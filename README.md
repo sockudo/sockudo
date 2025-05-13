@@ -162,6 +162,84 @@ VITE_PUSHER_SCHEME=http
 VITE_PUSHER_APP_CLUSTER=mt1
 ```
 
+## Using with Pusher Clients
+
+Sockudo is fully compatible with standard Pusher client libraries, making it easy to integrate with your existing applications. Here's how to use it with the Pusher JavaScript client:
+
+### JavaScript (Browser)
+
+```javascript
+// Initialize the Pusher client pointing to your Sockudo server
+const pusher = new Pusher('demo-key', {
+  wsHost: 'localhost',
+  wsPort: 6001,
+  enabledTransports: ['ws', 'wss'],
+  disableStats: true,
+  forceTLS: false,
+});
+
+// Subscribe to a channel
+const channel = pusher.subscribe('my-channel');
+
+// Listen for events on the channel
+channel.bind('my-event', function(data) {
+  console.log('Received event:', data);
+});
+
+// Public channels don't require authentication
+// For private or presence channels:
+const privateChannel = pusher.subscribe('private-channel');
+const presenceChannel = pusher.subscribe('presence-channel');
+```
+
+### Node.js
+
+```javascript
+const Pusher = require('pusher-js');
+
+const pusher = new Pusher('demo-key', {
+  wsHost: 'localhost',
+  wsPort: 6001,
+  enabledTransports: ['ws', 'wss'],
+  disableStats: true,
+  forceTLS: false,
+});
+
+// Subscribe and listen to events as in the browser example
+```
+
+### PHP
+
+```php
+$options = [
+  'host' => 'localhost',
+  'port' => 6001,
+  'scheme' => 'http',
+  'encrypted' => false,
+  'useTLS' => false,
+];
+
+$pusher = new Pusher\Pusher('demo-key', 'demo-secret', 'demo-app', $options);
+
+// Trigger an event
+$pusher->trigger('my-channel', 'my-event', ['message' => 'Hello World!']);
+```
+
+### Publishing Events
+
+To publish events to your channels from your backend:
+
+```bash
+# Using curl to trigger an event
+curl -X POST http://localhost:6001/apps/demo-app/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-event",
+    "channel": "my-channel",
+    "data": {"message": "Hello from Sockudo!"}
+  }'
+```
+
 ## API Documentation
 
 Sockudo implements the Pusher API, supporting:
@@ -254,7 +332,7 @@ Sockudo's architecture is organized around these key components:
 - **Cache Manager**: Provides caching capabilities
 - **Metrics**: Collects and exposes performance metrics
 - **Webhook Integration**: Sends webhook events to configured endpoints
-- 
+-
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
