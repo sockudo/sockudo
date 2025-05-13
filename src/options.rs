@@ -172,9 +172,14 @@ pub struct DatabaseConfig {
 pub struct DatabaseConnection {
     pub host: String,
     pub port: u16,
-    pub user: String,
+    pub username: String,
     pub password: String,
     pub database: String,
+    pub table_name: String,
+    pub connection_pool_size: u32,
+    pub cache_ttl: u64,              // in seconds
+    pub cache_cleanup_interval: u64, // in seconds
+    pub cache_max_capacity: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -431,16 +436,26 @@ impl Default for ServerOptions {
                 mysql: DatabaseConnection {
                     host: "localhost".to_string(),
                     port: 3306,
-                    user: "root".to_string(),
+                    username: "root".to_string(),
                     password: "".to_string(),
                     database: "sockudo".to_string(),
+                    table_name: "applications".to_string(),
+                    connection_pool_size: 0,
+                    cache_ttl: 0,
+                    cache_cleanup_interval: 0,
+                    cache_max_capacity: 0,
                 },
                 postgres: DatabaseConnection {
                     host: "localhost".to_string(),
                     port: 5432,
-                    user: "postgres".to_string(),
+                    username: "postgres".to_string(),
                     password: "".to_string(),
                     database: "sockudo".to_string(),
+                    table_name: "applications".to_string(),
+                    connection_pool_size: 4,
+                    cache_ttl: 60,
+                    cache_cleanup_interval: 60,
+                    cache_max_capacity: 60,
                 },
                 redis: RedisConnection {
                     host: "localhost".to_string(),
@@ -694,10 +709,15 @@ impl Default for DatabaseConnection {
     fn default() -> Self {
         Self {
             host: "localhost".to_string(),
-            port: 3306, // Default for MySQL
-            user: "root".to_string(),
+            port: 3306,
+            username: "root".to_string(),
             password: "".to_string(),
             database: "sockudo".to_string(),
+            table_name: "applications".to_string(),
+            connection_pool_size: 10,
+            cache_ttl: 300,             // 5 minutes
+            cache_cleanup_interval: 60, // 1 minute
+            cache_max_capacity: 100,
         }
     }
 }

@@ -2,6 +2,7 @@ use super::config::App;
 use crate::app::manager::AppManager;
 use crate::error::{Error, Result};
 use crate::log::Log;
+use crate::options::DatabaseConnection;
 use crate::token::Token;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
@@ -15,47 +16,17 @@ use tokio::sync::Mutex;
 use tokio::time::interval;
 
 /// Configuration for MySQL App Manager
-#[derive(Debug, Clone)]
-pub struct MySQLConfig {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub password: String,
-    pub database: String,
-    pub table_name: String,
-    pub connection_pool_size: u32,
-    pub cache_ttl: u64,              // in seconds
-    pub cache_cleanup_interval: u64, // in seconds
-    pub cache_max_capacity: u64,
-}
-
-impl Default for MySQLConfig {
-    fn default() -> Self {
-        Self {
-            host: "localhost".to_string(),
-            port: 3306,
-            username: "root".to_string(),
-            password: "".to_string(),
-            database: "sockudo".to_string(),
-            table_name: "applications".to_string(),
-            connection_pool_size: 10,
-            cache_ttl: 300,             // 5 minutes
-            cache_cleanup_interval: 60, // 1 minute
-            cache_max_capacity: 100,
-        }
-    }
-}
 
 /// MySQL-based implementation of the AppManager
 pub struct MySQLAppManager {
-    config: MySQLConfig,
+    config: DatabaseConnection,
     pool: MySqlPool,
     app_cache: Cache<String, App>, // App ID -> App
 }
 
 impl MySQLAppManager {
     /// Create a new MySQL-based AppManager with the provided configuration
-    pub async fn new(config: MySQLConfig) -> Result<Self> {
+    pub async fn new(config: DatabaseConnection) -> Result<Self> {
         Log::info(format!(
             "Initializing MySQL AppManager with database {}",
             config.database
@@ -700,7 +671,7 @@ mod tests {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
             // Setup test database
-            let config = MySQLConfig {
+            let config = DatabaseConnection {
                 database: "sockudo_test".to_string(),
                 table_name: "apps_test".to_string(),
                 cache_ttl: 5, // Short TTL for testing
