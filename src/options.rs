@@ -333,10 +333,27 @@ impl Default for RateLimiterConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SslConfig {
+    pub enabled: bool,
     pub cert_path: String,
     pub key_path: String,
     pub passphrase: String,
     pub ca_path: String,
+    pub redirect_http: bool,
+    pub http_port: Option<u16>,
+}
+
+impl Default for SslConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: "".to_string(),
+            key_path: "".to_string(),
+            passphrase: "".to_string(),
+            ca_path: "".to_string(),
+            redirect_http: true,
+            http_port: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,10 +547,13 @@ impl Default for ServerOptions {
             rate_limiter: RateLimiterConfig::default(),
             shutdown_grace_period: 10,
             ssl: SslConfig {
+                enabled: false,
                 cert_path: "".to_string(),
                 key_path: "".to_string(),
                 passphrase: "".to_string(),
                 ca_path: "".to_string(),
+                redirect_http: false,
+                http_port: None,
             },
             user_authentication_timeout: 3600,
             webhooks: WebhooksConfig {
@@ -848,17 +868,6 @@ impl Default for RedisQueueConfig {
             concurrency: 5,
             redis_options: HashMap::new(),
             cluster_mode: false,
-        }
-    }
-}
-
-impl Default for SslConfig {
-    fn default() -> Self {
-        Self {
-            cert_path: "".to_string(),
-            key_path: "".to_string(),
-            passphrase: "".to_string(),
-            ca_path: "".to_string(),
         }
     }
 }

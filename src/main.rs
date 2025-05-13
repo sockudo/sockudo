@@ -28,10 +28,14 @@ use std::time::Duration;
 
 use app::dynamodb_app_manager::DynamoDbConfig;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
-use axum::http::HeaderValue;
+use axum::http::uri::Authority;
 use axum::http::Method;
+use axum::http::{HeaderValue, StatusCode, Uri};
+use axum::response::Redirect;
 use axum::routing::{get, post};
-use axum::{serve, Router};
+use axum::{serve, BoxError, Router, ServiceExt};
+use axum_extra::extract::Host;
+use axum_server::tls_rustls::RustlsConfig;
 use error::Error;
 use serde_json::{from_str, json, Value};
 use tokio::io::AsyncReadExt;
@@ -708,59 +712,142 @@ impl SockudoServer {
         let http_addr = self.get_http_addr();
         let metrics_addr = self.get_metrics_addr();
 
-        // Create TCP listeners
-        let http_listener = TcpListener::bind(http_addr).await?;
-        let metrics_listener = if self.config.metrics.enabled {
-            Some(TcpListener::bind(metrics_addr).await?)
-        } else {
-            None
-        };
+        // Check if SSL is enabled and cert/key paths are provided
+        if self.config.ssl.enabled
+            && !self.config.ssl.cert_path.is_empty()
+            && !self.config.ssl.key_path.is_empty()
+        {
+            info!("SSL is enabled, starting HTTPS server");
 
-        info!("HTTP server listening on {}", http_addr);
-        if metrics_listener.is_some() {
-            info!("Metrics server listening on {}", metrics_addr);
-        }
+            // Load TLS configuration
+            let tls_config = match self.load_tls_config().await {
+                Ok(config) => config,
+                Err(e) => {
+                    error!("Failed to load TLS configuration: {}", e);
+                    return Err(Error::InternalError(format!(
+                        "Failed to load TLS configuration: {}",
+                        e
+                    )));
+                }
+            };
 
-        // Spawn HTTP server
-        let http_server = axum::serve(http_listener, http_router);
+            // Start HTTP redirect server if enabled
+            if self.config.ssl.redirect_http {
+                let http_port = self.config.ssl.http_port.unwrap_or(80);
+                let host_ip = self.config.host.parse::<std::net::IpAddr>()
+                    .unwrap_or_else(|_| "0.0.0.0".parse().unwrap());
+                let redirect_addr = SocketAddr::from((host_ip, http_port));
 
-        // Spawn metrics server if enabled
-        let metrics_server = if let Some(listener) = metrics_listener {
-            Some(axum::serve(listener, metrics_router))
-        } else {
-            None
-        };
+                info!("Starting HTTP to HTTPS redirect server on {}", redirect_addr);
 
-        // Get shutdown signal
-        let shutdown_signal = self.shutdown_signal();
+                let https_port = self.config.port;
 
-        // Spawn servers with graceful shutdown
-        let running = self.state.running.clone();
-        if let Some(metrics_server) = metrics_server {
+                // Create a router with the redirect handler instead of using the closure directly
+                let redirect_app = Router::new().fallback(move |Host(host): Host, uri: Uri| async move {
+                    match make_https(&host, uri, https_port) {
+                        Ok(uri) => Ok(Redirect::permanent(&uri.to_string())),
+                        Err(error) => {
+                            warn!(%error, "failed to convert URI to HTTPS");
+                            Err(StatusCode::BAD_REQUEST)
+                        }
+                    }
+                });
+
+                // Start the redirect server
+                match TcpListener::bind(redirect_addr).await {
+                    Ok(redirect_listener) => {
+                        tokio::spawn(async move {
+                            if let Err(e) = axum::serve(redirect_listener, redirect_app).await {
+                                error!("HTTP redirect server error: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        warn!("Failed to bind HTTP redirect server: {}", e);
+                    }
+                }
+            }
+
+            // Start metrics server if enabled
+            if self.config.metrics.enabled {
+                if let Ok(metrics_listener) = TcpListener::bind(metrics_addr).await {
+                    info!("Metrics server listening on {}", metrics_addr);
+                    tokio::spawn(async move {
+                        if let Err(e) = axum::serve(metrics_listener, metrics_router).await {
+                            error!("Metrics server error: {}", e);
+                        }
+                    });
+                } else {
+                    warn!("Failed to start metrics server on {}", metrics_addr);
+                }
+            }
+
+            // In the SockudoServer::start() method
+
+            // Start main HTTPS server
+            info!("HTTPS server listening on {}", http_addr);
+            let running = self.state.running.clone();
+
+            // Bind with TLS config - this returns a Server directly, not a Result
+            let server = axum_server::bind_rustls(http_addr, tls_config);
+
+            // Serve with graceful shutdown
             tokio::select! {
-                res = http_server => {
-                    if let Err(err) = res {
-                        error!("HTTP server error: {}", err);
+                result = server.serve(http_router.into_make_service()) => {
+                    if let Err(err) = result {
+                        error!("HTTPS server error: {}", err);
                     }
                 }
-                res = metrics_server => {
-                    if let Err(err) = res {
-                        error!("Metrics server error: {}", err);
-                    }
-                }
-                _ = shutdown_signal => {
+                _ = self.shutdown_signal() => {
                     info!("Shutdown signal received");
                     running.store(false, Ordering::SeqCst);
                 }
             }
         } else {
+            // SSL is not enabled, start HTTP server as before
+            info!("SSL is not enabled, starting HTTP server");
+
+            // Create TCP listeners
+            let http_listener = TcpListener::bind(http_addr).await?;
+            let metrics_listener = if self.config.metrics.enabled {
+                match TcpListener::bind(metrics_addr).await {
+                    Ok(listener) => {
+                        info!("Metrics server listening on {}", metrics_addr);
+                        Some(listener)
+                    }
+                    Err(e) => {
+                        warn!("Failed to bind metrics server: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            info!("HTTP server listening on {}", http_addr);
+
+            // Spawn servers with graceful shutdown
+            let running = self.state.running.clone();
+
+            if let Some(metrics_listener) = metrics_listener {
+                let metrics_router_clone = metrics_router.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = axum::serve(metrics_listener, metrics_router_clone).await {
+                        error!("Metrics server error: {}", e);
+                    }
+                });
+            }
+
+            // Start HTTP server with shutdown signal
+            let http_server = axum::serve(http_listener, http_router);
+
             tokio::select! {
                 res = http_server => {
                     if let Err(err) = res {
                         error!("HTTP server error: {}", err);
                     }
                 }
-                _ = shutdown_signal => {
+                _ = self.shutdown_signal() => {
                     info!("Shutdown signal received");
                     running.store(false, Ordering::SeqCst);
                 }
@@ -768,8 +855,23 @@ impl SockudoServer {
         }
 
         info!("Server shutting down");
-
         Ok(())
+    }
+
+    /// Load TLS configuration from the SSL config
+    async fn load_tls_config(&self) -> Result<RustlsConfig> {
+        // Handle certificate and key paths
+        let cert_path = std::path::PathBuf::from(&self.config.ssl.cert_path);
+        let key_path = std::path::PathBuf::from(&self.config.ssl.key_path);
+
+        // If passphrase is provided, we need to use a different loading method
+        // Currently, the example only supports loading from PEM files without passphrase
+        // For passphrase support, we'd need to implement more complex loading logic
+
+        // Load TLS configuration
+        RustlsConfig::from_pem_file(cert_path, key_path)
+            .await
+            .map_err(|e| Error::InternalError(format!("Failed to load TLS configuration: {}", e)))
     }
 
     /// Graceful shutdown handler
@@ -885,6 +987,28 @@ async fn main() -> Result<()> {
     // Override adapter options if provided in environment
     if let Ok(adapter_driver) = std::env::var("ADAPTER_DRIVER") {
         config.adapter.driver = adapter_driver;
+    }
+
+    if let Ok(ssl_enabled) = std::env::var("SSL_ENABLED") {
+        config.ssl.enabled = ssl_enabled == "1" || ssl_enabled.to_lowercase() == "true";
+    }
+
+    if let Ok(cert_path) = std::env::var("SSL_CERT_PATH") {
+        config.ssl.cert_path = cert_path;
+    }
+
+    if let Ok(key_path) = std::env::var("SSL_KEY_PATH") {
+        config.ssl.key_path = key_path;
+    }
+
+    if let Ok(redirect_http) = std::env::var("SSL_REDIRECT_HTTP") {
+        config.ssl.redirect_http = redirect_http == "1" || redirect_http.to_lowercase() == "true";
+    }
+
+    if let Ok(http_port) = std::env::var("SSL_HTTP_PORT") {
+        if let Ok(port) = http_port.parse() {
+            config.ssl.http_port = Some(port);
+        }
     }
 
     // Override Redis URL if provided in environment
@@ -1029,4 +1153,22 @@ async fn main() -> Result<()> {
 
     info!("Server shutdown complete");
     Ok(())
+}
+
+fn make_https(host: &str, uri: Uri, https_port: u16) -> core::result::Result<Uri, BoxError> {
+    let mut parts = uri.into_parts();
+    parts.scheme = Some(axum::http::uri::Scheme::HTTPS);
+    if parts.path_and_query.is_none() {
+        parts.path_and_query = Some("/".parse().unwrap());
+    }
+    let authority: Authority = host.parse()?;
+    let bare_host = match authority.port() {
+        Some(port_struct) => authority
+            .as_str()
+            .strip_suffix(&format!(":{}", port_struct))
+            .unwrap_or(authority.as_str()),
+        None => authority.as_str(),
+    };
+    parts.authority = Some(format!("{bare_host}:{https_port}").parse()?);
+    Ok(Uri::from_parts(parts)?)
 }
