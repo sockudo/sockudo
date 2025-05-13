@@ -9,13 +9,13 @@ mod metrics;
 mod namespace;
 mod options;
 mod protocol;
+mod queue;
 mod rate_limiter;
 mod token;
 pub mod utils;
 mod webhook;
 mod websocket;
 mod ws_handler;
-mod queue;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -32,17 +32,14 @@ use axum::http::Method;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{serve, Router};
+use error::Error;
 use serde_json::{from_str, json, Value};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
 
-use tower_http::cors::CorsLayer;
-use tracing::{error, info, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use tracing_subscriber::fmt::format;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterConfig};
 use crate::adapter::Adapter;
@@ -55,14 +52,20 @@ use crate::cache::manager::CacheManager;
 use crate::cache::redis_cache_manager::{RedisCacheConfig, RedisCacheManager};
 use crate::channel::ChannelManager;
 use crate::error::Result;
-use crate::http_handler::{batch_events, channel, channel_users, channels, events, metrics, terminate_user_connections, up, usage};
+use crate::http_handler::{
+    batch_events, channel, channel_users, channels, events, metrics, terminate_user_connections,
+    up, usage,
+};
 use crate::log::Log;
 use crate::metrics::{MetricsFactory, MetricsInterface};
 use crate::options::{ServerOptions, WebhooksConfig};
-use crate::webhook::integration::{WebhookConfig, WebhookIntegration, BatchingConfig};
+use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegration};
 use crate::webhook::types::Webhook;
 use crate::ws_handler::handle_ws_upgrade;
-
+use tower_http::cors::CorsLayer;
+use tracing::{error, info, warn};
+use tracing_subscriber::fmt::format;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Server state containing all managers
 #[derive(Clone)]
@@ -112,8 +115,8 @@ impl SockudoServer {
                 } else {
                     "redis://127.0.0.1:6379".to_string()
                 }
-            },
-            _ => "redis://127.0.0.1:6379".to_string()
+            }
+            _ => "redis://127.0.0.1:6379".to_string(),
         };
 
         // Initialize Redis adapter with configuration
@@ -153,8 +156,8 @@ impl SockudoServer {
                     } else {
                         "cache".to_string()
                     }
-                },
-                _ => "cache".to_string()
+                }
+                _ => "cache".to_string(),
             },
             ..RedisCacheConfig::default()
         };
@@ -163,7 +166,7 @@ impl SockudoServer {
             Ok(manager) => {
                 info!("Using Redis cache manager");
                 manager
-            },
+            }
             Err(e) => {
                 warn!("Failed to initialize Redis cache: {}", e);
                 return Err(e);
@@ -179,13 +182,16 @@ impl SockudoServer {
 
         // Initialize metrics
         let metrics_driver = Arc::new(Mutex::new(
-            metrics::PrometheusMetricsDriver::new(config.metrics.port, Some(&config.metrics.prometheus.prefix))
-                .await,
+            metrics::PrometheusMetricsDriver::new(
+                config.metrics.port,
+                Some(&config.metrics.prometheus.prefix),
+            )
+            .await,
         ));
 
         // Initialize webhook integration
         let webhook_config = WebhookConfig {
-            enabled: config.webhooks.batching.enabled,
+            enabled: true,
             batching: BatchingConfig {
                 enabled: config.webhooks.batching.enabled,
                 duration: config.webhooks.batching.duration,
@@ -199,22 +205,26 @@ impl SockudoServer {
         };
 
         // Initialize webhook integration with proper error handling
-        let webhook_integration = match WebhookIntegration::new(webhook_config).await {
-            Ok(integration) => {
-                info!("Webhook integration initialized successfully");
-                Arc::new(integration)
-            },
-            Err(e) => {
-                warn!("Failed to initialize webhook integration: {}, webhooks will be disabled", e);
-                // Create a disabled integration as fallback
-                let disabled_config = WebhookConfig {
-                    enabled: false,
-                    ..Default::default()
-                };
+        let webhook_integration =
+            match WebhookIntegration::new(webhook_config, app_manager.clone()).await {
+                Ok(integration) => {
+                    info!("Webhook integration initialized successfully");
+                    Arc::new(integration)
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to initialize webhook integration: {}, webhooks will be disabled",
+                        e
+                    );
+                    // Create a disabled integration as fallback
+                    let disabled_config = WebhookConfig {
+                        enabled: false,
+                        ..Default::default()
+                    };
 
-                Arc::new(WebhookIntegration::new(disabled_config).await?)
-            }
-        };
+                    Arc::new(WebhookIntegration::new(disabled_config, app_manager.clone()).await?)
+                }
+            };
 
         // Initialize the state
         let state = ServerState {
@@ -235,7 +245,7 @@ impl SockudoServer {
             state.connection_manager.clone(),
             state.cache_manager.clone(),
             state.metrics.clone(),
-            Some(webhook_integration)
+            Some(webhook_integration),
         ));
 
         Ok(Self {
@@ -253,32 +263,99 @@ impl SockudoServer {
             connection_manager.init().await;
         }
 
-        // Register demo app (in a real environment, this would be loaded from config)
-        let demo_app = App {
-            id: "demo-app".to_string(),
-            key: "demo-key".to_string(),
-            secret: "demo-secret".to_string(),
-            enable_client_messages: true,
-            enabled: true,
-            max_connections: 1000,
-            max_client_events_per_second: 100,
-            webhooks: Some(vec![
-                Webhook {
-                    url: Some("http://localhost:3000/webhook".parse().unwrap()),
+        // Register apps from configuration
+        if !self.config.app_manager.array.apps.is_empty() {
+            info!(
+                "Registering {} apps from configuration",
+                self.config.app_manager.array.apps.len()
+            );
+
+            // Clone apps from config to avoid borrowing issues
+            let apps_to_register = self.config.app_manager.array.apps.clone();
+
+            // Register each app individually and log the outcome
+            for app in apps_to_register {
+                info!("Registering app: id={}, key={}", app.id, app.key);
+
+                match self.state.app_manager.register_app(app.clone()).await {
+                    Ok(_) => info!("Successfully registered app: {}", app.id),
+                    Err(e) => {
+                        warn!("Failed to register app {}: {}", app.id, e);
+                        // Check if app already exists
+                        match self.state.app_manager.get_app(&app.id).await {
+                            Ok(Some(_)) => {
+                                info!("App {} already exists, updating instead", app.id);
+                                // Try to update instead
+                                if let Err(update_err) =
+                                    self.state.app_manager.update_app(app.clone()).await
+                                {
+                                    error!(
+                                        "Failed to update existing app {}: {}",
+                                        app.clone().id,
+                                        update_err
+                                    );
+                                    // Continue with other apps rather than failing completely
+                                } else {
+                                    info!("Successfully updated app: {}", app.id);
+                                }
+                            }
+                            _ => {
+                                // Some other error occurred, but continue processing other apps
+                                error!("Error retrieving app {}: {}", app.id, e);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // No apps in configuration, register demo app
+            info!("No apps found in configuration, registering demo app");
+
+            let demo_app = App {
+                id: "demo-app".to_string(),
+                key: "demo-key".to_string(),
+                secret: "demo-secret".to_string(),
+                enable_client_messages: true,
+                enabled: true,
+                max_connections: 1000,
+                max_client_events_per_second: 100,
+                webhooks: Some(vec![Webhook {
+                    url: Some("http://localhost:3000/pusher/webhooks".parse().unwrap()),
                     lambda_function: None,
                     lambda: None,
                     event_types: vec!["member_added".to_string(), "member_removed".to_string()],
                     filter: None,
                     headers: None,
-                }
-            ]),
-            ..Default::default()
-        };
+                }]),
+                ..Default::default()
+            };
 
-        self.state.app_manager.register_app(demo_app).await?;
+            match self.state.app_manager.register_app(demo_app).await {
+                Ok(_) => info!("Successfully registered demo app"),
+                Err(e) => {
+                    warn!("Failed to register demo app: {}", e);
+                    // Not returning error as server can still function with no apps
+                }
+            }
+        }
+
+        // Verify apps were registered
+        match self.state.app_manager.get_apps().await {
+            Ok(apps) => {
+                info!("Server has {} registered apps:", apps.len());
+                for app in apps {
+                    info!(
+                        "- App: id={}, key={}, enabled={}",
+                        app.id, app.key, app.enabled
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("Failed to retrieve registered apps: {}", e);
+            }
+        }
 
         info!("Server initialized successfully");
-
         Ok(())
     }
 
@@ -299,7 +376,10 @@ impl SockudoServer {
             .route("/apps/{appId}/batch_events", post(batch_events))
             .route("/apps/{app_id}/channels", get(channels))
             .route("/apps/{app_id}/channels/{channel_name}", get(channel))
-            .route("/apps/{app_id}/channels/{channel_name}/users", get(channel_users))
+            .route(
+                "/apps/{app_id}/channels/{channel_name}/users",
+                get(channel_users),
+            )
             .route(
                 "/apps/{app_id}/users/{user_id}/terminate_connections",
                 post(terminate_user_connections),
@@ -428,6 +508,7 @@ impl SockudoServer {
 
         let options: ServerOptions = from_str(&contents)?;
         self.config = options;
+        println!("{:?}", self.config.app_manager);
 
         Ok(())
     }
@@ -453,6 +534,8 @@ impl SockudoServer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // print hello world
+
     // Initialize logging
     tracing_subscriber::registry()
         .with(
@@ -460,57 +543,136 @@ async fn main() -> Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-    Log::info("server 1");
 
+    info!("Starting Sockudo server initialization");
     // Create default ServerOptions
-    let mut config = ServerOptions {
-        debug: std::env::var("DEBUG")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false),
-        host: std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
-        port: std::env::var("PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(6001),
-        ..Default::default()
-    };
-
-    Log::info("server 1");
+    let mut config = ServerOptions::default();
 
     // Override from environment variables
+    config.debug = std::env::var("DEBUG")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    config.host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+
+    config.port = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6001);
+
+    // Override Redis URL if provided in environment
     if let Ok(redis_url) = std::env::var("REDIS_URL") {
-        // Update Redis config
+        // Update Redis config in adapter, making sure the HashMap exists
         if !config.adapter.redis.redis_pub_options.contains_key("url") {
-            config.adapter.redis.redis_pub_options.insert("url".to_string(), json!(redis_url));
+            config
+                .adapter
+                .redis
+                .redis_pub_options
+                .insert("url".to_string(), json!(redis_url.clone()));
         }
+
         if !config.adapter.redis.redis_sub_options.contains_key("url") {
-            config.adapter.redis.redis_sub_options.insert("url".to_string(), json!(redis_url));
+            config
+                .adapter
+                .redis
+                .redis_sub_options
+                .insert("url".to_string(), json!(redis_url.clone()));
         }
+
         if !config.cache.redis.redis_options.contains_key("url") {
-            config.cache.redis.redis_options.insert("url".to_string(), json!(redis_url));
+            config
+                .cache
+                .redis
+                .redis_options
+                .insert("url".to_string(), json!(redis_url.clone()));
         }
+
+        info!("Using Redis URL from environment: {}", redis_url);
     }
-    Log::info("server 1");
-
-    // Create and start the server
-    let mut server = SockudoServer::new(config).await?;
-
-    Log::info("server 1");
 
     // Load config from file if available
-    let config_path = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "src/config.json".to_string());
+    let config_path =
+        std::env::var("CONFIG_FILE").unwrap_or_else(|_| "src/config.json".to_string());
     if Path::new(&config_path).exists() {
         info!("Loading configuration from {}", config_path);
-        if let Err(e) = server.load_options_from_file(&config_path).await {
-            warn!("Failed to load configuration file: {}", e);
+
+        // Read the file
+        let mut file = match File::open(&config_path) {
+            Ok(file) => file,
+            Err(e) => {
+                error!("Failed to open configuration file {}: {}", config_path, e);
+                return Err(Error::InternalError(format!(
+                    "Failed to open config file: {}",
+                    e
+                )));
+            }
+        };
+
+        let mut contents = String::new();
+        if let Err(e) = file.read_to_string(&mut contents) {
+            error!("Failed to read configuration file {}: {}", config_path, e);
+            return Err(Error::InternalError(format!(
+                "Failed to read config file: {}",
+                e
+            )));
+        }
+
+        // Parse the configuration file
+        match from_str::<ServerOptions>(&contents) {
+            Ok(file_config) => {
+                // Log apps found in config
+                info!(
+                    "Found {} apps in configuration file",
+                    file_config.app_manager.array.apps.len()
+                );
+
+                // Log details about each app for debugging
+                for app in &file_config.app_manager.array.apps {
+                    info!(
+                        "App in config: id={}, key={}, enabled={}",
+                        app.id, app.key, app.enabled
+                    );
+                }
+
+                // Replace our config with the file config
+                config = file_config;
+
+                info!("Successfully loaded configuration from {}", config_path);
+            }
+            Err(e) => {
+                error!("Failed to parse configuration file {}: {}", config_path, e);
+                return Err(Error::InternalError(format!(
+                    "Failed to parse config file: {}",
+                    e
+                )));
+            }
         }
     } else {
-        info!("No configuration file found at {}, using defaults", config_path);
+        info!(
+            "No configuration file found at {}, using defaults and environment variables",
+            config_path
+        );
     }
-    Log::info("server 1");
 
+    // Create the server with the loaded configuration
+    let server = match SockudoServer::new(config).await {
+        Ok(server) => server,
+        Err(e) => {
+            error!("Failed to create server: {}", e);
+            return Err(e);
+        }
+    };
+
+    let a = "Hello";
+    println!("{a}");
+    println!("{:?}", server.config.app_manager.array.apps);
     // Start the server and await completion
-    server.start().await?;
+    info!("Starting Sockudo server");
+    if let Err(e) = server.start().await {
+        error!("Server error: {}", e);
+        return Err(e);
+    }
 
+    info!("Server shutdown complete");
     Ok(())
 }

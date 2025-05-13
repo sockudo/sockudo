@@ -158,7 +158,7 @@ impl CacheManager for RedisClusterCacheManager {
         }
     }
 
-    async fn ttl(&mut self, key: &str) -> Result<Option<Duration>> {        
+    async fn ttl(&mut self, key: &str) -> Result<Option<Duration>> {
         let ttl: i64 = self
             .connection
             .ttl(self.prefixed_key(key))

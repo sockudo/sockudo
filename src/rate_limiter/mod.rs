@@ -5,6 +5,7 @@ pub mod redis_limiter;
 
 use crate::error::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Configuration for rate limiters
@@ -43,17 +44,14 @@ pub struct RateLimitResult {
 
 /// Common trait for all rate limiters
 #[async_trait]
-pub trait RateLimiter: Send + Sync {
+pub trait RateLimiter: Send + Sync + 'static {
     /// Check if a request is allowed for a given key
     async fn check(&self, key: &str) -> Result<RateLimitResult>;
-
     /// Increment the counter for a key and check if the request is allowed
     /// Returns the same result as `check` but also increments the counter
     async fn increment(&self, key: &str) -> Result<RateLimitResult>;
-
     /// Reset the counter for a key
     async fn reset(&self, key: &str) -> Result<()>;
-
     /// Get the remaining requests for a key without incrementing
     async fn get_remaining(&self, key: &str) -> Result<u32>;
 }
@@ -61,7 +59,7 @@ pub trait RateLimiter: Send + Sync {
 /// Factory method to create a rate limiter based on the configuration
 pub async fn create_rate_limiter(
     config: &crate::options::RateLimiterConfig,
-) -> Result<Box<dyn RateLimiter>> {
+) -> Result<Arc<dyn RateLimiter>> {
     match config.driver.as_str() {
         "redis" => {
             // Get Redis URL from config or use default
@@ -100,7 +98,7 @@ pub async fn create_rate_limiter(
             )
             .await?;
 
-            Ok(Box::new(limiter))
+            Ok(Arc::new(limiter))
         }
         "memory" | _ => {
             // Default to memory rate limiter
@@ -109,7 +107,51 @@ pub async fn create_rate_limiter(
                 config.default_window_seconds,
             );
 
-            Ok(Box::new(limiter))
+            Ok(Arc::new(limiter))
         }
+    }
+}
+
+// Convenience function to create a memory rate limiter with specific configuration
+pub fn create_memory_rate_limiter(max_requests: u32, window_secs: u64) -> Arc<dyn RateLimiter> {
+    Arc::new(memory_limiter::MemoryRateLimiter::new(
+        max_requests,
+        window_secs,
+    ))
+}
+
+// Convenience function to create a redis rate limiter with specific configuration
+pub async fn create_redis_rate_limiter(
+    redis_url: &str,
+    prefix: &str,
+    max_requests: u32,
+    window_secs: u64,
+) -> Result<Arc<dyn RateLimiter>> {
+    let redis_client = redis::Client::open(redis_url).map_err(|e| {
+        crate::error::Error::CacheError(format!("Failed to create Redis client: {}", e))
+    })?;
+
+    let limiter = redis_limiter::RedisRateLimiter::new(
+        redis_client,
+        prefix.to_string(),
+        max_requests,
+        window_secs,
+    )
+    .await?;
+
+    Ok(Arc::new(limiter))
+}
+
+// Then modify the middleware module to accept Arc<dyn RateLimiter> directly
+pub mod middleware_utils {
+    use super::*;
+    use crate::rate_limiter::middleware::{IpKeyExtractor, RateLimitLayer, RateLimitOptions};
+
+    // Helper function to create rate limit middleware with Arc<dyn RateLimiter>
+    pub fn with_arc_ip_limiter(
+        limiter: Arc<dyn RateLimiter>,
+        options: RateLimitOptions,
+    ) -> RateLimitLayer<IpKeyExtractor> {
+        RateLimitLayer::with_options(limiter, IpKeyExtractor::new(), options)
     }
 }

@@ -1,5 +1,8 @@
 use crate::adapter::ConnectionHandler;
-use crate::protocol::messages::{BatchPusherApiMessage, InfoQueryParser, PusherApiMessage, PusherMessage};
+use crate::log::Log;
+use crate::protocol::messages::{
+    BatchPusherApiMessage, InfoQueryParser, PusherApiMessage, PusherMessage,
+};
 use crate::utils;
 use crate::websocket::SocketId;
 use axum::{
@@ -8,14 +11,13 @@ use axum::{
     response::{IntoResponse, Response as AxumResponse},
     Json,
 };
+use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, fmt, sync::Arc};
-use chrono::Duration;
 use sysinfo::System;
 use thiserror::Error;
 use tracing::{error, field, info, instrument, warn};
-use crate::log::Log;
 
 // --- Custom Error Type ---
 
@@ -41,12 +43,27 @@ impl IntoResponse for AppError {
     fn into_response(self) -> AxumResponse {
         let (status, error_message) = match &self {
             AppError::AppNotFound(msg) => (StatusCode::NOT_FOUND, json!({ "error": msg })),
-            AppError::AppValidationFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg })),
-            AppError::MissingChannelInfo => (StatusCode::BAD_REQUEST, json!({ "error": "Request must contain 'channels' (list) or 'channel' (string)" })),
-            AppError::TerminationFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg })),
-            AppError::SerializationError(e) => (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("Internal error during serialization: {}", e) })),
-            AppError::HeaderBuildError(e) => (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("Internal error building response: {}", e) })),
-            AppError::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg })),
+            AppError::AppValidationFailed(msg) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
+            }
+            AppError::MissingChannelInfo => (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Request must contain 'channels' (list) or 'channel' (string)" }),
+            ),
+            AppError::TerminationFailed(msg) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
+            }
+            AppError::SerializationError(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("Internal error during serialization: {}", e) }),
+            ),
+            AppError::HeaderBuildError(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("Internal error building response: {}", e) }),
+            ),
+            AppError::InternalError(msg) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
+            }
         };
 
         error!(error.message = %self, status_code = %status, "Request failed");
@@ -119,12 +136,12 @@ async fn record_api_metrics(
 ) {
     if let Some(metrics_arc) = &handler.metrics {
         let metrics = metrics_arc.lock().await;
-        metrics.mark_api_message(
-            app_id,
-            batch_size,
-            response_size,
+        metrics.mark_api_message(app_id, batch_size, response_size);
+        info!(
+            incoming_bytes = batch_size,
+            outgoing_bytes = response_size,
+            "Recorded API message metrics"
         );
-        info!(incoming_bytes = batch_size, outgoing_bytes = response_size, "Recorded API message metrics");
     } else {
         info!("Metrics system not available, skipping metrics recording.");
     }
@@ -147,8 +164,15 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
         0.0
     };
 
-    let memory_stats = MemoryStats { free, used, total, percent };
-    let response_payload = UsageResponse { memory: memory_stats };
+    let memory_stats = MemoryStats {
+        free,
+        used,
+        total,
+        percent,
+    };
+    let response_payload = UsageResponse {
+        memory: memory_stats,
+    };
 
     info!(
         total_bytes = total,
@@ -239,19 +263,34 @@ async fn process_single_event(
 
             // Get user_count for presence channels
             if is_presence && info.as_deref().map_or(false, |s| s.contains("user_count")) {
-                match handler.channel_manager.read().await.get_channel_members(app_id, &target_channel).await {
+                match handler
+                    .channel_manager
+                    .read()
+                    .await
+                    .get_channel_members(app_id, &target_channel)
+                    .await
+                {
                     Ok(members) => {
                         channel_info.insert("user_count".to_string(), json!(members.len()));
-                    },
+                    }
                     Err(e) => {
-                        Log::warning(format!("Failed to get user count for channel {}: {}", target_channel, e));
+                        Log::warning(format!(
+                            "Failed to get user count for channel {}: {}",
+                            target_channel, e
+                        ));
                     }
                 }
             }
 
             // Get subscription_count if requested
-            if info.as_deref().map_or(false, |s| s.contains("subscription_count")) {
-                let count = handler.connection_manager.lock().await
+            if info
+                .as_deref()
+                .map_or(false, |s| s.contains("subscription_count"))
+            {
+                let count = handler
+                    .connection_manager
+                    .lock()
+                    .await
                     .get_channel_socket_count(app_id, &target_channel)
                     .await;
                 channel_info.insert("subscription_count".to_string(), json!(count));
@@ -316,7 +355,10 @@ pub async fn events(
         }
         Err(e) => {
             error!(error = %e, "Failed to fetch app details.");
-            return Err(AppError::AppValidationFailed(format!("Error fetching app: {}", e)));
+            return Err(AppError::AppValidationFailed(format!(
+                "Error fetching app: {}",
+                e
+            )));
         }
     }
 
@@ -353,7 +395,8 @@ pub async fn batch_events(
         .map_err(|e| {
             warn!(error = %e, "Failed to serialize incoming batch for size calculation");
             AppError::SerializationError(e)
-        })?.len();
+        })?
+        .len();
 
     // Process each event and collect info if needed
     let mut batch_info = Vec::new();
@@ -366,20 +409,27 @@ pub async fn batch_events(
         }
 
         // Process the event
-        let channel_info = process_single_event(
-            &handler,
-            &app_id,
-            message.clone(),
-            message.info.is_some()
-        ).await?;
+        let channel_info =
+            process_single_event(&handler, &app_id, message.clone(), message.info.is_some())
+                .await?;
 
         // Add info to the batch response if needed
         if need_info {
             if let Some(channel) = message.channel {
-                batch_info.push(channel_info.get(&channel).cloned().unwrap_or_else(|| json!({})));
+                batch_info.push(
+                    channel_info
+                        .get(&channel)
+                        .cloned()
+                        .unwrap_or_else(|| json!({})),
+                );
             } else if let Some(channels) = message.channels {
                 if !channels.is_empty() {
-                    batch_info.push(channel_info.get(&channels[0]).cloned().unwrap_or_else(|| json!({})));
+                    batch_info.push(
+                        channel_info
+                            .get(&channels[0])
+                            .cloned()
+                            .unwrap_or_else(|| json!({})),
+                    );
                 } else {
                     batch_info.push(json!({}));
                 }
@@ -420,20 +470,33 @@ pub async fn channel(
 
     // Get basic channel data
     let mut connection_manager = handler.connection_manager.lock().await;
-    let socket_count = connection_manager.get_channel_socket_count(&app_id, &channel_name).await;
+    let socket_count = connection_manager
+        .get_channel_socket_count(&app_id, &channel_name)
+        .await;
     drop(connection_manager); // Release the lock early
 
     // Get user_count for presence channels if requested
     let user_count = if wants_user_count {
         if channel_name.starts_with("presence-") {
-            match handler.channel_manager.read().await.get_channel_members(&app_id, &channel_name).await {
+            match handler
+                .channel_manager
+                .read()
+                .await
+                .get_channel_members(&app_id, &channel_name)
+                .await
+            {
                 Ok(members) => Some(members.len() as u64),
                 Err(e) => {
-                    return Err(AppError::InternalError(format!("Failed to get channel members: {}", e)));
+                    return Err(AppError::InternalError(format!(
+                        "Failed to get channel members: {}",
+                        e
+                    )));
                 }
             }
         } else {
-            return Err(AppError::InternalError("user_count is only available for presence channels".to_string()));
+            return Err(AppError::InternalError(
+                "user_count is only available for presence channels".to_string(),
+            ));
         }
     } else {
         None
@@ -453,7 +516,7 @@ pub async fn channel(
                 };
 
                 Some((cache_content, ttl.unwrap()))
-            },
+            }
             _ => None,
         }
     } else {
@@ -461,13 +524,13 @@ pub async fn channel(
     };
 
     // Use the helper to create the response
-    let subscription_count = if wants_subscription_count { Some(socket_count as u64) } else { None };
-    let response = PusherMessage::channel_info(
-        socket_count > 0,
-        subscription_count,
-        user_count,
-        cache_data
-    );
+    let subscription_count = if wants_subscription_count {
+        Some(socket_count as u64)
+    } else {
+        None
+    };
+    let response =
+        PusherMessage::channel_info(socket_count > 0, subscription_count, user_count, cache_data);
 
     let response_json = serde_json::to_vec(&response)?;
     record_api_metrics(&handler, &app_id, 0, response_json.len()).await;
@@ -491,9 +554,17 @@ pub async fn channels(
 
     // Get channels with socket count
     let mut connection_manager = handler.connection_manager.lock().await;
-    let channels = match connection_manager.get_channels_with_socket_count(&app_id).await {
+    let channels = match connection_manager
+        .get_channels_with_socket_count(&app_id)
+        .await
+    {
         Ok(ch) => ch,
-        Err(e) => return Err(AppError::InternalError(format!("Failed to get channels: {}", e))),
+        Err(e) => {
+            return Err(AppError::InternalError(format!(
+                "Failed to get channels: {}",
+                e
+            )))
+        }
     };
     drop(connection_manager); // Release lock early
 
@@ -515,12 +586,21 @@ pub async fn channels(
         // Add user_count for presence channels if requested
         if wants_user_count {
             if channel_name.starts_with("presence-") {
-                match handler.channel_manager.read().await.get_channel_members(&app_id, &channel_name).await {
+                match handler
+                    .channel_manager
+                    .read()
+                    .await
+                    .get_channel_members(&app_id, &channel_name)
+                    .await
+                {
                     Ok(members) => {
                         channel_info.insert("user_count".to_string(), json!(members.len()));
-                    },
+                    }
                     Err(e) => {
-                        Log::warning(format!("Failed to get user count for channel {}: {}", channel_name, e));
+                        Log::warning(format!(
+                            "Failed to get user count for channel {}: {}",
+                            channel_name, e
+                        ));
                         continue;
                     }
                 }
@@ -550,7 +630,6 @@ pub async fn channels(
     Ok((StatusCode::OK, Json(response)))
 }
 
-
 /// GET /apps/{app_id}/channels/{channel_name}/users
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
 pub async fn channel_users(
@@ -562,7 +641,7 @@ pub async fn channel_users(
     // Verify it's a presence channel
     if !channel_name.starts_with("presence-") {
         return Err(AppError::InternalError(
-            "Only presence channels support this endpoint".to_string()
+            "Only presence channels support this endpoint".to_string(),
         ));
     }
 
@@ -572,9 +651,15 @@ pub async fn channel_users(
         .read()
         .await
         .get_channel_members(&app_id, &channel_name)
-        .await {
+        .await
+    {
         Ok(members) => members,
-        Err(e) => return Err(AppError::InternalError(format!("Failed to get channel members: {}", e)))
+        Err(e) => {
+            return Err(AppError::InternalError(format!(
+                "Failed to get channel members: {}",
+                e
+            )))
+        }
     };
 
     // Convert to user list format
@@ -588,7 +673,10 @@ pub async fn channel_users(
 
     record_api_metrics(&handler, &app_id, 0, response_json.len()).await;
 
-    info!(user_count = users.len(), "Channel users retrieved successfully");
+    info!(
+        user_count = users.len(),
+        "Channel users retrieved successfully"
+    );
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
@@ -670,6 +758,9 @@ pub async fn metrics(
         HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
     );
 
-    info!(bytes = plaintext_metrics.len(), "Successfully generated metrics");
+    info!(
+        bytes = plaintext_metrics.len(),
+        "Successfully generated metrics"
+    );
     Ok((StatusCode::OK, headers, plaintext_metrics))
 }

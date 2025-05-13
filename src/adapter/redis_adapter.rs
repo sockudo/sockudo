@@ -133,7 +133,10 @@ impl RedisAdapter {
         Ok(adapter)
     }
 
-    pub async fn set_metrics(&mut self, metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>) -> Result<()> {
+    pub async fn set_metrics(
+        &mut self,
+        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
+    ) -> Result<()> {
         // Get lock on the horizontal adapter
         let mut horizontal = self.horizontal.lock().await;
 
@@ -144,7 +147,10 @@ impl RedisAdapter {
     }
 
     // Method to initialize metrics during adapter startup
-    pub async fn init_with_metrics(&mut self, metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>) -> Result<()> {
+    pub async fn init_with_metrics(
+        &mut self,
+        metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+    ) -> Result<()> {
         // First initialize the adapter
         self.init().await;
 

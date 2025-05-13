@@ -2,8 +2,7 @@ use crate::webhook::types::Webhook;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct App {
     pub id: String,
     pub key: String,

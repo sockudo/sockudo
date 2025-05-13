@@ -1,6 +1,6 @@
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocket, WebSocketRef};
@@ -9,7 +9,7 @@ use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;

@@ -1,15 +1,15 @@
-use std::sync::Arc;
-use std::time::Duration;
+use crate::log::Log;
+use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
+use crate::webhook::sender::JobProcessorFnAsync;
+use crate::webhook::types::JobData;
 use async_trait::async_trait;
 use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, RedisResult};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
-use crate::log::Log;
-use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
-use crate::webhook::sender::JobProcessorFnAsync;
-use crate::webhook::types::JobData;
 
 pub struct RedisQueueManager {
     redis_connection: Arc<Mutex<MultiplexedConnection>>,
@@ -22,7 +22,11 @@ pub struct RedisQueueManager {
 impl RedisQueueManager {
     /// Creates a new RedisQueueManager instance.
     /// Connects to Redis and returns a Result.
-    pub async fn new(redis_url: &str, prefix: &str, concurrency: usize) -> crate::error::Result<Self> {
+    pub async fn new(
+        redis_url: &str,
+        prefix: &str,
+        concurrency: usize,
+    ) -> crate::error::Result<Self> {
         let client = redis::Client::open(redis_url).map_err(|e| {
             crate::error::Error::Config(format!("Failed to open Redis client: {}", e))
         })?; // Use custom error type
@@ -80,7 +84,11 @@ impl QueueInterface for RedisQueueManager {
     }
 
     /// Registers a callback for a queue and starts worker tasks to process jobs.
-    async fn process_queue(&self, queue_name: &str, callback: JobProcessorFnAsync) -> crate::error::Result<()>
+    async fn process_queue(
+        &self,
+        queue_name: &str,
+        callback: JobProcessorFnAsync,
+    ) -> crate::error::Result<()>
     where
         JobData: DeserializeOwned + Send + 'static, // Ensure JobData can be deserialized and sent across threads
     {

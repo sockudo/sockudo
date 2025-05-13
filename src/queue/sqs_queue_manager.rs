@@ -1,24 +1,24 @@
 use crate::error::{Error, Result};
 use crate::log::Log;
-use crate::options::SqsQueueConfig;  // Use the struct from options.rs
+use crate::options::SqsQueueConfig; // Use the struct from options.rs
 use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
+use crate::webhook::sender::JobProcessorFnAsync;
 use async_trait::async_trait;
-use aws_sdk_sqs as sqs;
 use aws_config::SdkConfig;
+use aws_sdk_sqs as sqs;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::interval;
-use crate::webhook::sender::JobProcessorFnAsync;
 
 /// SQS-based implementation of the QueueInterface
 pub struct SqsQueueManager {
     /// SQS client
     client: sqs::Client,
     /// Configuration
-    config: SqsQueueConfig,  // Using the struct from options.rs
+    config: SqsQueueConfig, // Using the struct from options.rs
     /// Cache of queue URLs
     queue_urls: Arc<Mutex<HashMap<String, String>>>,
     /// Active workers
@@ -34,9 +34,8 @@ impl SqsQueueManager {
         let mut aws_config_builder = aws_config::from_env();
 
         // Set region
-        aws_config_builder = aws_config_builder.region(
-            aws_sdk_sqs::config::Region::new(config.region.clone())
-        );
+        aws_config_builder =
+            aws_config_builder.region(aws_sdk_sqs::config::Region::new(config.region.clone()));
 
         // Set custom endpoint if provided (for local testing)
         if let Some(endpoint) = &config.endpoint_url {
@@ -92,7 +91,8 @@ impl SqsQueueManager {
             queue_name.to_string()
         };
 
-        match self.client
+        match self
+            .client
             .get_queue_url()
             .queue_name(&actual_queue_name)
             .send()
@@ -106,12 +106,17 @@ impl SqsQueueManager {
 
                     Ok(url.to_string())
                 } else {
-                    Err(Error::Queue(format!("No URL returned for queue: {}", queue_name)))
+                    Err(Error::Queue(format!(
+                        "No URL returned for queue: {}",
+                        queue_name
+                    )))
                 }
-            },
+            }
             Err(e) => {
                 // If queue doesn't exist, try to create it
-                if e.to_string().contains("QueueDoesNotExist") || e.to_string().contains("NonExistentQueue") {
+                if e.to_string().contains("QueueDoesNotExist")
+                    || e.to_string().contains("NonExistentQueue")
+                {
                     self.create_queue(queue_name).await
                 } else {
                     Err(Error::Queue(format!("Failed to get queue URL: {}", e)))
@@ -146,18 +151,21 @@ impl SqsQueueManager {
             // Content-based deduplication for FIFO queues
             attributes.insert(
                 QueueAttributeName::ContentBasedDeduplication,
-                "true".to_string()
+                "true".to_string(),
             );
         }
 
         // Create the queue
-        let result = self.client
+        let result = self
+            .client
             .create_queue()
             .queue_name(&actual_queue_name)
             .set_attributes(Some(attributes))
             .send()
             .await
-            .map_err(|e| Error::Queue(format!("Failed to create SQS queue {}: {}", queue_name, e)))?;
+            .map_err(|e| {
+                Error::Queue(format!("Failed to create SQS queue {}: {}", queue_name, e))
+            })?;
 
         if let Some(url) = result.queue_url() {
             // Cache the URL
@@ -166,7 +174,10 @@ impl SqsQueueManager {
 
             Ok(url.to_string())
         } else {
-            Err(Error::Queue(format!("No URL returned after creating queue: {}", queue_name)))
+            Err(Error::Queue(format!(
+                "No URL returned after creating queue: {}",
+                queue_name
+            )))
         }
     }
 
@@ -176,7 +187,7 @@ impl SqsQueueManager {
         queue_name: &str,
         queue_url: String,
         processor: ArcJobProcessorFn,
-        worker_id: usize
+        worker_id: usize,
     ) -> tokio::task::JoinHandle<()> {
         // Clone values needed for the worker
         let client = self.client.clone();
@@ -186,7 +197,10 @@ impl SqsQueueManager {
 
         // Spawn the worker task
         tokio::spawn(async move {
-            Log::info(format!("Starting SQS worker #{} for queue: {}", worker_id, queue_name));
+            Log::info(format!(
+                "Starting SQS worker #{} for queue: {}",
+                worker_id, queue_name
+            ));
 
             let mut interval = interval(Duration::from_secs(1));
 
@@ -195,7 +209,10 @@ impl SqsQueueManager {
 
                 // Check if we should shutdown
                 if *shutdown.lock().await {
-                    Log::info(format!("SQS worker #{} for queue {} shutting down", worker_id, queue_name));
+                    Log::info(format!(
+                        "SQS worker #{} for queue {} shutting down",
+                        worker_id, queue_name
+                    ));
                     break;
                 }
 
@@ -218,20 +235,26 @@ impl SqsQueueManager {
                         if !messages.is_empty() {
                             Log::info(format!(
                                 "SQS worker #{} received {} messages from queue {}",
-                                worker_id, messages.len(), queue_name
+                                worker_id,
+                                messages.len(),
+                                queue_name
                             ));
 
                             // Iterate through the messages in the slice
                             for message in messages {
                                 if let Some(body) = message.body() {
                                     // Process the message
-                                    match serde_json::from_str::<crate::webhook::types::JobData>(body) {
+                                    match serde_json::from_str::<crate::webhook::types::JobData>(
+                                        body,
+                                    ) {
                                         Ok(job_data) => {
                                             // Call the processor
                                             match processor(job_data).await {
                                                 Ok(_) => {
                                                     // Processing succeeded, delete the message
-                                                    if let Some(receipt_handle) = message.receipt_handle() {
+                                                    if let Some(receipt_handle) =
+                                                        message.receipt_handle()
+                                                    {
                                                         if let Err(e) = client
                                                             .delete_message()
                                                             .queue_url(&queue_url)
@@ -300,7 +323,11 @@ impl SqsQueueManager {
 #[async_trait]
 impl QueueInterface for SqsQueueManager {
     /// Add a job to a queue
-    async fn add_to_queue(&self, queue_name: &str, data: crate::webhook::types::JobData) -> Result<()> {
+    async fn add_to_queue(
+        &self,
+        queue_name: &str,
+        data: crate::webhook::types::JobData,
+    ) -> Result<()> {
         // Get the queue URL
         let queue_url = self.get_queue_url(queue_name).await?;
 
@@ -309,7 +336,8 @@ impl QueueInterface for SqsQueueManager {
             .map_err(|e| Error::Queue(format!("Failed to serialize job data: {}", e)))?;
 
         // Build send message request
-        let mut send_message_request = self.client
+        let mut send_message_request = self
+            .client
             .send_message()
             .queue_url(queue_url)
             .message_body(data_json);
@@ -327,13 +355,12 @@ impl QueueInterface for SqsQueueManager {
         }
 
         // Send the message to SQS
-        let result = send_message_request
-            .send()
-            .await
-            .map_err(|e| Error::Queue(format!(
+        let result = send_message_request.send().await.map_err(|e| {
+            Error::Queue(format!(
                 "Failed to send message to SQS queue {}: {}",
                 queue_name, e
-            )))?;
+            ))
+        })?;
 
         Log::info(format!(
             "Added job to SQS queue {} with ID: {}",
@@ -350,19 +377,15 @@ impl QueueInterface for SqsQueueManager {
         let queue_url = self.get_queue_url(queue_name).await?;
 
         // Wrap the callback in an Arc for thread-safe sharing
-        let processor: ArcJobProcessorFn =
-            Arc::from(callback);
+        let processor: ArcJobProcessorFn = Arc::from(callback);
 
         // Start workers
         let mut worker_handles = Vec::new();
         let concurrency = self.config.concurrency as usize;
         for worker_id in 0..concurrency {
-            let handle = self.start_worker(
-                queue_name,
-                queue_url.clone(),
-                processor.clone(),
-                worker_id
-            ).await;
+            let handle = self
+                .start_worker(queue_name, queue_url.clone(), processor.clone(), worker_id)
+                .await;
 
             worker_handles.push(handle);
         }
@@ -373,8 +396,7 @@ impl QueueInterface for SqsQueueManager {
 
         Log::info(format!(
             "Started {} workers for SQS queue: {}",
-            concurrency,
-            queue_name
+            concurrency, queue_name
         ));
 
         Ok(())
@@ -392,7 +414,10 @@ impl QueueInterface for SqsQueueManager {
         {
             let mut handles = self.worker_handles.lock().await;
             for (queue_name, workers) in handles.drain() {
-                Log::info(format!("Waiting for SQS queue {} workers to shutdown", queue_name));
+                Log::info(format!(
+                    "Waiting for SQS queue {} workers to shutdown",
+                    queue_name
+                ));
 
                 for handle in workers {
                     // We don't want to await here as it could block indefinitely

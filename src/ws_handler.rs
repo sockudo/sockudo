@@ -26,7 +26,7 @@ pub async fn handle_ws_upgrade(
     let apps = handler.app_manager.get_apps().await;
     println!("{:?}", apps.unwrap());
     tokio::task::spawn(async move {
-        if let Err(e) = handler.handle_socket(fut, app_key, metrics, webhook).await {
+        if let Err(e) = handler.handle_socket(fut, app_key).await {
             Log::error(format!("Error handling socket: {}", e));
         }
     });

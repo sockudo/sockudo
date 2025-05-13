@@ -7,31 +7,30 @@ use crate::adapter::Adapter;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
 use crate::log::Log;
+use crate::metrics::MetricsInterface;
 use crate::websocket::SocketId;
-use async_trait::async_trait;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use uuid::Uuid;
-use crate::metrics::MetricsInterface;
 
 /// Request types for horizontal communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RequestType {
     // Original request types
-    ChannelMembers,      // Get members in a channel
-    ChannelSockets,      // Get sockets in a channel
-    ChannelSocketsCount, // Get count of sockets in a channel
-    SocketExistsInChannel, // Check if socket exists in a channel
+    ChannelMembers,           // Get members in a channel
+    ChannelSockets,           // Get sockets in a channel
+    ChannelSocketsCount,      // Get count of sockets in a channel
+    SocketExistsInChannel,    // Check if socket exists in a channel
     TerminateUserConnections, // Terminate user connections
     ChannelsWithSocketsCount, // Get channels with socket counts
 
     // New request types
-    Sockets,              // Get all sockets
-    Channels,             // Get all channels
-    SocketsCount,         // Get count of all sockets
-    ChannelMembersCount,  // Get count of members in a channel
+    Sockets,             // Get all sockets
+    Channels,            // Get all channels
+    SocketsCount,        // Get count of all sockets
+    ChannelMembersCount, // Get count of members in a channel
 }
 
 /// Request body for horizontal communication
@@ -73,7 +72,7 @@ pub struct BroadcastMessage {
 
 /// Request tracking struct
 #[derive(Clone)]
-struct PendingRequest {
+pub struct PendingRequest {
     start_time: Instant,
     app_id: String,
     responses: Vec<ResponseBody>,
@@ -232,7 +231,7 @@ impl HorizontalAdapter {
                     .iter()
                     .map(|entry| (entry.key().clone(), *entry.value()))
                     .collect();
-            },
+            }
             // New request types
             RequestType::Sockets => {
                 // Get all connections for the app
@@ -245,18 +244,15 @@ impl HorizontalAdapter {
                     .map(|entry| entry.key().0.clone())
                     .collect();
                 response.sockets_count = connections.len();
-            },
+            }
             RequestType::Channels => {
                 // Get all channels for the app
                 let channels = self
                     .local_adapter
                     .get_channels_with_socket_count(&request.app_id)
                     .await?;
-                response.channels = channels
-                    .iter()
-                    .map(|entry| entry.key().clone())
-                    .collect();
-            },
+                response.channels = channels.iter().map(|entry| entry.key().clone()).collect();
+            }
             RequestType::SocketsCount => {
                 // Get count of all sockets
                 let connections = self
@@ -264,7 +260,7 @@ impl HorizontalAdapter {
                     .get_all_connections(&request.app_id)
                     .await;
                 response.sockets_count = connections.len();
-            },
+            }
             RequestType::ChannelMembersCount => {
                 if let Some(channel) = &request.channel {
                     // Get count of members in a channel
@@ -274,7 +270,7 @@ impl HorizontalAdapter {
                         .await?;
                     response.members_count = members.len();
                 }
-            },
+            }
         }
 
         // Return the response
@@ -364,7 +360,7 @@ impl HorizontalAdapter {
             channels_with_sockets_count: HashMap::new(),
             exists: false,
             channels: Default::default(),
-            members_count:0 ,
+            members_count: 0,
         };
 
         // Wait for responses until timeout or we have enough responses

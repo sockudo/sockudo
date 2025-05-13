@@ -2,8 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_nats::{Client as NatsClient, Message as NatsMessage, ConnectOptions as NatsOptions, Subject};
 use async_nats::jetstream::AckKind::Nak;
+use async_nats::{
+    Client as NatsClient, ConnectOptions as NatsOptions, Message as NatsMessage, Subject,
+};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
@@ -104,15 +106,19 @@ impl NatsAdapter {
         // Set credentials conditionally: Prefer user/password if both are provided
         // Use as_deref() assuming the methods take &str.
         // If they require owned String, use .cloned() instead.
-        if let (Some(username), Some(password)) = (config.username.as_deref(), config.password.as_deref()) {
-            nats_options = nats_options.user_and_password(username.to_string(), password.parse().unwrap());
+        if let (Some(username), Some(password)) =
+            (config.username.as_deref(), config.password.as_deref())
+        {
+            nats_options =
+                nats_options.user_and_password(username.to_string(), password.parse().unwrap());
         } else if let Some(token) = config.token.as_deref() {
             nats_options = nats_options.token(token.parse().unwrap());
         };
         // Note: If both user/pass and token are None, no credentials are set.
 
         // Set connection timeout
-        nats_options = nats_options.connection_timeout(Duration::from_millis(config.connection_timeout_ms));
+        nats_options =
+            nats_options.connection_timeout(Duration::from_millis(config.connection_timeout_ms));
 
         // --- Connect to NATS ---
         // Assuming connect takes a reference to the servers string/list (e.g., &str or &[String])
@@ -186,19 +192,25 @@ impl NatsAdapter {
         let mut broadcast_subscription = nats_client
             .subscribe(Subject::from(broadcast_subject.clone()))
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to subscribe to broadcast subject: {}", e)))?;
+            .map_err(|e| {
+                Error::InternalError(format!("Failed to subscribe to broadcast subject: {}", e))
+            })?;
 
         // Subscribe to requests channel
         let mut request_subscription = nats_client
             .subscribe(Subject::from(request_subject.clone()))
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to subscribe to request subject: {}", e)))?;
+            .map_err(|e| {
+                Error::InternalError(format!("Failed to subscribe to request subject: {}", e))
+            })?;
 
         // Subscribe to responses channel
         let mut response_subscription = nats_client
             .subscribe(Subject::from(response_subject.clone()))
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to subscribe to response subject: {}", e)))?;
+            .map_err(|e| {
+                Error::InternalError(format!("Failed to subscribe to response subject: {}", e))
+            })?;
 
         Log::info(format!(
             "NATS adapter listening on subjects: {}, {}, {}",
@@ -286,17 +298,11 @@ impl NatsAdapter {
                                         )
                                         .await
                                     {
-                                        Log::error(format!(
-                                            "Failed to publish response: {}",
-                                            e
-                                        ));
+                                        Log::error(format!("Failed to publish response: {}", e));
                                     }
                                 }
                                 Err(e) => {
-                                    Log::error(format!(
-                                        "Failed to serialize response: {}",
-                                        e
-                                    ));
+                                    Log::error(format!("Failed to serialize response: {}", e));
                                 }
                             }
                         }
@@ -360,7 +366,10 @@ impl NatsAdapter {
     }
 
     /// Set the metrics instance
-    pub async fn set_metrics(&mut self, metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>) -> Result<()> {
+    pub async fn set_metrics(
+        &mut self,
+        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
+    ) -> Result<()> {
         // Get lock on the horizontal adapter
         let mut horizontal = self.horizontal.lock().await;
 
@@ -371,7 +380,10 @@ impl NatsAdapter {
     }
 
     /// Initialize with metrics
-    pub async fn init_with_metrics(&mut self, metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>) -> Result<()> {
+    pub async fn init_with_metrics(
+        &mut self,
+        metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+    ) -> Result<()> {
         // First initialize the adapter
         self.init().await;
 
@@ -509,7 +521,10 @@ impl Adapter for NatsAdapter {
 
         // 7. Publish to NATS (outside the lock)
         self.client
-            .publish(Subject::from(self.broadcast_subject.clone()), broadcast_data.into())
+            .publish(
+                Subject::from(self.broadcast_subject.clone()),
+                broadcast_data.into(),
+            )
             .await
             .map_err(|e| Error::InternalError(format!("Failed to publish broadcast: {}", e)))?;
 

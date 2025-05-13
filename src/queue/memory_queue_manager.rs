@@ -1,13 +1,13 @@
 // --- MemoryQueueManager ---
 // No major logical changes, but added comments and ensured consistency.
 
-use std::sync::Arc;
-use std::time::Duration;
-use async_trait::async_trait;
 use crate::log::Log;
 use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
+use async_trait::async_trait;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Memory-based queue manager for simple deployments
 pub struct MemoryQueueManager {
@@ -86,7 +86,11 @@ impl QueueInterface for MemoryQueueManager {
         Ok(())
     }
 
-    async fn process_queue(&self, queue_name: &str, callback: JobProcessorFnAsync) -> crate::error::Result<()> {
+    async fn process_queue(
+        &self,
+        queue_name: &str,
+        callback: JobProcessorFnAsync,
+    ) -> crate::error::Result<()> {
         // Ensure the queue Vec exists (might be redundant if add_to_queue is always called first, but safe)
         self.queues.entry(queue_name.to_string()).or_default();
 

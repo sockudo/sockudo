@@ -2,44 +2,131 @@
   "debug": true,
   "port": 6001,
   "host": "0.0.0.0",
-  "app_manager.driver": "memory",
-  "app_manager.array.apps": [
-    {
-      "id": "app1",
-      "key": "key1",
-      "secret": "secret1",
-      "enable_client_messages": true,
-      "enabled": true,
-      "max_connections": "100",
-      "max_client_events_per_second": "10",
-      "webhooks" : [
+  "app_manager": {
+    "driver": "memory",
+    "array": {
+      "apps": [
         {
-          "url": "http://localhost:3000/webhook",
-          "event_types": ["member_added", "member_removed"]
+          "id": "app1",
+          "key": "key1",
+          "secret": "secret1",
+          "enable_client_messages": true,
+          "enabled": true,
+          "max_connections": "100",
+          "max_client_events_per_second": "10",
+          "webhooks": [
+            {
+              "url": "http://localhost:3000/pusher/webhooks",
+              "event_types": ["member_added", "member_removed"]
+            }
+          ]
+        },
+        {
+          "id": "app2",
+          "key": "key2",
+          "secret": "secret2",
+          "enable_client_messages": false,
+          "enabled": true,
+          "max_connections": "50",
+          "max_client_events_per_second": "5"
         }
       ]
     },
-    {
-      "id": "app2",
-      "key": "key2",
-      "secret": "secret2",
-      "enable_client_messages": false,
+    "cache": {
       "enabled": true,
-      "max_connections": "50",
-      "max_client_events_per_second": "5"
+      "ttl": 300
     }
-  ],
-  "adapter.driver": "redis",
-  "adapter.redis.prefix": "sockudo",
-  "adapter.redis.requests_timeout": "5000",
-  "cache.driver": "redis",
-  "cache.redis.url": "redis://localhost:6379",
-
-  "webhooks.enabled": true,
-  "webhooks.queue.driver": "redis",
-  "webhooks.queue.redis.url": "redis://localhost:6379",
-  "webhooks.queue.redis.prefix": "sockudo",
-  "webhooks.queue.redis.concurrency": "5",
-  "webhooks.batching.enabled": false,
-  "webhooks.batching.duration": "50"
+  },
+  "adapter": {
+    "driver": "redis",
+    "redis": {
+      "prefix": "sockudo",
+      "requests_timeout": 5000,
+      "redis_pub_options": {
+        "url": "redis://localhost:6379"
+      },
+      "redis_sub_options": {
+        "url": "redis://localhost:6379"
+      },
+      "cluster_mode": false
+    },
+    "cluster": {
+      "requests_timeout": 5000
+    },
+    "nats": {
+      "requests_timeout": 5000,
+      "prefix": "sockudo",
+      "servers": ["nats://localhost:4222"],
+      "timeout": 5000
+    }
+  },
+  "cache": {
+    "driver": "redis",
+    "redis": {
+      "redis_options": {
+        "url": "redis://localhost:6379"
+      },
+      "cluster_mode": false
+    }
+  },
+  "webhooks": {
+    "batching": {
+      "enabled": false,
+      "duration": 50
+    }
+  },
+  "queue": {
+    "driver": "redis",
+    "redis": {
+      "concurrency": 5,
+      "redis_options": {
+        "url": "redis://localhost:6379"
+      },
+      "cluster_mode": false
+    },
+    "sqs": {
+      "region": "us-east-1",
+      "visibility_timeout": 30,
+      "max_messages": 10,
+      "wait_time_seconds": 5,
+      "concurrency": 5,
+      "fifo": false,
+      "message_group_id": "default"
+    }
+  },
+  "rate_limiter": {
+    "driver": "memory",
+    "default_limit_per_second": 60,
+    "default_window_seconds": 60,
+    "api_rate_limit": {
+      "max_requests": 60,
+      "window_seconds": 60,
+      "identifier": "api"
+    },
+    "websocket_rate_limit": {
+      "max_requests": 10,
+      "window_seconds": 60,
+      "identifier": "websocket"
+    },
+    "redis": {
+      "redis_options": {},
+      "cluster_mode": false
+    }
+  },
+  "metrics": {
+    "enabled": true,
+    "driver": "prometheus",
+    "host": "0.0.0.0",
+    "port": 9601,
+    "prometheus": {
+      "prefix": "sockudo_"
+    }
+  },
+  "mode": "production",
+  "path_prefix": "/",
+  "shutdown_grace_period": 10,
+  "channel_limits": {
+    "max_name_length": 200,
+    "cache_ttl": 3600
+  }
 }

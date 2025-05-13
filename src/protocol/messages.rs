@@ -121,7 +121,7 @@ impl PusherMessage {
                     "socket_id": socket_id,
                     "activity_timeout": 120
                 })
-                    .to_string(),
+                .to_string(),
             )),
             channel: None,
             name: None,
@@ -194,7 +194,12 @@ impl PusherMessage {
     }
 
     // Helper for creating channel info response
-    pub fn channel_info(occupied: bool, subscription_count: Option<u64>, user_count: Option<u64>, cache_data: Option<(String, Duration)>) -> Value {
+    pub fn channel_info(
+        occupied: bool,
+        subscription_count: Option<u64>,
+        user_count: Option<u64>,
+        cache_data: Option<(String, Duration)>,
+    ) -> Value {
         let mut response = json!({
             "occupied": occupied
         });
@@ -226,7 +231,8 @@ impl PusherMessage {
 
     // Helper for creating user list response
     pub fn user_list(user_ids: Vec<String>) -> Value {
-        let users = user_ids.into_iter()
+        let users = user_ids
+            .into_iter()
             .map(|id| json!({ "id": id }))
             .collect::<Vec<_>>();
 

@@ -13,12 +13,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Debug)]
-struct PresenceData {
-    ids: Vec<String>,
-    hash: HashMap<String, Value>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceMember {
     pub(crate) user_id: String,
@@ -260,13 +254,15 @@ impl ChannelManager {
             _ => panic!("Invalid message data"),
         }
     }
-    
+
     pub async fn get_channel_members(
         &self,
         app_id: &str,
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>, Error> {
         let mut connection_manager = self.connection_manager.lock().await;
-        connection_manager.get_channel_members(app_id, channel).await
+        connection_manager
+            .get_channel_members(app_id, channel)
+            .await
     }
 }

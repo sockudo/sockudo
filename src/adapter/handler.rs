@@ -7,6 +7,7 @@ use crate::channel::{ChannelType, PresenceMemberInfo};
 use crate::log::Log;
 use crate::metrics::MetricsInterface;
 use crate::protocol::messages::{ErrorData, MessageData, PusherApiMessage, PusherMessage};
+use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::{SocketId, WebSocketRef};
 use crate::{
     channel::ChannelManager,
@@ -18,8 +19,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tracing_subscriber::fmt::format;
-use crate::webhook::integration::WebhookIntegration;
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -45,7 +44,7 @@ impl ConnectionHandler {
             connection_manager,
             cache_manager,
             metrics,
-            webhook_integration
+            webhook_integration,
         }
     }
 
@@ -103,21 +102,18 @@ impl ConnectionHandler {
                     .send_message(app_id, socket_id, message)
                     .await?;
                 let app = self.app_manager.get_app(app_id).await?;
-                self.webhook_integration.clone().unwrap().send_cache_missed(&app.unwrap(),channel).await?;
+                self.webhook_integration
+                    .clone()
+                    .unwrap()
+                    .send_cache_missed(&app.unwrap(), channel)
+                    .await?;
                 Log::info(format!("No missed cache for channel: {}", channel));
             }
         }
         Ok(())
     }
 
-    pub async fn handle_socket(
-        &self,
-        fut: upgrade::UpgradeFut,
-        app_key: String,
-        metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
-        webhook_integration: Option<Arc<WebhookIntegration>>,
-
-    ) -> Result<()> {
+    pub async fn handle_socket(&self, fut: upgrade::UpgradeFut, app_key: String) -> Result<()> {
         // Get app by key - this needs to handle both sync and potentially async implementations
         let app = self.app_manager.get_app_by_key(&app_key).await?;
         if app.is_none() {
@@ -270,10 +266,7 @@ impl ConnectionHandler {
         if let Some(ref metrics) = self.metrics {
             let metrics = metrics.lock().await;
             let message_size = frame.payload.len();
-            metrics.mark_ws_message_received(
-                &app.id,
-               message_size
-            );
+            metrics.mark_ws_message_received(&app.id, message_size);
         }
 
         Ok(())
@@ -349,7 +342,12 @@ impl ConnectionHandler {
                 return Err(Error::AuthError("Authentication required".into()));
             }
 
-            channel_manager.signature_is_valid(app.clone().unwrap(), socket_id, &signature, message.clone())
+            channel_manager.signature_is_valid(
+                app.clone().unwrap(),
+                socket_id,
+                &signature,
+                message.clone(),
+            )
         };
 
         // Subscribe to channel with write lock
@@ -383,7 +381,11 @@ impl ConnectionHandler {
 
         if subscription_result.channel_connections.unwrap() == 1 {
             let app = app.clone().unwrap();
-            self.webhook_integration.clone().unwrap().send_channel_occupied(&app, channel).await?;
+            self.webhook_integration
+                .clone()
+                .unwrap()
+                .send_channel_occupied(&app, channel)
+                .await?;
         }
 
         // Update adapter state with presence information if needed
@@ -446,7 +448,11 @@ impl ConnectionHandler {
                     let channel_str = channel.to_string();
                     let user_id_str = user_id.to_string();
                     tokio::spawn(async move {
-                        if let Err(e) = webhook_integration.unwrap().send_member_added(&app_clone, &channel_str, &user_id_str).await {
+                        if let Err(e) = webhook_integration
+                            .unwrap()
+                            .send_member_added(&app_clone, &channel_str, &user_id_str)
+                            .await
+                        {
                             Log::error(format!("Error sending presence webhook: {:?}", e));
                         }
                     });
@@ -518,19 +524,19 @@ impl ConnectionHandler {
         app_id: &str,
     ) -> Result<()> {
         println!("handle_unsubscribe: {:?}", message);
-        let data = message
-            .data
-            .as_ref()
-            .ok_or_else(|| Error::InvalidMessageFormat("Missing data in unsubscribe message".into()))?;
+        let data = message.data.as_ref().ok_or_else(|| {
+            Error::InvalidMessageFormat("Missing data in unsubscribe message".into())
+        })?;
         let channel_name = match data {
             MessageData::String(channel) => channel,
-            MessageData::Json(data) => data
-                .get("channel")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::InvalidMessageFormat("Missing channel in unsubscribe message".into()))?,
-            MessageData::Structured { channel, .. } => channel
-                .as_ref()
-                .ok_or_else(|| Error::InvalidMessageFormat("Missing channel in unsubscribe message".into()))?,
+            MessageData::Json(data) => {
+                data.get("channel").and_then(Value::as_str).ok_or_else(|| {
+                    Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
+                })?
+            }
+            MessageData::Structured { channel, .. } => channel.as_ref().ok_or_else(|| {
+                Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
+            })?,
         };
 
         let channel_type = ChannelType::from_name(channel_name);
@@ -573,10 +579,20 @@ impl ConnectionHandler {
                         }
 
                         // send member removal within the same lock
-                        let member_removed =
-                            PusherMessage::member_removed(channel_name.to_string(), member.clone().user_id);
+                        let member_removed = PusherMessage::member_removed(
+                            channel_name.to_string(),
+                            member.clone().user_id,
+                        );
                         let app = self.app_manager.get_app(app_id).await?;
-                        self.webhook_integration.clone().unwrap().send_member_removed(&app.unwrap(), channel_name, member.user_id.as_str()).await?;
+                        self.webhook_integration
+                            .clone()
+                            .unwrap()
+                            .send_member_removed(
+                                &app.unwrap(),
+                                channel_name,
+                                member.user_id.as_str(),
+                            )
+                            .await?;
 
                         conn_manager
                             .send(channel_name, member_removed, Some(socket_id), app_id)
@@ -600,7 +616,11 @@ impl ConnectionHandler {
                     })?;
                 if response.remaining_connections == Some(0) {
                     let app = self.app_manager.get_app(app_id).await?;
-                    self.webhook_integration.clone().unwrap().send_channel_vacated(&app.unwrap(), channel_name).await?;
+                    self.webhook_integration
+                        .clone()
+                        .unwrap()
+                        .send_channel_vacated(&app.unwrap(), channel_name)
+                        .await?;
                 }
             }
         }
@@ -794,7 +814,10 @@ impl ConnectionHandler {
         };
 
         let mut connection_manager = self.connection_manager.lock().await;
-        let connection = connection_manager.get_connection(socket_id, app_id).await.unwrap();
+        let connection = connection_manager
+            .get_connection(socket_id, app_id)
+            .await
+            .unwrap();
         // If not subscribed, log and return error
         if !is_subscribed {
             // Check if there's a mismatch in the channel name
@@ -821,20 +844,38 @@ impl ConnectionHandler {
             data: Some(MessageData::Json(data)),
         };
 
-
         // send message in a single lock scope
         self.connection_manager
             .lock()
             .await
             .send(channel_name, message.clone(), Some(socket_id), app_id)
-            .await;
+            .await?;
         let app = self.app_manager.get_app(app_id).await?;
         let value = serde_json::to_value(&message.data)?;
-        if let Some(presence) = connection.lock().await.state.presence.clone().unwrap().get(channel_name) {
-            let user_id =  &presence.user_id;
-            self.webhook_integration.clone().unwrap().send_client_event(&app.unwrap(), channel_name, message.event.unwrap().as_str(), value, Some(socket_id.as_ref()), Some(&*user_id)).await;
+        if let Some(presence) = connection
+            .lock()
+            .await
+            .state
+            .presence
+            .clone()
+            .unwrap()
+            .get(channel_name)
+        {
+            let user_id = &presence.user_id;
+            self.webhook_integration
+                .clone()
+                .unwrap()
+                .send_client_event(
+                    &app.unwrap(),
+                    channel_name,
+                    message.event.unwrap().as_str(),
+                    value,
+                    Some(socket_id.as_ref()),
+                    Some(&*user_id),
+                )
+                .await?
         }
-        return Ok(());
+        Ok(())
     }
 
     async fn send_error(
@@ -988,7 +1029,9 @@ impl ConnectionHandler {
         // see if current channel is presence
         let channel_type = ChannelType::from_name(channel_name);
         if channel_type != ChannelType::Presence {
-            return Err(Error::ChannelError("Channel is not a presence channel".into()));
+            return Err(Error::ChannelError(
+                "Channel is not a presence channel".into(),
+            ));
         }
         let channel_manager = self.channel_manager.read().await;
         let members = channel_manager

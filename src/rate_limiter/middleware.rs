@@ -80,7 +80,6 @@ impl<K> RateLimitLayer<K>
 where
     K: KeyExtractor + Clone + Send + Sync + 'static,
 {
-    /// Creates a new `RateLimitLayer`.
     pub fn new(limiter: Arc<dyn RateLimiter>, key_extractor: K) -> Self {
         Self {
             limiter,
@@ -89,7 +88,6 @@ where
         }
     }
 
-    /// Creates a new `RateLimitLayer` with specific options.
     pub fn with_options(
         limiter: Arc<dyn RateLimiter>,
         key_extractor: K,
@@ -524,7 +522,7 @@ pub fn with_path_limiter(
     limiter: Arc<dyn RateLimiter>,
     options: RateLimitOptions,
 ) -> RateLimitLayer<PathKeyExtractor> {
-    RateLimitLayer::with_options(limiter, PathKeyExtractor::default(), options)
+    RateLimitLayer::with_options(limiter, PathKeyExtractor, options)
 }
 
 /// Creates rate limit middleware using a custom key extraction function.

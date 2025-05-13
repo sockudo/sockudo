@@ -3,8 +3,8 @@
 pub mod prometheus;
 
 pub use prometheus::PrometheusMetricsDriver;
+use tokio::sync::Mutex;
 
-use crate::app::config::App;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -70,11 +70,11 @@ impl MetricsFactory {
         driver_type: &str,
         port: u16,
         prefix: Option<&str>,
-    ) -> Option<Arc<dyn MetricsInterface>> {
+    ) -> Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>> {
         match driver_type.to_lowercase().as_str() {
             "prometheus" => {
                 let driver = PrometheusMetricsDriver::new(port, prefix).await;
-                Some(Arc::new(driver))
+                Some(Arc::new(Mutex::new(driver)))
             }
             // Add more drivers here
             _ => None,
