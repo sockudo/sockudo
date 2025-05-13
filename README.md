@@ -140,11 +140,12 @@ import Pusher from 'pusher-js';
 window.Pusher = Pusher;
 window.Echo = new Echo({
     broadcaster: 'pusher',
-    key: 'demo-key',
-    wsHost: window.location.hostname,
-    wsPort: 6001,
-    forceTLS: false,
+    key: import.meta.env.VITE_PUSHER_APP_KEY,
+    wsHost: import.meta.env.VITE_PUSHER_HOST ?? window.location.hostname,
+    wsPort: import.meta.env.VITE_PUSHER_PORT ?? 6001,
+    forceTLS: (import.meta.env.VITE_PUSHER_SCHEME ?? 'http') === 'https',
     disableStats: true,
+    cluster: import.meta.env.VITE_PUSHER_APP_CLUSTER ?? 'mt1',
 });
 ```
 
@@ -152,13 +153,13 @@ And in your Laravel `.env` file:
 
 ```
 BROADCAST_DRIVER=pusher
-PUSHER_APP_ID=demo-app
-PUSHER_APP_KEY=demo-key
-PUSHER_APP_SECRET=demo-secret
-PUSHER_HOST=localhost
-PUSHER_PORT=6001
-PUSHER_SCHEME=http
-PUSHER_APP_CLUSTER=mt1
+VITE_PUSHER_APP_ID=demo-app
+VITE_PUSHER_APP_KEY=demo-key
+VITE_PUSHER_APP_SECRET=demo-secret
+VITE_PUSHER_HOST=localhost
+VITE_PUSHER_PORT=6001
+VITE_PUSHER_SCHEME=http
+VITE_PUSHER_APP_CLUSTER=mt1
 ```
 
 ## API Documentation
