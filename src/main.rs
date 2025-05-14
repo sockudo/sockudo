@@ -1102,7 +1102,7 @@ async fn main() -> Result<()> {
     }
 
     // Load config from file if available
-    let config_path = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "config.json".to_string());
+    let config_path = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "src/config.json".to_string());
     if Path::new(&config_path).exists() {
         info!("Loading configuration from {}", config_path);
 
