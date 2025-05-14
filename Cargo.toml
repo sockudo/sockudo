@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.8.3", features = ["ws"] }
-tokio = { version = "1.44.1", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
 tower = "0.5.2"
 tower-http = { version = "0.6.1", features = ["cors"] }
 fastwebsockets = { version = "0.10.0", features = [
