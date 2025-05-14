@@ -4,7 +4,7 @@ use crate::app::manager::AppManager;
 use crate::error::{Error, Result};
 use crate::log::Log;
 use crate::webhook::lambda_sender::LambdaWebhookSender;
-use crate::webhook::types::{JobData, JobPayload, Webhook};
+use crate::webhook::types::{JobData, Webhook}; // Removed JobPayload as it's part of JobData
 use reqwest::{header, Client};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -12,17 +12,21 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore; // Added for bounded concurrency
 
 // Type for callback function that processes jobs
 pub type JobProcessorFnAsync = Box<
     dyn Fn(JobData) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync + 'static,
 >;
 
+const MAX_CONCURRENT_WEBHOOKS: usize = 20; // Configurable: Max number of concurrent webhook sends
+
 /// WebhookSender is responsible for sending webhook events to configured endpoints
 pub struct WebhookSender {
     client: Client,
     app_manager: Arc<dyn AppManager + Send + Sync>,
     lambda_sender: LambdaWebhookSender,
+    webhook_semaphore: Arc<Semaphore>, // Semaphore for limiting concurrent webhooks
 }
 
 impl WebhookSender {
@@ -37,6 +41,7 @@ impl WebhookSender {
             client,
             app_manager,
             lambda_sender: LambdaWebhookSender::new(),
+            webhook_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_WEBHOOKS)),
         }
     }
 
@@ -86,36 +91,39 @@ impl WebhookSender {
         // 5. Send webhooks to all matching endpoints
         let mut tasks = Vec::new();
 
-        for webhook in matching_webhooks {
+        for webhook_config in matching_webhooks {
             // Prepare payload for sending
-            let payload = json!({
+            let payload_to_send = json!({
                 "time_ms": job.payload.time_ms,
-                "events": job.payload.events,
+                "events": job.payload.events, // Send all events in the job
                 "app_id": job.app_id,
                 "app_key": job.app_key,
-                "data": job.payload.data
+                "data": job.payload.data // Send the original data field
             });
 
-            // Determine if we should use URL or Lambda
-            if let Some(url) = &webhook.url {
-                // Clone what we need for the async task
+            // Acquire a permit from the semaphore before spawning the task
+            // Clone semaphore Arc for the task
+            let permit_semaphore = self.webhook_semaphore.clone();
+            let permit = permit_semaphore.acquire_owned().await.map_err(|e| Error::Other(format!("Failed to acquire webhook semaphore permit: {}", e)))?;
+
+
+            if let Some(url) = &webhook_config.url {
                 let client = self.client.clone();
                 let url_str = url.to_string();
-                let event_clone = event.clone();
-                let app_id = app.id.clone();
-                let payload_clone = payload.clone();
-
-                // Build custom headers if specified
-                let headers = webhook
+                let event_clone = event.clone(); // Clone event for the task
+                let app_id_clone = app.id.clone(); // Clone app_id for the task
+                let payload_clone = payload_to_send.clone(); // Clone payload for the task
+                let headers = webhook_config
                     .headers
                     .as_ref()
                     .map(|h| h.headers.clone())
                     .unwrap_or_default();
 
-                // Spawn a task to send the webhook
                 let task = tokio::spawn(async move {
-                    if let Err(e) = send_webhook(&client, &url_str, &event_clone, &app_id, payload_clone, headers).await {
-                        Log::error(format!("Webhook send error: {}", e));
+                    // The permit is moved into the task and will be released when the task finishes
+                    let _permit = permit;
+                    if let Err(e) = send_webhook(&client, &url_str, &event_clone, &app_id_clone, payload_clone, headers).await {
+                        Log::error(format!("Webhook send error to URL {}: {}", url_str, e));
                     } else {
                         Log::webhook_sender(format!(
                             "Successfully sent webhook to URL: {}",
@@ -123,37 +131,38 @@ impl WebhookSender {
                         ));
                     }
                 });
-
                 tasks.push(task);
-            } else if webhook.lambda.is_some() || webhook.lambda_function.is_some() {
-                // Clone what we need for the Lambda task
+            } else if webhook_config.lambda.is_some() || webhook_config.lambda_function.is_some() {
                 let lambda_sender = self.lambda_sender.clone();
-                let webhook_clone = webhook.clone();
+                let webhook_clone = webhook_config.clone(); // Clone the specific webhook_config
                 let event_clone = event.clone();
-                let app_id = app.id.clone();
-                let payload_clone = payload.clone();
+                let app_id_clone = app.id.clone();
+                let payload_clone = payload_to_send.clone();
 
-                // Spawn a task to invoke the Lambda function
                 let task = tokio::spawn(async move {
+                    // The permit is moved into the task and will be released when the task finishes
+                    let _permit = permit;
                     if let Err(e) = lambda_sender.invoke_lambda(
                         &webhook_clone,
                         &event_clone,
-                        &app_id,
+                        &app_id_clone,
                         payload_clone
                     ).await {
-                        Log::error(format!("Lambda webhook error: {}", e));
+                        Log::error(format!("Lambda webhook error for app {}: {}", app_id_clone, e));
                     }
                 });
-
                 tasks.push(task);
             } else {
                 Log::warning("Webhook has neither URL nor Lambda configuration, skipping");
+                // Manually drop the permit if the task is not spawned
+                drop(permit);
             }
         }
 
         // 6. Wait for all webhook sends to complete
         for task in tasks {
             if let Err(e) = task.await {
+                // This catches errors from tokio::spawn (e.g., if the task panicked)
                 Log::error(format!("Webhook task failed: {}", e));
             }
         }
@@ -168,6 +177,7 @@ impl Clone for WebhookSender {
             client: self.client.clone(),
             app_manager: self.app_manager.clone(),
             lambda_sender: self.lambda_sender.clone(),
+            webhook_semaphore: self.webhook_semaphore.clone(), // Clone the semaphore Arc
         }
     }
 }

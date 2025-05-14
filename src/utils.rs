@@ -1,20 +1,32 @@
+use lazy_static::lazy_static; // Added for one-time regex compilation
 use regex::Regex;
+
+// Compile regexes once using lazy_static
+lazy_static! {
+    static ref CACHING_CHANNEL_REGEXES: Vec<Regex> = {
+        let patterns = vec![
+            "cache-*",
+            "private-cache-*",
+            "private-encrypted-cache-*",
+            "presence-cache-*",
+        ];
+        patterns
+            .into_iter()
+            .map(|pattern| Regex::new(&pattern.replace("*", ".*")).unwrap())
+            .collect()
+    };
+}
+
 pub fn is_cache_channel(channel: &str) -> bool {
-    let caching_channel_patterns: Vec<String> = vec![
-        "cache-*".to_string(),
-        "private-cache-*".to_string(),
-        "private-encrypted-cache-*".to_string(),
-        "presence-cache-*".to_string(),
-    ];
-    let mut ok = false;
-    for pattern in caching_channel_patterns {
-        let regex = Regex::new(&pattern.replace("*", ".*")).unwrap();
+    // Use the pre-compiled regexes
+    for regex in CACHING_CHANNEL_REGEXES.iter() {
         if regex.is_match(channel) {
-            ok = true;
+            return true;
         }
     }
-    ok
+    false
 }
+
 pub fn data_to_bytes<T: AsRef<str> + serde::Serialize>(data: &[T]) -> usize {
     data.iter()
         .map(|element| {
@@ -28,7 +40,7 @@ pub fn data_to_bytes<T: AsRef<str> + serde::Serialize>(data: &[T]) -> usize {
             };
 
             // Calculate byte length of string
-            string_data.as_bytes().len()
+            string_data.len()
         })
         .sum()
 }
@@ -44,8 +56,7 @@ pub fn data_to_bytes_flexible(data: Vec<serde_json::Value>) -> usize {
         };
 
         // Add byte length, handling potential encoding errors
-        match element_str.as_bytes().len() {
-            len => total_bytes + len,
-        }
+        // No specific error handling for as_bytes().len() as it's inherent to string length.
+        total_bytes + element_str.len()
     })
 }
