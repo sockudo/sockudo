@@ -72,3 +72,7 @@ features = [
 
 [features]
 rusty-sidekiq = ["dep:rusty-sidekiq"]
+
+[profile.release]
+codegen-units = 1
+lto = true
