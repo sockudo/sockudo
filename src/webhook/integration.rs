@@ -180,7 +180,7 @@ impl WebhookIntegration {
                 // Process each group
                 if let Some(manager) = &queue_manager {
                     for (queue_name, jobs) in webhooks_to_process {
-                        let mut manager = manager.lock().await;
+                        let manager = manager.lock().await;
                         for job in jobs {
                             if let Err(e) = manager.add_to_queue(&queue_name, job).await {
                                 Log::error(format!("Failed to add job to queue: {}", e));

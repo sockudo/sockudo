@@ -286,6 +286,14 @@ pub struct RedisQueueConfig {
     pub cluster_mode: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RateLimit {
+    pub max_requests: u32,
+    pub window_seconds: u64,
+    pub identifier: Option<String>,
+    pub trust_hops: Option<u32>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RateLimiterConfig {
@@ -294,15 +302,8 @@ pub struct RateLimiterConfig {
     pub default_window_seconds: u64,
     pub api_rate_limit: RateLimit,
     pub websocket_rate_limit: RateLimit,
+    pub enabled: bool, // Master switch to enable/disable rate limiting
     pub redis: RedisConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RateLimit {
-    pub max_requests: u32,
-    pub window_seconds: u64,
-    pub identifier: Option<String>,
 }
 
 // Default implementation for RateLimiterConfig
@@ -316,20 +317,22 @@ impl Default for RateLimiterConfig {
                 max_requests: 60,
                 window_seconds: 60,
                 identifier: Some("api".to_string()),
+                trust_hops: Some(1),
             },
             websocket_rate_limit: RateLimit {
                 max_requests: 10,
                 window_seconds: 60,
                 identifier: Some("websocket".to_string()),
+                trust_hops: Some(1),
             },
+            enabled: true, // Enable rate limiting by default
             redis: RedisConfig {
                 redis_options: HashMap::new(),
                 cluster_mode: false,
             },
         }
     }
-}
-
+}// Updated configure_http_routes in main.rs to apply rate limiting
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SslConfig {
@@ -375,7 +378,8 @@ impl Default for RateLimit {
         Self {
             max_requests: 60,
             window_seconds: 60,
-            identifier: None,
+            identifier: Some("default".to_string()),
+            trust_hops: Some(1),
         }
     }
 }

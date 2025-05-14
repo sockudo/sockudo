@@ -19,6 +19,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
+use crate::options::RateLimiterConfig;
+use crate::rate_limiter::RateLimiter;
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -27,6 +29,7 @@ pub struct ConnectionHandler {
     pub(crate) cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     pub(crate) metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
     pub(crate) webhook_integration: Option<Arc<WebhookIntegration>>,
+    pub(crate) rate_limiter: Option<Arc<dyn RateLimiter>>,
 }
 
 impl ConnectionHandler {
@@ -37,6 +40,7 @@ impl ConnectionHandler {
         cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
+        rate_limiter: Option<Arc<dyn RateLimiter>>,
     ) -> Self {
         Self {
             app_manager,
@@ -45,6 +49,7 @@ impl ConnectionHandler {
             cache_manager,
             metrics,
             webhook_integration,
+            rate_limiter,
         }
     }
 

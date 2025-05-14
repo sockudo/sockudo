@@ -33,7 +33,8 @@ use axum::http::Method;
 use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
-use axum::{serve, BoxError, Router, ServiceExt};
+use axum::{serve, BoxError, RequestExt, Router, ServiceExt};
+use axum::middleware::from_fn_with_state;
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use error::Error;
@@ -398,7 +399,7 @@ impl SockudoServer {
             match config.queue.driver.as_str() {
                 "redis" => {
                     if let Some(url) = config.cache.redis.redis_options.get("url") {
-                        Option::from(url.as_str())
+                        url.as_str()
                     } else {
                         Option::from("redis://127.0.0.1:6379")
                     }
@@ -492,6 +493,7 @@ impl SockudoServer {
             state.cache_manager.clone(),
             state.metrics.clone(),
             Some(webhook_integration),
+            state.rate_limiter.clone(),
         ));
 
         // Initialize adapter metrics if available
@@ -664,28 +666,55 @@ impl SockudoServer {
             .allow_methods([Method::GET, Method::POST])
             .allow_headers([AUTHORIZATION, CONTENT_TYPE]);
 
-        // Create application routes
-        Router::new()
+        // Create rate limiter middleware based on config
+        let rate_limiter_middleware = if let Some(rate_limiter) = &self.state.rate_limiter {
+            // Configure rate limit options based on server config
+            let rate_limit_options = rate_limiter::middleware::RateLimitOptions {
+                include_headers: true,
+                fail_open: false, // If rate limiter fails, block the request
+                key_prefix: Some("api:".to_string()),
+            };
+
+            // Create IP-based rate limiter middleware
+            // Use the configured trust_hops value or default to 1 (trust 1 proxy)
+            let trust_hops = self.config.rate_limiter.api_rate_limit.trust_hops.unwrap_or(1);
+            Some(rate_limiter::middleware::with_ip_limiter_trusting(
+                rate_limiter.clone(),
+                trust_hops as usize,
+                rate_limit_options,
+            ))
+        } else {
+            None
+        };
+
+        // Base router with all routes
+        let mut router = Router::new()
             // WebSocket handler for Pusher protocol
-            .route("/app/{key}", get(handle_ws_upgrade))
-            // HTTP API endpoints
+            .route("/app/{appKey}", get(handle_ws_upgrade))
             .route("/apps/{appId}/events", post(events))
             .route("/apps/{appId}/batch_events", post(batch_events))
-            .route("/apps/{app_id}/channels", get(channels))
-            .route("/apps/{app_id}/channels/{channel_name}", get(channel))
+            .route("/apps/{appId}/channels", get(channels))
+            .route("/apps/{appId}/channels/{channelName}", get(channel))
             .route(
-                "/apps/{app_id}/channels/{channel_name}/users",
+                "/apps/{appId}/channels/{channelName}/users",
                 get(channel_users),
             )
             .route(
-                "/apps/{app_id}/users/{user_id}/terminate_connections",
+                "/apps/{appId}/users/{userId}/terminate_connections",
                 post(terminate_user_connections),
             )
             .route("/usage", get(usage))
             .route("/up/{app_id}", get(up))
             // Apply CORS middleware
-            .layer(cors)
-            .with_state(self.handler.clone())
+            .layer(cors);
+
+        // Apply rate limiter middleware if available
+        if let Some(rate_limiter_layer) = rate_limiter_middleware {
+            router = router.layer(rate_limiter_layer);
+        }
+
+        // Return the configured router
+        router.with_state(self.handler.clone())
     }
 
     /// Configure routes for the metrics server

@@ -1,3 +1,4 @@
+use aws_config::SdkConfig;
 // src/webhook/types.rs
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
