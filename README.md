@@ -332,7 +332,6 @@ Sockudo's architecture is organized around these key components:
 - **Cache Manager**: Provides caching capabilities
 - **Metrics**: Collects and exposes performance metrics
 - **Webhook Integration**: Sends webhook events to configured endpoints
--
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

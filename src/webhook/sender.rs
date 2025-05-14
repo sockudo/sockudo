@@ -1,8 +1,9 @@
-// src/webhook/sender.rs
+// Updated src/webhook/sender.rs
 use crate::app::config::App;
 use crate::app::manager::AppManager;
 use crate::error::{Error, Result};
 use crate::log::Log;
+use crate::webhook::lambda_sender::LambdaWebhookSender;
 use crate::webhook::types::{JobData, JobPayload, Webhook};
 use reqwest::{header, Client};
 use serde_json::{json, Value};
@@ -21,6 +22,7 @@ pub type JobProcessorFnAsync = Box<
 pub struct WebhookSender {
     client: Client,
     app_manager: Arc<dyn AppManager + Send + Sync>,
+    lambda_sender: LambdaWebhookSender,
 }
 
 impl WebhookSender {
@@ -34,6 +36,7 @@ impl WebhookSender {
         Self {
             client,
             app_manager,
+            lambda_sender: LambdaWebhookSender::new(),
         }
     }
 
@@ -84,13 +87,7 @@ impl WebhookSender {
         let mut tasks = Vec::new();
 
         for webhook in matching_webhooks {
-            // Skip if no URL is specified
-            let url = match &webhook.url {
-                Some(url_str) => url_str,
-                None => continue,
-            };
-
-            // Create the payload to send
+            // Prepare payload for sending
             let payload = json!({
                 "time_ms": job.payload.time_ms,
                 "events": job.payload.events,
@@ -99,25 +96,59 @@ impl WebhookSender {
                 "data": job.payload.data
             });
 
-            // Clone what we need for the async task
-            let client = self.client.clone();
-            let url = url.clone();
-            let event = event.clone();
-            let app_id = app.id.clone();
+            // Determine if we should use URL or Lambda
+            if let Some(url) = &webhook.url {
+                // Clone what we need for the async task
+                let client = self.client.clone();
+                let url_str = url.to_string();
+                let event_clone = event.clone();
+                let app_id = app.id.clone();
+                let payload_clone = payload.clone();
 
-            // Build custom headers if specified
-            let headers = webhook
-                .headers
-                .as_ref()
-                .map(|h| h.headers.clone())
-                .unwrap_or_default();
+                // Build custom headers if specified
+                let headers = webhook
+                    .headers
+                    .as_ref()
+                    .map(|h| h.headers.clone())
+                    .unwrap_or_default();
 
-            // Spawn a task to send the webhook
-            let task = tokio::spawn(async move {
-                send_webhook(&client, url.as_ref(), &event, &app_id, payload, headers).await
-            });
+                // Spawn a task to send the webhook
+                let task = tokio::spawn(async move {
+                    if let Err(e) = send_webhook(&client, &url_str, &event_clone, &app_id, payload_clone, headers).await {
+                        Log::error(format!("Webhook send error: {}", e));
+                    } else {
+                        Log::webhook_sender(format!(
+                            "Successfully sent webhook to URL: {}",
+                            url_str
+                        ));
+                    }
+                });
 
-            tasks.push(task);
+                tasks.push(task);
+            } else if webhook.lambda.is_some() || webhook.lambda_function.is_some() {
+                // Clone what we need for the Lambda task
+                let lambda_sender = self.lambda_sender.clone();
+                let webhook_clone = webhook.clone();
+                let event_clone = event.clone();
+                let app_id = app.id.clone();
+                let payload_clone = payload.clone();
+
+                // Spawn a task to invoke the Lambda function
+                let task = tokio::spawn(async move {
+                    if let Err(e) = lambda_sender.invoke_lambda(
+                        &webhook_clone,
+                        &event_clone,
+                        &app_id,
+                        payload_clone
+                    ).await {
+                        Log::error(format!("Lambda webhook error: {}", e));
+                    }
+                });
+
+                tasks.push(task);
+            } else {
+                Log::warning("Webhook has neither URL nor Lambda configuration, skipping");
+            }
         }
 
         // 6. Wait for all webhook sends to complete
@@ -128,6 +159,16 @@ impl WebhookSender {
         }
 
         Ok(())
+    }
+}
+
+impl Clone for WebhookSender {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            app_manager: self.app_manager.clone(),
+            lambda_sender: self.lambda_sender.clone(),
+        }
     }
 }
 
