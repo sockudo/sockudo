@@ -1,3 +1,4 @@
+use std::any::Any;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::Result;
@@ -104,4 +105,5 @@ pub trait Adapter: Send + Sync {
         &mut self,
         app_id: &str,
     ) -> Result<DashMap<String, usize>>;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }

@@ -493,7 +493,6 @@ impl SockudoServer {
             state.cache_manager.clone(),
             state.metrics.clone(),
             Some(webhook_integration),
-            state.rate_limiter.clone(),
         ));
 
         // Initialize adapter metrics if available
@@ -688,7 +687,7 @@ impl SockudoServer {
         };
 
         // Base router with all routes
-        let mut router = Router::new()
+        let router = Router::new()
             // WebSocket handler for Pusher protocol
             .route("/app/{appKey}", get(handle_ws_upgrade))
             .route("/apps/{appId}/events", post(events))
@@ -709,9 +708,9 @@ impl SockudoServer {
             .layer(cors);
 
         // Apply rate limiter middleware if available
-        if let Some(rate_limiter_layer) = rate_limiter_middleware {
-            router = router.layer(rate_limiter_layer);
-        }
+        // if let Some(rate_limiter_layer) = rate_limiter_middleware {
+        //     router = router.layer(rate_limiter_layer);
+        // }
 
         // Return the configured router
         router.with_state(self.handler.clone())

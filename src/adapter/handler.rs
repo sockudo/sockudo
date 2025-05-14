@@ -6,7 +6,10 @@ use crate::cache::manager::CacheManager;
 use crate::channel::{ChannelType, PresenceMemberInfo};
 use crate::log::Log;
 use crate::metrics::MetricsInterface;
-use crate::protocol::constants::{CLIENT_EVENT_PREFIX, EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH, CHANNEL_NAME_MAX_LENGTH as DEFAULT_CHANNEL_NAME_MAX_LENGTH};
+use crate::protocol::constants::{
+    CHANNEL_NAME_MAX_LENGTH as DEFAULT_CHANNEL_NAME_MAX_LENGTH, CLIENT_EVENT_PREFIX,
+    EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH,
+};
 use crate::protocol::messages::{ErrorData, MessageData, PusherApiMessage, PusherMessage};
 use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::{SocketId, WebSocketRef};
@@ -21,8 +24,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use crate::rate_limiter::RateLimiter;
-
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -31,7 +32,6 @@ pub struct ConnectionHandler {
     pub(crate) cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     pub(crate) metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
     pub(crate) webhook_integration: Option<Arc<WebhookIntegration>>,
-    pub(crate) rate_limiter: Option<Arc<dyn RateLimiter>>,
 }
 
 impl ConnectionHandler {
@@ -42,7 +42,6 @@ impl ConnectionHandler {
         cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
-        rate_limiter: Option<Arc<dyn RateLimiter>>,
     ) -> Self {
         Self {
             app_manager,
@@ -51,7 +50,6 @@ impl ConnectionHandler {
             cache_manager,
             metrics,
             webhook_integration,
-            rate_limiter,
         }
     }
 
@@ -112,22 +110,29 @@ impl ConnectionHandler {
 
                 if let Some(app_config) = self.app_manager.get_app(app_id).await? {
                     if let Some(webhook_integration) = &self.webhook_integration {
-                        webhook_integration.send_cache_missed(&app_config, channel).await?;
+                        webhook_integration
+                            .send_cache_missed(&app_config, channel)
+                            .await?;
                     }
                 }
                 Log::info(format!("No missed cache for channel: {}", channel));
             }
             Err(e) => {
-                Log::error(format!("Failed to get cache for channel {}: {}", channel, e));
+                Log::error(format!(
+                    "Failed to get cache for channel {}: {}",
+                    channel, e
+                ));
                 return Err(e);
             }
         }
         Ok(())
     }
 
-
     pub async fn handle_socket(&self, fut: upgrade::UpgradeFut, app_key: String) -> Result<()> {
-        let app_config = self.app_manager.get_app_by_key(&app_key).await?
+        let app_config = self
+            .app_manager
+            .get_app_by_key(&app_key)
+            .await?
             .ok_or(Error::InvalidAppKey)?;
 
         // Placeholder for max_connections check
@@ -146,7 +151,6 @@ impl ConnectionHandler {
         // }
         Log::info(format!("Placeholder: App {} has {} max connections. Current connection count check would go here.", app_config.id, app_config.max_connections));
 
-
         let socket = fut.await?;
         let (socket_rx, socket_tx) = socket.split(tokio::io::split);
         let socket_id = SocketId::new();
@@ -154,13 +158,21 @@ impl ConnectionHandler {
 
         {
             let mut connection_manager_locked = self.connection_manager.lock().await;
-            if let Some(conn) = connection_manager_locked.get_connection(&socket_id, &app_config.id).await {
+            if let Some(conn) = connection_manager_locked
+                .get_connection(&socket_id, &app_config.id)
+                .await
+            {
                 connection_manager_locked
                     .cleanup_connection(&app_config.id, WebSocketRef(conn))
                     .await;
             }
             connection_manager_locked
-                .add_socket(socket_id.clone(), socket_tx, &app_config.id, &self.app_manager)
+                .add_socket(
+                    socket_id.clone(),
+                    socket_tx,
+                    &app_config.id,
+                    &self.app_manager,
+                )
                 .await
                 .map_err(|e| {
                     Log::error(format!("Failed to add socket: {}", e));
@@ -172,11 +184,17 @@ impl ConnectionHandler {
             }
         }
 
-        if let Err(e) = self.send_connection_established(&app_config.id, &socket_id).await {
+        if let Err(e) = self
+            .send_connection_established(&app_config.id, &socket_id)
+            .await
+        {
             self.send_error(&app_config.id, &socket_id, &e, None)
                 .await
                 .map_err(|err_send| {
-                    Log::error(format!("Failed to send connection established: {}", err_send));
+                    Log::error(format!(
+                        "Failed to send connection established: {}",
+                        err_send
+                    ));
                     WebSocketError::ConnectionClosed
                 })?;
             return Ok(());
@@ -201,17 +219,24 @@ impl ConnectionHandler {
                 }
                 OpCode::Text | OpCode::Binary => {
                     // Pass app_config by value (it's Arc'd or cloned from AppManager)
-                    if let Err(e) = self.handle_message(frame, &socket_id, app_config.clone()).await {
+                    if let Err(e) = self
+                        .handle_message(frame, &socket_id, app_config.clone())
+                        .await
+                    {
                         Log::error(format!(
                             "Message handling error for socket {}: {}",
                             socket_id, e
                         ));
-                        self.send_error(&app_config.id, &socket_id, &e, None).await.ok();
+                        self.send_error(&app_config.id, &socket_id, &e, None)
+                            .await
+                            .ok();
                     }
                 }
                 OpCode::Ping => {
                     let mut connection_manager_locked = self.connection_manager.lock().await;
-                    if let Some(conn_arc) = connection_manager_locked.get_connection(&socket_id, &app_config.id).await
+                    if let Some(conn_arc) = connection_manager_locked
+                        .get_connection(&socket_id, &app_config.id)
+                        .await
                     {
                         let mut conn_locked = conn_arc.lock().await;
                         conn_locked.state.update_ping();
@@ -258,15 +283,19 @@ impl ConnectionHandler {
         // }
         Log::info(format!("Placeholder: App {} client event rate limit ({} per sec) check for event '{}' would go here.", app_config.id, app_config.max_client_events_per_second, event_name_str));
 
-
         let processing_result = match event_name_str {
             "pusher:ping" => self.handle_ping(&app_config.id, socket_id).await,
-            "pusher:subscribe" => self.handle_subscribe(socket_id, &app_config, &message).await, // Pass app_config
+            "pusher:subscribe" => {
+                self.handle_subscribe(socket_id, &app_config, &message)
+                    .await
+            } // Pass app_config
             "pusher:unsubscribe" => {
-                self.handle_unsubscribe(socket_id, &message, &app_config.id).await
+                self.handle_unsubscribe(socket_id, &message, &app_config.id)
+                    .await
             }
             "pusher:signin" => {
-                self.handle_signin(socket_id, message.clone(), &app_config).await // Pass app_config
+                self.handle_signin(socket_id, message.clone(), &app_config)
+                    .await // Pass app_config
             }
             _ if event_name_str.starts_with(CLIENT_EVENT_PREFIX) => {
                 self.handle_client_event(
@@ -279,16 +308,20 @@ impl ConnectionHandler {
                         .and_then(|d| serde_json::to_value(d).ok())
                         .unwrap_or_default(),
                 )
-                    .await
+                .await
             }
             _ => Ok(()),
         };
 
         if let Err(e) = processing_result {
-            self.send_error(&app_config.id, socket_id, &e, channel_name_option).await?;
+            self.send_error(&app_config.id, socket_id, &e, channel_name_option)
+                .await?;
 
             let mut connection_manager_locked = self.connection_manager.lock().await;
-            if let Some(conn_arc) = connection_manager_locked.get_connection(socket_id, &app_config.id).await {
+            if let Some(conn_arc) = connection_manager_locked
+                .get_connection(socket_id, &app_config.id)
+                .await
+            {
                 connection_manager_locked
                     .cleanup_connection(&app_config.id, WebSocketRef(conn_arc))
                     .await;
@@ -308,7 +341,6 @@ impl ConnectionHandler {
 
         Ok(())
     }
-
 
     pub async fn handle_ping(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         self.connection_manager
@@ -344,29 +376,30 @@ impl ConnectionHandler {
         }
     }
 
-
     pub async fn handle_subscribe(
         &self,
         socket_id: &SocketId,
         app_config: &App, // Changed to pass App struct directly
         message: &PusherMessage,
     ) -> Result<()> {
-        let channel_str = match &message.data {
-            Some(MessageData::String(data_str)) => data_str.as_str(),
-            Some(MessageData::Structured { channel, .. }) => channel
-                .as_ref()
-                .map(|s| s.as_str())
-                .ok_or_else(|| Error::ChannelError("Missing channel".into()))?,
-            Some(MessageData::Json(data_val)) => data_val
-                .get("channel")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::ChannelError("Missing channel".into()))?,
-            None => return Err(Error::ChannelError("Missing channel data".into())),
-        };
+        let channel_str =
+            match &message.data {
+                Some(MessageData::String(data_str)) => data_str.as_str(),
+                Some(MessageData::Structured { channel, .. }) => channel
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .ok_or_else(|| Error::ChannelError("Missing channel".into()))?,
+                Some(MessageData::Json(data_val)) => data_val
+                    .get("channel")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::ChannelError("Missing channel".into()))?,
+                None => return Err(Error::ChannelError("Missing channel data".into())),
+            };
 
         // Validate channel name length using AppManager
-        self.app_manager.validate_channel_name(&app_config.id, channel_str).await?;
-
+        self.app_manager
+            .validate_channel_name(&app_config.id, channel_str)
+            .await?;
 
         let is_authenticated = {
             let channel_manager_locked = self.channel_manager.read().await;
@@ -390,9 +423,14 @@ impl ConnectionHandler {
         if channel_str.starts_with("presence-") {
             if let Some(MessageData::Structured { channel_data, .. }) = &message.data {
                 if let Some(cd_str) = channel_data {
-                    let user_info_payload: Value = serde_json::from_str(cd_str)
-                        .map_err(|_| Error::InvalidMessageFormat("Invalid channel_data JSON for presence".into()))?;
-                    let user_info_size_kb = utils::data_to_bytes_flexible(vec![user_info_payload.get("user_info").cloned().unwrap_or_default()]) / 1024;
+                    let user_info_payload: Value = serde_json::from_str(cd_str).map_err(|_| {
+                        Error::InvalidMessageFormat("Invalid channel_data JSON for presence".into())
+                    })?;
+                    let user_info_size_kb = utils::data_to_bytes_flexible(vec![user_info_payload
+                        .get("user_info")
+                        .cloned()
+                        .unwrap_or_default()])
+                        / 1024;
                     if let Some(max_size) = app_config.max_presence_member_size_in_kb {
                         if user_info_size_kb > max_size as usize {
                             return Err(Error::ChannelError(format!(
@@ -404,9 +442,14 @@ impl ConnectionHandler {
                 }
             } else if let Some(MessageData::Json(json_data)) = &message.data {
                 if let Some(cd_str) = json_data.get("channel_data").and_then(Value::as_str) {
-                    let user_info_payload: Value = serde_json::from_str(cd_str)
-                        .map_err(|_| Error::InvalidMessageFormat("Invalid channel_data JSON for presence".into()))?;
-                    let user_info_size_kb = utils::data_to_bytes_flexible(vec![user_info_payload.get("user_info").cloned().unwrap_or_default()]) / 1024;
+                    let user_info_payload: Value = serde_json::from_str(cd_str).map_err(|_| {
+                        Error::InvalidMessageFormat("Invalid channel_data JSON for presence".into())
+                    })?;
+                    let user_info_size_kb = utils::data_to_bytes_flexible(vec![user_info_payload
+                        .get("user_info")
+                        .cloned()
+                        .unwrap_or_default()])
+                        / 1024;
                     if let Some(max_size) = app_config.max_presence_member_size_in_kb {
                         if user_info_size_kb > max_size as usize {
                             return Err(Error::ChannelError(format!(
@@ -418,10 +461,15 @@ impl ConnectionHandler {
                 }
             }
 
-
             // Check max_presence_members_per_channel
             if let Some(max_members) = app_config.max_presence_members_per_channel {
-                let current_members = self.connection_manager.lock().await.get_channel_members(&app_config.id, channel_str).await?.len();
+                let current_members = self
+                    .connection_manager
+                    .lock()
+                    .await
+                    .get_channel_members(&app_config.id, channel_str)
+                    .await?
+                    .len();
                 if current_members >= max_members as usize {
                     return Err(Error::ChannelError(format!(
                         "Presence channel {} at capacity ({})",
@@ -430,7 +478,6 @@ impl ConnectionHandler {
                 }
             }
         }
-
 
         let subscription_result = {
             let channel_manager_locked = self.channel_manager.write().await;
@@ -462,10 +509,11 @@ impl ConnectionHandler {
 
         if subscription_result.channel_connections == Some(1) {
             if let Some(webhook_integration) = &self.webhook_integration {
-                webhook_integration.send_channel_occupied(app_config, channel_str).await?;
+                webhook_integration
+                    .send_channel_occupied(app_config, channel_str)
+                    .await?;
             }
         }
-
 
         let channel_type = ChannelType::from_name(channel_str);
         let presence_data_tuple = if channel_type == ChannelType::Presence {
@@ -484,7 +532,10 @@ impl ConnectionHandler {
 
         {
             let mut connection_manager_locked = self.connection_manager.lock().await;
-            if let Some(conn_arc) = connection_manager_locked.get_connection(socket_id, &app_config.id).await {
+            if let Some(conn_arc) = connection_manager_locked
+                .get_connection(socket_id, &app_config.id)
+                .await
+            {
                 let mut conn_locked = conn_arc.lock().await;
                 conn_locked
                     .state
@@ -504,7 +555,6 @@ impl ConnectionHandler {
                 }
             }
         }
-
 
         if channel_type == ChannelType::Presence {
             if let Some(presence_member) = subscription_result.member {
@@ -543,7 +593,12 @@ impl ConnectionHandler {
                     );
 
                     connection_manager_locked
-                        .send(channel_str, member_added_msg, Some(socket_id), &app_config.id)
+                        .send(
+                            channel_str,
+                            member_added_msg,
+                            Some(socket_id),
+                            &app_config.id,
+                        )
                         .await?;
 
                     current_members
@@ -593,7 +648,6 @@ impl ConnectionHandler {
         Ok(())
     }
 
-
     pub async fn handle_unsubscribe(
         &self,
         socket_id: &SocketId,
@@ -606,14 +660,17 @@ impl ConnectionHandler {
         })?;
         let channel_name_str = match message_data_ref {
             MessageData::String(channel_str_val) => channel_str_val.as_str(),
-            MessageData::Json(data_val) => {
-                data_val.get("channel").and_then(Value::as_str).ok_or_else(|| {
+            MessageData::Json(data_val) => data_val
+                .get("channel")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
+                })?,
+            MessageData::Structured { channel, .. } => {
+                channel.as_ref().map(|s| s.as_str()).ok_or_else(|| {
                     Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
                 })?
             }
-            MessageData::Structured { channel, .. } => channel.as_ref().map(|s| s.as_str()).ok_or_else(|| {
-                Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
-            })?,
         };
 
         let channel_type_val = ChannelType::from_name(channel_name_str);
@@ -646,12 +703,17 @@ impl ConnectionHandler {
 
                     {
                         let mut conn_manager_locked = self.connection_manager.lock().await;
-                        if let Some(conn_arc) = conn_manager_locked.get_connection(socket_id, app_id).await {
+                        if let Some(conn_arc) =
+                            conn_manager_locked.get_connection(socket_id, app_id).await
+                        {
                             let mut conn_locked = conn_arc.lock().await;
                             if let Some(presence_map) = conn_locked.state.presence.as_mut() {
                                 presence_map.remove(channel_name_str);
                             }
-                            conn_locked.state.subscribed_channels.remove(channel_name_str);
+                            conn_locked
+                                .state
+                                .subscribed_channels
+                                .remove(channel_name_str);
                         }
 
                         let member_removed_msg = PusherMessage::member_removed(
@@ -661,17 +723,23 @@ impl ConnectionHandler {
 
                         if let Some(app_config_val) = self.app_manager.get_app(app_id).await? {
                             if let Some(webhook_integration) = &self.webhook_integration {
-                                webhook_integration.send_member_removed(
-                                    &app_config_val,
-                                    channel_name_str,
-                                    presence_member_val.user_id.as_str(),
-                                ).await?;
+                                webhook_integration
+                                    .send_member_removed(
+                                        &app_config_val,
+                                        channel_name_str,
+                                        presence_member_val.user_id.as_str(),
+                                    )
+                                    .await?;
                             }
                         }
 
-
                         conn_manager_locked
-                            .send(channel_name_str, member_removed_msg, Some(socket_id), app_id)
+                            .send(
+                                channel_name_str,
+                                member_removed_msg,
+                                Some(socket_id),
+                                app_id,
+                            )
                             .await
                             .map_err(|e| {
                                 Log::error(format!("Error sending member_removed: {:?}", e));
@@ -695,7 +763,9 @@ impl ConnectionHandler {
                 if response_val.remaining_connections == Some(0) {
                     if let Some(app_config_val) = self.app_manager.get_app(app_id).await? {
                         if let Some(webhook_integration) = &self.webhook_integration {
-                            webhook_integration.send_channel_vacated(&app_config_val, channel_name_str).await?;
+                            webhook_integration
+                                .send_channel_vacated(&app_config_val, channel_name_str)
+                                .await?;
                         }
                     }
                 }
@@ -704,7 +774,6 @@ impl ConnectionHandler {
 
         Ok(())
     }
-
 
     pub async fn handle_signin(
         &self,
@@ -776,7 +845,10 @@ impl ConnectionHandler {
                     Error::ConnectionError("Failed to add socket".into())
                 })?;
 
-            if let Err(e) = connection_manager_locked.add_user(connection_arc.clone()).await {
+            if let Err(e) = connection_manager_locked
+                .add_user(connection_arc.clone())
+                .await
+            {
                 Log::error(format!("Failed to add user: {}", e));
             }
         }
@@ -795,7 +867,6 @@ impl ConnectionHandler {
         Ok(())
     }
 
-
     async fn handle_client_event(
         &self,
         app_config: &App, // Changed to app_config
@@ -808,7 +879,9 @@ impl ConnectionHandler {
             channel.ok_or_else(|| Error::ClientEventError("Channel name is required".into()))?;
 
         // Validate event name length
-        let max_event_name_len = app_config.max_event_name_length.unwrap_or(DEFAULT_EVENT_NAME_MAX_LENGTH as u32);
+        let max_event_name_len = app_config
+            .max_event_name_length
+            .unwrap_or(DEFAULT_EVENT_NAME_MAX_LENGTH as u32);
         if event.len() > max_event_name_len as usize {
             return Err(Error::InvalidEventName(format!(
                 "Event name exceeds maximum length of {}",
@@ -827,7 +900,6 @@ impl ConnectionHandler {
             }
         }
 
-
         if !event.starts_with(CLIENT_EVENT_PREFIX) {
             return Err(Error::InvalidEventName(
                 "Client events must start with 'client-'".into(),
@@ -835,14 +907,15 @@ impl ConnectionHandler {
         }
 
         // Validate channel name length (already done by AppManager, but good to have here too for client events)
-        let max_channel_len = app_config.max_channel_name_length.unwrap_or(DEFAULT_CHANNEL_NAME_MAX_LENGTH as u32);
+        let max_channel_len = app_config
+            .max_channel_name_length
+            .unwrap_or(DEFAULT_CHANNEL_NAME_MAX_LENGTH as u32);
         if channel_name.len() > max_channel_len as usize {
             return Err(Error::InvalidChannelName(format!(
                 "Channel name for client event exceeds maximum length of {}",
                 max_channel_len
             )));
         }
-
 
         let channel_type = ChannelType::from_name(channel_name);
         if !matches!(channel_type, ChannelType::Private | ChannelType::Presence) {
@@ -861,13 +934,20 @@ impl ConnectionHandler {
             let conn_locked = connection_arc.lock().await;
             let key = conn_locked.state.get_app_key();
             let channels = conn_locked.state.subscribed_channels.clone();
-            let user_id = conn_locked.state.presence.as_ref()
+            let user_id = conn_locked
+                .state
+                .presence
+                .as_ref()
                 .and_then(|p_map| p_map.get(channel_name))
                 .map(|pi| pi.user_id.clone());
             (key, channels, user_id)
         };
 
-        if !self.app_manager.can_handle_client_events(&app_key_str).await? {
+        if !self
+            .app_manager
+            .can_handle_client_events(&app_key_str)
+            .await?
+        {
             return Err(Error::ClientEventError(
                 "Client events are not enabled for this app".into(),
             ));
@@ -882,7 +962,6 @@ impl ConnectionHandler {
             socket_id, channel_name
         ));
 
-
         let is_subscribed_globally;
         {
             let mut conn_manager_locked = self.connection_manager.lock().await;
@@ -890,7 +969,6 @@ impl ConnectionHandler {
                 .is_in_channel(&app_config.id, channel_name, socket_id) // Use app_config
                 .await?;
         }
-
 
         if !is_subscribed_globally {
             if !subscribed_channels_set.contains(channel_name) {
@@ -913,7 +991,6 @@ impl ConnectionHandler {
             )));
         }
 
-
         let message_to_send = PusherMessage {
             channel: Some(channel_name.to_string()),
             name: None,
@@ -924,29 +1001,40 @@ impl ConnectionHandler {
         {
             let mut conn_manager_locked = self.connection_manager.lock().await;
             conn_manager_locked
-                .send(channel_name, message_to_send.clone(), Some(socket_id), &app_config.id) // Use app_config
+                .send(
+                    channel_name,
+                    message_to_send.clone(),
+                    Some(socket_id),
+                    &app_config.id,
+                ) // Use app_config
                 .await?;
         }
 
-
-        if let Some(webhook_integration_val) = &self.webhook_integration { // Renamed variable
-            if let Some(uid_str_val) = user_id_for_webhook { // Renamed variable
-                webhook_integration_val.send_client_event( // Use webhook_integration_val
-                                                           app_config, // Pass app_config by reference
-                                                           channel_name,
-                                                           event,
-                                                           data,
-                                                           Some(socket_id.as_ref()),
-                                                           Some(&uid_str_val),
-                ).await?;
+        if let Some(webhook_integration_val) = &self.webhook_integration {
+            // Renamed variable
+            if let Some(uid_str_val) = user_id_for_webhook {
+                // Renamed variable
+                webhook_integration_val
+                    .send_client_event(
+                        // Use webhook_integration_val
+                        app_config, // Pass app_config by reference
+                        channel_name,
+                        event,
+                        data,
+                        Some(socket_id.as_ref()),
+                        Some(&uid_str_val),
+                    )
+                    .await?;
             } else {
-                Log::warning(format!("Could not determine user_id for client event webhook on channel: {}", channel_name));
+                Log::warning(format!(
+                    "Could not determine user_id for client event webhook on channel: {}",
+                    channel_name
+                ));
             }
         }
 
         Ok(())
     }
-
 
     pub async fn send_error(
         &self,
@@ -959,7 +1047,8 @@ impl ConnectionHandler {
             message: error.to_string(),
             code: Some(error.close_code()),
         };
-        let error_message = PusherMessage::error(error_data.code.unwrap_or(4000), error_data.message, channel);
+        let error_message =
+            PusherMessage::error(error_data.code.unwrap_or(4000), error_data.message, channel);
         self.connection_manager
             .lock()
             .await
@@ -967,7 +1056,11 @@ impl ConnectionHandler {
             .await
     }
 
-    pub async fn send_connection_established(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+    pub async fn send_connection_established(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+    ) -> Result<()> {
         let connection_message = PusherMessage::connection_established(socket_id.0.clone());
         self.connection_manager
             .lock()
@@ -976,11 +1069,13 @@ impl ConnectionHandler {
             .await
     }
 
-
     pub async fn handle_disconnect(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         let (subscribed_channels_set, user_id_option) = {
             let mut connection_manager_locked = self.connection_manager.lock().await;
-            let connection_arc = match connection_manager_locked.get_connection(socket_id, app_id).await {
+            let connection_arc = match connection_manager_locked
+                .get_connection(socket_id, app_id)
+                .await
+            {
                 Some(conn_val) => conn_val,
                 None => {
                     Log::warning(format!("No connection found for socket: {}", socket_id));
@@ -1008,7 +1103,12 @@ impl ConnectionHandler {
                 Log::info(format!("Unsubscribing from channel: {}", channel_str));
 
                 if let Err(e) = channel_manager_locked
-                    .unsubscribe(socket_id.0.as_str(), &channel_str, app_id, user_id_option.as_deref())
+                    .unsubscribe(
+                        socket_id.0.as_str(),
+                        &channel_str,
+                        app_id,
+                        user_id_option.as_deref(),
+                    )
                     .await
                 {
                     Log::error(format!(
@@ -1021,11 +1121,13 @@ impl ConnectionHandler {
                 if channel_str.starts_with("presence-") && user_id_option.is_some() {
                     let should_broadcast_removal;
                     {
-                        let mut connection_manager_locked_inner = self.connection_manager.lock().await;
+                        let mut connection_manager_locked_inner =
+                            self.connection_manager.lock().await;
                         let members_map = connection_manager_locked_inner
                             .get_channel_members(app_id, &channel_str)
                             .await?;
-                        should_broadcast_removal = !members_map.contains_key(user_id_option.as_ref().unwrap());
+                        should_broadcast_removal =
+                            !members_map.contains_key(user_id_option.as_ref().unwrap());
                     }
 
                     if should_broadcast_removal {
@@ -1057,7 +1159,6 @@ impl ConnectionHandler {
 
         Ok(())
     }
-
 
     pub async fn channel(&self, app_id: &str, channel_name: &str) -> Value {
         let socket_count_val = self
@@ -1091,11 +1192,13 @@ impl ConnectionHandler {
                 });
             });
         } else if let Err(e) = channels_map_result {
-            Log::error(format!("Failed to get channels with socket count for app {}: {}", app_id, e));
+            Log::error(format!(
+                "Failed to get channels with socket count for app {}: {}",
+                app_id, e
+            ));
         }
         response_val
     }
-
 
     pub async fn channel_users(
         &self,
@@ -1114,7 +1217,6 @@ impl ConnectionHandler {
             .await?;
         Ok(members_map)
     }
-
 
     pub async fn send_message(
         &self,

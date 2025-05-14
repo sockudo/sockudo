@@ -104,8 +104,9 @@ impl WebhookSender {
             // Acquire a permit from the semaphore before spawning the task
             // Clone semaphore Arc for the task
             let permit_semaphore = self.webhook_semaphore.clone();
-            let permit = permit_semaphore.acquire_owned().await.map_err(|e| Error::Other(format!("Failed to acquire webhook semaphore permit: {}", e)))?;
-
+            let permit = permit_semaphore.acquire_owned().await.map_err(|e| {
+                Error::Other(format!("Failed to acquire webhook semaphore permit: {}", e))
+            })?;
 
             if let Some(url) = &webhook_config.url {
                 let client = self.client.clone();
@@ -122,7 +123,16 @@ impl WebhookSender {
                 let task = tokio::spawn(async move {
                     // The permit is moved into the task and will be released when the task finishes
                     let _permit = permit;
-                    if let Err(e) = send_webhook(&client, &url_str, &event_clone, &app_id_clone, payload_clone, headers).await {
+                    if let Err(e) = send_webhook(
+                        &client,
+                        &url_str,
+                        &event_clone,
+                        &app_id_clone,
+                        payload_clone,
+                        headers,
+                    )
+                    .await
+                    {
                         Log::error(format!("Webhook send error to URL {}: {}", url_str, e));
                     } else {
                         Log::webhook_sender(format!(
@@ -142,13 +152,14 @@ impl WebhookSender {
                 let task = tokio::spawn(async move {
                     // The permit is moved into the task and will be released when the task finishes
                     let _permit = permit;
-                    if let Err(e) = lambda_sender.invoke_lambda(
-                        &webhook_clone,
-                        &event_clone,
-                        &app_id_clone,
-                        payload_clone
-                    ).await {
-                        Log::error(format!("Lambda webhook error for app {}: {}", app_id_clone, e));
+                    if let Err(e) = lambda_sender
+                        .invoke_lambda(&webhook_clone, &event_clone, &app_id_clone, payload_clone)
+                        .await
+                    {
+                        Log::error(format!(
+                            "Lambda webhook error for app {}: {}",
+                            app_id_clone, e
+                        ));
                     }
                 });
                 tasks.push(task);

@@ -2,11 +2,14 @@
 pub mod memory_limiter;
 pub mod middleware;
 pub mod redis_limiter;
+pub mod redis_cluster_limiter;
 
 use crate::error::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
+use redis::cluster::ClusterClient;
+use crate::rate_limiter::redis_cluster_limiter::RedisClusterRateLimiter;
 
 /// Configuration for rate limiters
 #[derive(Debug, Clone)]
@@ -65,11 +68,7 @@ pub async fn create_rate_limiter(
             // Get Redis URL from config or use default
             let redis_url = match &config.redis.redis_options.get("url") {
                 Some(url) => {
-                    if let Some(url_str) = url.as_str() {
-                        url_str
-                    } else {
-                        "redis://127.0.0.1:6379/"
-                    }
+                    url.as_str().unwrap_or("redis://127.0.0.1:6379/")
                 }
                 None => "redis://127.0.0.1:6379/",
             };
@@ -100,6 +99,47 @@ pub async fn create_rate_limiter(
 
             Ok(Arc::new(limiter))
         }
+        "redis_cluster" => {
+            // Get Redis URL from config or use default
+            let redis_nodes = match &config.redis.redis_options.get("nodes") {
+                Some(nodes) => {
+                    nodes.as_str().unwrap_or("redis://127.0.1:6379/")
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect::<Vec<String>>()
+                }
+                None => {
+                    vec!["redis://127.0.1:6379/".to_string()]
+                }
+            };
+
+            let redis_client = ClusterClient::new(redis_nodes).map_err(|e| {
+                crate::error::Error::CacheError(format!("Failed to create Redis client: {}", e))
+            })?;
+
+            // Get prefix from config or use default
+            let prefix = match &config.redis.redis_options.get("prefix") {
+                Some(prefix) => {
+                    if let Some(prefix_str) = prefix.as_str() {
+                        prefix_str.to_string()
+                    } else {
+                        "rate_limit".to_string()
+                    }
+                }
+                None => "rate_limit".to_string(),
+            };
+
+            let limiter = RedisClusterRateLimiter::new(
+                redis_client,
+                prefix,
+                config.default_limit_per_second,
+                config.default_window_seconds,
+            )
+                .await?;
+
+            Ok(Arc::new(limiter))
+        }
+
         "memory" | _ => {
             // Default to memory rate limiter
             let limiter = memory_limiter::MemoryRateLimiter::new(

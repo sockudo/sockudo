@@ -12,15 +12,14 @@ use axum::{
     Json,
 };
 // use chrono::Duration; // Duration seems unused in this file after changes
+use crate::app::config::App; // To access app limits
+use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, fmt, sync::Arc}; // Added fmt for AppError Display
 use sysinfo::System;
 use thiserror::Error;
 use tracing::{error, field, info, instrument, warn};
-use crate::app::config::App; // To access app limits
-use crate::protocol::constants::{EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH};
-
 
 // --- Custom Error Type ---
 
@@ -73,7 +72,6 @@ impl IntoResponse for AppError {
             }
             AppError::LimitExceeded(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
             AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
-
         };
 
         // Log the error using the tracing crate, including the specific error message and status code.
@@ -91,9 +89,13 @@ impl From<crate::error::Error> for AppError {
         warn!(original_error = ?err, "Converting internal error to AppError for HTTP response");
         match err {
             // Specific mappings:
-            crate::error::Error::InvalidAppKey => AppError::AppNotFound(format!("Application key not found or invalid: {}", err)),
+            crate::error::Error::InvalidAppKey => {
+                AppError::AppNotFound(format!("Application key not found or invalid: {}", err))
+            }
             crate::error::Error::ApplicationNotFound => AppError::AppNotFound(err.to_string()),
-            crate::error::Error::InvalidChannelName(s) => AppError::InvalidInput(format!("Invalid channel name: {}", s)),
+            crate::error::Error::InvalidChannelName(s) => {
+                AppError::InvalidInput(format!("Invalid channel name: {}", s))
+            }
             crate::error::Error::ChannelError(s) => AppError::InvalidInput(s), // Or map to InternalError if more appropriate
             crate::error::Error::AuthError(s) => AppError::AppValidationFailed(s), // Or a more specific auth-related AppError
 
@@ -104,7 +106,6 @@ impl From<crate::error::Error> for AppError {
         }
     }
 }
-
 
 // --- Query Parameter Structs ---
 
@@ -162,19 +163,20 @@ fn build_cache_payload(event_name: &str, event_data: &Value) -> Result<String, s
 }
 
 /// Records API metrics (helper async function)
-#[instrument(skip(handler, batch_size, response_size), fields(app_id = %app_id))]
+#[instrument(skip(handler, incoming_request_size, outgoing_response_size), fields(app_id = %app_id))] // Renamed parameters for clarity
 async fn record_api_metrics(
     handler: &Arc<ConnectionHandler>,
     app_id: &str,
-    batch_size: usize,
-    response_size: usize,
+    incoming_request_size: usize, // Renamed for clarity (e.g. size of incoming batch or single event)
+    outgoing_response_size: usize, // Renamed for clarity (size of HTTP response body)
 ) {
     if let Some(metrics_arc) = &handler.metrics {
         let metrics = metrics_arc.lock().await;
-        metrics.mark_api_message(app_id, batch_size, response_size);
+        // Pass the sizes as they are: incoming_request_size and outgoing_response_size
+        metrics.mark_api_message(app_id, incoming_request_size, outgoing_response_size);
         info!(
-            incoming_bytes = batch_size,
-            outgoing_bytes = response_size,
+            incoming_bytes = incoming_request_size,
+            outgoing_bytes = outgoing_response_size,
             "Recorded API message metrics"
         );
     } else {
@@ -190,13 +192,13 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    let total = sys.total_memory() * 1024; // sysinfo reports in KB, convert to Bytes
+    let total = sys.total_memory() * 1024;
     let used = sys.used_memory() * 1024;
-    let free = total.saturating_sub(used); // Use saturating_sub to prevent underflow
+    let free = total.saturating_sub(used);
     let percent = if total > 0 {
         (used as f64 / total as f64) * 100.0
     } else {
-        0.0 // Avoid division by zero
+        0.0
     };
 
     let memory_stats = MemoryStats {
@@ -213,7 +215,7 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
         total_bytes = total,
         used_bytes = used,
         free_bytes = free,
-        usage_percent = format!("{:.2}", percent), // Format for better readability
+        usage_percent = format!("{:.2}", percent),
         "Memory usage queried"
     );
 
@@ -224,25 +226,28 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
 #[instrument(skip(handler, event_data, app_config), fields(app_id = app_id, event_name = field::Empty))]
 async fn process_single_event(
     handler: &Arc<ConnectionHandler>,
-    app_id: &str, // Keep app_id as &str for logging and direct use
-    app_config: &App, // Pass App config for limit checks
+    app_id: &str,
+    app_config: &App,
     event_data: PusherApiMessage,
     collect_info: bool,
 ) -> Result<HashMap<String, Value>, AppError> {
     let PusherApiMessage {
         name,
-        data: event_payload_data, 
+        data: event_payload_data,
         channels,
         channel,
         socket_id: original_socket_id_str,
         info,
     } = event_data;
 
-    let event_name_str = name.as_deref().ok_or_else(|| AppError::InvalidInput("Event name is required".to_string()))?;
+    let event_name_str = name
+        .as_deref()
+        .ok_or_else(|| AppError::InvalidInput("Event name is required".to_string()))?;
     tracing::Span::current().record("event_name", event_name_str);
 
-    // Validate event name length
-    let max_event_name_len = app_config.max_event_name_length.unwrap_or(DEFAULT_EVENT_NAME_MAX_LENGTH as u32);
+    let max_event_name_len = app_config
+        .max_event_name_length
+        .unwrap_or(DEFAULT_EVENT_NAME_MAX_LENGTH as u32);
     if event_name_str.len() > max_event_name_len as usize {
         return Err(AppError::LimitExceeded(format!(
             "Event name '{}' exceeds maximum length of {}",
@@ -250,9 +255,7 @@ async fn process_single_event(
         )));
     }
 
-    // Validate event payload size
     if let Some(max_payload_kb) = app_config.max_event_payload_in_kb {
-        // Convert Option<ApiMessageData> to Value for size calculation
         let value_for_size_calc = match &event_payload_data {
             Some(crate::protocol::messages::ApiMessageData::String(s)) => json!(s),
             Some(crate::protocol::messages::ApiMessageData::Json(j_val)) => j_val.clone(),
@@ -267,9 +270,8 @@ async fn process_single_event(
         }
     }
 
-
     let mapped_socket_id: Option<SocketId> = original_socket_id_str.map(SocketId);
-    let name_clone_for_message = name.clone(); 
+    let name_clone_for_message = name.clone();
 
     let target_channels: Vec<String> = match channels {
         Some(ch_list) if !ch_list.is_empty() => {
@@ -277,40 +279,38 @@ async fn process_single_event(
                 if ch_list.len() > max_ch_at_once as usize {
                     return Err(AppError::LimitExceeded(format!(
                         "Number of channels ({}) exceeds limit ({})",
-                        ch_list.len(), max_ch_at_once
+                        ch_list.len(),
+                        max_ch_at_once
                     )));
                 }
             }
             ch_list
-        },
+        }
         None => match channel {
-            Some(ch_str) => vec![ch_str], 
+            Some(ch_str) => vec![ch_str],
             None => {
                 warn!("Missing 'channels' or 'channel' in event");
                 return Err(AppError::MissingChannelInfo);
             }
         },
-        Some(_) => { 
+        Some(_) => {
             warn!("Empty 'channels' list provided in event");
             return Err(AppError::MissingChannelInfo);
         }
     };
 
+    let mut channels_info_map = HashMap::new();
 
-    let mut channels_info_map = HashMap::new(); 
-
-    for target_channel_str in target_channels { 
+    for target_channel_str in target_channels {
         info!(channel = %target_channel_str, "Processing channel for event");
-
-        // Validate channel name length using AppManager.
-        // The `?` operator will now correctly convert `crate::error::Error` to `AppError`
-        // due to the `From<crate::error::Error> for AppError` implementation.
-        handler.app_manager.validate_channel_name(app_id, &target_channel_str).await?;
-
+        handler
+            .app_manager
+            .validate_channel_name(app_id, &target_channel_str)
+            .await?;
 
         let message_to_send = PusherApiMessage {
             name: name_clone_for_message.clone(),
-            data: event_payload_data.clone(), 
+            data: event_payload_data.clone(),
             channels: None,
             channel: Some(target_channel_str.clone()),
             socket_id: mapped_socket_id.as_ref().map(|sid| sid.0.clone()),
@@ -324,32 +324,29 @@ async fn process_single_event(
                 message_to_send,
                 &target_channel_str,
             )
-            .await; 
+            .await;
 
         if collect_info {
-            let is_presence_channel = target_channel_str.starts_with("presence-"); 
-            let mut current_channel_info_map = serde_json::Map::new(); 
+            let is_presence_channel = target_channel_str.starts_with("presence-");
+            let mut current_channel_info_map = serde_json::Map::new();
 
             if is_presence_channel && info.as_deref().map_or(false, |s| s.contains("user_count")) {
                 match handler
                     .channel_manager
                     .read()
                     .await
-                    .get_channel_members(app_id, &target_channel_str) // This returns Result<_, crate::error::Error>
-                    .await 
+                    .get_channel_members(app_id, &target_channel_str)
+                    .await
                 {
-                    Ok(members_map) => { 
-                        current_channel_info_map.insert("user_count".to_string(), json!(members_map.len()));
+                    Ok(members_map) => {
+                        current_channel_info_map
+                            .insert("user_count".to_string(), json!(members_map.len()));
                     }
-                    Err(e) => { // e is crate::error::Error
-                        // Log the error but don't necessarily fail the whole event processing.
-                        // Depending on requirements, you might want to convert and return it.
+                    Err(e) => {
                         Log::warning(format!(
                             "Failed to get user count for channel {}: {} (internal error: {:?})",
-                            target_channel_str, e, e 
+                            target_channel_str, e, e
                         ));
-                        // If you need to propagate this as an AppError:
-                        // return Err(AppError::from(e)); 
                     }
                 }
             }
@@ -368,34 +365,39 @@ async fn process_single_event(
             }
 
             if !current_channel_info_map.is_empty() {
-                channels_info_map.insert(target_channel_str.clone(), Value::Object(current_channel_info_map));
+                channels_info_map.insert(
+                    target_channel_str.clone(),
+                    Value::Object(current_channel_info_map),
+                );
             }
         }
 
         if utils::is_cache_channel(&target_channel_str) {
-            let payload_for_cache = match event_payload_data.clone() { 
-                Some(data_val) => serde_json::to_value(data_val)?, // This `?` is on serde_json::Error
+            let payload_for_cache = match event_payload_data.clone() {
+                Some(data_val) => serde_json::to_value(data_val)?,
                 None => json!(null),
             };
 
             let cache_payload_str = match build_cache_payload(event_name_str, &payload_for_cache) {
                 Ok(payload) => payload,
-                Err(e) => { // serde_json::Error
+                Err(e) => {
                     error!(channel = %target_channel_str, error = %e, "Failed to serialize event data for caching");
-                    continue; // Or return Err(AppError::from(e))
+                    continue;
                 }
             };
 
-            let mut cache_manager_locked = handler.cache_manager.lock().await; 
-            let cache_key_str = format!("app:{}:channel:{}:cache_miss", app_id, target_channel_str); 
+            let mut cache_manager_locked = handler.cache_manager.lock().await;
+            let cache_key_str = format!("app:{}:channel:{}:cache_miss", app_id, target_channel_str);
 
-            match cache_manager_locked.set(&cache_key_str, &cache_payload_str, 3600).await { // This returns Result<(), crate::error::Error>
+            match cache_manager_locked
+                .set(&cache_key_str, &cache_payload_str, 3600)
+                .await
+            {
                 Ok(_) => {
                     info!(channel = %target_channel_str, cache_key = %cache_key_str, "Cached event for channel");
                 }
-                Err(e) => { // e is crate::error::Error
+                Err(e) => {
                     error!(channel = %target_channel_str, cache_key = %cache_key_str, error = %e, "Failed to cache event (internal error: {:?})", e);
-                     // If you need to propagate: return Err(AppError::from(e));
                 }
             }
         }
@@ -404,29 +406,35 @@ async fn process_single_event(
     Ok(channels_info_map)
 }
 
-
 /// POST /apps/{app_id}/events
-#[instrument(skip(handler, event_payload), fields(app_id = %app_id))] 
+#[instrument(skip(handler, event_payload), fields(app_id = %app_id))]
 pub async fn events(
     Path(app_id): Path<String>,
-    Query(_query): Query<EventQuery>, 
+    Query(_query): Query<EventQuery>,
     State(handler): State<Arc<ConnectionHandler>>,
-    Json(event_payload): Json<PusherApiMessage>, 
+    Json(event_payload): Json<PusherApiMessage>,
 ) -> Result<impl IntoResponse, AppError> {
-    Log::info(format!("Received event: {:?}", event_payload)); 
+    Log::info(format!("Received event: {:?}", event_payload));
 
-    // The `?` here will use `From<crate::error::Error>` for `AppError` if `get_app` returns `crate::error::Error`.
-    let app_config = handler.app_manager.get_app(app_id.as_str()).await?
+    let app_config = handler
+        .app_manager
+        .get_app(app_id.as_str())
+        .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
-
 
     let need_channel_info = event_payload.info.is_some();
 
-    // `process_single_event` now returns `Result<_, AppError>`, so `?` is fine.
-    let channels_info_map = process_single_event(&handler, &app_id, &app_config, event_payload, need_channel_info).await?; 
+    let channels_info_map = process_single_event(
+        &handler,
+        &app_id,
+        &app_config,
+        event_payload,
+        need_channel_info,
+    )
+    .await?;
 
     if need_channel_info && !channels_info_map.is_empty() {
-        let response_payload = json!({ 
+        let response_payload = json!({
             "channels": channels_info_map
         });
         Ok((StatusCode::OK, Json(response_payload)))
@@ -436,18 +444,21 @@ pub async fn events(
 }
 
 /// POST /apps/{app_id}/batch_events
-#[instrument(skip(handler, batch_message_payload), fields(app_id = %app_id, batch_len = field::Empty))] 
+#[instrument(skip(handler, batch_message_payload), fields(app_id = %app_id, batch_len = field::Empty))]
 pub async fn batch_events(
     Path(app_id): Path<String>,
     State(handler): State<Arc<ConnectionHandler>>,
-    Json(batch_message_payload): Json<BatchPusherApiMessage>, 
+    Json(batch_message_payload): Json<BatchPusherApiMessage>,
 ) -> Result<impl IntoResponse, AppError> {
-    let batch_events_vec = batch_message_payload.batch; 
+    let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
     tracing::Span::current().record("batch_len", &batch_len);
     info!("Received batch events request with {} events", batch_len);
 
-    let app_config = handler.app_manager.get_app(app_id.as_str()).await?
+    let app_config = handler
+        .app_manager
+        .get_app(app_id.as_str())
+        .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
     if let Some(max_batch) = app_config.max_event_batch_size {
@@ -459,83 +470,101 @@ pub async fn batch_events(
         }
     }
 
-    // This `?` is on serde_json::Error, which is handled by `#[from]` on AppError.
-    let batch_size_bytes = serde_json::to_vec(&batch_events_vec)? 
-        .len();
+    let incoming_request_size_bytes = serde_json::to_vec(&batch_events_vec)?.len();
 
-    let mut batch_response_info_vec = Vec::new(); 
-    let mut any_message_requests_info = false; 
+    let mut batch_response_info_vec = Vec::new();
+    let mut any_message_requests_info = false;
 
-    for single_event_message in batch_events_vec { 
+    for single_event_message in batch_events_vec {
         if single_event_message.info.is_some() {
             any_message_requests_info = true;
         }
 
-        let channel_info_map_for_event =
-            process_single_event(&handler, &app_id, &app_config, single_event_message.clone(), single_event_message.info.is_some()).await?;  
+        let channel_info_map_for_event = process_single_event(
+            &handler,
+            &app_id,
+            &app_config,
+            single_event_message.clone(),
+            single_event_message.info.is_some(),
+        )
+        .await?;
 
-        if any_message_requests_info { 
-            if let Some(main_channel_for_event) = single_event_message.channel.as_ref().or_else(|| single_event_message.channels.as_ref().and_then(|chs| chs.first())) {
-                 batch_response_info_vec.push(
+        if any_message_requests_info {
+            if let Some(main_channel_for_event) =
+                single_event_message.channel.as_ref().or_else(|| {
+                    single_event_message
+                        .channels
+                        .as_ref()
+                        .and_then(|chs| chs.first())
+                })
+            {
+                batch_response_info_vec.push(
                     channel_info_map_for_event
                         .get(main_channel_for_event)
                         .cloned()
-                        .unwrap_or_else(|| json!({})), 
+                        .unwrap_or_else(|| json!({})),
                 );
             } else {
-                batch_response_info_vec.push(json!({})); 
+                batch_response_info_vec.push(json!({}));
             }
         }
     }
 
-    let final_response_payload = if any_message_requests_info { 
+    let final_response_payload = if any_message_requests_info {
         json!({ "batch": batch_response_info_vec })
     } else {
         json!({ "ok": true })
     };
 
-    let response_size_bytes = serde_json::to_vec(&final_response_payload)?; 
-    record_api_metrics(&handler, &app_id, batch_size_bytes, response_size_bytes.len()).await;
+    let outgoing_response_size_bytes_vec = serde_json::to_vec(&final_response_payload)?;
+
+    record_api_metrics(
+        &handler,
+        &app_id,
+        incoming_request_size_bytes,
+        outgoing_response_size_bytes_vec.len(),
+    )
+    .await;
 
     info!("Batch events processed successfully");
     Ok((StatusCode::OK, Json(final_response_payload)))
 }
 
-
 /// GET /apps/{app_id}/channels/{channel_name}
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
 pub async fn channel(
     Path((app_id, channel_name)): Path<(String, String)>,
-    Query(query_params): Query<ChannelQuery>, 
+    Query(query_params): Query<ChannelQuery>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Request for channel info for channel: {}", channel_name); 
+    info!("Request for channel info for channel: {}", channel_name);
 
-    // Fetch app_config first to use for validation (though not strictly for limits here, it's good practice)
-    // The `?` will use `From<crate::error::Error>` for `AppError`.
-    let _app_config = handler.app_manager.get_app(&app_id).await?
+    let _app_config = handler
+        .app_manager
+        .get_app(&app_id)
+        .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
-    // `?` will use `From<crate::error::Error>` for `AppError`.
-    handler.app_manager.validate_channel_name(&app_id, &channel_name).await?;
+    handler
+        .app_manager
+        .validate_channel_name(&app_id, &channel_name)
+        .await?;
 
-
-    let info_query_str = query_params.info.as_ref(); 
+    let info_query_str = query_params.info.as_ref();
     let wants_subscription_count = info_query_str.wants_subscription_count();
     let wants_user_count = info_query_str.wants_user_count();
-    let wants_cache_data = info_query_str.wants_cache(); 
+    let wants_cache_data = info_query_str.wants_cache();
 
-    let socket_count_val; 
+    let socket_count_val;
     {
-        let mut connection_manager_locked = handler.connection_manager.lock().await; 
+        let mut connection_manager_locked = handler.connection_manager.lock().await;
         socket_count_val = connection_manager_locked
             .get_channel_socket_count(&app_id, &channel_name)
             .await;
-    } 
+    }
 
-    let user_count_val = if wants_user_count { 
+    let user_count_val = if wants_user_count {
         if channel_name.starts_with("presence-") {
-            // `?` will use `From<crate::error::Error>` for `AppError`.
             let members_map = handler
                 .channel_manager
                 .read()
@@ -552,20 +581,16 @@ pub async fn channel(
         None
     };
 
-    let cache_data_tuple = if wants_cache_data && utils::is_cache_channel(&channel_name) { 
-        let mut cache_manager_locked = handler.cache_manager.lock().await; 
-        let cache_key_str = format!("app:{}:channel:{}:cache_miss", app_id, channel_name); 
+    let cache_data_tuple = if wants_cache_data && utils::is_cache_channel(&channel_name) {
+        let mut cache_manager_locked = handler.cache_manager.lock().await;
+        let cache_key_str = format!("app:{}:channel:{}:cache_miss", app_id, channel_name);
 
-        // `?` will use `From<crate::error::Error>` for `AppError`.
         match cache_manager_locked.get(&cache_key_str).await? {
-            Some(cache_content_str) => { 
-                // `?` will use `From<crate::error::Error>` for `AppError`.
-                let ttl_duration = cache_manager_locked.ttl(&cache_key_str).await?.unwrap_or_else(|| {
-                    // If key exists but has no TTL (e.g., persistent), or TTL is not applicable,
-                    // use a default value like 3600 seconds.
-                    // This replaces the incorrect access to app_config.channel_limits.cache_ttl.
-                    core::time::Duration::from_secs(3600)
-                });
+            Some(cache_content_str) => {
+                let ttl_duration = cache_manager_locked
+                    .ttl(&cache_key_str)
+                    .await?
+                    .unwrap_or_else(|| core::time::Duration::from_secs(3600));
                 Some((cache_content_str, ttl_duration))
             }
             _ => None,
@@ -574,60 +599,61 @@ pub async fn channel(
         None
     };
 
-    let subscription_count_val = if wants_subscription_count { 
+    let subscription_count_val = if wants_subscription_count {
         Some(socket_count_val as u64)
     } else {
         None
     };
-    let response_payload = 
-        PusherMessage::channel_info(socket_count_val > 0, subscription_count_val, user_count_val, cache_data_tuple);
+    let response_payload = PusherMessage::channel_info(
+        socket_count_val > 0,
+        subscription_count_val,
+        user_count_val,
+        cache_data_tuple,
+    );
 
-    // `?` on serde_json::Error is fine.
-    let response_json_bytes = serde_json::to_vec(&response_payload)?; 
+    let response_json_bytes = serde_json::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
 
-    info!("Channel info for '{}' retrieved successfully", channel_name); 
+    info!("Channel info for '{}' retrieved successfully", channel_name);
     Ok((StatusCode::OK, Json(response_payload)))
 }
-
 
 /// GET /apps/{app_id}/channels
 #[instrument(skip(handler), fields(app_id = %app_id))]
 pub async fn channels(
     Path(app_id): Path<String>,
-    Query(query_params): Query<ChannelsQuery>, 
+    Query(query_params): Query<ChannelsQuery>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Request for channels list for app_id: {}", app_id); 
+    info!("Request for channels list for app_id: {}", app_id);
 
-    let filter_prefix_str = query_params.filter_by_prefix.as_deref().unwrap_or(""); 
+    let filter_prefix_str = query_params.filter_by_prefix.as_deref().unwrap_or("");
     let wants_user_count = query_params.info.as_ref().wants_user_count();
 
-    let channels_map; 
+    let channels_map;
     {
-        let mut connection_manager_locked = handler.connection_manager.lock().await; 
-        // `?` will use `From<crate::error::Error>` for `AppError`.
+        let mut connection_manager_locked = handler.connection_manager.lock().await;
         channels_map = connection_manager_locked
             .get_channels_with_socket_count(&app_id)
             .await?;
-    } 
+    }
 
-    let mut channels_info_response_map = HashMap::new(); 
+    let mut channels_info_response_map = HashMap::new();
 
     for entry in channels_map.iter() {
-        let channel_name_str = entry.key(); 
+        let channel_name_str = entry.key();
         if !channel_name_str.starts_with(filter_prefix_str) {
             continue;
         }
-        // `?` will use `From<crate::error::Error>` for `AppError`.
-        handler.app_manager.validate_channel_name(&app_id, channel_name_str).await?;
+        handler
+            .app_manager
+            .validate_channel_name(&app_id, channel_name_str)
+            .await?;
 
-
-        let mut current_channel_info_map = serde_json::Map::new(); 
+        let mut current_channel_info_map = serde_json::Map::new();
 
         if wants_user_count {
             if channel_name_str.starts_with("presence-") {
-                // `?` will use `From<crate::error::Error>` for `AppError`.
                 let members_map = handler
                     .channel_manager
                     .read()
@@ -643,21 +669,23 @@ pub async fn channels(
         }
 
         if !current_channel_info_map.is_empty() {
-            channels_info_response_map.insert(channel_name_str.clone(), Value::Object(current_channel_info_map));
-        } else if query_params.info.is_none() { 
+            channels_info_response_map.insert(
+                channel_name_str.clone(),
+                Value::Object(current_channel_info_map),
+            );
+        } else if query_params.info.is_none() {
             channels_info_response_map.insert(channel_name_str.clone(), json!({}));
         }
     }
 
-    let response_payload = PusherMessage::channels_list(channels_info_response_map); 
+    let response_payload = PusherMessage::channels_list(channels_info_response_map);
 
-    let response_json_bytes = serde_json::to_vec(&response_payload)?; 
+    let response_json_bytes = serde_json::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
 
-    info!("Channels list for app '{}' retrieved successfully", app_id); 
+    info!("Channels list for app '{}' retrieved successfully", app_id);
     Ok((StatusCode::OK, Json(response_payload)))
 }
-
 
 /// GET /apps/{app_id}/channels/{channel_name}/users
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
@@ -665,11 +693,11 @@ pub async fn channel_users(
     Path((app_id, channel_name)): Path<(String, String)>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Request for users in channel: {}", channel_name); 
-
-    // `?` will use `From<crate::error::Error>` for `AppError`.
-    handler.app_manager.validate_channel_name(&app_id, &channel_name).await?;
-
+    info!("Request for users in channel: {}", channel_name);
+    handler
+        .app_manager
+        .validate_channel_name(&app_id, &channel_name)
+        .await?;
 
     if !channel_name.starts_with("presence-") {
         return Err(AppError::InvalidInput(
@@ -677,32 +705,29 @@ pub async fn channel_users(
         ));
     }
 
-    // `?` will use `From<crate::error::Error>` for `AppError`.
-    let channel_members_map = handler 
+    let channel_members_map = handler
         .channel_manager
         .read()
         .await
         .get_channel_members(&app_id, &channel_name)
         .await?;
-    
 
-    let users_vec = channel_members_map 
+    let users_vec = channel_members_map
         .keys()
-        .map(|user_id_str| json!({ "id": user_id_str })) 
+        .map(|user_id_str| json!({ "id": user_id_str }))
         .collect::<Vec<_>>();
 
-    let response_payload_val = json!({ "users": users_vec }); 
-    let response_json_bytes = serde_json::to_vec(&response_payload_val)?; 
+    let response_payload_val = json!({ "users": users_vec });
+    let response_json_bytes = serde_json::to_vec(&response_payload_val)?;
 
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
 
     info!(
-        user_count = users_vec.len(), 
-        "Channel users for '{}' retrieved successfully", channel_name 
+        user_count = users_vec.len(),
+        "Channel users for '{}' retrieved successfully", channel_name
     );
     Ok((StatusCode::OK, Json(response_payload_val)))
 }
-
 
 /// POST /apps/{app_id}/users/{user_id}/terminate_connections
 #[instrument(skip(handler), fields(app_id = %app_id, user_id = %user_id))]
@@ -710,24 +735,23 @@ pub async fn terminate_user_connections(
     Path((app_id, user_id)): Path<(String, String)>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Received request to terminate user connections for user_id: {}", user_id); 
+    info!(
+        "Received request to terminate user connections for user_id: {}",
+        user_id
+    );
 
-    let connection_manager_arc = handler.connection_manager.clone(); 
-
-    // `?` will use `From<crate::error::Error>` for `AppError`.
-    connection_manager_arc 
+    let connection_manager_arc = handler.connection_manager.clone();
+    connection_manager_arc
         .lock()
         .await
         .terminate_connection(&app_id, &user_id)
         .await?;
-    
 
-    info!("Successfully initiated termination for user_id: {}", user_id); 
+    info!(
+        "Successfully initiated termination for user_id: {}",
+        user_id
+    );
     Ok((StatusCode::OK, Json(json!({ "ok": true }))))
-    // Note: The original code had a match here. If terminate_connection can return specific
-    // crate::error::Error types that should map to different AppError types,
-    // you might re-introduce a match or rely on the From impl to handle it.
-    // For now, a successful call to terminate_connection (no `Err` returned) means Ok.
 }
 
 /// GET /up/{app_id}
@@ -736,28 +760,25 @@ pub async fn up(
     Path(app_id): Path<String>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Health check received for app_id: {}", app_id); 
+    info!("Health check received for app_id: {}", app_id);
 
-    // `?` will use `From<crate::error::Error>` for `AppError`.
     if handler.app_manager.get_app(&app_id).await?.is_none() {
         warn!("Health check for non-existent app_id: {}", app_id);
-        // If app must exist for this endpoint to be "up" for that app_id:
-        return Err(AppError::AppNotFound(app_id));
     }
-
 
     if handler.metrics.is_some() {
         record_api_metrics(&handler, &app_id, 0, 2).await;
     } else {
-        info!("Metrics system not available for health check for app_id: {}.", app_id); 
+        info!(
+            "Metrics system not available for health check for app_id: {}.",
+            app_id
+        );
     }
 
-    // `?` on http::Error is fine due to `#[from]`
-    let response_val = Response::builder() 
+    let response_val = Response::builder()
         .status(StatusCode::OK)
-        .header("X-Health-Check", "OK") 
+        .header("X-Health-Check", "OK")
         .body("OK".to_string())?;
-        
 
     Ok(response_val)
 }
@@ -769,26 +790,26 @@ pub async fn metrics(
 ) -> Result<impl IntoResponse, AppError> {
     info!("Metrics endpoint called");
 
-    let plaintext_metrics_str = match handler.metrics.clone() { 
+    let plaintext_metrics_str = match handler.metrics.clone() {
         Some(metrics_arc) => {
-            let metrics_data_guard = metrics_arc.lock().await; 
+            let metrics_data_guard = metrics_arc.lock().await;
             metrics_data_guard.get_metrics_as_plaintext().await
         }
         None => {
-            info!("No metrics data available (metrics collection is not enabled)."); 
-            "# Metrics collection is not enabled.\n".to_string() 
+            info!("No metrics data available (metrics collection is not enabled).");
+            "# Metrics collection is not enabled.\n".to_string()
         }
     };
 
-    let mut response_headers = HeaderMap::new(); 
+    let mut response_headers = HeaderMap::new();
     response_headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"), 
+        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
     );
 
     info!(
         bytes = plaintext_metrics_str.len(),
-        "Successfully generated Prometheus metrics" 
+        "Successfully generated Prometheus metrics"
     );
     Ok((StatusCode::OK, response_headers, plaintext_metrics_str))
 }

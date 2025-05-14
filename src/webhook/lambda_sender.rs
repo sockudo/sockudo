@@ -4,14 +4,14 @@ use crate::error::{Error, Result};
 use crate::log::Log;
 use crate::webhook::types::{LambdaConfig, Webhook};
 use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_lambda::Client as LambdaClient;
 use aws_sdk_lambda::config::{Credentials, Region};
-use aws_sdk_lambda::operation::invoke::{InvokeError, InvokeOutput};
 use aws_sdk_lambda::error::SdkError;
+use aws_sdk_lambda::operation::invoke::{InvokeError, InvokeOutput};
+use aws_sdk_lambda::primitives::Blob;
 use aws_sdk_lambda::types::InvocationType;
+use aws_sdk_lambda::Client as LambdaClient;
 use serde_json::{json, Value};
 use std::time::Duration;
-use aws_sdk_lambda::primitives::Blob;
 
 /// Handles invoking AWS Lambda functions for webhooks
 #[derive(Clone)]
@@ -79,7 +79,9 @@ impl LambdaWebhookSender {
                     }
                 } else {
                     Log::error("Missing Lambda configuration in webhook");
-                    return Err(Error::InternalError("Missing Lambda configuration".to_string()));
+                    return Err(Error::InternalError(
+                        "Missing Lambda configuration".to_string(),
+                    ));
                 }
             }
         };
@@ -125,7 +127,10 @@ impl LambdaWebhookSender {
                     "Failed to invoke Lambda function {}: {}",
                     lambda_config.function_name, e
                 ));
-                Err(Error::Other(format!("Failed to invoke Lambda function: {}", e)))
+                Err(Error::Other(format!(
+                    "Failed to invoke Lambda function: {}",
+                    e
+                )))
             }
         }
     }
@@ -149,7 +154,9 @@ impl LambdaWebhookSender {
                         region: "us-east-1".to_string(),
                     }
                 } else {
-                    return Err(Error::InternalError("Missing Lambda configuration".to_string()));
+                    return Err(Error::InternalError(
+                        "Missing Lambda configuration".to_string(),
+                    ));
                 }
             }
         };
@@ -195,10 +202,7 @@ impl LambdaWebhookSender {
                             Ok(Some(json_response))
                         }
                         Err(e) => {
-                            Log::warning(format!(
-                                "Failed to parse Lambda response as JSON: {}",
-                                e
-                            ));
+                            Log::warning(format!("Failed to parse Lambda response as JSON: {}", e));
                             // Return the raw response as a string
                             let response_str = String::from_utf8_lossy(response_payload.as_ref());
                             Ok(Some(json!({"raw_response": response_str})))
@@ -217,7 +221,10 @@ impl LambdaWebhookSender {
                     "Failed to invoke Lambda function {} synchronously: {}",
                     lambda_config.function_name, e
                 ));
-                Err(Error::Other(format!("Failed to invoke Lambda function: {}", e)))
+                Err(Error::Other(format!(
+                    "Failed to invoke Lambda function: {}",
+                    e
+                )))
             }
         }
     }

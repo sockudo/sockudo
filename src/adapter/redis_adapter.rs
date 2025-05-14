@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -923,5 +924,9 @@ impl Adapter for RedisAdapter {
             .local_adapter
             .get_channels_with_socket_count(app_id)
             .await?)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }

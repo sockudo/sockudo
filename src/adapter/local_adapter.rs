@@ -1,3 +1,4 @@
+use std::any::Any;
 use crate::adapter::adapter::Adapter;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
@@ -292,5 +293,9 @@ impl Adapter for LocalAdapter {
         let namespace = self.get_or_create_namespace(app_id).await;
         let channels = namespace.get_channels_with_socket_count().await;
         Ok(channels?)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
