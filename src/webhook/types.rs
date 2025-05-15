@@ -1,23 +1,25 @@
-use aws_config::SdkConfig;
 // src/webhook/types.rs
+// No SdkConfig needed here, it's for AWS SDK interaction in lambda_sender.
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::Value; // Keep this for Value type
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Webhook {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<url::Url>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lambda_function: Option<String>,
+    pub lambda_function: Option<String>, // Kept for potential legacy or direct Lambda use
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lambda: Option<LambdaConfig>,
-    pub event_types: Vec<String>,
+    pub lambda: Option<LambdaConfig>, // For structured Lambda config
+    pub event_types: Vec<String>, // Names of events this webhook is interested in
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<WebhookFilter>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<WebhookHeaders>,
+    pub headers: Option<WebhookHeaders>, // Custom headers user might want to add to outgoing webhook
 }
 
+// This struct is not directly used in the Pusher payload format,
+// but represents the type of events a webhook configuration can subscribe to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookEventType {
     pub name: String,
@@ -42,19 +44,30 @@ pub struct LambdaConfig {
     pub region: String,
 }
 
-// This is the JobData structure based on your definition
+// This is the JobData structure that Sockudo uses internally for its queue.
+// The `payload` field will be structured to produce the Pusher-compatible format when sent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobData {
-    pub app_key: String,
-    pub app_id: String,
+    pub app_key: String, // Needed for X-Pusher-Key and signing
+    pub app_id: String,  // For logging and potentially for the webhook receiver
+    pub app_secret: String, // Needed for signing the X-Pusher-Signature
     pub payload: JobPayload,
-    pub original_signature: String,
+    pub original_signature: String, // Sockudo's internal signature for queue deduplication, etc.
 }
 
-// And this is the JobPayload structure that's part of JobData
+// This is the JobPayload structure.
+// The `events` field will now hold a vector of fully formed Pusher event objects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobPayload {
+    pub time_ms: i64,       // Unix timestamp in milliseconds
+    pub events: Vec<Value>, // Each Value is a JSON object representing a Pusher event,
+    // e.g., { "name": "channel_occupied", "channel": "my-channel" }
+}
+
+// This struct represents the final payload sent to the webhook receiver,
+// aligning with Pusher's format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PusherWebhookPayload {
     pub time_ms: i64,
-    pub events: Vec<String>,
-    pub data: Value,
+    pub events: Vec<Value>, // Array of event objects
 }

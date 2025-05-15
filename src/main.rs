@@ -17,7 +17,6 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -34,11 +33,10 @@ use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::{serve, BoxError, RequestExt, Router, ServiceExt};
-use axum::middleware::from_fn_with_state;
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use error::Error;
-use serde_json::{from_str, json, Value};
+use serde_json::{from_str, json};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -47,7 +45,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::{NatsAdapter, NatsAdapterConfig};
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterConfig};
-use crate::adapter::redis_cluster_adapter::{RedisClusterAdapter, RedisClusterAdapterConfig};
+use crate::adapter::redis_cluster_adapter::{RedisClusterAdapter};
 use crate::adapter::Adapter;
 use crate::adapter::ConnectionHandler;
 use crate::app::auth::AuthValidator;
@@ -70,7 +68,7 @@ use crate::http_handler::{
 };
 use crate::log::Log;
 use crate::metrics::{MetricsFactory, MetricsInterface};
-use crate::options::{ServerOptions, WebhooksConfig};
+use crate::options::{RedisClusterAdapterConfig, ServerOptions, WebhooksConfig};
 use crate::queue::manager::{QueueManager, QueueManagerFactory};
 use crate::rate_limiter::{create_rate_limiter, RateLimiter};
 use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegration};
@@ -89,7 +87,7 @@ struct ServerState {
     auth_validator: Arc<AuthValidator>,
     cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     queue_manager: Option<Arc<QueueManager>>,
-    rate_limiter: Option<Arc<dyn RateLimiter>>,
+    rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync + 'static>>,
     webhooks_integration: Arc<WebhookIntegration>,
     metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
     running: Arc<AtomicBool>,
@@ -229,11 +227,11 @@ impl SockudoServer {
                 let nats_config = NatsAdapterConfig {
                     servers: config.adapter.nats.servers.clone(),
                     prefix: config.adapter.nats.prefix.clone(),
-                    request_timeout_ms: config.adapter.nats.requests_timeout,
-                    username: config.adapter.nats.user.clone(),
-                    password: config.adapter.nats.pass.clone(),
+                    request_timeout_ms: config.adapter.nats.request_timeout_ms,
+                    username: config.adapter.nats.username.clone(),
+                    password: config.adapter.nats.password.clone(),
                     token: config.adapter.nats.token.clone(),
-                    connection_timeout_ms: config.adapter.nats.timeout,
+                    connection_timeout_ms: config.adapter.nats.connection_timeout_ms,
                     nodes_number: config.adapter.nats.nodes_number,
                 };
 
@@ -479,21 +477,14 @@ impl SockudoServer {
             auth_validator,
             cache_manager,
             queue_manager,
-            rate_limiter,
+            rate_limiter: rate_limiter.clone(),
             webhooks_integration: webhook_integration.clone(),
             metrics: metrics.clone(),
             running: Arc::new(AtomicBool::new(true)),
         };
 
         // Create connection handler with webhook integration
-        let handler = Arc::new(ConnectionHandler::new(
-            state.app_manager.clone(),
-            state.channel_manager.clone(),
-            state.connection_manager.clone(),
-            state.cache_manager.clone(),
-            state.metrics.clone(),
-            Some(webhook_integration),
-        ));
+        let handler = Arc::new(ConnectionHandler::new(state.app_manager.clone(), state.channel_manager.clone(), state.connection_manager.clone(), state.cache_manager.clone(), state.metrics.clone(), Some(webhook_integration), rate_limiter));
 
         // Initialize adapter metrics if available
         if let Some(metrics_instance) = &metrics {
@@ -687,7 +678,7 @@ impl SockudoServer {
                     trust_hops_config
                 );
 
-                Some(crate::rate_limiter::middleware::RateLimitLayer::with_options(
+                Some(rate_limiter::middleware::RateLimitLayer::with_options(
                     rate_limiter_instance.clone(), // Clone the Arc<dyn RateLimiter>
                     ip_key_extractor,
                     rate_limit_options,

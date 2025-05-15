@@ -1,11 +1,10 @@
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use async_nats::jetstream::AckKind::Nak;
 use async_nats::{
-    Client as NatsClient, ConnectOptions as NatsOptions, Message as NatsMessage, Subject,
+    Client as NatsClient, ConnectOptions as NatsOptions, Subject,
 };
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
@@ -13,10 +12,8 @@ use fastwebsockets::WebSocketWrite;
 use futures::StreamExt;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use serde::{Deserialize, Serialize};
 use tokio::io::WriteHalf;
-use tokio::sync::{mpsc, Mutex};
-use uuid::Uuid;
+use tokio::sync::Mutex;
 
 use crate::adapter::adapter::Adapter;
 use crate::adapter::horizontal_adapter::{
@@ -28,6 +25,7 @@ use crate::error::{Error, Result};
 use crate::log::Log;
 use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
+pub(crate) use crate::options::NatsAdapterConfig;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocket, WebSocketRef};
 
@@ -38,40 +36,6 @@ const REQUESTS_SUFFIX: &str = ".requests";
 const RESPONSES_SUFFIX: &str = ".responses";
 
 /// NATS adapter configuration
-#[derive(Debug, Clone)]
-pub struct NatsAdapterConfig {
-    /// NATS server URLs
-    pub servers: Vec<String>,
-    /// Channel prefix
-    pub prefix: String,
-    /// Request timeout in milliseconds
-    pub request_timeout_ms: u64,
-    /// Username for NATS authentication
-    pub username: Option<String>,
-    /// Password for NATS authentication
-    pub password: Option<String>,
-    /// Token for NATS authentication
-    pub token: Option<String>,
-    /// Connection timeout in milliseconds
-    pub connection_timeout_ms: u64,
-    /// Optional nodes number for metrics
-    pub nodes_number: Option<u32>,
-}
-
-impl Default for NatsAdapterConfig {
-    fn default() -> Self {
-        Self {
-            servers: vec!["nats://localhost:4222".to_string()],
-            prefix: DEFAULT_PREFIX.to_string(),
-            request_timeout_ms: 5000,
-            username: None,
-            password: None,
-            token: None,
-            connection_timeout_ms: 5000,
-            nodes_number: None,
-        }
-    }
-}
 
 /// NATS adapter for horizontal scaling
 pub struct NatsAdapter {

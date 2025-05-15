@@ -902,7 +902,7 @@ impl Adapter for RedisAdapter {
             {
                 Ok(response_data) => {
                     // Merge the local and remote data
-                    let mut channels = horizontal
+                    let channels = horizontal
                         .local_adapter
                         .get_channels_with_socket_count(app_id)
                         .await?;

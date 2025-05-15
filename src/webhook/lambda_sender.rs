@@ -2,16 +2,16 @@
 
 use crate::error::{Error, Result};
 use crate::log::Log;
-use crate::webhook::types::{LambdaConfig, Webhook};
+use crate::webhook::types::{LambdaConfig, Webhook, PusherWebhookPayload}; // Added PusherWebhookPayload for clarity
 use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_lambda::config::{Credentials, Region};
-use aws_sdk_lambda::error::SdkError;
-use aws_sdk_lambda::operation::invoke::{InvokeError, InvokeOutput};
-use aws_sdk_lambda::primitives::Blob;
-use aws_sdk_lambda::types::InvocationType;
 use aws_sdk_lambda::Client as LambdaClient;
+use aws_sdk_lambda::config::{Region}; // Credentials not directly used here for client creation
+use aws_sdk_lambda::operation::invoke::{InvokeError, InvokeOutput}; // Keep for sync if needed
+use aws_sdk_lambda::error::SdkError; // Keep for sync if needed
+use aws_sdk_lambda::types::InvocationType;
 use serde_json::{json, Value};
 use std::time::Duration;
+use aws_sdk_lambda::primitives::Blob;
 
 /// Handles invoking AWS Lambda functions for webhooks
 #[derive(Clone)]
@@ -30,12 +30,10 @@ impl LambdaWebhookSender {
 
     /// Get or create a Lambda client for a specific region
     async fn get_client(&self, region: &str) -> Result<LambdaClient> {
-        // Check if client already exists in cache
-        if let Some(client) = self.clients.get(region) {
-            return Ok(client.clone());
+        if let Some(client_ref) = self.clients.get(region) {
+            return Ok(client_ref.clone());
         }
 
-        // Create AWS config with the specified region
         let region_provider = RegionProviderChain::first_try(Region::new(region.to_string()))
             .or_default_provider()
             .or_else(Region::new("us-east-1"));
@@ -50,168 +48,158 @@ impl LambdaWebhookSender {
             .load()
             .await;
 
-        // Create Lambda client
         let client = LambdaClient::new(&shared_config);
-
-        // Store in cache and return
         self.clients.insert(region.to_string(), client.clone());
         Ok(client)
     }
 
-    /// Invoke a Lambda function with the provided webhook and payload
+    /// Invoke a Lambda function with the provided webhook and payload.
+    /// The `payload` argument is expected to be the complete PusherWebhookPayload.
+    /// The `triggering_event_name` is for logging/context, could be "batch_events" or a specific event.
     pub async fn invoke_lambda(
         &self,
         webhook: &Webhook,
-        event: &str,
+        triggering_event_name: &str,
         app_id: &str,
-        payload: Value,
+        pusher_webhook_payload: Value,
     ) -> Result<()> {
-        // Get Lambda configuration
-        let lambda_config = match &webhook.lambda {
-            Some(config) => config,
+        // This `temp_owned_config` allows us to create an owned LambdaConfig if needed
+        // for the legacy `lambda_function` case, and then take a reference to it.
+        // It must be declared outside the match so its lifetime extends for `lambda_config_ref`.
+        let temp_owned_config: LambdaConfig;
+
+        let lambda_config_ref: &LambdaConfig = match &webhook.lambda {
+            Some(config_struct) => {
+                // If the structured 'lambda' field exists, use it directly.
+                config_struct
+            }
             None => {
-                // If lambda field is not set, try to use the legacy lambda_function field
-                if let Some(function_name) = &webhook.lambda_function {
-                    // Create a temporary config with default region
-                    &LambdaConfig {
-                        function_name: function_name.clone(),
-                        region: "us-east-1".to_string(), // Default region
-                    }
+                // If 'lambda' is None, try the legacy 'lambda_function' string.
+                if let Some(function_name_str) = &webhook.lambda_function {
+                    Log::warning(format!(
+                        "Webhook for app {} uses legacy 'lambda_function' field. Defaulting region to 'us-east-1'. Consider updating to structured 'lambda' config.",
+                        app_id
+                    ));
+                    // Assign to the outer `temp_owned_config`
+                    temp_owned_config = LambdaConfig {
+                        function_name: function_name_str.clone(),
+                        region: "us-east-1".to_string(),
+                    };
+                    // Now `lambda_config_ref` can borrow from `temp_owned_config`.
+                    &temp_owned_config
                 } else {
-                    Log::error("Missing Lambda configuration in webhook");
+                    // If both 'lambda' and 'lambda_function' are None, it's an error.
+                    Log::error(format!("Missing Lambda configuration in webhook for app_id: {}", app_id));
                     return Err(Error::InternalError(
-                        "Missing Lambda configuration".to_string(),
+                        "Missing Lambda configuration: Neither 'lambda' struct nor 'lambda_function' string provided.".to_string(),
                     ));
                 }
             }
         };
 
-        // Get the Lambda client for this region
-        let client = self.get_client(&lambda_config.region).await?;
+        // Now `lambda_config_ref` is guaranteed to be a valid reference to a LambdaConfig.
+        let client = self.get_client(&lambda_config_ref.region).await?;
 
-        // Add metadata to the payload
-        let lambda_payload = json!({
-            "webhook_event": event,
-            "app_id": app_id,
-            "payload": payload,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        });
+        let payload_bytes = serde_json::to_vec(&pusher_webhook_payload)
+            .map_err(|e| Error::Other(format!("Failed to serialize Pusher Webhook payload for Lambda: {}", e)))?;
 
-        // Convert payload to bytes
-        let payload_bytes = serde_json::to_vec(&lambda_payload)
-            .map_err(|e| Error::Other(format!("Failed to serialize Lambda payload: {}", e)))?;
-
-        // Invoke Lambda function
         Log::webhook_sender(format!(
-            "Invoking Lambda function {} in region {} for event '{}'",
-            lambda_config.function_name, lambda_config.region, event
+            "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
+            lambda_config_ref.function_name, lambda_config_ref.region, app_id, triggering_event_name, payload_bytes.len()
         ));
 
         match client
             .invoke()
-            .function_name(&lambda_config.function_name)
+            .function_name(&lambda_config_ref.function_name)
             .payload(Blob::new(payload_bytes))
-            .invocation_type(InvocationType::Event) // Asynchronous invocation
+            .invocation_type(InvocationType::Event)
             .send()
             .await
         {
             Ok(_) => {
                 Log::webhook_sender(format!(
-                    "Successfully invoked Lambda function {} for event '{}'",
-                    lambda_config.function_name, event
+                    "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
+                    lambda_config_ref.function_name, app_id, triggering_event_name
                 ));
                 Ok(())
             }
             Err(e) => {
                 Log::error(format!(
                     "Failed to invoke Lambda function {}: {}",
-                    lambda_config.function_name, e
+                    lambda_config_ref.function_name, e
                 ));
-                Err(Error::Other(format!(
-                    "Failed to invoke Lambda function: {}",
-                    e
-                )))
+                Err(Error::Other(format!("Failed to invoke Lambda function: {}", e)))
             }
         }
     }
 
     /// Invoke a Lambda function synchronously and parse the response
-    #[allow(dead_code)] // May be useful for future features
+    #[allow(dead_code)]
     pub async fn invoke_lambda_sync(
         &self,
         webhook: &Webhook,
-        event: &str,
+        triggering_event_name: &str,
         app_id: &str,
-        payload: Value,
+        pusher_webhook_payload: Value,
     ) -> Result<Option<Value>> {
-        // Get Lambda configuration (same as above)
-        let lambda_config = match &webhook.lambda {
-            Some(config) => config,
+        let temp_owned_config: LambdaConfig;
+        let lambda_config_ref: &LambdaConfig = match &webhook.lambda {
+            Some(config_struct) => config_struct,
             None => {
-                if let Some(function_name) = &webhook.lambda_function {
-                    &LambdaConfig {
-                        function_name: function_name.clone(),
-                        region: "us-east-1".to_string(),
-                    }
+                if let Some(function_name_str) = &webhook.lambda_function {
+                    temp_owned_config = LambdaConfig {
+                        function_name: function_name_str.clone(),
+                        region: "us-east-1".to_string()
+                    };
+                    &temp_owned_config
                 } else {
-                    return Err(Error::InternalError(
-                        "Missing Lambda configuration".to_string(),
-                    ));
+                    return Err(Error::InternalError("Missing Lambda configuration".to_string()));
                 }
             }
         };
 
-        // Get the Lambda client for this region
-        let client = self.get_client(&lambda_config.region).await?;
+        let client = self.get_client(&lambda_config_ref.region).await?;
 
-        // Prepare payload (same as above)
-        let lambda_payload = json!({
-            "webhook_event": event,
-            "app_id": app_id,
-            "payload": payload,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        });
+        let payload_bytes = serde_json::to_vec(&pusher_webhook_payload)
+            .map_err(|e| Error::Other(format!("Failed to serialize Pusher Webhook payload for Lambda sync: {}", e)))?;
 
-        let payload_bytes = serde_json::to_vec(&lambda_payload)
-            .map_err(|e| Error::Other(format!("Failed to serialize Lambda payload: {}", e)))?;
-
-        // Invoke Lambda function synchronously
         Log::webhook_sender(format!(
-            "Invoking Lambda function {} synchronously for event '{}'",
-            lambda_config.function_name, event
+            "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
+            lambda_config_ref.function_name, app_id, triggering_event_name
         ));
 
         let result: core::result::Result<InvokeOutput, SdkError<InvokeError>> = client
             .invoke()
-            .function_name(&lambda_config.function_name)
+            .function_name(&lambda_config_ref.function_name)
             .payload(Blob::new(payload_bytes))
-            .invocation_type(InvocationType::RequestResponse) // Synchronous invocation
+            .invocation_type(InvocationType::RequestResponse)
             .send()
             .await;
 
         match result {
             Ok(output) => {
-                // Parse the response payload if available
-                if let Some(response_payload) = output.payload() {
-                    match serde_json::from_slice::<Value>(response_payload.as_ref()) {
+                if let Some(response_payload_blob) = output.payload() {
+                    match serde_json::from_slice::<Value>(response_payload_blob.as_ref()) {
                         Ok(json_response) => {
                             Log::webhook_sender(format!(
                                 "Received response from Lambda function {}: {:?}",
-                                lambda_config.function_name, json_response
+                                lambda_config_ref.function_name, json_response
                             ));
                             Ok(Some(json_response))
                         }
                         Err(e) => {
-                            Log::warning(format!("Failed to parse Lambda response as JSON: {}", e));
-                            // Return the raw response as a string
-                            let response_str = String::from_utf8_lossy(response_payload.as_ref());
-                            Ok(Some(json!({"raw_response": response_str})))
+                            Log::warning(format!(
+                                "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
+                                e, response_payload_blob
+                            ));
+                            let response_str = String::from_utf8_lossy(response_payload_blob.as_ref());
+                            Ok(Some(json!({"raw_response": response_str.to_string() })))
                         }
                     }
                 } else {
                     Log::webhook_sender(format!(
                         "Lambda function {} returned no payload",
-                        lambda_config.function_name
+                        lambda_config_ref.function_name
                     ));
                     Ok(None)
                 }
@@ -219,12 +207,9 @@ impl LambdaWebhookSender {
             Err(e) => {
                 Log::error(format!(
                     "Failed to invoke Lambda function {} synchronously: {}",
-                    lambda_config.function_name, e
+                    lambda_config_ref.function_name, e
                 ));
-                Err(Error::Other(format!(
-                    "Failed to invoke Lambda function: {}",
-                    e
-                )))
+                Err(Error::Other(format!("Failed to invoke Lambda function synchronously: {}", e)))
             }
         }
     }

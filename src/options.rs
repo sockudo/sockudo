@@ -1,6 +1,7 @@
 use crate::app::config::App;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use crate::adapter::nats_adapter::DEFAULT_PREFIX;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)] // This makes all fields use default values when missing
@@ -59,8 +60,8 @@ pub struct SqsQueueConfig {
 pub struct AdapterConfig {
     pub driver: String,
     pub redis: RedisAdapterConfig,
-    pub cluster: ClusterAdapterConfig,
-    pub nats: NatsConfig,
+    pub cluster: RedisClusterAdapterConfig,
+    pub nats: NatsAdapterConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,21 +76,62 @@ pub struct RedisAdapterConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ClusterAdapterConfig {
-    pub requests_timeout: u64,
+pub struct RedisClusterAdapterConfig {
+    /// Redis URL
+    pub nodes: Vec<String>,
+    /// Channel prefix
+    pub prefix: String,
+    /// Request timeout in milliseconds
+    pub request_timeout_ms: u64,
+    /// Use connection manager for auto-reconnection
+    pub use_connection_manager: bool,
+}
+
+impl Default for RedisClusterAdapterConfig {
+    fn default() -> Self {
+        Self {
+            nodes: vec![],
+            prefix: crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX.to_string(),
+            request_timeout_ms: 5000,
+            use_connection_manager: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct NatsConfig {
-    pub requests_timeout: u64,
-    pub prefix: String,
+pub struct NatsAdapterConfig {
+    /// NATS server URLs
     pub servers: Vec<String>,
-    pub user: Option<String>,
-    pub pass: Option<String>,
+    /// Channel prefix
+    pub prefix: String,
+    /// Request timeout in milliseconds
+    pub request_timeout_ms: u64,
+    /// Username for NATS authentication
+    pub username: Option<String>,
+    /// Password for NATS authentication
+    pub password: Option<String>,
+    /// Token for NATS authentication
     pub token: Option<String>,
-    pub timeout: u64,
+    /// Connection timeout in milliseconds
+    pub connection_timeout_ms: u64,
+    /// Optional nodes number for metrics
     pub nodes_number: Option<u32>,
+}
+
+impl Default for NatsAdapterConfig {
+    fn default() -> Self {
+        Self {
+            servers: vec!["nats://localhost:4222".to_string()],
+            prefix: DEFAULT_PREFIX.to_string(),
+            request_timeout_ms: 5000,
+            username: None,
+            password: None,
+            token: None,
+            connection_timeout_ms: 5000,
+            nodes_number: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,17 +438,20 @@ impl Default for ServerOptions {
                     redis_sub_options: HashMap::new(),
                     cluster_mode: false,
                 },
-                cluster: ClusterAdapterConfig {
-                    requests_timeout: 5000,
+                cluster: RedisClusterAdapterConfig {
+                    nodes: vec![],
+                    prefix: "".to_string(),
+                    request_timeout_ms: 5000,
+                    use_connection_manager: true,
                 },
-                nats: NatsConfig {
-                    requests_timeout: 5000,
-                    prefix: "sockudo".to_string(),
-                    servers: vec!["nats://localhost:4222".to_string()],
-                    user: None,
-                    pass: None,
+                nats: NatsAdapterConfig {
+                    servers: vec![],
+                    prefix: "".to_string(),
+                    request_timeout_ms: 0,
+                    username: None,
+                    password: None,
                     token: None,
-                    timeout: 5000,
+                    connection_timeout_ms: 0,
                     nodes_number: None,
                 },
             },
@@ -592,8 +637,8 @@ impl Default for AdapterConfig {
         Self {
             driver: "redis".to_string(),
             redis: RedisAdapterConfig::default(),
-            cluster: ClusterAdapterConfig::default(),
-            nats: NatsConfig::default(),
+            cluster: RedisClusterAdapterConfig::default(),
+            nats: NatsAdapterConfig::default(),
         }
     }
 }
@@ -606,29 +651,6 @@ impl Default for RedisAdapterConfig {
             redis_pub_options: HashMap::new(),
             redis_sub_options: HashMap::new(),
             cluster_mode: false,
-        }
-    }
-}
-
-impl Default for ClusterAdapterConfig {
-    fn default() -> Self {
-        Self {
-            requests_timeout: 5000,
-        }
-    }
-}
-
-impl Default for NatsConfig {
-    fn default() -> Self {
-        Self {
-            requests_timeout: 5000,
-            prefix: "sockudo".to_string(),
-            servers: vec!["nats://localhost:4222".to_string()],
-            user: None,
-            pass: None,
-            token: None,
-            timeout: 5000,
-            nodes_number: None,
         }
     }
 }

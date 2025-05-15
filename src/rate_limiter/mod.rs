@@ -62,7 +62,7 @@ pub trait RateLimiter: Send + Sync + 'static {
 /// Factory method to create a rate limiter based on the configuration
 pub async fn create_rate_limiter(
     config: &crate::options::RateLimiterConfig,
-) -> Result<Arc<dyn RateLimiter>> {
+) -> Result<Arc<dyn RateLimiter + Send + Sync + 'static>> {
     match config.driver.as_str() {
         "redis" => {
             // Get Redis URL from config or use default

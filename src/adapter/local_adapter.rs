@@ -1,4 +1,3 @@
-use std::any::Any;
 use crate::adapter::adapter::Adapter;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
@@ -11,14 +10,15 @@ use dashmap::{DashMap, DashSet};
 use fastwebsockets::{Frame, Payload, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use std::collections::{HashMap, HashSet};
+use std::any::Any;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct LocalAdapter {
-    pub namespaces: Arc<DashMap<String, Arc<Namespace>>>,
+    pub namespaces: DashMap<String, Arc<Namespace>>,
 }
 
 impl Default for LocalAdapter {
@@ -30,7 +30,7 @@ impl Default for LocalAdapter {
 impl LocalAdapter {
     pub fn new() -> Self {
         Self {
-            namespaces: Arc::new(DashMap::new()),
+            namespaces: DashMap::new(),
         }
     }
 

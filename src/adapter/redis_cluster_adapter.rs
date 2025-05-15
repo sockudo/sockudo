@@ -24,6 +24,7 @@ use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
 use crate::log::Log;
 use crate::namespace::Namespace;
+pub(crate) use crate::options::RedisClusterAdapterConfig;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocket, WebSocketRef};
 
@@ -34,28 +35,7 @@ const REQUESTS_SUFFIX: &str = "#requests";
 const RESPONSES_SUFFIX: &str = "#responses";
 
 /// Redis adapter configuration
-#[derive(Debug, Clone)]
-pub struct RedisClusterAdapterConfig {
-    /// Redis URL
-    pub nodes: Vec<String>,
-    /// Channel prefix
-    pub prefix: String,
-    /// Request timeout in milliseconds
-    pub request_timeout_ms: u64,
-    /// Use connection manager for auto-reconnection
-    pub use_connection_manager: bool,
-}
 
-impl Default for RedisClusterAdapterConfig {
-    fn default() -> Self {
-        Self {
-            nodes: vec![],
-            prefix: DEFAULT_PREFIX.to_string(),
-            request_timeout_ms: 5000,
-            use_connection_manager: true,
-        }
-    }
-}
 
 /// Redis adapter for horizontal scaling (Optimized Version)
 pub struct RedisClusterAdapter {
