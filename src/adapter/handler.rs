@@ -139,7 +139,7 @@ impl ConnectionHandler {
         // This check is more complex in a distributed environment.
         // For a local adapter, one might query the adapter for current connection count for the app.
         // For distributed, it would require inter-node communication or a central counter.
-        // let current_connections = self.connection_manager.lock().await.get_app_connection_count(&app_config.id).await?;
+        // let current_connections = self.connection_manager.lock().await.get_(&app_config.id).await?;
         // if current_connections >= app_config.max_connections {
         //     Log::warning(format!("App {} at max connections limit ({})", app_config.id, app_config.max_connections));
         //     // The WebSocket upgrade future `fut` would need to be gracefully rejected here.

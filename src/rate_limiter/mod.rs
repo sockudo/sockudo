@@ -192,6 +192,6 @@ pub mod middleware_utils {
         limiter: Arc<dyn RateLimiter>,
         options: RateLimitOptions,
     ) -> RateLimitLayer<IpKeyExtractor> {
-        RateLimitLayer::with_options(limiter, IpKeyExtractor::new(), options)
+        RateLimitLayer::with_options(limiter, IpKeyExtractor::new(1), options)
     }
 }

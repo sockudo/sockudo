@@ -666,28 +666,43 @@ impl SockudoServer {
             .allow_headers([AUTHORIZATION, CONTENT_TYPE]);
 
         // Create rate limiter middleware based on config
-        let rate_limiter_middleware = if let Some(rate_limiter) = &self.state.rate_limiter {
-            // Configure rate limit options based on server config
-            let rate_limit_options = rate_limiter::middleware::RateLimitOptions {
-                include_headers: true,
-                fail_open: false, // If rate limiter fails, block the request
-                key_prefix: Some("api:".to_string()),
-            };
+        let rate_limiter_middleware_layer = if self.config.rate_limiter.enabled { // Check if rate limiting is enabled
+            if let Some(rate_limiter_instance) = &self.state.rate_limiter { // Check if a RateLimiter instance exists in state
+                // Configure rate limit options based on server config
+                let rate_limit_options = crate::rate_limiter::middleware::RateLimitOptions {
+                    include_headers: true, // Example: always include headers
+                    fail_open: false,      // If rate limiter fails, block the request
+                    key_prefix: Some("api:".to_string()), // Example prefix
+                };
 
-            // Create IP-based rate limiter middleware
-            // Use the configured trust_hops value or default to 1 (trust 1 proxy)
-            let trust_hops = self.config.rate_limiter.api_rate_limit.trust_hops.unwrap_or(1);
-            Some(rate_limiter::middleware::with_ip_limiter_trusting(
-                rate_limiter.clone(),
-                trust_hops as usize,
-                rate_limit_options,
-            ))
+                // Use the configured trust_hops value.
+                // Assuming self.config.rate_limiter.api_rate_limit.trust_hops is Option<u32>
+                // and IpKeyExtractor::new expects usize.
+                let trust_hops_config = self.config.rate_limiter.api_rate_limit.trust_hops.unwrap_or(0); // Default to 0 if not specified
+
+                let ip_key_extractor = crate::rate_limiter::middleware::IpKeyExtractor::new(trust_hops_config as usize);
+
+                info!(
+                    "Applying custom rate limiting middleware with trust_hops: {}",
+                    trust_hops_config
+                );
+
+                Some(crate::rate_limiter::middleware::RateLimitLayer::with_options(
+                    rate_limiter_instance.clone(), // Clone the Arc<dyn RateLimiter>
+                    ip_key_extractor,
+                    rate_limit_options,
+                ))
+            } else {
+                warn!("Rate limiting is enabled in config, but no RateLimiter instance found in server state.");
+                None
+            }
         } else {
+            info!("Custom HTTP API Rate limiting is disabled in configuration.");
             None
         };
 
         // Base router with all routes
-        let router = Router::new()
+        let mut router = Router::new()
             // WebSocket handler for Pusher protocol
             .route("/app/{appKey}", get(handle_ws_upgrade))
             .route("/apps/{appId}/events", post(events))
@@ -707,10 +722,10 @@ impl SockudoServer {
             // Apply CORS middleware
             .layer(cors);
 
-        // Apply rate limiter middleware if available
-        // if let Some(rate_limiter_layer) = rate_limiter_middleware {
-        //     router = router.layer(rate_limiter_layer);
-        // }
+        if let Some(middleware) = rate_limiter_middleware_layer {
+            router = router.layer(middleware);
+        }
+
 
         // Return the configured router
         router.with_state(self.handler.clone())
@@ -785,7 +800,7 @@ impl SockudoServer {
                 match TcpListener::bind(redirect_addr).await {
                     Ok(redirect_listener) => {
                         tokio::spawn(async move {
-                            if let Err(e) = axum::serve(redirect_listener, redirect_app).await {
+                            if let Err(e) = axum::serve(redirect_listener, redirect_app.into_make_service_with_connect_info::<SocketAddr>()).await {
                                 error!("HTTP redirect server error: {}", e);
                             }
                         });
@@ -801,7 +816,7 @@ impl SockudoServer {
                 if let Ok(metrics_listener) = TcpListener::bind(metrics_addr).await {
                     info!("Metrics server listening on {}", metrics_addr);
                     tokio::spawn(async move {
-                        if let Err(e) = axum::serve(metrics_listener, metrics_router).await {
+                        if let Err(e) = axum::serve(metrics_listener, metrics_router.into_make_service_with_connect_info::<SocketAddr>()).await {
                             error!("Metrics server error: {}", e);
                         }
                     });
@@ -860,14 +875,14 @@ impl SockudoServer {
             if let Some(metrics_listener) = metrics_listener {
                 let metrics_router_clone = metrics_router.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = axum::serve(metrics_listener, metrics_router_clone).await {
+                    if let Err(e) = axum::serve(metrics_listener, metrics_router_clone.into_make_service_with_connect_info::<SocketAddr>()).await {
                         error!("Metrics server error: {}", e);
                     }
                 });
             }
 
             // Start HTTP server with shutdown signal
-            let http_server = axum::serve(http_listener, http_router);
+            let http_server = axum::serve(http_listener, http_router.into_make_service_with_connect_info::<SocketAddr>());
 
             tokio::select! {
                 res = http_server => {
