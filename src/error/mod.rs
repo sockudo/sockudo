@@ -151,6 +151,12 @@ pub enum Error {
 
     #[error("Connection Error: {0}")]
     Connection(String),
+    
+    #[error("Configuration Error: {0}")]
+    ConfigurationError(String),
+    
+    #[error("Config file Error: {0}")]
+    ConfigFileError(String),
 }
 
 // Add conversion to WebSocket close codes

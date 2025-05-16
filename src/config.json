@@ -95,7 +95,8 @@
     }
   },
   "rate_limiter": {
-    "driver": "memory",
+    "driver": "redis",
+    "enabled": false,
     "default_limit_per_second": 60,
     "default_window_seconds": 60,
     "api_rate_limit": {

@@ -71,7 +71,7 @@ impl QueueInterface for RedisQueueManager {
         let mut conn = self.redis_connection.lock().await;
 
         // Perform RPUSH and handle potential Redis errors
-        conn.rpush(&queue_key, data_json).await.map_err(|e| {
+        conn.rpush::<_, _, ()>(&queue_key, data_json).await.map_err(|e| {
             crate::error::Error::Queue(format!(
                 "Redis RPUSH failed for queue {}: {}",
                 queue_name, e
