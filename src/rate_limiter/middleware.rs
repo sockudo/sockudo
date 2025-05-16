@@ -3,11 +3,11 @@ use crate::rate_limiter::{RateLimitResult, RateLimiter};
 use axum::{
     body::Body as AxumBody,
     extract::ConnectInfo,
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Request as AxumRequest},
+    http::{HeaderMap, HeaderName, HeaderValue, Request as AxumRequest, StatusCode},
     response::{IntoResponse, Response as AxumResponse},
 };
-use hyper::Request as HyperRequest;
 use futures_util::future::BoxFuture;
+use hyper::Request as HyperRequest;
 use serde_json::json;
 use std::{
     fmt,
@@ -46,7 +46,6 @@ const HEADER_LIMIT: HeaderName = HeaderName::from_static("x-ratelimit-limit");
 const HEADER_REMAINING: HeaderName = HeaderName::from_static("x-ratelimit-remaining");
 const HEADER_RESET: HeaderName = HeaderName::from_static("x-ratelimit-reset");
 const HEADER_RETRY_AFTER: HeaderName = HeaderName::from_static("retry-after");
-
 
 #[derive(Debug, Clone)]
 pub struct RateLimitOptions {
@@ -152,7 +151,9 @@ where
                 Ok(k) => k,
                 Err(e) => {
                     error!("Failed to extract key for rate limiting: {}", e);
-                    return Ok(internal_server_error_response_with_message("Key extraction failed for rate limiting."));
+                    return Ok(internal_server_error_response_with_message(
+                        "Key extraction failed for rate limiting.",
+                    ));
                 }
             };
 
@@ -179,7 +180,9 @@ where
                         }
                     } else {
                         error!(key = %final_key, "Rate limiter failed closed");
-                        return Ok(internal_server_error_response_with_message("Rate limiter backend unavailable."));
+                        return Ok(internal_server_error_response_with_message(
+                            "Rate limiter backend unavailable.",
+                        ));
                     }
                 }
             };
@@ -200,9 +203,7 @@ where
                     }
                     Ok(response)
                 }
-                Err(err) => {
-                    Err(err)
-                }
+                Err(err) => Err(err),
             }
         })
     }
@@ -213,7 +214,6 @@ where
 pub trait KeyExtractor: Send + Sync {
     fn extract<B>(&self, req: &HyperRequest<B>) -> Result<String, RateLimitMiddlewareError>;
 }
-
 
 #[derive(Clone, Debug)]
 pub struct IpKeyExtractor {
@@ -274,7 +274,6 @@ impl KeyExtractor for IpKeyExtractor {
     }
 }
 
-
 // --- Helper Functions ---
 
 fn rate_limit_error_response(result: Option<&RateLimitResult>) -> AxumResponse {
@@ -286,7 +285,7 @@ fn rate_limit_error_response(result: Option<&RateLimitResult>) -> AxumResponse {
                 "error": "Too Many Requests",
                 "message": "Rate limit exceeded. Please try again later.",
             }))
-                .expect("Failed to serialize rate limit error response"),
+            .expect("Failed to serialize rate limit error response"),
         ))
         .expect("Failed to build rate limit error response");
 
@@ -304,9 +303,9 @@ fn internal_server_error_response_with_message(message: &str) -> AxumResponse {
         .body(AxumBody::from(
             serde_json::to_string(&json!({
                 "error": "Internal Server Error",
-                "message": message, 
+                "message": message,
             }))
-                .expect("Failed to serialize internal server error response"),
+            .expect("Failed to serialize internal server error response"),
         ))
         .expect("Failed to build internal server error response")
 }
@@ -320,7 +319,10 @@ fn add_rate_limit_headers(
     if let Ok(value) = HeaderValue::try_from(result.limit.to_string()) {
         headers.insert(HEADER_LIMIT, value);
     } else {
-        warn!(value = result.limit, "Failed to convert rate limit limit value for header X-RateLimit-Limit");
+        warn!(
+            value = result.limit,
+            "Failed to convert rate limit limit value for header X-RateLimit-Limit"
+        );
     }
 
     // Conditionally add X-RateLimit-Remaining and X-RateLimit-Reset if they were not the cause of the panic
@@ -328,7 +330,10 @@ fn add_rate_limit_headers(
     if let Ok(value) = HeaderValue::try_from(result.remaining.to_string()) {
         headers.insert(HEADER_REMAINING, value);
     } else {
-        warn!(value = result.remaining, "Failed to convert rate limit remaining value for header X-RateLimit-Remaining");
+        warn!(
+            value = result.remaining,
+            "Failed to convert rate limit remaining value for header X-RateLimit-Remaining"
+        );
     }
 
     if let Ok(value) = HeaderValue::try_from(result.reset_after.to_string()) {

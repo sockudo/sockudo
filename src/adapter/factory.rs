@@ -1,13 +1,13 @@
 // src/adapter/factory.rs
-use std::sync::Arc;
-use crate::adapter::Adapter;
 use crate::adapter::local_adapter::LocalAdapter;
+use crate::adapter::nats_adapter::{NatsAdapter, NatsAdapterConfig};
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterConfig as RedisAdapterOptions};
 use crate::adapter::redis_cluster_adapter::{RedisClusterAdapter, RedisClusterAdapterConfig};
-use crate::adapter::nats_adapter::{NatsAdapter, NatsAdapterConfig};
-use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig, RedisConnection}; // Import AdapterDriver, RedisConnection
+use crate::adapter::Adapter;
 use crate::error::Result;
 use crate::log::Log;
+use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig, RedisConnection}; // Import AdapterDriver, RedisConnection
+use std::sync::Arc;
 
 pub struct AdapterFactory;
 
@@ -17,13 +17,22 @@ impl AdapterFactory {
         db_config: &DatabaseConfig,
         debug_enabled: bool,
     ) -> Result<Box<dyn Adapter + Send + Sync>> {
-        Log::info(format!("Initializing Adapter with driver: {:?}", config.driver));
-        match config.driver { // Match on the enum
+        Log::info(format!(
+            "Initializing Adapter with driver: {:?}",
+            config.driver
+        ));
+        match config.driver {
+            // Match on the enum
             AdapterDriver::Redis => {
-                let redis_url = config.redis.redis_pub_options.get("url")
+                let redis_url = config
+                    .redis
+                    .redis_pub_options
+                    .get("url")
                     .and_then(|v| v.as_str())
                     .map(String::from)
-                    .unwrap_or_else(|| format!("redis://{}:{}", db_config.redis.host, db_config.redis.port));
+                    .unwrap_or_else(|| {
+                        format!("redis://{}:{}", db_config.redis.host, db_config.redis.port)
+                    });
 
                 let adapter_options = RedisAdapterOptions {
                     url: redis_url,
@@ -35,7 +44,10 @@ impl AdapterFactory {
                 match RedisAdapter::new(adapter_options).await {
                     Ok(adapter) => Ok(Box::new(adapter)),
                     Err(e) => {
-                        Log::warning(format!("Failed to initialize Redis adapter: {}, falling back to local adapter", e));
+                        Log::warning(format!(
+                            "Failed to initialize Redis adapter: {}, falling back to local adapter",
+                            e
+                        ));
                         Ok(Box::new(LocalAdapter::new()))
                     }
                 }
@@ -45,7 +57,10 @@ impl AdapterFactory {
                 let nodes = if !config.cluster.nodes.is_empty() {
                     config.cluster.nodes.clone()
                 } else {
-                    db_config.redis.cluster_nodes.iter()
+                    db_config
+                        .redis
+                        .cluster_nodes
+                        .iter()
                         .map(|node| format!("redis://{}:{}", node.host, node.port))
                         .collect()
                 };
@@ -55,7 +70,8 @@ impl AdapterFactory {
                     return Ok(Box::new(LocalAdapter::new()));
                 }
 
-                let cluster_adapter_config = RedisClusterAdapterConfig { // Use the specific config struct
+                let cluster_adapter_config = RedisClusterAdapterConfig {
+                    // Use the specific config struct
                     nodes,
                     prefix: config.cluster.prefix.clone(),
                     request_timeout_ms: config.cluster.request_timeout_ms,
@@ -70,7 +86,8 @@ impl AdapterFactory {
                 }
             }
             AdapterDriver::Nats => {
-                let nats_cfg = NatsAdapterConfig { // Directly use the NatsAdapterConfig from options
+                let nats_cfg = NatsAdapterConfig {
+                    // Directly use the NatsAdapterConfig from options
                     servers: config.nats.servers.clone(),
                     prefix: config.nats.prefix.clone(),
                     request_timeout_ms: config.nats.request_timeout_ms,
@@ -83,12 +100,16 @@ impl AdapterFactory {
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(adapter) => Ok(Box::new(adapter)),
                     Err(e) => {
-                        Log::warning(format!("Failed to initialize NATS adapter: {}, falling back to local adapter", e));
+                        Log::warning(format!(
+                            "Failed to initialize NATS adapter: {}, falling back to local adapter",
+                            e
+                        ));
                         Ok(Box::new(LocalAdapter::new()))
                     }
                 }
             }
-            AdapterDriver::Local | _ => { // Handle unknown as Local or make it an error
+            AdapterDriver::Local | _ => {
+                // Handle unknown as Local or make it an error
                 Log::info("Using local adapter.".to_string());
                 Ok(Box::new(LocalAdapter::new()))
             }

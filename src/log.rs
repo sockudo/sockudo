@@ -115,60 +115,60 @@ impl Log {
     }
 
     fn log<T: Display>(message: T, styles: &[&str], margin: usize, padding: usize) {
-        // let mut colored_message = message.to_string();
-        // 
-        // // Apply colors and styles
-        // for style in styles {
-        //     colored_message = match *style {
-        //         "bold" => colored_message.bold(),
-        //         "black" => colored_message.black(),
-        //         "white" => colored_message.white(),
-        //         "red" => colored_message.red(),
-        //         "green" => colored_message.green(),
-        //         "yellow" => colored_message.yellow(),
-        //         "blue" => colored_message.blue(),
-        //         "magenta" => colored_message.magenta(),
-        //         "cyan" => colored_message.cyan(),
-        //         "grey" | "gray" => colored_message.bright_black(),
-        //         "bright_cyan" => colored_message.bright_cyan(),
-        //         "on_red" => colored_message.on_red(),
-        //         "on_green" => colored_message.on_green(),
-        //         "on_yellow" => colored_message.on_yellow(),
-        //         "on_blue" => colored_message.on_blue(),
-        //         "on_magenta" => colored_message.on_magenta(),
-        //         "on_cyan" => colored_message.on_cyan(),
-        //         "on_white" => colored_message.on_white(),
-        //         _ => colored_message.white(),
-        //     }
-        //     .to_string();
-        // }
-        // 
-        // // Apply margins and padding
-        // let margin_spaces = " ".repeat(margin);
-        // let padding_spaces = " ".repeat(padding);
-        // 
-        // // Handle JSON values - both string representations and Value types
-        // let formatted_message =
-        //     if let Ok(json_value) = serde_json::from_str::<Value>(&colored_message) {
-        //         serde_json::to_string_pretty(&json_value).unwrap_or(colored_message)
-        //     } else if let Some(stripped) = colored_message.strip_prefix("Value(") {
-        //         if let Some(stripped) = stripped.strip_suffix(")") {
-        //             if let Ok(json_value) = serde_json::from_str::<Value>(stripped) {
-        //                 serde_json::to_string_pretty(&json_value).unwrap_or(colored_message)
-        //             } else {
-        //                 colored_message
-        //             }
-        //         } else {
-        //             colored_message
-        //         }
-        //     } else {
-        //         colored_message
-        //     };
-        // 
-        // println!(
-        //     "{}{}{}{}",
-        //     margin_spaces, padding_spaces, formatted_message, padding_spaces
-        // );
+        let mut colored_message = message.to_string();
+
+        // Apply colors and styles
+        for style in styles {
+            colored_message = match *style {
+                "bold" => colored_message.bold(),
+                "black" => colored_message.black(),
+                "white" => colored_message.white(),
+                "red" => colored_message.red(),
+                "green" => colored_message.green(),
+                "yellow" => colored_message.yellow(),
+                "blue" => colored_message.blue(),
+                "magenta" => colored_message.magenta(),
+                "cyan" => colored_message.cyan(),
+                "grey" | "gray" => colored_message.bright_black(),
+                "bright_cyan" => colored_message.bright_cyan(),
+                "on_red" => colored_message.on_red(),
+                "on_green" => colored_message.on_green(),
+                "on_yellow" => colored_message.on_yellow(),
+                "on_blue" => colored_message.on_blue(),
+                "on_magenta" => colored_message.on_magenta(),
+                "on_cyan" => colored_message.on_cyan(),
+                "on_white" => colored_message.on_white(),
+                _ => colored_message.white(),
+            }
+            .to_string();
+        }
+
+        // Apply margins and padding
+        let margin_spaces = " ".repeat(margin);
+        let padding_spaces = " ".repeat(padding);
+
+        // Handle JSON values - both string representations and Value types
+        let formatted_message =
+            if let Ok(json_value) = serde_json::from_str::<Value>(&colored_message) {
+                serde_json::to_string_pretty(&json_value).unwrap_or(colored_message)
+            } else if let Some(stripped) = colored_message.strip_prefix("Value(") {
+                if let Some(stripped) = stripped.strip_suffix(")") {
+                    if let Ok(json_value) = serde_json::from_str::<Value>(stripped) {
+                        serde_json::to_string_pretty(&json_value).unwrap_or(colored_message)
+                    } else {
+                        colored_message
+                    }
+                } else {
+                    colored_message
+                }
+            } else {
+                colored_message
+            };
+
+        println!(
+            "{}{}{}{}",
+            margin_spaces, padding_spaces, formatted_message, padding_spaces
+        );
     }
 }
 

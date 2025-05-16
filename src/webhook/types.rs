@@ -48,8 +48,8 @@ pub struct LambdaConfig {
 // The `payload` field will be structured to produce the Pusher-compatible format when sent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobData {
-    pub app_key: String, // Needed for X-Pusher-Key and signing
-    pub app_id: String,  // For logging and potentially for the webhook receiver
+    pub app_key: String,    // Needed for X-Pusher-Key and signing
+    pub app_id: String,     // For logging and potentially for the webhook receiver
     pub app_secret: String, // Needed for signing the X-Pusher-Signature
     pub payload: JobPayload,
     pub original_signature: String, // Sockudo's internal signature for queue deduplication, etc.
@@ -59,9 +59,9 @@ pub struct JobData {
 // The `events` field will now hold a vector of fully formed Pusher event objects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobPayload {
-    pub time_ms: i64,       // Unix timestamp in milliseconds
+    pub time_ms: i64, // Unix timestamp in milliseconds
     pub events: Vec<Value>, // Each Value is a JSON object representing a Pusher event,
-    // e.g., { "name": "channel_occupied", "channel": "my-channel" }
+                      // e.g., { "name": "channel_occupied", "channel": "my-channel" }
 }
 
 // This struct represents the final payload sent to the webhook receiver,

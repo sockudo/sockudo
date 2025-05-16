@@ -31,7 +31,7 @@ pub struct WebhookConfig {
 impl Default for WebhookConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             batching: BatchingConfig::default(),
             queue_driver: "redis".to_string(),
             redis_url: None,
@@ -97,7 +97,7 @@ impl WebhookIntegration {
                 self.config.redis_prefix.as_deref(),
                 self.config.redis_concurrency,
             )
-                .await?;
+            .await?;
             let queue_manager = Arc::new(Mutex::new(QueueManager::new(driver)));
             let webhook_sender = Arc::new(WebhookSender::new(self.app_manager.clone()));
             let queue_name = "webhooks".to_string();
@@ -106,13 +106,16 @@ impl WebhookIntegration {
             let processor: JobProcessorFnAsync = Box::new(move |job_data| {
                 let sender_for_task = sender_clone.clone();
                 Box::pin(async move {
-                    Log::webhook_sender(format!("Processing webhook job from queue: {:?}", job_data.app_id));
+                    Log::webhook_sender(format!(
+                        "Processing webhook job from queue: {:?}",
+                        job_data.app_id
+                    ));
                     sender_for_task.process_webhook_job(job_data).await
                 })
             });
 
             {
-                let mut manager = queue_manager.lock().await;
+                let manager = queue_manager.lock().await;
                 manager.process_queue(&queue_name, processor).await?;
             }
             self.queue_manager = Some(queue_manager);
@@ -154,7 +157,10 @@ impl WebhookIntegration {
                         let manager_locked = manager_arc.lock().await;
                         for job in jobs {
                             if let Err(e) = manager_locked.add_to_queue(&queue_name, job).await {
-                                Log::error(format!("Failed to add batched job to queue {}: {}", queue_name, e));
+                                Log::error(format!(
+                                    "Failed to add batched job to queue {}: {}",
+                                    queue_name, e
+                                ));
                             }
                         }
                     }
@@ -178,15 +184,22 @@ impl WebhookIntegration {
                 .or_default()
                 .push(job_data);
         } else if let Some(qm_arc) = &self.queue_manager {
-            let mut manager = qm_arc.lock().await;
+            let manager = qm_arc.lock().await;
             manager.add_to_queue(queue_name, job_data).await?;
         } else {
-            return Err(Error::InternalError("Queue manager not initialized for webhooks".to_string()));
+            return Err(Error::InternalError(
+                "Queue manager not initialized for webhooks".to_string(),
+            ));
         }
         Ok(())
     }
 
-    fn create_job_data(&self, app: &App, events_payload: Vec<Value>, original_signature_for_queue: &str) -> JobData {
+    fn create_job_data(
+        &self,
+        app: &App,
+        events_payload: Vec<Value>,
+        original_signature_for_queue: &str,
+    ) -> JobData {
         let job_payload = JobPayload {
             time_ms: chrono::Utc::now().timestamp_millis(),
             events: events_payload,
@@ -205,10 +218,11 @@ impl WebhookIntegration {
             return false;
         }
         app.webhooks.as_ref().map_or(false, |webhooks| {
-            webhooks.iter().any(|wh_config| wh_config.event_types.contains(&event_type_name.to_string()))
+            webhooks
+                .iter()
+                .any(|wh_config| wh_config.event_types.contains(&event_type_name.to_string()))
         })
     }
-
 
     pub async fn send_channel_occupied(&self, app: &App, channel: &str) -> Result<()> {
         if !self.should_send_webhook(app, "channel_occupied").await {
@@ -278,9 +292,9 @@ impl WebhookIntegration {
         }
 
         let mut client_event_pusher_payload = json!({
-            "name": "client_event", 
+            "name": "client_event",
             "channel": channel,
-            "event": event_name, 
+            "event": event_name,
             "data": event_data,
             "socket_id": socket_id,
         });
@@ -291,7 +305,12 @@ impl WebhookIntegration {
             }
         }
 
-        let signature = format!("{}:{}:{}:client_event", app.id, channel, socket_id.unwrap_or("unknown"));
+        let signature = format!(
+            "{}:{}:{}:client_event",
+            app.id,
+            channel,
+            socket_id.unwrap_or("unknown")
+        );
         let job_data = self.create_job_data(app, vec![client_event_pusher_payload], &signature);
         self.add_webhook("webhooks", job_data).await
     }
@@ -329,7 +348,10 @@ impl WebhookIntegration {
         });
 
         // Create a unique signature for queue deduplication or logging if needed
-        let signature = format!("{}:{}:subscription_count:{}", app.id, channel, subscription_count);
+        let signature = format!(
+            "{}:{}:subscription_count:{}",
+            app.id, channel, subscription_count
+        );
 
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
         self.add_webhook("webhooks", job_data).await

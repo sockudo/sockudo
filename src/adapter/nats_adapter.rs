@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_nats::{
-    Client as NatsClient, ConnectOptions as NatsOptions, Subject,
-};
+use async_nats::{Client as NatsClient, ConnectOptions as NatsOptions, Subject};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;

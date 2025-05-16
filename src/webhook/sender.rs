@@ -6,8 +6,8 @@ use crate::log::Log;
 use crate::webhook::lambda_sender::LambdaWebhookSender;
 // JobData now contains app_secret and its payload.events is Vec<Value>
 // PusherWebhookPayload is the structure for the final POST body
-use crate::webhook::types::{JobData, PusherWebhookPayload, Webhook, LambdaConfig};
 use crate::token::Token; // For HMAC SHA256 signing
+use crate::webhook::types::{JobData, LambdaConfig, PusherWebhookPayload, Webhook};
 use reqwest::{header, Client};
 use serde_json::{json, Value}; // Keep json! and Value
 use std::collections::HashMap;
@@ -47,7 +47,10 @@ impl WebhookSender {
     pub async fn process_webhook_job(&self, job: JobData) -> Result<()> {
         let app_key = job.app_key.clone();
         let app_id = job.app_id.clone();
-        Log::webhook_sender(format!("Processing webhook job for app_id: {}", app_id.clone()));
+        Log::webhook_sender(format!(
+            "Processing webhook job for app_id: {}",
+            app_id.clone()
+        ));
 
         // The App struct (or at least its webhooks configuration) is needed.
         // If JobData doesn't contain the full App.webhooks, we fetch it.
@@ -55,7 +58,10 @@ impl WebhookSender {
         let app_config = match self.app_manager.get_app(&app_id.clone()).await? {
             Some(app) => app,
             None => {
-                Log::error(format!("Webhook: Failed to find app with ID: {}", app_id.clone()));
+                Log::error(format!(
+                    "Webhook: Failed to find app with ID: {}",
+                    app_id.clone()
+                ));
                 return Err(Error::InvalidAppKey); // Or handle as non-retryable error
             }
         };
@@ -63,13 +69,19 @@ impl WebhookSender {
         let webhook_configurations = match &app_config.webhooks {
             Some(hooks) => hooks,
             None => {
-                Log::info(format!("No webhooks configured for app: {}", app_id.clone()));
+                Log::info(format!(
+                    "No webhooks configured for app: {}",
+                    app_id.clone()
+                ));
                 return Ok(());
             }
         };
 
         if job.payload.events.is_empty() {
-            Log::warning(format!("Webhook job for app {} has no events.", app_id.clone()));
+            Log::warning(format!(
+                "Webhook job for app {} has no events.",
+                app_id.clone()
+            ));
             return Ok(());
         }
 
@@ -81,12 +93,14 @@ impl WebhookSender {
         };
 
         // Serialize the payload body to JSON string for signing and sending
-        let body_json_string = serde_json::to_string(&pusher_payload_body)
-            .map_err(|e| Error::SerializationError(format!("Failed to serialize webhook body: {}", e)))?;
+        let body_json_string = serde_json::to_string(&pusher_payload_body).map_err(|e| {
+            Error::SerializationError(format!("Failed to serialize webhook body: {}", e))
+        })?;
 
         // Create the HMAC SHA256 signature
         // The app_secret is now in JobData
-        let signature = Token::new(job.app_key.clone(), job.app_secret.clone()).sign(&body_json_string);
+        let signature =
+            Token::new(job.app_key.clone(), job.app_secret.clone()).sign(&body_json_string);
 
         let mut tasks = Vec::new();
 
@@ -100,7 +114,10 @@ impl WebhookSender {
                 for wh_config in webhook_configurations {
                     if wh_config.event_types.contains(&event_name.to_string()) {
                         // Use webhook URL or function name as key to avoid duplicate tasks for the same endpoint
-                        let key = wh_config.url.as_ref().map(|u| u.to_string())
+                        let key = wh_config
+                            .url
+                            .as_ref()
+                            .map(|u| u.to_string())
                             .or_else(|| wh_config.lambda_function.clone())
                             .or_else(|| wh_config.lambda.as_ref().map(|l| l.function_name.clone()))
                             .unwrap_or_else(String::new); // Should have one
@@ -113,19 +130,21 @@ impl WebhookSender {
             }
         }
 
-
         if relevant_webhook_configs.is_empty() {
-            Log::info(format!("No matching webhook configurations for events in job for app {}", app_id.clone()));
+            Log::info(format!(
+                "No matching webhook configurations for events in job for app {}",
+                app_id.clone()
+            ));
             return Ok(());
         }
 
         log_webhook_processing_pusher_format(&app_id, &pusher_payload_body);
-      
-
 
         for (_endpoint_key, webhook_config) in relevant_webhook_configs {
             let permit_semaphore = self.webhook_semaphore.clone();
-            let permit = permit_semaphore.acquire_owned().await.map_err(|e| Error::Other(format!("Failed to acquire webhook semaphore permit: {}", e)))?;
+            let permit = permit_semaphore.acquire_owned().await.map_err(|e| {
+                Error::Other(format!("Failed to acquire webhook semaphore permit: {}", e))
+            })?;
             let app_id = app_id.clone(); // Clone app_id for the async task
             let current_app_key = app_key.clone();
             let current_signature = signature.clone();
@@ -134,7 +153,11 @@ impl WebhookSender {
             if let Some(url) = &webhook_config.url {
                 let client = self.client.clone();
                 let url_str = url.to_string();
-                let custom_headers_config = webhook_config.headers.as_ref().map(|h| h.headers.clone()).unwrap_or_default();
+                let custom_headers_config = webhook_config
+                    .headers
+                    .as_ref()
+                    .map(|h| h.headers.clone())
+                    .unwrap_or_default();
 
                 let task = tokio::spawn(async move {
                     let _permit = permit; // Permit dropped when task finishes
@@ -146,11 +169,14 @@ impl WebhookSender {
                         body_to_send, // Send the pre-serialized JSON string
                         custom_headers_config,
                     )
-                        .await
+                    .await
                     {
                         Log::error(format!("Webhook send error to URL {}: {}", url_str, e));
                     } else {
-                        Log::webhook_sender(format!("Successfully sent Pusher webhook to URL: {}", url_str));
+                        Log::webhook_sender(format!(
+                            "Successfully sent Pusher webhook to URL: {}",
+                            url_str
+                        ));
                     }
                 });
                 tasks.push(task);
@@ -163,8 +189,8 @@ impl WebhookSender {
                 // For Lambda, we might need to pass the raw Pusher payload or a structured version of it.
                 // The current lambda_sender.invoke_lambda expects a Value.
                 // Let's parse the body_to_send back to Value for the lambda_sender.
-                let payload_for_lambda: Value = serde_json::from_str(&body_to_send).unwrap_or(json!({}));
-
+                let payload_for_lambda: Value =
+                    serde_json::from_str(&body_to_send).unwrap_or(json!({}));
 
                 let task = tokio::spawn(async move {
                     let _permit = permit;
@@ -172,25 +198,39 @@ impl WebhookSender {
                     // X-Pusher-Key and X-Pusher-Signature as part of its invocation,
                     // or if the Lambda function itself expects to verify these from an API Gateway.
                     // This example passes the Pusher payload body to Lambda.
-                    if let Err(e) = lambda_sender.invoke_lambda(
-                        &webhook_clone,
-                        "batch_events", // Generic event type for batched lambda
-                        &app_id.clone(), // Pass app_id for context
-                        payload_for_lambda, // Pass the parsed Value
-                    ).await {
-                        Log::error(format!("Lambda webhook error for app {}: {}", app_id.clone(), e));
+                    if let Err(e) = lambda_sender
+                        .invoke_lambda(
+                            &webhook_clone,
+                            "batch_events",  // Generic event type for batched lambda
+                            &app_id.clone(), // Pass app_id for context
+                            payload_for_lambda, // Pass the parsed Value
+                        )
+                        .await
+                    {
+                        Log::error(format!(
+                            "Lambda webhook error for app {}: {}",
+                            app_id.clone(),
+                            e
+                        ));
                     } else {
-                        Log::webhook_sender(format!("Successfully invoked Lambda for app: {}", app_id.clone()));
+                        Log::webhook_sender(format!(
+                            "Successfully invoked Lambda for app: {}",
+                            app_id.clone()
+                        ));
                     }
                 });
                 tasks.push(task);
             } else {
-                Log::warning(format!("Webhook for app {} has neither URL nor Lambda config.", app_id.clone()));
+                Log::warning(format!(
+                    "Webhook for app {} has neither URL nor Lambda config.",
+                    app_id.clone()
+                ));
                 drop(permit);
             }
         }
 
-        for task_handle in tasks { // Renamed variable
+        for task_handle in tasks {
+            // Renamed variable
             if let Err(e) = task_handle.await {
                 Log::error(format!("Webhook task execution failed: {}", e));
             }
@@ -235,7 +275,8 @@ async fn send_pusher_webhook(
     match request_builder.body(json_body).send().await {
         Ok(response) => {
             let status = response.status();
-            if status.is_success() { // 2XX status codes
+            if status.is_success() {
+                // 2XX status codes
                 Log::webhook_sender(format!(
                     "Successfully sent Pusher webhook to {} (status: {})",
                     url, status
@@ -255,7 +296,10 @@ async fn send_pusher_webhook(
         }
         Err(e) => {
             Log::error(format!("Failed to send Pusher webhook to {}: {}", url, e));
-            Err(Error::Other(format!("HTTP request failed for webhook to {}: {}",url, e)))
+            Err(Error::Other(format!(
+                "HTTP request failed for webhook to {}: {}",
+                url, e
+            )))
         }
     }
 }

@@ -1,16 +1,16 @@
 // src/rate_limiter/mod.rs
+pub mod factory;
 pub mod memory_limiter;
 pub mod middleware;
-pub mod redis_limiter;
 pub mod redis_cluster_limiter;
-pub mod factory;
+pub mod redis_limiter;
 
 use crate::error::Result;
+use crate::rate_limiter::redis_cluster_limiter::RedisClusterRateLimiter;
 use async_trait::async_trait;
+use redis::cluster::ClusterClient;
 use std::sync::Arc;
 use std::time::Duration;
-use redis::cluster::ClusterClient;
-use crate::rate_limiter::redis_cluster_limiter::RedisClusterRateLimiter;
 
 /// Configuration for rate limiters
 #[derive(Debug, Clone)]

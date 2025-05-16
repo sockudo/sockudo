@@ -2,6 +2,17 @@
   "debug": true,
   "port": 6001,
   "host": "127.0.0.1",
+  "cors": {
+    "credentials": false,
+    "origin": ["*"],
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allowed_headers": [
+      "Authorization",
+      "Content-Type",
+      "X-Requested-With",
+      "Accept"
+    ]
+  },
   "app_manager": {
     "driver": "memory",
     "array": {
@@ -18,7 +29,7 @@
             {
               "url": "http://localhost:3000/pusher/webhooks",
               "event_types": ["member_added", "member_removed", "subscription_count"]
-              }
+            }
           ]
         },
         {
@@ -57,21 +68,19 @@
       "requests_timeout": 5000,
       "prefix": "sockudo",
       "servers": ["nats://localhost:4222"],
-      "timeout": 5000
+      "connection_timeout_ms": 5000
     }
   },
   "cache": {
     "driver": "redis",
     "redis": {
-      "redis_options": {
-        "url": "redis://localhost:6379"
-      },
+      "url_override": "redis://localhost:6379",
       "cluster_mode": false
     }
   },
   "webhooks": {
     "batching": {
-      "enabled": false,
+      "enabled": true,
       "duration": 50
     }
   },
@@ -79,9 +88,7 @@
     "driver": "redis",
     "redis": {
       "concurrency": 5,
-      "redis_options": {
-        "url": "redis://localhost:6379"
-      },
+      "url_override": "redis://localhost:6379",
       "cluster_mode": false
     },
     "sqs": {
@@ -97,8 +104,6 @@
   "rate_limiter": {
     "driver": "redis",
     "enabled": false,
-    "default_limit_per_second": 60,
-    "default_window_seconds": 60,
     "api_rate_limit": {
       "max_requests": 60,
       "window_seconds": 60,
@@ -110,7 +115,6 @@
       "identifier": "websocket"
     },
     "redis": {
-      "redis_options": {},
       "cluster_mode": false
     }
   },
@@ -129,5 +133,33 @@
   "channel_limits": {
     "max_name_length": 200,
     "cache_ttl": 3600
+  },
+  "database": {
+    "mysql": {
+      "host": "localhost",
+      "port": 3306,
+      "username": "root",
+      "password": "",
+      "database": "sockudo",
+      "table_name": "applications",
+      "connection_pool_size": 10,
+      "cache_ttl": 300,
+      "cache_cleanup_interval": 60,
+      "cache_max_capacity": 100
+    },
+    "redis": {
+      "host": "127.0.0.1",
+      "port": 6379,
+      "db": 0,
+      "username": null,
+      "password": null,
+      "key_prefix": "sockudo:",
+      "cluster_nodes": []
+    },
+    "dynamodb": {
+      "region": "us-east-1",
+      "table_name": "sockudo-applications",
+      "endpoint_url": null
+    }
   }
 }

@@ -38,7 +38,11 @@ impl MemoryCacheManager {
             cache_builder.build()
         };
 
-        Self { cache, options, prefix }
+        Self {
+            cache,
+            options,
+            prefix,
+        }
     }
 
     /// Get the prefixed key.
@@ -98,7 +102,8 @@ impl CacheManager for MemoryCacheManager {
     /// or None if the key doesn't exist or no default TTL is configured.
     async fn ttl(&mut self, key: &str) -> Result<Option<Duration>> {
         let prefixed_key = self.prefixed_key(key);
-        if self.cache.contains_key(&prefixed_key) { // Check if key exists (Moka's contains_key is sync)
+        if self.cache.contains_key(&prefixed_key) {
+            // Check if key exists (Moka's contains_key is sync)
             if self.options.ttl > 0 {
                 Ok(Some(Duration::from_secs(self.options.ttl)))
             } else {
@@ -117,7 +122,8 @@ impl MemoryCacheManager {
         let prefixed_key = self.prefixed_key(key);
         // Moka's invalidate doesn't return if the key existed.
         // To match potential expectations of `delete` returning true if item was deleted:
-        if self.cache.contains_key(&prefixed_key) { // Sync check, but common
+        if self.cache.contains_key(&prefixed_key) {
+            // Sync check, but common
             self.cache.invalidate(&prefixed_key).await;
             Ok(true)
         } else {

@@ -71,12 +71,14 @@ impl QueueInterface for RedisQueueManager {
         let mut conn = self.redis_connection.lock().await;
 
         // Perform RPUSH and handle potential Redis errors
-        conn.rpush::<_, _, ()>(&queue_key, data_json).await.map_err(|e| {
-            crate::error::Error::Queue(format!(
-                "Redis RPUSH failed for queue {}: {}",
-                queue_name, e
-            ))
-        })?; // Use custom error type
+        conn.rpush::<_, _, ()>(&queue_key, data_json)
+            .await
+            .map_err(|e| {
+                crate::error::Error::Queue(format!(
+                    "Redis RPUSH failed for queue {}: {}",
+                    queue_name, e
+                ))
+            })?; // Use custom error type
 
         // Log::info(format!("Added job to Redis queue: {}", queue_name)); // Optional: reduce log verbosity
 

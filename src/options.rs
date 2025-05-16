@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
 use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
 
-
 // --- Enums for Driver Types ---
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AdapterDriver {
+    #[default]
     Local,
     Redis,
     #[serde(rename = "redis-cluster")]
@@ -18,13 +18,35 @@ pub enum AdapterDriver {
     Nats,
 }
 
-impl Default for AdapterDriver {
-    fn default() -> Self { AdapterDriver::Redis }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DynamoDbSettings {
+    pub region: String,
+    pub table_name: String,
+    pub endpoint_url: Option<String>, // For local testing
+    pub aws_access_key_id: Option<String>,
+    pub aws_secret_access_key: Option<String>,
+    pub aws_profile_name: Option<String>,
+    // cache_ttl for app_manager is already in AppManagerConfig.cache.ttl
 }
+
+impl Default for DynamoDbSettings {
+    fn default() -> Self {
+        Self {
+            region: "us-east-1".to_string(),
+            table_name: "sockudo-applications".to_string(), // Default table name
+            endpoint_url: None,
+            aws_access_key_id: None,
+            aws_secret_access_key: None,
+            aws_profile_name: None,
+        }
+    }
+}
+
 
 impl std::str::FromStr for AdapterDriver {
     type Err = String;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "local" => Ok(AdapterDriver::Local),
             "redis" => Ok(AdapterDriver::Redis),
@@ -35,22 +57,17 @@ impl std::str::FromStr for AdapterDriver {
     }
 }
 
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AppManagerDriver {
+    #[default]
     Memory,
     Mysql,
     Dynamodb,
 }
-
-impl Default for AppManagerDriver {
-    fn default() -> Self { AppManagerDriver::Memory }
-}
-
 impl std::str::FromStr for AppManagerDriver {
     type Err = String;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "memory" => Ok(AppManagerDriver::Memory),
             "mysql" => Ok(AppManagerDriver::Mysql),
@@ -71,7 +88,9 @@ pub enum CacheDriver {
 }
 
 impl Default for CacheDriver {
-    fn default() -> Self { CacheDriver::Memory }
+    fn default() -> Self {
+        CacheDriver::Memory
+    }
 }
 
 impl std::str::FromStr for CacheDriver {
@@ -97,7 +116,9 @@ pub enum QueueDriver {
 }
 
 impl Default for QueueDriver {
-    fn default() -> Self { QueueDriver::Redis }
+    fn default() -> Self {
+        QueueDriver::Redis
+    }
 }
 
 impl std::str::FromStr for QueueDriver {
@@ -113,6 +134,18 @@ impl std::str::FromStr for QueueDriver {
     }
 }
 
+// Corrected: Added AsRef<str> implementation for QueueDriver
+impl AsRef<str> for QueueDriver {
+    fn as_ref(&self) -> &str {
+        match self {
+            QueueDriver::Memory => "memory",
+            QueueDriver::Redis => "redis",
+            QueueDriver::Sqs => "sqs",
+            QueueDriver::None => "none",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricsDriver {
@@ -120,7 +153,9 @@ pub enum MetricsDriver {
 }
 
 impl Default for MetricsDriver {
-    fn default() -> Self { MetricsDriver::Prometheus }
+    fn default() -> Self {
+        MetricsDriver::Prometheus
+    }
 }
 
 impl std::str::FromStr for MetricsDriver {
@@ -133,6 +168,14 @@ impl std::str::FromStr for MetricsDriver {
     }
 }
 
+// Corrected: Added AsRef<str> implementation for MetricsDriver
+impl AsRef<str> for MetricsDriver {
+    fn as_ref(&self) -> &str {
+        match self {
+            MetricsDriver::Prometheus => "prometheus",
+        }
+    }
+}
 
 // --- Main Configuration Struct ---
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,7 +224,7 @@ pub struct SqsQueueConfig {
     pub message_group_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AdapterConfig {
     pub driver: AdapterDriver,
@@ -230,7 +273,7 @@ pub struct AppManagerConfig {
     pub cache: CacheSettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ArrayConfig {
     pub apps: Vec<App>,
@@ -305,6 +348,7 @@ pub struct DatabaseConfig {
     pub mysql: DatabaseConnection,
     pub postgres: DatabaseConnection,
     pub redis: RedisConnection,
+    pub dynamodb: DynamoDbSettings, // ⬅️ Add this
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,7 +454,7 @@ pub struct PresenceConfig {
     pub max_member_size_in_kb: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct QueueConfig {
     pub driver: QueueDriver,
@@ -423,7 +467,7 @@ pub struct QueueConfig {
 #[serde(default)]
 pub struct RedisQueueConfig {
     pub concurrency: u32,
-    pub prefix: Option<String>,       // Optional prefix for this specific queue
+    pub prefix: Option<String>, // Optional prefix for this specific queue
     pub url_override: Option<String>, // Optional URL to override the global DatabaseConfig.redis.url
     pub cluster_mode: bool,
 }
@@ -441,12 +485,11 @@ pub struct RateLimit {
 #[serde(default)]
 pub struct RateLimiterConfig {
     pub enabled: bool,
-    pub driver: CacheDriver,
+    pub driver: CacheDriver, // Rate limiter backend often uses a cache driver
     pub api_rate_limit: RateLimit,
     pub websocket_rate_limit: RateLimit,
-    pub redis: RedisConfig,
+    pub redis: RedisConfig, // Specific Redis settings if Redis is chosen as backend
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -460,7 +503,7 @@ pub struct SslConfig {
     pub http_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct WebhooksConfig {
     pub batching: BatchingConfig,
@@ -523,16 +566,6 @@ impl Default for SqsQueueConfig {
     }
 }
 
-impl Default for AdapterConfig {
-    fn default() -> Self {
-        Self {
-            driver: AdapterDriver::default(),
-            redis: RedisAdapterConfig::default(),
-            cluster: RedisClusterAdapterConfig::default(),
-            nats: NatsAdapterConfig::default(),
-        }
-    }
-}
 
 impl Default for RedisAdapterConfig {
     fn default() -> Self {
@@ -572,7 +605,6 @@ impl Default for NatsAdapterConfig {
     }
 }
 
-
 impl Default for AppManagerConfig {
     fn default() -> Self {
         Self {
@@ -583,12 +615,14 @@ impl Default for AppManagerConfig {
     }
 }
 
-impl Default for ArrayConfig {
-    fn default() -> Self { Self { apps: Vec::new() } }
-}
 
 impl Default for CacheSettings {
-    fn default() -> Self { Self { enabled: true, ttl: 300 } }
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl: 300,
+        }
+    }
 }
 
 impl Default for MemoryCacheOptions {
@@ -674,6 +708,7 @@ impl Default for DatabaseConfig {
             mysql: DatabaseConnection::default(),
             postgres: DatabaseConnection::default(),
             redis: RedisConnection::default(),
+            dynamodb: Default::default(),
         }
     }
 }
@@ -713,15 +748,31 @@ impl Default for RedisConnection {
 }
 
 impl Default for RedisSentinel {
-    fn default() -> Self { Self { host: "localhost".to_string(), port: 26379 } }
+    fn default() -> Self {
+        Self {
+            host: "localhost".to_string(),
+            port: 26379,
+        }
+    }
 }
 
 impl Default for ClusterNode {
-    fn default() -> Self { Self { host: "127.0.0.1".to_string(), port: 7000 } }
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 7000,
+        }
+    }
 }
 
 impl Default for DatabasePooling {
-    fn default() -> Self { Self { enabled: true, min: 2, max: 10 } }
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min: 2,
+            max: 10,
+        }
+    }
 }
 
 impl Default for EventLimits {
@@ -745,11 +796,19 @@ impl Default for HttpApiConfig {
 }
 
 impl Default for AcceptTraffic {
-    fn default() -> Self { Self { memory_threshold: 0.90 } }
+    fn default() -> Self {
+        Self {
+            memory_threshold: 0.90,
+        }
+    }
 }
 
 impl Default for InstanceConfig {
-    fn default() -> Self { Self { process_id: uuid::Uuid::new_v4().to_string() } }
+    fn default() -> Self {
+        Self {
+            process_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
 }
 
 impl Default for MetricsConfig {
@@ -765,7 +824,11 @@ impl Default for MetricsConfig {
 }
 
 impl Default for PrometheusConfig {
-    fn default() -> Self { Self { prefix: "sockudo_".to_string() } }
+    fn default() -> Self {
+        Self {
+            prefix: "sockudo_".to_string(),
+        }
+    }
 }
 
 impl Default for PresenceConfig {
@@ -776,17 +839,6 @@ impl Default for PresenceConfig {
         }
     }
 }
-
-impl Default for QueueConfig {
-    fn default() -> Self {
-        Self {
-            driver: QueueDriver::default(),
-            redis: RedisQueueConfig::default(), // Uses updated RedisQueueConfig default
-            sqs: SqsQueueConfig::default(),
-        }
-    }
-}
-
 // Updated Default for new RedisQueueConfig structure
 impl Default for RedisQueueConfig {
     fn default() -> Self {
@@ -814,7 +866,7 @@ impl Default for RateLimiterConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            driver: CacheDriver::Memory,
+            driver: CacheDriver::Memory, // Default Rate Limiter backend to Memory
             api_rate_limit: RateLimit {
                 max_requests: 100,
                 window_seconds: 60,
@@ -828,6 +880,7 @@ impl Default for RateLimiterConfig {
                 trust_hops: Some(0),
             },
             redis: RedisConfig {
+                // Specific Redis settings if Redis is chosen as backend for rate limiting
                 prefix: Some("sockudo_rl:".to_string()),
                 url_override: None,
                 cluster_mode: false,
@@ -850,10 +903,11 @@ impl Default for SslConfig {
     }
 }
 
-impl Default for WebhooksConfig {
-    fn default() -> Self { Self { batching: BatchingConfig::default() } }
-}
-
 impl Default for BatchingConfig {
-    fn default() -> Self { Self { enabled: true, duration: 50 } }
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            duration: 50,
+        }
+    }
 }

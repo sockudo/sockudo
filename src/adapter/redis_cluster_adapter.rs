@@ -36,7 +36,6 @@ const RESPONSES_SUFFIX: &str = "#responses";
 
 /// Redis adapter configuration
 
-
 /// Redis adapter for horizontal scaling (Optimized Version)
 pub struct RedisClusterAdapter {
     /// Base horizontal adapter (protected by a Mutex)

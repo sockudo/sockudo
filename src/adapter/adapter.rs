@@ -1,4 +1,3 @@
-use std::any::Any;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::Result;
@@ -10,6 +9,7 @@ use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
