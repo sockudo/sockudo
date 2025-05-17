@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Pusher Compatible Server Tester</title>
+        <link rel="stylesheet" href="style.css" />
+        <script src="https://js.pusher.com/8.2.0/pusher.min.js"></script>
+    </head>
+    <body>
+        <h1>Pusher Compatible Server Tester</h1>
+
+        <div class="config-section card">
+            <h2>Configuration</h2>
+            <p>Loaded from backend:</p>
+            <pre id="config-display">Loading...</pre>
+            <button id="connect-btn" disabled>Connect</button>
+            <button id="disconnect-btn" disabled>Disconnect</button>
+            <p>Status: <strong id="connection-status">Disconnected</strong></p>
+        </div>
+
+        <div class="channels-section card">
+            <h2>Channels</h2>
+            <div class="channel-control">
+                <input
+                    type="text"
+                    id="channel-name"
+                    placeholder="Channel Name (e.g., public-test, private-secret, presence-room)"
+                />
+                <button id="subscribe-btn" disabled>Subscribe</button>
+            </div>
+            <h3>Subscribed Channels:</h3>
+            <ul id="subscribed-channels"></ul>
+        </div>
+
+        <div class="events-section card">
+            <h2>Send Client Event (Requires Subscribed Channel)</h2>
+            <label for="client-event-channel-select">Channel:</label>
+            <select id="client-event-channel-select" disabled>
+                <option value="">-- Select Channel --</option></select
+            ><br />
+            <input
+                type="text"
+                id="client-event-name"
+                placeholder="Event Name (e.g., client-message)"
+            />
+            <textarea
+                id="client-event-data"
+                placeholder='Event Data (JSON, e.g., {"message": "hello"})'
+            ></textarea>
+            <button id="send-client-event-btn" disabled>
+                Send Client Event
+            </button>
+            <p class="note">
+                Note: Your server must be configured to allow client events on
+                the selected channel.
+            </p>
+        </div>
+
+        <div class="logs-section">
+            <div class="log-column card">
+                <h2>Received Events Log</h2>
+                <button id="clear-events-log-btn">Clear Log</button>
+                <ul id="events-log"></ul>
+            </div>
+            <div class="log-column card">
+                <h2>
+                    Presence Members (<span id="presence-channel-name">N/A</span
+                    >)
+                </h2>
+                <p>
+                    Members Count:
+                    <strong id="presence-members-count">0</strong>
+                </p>
+                <ul id="presence-members"></ul>
+            </div>
+            <div class="log-column card">
+                <h2>Received Webhooks Log (From Backend)</h2>
+                <button id="fetch-webhooks-btn">Fetch Webhooks</button>
+                <button id="clear-webhooks-log-btn">Clear Log</button>
+                <ul id="webhooks-log"></ul>
+            </div>
+        </div>
+
+        <script src="app.js"></script>
+    </body>
+</html>

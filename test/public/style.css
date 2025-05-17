@@ -1,0 +1,170 @@
+/* style.css */
+body {
+    font-family: sans-serif;
+    line-height: 1.6;
+    margin: 20px;
+    background-color: #f4f4f4;
+}
+
+h1,
+h2,
+h3 {
+    color: #333;
+}
+
+.card {
+    background: #fff;
+    padding: 15px 20px;
+    margin-bottom: 20px;
+    border-radius: 5px;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+input[type="text"],
+textarea,
+select {
+    padding: 8px;
+    margin-right: 5px;
+    margin-bottom: 10px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    width: calc(100% - 22px); /* Adjust width */
+}
+textarea {
+    height: 60px;
+    display: block;
+    width: calc(100% - 22px);
+}
+
+select {
+    width: auto;
+    min-width: 150px;
+}
+
+button {
+    padding: 8px 15px;
+    background-color: #5cb85c;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    margin-right: 5px;
+    margin-bottom: 5px; /* Add margin for spacing */
+}
+button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+button#disconnect-btn {
+    background-color: #d9534f;
+}
+button#disconnect-btn:disabled {
+    background-color: #cccccc;
+}
+button#clear-events-log-btn,
+button#clear-webhooks-log-btn,
+button#fetch-webhooks-btn {
+    background-color: #f0ad4e;
+    font-size: 0.9em;
+    padding: 5px 10px;
+}
+
+pre {
+    background-color: #eee;
+    padding: 10px;
+    border-radius: 3px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 0.9em;
+}
+
+ul {
+    list-style: none;
+    padding: 0;
+}
+
+#events-log li,
+#presence-members li,
+#webhooks-log li {
+    background: #e9e9e9;
+    margin-bottom: 5px;
+    padding: 8px;
+    border-radius: 3px;
+    font-size: 0.9em;
+    word-wrap: break-word;
+}
+#events-log li .timestamp,
+#webhooks-log li .timestamp {
+    font-size: 0.8em;
+    color: #555;
+    display: block;
+}
+#events-log li .data,
+#webhooks-log li .data {
+    font-family: monospace;
+    white-space: pre-wrap;
+}
+
+.logs-section {
+    display: flex;
+    flex-wrap: wrap; /* Allow wrapping on smaller screens */
+    gap: 20px; /* Space between columns */
+}
+
+.log-column {
+    flex: 1; /* Each column tries to take equal space */
+    min-width: 300px; /* Minimum width before wrapping */
+    display: flex;
+    flex-direction: column; /* Stack elements vertically */
+}
+
+.log-column ul {
+    max-height: 400px;
+    overflow-y: auto; /* Add scrollbar if content overflows */
+    border: 1px solid #ddd;
+    padding: 5px;
+    flex-grow: 1; /* Allow list to grow to fill space */
+}
+
+#subscribed-channels li {
+    margin-bottom: 5px;
+    padding: 5px;
+    background-color: #f9f9f9;
+    border: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#subscribed-channels button {
+    background-color: #d9534f;
+    font-size: 0.8em;
+    padding: 3px 8px;
+}
+
+.note {
+    font-size: 0.9em;
+    color: #666;
+    margin-top: 10px;
+}
+
+.event-meta {
+    font-weight: bold;
+    color: #0056b3; /* Blue */
+}
+.event-meta .channel {
+    color: #006400; /* Dark Green */
+}
+.event-system {
+    color: #800080; /* Purple */
+}
+.event-error {
+    color: #dc3545; /* Red */
+    font-weight: bold;
+}
+.event-member {
+    color: #ff8c00; /* Dark Orange */
+}
+.event-client {
+    color: #007bff; /* Bright Blue */
+}
