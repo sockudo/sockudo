@@ -1,17 +1,16 @@
 // src/metrics/prometheus.rs
 
 use crate::error::{Error, Result};
-use crate::log::Log;
+
+use super::MetricsInterface;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
-use lazy_static::lazy_static;
 use prometheus::{
     register_counter_vec, register_gauge_vec, register_histogram_vec, CounterVec, GaugeVec,
     HistogramVec, Opts, TextEncoder,
 };
 use serde_json::{json, Value};
-
-use super::MetricsInterface;
+use tracing::{error, info};
 
 /// A Prometheus implementation of the metrics interface
 pub struct PrometheusMetricsDriver {
@@ -225,10 +224,13 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connected_sockets.with_label_values(&tags).inc();
         self.new_connections_total.with_label_values(&tags).inc();
 
-        Log::info(format!(
-            "Metrics: New connection for app {}, socket {}",
-            app_id, socket_id
-        ));
+        info!(
+            "{}",
+            format!(
+                "Metrics: New connection for app {}, socket {}",
+                app_id, socket_id
+            )
+        );
     }
 
     fn mark_disconnection(&self, app_id: &str, socket_id: &SocketId) {
@@ -236,10 +238,13 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connected_sockets.with_label_values(&tags).dec();
         self.new_disconnections_total.with_label_values(&tags).inc();
 
-        Log::info(format!(
-            "Metrics: Disconnection for app {}, socket {}",
-            app_id, socket_id
-        ));
+        info!(
+            "{}",
+            format!(
+                "Metrics: Disconnection for app {}, socket {}",
+                app_id, socket_id
+            )
+        );
     }
 
     fn mark_api_message(
@@ -322,7 +327,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
         encoder
             .encode_to_string(&metric_families)
             .unwrap_or_else(|e| {
-                Log::error(format!("Failed to encode metrics to string: {}", e));
+                error!("{}", format!("Failed to encode metrics to string: {}", e));
                 String::from("Error encoding metrics")
             })
     }
@@ -449,6 +454,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
     async fn clear(&self) {
         // Reset individual metrics counters - not fully supported by Prometheus Rust client
         // So we'll just log a message
-        Log::info("Metrics cleared (note: Prometheus metrics can't be fully cleared)");
+        info!(
+            "{}",
+            "Metrics cleared (note: Prometheus metrics can't be fully cleared)"
+        );
     }
 }

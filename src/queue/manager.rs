@@ -2,7 +2,7 @@
 // Seems fine, just delegates calls.
 
 use crate::error::Result;
-use crate::log::Log;
+
 use crate::queue::memory_queue_manager::MemoryQueueManager;
 use crate::queue::redis_queue_manager::RedisQueueManager;
 use crate::queue::{JobProcessorFn, QueueInterface};
@@ -11,6 +11,7 @@ use crate::webhook::types::JobData;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::Arc;
+use tracing::info;
 
 /// General Queue Manager interface wrapper
 pub struct QueueManagerFactory;
@@ -29,10 +30,13 @@ impl QueueManagerFactory {
                 let url = redis_url.unwrap_or("redis://127.0.0.1:6379/");
                 let prefix_str = prefix.unwrap_or("sockudo"); // Consider a more generic default or make it mandatory?
                 let concurrency_val = concurrency.unwrap_or(5); // Default concurrency
-                Log::info(format!(
-                    "Creating Redis queue manager (URL: {}, Prefix: {}, Concurrency: {})",
-                    url, prefix_str, concurrency_val
-                ));
+                info!(
+                    "{}",
+                    format!(
+                        "Creating Redis queue manager (URL: {}, Prefix: {}, Concurrency: {})",
+                        url, prefix_str, concurrency_val
+                    )
+                );
                 // Use `?` to propagate potential errors from RedisQueueManager::new
                 let manager = RedisQueueManager::new(url, prefix_str, concurrency_val).await?;
                 // Note: Redis workers are started via process_queue, not here.
@@ -40,7 +44,7 @@ impl QueueManagerFactory {
             }
             "memory" | _ => {
                 // Default to memory queue manager
-                Log::info("Creating Memory queue manager".to_string());
+                info!("{}", "Creating Memory queue manager".to_string());
                 let manager = MemoryQueueManager::new();
                 // Start the single processing loop for the memory manager *after* creation.
                 // The user needs to call process_queue afterwards to register processors.

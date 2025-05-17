@@ -1,5 +1,5 @@
 use crate::adapter::ConnectionHandler;
-use crate::log::Log;
+
 use crate::protocol::messages::{
     BatchPusherApiMessage, InfoQueryParser, PusherApiMessage, PusherMessage,
 };
@@ -180,7 +180,10 @@ async fn record_api_metrics(
             "Recorded API message metrics"
         );
     } else {
-        info!("Metrics system not available, skipping metrics recording.");
+        info!(
+            "{}",
+            "Metrics system not available, skipping metrics recording."
+        );
     }
 }
 
@@ -288,12 +291,12 @@ async fn process_single_event(
         None => match channel {
             Some(ch_str) => vec![ch_str],
             None => {
-                warn!("Missing 'channels' or 'channel' in event");
+                warn!("{}", "Missing 'channels' or 'channel' in event");
                 return Err(AppError::MissingChannelInfo);
             }
         },
         Some(_) => {
-            warn!("Empty 'channels' list provided in event");
+            warn!("{}", "Empty 'channels' list provided in event");
             return Err(AppError::MissingChannelInfo);
         }
     };
@@ -340,10 +343,13 @@ async fn process_single_event(
                             .insert("user_count".to_string(), json!(members_map.len()));
                     }
                     Err(e) => {
-                        Log::warning(format!(
+                        warn!(
+                            "{}",
+                            format!(
                             "Failed to get user count for channel {}: {} (internal error: {:?})",
                             target_channel_str, e, e
-                        ));
+                        )
+                        );
                     }
                 }
             }
@@ -378,7 +384,7 @@ async fn process_single_event(
             let cache_payload_str = match build_cache_payload(event_name_str, &payload_for_cache) {
                 Ok(payload) => payload,
                 Err(e) => {
-                    error!(channel = %target_channel_str, error = %e, "Failed to serialize event data for caching");
+                    error!( channel = %target_channel_str, error = %e, "Failed to serialize event data for caching");
                     continue;
                 }
             };
@@ -412,7 +418,7 @@ pub async fn events(
     State(handler): State<Arc<ConnectionHandler>>,
     Json(event_payload): Json<PusherApiMessage>,
 ) -> Result<impl IntoResponse, AppError> {
-    Log::info(format!("Received event: {:?}", event_payload));
+    info!("{}", format!("Received event: {:?}", event_payload));
 
     let app = handler
         .app_manager
@@ -517,7 +523,7 @@ pub async fn batch_events(
     )
     .await;
 
-    info!("Batch events processed successfully");
+    info!("{}", "Batch events processed successfully");
     Ok((StatusCode::OK, Json(final_response_payload)))
 }
 
@@ -780,7 +786,7 @@ pub async fn up(
 pub async fn metrics(
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Metrics endpoint called");
+    info!("{}", "Metrics endpoint called");
 
     let plaintext_metrics_str = match handler.metrics.clone() {
         Some(metrics_arc) => {
@@ -788,7 +794,10 @@ pub async fn metrics(
             metrics_data_guard.get_metrics_as_plaintext().await
         }
         None => {
-            info!("No metrics data available (metrics collection is not enabled).");
+            info!(
+                "{}",
+                "No metrics data available (metrics collection is not enabled)."
+            );
             "# Metrics collection is not enabled.\n".to_string()
         }
     };

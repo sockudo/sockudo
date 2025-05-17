@@ -1,9 +1,10 @@
 // src/rate_limiter/factory.rs
 use crate::rate_limiter::RateLimiter;
 use std::sync::Arc;
+use tracing::{error, info, warn};
 // Use the type-safe RedisConfig and CacheDriver from options.rs
 use crate::error::Result;
-use crate::log::Log;
+
 use crate::options::{
     CacheDriver, RateLimiterConfig, RedisConfig as RateLimiterRedisBackendConfig, RedisConnection,
 };
@@ -19,26 +20,33 @@ impl RateLimiterFactory {
         debug_enabled: bool,
     ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
         if !config.enabled {
-            Log::info(
+            info!(
+                "{}",
                 "HTTP API Rate limiting is globally disabled. Returning a permissive limiter."
                     .to_string(),
             );
             return Ok(Arc::new(MemoryRateLimiter::new(u32::MAX, 1))); // Allows all
         }
 
-        Log::info(format!(
-            "Initializing HTTP API RateLimiter with driver: {:?}",
-            config.driver
-        ));
+        info!(
+            "{}",
+            format!(
+                "Initializing HTTP API RateLimiter with driver: {:?}",
+                config.driver
+            )
+        );
         match config.driver {
             CacheDriver::Redis => {
                 // Assuming RateLimiter uses CacheDriver enum for its backend
                 // Determine if this Redis instance should be cluster or standalone
                 // based on the specific RateLimiterConfig.redis.cluster_mode
                 if config.redis.cluster_mode {
-                    Log::info("RateLimiter: Using Redis Cluster backend.".to_string());
+                    info!(
+                        "{}",
+                        "RateLimiter: Using Redis Cluster backend.".to_string()
+                    );
                     if global_redis_conn_details.cluster_nodes.is_empty() {
-                        Log::error("RateLimiter: Redis cluster mode enabled, but no cluster_nodes configured.".to_string());
+                        error!("{}", "RateLimiter: Redis cluster mode enabled, but no cluster_nodes configured.".to_string());
                         return Err(crate::error::Error::ConfigurationError(
                             "RateLimiter: Redis cluster nodes not configured.".to_string(),
                         ));
@@ -55,7 +63,7 @@ impl RateLimiterFactory {
 
                     // Here you would instantiate your RedisClusterRateLimiter
                     // For now, let's assume it's not implemented and fall back or error
-                    Log::warning("RedisClusterRateLimiter not yet implemented. Falling back to MemoryRateLimiter for HTTP API.".to_string());
+                    warn!("{}", "RedisClusterRateLimiter not yet implemented. Falling back to MemoryRateLimiter for HTTP API.".to_string());
                     let limiter = MemoryRateLimiter::new(
                         config.api_rate_limit.max_requests,
                         config.api_rate_limit.window_seconds,
@@ -65,7 +73,10 @@ impl RateLimiterFactory {
                     // let limiter = RedisClusterRateLimiter::new(nodes, prefix, config.api_rate_limit.max_requests, config.api_rate_limit.window_seconds).await?;
                     // Ok(Arc::new(limiter))
                 } else {
-                    Log::info("RateLimiter: Using standalone Redis backend.".to_string());
+                    info!(
+                        "{}",
+                        "RateLimiter: Using standalone Redis backend.".to_string()
+                    );
                     let redis_url = config.redis.url_override.clone().unwrap_or_else(|| {
                         format!(
                             "redis://{}:{}",
@@ -96,15 +107,16 @@ impl RateLimiterFactory {
             }
             CacheDriver::RedisCluster => {
                 // Explicit RedisCluster driver for RateLimiter backend
-                Log::info(
+                info!(
+                    "{}",
                     "RateLimiter: Using Redis Cluster backend (explicitly selected).".to_string(),
                 );
                 if global_redis_conn_details.cluster_nodes.is_empty() {
-                    Log::error("RateLimiter: Redis cluster driver selected, but no cluster_nodes configured.".to_string());
+                    error!("{}", "RateLimiter: Redis cluster driver selected, but no cluster_nodes configured.".to_string());
                     return Err(crate::error::Error::ConfigurationError("RateLimiter: Redis cluster nodes not configured for explicit cluster driver.".to_string()));
                 }
                 // As above, if RedisClusterRateLimiter is implemented:
-                Log::warning("RedisClusterRateLimiter not yet implemented. Falling back to MemoryRateLimiter for HTTP API.".to_string());
+                warn!("{}", "RedisClusterRateLimiter not yet implemented. Falling back to MemoryRateLimiter for HTTP API.".to_string());
                 let limiter = MemoryRateLimiter::new(
                     config.api_rate_limit.max_requests,
                     config.api_rate_limit.window_seconds,
@@ -113,7 +125,7 @@ impl RateLimiterFactory {
             }
             CacheDriver::Memory | _ => {
                 // Default to memory for rate limiter if driver is "memory" or unknown
-                Log::info("Using memory rate limiter for HTTP API.".to_string());
+                info!("{}", "Using memory rate limiter for HTTP API.".to_string());
                 let limiter = MemoryRateLimiter::new(
                     config.api_rate_limit.max_requests,
                     config.api_rate_limit.window_seconds,

@@ -3,6 +3,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::adapter::adapter::Adapter;
+use crate::adapter::horizontal_adapter::{
+    BroadcastMessage, HorizontalAdapter, RequestBody, RequestType, ResponseBody,
+};
+use crate::app::manager::AppManager;
+use crate::channel::PresenceMemberInfo;
+use crate::error::{Error, Result};
 use async_nats::{Client as NatsClient, ConnectOptions as NatsOptions, Subject};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
@@ -12,15 +19,8 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
+use tracing::{error, info, warn};
 
-use crate::adapter::adapter::Adapter;
-use crate::adapter::horizontal_adapter::{
-    BroadcastMessage, HorizontalAdapter, RequestBody, RequestType, ResponseBody,
-};
-use crate::app::manager::AppManager;
-use crate::channel::PresenceMemberInfo;
-use crate::error::{Error, Result};
-use crate::log::Log;
 use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 pub(crate) use crate::options::NatsAdapterConfig;
@@ -58,7 +58,7 @@ impl NatsAdapter {
     pub async fn new(config: NatsAdapterConfig) -> Result<Self> {
         // Create the base horizontal adapter
         let mut horizontal = HorizontalAdapter::new();
-        Log::info(format!("NATS adapter config: {:?}", config)); // Borrows config temporarily
+        info!("{}", format!("NATS adapter config: {:?}", config)); // Borrows config temporarily
 
         // Set timeout
         horizontal.requests_timeout = config.request_timeout_ms; // Accesses field (likely Copy)
@@ -175,10 +175,13 @@ impl NatsAdapter {
                 Error::InternalError(format!("Failed to subscribe to response subject: {}", e))
             })?;
 
-        Log::info(format!(
-            "NATS adapter listening on subjects: {}, {}, {}",
-            broadcast_subject, request_subject, response_subject
-        ));
+        info!(
+            "{}",
+            format!(
+                "NATS adapter listening on subjects: {}, {}, {}",
+                broadcast_subject, request_subject, response_subject
+            )
+        );
 
         // Spawn a task to handle broadcast messages
         let broadcast_horizontal = horizontal_arc.clone();
@@ -212,7 +215,7 @@ impl NatsAdapter {
                                 // Lock released automatically when horizontal_lock goes out of scope
                             }
                             Err(e) => {
-                                Log::warning(format!(
+                                warn!("{}", format!(
                                     "Failed to deserialize broadcast inner message: {}, Payload: {}",
                                     e, broadcast.message
                                 ));
@@ -220,14 +223,17 @@ impl NatsAdapter {
                         }
                     }
                     Err(e) => {
-                        Log::warning(format!(
-                            "Failed to deserialize broadcast message: {}, Payload: {:?}",
-                            e, msg.payload
-                        ));
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to deserialize broadcast message: {}, Payload: {:?}",
+                                e, msg.payload
+                            )
+                        );
                     }
                 }
             }
-            Log::info("NATS broadcast listener stream ended.");
+            info!("{}", "NATS broadcast listener stream ended.");
         });
 
         // Spawn a task to handle request messages
@@ -261,24 +267,27 @@ impl NatsAdapter {
                                         )
                                         .await
                                     {
-                                        Log::error(format!("Failed to publish response: {}", e));
+                                        error!("{}", format!("Failed to publish response: {}", e));
                                     }
                                 }
                                 Err(e) => {
-                                    Log::error(format!("Failed to serialize response: {}", e));
+                                    error!("{}", format!("Failed to serialize response: {}", e));
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        Log::warning(format!(
-                            "Failed to deserialize request message: {}, Payload: {:?}",
-                            e, msg.payload
-                        ));
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to deserialize request message: {}, Payload: {:?}",
+                                e, msg.payload
+                            )
+                        );
                     }
                 }
             }
-            Log::info("NATS request listener stream ended.");
+            info!("{}", "NATS request listener stream ended.");
         });
 
         // Spawn a task to handle response messages
@@ -299,14 +308,17 @@ impl NatsAdapter {
                         // Lock released automatically
                     }
                     Err(e) => {
-                        Log::warning(format!(
-                            "Failed to deserialize response message: {}, Payload: {:?}",
-                            e, msg.payload
-                        ));
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to deserialize response message: {}, Payload: {:?}",
+                                e, msg.payload
+                            )
+                        );
                     }
                 }
             }
-            Log::info("NATS response listener stream ended.");
+            info!("{}", "NATS response listener stream ended.");
         });
 
         Ok(())
@@ -370,7 +382,7 @@ impl Adapter for NatsAdapter {
 
         // Start NATS listeners (already optimized)
         if let Err(e) = self.start_listeners().await {
-            Log::error(format!("Failed to start NATS listeners: {}", e));
+            error!("{}", format!("Failed to start NATS listeners: {}", e));
             // Consider returning the error or handling it more gracefully
         }
     }
@@ -447,10 +459,13 @@ impl Adapter for NatsAdapter {
 
             // Log local send errors if necessary, but continue to broadcast
             if let Err(e) = local_send_result {
-                Log::warning_title(format!(
-                    "Local send failed during broadcast for channel {}: {}",
-                    channel, e
-                ));
+                warn!(
+                    "{}",
+                    format!(
+                        "Local send failed during broadcast for channel {}: {}",
+                        channel, e
+                    )
+                );
             }
 
             // 2. Prepare data needed for broadcast *outside* the lock
@@ -477,7 +492,7 @@ impl Adapter for NatsAdapter {
             except_socket_id: broadcast_data.2,
         };
 
-        Log::info(format!("Broadcasting message: {:?}", broadcast));
+        info!("{}", format!("Broadcasting message: {:?}", broadcast));
 
         // 6. Serialize broadcast message (outside the lock)
         let broadcast_data = serde_json::to_vec(&broadcast)?;
@@ -595,29 +610,35 @@ impl Adapter for NatsAdapter {
         let node_count = self.get_node_count().await?; // Get count first
         let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
 
-        Log::warning(format!(
-            "Checking if socket {} is in channel {} locally",
-            socket_id, channel
-        ));
+        warn!(
+            "{}",
+            format!(
+                "Checking if socket {} is in channel {} locally",
+                socket_id, channel
+            )
+        );
         let local_result = horizontal
             .local_adapter
             .is_in_channel(app_id, channel, socket_id)
             .await?;
 
         if local_result {
-            Log::warning_title(format!(
-                "Socket {} found in channel {} locally",
-                socket_id, channel
-            ));
+            warn!(
+                "{}",
+                format!("Socket {} found in channel {} locally", socket_id, channel)
+            );
             return Ok(true);
         }
 
         // If not found locally, check other nodes if they exist
         if node_count > 1 {
-            Log::warning_title(format!(
-                "Checking remote nodes for socket {} in channel {}",
-                socket_id, channel
-            ));
+            warn!(
+                "{}",
+                format!(
+                    "Checking remote nodes for socket {} in channel {}",
+                    socket_id, channel
+                )
+            );
             // send_request handles its own locking/timing
             let response_data = horizontal
                 .send_request(
@@ -629,17 +650,23 @@ impl Adapter for NatsAdapter {
                     node_count,
                 )
                 .await?;
-            Log::warning_title(format!(
-                "Remote check result for socket {} in channel {}: {}",
-                socket_id, channel, response_data.exists
-            ));
+            warn!(
+                "{}",
+                format!(
+                    "Remote check result for socket {} in channel {}: {}",
+                    socket_id, channel, response_data.exists
+                )
+            );
             return Ok(response_data.exists);
         }
 
-        Log::warning_title(format!(
+        warn!(
+            "{}",
+            format!(
             "Socket {} NOT found in channel {} (only local node checked or remote check negative)",
             socket_id, channel
-        ));
+        )
+        );
         Ok(false) // Not found locally, and no other nodes or not found remotely
     }
 
@@ -699,10 +726,13 @@ impl Adapter for NatsAdapter {
             {
                 Ok(response_data) => local_count + response_data.sockets_count,
                 Err(e) => {
-                    Log::error(format!(
-                        "Failed to get remote socket count for channel {}: {}",
-                        channel, e
-                    ));
+                    error!(
+                        "{}",
+                        format!(
+                            "Failed to get remote socket count for channel {}: {}",
+                            channel, e
+                        )
+                    );
                     local_count // Return local count on error
                 }
             }
@@ -719,10 +749,10 @@ impl Adapter for NatsAdapter {
     ) -> Result<bool> {
         // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
-        Log::warning_title(format!(
-            "Adding socket {} to channel {}",
-            socket_id, channel
-        ));
+        warn!(
+            "{}",
+            format!("Adding socket {} to channel {}", socket_id, channel)
+        );
         horizontal
             .local_adapter
             .add_to_channel(app_id, channel, socket_id)

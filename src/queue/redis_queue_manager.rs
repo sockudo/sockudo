@@ -1,4 +1,3 @@
-use crate::log::Log;
 use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
@@ -10,6 +9,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tracing::{error, info};
 
 pub struct RedisQueueManager {
     redis_connection: Arc<Mutex<MultiplexedConnection>>,
@@ -80,7 +80,7 @@ impl QueueInterface for RedisQueueManager {
                 ))
             })?; // Use custom error type
 
-        // Log::info(format!("Added job to Redis queue: {}", queue_name)); // Optional: reduce log verbosity
+        // info!("{}", format!("Added job to Redis queue: {}", queue_name)); // Optional: reduce log verbosity
 
         Ok(())
     }
@@ -102,10 +102,13 @@ impl QueueInterface for RedisQueueManager {
         // Store the Arc'd callback
         self.job_processors
             .insert(queue_name.to_string(), processor_arc.clone());
-        Log::info(format!(
-            "Registered processor and starting workers for Redis queue: {}",
-            queue_name
-        ));
+        info!(
+            "{}",
+            format!(
+                "Registered processor and starting workers for Redis queue: {}",
+                queue_name
+            )
+        );
 
         // Start worker tasks
         for i in 0..self.concurrency {
@@ -115,10 +118,13 @@ impl QueueInterface for RedisQueueManager {
             let worker_queue_name = queue_name.to_string(); // Clone queue name for logging
 
             tokio::spawn(async move {
-                Log::info(format!(
-                    "Starting Redis queue worker {} for queue: {}",
-                    i, worker_queue_name
-                ));
+                info!(
+                    "{}",
+                    format!(
+                        "Starting Redis queue worker {} for queue: {}",
+                        i, worker_queue_name
+                    )
+                );
 
                 loop {
                     let blpop_result: RedisResult<Option<(String, String)>> = {
@@ -136,16 +142,16 @@ impl QueueInterface for RedisQueueManager {
                                     // Execute the job processing callback
                                     match worker_processor(job_data).await {
                                         Ok(_) => {
-                                            Log::info(format!("Worker finished"));
+                                            info!("{}", format!("Worker finished"));
                                         }
                                         Err(e) => {
-                                            Log::error(format!("Worker error: {}", e));
+                                            error!("{}", format!("Worker error: {}", e));
                                         }
                                     }
                                 }
                                 Err(e) => {
                                     // Failed to deserialize the job data
-                                    Log::error(format!("[Worker {}] Error deserializing job data from Redis queue {}: {}. Data: '{}'", i, worker_queue_name, e, job_data_str));
+                                    error!("{}", format!("[Worker {}] Error deserializing job data from Redis queue {}: {}. Data: '{}'", i, worker_queue_name, e, job_data_str));
                                     // Potential: Move corrupted data to a specific place?
                                 }
                             }
@@ -157,10 +163,13 @@ impl QueueInterface for RedisQueueManager {
                         }
                         // Redis error during BLPOP
                         Err(e) => {
-                            Log::error(format!(
-                                "[Worker {}] Redis BLPOP error on queue {}: {}",
-                                i, worker_queue_name, e
-                            ));
+                            error!(
+                                "{}",
+                                format!(
+                                    "[Worker {}] Redis BLPOP error on queue {}: {}",
+                                    i, worker_queue_name, e
+                                )
+                            );
                             // Avoid hammering Redis on persistent errors
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }

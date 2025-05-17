@@ -1,7 +1,7 @@
 // src/webhook/lambda_sender.rs
 
 use crate::error::{Error, Result};
-use crate::log::Log;
+
 use crate::webhook::types::{LambdaConfig, PusherWebhookPayload, Webhook}; // Added PusherWebhookPayload for clarity
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_lambda::config::Region; // Credentials not directly used here for client creation
@@ -12,6 +12,7 @@ use aws_sdk_lambda::types::InvocationType;
 use aws_sdk_lambda::Client as LambdaClient;
 use serde_json::{json, Value};
 use std::time::Duration;
+use tracing::{error, info, warn};
 
 /// Handles invoking AWS Lambda functions for webhooks
 #[derive(Clone)]
@@ -76,7 +77,7 @@ impl LambdaWebhookSender {
             None => {
                 // If 'lambda' is None, try the legacy 'lambda_function' string.
                 if let Some(function_name_str) = &webhook.lambda_function {
-                    Log::warning(format!(
+                    warn!("{}", format!(
                         "Webhook for app {} uses legacy 'lambda_function' field. Defaulting region to 'us-east-1'. Consider updating to structured 'lambda' config.",
                         app_id
                     ));
@@ -89,10 +90,13 @@ impl LambdaWebhookSender {
                     &temp_owned_config
                 } else {
                     // If both 'lambda' and 'lambda_function' are None, it's an error.
-                    Log::error(format!(
-                        "Missing Lambda configuration in webhook for app_id: {}",
-                        app_id
-                    ));
+                    error!(
+                        "{}",
+                        format!(
+                            "Missing Lambda configuration in webhook for app_id: {}",
+                            app_id
+                        )
+                    );
                     return Err(Error::InternalError(
                         "Missing Lambda configuration: Neither 'lambda' struct nor 'lambda_function' string provided.".to_string(),
                     ));
@@ -110,7 +114,7 @@ impl LambdaWebhookSender {
             ))
         })?;
 
-        Log::webhook_sender(format!(
+        info!("{}", format!(
             "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
             lambda_config_ref.function_name, lambda_config_ref.region, app_id, triggering_event_name, payload_bytes.len()
         ));
@@ -124,17 +128,20 @@ impl LambdaWebhookSender {
             .await
         {
             Ok(_) => {
-                Log::webhook_sender(format!(
+                info!("{}", format!(
                     "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
                     lambda_config_ref.function_name, app_id, triggering_event_name
                 ));
                 Ok(())
             }
             Err(e) => {
-                Log::error(format!(
-                    "Failed to invoke Lambda function {}: {}",
-                    lambda_config_ref.function_name, e
-                ));
+                error!(
+                    "{}",
+                    format!(
+                        "Failed to invoke Lambda function {}: {}",
+                        lambda_config_ref.function_name, e
+                    )
+                );
                 Err(Error::Other(format!(
                     "Failed to invoke Lambda function: {}",
                     e
@@ -179,7 +186,7 @@ impl LambdaWebhookSender {
             ))
         })?;
 
-        Log::webhook_sender(format!(
+        info!("{}", format!(
             "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
             lambda_config_ref.function_name, app_id, triggering_event_name
         ));
@@ -197,24 +204,27 @@ impl LambdaWebhookSender {
                 if let Some(response_payload_blob) = output.payload() {
                     match serde_json::from_slice::<Value>(response_payload_blob.as_ref()) {
                         Ok(json_response) => {
-                            Log::webhook_sender(format!(
+                            info!("{}", format!(
                                 "Received response from Lambda function {}: {:?}",
                                 lambda_config_ref.function_name, json_response
                             ));
                             Ok(Some(json_response))
                         }
                         Err(e) => {
-                            Log::warning(format!(
+                            warn!(
+                                "{}",
+                                format!(
                                 "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
                                 e, response_payload_blob
-                            ));
+                            )
+                            );
                             let response_str =
                                 String::from_utf8_lossy(response_payload_blob.as_ref());
                             Ok(Some(json!({"raw_response": response_str.to_string() })))
                         }
                     }
                 } else {
-                    Log::webhook_sender(format!(
+                    info!("{}", format!(
                         "Lambda function {} returned no payload",
                         lambda_config_ref.function_name
                     ));
@@ -222,10 +232,13 @@ impl LambdaWebhookSender {
                 }
             }
             Err(e) => {
-                Log::error(format!(
-                    "Failed to invoke Lambda function {} synchronously: {}",
-                    lambda_config_ref.function_name, e
-                ));
+                error!(
+                    "{}",
+                    format!(
+                        "Failed to invoke Lambda function {} synchronously: {}",
+                        lambda_config_ref.function_name, e
+                    )
+                );
                 Err(Error::Other(format!(
                     "Failed to invoke Lambda function synchronously: {}",
                     e

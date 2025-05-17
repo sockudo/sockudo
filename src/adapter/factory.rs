@@ -5,9 +5,10 @@ use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterConfig as RedisAda
 use crate::adapter::redis_cluster_adapter::{RedisClusterAdapter, RedisClusterAdapterConfig};
 use crate::adapter::Adapter;
 use crate::error::Result;
-use crate::log::Log;
+
 use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig, RedisConnection}; // Import AdapterDriver, RedisConnection
 use std::sync::Arc;
+use tracing::{info, warn};
 
 pub struct AdapterFactory;
 
@@ -17,10 +18,10 @@ impl AdapterFactory {
         db_config: &DatabaseConfig,
         debug_enabled: bool,
     ) -> Result<Box<dyn Adapter + Send + Sync>> {
-        Log::info(format!(
-            "Initializing Adapter with driver: {:?}",
-            config.driver
-        ));
+        info!(
+            "{}",
+            format!("Initializing Adapter with driver: {:?}", config.driver)
+        );
         match config.driver {
             // Match on the enum
             AdapterDriver::Redis => {
@@ -44,10 +45,13 @@ impl AdapterFactory {
                 match RedisAdapter::new(adapter_options).await {
                     Ok(adapter) => Ok(Box::new(adapter)),
                     Err(e) => {
-                        Log::warning(format!(
+                        warn!(
+                            "{}",
+                            format!(
                             "Failed to initialize Redis adapter: {}, falling back to local adapter",
                             e
-                        ));
+                        )
+                        );
                         Ok(Box::new(LocalAdapter::new()))
                     }
                 }
@@ -66,7 +70,7 @@ impl AdapterFactory {
                 };
 
                 if nodes.is_empty() {
-                    Log::warning("Redis Cluster Adapter selected, but no nodes configured. Falling back to local adapter.".to_string());
+                    warn!("{}", "Redis Cluster Adapter selected, but no nodes configured. Falling back to local adapter.".to_string());
                     return Ok(Box::new(LocalAdapter::new()));
                 }
 
@@ -80,7 +84,7 @@ impl AdapterFactory {
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
                     Ok(adapter) => Ok(Box::new(adapter)),
                     Err(e) => {
-                        Log::warning(format!("Failed to initialize Redis Cluster adapter: {}, falling back to local adapter", e));
+                        warn!("{}", format!("Failed to initialize Redis Cluster adapter: {}, falling back to local adapter", e));
                         Ok(Box::new(LocalAdapter::new()))
                     }
                 }
@@ -100,17 +104,20 @@ impl AdapterFactory {
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(adapter) => Ok(Box::new(adapter)),
                     Err(e) => {
-                        Log::warning(format!(
+                        warn!(
+                            "{}",
+                            format!(
                             "Failed to initialize NATS adapter: {}, falling back to local adapter",
                             e
-                        ));
+                        )
+                        );
                         Ok(Box::new(LocalAdapter::new()))
                     }
                 }
             }
             AdapterDriver::Local | _ => {
                 // Handle unknown as Local or make it an error
-                Log::info("Using local adapter.".to_string());
+                info!("{}", "Using local adapter.".to_string());
                 Ok(Box::new(LocalAdapter::new()))
             }
         }

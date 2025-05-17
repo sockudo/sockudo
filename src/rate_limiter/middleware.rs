@@ -167,7 +167,7 @@ where
                 Err(e) => {
                     error!("Rate limiter backend error for key '{}': {}", final_key, e);
                     if options.fail_open {
-                        warn!(key = %final_key, "Rate limiter failed open");
+                        warn!("{}", "Rate limiter failed open");
                         RateLimitResult {
                             allowed: true,
                             remaining: 0,
@@ -264,7 +264,10 @@ impl Default for IpKeyExtractor {
 impl KeyExtractor for IpKeyExtractor {
     fn extract<B>(&self, req: &HyperRequest<B>) -> Result<String, RateLimitMiddlewareError> {
         Ok(self.get_ip(req).unwrap_or_else(|| {
-            warn!("Could not extract IP address for rate limiting, falling back to 'unknown_ip'");
+            warn!(
+                "{}",
+                "Could not extract IP address for rate limiting, falling back to 'unknown_ip'"
+            );
             "unknown_ip".to_string()
         }))
     }

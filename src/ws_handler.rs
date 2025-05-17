@@ -1,10 +1,11 @@
 use crate::adapter::ConnectionHandler;
-use crate::log::Log;
+
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use fastwebsockets::upgrade;
 use serde::Deserialize;
 use std::sync::Arc;
+use tracing::log::error;
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectionQuery {
@@ -23,7 +24,7 @@ pub async fn handle_ws_upgrade(
     let (response, fut) = ws.upgrade().unwrap();
     tokio::task::spawn(async move {
         if let Err(e) = handler.handle_socket(fut, app_key).await {
-            Log::error(format!("Error handling socket: {}", e));
+            error!("{}", format!("Error handling socket: {}", e));
         }
     });
     response

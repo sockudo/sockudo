@@ -1,7 +1,7 @@
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
-use crate::log::Log;
+
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{ConnectionState, SocketId, WebSocket, WebSocketRef}; // Assuming WebSocketRef is defined (e.g., pub struct WebSocketRef(Arc<Mutex<WebSocket>>);)
 use dashmap::{DashMap, DashSet};
@@ -16,6 +16,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use tokio::io::WriteHalf;
 use tokio::sync::{mpsc, Mutex};
+use tracing::{error, info, warn};
 // use tokio::sync::Semaphore; // Semaphore seems unused
 
 // Represents a namespace, typically tied to a specific application ID.
@@ -65,10 +66,13 @@ impl Namespace {
             }
             Ok(None) => {
                 // App not found, log error and potentially close connection early.
-                Log::error(format!(
-                    "App not found for app_id: {}. Cannot fully initialize socket: {}",
-                    self.app_id, socket_id
-                ));
+                error!(
+                    "{}",
+                    format!(
+                        "App not found for app_id: {}. Cannot fully initialize socket: {}",
+                        self.app_id, socket_id
+                    )
+                );
                 // Decide on error handling: maybe send an error frame and close?
                 // For now, it proceeds without app config.
                 // Consider sending a close frame immediately:
@@ -76,10 +80,13 @@ impl Namespace {
                 // return;
             }
             Err(e) => {
-                Log::error(format!(
-                    "Failed to get app {} for socket {}: {}",
-                    self.app_id, socket_id, e
-                ));
+                error!(
+                    "{}",
+                    format!(
+                        "Failed to get app {} for socket {}: {}",
+                        self.app_id, socket_id, e
+                    )
+                );
                 // Decide on error handling.
                 // let _ = socket.write_frame(Frame::close(1011, b"Internal server error")).await;
                 // return;
@@ -110,10 +117,13 @@ impl Namespace {
                 if let Some(socket) = &mut connection_guard.socket {
                     // Attempt to send the frame over the WebSocket.
                     if let Err(e) = socket.write_frame(frame).await {
-                        Log::error(format!(
-                            "Failed to send frame to socket {}: {}. Closing send loop.",
-                            socket_id, e
-                        ));
+                        error!(
+                            "{}",
+                            format!(
+                                "Failed to send frame to socket {}: {}. Closing send loop.",
+                                socket_id, e
+                            )
+                        );
                         // Error likely means the connection is broken or closed.
                         // Remove the socket write half to prevent further writes.
                         connection_guard.socket.take();
@@ -122,17 +132,20 @@ impl Namespace {
                     }
                 } else {
                     // If connection_guard.socket is None, it means the socket was already closed/taken elsewhere.
-                    Log::info(format!(
-                        "Send loop for socket {} stopping: WebSocket already closed.",
-                        socket_id
-                    ));
+                    info!(
+                        "{}",
+                        format!(
+                            "Send loop for socket {} stopping: WebSocket already closed.",
+                            socket_id
+                        )
+                    );
                     break;
                 }
                 // Drop the lock guard before waiting for the next message.
                 drop(connection_guard);
             }
             // Optional: Log when the send loop terminates naturally (e.g., channel closed).
-            // Log::info(format!("Send loop for socket {} finished.", socket_id));
+            // info!("{}", format!("Send loop for socket {} finished.", socket_id));
         });
     }
 
@@ -173,7 +186,10 @@ impl Namespace {
             let conn_guard = connection.lock().await;
             conn_guard.message_sender.send(frame).map_err(|e| {
                 // If send fails, the receiver task likely terminated (connection closed).
-                Log::warning(format!("Failed to queue message for {}: {}", socket_id, e));
+                warn!(
+                    "{}",
+                    format!("Failed to queue message for {}: {}", socket_id, e)
+                );
                 Error::ConnectionError(format!(
                     "Failed to send message: receiver closed for {}",
                     socket_id
@@ -181,10 +197,13 @@ impl Namespace {
             })?;
         } else {
             // Log if the target socket doesn't exist (it might have disconnected).
-            Log::warning(format!(
-                "Attempted to send message to non-existent socket: {}",
-                socket_id
-            ));
+            warn!(
+                "{}",
+                format!(
+                    "Attempted to send message to non-existent socket: {}",
+                    socket_id
+                )
+            );
             // Depending on requirements, this could return an error:
             // return Err(Error::NotFound(format!("Socket {} not found", socket_id)));
         }
@@ -224,10 +243,13 @@ impl Namespace {
                         let conn_guard = connection.lock().await;
                         if let Err(e) = conn_guard.message_sender.send(frame) {
                             // Log send errors but continue broadcasting to others.
-                            Log::warning(format!(
-                                "Failed to queue broadcast message for socket {:?}: {:?}",
-                                socket_id.0, e
-                            ));
+                            warn!(
+                                "{}",
+                                format!(
+                                    "Failed to queue broadcast message for socket {:?}: {:?}",
+                                    socket_id.0, e
+                                )
+                            );
                             // Don't propagate this error, as broadcast should be best-effort.
                         }
                         // Drop the lock guard.
@@ -239,10 +261,13 @@ impl Namespace {
             }
         } else {
             // Log if the channel doesn't exist or has no subscribers.
-            Log::info(format!(
-                "Broadcast attempted on non-existent or empty channel: {}",
-                channel
-            ));
+            info!(
+                "{}",
+                format!(
+                    "Broadcast attempted on non-existent or empty channel: {}",
+                    channel
+                )
+            );
         }
 
         Ok(())
@@ -286,10 +311,13 @@ impl Namespace {
             }
         } else {
             // Channel doesn't exist, return empty map.
-            Log::info(format!(
-                "get_channel_members called on non-existent channel: {}",
-                channel
-            ));
+            info!(
+                "{}",
+                format!(
+                    "get_channel_members called on non-existent channel: {}",
+                    channel
+                )
+            );
         }
 
         Ok(presence_members)
@@ -349,7 +377,10 @@ impl Namespace {
         };
 
         // Log the cleanup attempt.
-        Log::info(format!("Cleaning up connection for socket: {}", socket_id));
+        info!(
+            "{}",
+            format!("Cleaning up connection for socket: {}", socket_id)
+        );
 
         // Send disconnect message (best effort).
         let disconnect_message = PusherMessage::error(
@@ -363,10 +394,13 @@ impl Namespace {
         let error_payload = match serde_json::to_string(&disconnect_message) {
             Ok(payload) => Some(payload),
             Err(e) => {
-                Log::error(format!(
-                    "Failed to serialize disconnect message for {}: {}",
-                    socket_id, e
-                ));
+                error!(
+                    "{}",
+                    format!(
+                        "Failed to serialize disconnect message for {}: {}",
+                        socket_id, e
+                    )
+                );
                 None
             }
         };
@@ -420,19 +454,22 @@ impl Namespace {
                 // If the user's socket set is now empty, remove the user entry entirely.
                 if is_empty {
                     self.users.remove(&user_id);
-                    Log::info(format!("Removed empty user entry for: {}", user_id));
+                    info!("{}", format!("Removed empty user entry for: {}", user_id));
                 }
             }
         }
 
         // Finally, remove the socket from the main sockets map.
         if self.sockets.remove(&socket_id).is_some() {
-            Log::info(format!("Removed socket {} from main map.", socket_id));
+            info!("{}", format!("Removed socket {} from main map.", socket_id));
         } else {
-            Log::warning(format!(
-                "Socket {} already removed from main map during cleanup.",
-                socket_id
-            ));
+            warn!(
+                "{}",
+                format!(
+                    "Socket {} already removed from main map during cleanup.",
+                    socket_id
+                )
+            );
         }
     }
 
@@ -446,18 +483,24 @@ impl Namespace {
         };
 
         if connections_to_terminate.is_empty() {
-            Log::info(format!(
-                "No active connections found to terminate for user: {}",
-                user_id
-            ));
+            info!(
+                "{}",
+                format!(
+                    "No active connections found to terminate for user: {}",
+                    user_id
+                )
+            );
             return Ok(());
         }
 
-        Log::info(format!(
-            "Terminating {} connections for user: {}",
-            connections_to_terminate.len(),
-            user_id
-        ));
+        info!(
+            "{}",
+            format!(
+                "Terminating {} connections for user: {}",
+                connections_to_terminate.len(),
+                user_id
+            )
+        );
 
         // Create futures for cleaning up each connection concurrently.
         let mut cleanup_futures = Vec::new();
@@ -469,10 +512,10 @@ impl Namespace {
         // Wait for all cleanup tasks to complete.
         join_all(cleanup_futures).await;
 
-        Log::info(format!(
-            "Finished terminating connections for user: {}",
-            user_id
-        ));
+        info!(
+            "{}",
+            format!("Finished terminating connections for user: {}", user_id)
+        );
 
         // Note: The user entry in `self.users` might still exist briefly if cleanup_connection
         // hasn't removed it yet, but it should be removed shortly after by those tasks.
@@ -504,7 +547,7 @@ impl Namespace {
             if is_empty {
                 // Remove the channel entry itself if no sockets remain.
                 self.channels.remove(channel);
-                Log::info(format!("Removed empty channel entry: {}", channel));
+                info!("{}", format!("Removed empty channel entry: {}", channel));
             }
             return removed.is_some(); // Return whether the socket was actually in the set.
         } else {
@@ -517,7 +560,7 @@ impl Namespace {
     // Typically called after cleanup_connection.
     pub fn remove_connection(&self, socket_id: &SocketId) {
         if self.sockets.remove(socket_id).is_some() {
-            Log::info(format!("Explicitly removed socket: {}", socket_id));
+            info!("{}", format!("Explicitly removed socket: {}", socket_id));
         }
     }
 
@@ -539,7 +582,7 @@ impl Namespace {
     // Removes a channel entry entirely, regardless of subscribers.
     pub fn remove_channel(&self, channel: &str) {
         self.channels.remove(channel);
-        Log::info(format!("Removed channel entry: {}", channel));
+        info!("{}", format!("Removed channel entry: {}", channel));
     }
 
     // Checks if a specific socket is subscribed to a specific channel.
@@ -593,17 +636,23 @@ impl Namespace {
                 // Add the WebSocket reference (assuming WebSocketRef wraps the Arc).
                 // Requires WebSocketRef to implement Clone, Eq, Hash.
                 user_sockets_ref.insert(WebSocketRef(ws.clone())); // Assuming WebSocketRef(Arc<Mutex<WebSocket>>)
-                Log::info(format!(
-                    "Added socket {} to user {}",
-                    ws.lock().await.state.socket_id,
-                    user_id
-                ));
+                info!(
+                    "{}",
+                    format!(
+                        "Added socket {} to user {}",
+                        ws.lock().await.state.socket_id,
+                        user_id
+                    )
+                );
             } else {
                 // Log if user data is present but lacks a valid 'id' field.
-                Log::warning(format!(
-                    "User data found for socket {} but missing 'id' string field.",
-                    ws.lock().await.state.socket_id // Re-lock is okay for logging
-                ));
+                warn!(
+                    "{}",
+                    format!(
+                        "User data found for socket {} but missing 'id' string field.",
+                        ws.lock().await.state.socket_id // Re-lock is okay for logging
+                    )
+                );
                 // Potentially return an error here depending on requirements.
                 // return Err(Error::InvalidData("User data missing 'id'".to_string()));
             }
@@ -637,24 +686,30 @@ impl Namespace {
                     drop(user_sockets_ref);
 
                     if removed.is_some() {
-                        Log::info(format!(
-                            "Removed socket {} from user {}",
-                            socket_id, user_id_str
-                        ));
+                        info!(
+                            "{}",
+                            format!("Removed socket {} from user {}", socket_id, user_id_str)
+                        );
                     }
 
                     // If the set becomes empty, remove the user entry from the map.
                     if is_empty {
                         self.users.remove(user_id_str);
-                        Log::info(format!("Removed empty user entry for: {}", user_id_str));
+                        info!(
+                            "{}",
+                            format!("Removed empty user entry for: {}", user_id_str)
+                        );
                     }
                 }
                 // If user_sockets_ref is None, the user entry might have already been removed.
             } else {
-                Log::warning(format!(
+                warn!(
+                    "{}",
+                    format!(
                     "User data found for socket {} during removal but missing 'id' string field.",
                     socket_id
-                ));
+                )
+                );
             }
         }
         // If user_json_option is None, nothing to remove.

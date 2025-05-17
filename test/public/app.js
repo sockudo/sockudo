@@ -1,4 +1,5 @@
 // public/app.js
+
 document.addEventListener("DOMContentLoaded", () => {
   // --- DOM Elements ---
   const configDisplay = document.getElementById("config-display");
@@ -67,7 +68,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const response = await fetch("/config");
       if (!response.ok)
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error(`HTTP error("{}", status: ${response.status}`);
       config = await response.json();
       configDisplay.textContent = JSON.stringify(config, null, 2);
       connectBtn.disabled = false;
@@ -491,7 +492,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const response = await fetch("/webhooks-log");
       if (!response.ok)
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error(`HTTP error!("{}", status: ${response.status}`);
       const webhooks = await response.json();
       webhooksLog.innerHTML = ""; // Clear loading message
       if (webhooks.length === 0) {

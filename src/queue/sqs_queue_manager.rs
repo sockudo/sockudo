@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::log::Log;
+
 use crate::options::SqsQueueConfig; // Use the struct from options.rs
 use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::interval;
+use tracing::{error, info};
 
 /// SQS-based implementation of the QueueInterface
 pub struct SqsQueueManager {
@@ -127,7 +128,7 @@ impl SqsQueueManager {
 
     /// Create a queue if it doesn't exist
     async fn create_queue(&self, queue_name: &str) -> Result<String> {
-        Log::info(format!("Creating SQS queue: {}", queue_name));
+        info!("{}", format!("Creating SQS queue: {}", queue_name));
 
         let actual_queue_name = if self.config.fifo && !queue_name.ends_with(".fifo") {
             format!("{}.fifo", queue_name)
@@ -197,10 +198,13 @@ impl SqsQueueManager {
 
         // Spawn the worker task
         tokio::spawn(async move {
-            Log::info(format!(
-                "Starting SQS worker #{} for queue: {}",
-                worker_id, queue_name
-            ));
+            info!(
+                "{}",
+                format!(
+                    "Starting SQS worker #{} for queue: {}",
+                    worker_id, queue_name
+                )
+            );
 
             let mut interval = interval(Duration::from_secs(1));
 
@@ -209,10 +213,13 @@ impl SqsQueueManager {
 
                 // Check if we should shutdown
                 if *shutdown.lock().await {
-                    Log::info(format!(
-                        "SQS worker #{} for queue {} shutting down",
-                        worker_id, queue_name
-                    ));
+                    info!(
+                        "{}",
+                        format!(
+                            "SQS worker #{} for queue {} shutting down",
+                            worker_id, queue_name
+                        )
+                    );
                     break;
                 }
 
@@ -233,12 +240,15 @@ impl SqsQueueManager {
 
                         // Check if we received any messages
                         if !messages.is_empty() {
-                            Log::info(format!(
-                                "SQS worker #{} received {} messages from queue {}",
-                                worker_id,
-                                messages.len(),
-                                queue_name
-                            ));
+                            info!(
+                                "{}",
+                                format!(
+                                    "SQS worker #{} received {} messages from queue {}",
+                                    worker_id,
+                                    messages.len(),
+                                    queue_name
+                                )
+                            );
 
                             // Iterate through the messages in the slice
                             for message in messages {
@@ -262,7 +272,7 @@ impl SqsQueueManager {
                                                             .send()
                                                             .await
                                                         {
-                                                            Log::error(format!(
+                                                            error!("{}", format!(
                                                                 "Failed to delete message from SQS queue {}: {}",
                                                                 queue_name, e
                                                             ));
@@ -271,7 +281,7 @@ impl SqsQueueManager {
                                                 }
                                                 Err(e) => {
                                                     // Processing failed, log the error
-                                                    Log::error(format!(
+                                                    error!("{}", format!(
                                                         "Error processing message from SQS queue {}: {}",
                                                         queue_name, e
                                                     ));
@@ -279,7 +289,7 @@ impl SqsQueueManager {
                                             }
                                         }
                                         Err(e) => {
-                                            Log::error(format!(
+                                            error!("{}", format!(
                                                 "Failed to deserialize message from SQS queue {}: {}",
                                                 queue_name, e
                                             ));
@@ -293,7 +303,7 @@ impl SqsQueueManager {
                                                     .send()
                                                     .await
                                                 {
-                                                    Log::error(format!(
+                                                    error!("{}", format!(
                                                         "Failed to delete malformed message from SQS queue {}: {}",
                                                         queue_name, e
                                                     ));
@@ -306,10 +316,13 @@ impl SqsQueueManager {
                         }
                     }
                     Err(e) => {
-                        Log::error(format!(
-                            "Failed to receive messages from SQS queue {}: {}",
-                            queue_name, e
-                        ));
+                        error!(
+                            "{}",
+                            format!(
+                                "Failed to receive messages from SQS queue {}: {}",
+                                queue_name, e
+                            )
+                        );
 
                         // Add a small delay before retrying on error
                         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -362,11 +375,14 @@ impl QueueInterface for SqsQueueManager {
             ))
         })?;
 
-        Log::info(format!(
-            "Added job to SQS queue {} with ID: {}",
-            queue_name,
-            result.message_id().unwrap_or("unknown")
-        ));
+        info!(
+            "{}",
+            format!(
+                "Added job to SQS queue {} with ID: {}",
+                queue_name,
+                result.message_id().unwrap_or("unknown")
+            )
+        );
 
         Ok(())
     }
@@ -394,10 +410,13 @@ impl QueueInterface for SqsQueueManager {
         let mut handles = self.worker_handles.lock().await;
         handles.insert(queue_name.to_string(), worker_handles);
 
-        Log::info(format!(
-            "Started {} workers for SQS queue: {}",
-            concurrency, queue_name
-        ));
+        info!(
+            "{}",
+            format!(
+                "Started {} workers for SQS queue: {}",
+                concurrency, queue_name
+            )
+        );
 
         Ok(())
     }
@@ -414,10 +433,10 @@ impl QueueInterface for SqsQueueManager {
         {
             let mut handles = self.worker_handles.lock().await;
             for (queue_name, workers) in handles.drain() {
-                Log::info(format!(
-                    "Waiting for SQS queue {} workers to shutdown",
-                    queue_name
-                ));
+                info!(
+                    "{}",
+                    format!("Waiting for SQS queue {} workers to shutdown", queue_name)
+                );
 
                 for handle in workers {
                     // We don't want to await here as it could block indefinitely

@@ -2,7 +2,7 @@
 use crate::app::config::App;
 use crate::app::manager::AppManager;
 use crate::error::{Error, Result};
-use crate::log::Log;
+
 use crate::queue::manager::{QueueManager, QueueManagerFactory};
 use crate::webhook::sender::WebhookSender;
 use crate::webhook::types::{JobData, JobPayload, Webhook};
@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::interval;
+use tracing::{error, info};
 
 /// Configuration for the webhook integration
 #[derive(Debug, Clone)]
@@ -106,7 +107,7 @@ impl WebhookIntegration {
             let processor: JobProcessorFnAsync = Box::new(move |job_data| {
                 let sender_for_task = sender_clone.clone();
                 Box::pin(async move {
-                    Log::webhook_sender(format!(
+                    info!("{}", format!(
                         "Processing webhook job from queue: {:?}",
                         job_data.app_id
                     ));
@@ -147,7 +148,7 @@ impl WebhookIntegration {
                 if webhooks_to_process.is_empty() {
                     continue;
                 }
-                Log::webhook_sender(format!(
+                info!("{}", format!(
                     "Processing {} batched webhook queues (Sockudo internal batching)",
                     webhooks_to_process.len()
                 ));
@@ -157,10 +158,13 @@ impl WebhookIntegration {
                         let manager_locked = manager_arc.lock().await;
                         for job in jobs {
                             if let Err(e) = manager_locked.add_to_queue(&queue_name, job).await {
-                                Log::error(format!(
-                                    "Failed to add batched job to queue {}: {}",
-                                    queue_name, e
-                                ));
+                                error!(
+                                    "{}",
+                                    format!(
+                                        "Failed to add batched job to queue {}: {}",
+                                        queue_name, e
+                                    )
+                                );
                             }
                         }
                     }

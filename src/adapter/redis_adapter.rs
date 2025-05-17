@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::WriteHalf;
 use tokio::sync::{mpsc, Mutex};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::adapter::adapter::Adapter;
@@ -23,7 +24,7 @@ use crate::adapter::horizontal_adapter::{
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
-use crate::log::Log;
+
 use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
@@ -90,7 +91,7 @@ impl RedisAdapter {
     pub async fn new(config: RedisAdapterConfig) -> Result<Self> {
         // Create the base horizontal adapter
         let mut horizontal = HorizontalAdapter::new();
-        Log::info(format!("Redis adapter config: {:?}", config));
+        info!("{}", format!("Redis adapter config: {:?}", config));
 
         // Set timeout
         horizontal.requests_timeout = config.request_timeout_ms;
@@ -212,7 +213,7 @@ impl RedisAdapter {
             let mut pubsub = match sub_client.get_async_pubsub().await {
                 Ok(pubsub) => pubsub,
                 Err(e) => {
-                    Log::error(format!("Failed to get pubsub connection: {}", e));
+                    error!("{}", format!("Failed to get pubsub connection: {}", e));
                     // Consider adding retry logic or more robust error handling here
                     return;
                 }
@@ -225,14 +226,17 @@ impl RedisAdapter {
                 .subscribe(&[&broadcast_channel, &request_channel, &response_channel])
                 .await
             {
-                Log::error(format!("Failed to subscribe to channels: {}", e));
+                error!("{}", format!("Failed to subscribe to channels: {}", e));
                 return;
             }
 
-            Log::info(format!(
-                "Redis adapter listening on channels: {}, {}, {}",
-                broadcast_channel, request_channel, response_channel
-            ));
+            info!(
+                "{}",
+                format!(
+                    "Redis adapter listening on channels: {}, {}, {}",
+                    broadcast_channel, request_channel, response_channel
+                )
+            );
 
             // Listen for messages
             let mut message_stream = pubsub.on_message();
@@ -281,7 +285,7 @@ impl RedisAdapter {
                                             // Lock released automatically when horizontal_lock goes out of scope
                                         }
                                         Err(e) => {
-                                            Log::warning(format!(
+                                            warn!("{}", format!(
                                                 "Failed to deserialize broadcast inner message: {}, Payload: {}",
                                                 e, broadcast.message
                                             ));
@@ -289,10 +293,13 @@ impl RedisAdapter {
                                     }
                                 }
                                 Err(e) => {
-                                    Log::warning(format!(
+                                    warn!(
+                                        "{}",
+                                        format!(
                                         "Failed to deserialize broadcast message: {}, Payload: {}",
                                         e, payload
-                                    ));
+                                    )
+                                    );
                                 }
                             }
                         } else if channel == request_channel_clone {
@@ -322,26 +329,32 @@ impl RedisAdapter {
                                                     )
                                                     .await
                                                 {
-                                                    Log::error(format!(
-                                                        "Failed to publish response: {}",
-                                                        e
-                                                    ));
+                                                    error!(
+                                                        "{}",
+                                                        format!(
+                                                            "Failed to publish response: {}",
+                                                            e
+                                                        )
+                                                    );
                                                 }
                                             }
                                             Err(e) => {
-                                                Log::error(format!(
-                                                    "Failed to serialize response: {}",
-                                                    e
-                                                ));
+                                                error!(
+                                                    "{}",
+                                                    format!("Failed to serialize response: {}", e)
+                                                );
                                             }
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    Log::warning(format!(
+                                    warn!(
+                                        "{}",
+                                        format!(
                                         "Failed to deserialize request message: {}, Payload: {}",
                                         e, payload
-                                    ));
+                                    )
+                                    );
                                 }
                             }
                         } else if channel == response_channel_clone {
@@ -359,19 +372,25 @@ impl RedisAdapter {
                                     // Lock released automatically
                                 }
                                 Err(e) => {
-                                    Log::warning(format!(
+                                    warn!(
+                                        "{}",
+                                        format!(
                                         "Failed to deserialize response message: {}, Payload: {}",
                                         e, payload
-                                    ));
+                                    )
+                                    );
                                 }
                             }
                         }
                     }); // End of spawned task for message processing
                 } else if let Err(e) = payload_result {
-                    Log::error(format!("Failed to get payload from Redis message: {}", e));
+                    error!(
+                        "{}",
+                        format!("Failed to get payload from Redis message: {}", e)
+                    );
                 }
             }
-            Log::info("Redis Pub/Sub listener stream ended.");
+            info!("{}", "Redis Pub/Sub listener stream ended.");
         });
 
         Ok(())
@@ -383,7 +402,8 @@ impl RedisAdapter {
             // TODO: Implement actual Redis Cluster node counting logic
             // This requires querying CLUSTER NODES and potentially aggregating
             // PUBSUB NUMSUB results from multiple nodes. It's complex.
-            Log::warning(
+            warn!(
+                "{}",
                 "Cluster mode node count is not fully implemented, returning placeholder.",
             );
             Ok(5) // Placeholder
@@ -407,23 +427,29 @@ impl RedisAdapter {
                             // Ensure at least 1 node (ourselves)
                             Ok((count as usize).max(1))
                         } else {
-                            Log::warning(format!(
-                                "Failed to parse PUBSUB NUMSUB count (not an Int): {:?}",
-                                values
-                            ));
+                            warn!(
+                                "{}",
+                                format!(
+                                    "Failed to parse PUBSUB NUMSUB count (not an Int): {:?}",
+                                    values
+                                )
+                            );
                             Ok(1) // Default to 1 on unexpected format
                         }
                     } else {
-                        Log::warning(format!(
-                            "PUBSUB NUMSUB returned unexpected result format: {:?}",
-                            values
-                        ));
+                        warn!(
+                            "{}",
+                            format!(
+                                "PUBSUB NUMSUB returned unexpected result format: {:?}",
+                                values
+                            )
+                        );
                         Ok(1) // Default to 1 if format is wrong (e.g., channel not found)
                     }
                 }
                 Err(e) => {
                     // Log the error but default to 1 node to avoid breaking logic that relies on node count
-                    Log::error(format!("Failed to execute PUBSUB NUMSUB: {}", e));
+                    error!("{}", format!("Failed to execute PUBSUB NUMSUB: {}", e));
                     Ok(1) // Default to 1 node on error
                 }
             }
@@ -447,7 +473,7 @@ impl Adapter for RedisAdapter {
 
         // Start Redis listeners (already optimized)
         if let Err(e) = self.start_listeners().await {
-            Log::error(format!("Failed to start Redis listeners: {}", e));
+            error!("{}", format!("Failed to start Redis listeners: {}", e));
             // Consider returning the error or handling it more gracefully
         }
     }
@@ -523,10 +549,13 @@ impl Adapter for RedisAdapter {
 
             // Log local send errors if necessary, but continue to broadcast
             if let Err(e) = local_send_result {
-                Log::warning_title(format!(
-                    "Local send failed during broadcast for channel {}: {}",
-                    channel, e
-                ));
+                warn!(
+                    "{}",
+                    format!(
+                        "Local send failed during broadcast for channel {}: {}",
+                        channel, e
+                    )
+                );
             }
 
             // 2. Prepare data needed for broadcast *outside* the lock
@@ -553,7 +582,7 @@ impl Adapter for RedisAdapter {
             except_socket_id: broadcast_data.2,
         };
 
-        Log::info(format!("Broadcasting message: {:?}", broadcast));
+        info!("{}", format!("Broadcasting message: {:?}", broadcast));
 
         // 6. Serialize broadcast message (outside the lock)
         let broadcast_json = serde_json::to_string(&broadcast)?;
@@ -670,29 +699,35 @@ impl Adapter for RedisAdapter {
         let node_count = self.get_node_count().await?; // Get count first
         let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
 
-        Log::warning(format!(
-            "Checking if socket {} is in channel {} locally",
-            socket_id, channel
-        ));
+        warn!(
+            "{}",
+            format!(
+                "Checking if socket {} is in channel {} locally",
+                socket_id, channel
+            )
+        );
         let local_result = horizontal
             .local_adapter
             .is_in_channel(app_id, channel, socket_id)
             .await?;
 
         if local_result {
-            Log::warning_title(format!(
-                "Socket {} found in channel {} locally",
-                socket_id, channel
-            ));
+            warn!(
+                "{}",
+                format!("Socket {} found in channel {} locally", socket_id, channel)
+            );
             return Ok(true);
         }
 
         // If not found locally, check other nodes if they exist
         if node_count > 1 {
-            Log::warning_title(format!(
-                "Checking remote nodes for socket {} in channel {}",
-                socket_id, channel
-            ));
+            warn!(
+                "{}",
+                format!(
+                    "Checking remote nodes for socket {} in channel {}",
+                    socket_id, channel
+                )
+            );
             // send_request handles its own locking/timing
             let response_data = horizontal
                 .send_request(
@@ -704,17 +739,23 @@ impl Adapter for RedisAdapter {
                     node_count,
                 )
                 .await?;
-            Log::warning_title(format!(
-                "Remote check result for socket {} in channel {}: {}",
-                socket_id, channel, response_data.exists
-            ));
+            warn!(
+                "{}",
+                format!(
+                    "Remote check result for socket {} in channel {}: {}",
+                    socket_id, channel, response_data.exists
+                )
+            );
             return Ok(response_data.exists);
         }
 
-        Log::warning_title(format!(
+        warn!(
+            "{}",
+            format!(
             "Socket {} NOT found in channel {} (only local node checked or remote check negative)",
             socket_id, channel
-        ));
+        )
+        );
         Ok(false) // Not found locally, and no other nodes or not found remotely
     }
 
@@ -774,10 +815,13 @@ impl Adapter for RedisAdapter {
             {
                 Ok(response_data) => local_count + response_data.sockets_count,
                 Err(e) => {
-                    Log::error(format!(
-                        "Failed to get remote socket count for channel {}: {}",
-                        channel, e
-                    ));
+                    error!(
+                        "{}",
+                        format!(
+                            "Failed to get remote socket count for channel {}: {}",
+                            channel, e
+                        )
+                    );
                     local_count // Return local count on error
                 }
             }
@@ -794,10 +838,10 @@ impl Adapter for RedisAdapter {
     ) -> Result<bool> {
         // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
-        Log::warning_title(format!(
-            "Adding socket {} to channel {}",
-            socket_id, channel
-        ));
+        warn!(
+            "{}",
+            format!("Adding socket {} to channel {}", socket_id, channel)
+        );
         horizontal
             .local_adapter
             .add_to_channel(app_id, channel, socket_id)
@@ -912,10 +956,10 @@ impl Adapter for RedisAdapter {
                     return Ok(channels);
                 }
                 Err(e) => {
-                    Log::error(format!(
-                        "Failed to get remote channels with socket count: {}",
-                        e
-                    ));
+                    error!(
+                        "{}",
+                        format!("Failed to get remote channels with socket count: {}", e)
+                    );
                 }
             }
         }

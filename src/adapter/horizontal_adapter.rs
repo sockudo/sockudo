@@ -6,13 +6,14 @@ use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::Adapter;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
-use crate::log::Log;
+
 use crate::metrics::MetricsInterface;
 use crate::websocket::SocketId;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 /// Request types for horizontal communication
@@ -134,7 +135,7 @@ impl HorizontalAdapter {
 
                 // Process expired requests
                 for request_id in expired_requests {
-                    Log::warning(format!("Request {} expired", request_id));
+                    warn!("{}", format!("Request {} expired", request_id));
                     pending_requests_clone.remove(&request_id);
                 }
             }
@@ -143,10 +144,13 @@ impl HorizontalAdapter {
 
     /// Process a received request from another node
     pub async fn process_request(&mut self, request: RequestBody) -> Result<ResponseBody> {
-        Log::info(format!(
-            "Processing request from node {}: {:?}",
-            request.node_id, request.request_type
-        ));
+        info!(
+            "{}",
+            format!(
+                "Processing request from node {}: {:?}",
+                request.node_id, request.request_type
+            )
+        );
 
         // Skip processing our own requests
         if request.node_id == self.node_id {

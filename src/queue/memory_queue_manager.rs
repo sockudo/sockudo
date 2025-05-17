@@ -1,13 +1,13 @@
 // --- MemoryQueueManager ---
 // No major logical changes, but added comments and ensured consistency.
 
-use crate::log::Log;
 use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::info;
 
 /// Memory-based queue manager for simple deployments
 pub struct MemoryQueueManager {
@@ -32,7 +32,7 @@ impl MemoryQueueManager {
         let queues = self.queues.clone();
         let processors = self.processors.clone();
 
-        Log::info("Starting memory queue processing loop...".to_string());
+        info!("{}", "Starting memory queue processing loop...".to_string());
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -55,11 +55,14 @@ impl MemoryQueueManager {
                             let jobs_to_process: Vec<JobData> = jobs_vec.drain(..).collect();
 
                             if !jobs_to_process.is_empty() {
-                                Log::info(format!(
-                                    "Processing {} jobs from memory queue {}",
-                                    jobs_to_process.len(),
-                                    queue_name
-                                ));
+                                info!(
+                                    "{}",
+                                    format!(
+                                        "Processing {} jobs from memory queue {}",
+                                        jobs_to_process.len(),
+                                        queue_name
+                                    )
+                                );
                                 // Process each job sequentially within this tick
                                 for job in jobs_to_process {
                                     // Clone the Arc'd processor for the call
@@ -97,10 +100,10 @@ impl QueueInterface for MemoryQueueManager {
         // Register processor, wrapping it in Arc
         self.processors
             .insert(queue_name.to_string(), Arc::from(callback)); // Store as Arc
-        Log::info(format!(
-            "Registered processor for memory queue: {}",
-            queue_name
-        ));
+        info!(
+            "{}",
+            format!("Registered processor for memory queue: {}", queue_name)
+        );
 
         Ok(())
     }

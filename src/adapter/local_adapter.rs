@@ -2,7 +2,7 @@ use crate::adapter::adapter::Adapter;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
-use crate::log::Log;
+
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocket, WebSocketRef};
@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
+use tracing::{error, info};
 
 #[derive(Clone)]
 pub struct LocalAdapter {
@@ -57,7 +58,7 @@ impl LocalAdapter {
 #[async_trait::async_trait]
 impl Adapter for LocalAdapter {
     async fn init(&mut self) {
-        Log::info("Initializing local adapter");
+        info!("{}", "Initializing local adapter");
     }
 
     async fn get_namespace(&mut self, app_id: &str) -> Option<Arc<Namespace>> {
@@ -118,7 +119,7 @@ impl Adapter for LocalAdapter {
         };
 
         if let Err(e) = sender.send(frame) {
-            Log::error(format!("Failed to send message: {}", e));
+            error!("{}", format!("Failed to send message: {}", e));
         }
 
         Ok(())
@@ -131,12 +132,12 @@ impl Adapter for LocalAdapter {
         except: Option<&SocketId>,
         app_id: &str,
     ) -> Result<()> {
-        Log::info(format!("Sending message to channel: {}", channel));
-        Log::info(format!("Message: {:?}", message));
+        info!("{}", format!("Sending message to channel: {}", channel));
+        info!("{}", format!("Message: {:?}", message));
         if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
             let namespace = self.get_namespace(app_id).await.unwrap();
-            let socket_refs = namespace.get_user_sockets(user_id).await.unwrap();
+            let socket_refs = namespace.get_user_sockets(user_id).await?;
 
             for socket_ref in socket_refs {
                 // Get socket_id before sending
@@ -221,7 +222,7 @@ impl Adapter for LocalAdapter {
     async fn terminate_connection(&mut self, app_id: &str, user_id: &str) -> Result<()> {
         let namespace = self.get_or_create_namespace(app_id).await;
         if let Err(e) = namespace.terminate_user_connections(user_id).await {
-            Log::error(format!("Failed to terminate adapter: {}", e));
+            error!("{}", format!("Failed to terminate adapter: {}", e));
         }
         Ok(())
     }
@@ -269,7 +270,7 @@ impl Adapter for LocalAdapter {
     async fn terminate_user_connections(&mut self, app_id: &str, user_id: &str) -> Result<()> {
         let namespace = self.get_or_create_namespace(app_id).await;
         if let Err(e) = namespace.terminate_user_connections(user_id).await {
-            Log::error(format!("Failed to terminate user connections: {}", e));
+            error!("{}", format!("Failed to terminate user connections: {}", e));
         }
         Ok(())
     }
