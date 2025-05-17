@@ -22,7 +22,7 @@ struct RateLimitEntry {
 /// In-memory rate limiter implementation
 pub struct MemoryRateLimiter {
     /// Storage for rate limit counters
-    limits: DashMap<String, RateLimitEntry>,
+    limits: Arc<DashMap<String, RateLimitEntry>>,
     /// Configuration for rate limiting
     config: RateLimitConfig,
     /// Cleanup task handle
@@ -33,56 +33,16 @@ pub struct MemoryRateLimiter {
 impl MemoryRateLimiter {
     /// Create a new memory-based rate limiter
     pub fn new(max_requests: u32, window_secs: u64) -> Self {
-        let config = RateLimitConfig {
+        Self::with_config(RateLimitConfig {
             max_requests,
             window_secs,
             identifier: Some("memory".to_string()),
-        };
-
-        let limits: DashMap<String, RateLimitEntry> = DashMap::new();
-        let limits_clone = limits.clone();
-
-        // Start cleanup task
-        let cleanup_task = tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(10)); // Check every 10 seconds
-
-            loop {
-                interval.tick().await;
-                let now = Instant::now();
-
-                // Collect keys to remove (expired entries)
-                let expired_keys: Vec<String> = limits_clone
-                    .iter()
-                    .filter_map(|entry| {
-                        let key = entry.key().clone();
-                        let value = entry.value(); // This gives you the actual RateLimitEntry
-
-                        // Now check the expiry field on the value
-                        if value.expiry <= now {
-                            Some(key)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // Remove expired entries
-                for key in expired_keys {
-                    limits_clone.remove(&key);
-                }
-            }
-        });
-
-        Self {
-            limits,
-            config,
-            cleanup_task: Arc::new(Mutex::new(Some(cleanup_task))),
-        }
+        })
     }
 
     /// Create a new memory-based rate limiter with a specific configuration
     pub fn with_config(config: RateLimitConfig) -> Self {
-        let limits: DashMap<String, RateLimitEntry> = DashMap::new();
+        let limits: Arc<DashMap<String, RateLimitEntry>> = Arc::new(DashMap::new());
         let limits_clone = limits.clone();
 
         // Start cleanup task
