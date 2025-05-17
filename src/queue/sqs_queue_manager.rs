@@ -1,12 +1,10 @@
 use crate::error::{Error, Result};
 
 use crate::options::SqsQueueConfig; // Use the struct from options.rs
-use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
+use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
 use async_trait::async_trait;
-use aws_config::SdkConfig;
 use aws_sdk_sqs as sqs;
-use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

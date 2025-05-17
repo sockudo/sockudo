@@ -142,7 +142,7 @@ impl QueueInterface for RedisQueueManager {
                                     // Execute the job processing callback
                                     match worker_processor(job_data).await {
                                         Ok(_) => {
-                                            info!("{}", format!("Worker finished"));
+                                            info!("{}", "Worker finished".to_string());
                                         }
                                         Err(e) => {
                                             error!("{}", format!("Worker error: {}", e));

@@ -306,7 +306,7 @@ async fn process_single_event(
     for target_channel_str in target_channels {
         info!(channel = %target_channel_str, "Processing channel for event");
 
-        validate_channel_name(&app, &target_channel_str).await?;
+        validate_channel_name(app, &target_channel_str).await?;
 
         let message_to_send = PusherApiMessage {
             name: name_clone_for_message.clone(),
