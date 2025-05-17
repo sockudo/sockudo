@@ -1,3 +1,5 @@
+use crate::app::config::App;
+use crate::error::Error;
 use lazy_static::lazy_static; // Added for one-time regex compilation
 use regex::Regex;
 
@@ -59,4 +61,22 @@ pub fn data_to_bytes_flexible(data: Vec<serde_json::Value>) -> usize {
         // No specific error handling for as_bytes().len() as it's inherent to string length.
         total_bytes + element_str.len()
     })
+}
+
+pub async fn validate_channel_name(app: &App, channel: &str) -> crate::error::Result<()> {
+    if channel.len() > app.max_channel_name_length.unwrap_or(200) as usize {
+        return Err(Error::ChannelError(format!(
+            "Channel name too long. Max length is {}",
+            app.max_channel_name_length.unwrap_or(200)
+        )));
+    }
+    if !channel.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=' || c == '@' || c == '.'
+    }) {
+        return Err(Error::ChannelError(
+            "Channel name contains invalid characters".to_string(),
+        ));
+    }
+
+    Ok(())
 }

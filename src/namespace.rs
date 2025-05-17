@@ -59,7 +59,7 @@ impl Namespace {
 
         // Fetch and associate the application configuration.
         // TODO: Consider returning a Result from this function to signal failure.
-        match app_manager.get_app(&self.app_id).await {
+        match app_manager.find_by_id(&self.app_id).await {
             Ok(Some(app)) => {
                 connection_state.app = Some(app);
             }

@@ -110,7 +110,7 @@ impl MySQLAppManager {
     }
 
     /// Get an app by ID from cache or database
-    pub async fn get_app(&self, app_id: &str) -> Result<Option<App>> {
+    pub async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
         // Try to get from cache first
         if let Some(app) = self.app_cache.get(app_id).await {
             return Ok(Some(app));
@@ -166,7 +166,7 @@ impl MySQLAppManager {
     }
 
     /// Get an app by key from cache or database
-    pub async fn get_app_by_key(&self, key: &str) -> Result<Option<App>> {
+    pub async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
         // Check cache first
         if let Some(app) = self.app_cache.get(key).await {
             return Ok(Some(app));
@@ -220,7 +220,7 @@ impl MySQLAppManager {
     }
 
     /// Register a new app in the database
-    pub async fn register_app(&self, app: App) -> Result<()> {
+    pub async fn create_app(&self, app: App) -> Result<()> {
         Log::info(format!("Registering new app: {}", app.id));
 
         // Prepare the query with proper table name
@@ -320,7 +320,7 @@ impl MySQLAppManager {
     }
 
     /// Remove an app from the database
-    pub async fn remove_app(&self, app_id: &str) -> Result<()> {
+    pub async fn delete_app(&self, app_id: &str) -> Result<()> {
         Log::info(format!("Removing app: {}", app_id));
 
         // Prepare the query with proper table name
@@ -416,7 +416,7 @@ impl MySQLAppManager {
 
     /// Validate if an app ID exists
     pub async fn validate_key(&self, app_id: &str) -> Result<bool> {
-        Ok(self.get_app(app_id).await?.is_some())
+        Ok(self.find_by_id(app_id).await?.is_some())
     }
 
     /// Validate a signature against an app's secret
@@ -427,7 +427,7 @@ impl MySQLAppManager {
         body: &str,
     ) -> Result<bool> {
         let app = self
-            .get_app(app_id)
+            .find_by_id(app_id)
             .await?
             .ok_or_else(|| Error::InvalidAppKey)?;
 
@@ -440,7 +440,7 @@ impl MySQLAppManager {
     /// Validate if a channel name is valid for an app
     pub async fn validate_channel_name(&self, app_id: &str, channel: &str) -> Result<()> {
         let app = self
-            .get_app(app_id)
+            .find_by_id(app_id)
             .await?
             .ok_or_else(|| Error::InvalidAppKey)?;
 
@@ -466,7 +466,7 @@ impl MySQLAppManager {
     /// Check if client events are enabled for an app
     pub async fn can_handle_client_events(&self, app_key: &str) -> Result<bool> {
         Ok(self
-            .get_app_by_key(app_key)
+            .find_by_key(app_key)
             .await?
             .map(|app| app.enable_client_messages)
             .unwrap_or(false))
@@ -486,7 +486,7 @@ impl MySQLAppManager {
 
         // Get app config
         let app = self
-            .get_app_by_key(app_key)
+            .find_by_key(app_key)
             .await?
             .ok_or_else(|| Error::InvalidAppKey)?;
 
@@ -561,10 +561,10 @@ impl AppManager for MySQLAppManager {
         Ok(())
     }
 
-    async fn register_app(&self, config: App) -> Result<()> {
+    async fn create_app(&self, config: App) -> Result<()> {
         // Spawn a blocking task to avoid blocking the current thread
         let config_clone = config.clone();
-        self.register_app(config_clone).await
+        self.create_app(config_clone).await
     }
 
     async fn update_app(&self, config: App) -> Result<()> {
@@ -572,9 +572,9 @@ impl AppManager for MySQLAppManager {
         self.update_app(config).await
     }
 
-    async fn remove_app(&self, app_id: &str) -> Result<()> {
+    async fn delete_app(&self, app_id: &str) -> Result<()> {
         // This calls our implementation method
-        self.remove_app(app_id).await
+        self.delete_app(app_id).await
     }
 
     async fn get_apps(&self) -> Result<Vec<App>> {
@@ -582,43 +582,15 @@ impl AppManager for MySQLAppManager {
         self.get_apps().await
     }
 
-    async fn sign_payload(&self, secret: &str, payload: &str) -> Result<String> {
-        // Use the Token utility to sign the payload
-        let token = Token::new("temp".to_string(), secret.to_string());
-        Ok(token.sign(payload))
-    }
-
-    async fn get_app(&self, app_id: &str) -> Result<Option<App>> {
+    async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
         // For the sync interface, poll the async function in a blocking manner
-        self.get_app(app_id).await.map(|app| app.map(|a| a.clone()))
+        self.find_by_id(app_id)
+            .await
+            .map(|app| app.map(|a| a.clone()))
     }
 
-    async fn get_app_by_key(&self, key: &str) -> Result<Option<App>> {
-        self.get_app_by_key(key).await
-    }
-
-    async fn validate_key(&self, app_id: &str) -> Result<bool> {
-        self.validate_key(app_id).await
-    }
-
-    async fn validate_signature(&self, app_id: &str, signature: &str, body: &str) -> Result<bool> {
-        // For the sync interface, poll the async function in a blocking manner
-        self.validate_signature(app_id, signature, body).await
-    }
-
-    async fn validate_channel_name(&self, app_id: &str, channel: &str) -> Result<()> {
-        // For the sync interface, poll the async function in a blocking manner
-        self.validate_channel_name(app_id, channel).await
-    }
-
-    async fn can_handle_client_events(&self, app_id: &str) -> Result<bool> {
-        // For the sync interface, poll the async function in a blocking manner
-        self.can_handle_client_events(app_id).await
-    }
-
-    async fn validate_user_auth(&self, socket_id: &SocketId, auth: &str) -> Result<bool> {
-        // For the sync interface, poll the async function in a blocking manner
-        self.validate_user_auth(socket_id, auth).await
+    async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
+        self.find_by_key(key).await
     }
 }
 
@@ -683,15 +655,15 @@ mod tests {
 
             // Test registering an app
             let test_app = create_test_app("test1");
-            manager.register_app(test_app.clone()).await.unwrap();
+            manager.create_app(test_app.clone()).await.unwrap();
 
             // Test getting an app
-            let app = manager.get_app("test1").await.unwrap().unwrap();
+            let app = manager.find_by_id("test1").await.unwrap().unwrap();
             assert_eq!(app.id, "test1");
             assert_eq!(app.key, "test1_key");
 
             // Test getting an app by key
-            let app = manager.get_app_by_key("test1_key").await.unwrap().unwrap();
+            let app = manager.find_by_key("test1_key").await.unwrap().unwrap();
             assert_eq!(app.id, "test1");
 
             // Test updating an app
@@ -699,7 +671,7 @@ mod tests {
             updated_app.max_connections = 200;
             manager.update_app(updated_app).await.unwrap();
 
-            let app = manager.get_app("test1").await.unwrap().unwrap();
+            let app = manager.find_by_id("test1").await.unwrap().unwrap();
             assert_eq!(app.max_connections, 200);
 
             // Test cache expiration
@@ -707,18 +679,18 @@ mod tests {
 
             // Add another app
             let test_app2 = create_test_app("test2");
-            manager.register_app(test_app2).await.unwrap();
+            manager.create_app(test_app2).await.unwrap();
 
             // Get all apps
             let apps = manager.get_apps().await.unwrap();
             assert_eq!(apps.len(), 2);
 
             // Test removing an app
-            manager.remove_app("test1").await.unwrap();
-            assert!(manager.get_app("test1").await.unwrap().is_none());
+            manager.delete_app("test1").await.unwrap();
+            assert!(manager.find_by_id("test1").await.unwrap().is_none());
 
             // Cleanup
-            manager.remove_app("test2").await.unwrap();
+            manager.delete_app("test2").await.unwrap();
         });
     }
 }

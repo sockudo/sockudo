@@ -2,17 +2,8 @@
 use super::config::App;
 use crate::app::manager::AppManager;
 use crate::error::{Error, Result};
-use crate::token::{secure_compare, Token};
-use crate::websocket::SocketId;
 use async_trait::async_trait;
-use dashmap::DashMap;
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// Configuration for DynamoDB App Manager
 #[derive(Debug, Clone)]
@@ -22,7 +13,6 @@ pub struct DynamoDbConfig {
     pub endpoint: Option<String>, // For local development
     pub access_key: Option<String>,
     pub secret_key: Option<String>,
-    pub cache_ttl: u64, // in seconds
     pub profile_name: Option<String>,
 }
 
@@ -34,7 +24,6 @@ impl Default for DynamoDbConfig {
             endpoint: None,
             access_key: None,
             secret_key: None,
-            cache_ttl: 300, // 5 minutes
             profile_name: None,
         }
     }
@@ -47,8 +36,6 @@ type DynamoClient = aws_sdk_dynamodb::Client;
 pub struct DynamoDbAppManager {
     config: DynamoDbConfig,
     client: DynamoClient,
-    cache: Arc<DashMap<String, (App, std::time::Instant)>>,
-    cache_mutex: Arc<Mutex<()>>, // For cleanup coordination
 }
 
 impl DynamoDbAppManager {
@@ -86,62 +73,11 @@ impl DynamoDbAppManager {
         // Create DynamoDB client
         let client = aws_sdk_dynamodb::Client::new(&aws_config);
 
-        // Initialize cache
-        let cache = Arc::new(DashMap::new());
-        let cache_mutex = Arc::new(Mutex::new(()));
-
         // Create the manager
-        let manager = Self {
-            config,
-            client,
-            cache,
-            cache_mutex,
-        };
-
-        // Start cache cleanup task
-        manager.start_cache_cleanup();
+        let manager = Self { config, client };
 
         Ok(manager)
     }
-
-    /// Start a background task to clean up expired cache entries
-    fn start_cache_cleanup(&self) {
-        let cache = self.cache.clone();
-        let cache_mutex = self.cache_mutex.clone();
-        let ttl = self.config.cache_ttl;
-
-        tokio::spawn(async move {
-            loop {
-                // Sleep for half the TTL before checking
-                tokio::time::sleep(std::time::Duration::from_secs(ttl / 2)).await;
-
-                // Acquire lock to prevent cache updates during cleanup
-                let _lock = cache_mutex.lock().await;
-
-                // Get current time
-                let now = std::time::Instant::now();
-
-                // Collect keys to remove
-                let expired_keys: Vec<String> = cache
-                    .iter()
-                    .filter_map(|entry| {
-                        let (key, (_, timestamp)) = (entry.key().clone(), entry.value());
-                        if now.duration_since(*timestamp).as_secs() > ttl {
-                            Some(key)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // Remove expired entries
-                for key in expired_keys {
-                    cache.remove(&key);
-                }
-            }
-        });
-    }
-
     /// Convert a DynamoDB item to an App struct
     fn item_to_app(&self, item: aws_sdk_dynamodb::types::AttributeValue) -> Result<App> {
         if let aws_sdk_dynamodb::types::AttributeValue::M(map) = item {
@@ -423,17 +359,6 @@ impl DynamoDbAppManager {
 
     /// Get an app from cache or DynamoDB
     async fn get_app_internal(&self, app_id: &str) -> Result<Option<App>> {
-        // Check cache first
-        if let Some(entry) = self.cache.get(app_id) {
-            let (app, timestamp) = entry.value();
-            let now = std::time::Instant::now();
-
-            // If cache is not expired, return cached value
-            if now.duration_since(*timestamp).as_secs() < self.config.cache_ttl {
-                return Ok(Some(app.clone()));
-            }
-        }
-
         // If not in cache or expired, fetch from DynamoDB
         let response = self
             .client
@@ -454,9 +379,6 @@ impl DynamoDbAppManager {
             let app = self.item_to_app(aws_sdk_dynamodb::types::AttributeValue::M(item.clone()))?;
 
             // Update cache
-            let _lock = self.cache_mutex.lock().await;
-            self.cache
-                .insert(app_id.to_string(), (app.clone(), std::time::Instant::now()));
 
             Ok(Some(app))
         } else {
@@ -472,7 +394,7 @@ impl AppManager for DynamoDbAppManager {
         self.ensure_table_exists().await
     }
 
-    async fn register_app(&self, config: App) -> Result<()> {
+    async fn create_app(&self, config: App) -> Result<()> {
         // Convert App to DynamoDB item
         let item = self.app_to_item(&config);
 
@@ -488,9 +410,6 @@ impl AppManager for DynamoDbAppManager {
             })?;
 
         // Update cache
-        let _lock = self.cache_mutex.lock().await;
-        self.cache
-            .insert(config.id.clone(), (config, std::time::Instant::now()));
 
         Ok(())
     }
@@ -509,16 +428,10 @@ impl AppManager for DynamoDbAppManager {
             .map_err(|e| {
                 Error::InternalError(format!("Failed to update app in DynamoDB: {}", e))
             })?;
-
-        // Update cache
-        let _lock = self.cache_mutex.lock().await;
-        self.cache
-            .insert(config.id.clone(), (config, std::time::Instant::now()));
-
         Ok(())
     }
 
-    async fn remove_app(&self, app_id: &str) -> Result<()> {
+    async fn delete_app(&self, app_id: &str) -> Result<()> {
         // Remove item from DynamoDB
         self.client
             .delete_item()
@@ -532,10 +445,6 @@ impl AppManager for DynamoDbAppManager {
             .map_err(|e| {
                 Error::InternalError(format!("Failed to delete app from DynamoDB: {}", e))
             })?;
-
-        // Remove from cache
-        self.cache.remove(app_id);
-
         Ok(())
     }
 
@@ -560,29 +469,10 @@ impl AppManager for DynamoDbAppManager {
             }
         }
 
-        // Update cache
-        let _lock = self.cache_mutex.lock().await;
-        let now = std::time::Instant::now();
-        for app in &apps {
-            self.cache.insert(app.id.clone(), (app.clone(), now));
-        }
-
         Ok(apps)
     }
 
-    async fn validate_key(&self, app_id: &str) -> Result<bool> {
-        Ok(self.get_app(app_id).await?.is_some())
-    }
-
-    async fn get_app_by_key(&self, key: &str) -> Result<Option<App>> {
-        // Check cache first
-        for entry in self.cache.iter() {
-            let (app, _) = entry.value();
-            if app.key == key {
-                return Ok(Some(app.clone()));
-            }
-        }
-
+    async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
         // If not in cache, query DynamoDB by key (using GSI)
         let response = self
             .client
@@ -605,11 +495,6 @@ impl AppManager for DynamoDbAppManager {
                 let app =
                     self.item_to_app(aws_sdk_dynamodb::types::AttributeValue::M(item.clone()))?;
 
-                // Update cache
-                let _lock = self.cache_mutex.lock().await;
-                self.cache
-                    .insert(app.id.clone(), (app.clone(), std::time::Instant::now()));
-
                 return Ok(Some(app));
             }
         }
@@ -617,83 +502,7 @@ impl AppManager for DynamoDbAppManager {
         Ok(None)
     }
 
-    async fn get_app(&self, app_id: &str) -> Result<Option<App>> {
+    async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
         self.get_app_internal(app_id).await
-    }
-
-    async fn validate_signature(&self, app_id: &str, signature: &str, body: &str) -> Result<bool> {
-        let app = self
-            .get_app(app_id)
-            .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
-
-        let expected = self.sign_payload(&app.secret, body).await?;
-        Ok(signature == expected)
-    }
-
-    async fn sign_payload(&self, secret: &str, payload: &str) -> Result<String> {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-            .map_err(|e| Error::AuthError(e.to_string()))?;
-
-        mac.update(payload.as_bytes());
-        let result = mac.finalize();
-        let signature = hex::encode(result.into_bytes());
-
-        Ok(signature)
-    }
-
-    async fn validate_channel_name(&self, app_id: &str, channel: &str) -> Result<()> {
-        let app = self
-            .get_app(app_id)
-            .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
-
-        if channel.len() > app.max_channel_name_length.unwrap_or(200) as usize {
-            return Err(Error::ChannelError(format!(
-                "Channel name too long. Max length is {}",
-                app.max_channel_name_length.unwrap_or(200)
-            )));
-        }
-
-        // Validate channel name format
-        if !channel.chars().all(|c| {
-            c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=' || c == '@' || c == '.'
-        }) {
-            return Err(Error::ChannelError(
-                "Channel name contains invalid characters".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    async fn can_handle_client_events(&self, app_id: &str) -> Result<bool> {
-        Ok(self
-            .get_app_by_key(app_id)
-            .await?
-            .map(|app| app.enable_client_messages)
-            .unwrap_or(false))
-    }
-
-    async fn validate_user_auth(&self, socket_id: &SocketId, auth: &str) -> Result<bool> {
-        // Split auth string into key and signature (format: "app_key:signature")
-        let (app_key, signature) = auth
-            .split_once(':')
-            .ok_or_else(|| Error::AuthError("Invalid auth format".into()))?;
-
-        // Get app config
-        let app = self
-            .get_app(app_key)
-            .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
-
-        // Create string to sign: socket_id
-        let string_to_sign = socket_id.to_string();
-
-        // Generate expected signature
-        let expected = self.sign_payload(&app.secret, &string_to_sign).await?;
-
-        // Compare signatures
-        Ok(signature == expected)
     }
 }

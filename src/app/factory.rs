@@ -41,7 +41,6 @@ impl AppManagerFactory {
                     endpoint: dynamo_settings.endpoint_url.clone(),
                     access_key: dynamo_settings.aws_access_key_id.clone(),
                     secret_key: dynamo_settings.aws_secret_access_key.clone(),
-                    cache_ttl: config.cache.ttl, // This 'config' is AppManagerConfig
                     profile_name: dynamo_settings.aws_profile_name.clone(),
                 };
                 match DynamoDbAppManager::new(dynamo_app_config).await {

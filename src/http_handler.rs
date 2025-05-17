@@ -14,13 +14,13 @@ use axum::{
 // use chrono::Duration; // Duration seems unused in this file after changes
 use crate::app::config::App; // To access app limits
 use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
+use crate::utils::validate_channel_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, fmt, sync::Arc}; // Added fmt for AppError Display
 use sysinfo::System;
 use thiserror::Error;
 use tracing::{error, field, info, instrument, warn};
-
 // --- Custom Error Type ---
 
 #[derive(Debug, Error)]
@@ -223,11 +223,10 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
 }
 
 /// Helper to process a single event and return channel info if requested
-#[instrument(skip(handler, event_data, app_config), fields(app_id = app_id, event_name = field::Empty))]
+#[instrument(skip(handler, event_data, app), fields(app_id = app.id, event_name = field::Empty))]
 async fn process_single_event(
     handler: &Arc<ConnectionHandler>,
-    app_id: &str,
-    app_config: &App,
+    app: &App,
     event_data: PusherApiMessage,
     collect_info: bool,
 ) -> Result<HashMap<String, Value>, AppError> {
@@ -245,7 +244,7 @@ async fn process_single_event(
         .ok_or_else(|| AppError::InvalidInput("Event name is required".to_string()))?;
     tracing::Span::current().record("event_name", event_name_str);
 
-    let max_event_name_len = app_config
+    let max_event_name_len = app
         .max_event_name_length
         .unwrap_or(DEFAULT_EVENT_NAME_MAX_LENGTH as u32);
     if event_name_str.len() > max_event_name_len as usize {
@@ -255,7 +254,7 @@ async fn process_single_event(
         )));
     }
 
-    if let Some(max_payload_kb) = app_config.max_event_payload_in_kb {
+    if let Some(max_payload_kb) = app.max_event_payload_in_kb {
         let value_for_size_calc = match &event_payload_data {
             Some(crate::protocol::messages::ApiMessageData::String(s)) => json!(s),
             Some(crate::protocol::messages::ApiMessageData::Json(j_val)) => j_val.clone(),
@@ -275,7 +274,7 @@ async fn process_single_event(
 
     let target_channels: Vec<String> = match channels {
         Some(ch_list) if !ch_list.is_empty() => {
-            if let Some(max_ch_at_once) = app_config.max_event_channels_at_once {
+            if let Some(max_ch_at_once) = app.max_event_channels_at_once {
                 if ch_list.len() > max_ch_at_once as usize {
                     return Err(AppError::LimitExceeded(format!(
                         "Number of channels ({}) exceeds limit ({})",
@@ -303,10 +302,8 @@ async fn process_single_event(
 
     for target_channel_str in target_channels {
         info!(channel = %target_channel_str, "Processing channel for event");
-        handler
-            .app_manager
-            .validate_channel_name(app_id, &target_channel_str)
-            .await?;
+
+        validate_channel_name(&app, &target_channel_str).await?;
 
         let message_to_send = PusherApiMessage {
             name: name_clone_for_message.clone(),
@@ -319,7 +316,7 @@ async fn process_single_event(
 
         handler
             .send_message(
-                app_id,
+                &app.id,
                 mapped_socket_id.as_ref(),
                 message_to_send,
                 &target_channel_str,
@@ -335,7 +332,7 @@ async fn process_single_event(
                     .channel_manager
                     .read()
                     .await
-                    .get_channel_members(app_id, &target_channel_str)
+                    .get_channel_members(&app.id, &target_channel_str)
                     .await
                 {
                     Ok(members_map) => {
@@ -359,7 +356,7 @@ async fn process_single_event(
                     .connection_manager
                     .lock()
                     .await
-                    .get_channel_socket_count(app_id, &target_channel_str)
+                    .get_channel_socket_count(&app.id, &target_channel_str)
                     .await;
                 current_channel_info_map.insert("subscription_count".to_string(), json!(count));
             }
@@ -387,7 +384,8 @@ async fn process_single_event(
             };
 
             let mut cache_manager_locked = handler.cache_manager.lock().await;
-            let cache_key_str = format!("app:{}:channel:{}:cache_miss", app_id, target_channel_str);
+            let cache_key_str =
+                format!("app:{}:channel:{}:cache_miss", &app.id, target_channel_str);
 
             match cache_manager_locked
                 .set(&cache_key_str, &cache_payload_str, 3600)
@@ -416,22 +414,16 @@ pub async fn events(
 ) -> Result<impl IntoResponse, AppError> {
     Log::info(format!("Received event: {:?}", event_payload));
 
-    let app_config = handler
+    let app = handler
         .app_manager
-        .get_app(app_id.as_str())
+        .find_by_id(app_id.as_str())
         .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
     let need_channel_info = event_payload.info.is_some();
 
-    let channels_info_map = process_single_event(
-        &handler,
-        &app_id,
-        &app_config,
-        event_payload,
-        need_channel_info,
-    )
-    .await?;
+    let channels_info_map =
+        process_single_event(&handler, &app, event_payload, need_channel_info).await?;
 
     if need_channel_info && !channels_info_map.is_empty() {
         let response_payload = json!({
@@ -457,7 +449,7 @@ pub async fn batch_events(
 
     let app_config = handler
         .app_manager
-        .get_app(app_id.as_str())
+        .find_by_id(app_id.as_str())
         .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
@@ -482,7 +474,6 @@ pub async fn batch_events(
 
         let channel_info_map_for_event = process_single_event(
             &handler,
-            &app_id,
             &app_config,
             single_event_message.clone(),
             single_event_message.info.is_some(),
@@ -539,16 +530,13 @@ pub async fn channel(
 ) -> Result<impl IntoResponse, AppError> {
     info!("Request for channel info for channel: {}", channel_name);
 
-    let _app_config = handler
+    let app = handler
         .app_manager
-        .get_app(&app_id)
+        .find_by_id(&app_id)
         .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
-    handler
-        .app_manager
-        .validate_channel_name(&app_id, &channel_name)
-        .await?;
+    validate_channel_name(&app, &channel_name).await?;
 
     let info_query_str = query_params.info.as_ref();
     let wants_subscription_count = info_query_str.wants_subscription_count();
@@ -629,6 +617,11 @@ pub async fn channels(
 
     let filter_prefix_str = query_params.filter_by_prefix.as_deref().unwrap_or("");
     let wants_user_count = query_params.info.as_ref().wants_user_count();
+    let app = handler
+        .app_manager
+        .find_by_id(&app_id)
+        .await?
+        .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
     let channels_map;
     {
@@ -645,10 +638,7 @@ pub async fn channels(
         if !channel_name_str.starts_with(filter_prefix_str) {
             continue;
         }
-        handler
-            .app_manager
-            .validate_channel_name(&app_id, channel_name_str)
-            .await?;
+        validate_channel_name(&app, channel_name_str).await?;
 
         let mut current_channel_info_map = serde_json::Map::new();
 
@@ -693,11 +683,13 @@ pub async fn channel_users(
     Path((app_id, channel_name)): Path<(String, String)>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Request for users in channel: {}", channel_name);
-    handler
+    let app = handler
         .app_manager
-        .validate_channel_name(&app_id, &channel_name)
-        .await?;
+        .find_by_id(&app_id)
+        .await?
+        .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
+    info!("Request for users in channel: {}", channel_name);
+    validate_channel_name(&app, &channel_name).await?;
 
     if !channel_name.starts_with("presence-") {
         return Err(AppError::InvalidInput(
@@ -762,7 +754,7 @@ pub async fn up(
 ) -> Result<impl IntoResponse, AppError> {
     info!("Health check received for app_id: {}", app_id);
 
-    if handler.app_manager.get_app(&app_id).await?.is_none() {
+    if handler.app_manager.find_by_id(&app_id).await?.is_none() {
         warn!("Health check for non-existent app_id: {}", app_id);
     }
 

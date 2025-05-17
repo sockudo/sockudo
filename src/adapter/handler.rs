@@ -12,6 +12,7 @@ use crate::protocol::constants::{
 };
 use crate::protocol::messages::{ErrorData, MessageData, PusherApiMessage, PusherMessage};
 use crate::rate_limiter::{memory_limiter::MemoryRateLimiter, RateLimiter};
+use crate::utils::validate_channel_name;
 use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::{SocketId, WebSocketRef};
 use crate::{
@@ -136,7 +137,7 @@ impl ConnectionHandler {
                     .send_message(app_id, socket_id, message)
                     .await?;
 
-                if let Some(app_config) = self.app_manager.get_app(app_id).await? {
+                if let Some(app_config) = self.app_manager.find_by_id(app_id).await? {
                     if let Some(webhook_integration_instance) = &self.webhook_integration {
                         webhook_integration_instance
                             .send_cache_missed(&app_config, channel)
@@ -159,7 +160,7 @@ impl ConnectionHandler {
     pub async fn handle_socket(&self, fut: upgrade::UpgradeFut, app_key: String) -> Result<()> {
         let app_config = self
             .app_manager
-            .get_app_by_key(&app_key)
+            .find_by_key(&app_key)
             .await?
             .ok_or(Error::InvalidAppKey)?;
 
@@ -452,10 +453,13 @@ impl ConnectionHandler {
                     .ok_or_else(|| Error::ChannelError("Missing channel".into()))?,
                 None => return Err(Error::ChannelError("Missing channel data".into())),
             };
+        if !app_config.enable_client_messages {
+            return Err(Error::ChannelError(
+                "Client messages are disabled for this app".into(),
+            ));
+        }
 
-        self.app_manager
-            .validate_channel_name(&app_config.id, channel_str)
-            .await?;
+        validate_channel_name(&app_config, channel_str).await?;
 
         let is_authenticated = {
             let channel_manager_locked = self.channel_manager.read().await;
@@ -1019,11 +1023,13 @@ impl ConnectionHandler {
             (key, channels, user_id)
         };
 
-        if !self
+        let app = self
             .app_manager
-            .can_handle_client_events(&app_key_str)
+            .find_by_id(&app_key_str)
             .await?
-        {
+            .ok_or_else(|| Error::InvalidAppKey)?;
+
+        if app.enable_client_messages {
             return Err(Error::ClientEventError(
                 "Client events are not enabled for this app".into(),
             ));
@@ -1152,7 +1158,7 @@ impl ConnectionHandler {
             ));
         }
 
-        let app_config = match self.app_manager.get_app(app_id).await? {
+        let app_config = match self.app_manager.find_by_id(app_id).await? {
             Some(app) => app,
             None => {
                 Log::error(format!("App not found during disconnect: {}", app_id));

@@ -36,7 +36,7 @@ impl AuthValidator {
         user_data: &str,
         auth: &str,
     ) -> Result<bool, Error> {
-        let app = self.app_manager.get_app(app_key).await?;
+        let app = self.app_manager.find_by_id(app_key).await?;
         if app.is_none() {
             return Err(Error::InvalidAppKey);
         }
@@ -53,7 +53,7 @@ impl AuthValidator {
         app_config: App,
     ) -> bool {
         let signature = self.sing_in_token_for_user_data(socket_id, user_data, app_config);
-        secure_compare(&signature, &expected_signature)
+        secure_compare(&signature, expected_signature)
     }
 
     pub fn sing_in_token_for_user_data(
@@ -64,6 +64,6 @@ impl AuthValidator {
     ) -> String {
         let decoded_string = format!("{}::user::{}", socket_id, user_data);
         let signature = Token::new(app_config.key, app_config.secret);
-        signature.sign(&*decoded_string)
+        signature.sign(&decoded_string)
     }
 }

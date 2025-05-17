@@ -55,7 +55,7 @@ impl WebhookSender {
         // The App struct (or at least its webhooks configuration) is needed.
         // If JobData doesn't contain the full App.webhooks, we fetch it.
         // For simplicity, let's assume JobData might not have the Webhook configs, so we fetch the app.
-        let app_config = match self.app_manager.get_app(&app_id.clone()).await? {
+        let app_config = match self.app_manager.find_by_id(&app_id.clone()).await? {
             Some(app) => app,
             None => {
                 Log::error(format!(

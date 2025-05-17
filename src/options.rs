@@ -43,7 +43,6 @@ impl Default for DynamoDbSettings {
     }
 }
 
-
 impl std::str::FromStr for AdapterDriver {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -566,7 +565,6 @@ impl Default for SqsQueueConfig {
     }
 }
 
-
 impl Default for RedisAdapterConfig {
     fn default() -> Self {
         Self {
@@ -614,7 +612,6 @@ impl Default for AppManagerConfig {
         }
     }
 }
-
 
 impl Default for CacheSettings {
     fn default() -> Self {

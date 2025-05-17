@@ -417,11 +417,11 @@ impl SockudoServer {
             let apps_to_register = self.config.app_manager.array.apps.clone();
             for app in apps_to_register {
                 Log::info(format!("Registering app: id={}, key={}", app.id, app.key));
-                match self.state.app_manager.register_app(app.clone()).await {
+                match self.state.app_manager.create_app(app.clone()).await {
                     Ok(_) => Log::info(format!("Successfully registered app: {}", app.id)),
                     Err(e) => {
                         Log::warning(format!("Failed to register app {}: {}", app.id, e));
-                        match self.state.app_manager.get_app(&app.id).await {
+                        match self.state.app_manager.find_by_id(&app.id).await {
                             Ok(Some(_)) => {
                                 Log::info(format!(
                                     "App {} already exists, updating instead",
@@ -463,7 +463,7 @@ impl SockudoServer {
                 }]),
                 ..Default::default()
             };
-            match self.state.app_manager.register_app(demo_app).await {
+            match self.state.app_manager.create_app(demo_app).await {
                 // demo_app is moved here
                 Ok(_) => Log::info("Successfully registered demo app".to_string()),
                 Err(e) => Log::warning(format!("Failed to register demo app: {}", e)),
@@ -830,13 +830,13 @@ impl SockudoServer {
     async fn register_apps(&self, apps: Vec<App>) -> Result<()> {
         let debug_enabled = self.config.debug;
         for app in apps {
-            let existing_app = self.state.app_manager.get_app(&app.id).await?;
+            let existing_app = self.state.app_manager.find_by_id(&app.id).await?;
             if existing_app.is_some() {
                 Log::info(format!("Updating app: {}", app.id));
                 self.state.app_manager.update_app(app).await?;
             } else {
                 Log::info(format!("Registering new app: {}", app.id));
-                self.state.app_manager.register_app(app).await?;
+                self.state.app_manager.create_app(app).await?;
             }
         }
         Ok(())
