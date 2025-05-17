@@ -76,11 +76,7 @@ where
     K: KeyExtractor + Clone + Send + Sync + 'static,
 {
     pub fn new(limiter: Arc<dyn RateLimiter>, key_extractor: K) -> Self {
-        Self {
-            limiter,
-            key_extractor: Arc::new(key_extractor),
-            options: RateLimitOptions::default(),
-        }
+        Self::with_options(limiter, key_extractor, RateLimitOptions::default())
     }
 
     #[allow(dead_code)]

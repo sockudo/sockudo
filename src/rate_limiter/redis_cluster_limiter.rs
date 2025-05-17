@@ -27,23 +27,16 @@ impl RedisClusterRateLimiter {
         max_requests: u32,
         window_secs: u64,
     ) -> Result<Self> {
-        let connection = client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::RedisError(format!("Failed to connect to Redis: {}", e)))?;
-
-        let config = RateLimitConfig {
-            max_requests,
-            window_secs,
-            identifier: Some("redis".to_string()),
-        };
-
-        Ok(Self {
+        Self::with_config(
             client,
-            connection,
             prefix,
-            config,
-        })
+            RateLimitConfig {
+                max_requests,
+                window_secs,
+                identifier: Some("redis".to_string()),
+            },
+        )
+        .await
     }
 
     /// Create a new Redis-based rate limiter with a specific configuration
