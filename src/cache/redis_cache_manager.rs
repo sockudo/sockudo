@@ -144,7 +144,7 @@ impl CacheManager for RedisCacheManager {
             .keys(pattern)
             .await
             .map_err(|e| Error::CacheError(format!("Redis keys error: {}", e)))?;
-        
+
         Ok(())
     }
 

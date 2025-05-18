@@ -387,10 +387,8 @@ impl Namespace {
                 .iter()
                 .map(async |ws_ref| {
                     let mut ws = ws_ref.0.lock().await;
-                    ws.close(
-                        4009,
-                        "You got disconnected by the app.".to_string(),
-                    ).await;
+                    ws.close(4009, "You got disconnected by the app.".to_string())
+                        .await;
                 })
                 .collect();
 

@@ -877,9 +877,11 @@ impl SockudoServer {
         match namespaces {
             Ok(namespaces) => {
                 for (app_id, namespace) in namespaces {
-                    let sockets= namespace.get_sockets().await?;
+                    let sockets = namespace.get_sockets().await?;
                     for (_socket_id, ws) in sockets {
-                        connection_manager.cleanup_connection(app_id.as_str(), WebSocketRef(ws)).await;
+                        connection_manager
+                            .cleanup_connection(app_id.as_str(), WebSocketRef(ws))
+                            .await;
                     }
                 }
             }

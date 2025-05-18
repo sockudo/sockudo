@@ -19,18 +19,17 @@ impl WebSocket {
             message_sender,
         }
     }
-    
+
     pub fn get_socket_id(&self) -> &SocketId {
         &self.state.socket_id
     }
-    
+
     pub async fn close(&mut self, code: u16, reason: String) -> Result<(), WebSocketError> {
         if let Some(mut socket) = self.socket.take() {
             let frame = Frame::close(code, &reason.into_bytes());
             socket.write_frame(frame).await?;
             Ok(())
-        }
-        else {
+        } else {
             Err(WebSocketError::ConnectionClosed)
         }
     }

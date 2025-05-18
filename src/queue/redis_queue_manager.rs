@@ -183,9 +183,11 @@ impl QueueInterface for RedisQueueManager {
     }
 
     async fn disconnect(&self) -> crate::error::Result<()> {
-        
         let mut conn = self.redis_connection.lock().await;
-        let keys: Vec<String> = conn.keys(format!("{}:queue:*", self.prefix)).await.expect("Error fetching keys");
+        let keys: Vec<String> = conn
+            .keys(format!("{}:queue:*", self.prefix))
+            .await
+            .expect("Error fetching keys");
         for key in keys {
             conn.del::<_, ()>(&key).await.expect("Error deleting key");
         }
