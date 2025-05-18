@@ -1,4 +1,4 @@
-use fastwebsockets::{Frame, WebSocketWrite};
+use fastwebsockets::{Frame, Payload, WebSocketError, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use tokio::io::WriteHalf;
@@ -8,6 +8,42 @@ pub struct WebSocket {
     pub state: ConnectionState,
     pub socket: Option<WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>>,
     pub message_sender: mpsc::UnboundedSender<Frame<'static>>,
+}
+
+impl WebSocket {
+    pub fn new(socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>) -> Self {
+        let (message_sender, _) = mpsc::unbounded_channel();
+        Self {
+            state: ConnectionState::new(),
+            socket: Some(socket),
+            message_sender,
+        }
+    }
+    
+    pub fn get_socket_id(&self) -> &SocketId {
+        &self.state.socket_id
+    }
+    
+    pub async fn close(&mut self, code: u16, reason: String) -> Result<(), WebSocketError> {
+        if let Some(mut socket) = self.socket.take() {
+            let frame = Frame::close(code, &reason.into_bytes());
+            socket.write_frame(frame).await?;
+            Ok(())
+        }
+        else {
+            Err(WebSocketError::ConnectionClosed)
+        }
+    }
+    pub async fn send_json(&mut self, message: Value) -> Result<(), WebSocketError> {
+        if let Some(socket) = &mut self.socket {
+            let payload = Payload::from(message.to_string().into_bytes());
+            let frame = Frame::text(payload);
+            socket.write_frame(frame).await?;
+            Ok(())
+        } else {
+            Err(WebSocketError::ConnectionClosed)
+        }
+    }
 }
 
 impl PartialEq for ConnectionState {

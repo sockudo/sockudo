@@ -380,33 +380,23 @@ impl Namespace {
 
     // Terminates all connections associated with a specific user ID.
     pub async fn terminate_user_connections(&self, user_id: &str) -> Result<()> {
-        let connections_to_terminate = match self.users.get(user_id) {
-            Some(user_sockets_ref) => user_sockets_ref.clone(), // Clone the DashSet
-            None => DashSet::new(),                             // No connections for this user.
-        };
+        if let Some(user_sockets_ref) = self.users.get(user_id) {
+            let user_sockets_snapshot = user_sockets_ref.clone();
+            drop(user_sockets_ref); // Drop the DashMap RefGuard
+            let cleanup_tasks: Vec<_> = user_sockets_snapshot
+                .iter()
+                .map(async |ws_ref| {
+                    let mut ws = ws_ref.0.lock().await;
+                    ws.close(
+                        4009,
+                        "You got disconnected by the app.".to_string(),
+                    ).await;
+                })
+                .collect();
 
-        if connections_to_terminate.is_empty() {
-            info!(
-                "No active connections found to terminate for user: {}",
-                user_id
-            );
-            return Ok(());
+            // Wait for all cleanup tasks to complete.
+            join_all(cleanup_tasks).await;
         }
-
-        info!(
-            "Terminating {} connections for user: {}",
-            connections_to_terminate.len(),
-            user_id
-        );
-
-        let mut cleanup_futures = Vec::new();
-        for connection_ref_entry in connections_to_terminate.iter() {
-            let connection_ref = connection_ref_entry.key(); // Get &WebSocketRef
-            cleanup_futures.push(self.cleanup_connection(connection_ref.clone()));
-        }
-
-        join_all(cleanup_futures).await;
-        info!("Finished terminating connections for user: {}", user_id);
         Ok(())
     }
 
