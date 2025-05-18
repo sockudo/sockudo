@@ -203,7 +203,7 @@ impl NatsAdapter {
                                     .map(|id| SocketId(id.clone()));
                                 // Lock only when interacting with local adapter
                                 let mut horizontal_lock = broadcast_horizontal.lock().await;
-                                let _ = horizontal_lock
+                                horizontal_lock
                                     .local_adapter
                                     .send(
                                         &broadcast.channel,
@@ -304,7 +304,7 @@ impl NatsAdapter {
                         // Process the response (already designed to be async)
                         // Lock only when processing
                         let horizontal_lock = response_horizontal.lock().await;
-                        let _ = horizontal_lock.process_response(response).await;
+                        horizontal_lock.process_response(response).await;
                         // Lock released automatically
                     }
                     Err(e) => {

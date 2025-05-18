@@ -270,7 +270,7 @@ impl RedisClusterAdapter {
                                             .map(|id| SocketId(id.clone()));
                                         // Lock only when interacting with local adapter
                                         let mut horizontal_lock = horizontal_clone.lock().await;
-                                        let _ = horizontal_lock
+                                        horizontal_lock
                                             .local_adapter
                                             .send(
                                                 &broadcast.channel,

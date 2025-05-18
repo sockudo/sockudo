@@ -381,9 +381,9 @@ impl Namespace {
                 // Renamed to avoid conflict
                 let error_frame = Frame::text(Payload::from(payload_str.into_bytes()));
                 // Ignore send errors during cleanup, as the connection might already be dead.
-                let _ = ws_guard.message_sender.send(error_frame);
+                ws_guard.message_sender.send(error_frame);
             }
-            let _ = ws_guard.message_sender.send(close_frame);
+            ws_guard.message_sender.send(close_frame);
         } // Lock guard dropped here.
 
         // Remove socket from all channels it was subscribed to.
