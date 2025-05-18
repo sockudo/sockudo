@@ -972,6 +972,43 @@ impl Adapter for RedisAdapter {
             .await?)
     }
 
+    async fn get_sockets_count(&mut self, app_id: &str) -> Result<usize> {
+        let node_count = self.get_node_count().await?; // Get count first
+        let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
+
+        // Get local count
+        let local_count = horizontal.local_adapter.get_sockets_count(app_id).await?;
+
+        // Get distributed count if needed
+        if node_count > 1 {
+            // send_request handles its own locking/timing
+            match horizontal
+                .send_request(
+                    app_id,
+                    RequestType::SocketsCount,
+                    None,
+                    None,
+                    None,
+                    node_count,
+                )
+                .await
+            {
+                Ok(response_data) => Ok(local_count + response_data.sockets_count),
+                Err(e) => {
+                    error!("{}", format!("Failed to get remote socket count: {}", e));
+                    Ok(local_count) // Return local count on error
+                }
+            }
+        } else {
+            Ok(local_count)
+        }
+    }
+
+    async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {
+        let mut horizontal = self.horizontal.lock().await;
+        horizontal.local_adapter.get_namespaces().await
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

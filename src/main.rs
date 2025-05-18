@@ -81,6 +81,7 @@ use crate::cache::manager::CacheManager;
 use crate::cache::memory_cache_manager::MemoryCacheManager; // Import for fallback
                                                             // MetricsInterface trait
 use crate::metrics::MetricsInterface;
+use crate::websocket::WebSocketRef;
 
 /// Server state containing all managers
 #[derive(Clone)]
@@ -839,6 +840,8 @@ impl SockudoServer {
     }
 
     async fn shutdown_signal(&self) {
+        // cleanup the connections and adapters
+
         let ctrl_c = async {
             signal::ctrl_c()
                 .await
@@ -853,7 +856,26 @@ impl SockudoServer {
         };
         #[cfg(not(unix))]
         let terminate = std::future::pending::<()>();
-        tokio::select! { _ = ctrl_c => {}, _ = terminate => {}, }
+        tokio::select! {
+            _ = ctrl_c => {
+                let mut connection_manager = self.state.connection_manager.lock().await;
+                let namespaces = connection_manager.get_namespaces().await;
+                match namespaces {
+                    Ok(namespaces) => {
+                        for (app_id, namespace) in namespaces {
+                            let sockets= namespace.get_sockets().await.unwrap();
+                            for (_socket_id, ws) in sockets {
+                                connection_manager.cleanup_connection(app_id.as_str(), WebSocketRef(ws)).await;
+                            }
+                        }
+                    }
+                    Err(e) => warn!("{}", format!("Failed to get namespaces: {}", e)),
+                }
+            },
+            _ = terminate => {
+
+            },
+        }
         info!(
             "{}",
             "Shutdown signal received, starting graceful shutdown".to_string()
@@ -864,6 +886,7 @@ impl SockudoServer {
     async fn stop(&self) -> Result<()> {
         let debug_enabled = self.config.debug;
         info!("{}", "Stopping server...".to_string());
+
         self.state.running.store(false, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
         {

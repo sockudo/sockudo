@@ -296,6 +296,20 @@ impl Adapter for LocalAdapter {
         Ok(channels?)
     }
 
+    async fn get_sockets_count(&mut self, app_id: &str) -> Result<usize> {
+        let namespace = self.get_or_create_namespace(app_id).await;
+        let count = namespace.sockets.len();
+        Ok(count)
+    }
+
+    async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {
+        let mut namespaces = DashMap::new();
+        for entry in self.namespaces.iter() {
+            namespaces.insert(entry.key().clone(), entry.value().clone());
+        }
+        Ok(namespaces)
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

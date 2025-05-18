@@ -6,7 +6,7 @@ use crate::error::{Error, Result}; // Error should be in scope
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{ConnectionState, SocketId, WebSocket, WebSocketRef};
 use dashmap::{DashMap, DashSet};
-use fastwebsockets::{Frame, Payload, WebSocketWrite};
+use fastwebsockets::{Frame, OpCode, Payload, WebSocketWrite};
 use futures::future::join_all;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
@@ -31,8 +31,6 @@ pub struct Namespace {
     // Maps user IDs (String) to a set of WebSocket references associated with that user.
     // WebSocketRef likely wraps Arc<Mutex<WebSocket>> for reference counting and access.
     pub users: DashMap<String, DashSet<WebSocketRef>>,
-    // Tracks the number of active connections in this namespace.
-    pub active_connections: AtomicU32, // Added field, made public for external read if needed
 }
 
 impl Namespace {
@@ -43,7 +41,6 @@ impl Namespace {
             sockets: DashMap::new(),
             channels: DashMap::new(),
             users: DashMap::new(),
-            active_connections: AtomicU32::new(0), // Initialize counter
         }
     }
 
@@ -78,52 +75,6 @@ impl Namespace {
             }
         };
 
-        // Check connection limit
-        // max_connections = 0 means unlimited.
-        if app_config.max_connections > 0 {
-            // Atomically check and decide if we can increment.
-            let mut current_connections = self.active_connections.load(Ordering::Relaxed);
-            loop {
-                if current_connections >= app_config.max_connections {
-                    warn!(
-                        "Connection limit reached for app {}: {}/{}",
-                        self.app_id, current_connections, app_config.max_connections
-                    );
-                    return Err(Error::OverConnectionQuota);
-                }
-                // Try to increment, if current_connections hasn't changed.
-                match self.active_connections.compare_exchange(
-                    current_connections,
-                    current_connections + 1,
-                    Ordering::SeqCst, // Stronger ordering for CAS
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        // Successfully incremented
-                        debug!(
-                            "Connection count for app {} incremented to {}",
-                            self.app_id,
-                            current_connections + 1
-                        );
-                        break;
-                    }
-                    Err(observed_connections) => {
-                        // The count changed, retry with the new value.
-                        current_connections = observed_connections;
-                    }
-                }
-            }
-        } else {
-            // max_connections is 0 (unlimited)
-            // Still increment for tracking, even if not strictly limited.
-            self.active_connections.fetch_add(1, Ordering::Relaxed);
-            debug!(
-                "Connection count for app {} (unlimited) incremented to {}",
-                self.app_id,
-                self.active_connections.load(Ordering::Relaxed) // Read after increment for logging
-            );
-        }
-
         // Create a channel for sending outgoing messages to this specific WebSocket client.
         let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -148,35 +99,49 @@ impl Namespace {
         let task_socket_id = socket_id.clone(); // Clone socket_id for the task
         tokio::spawn(async move {
             while let Some(frame) = rx.recv().await {
-                // Lock the connection to access the socket's write half.
+                // Log details about the frame BEFORE attempting to send it
+                debug!(
+                    socket_id = %task_socket_id,
+                    opcode = ?frame.opcode,
+                    payload_len = frame.payload.len(),
+                    fin = frame.fin,
+                    "Attempting to send frame"
+                );
+
+                // For text frames, log a snippet of the payload (be mindful of large payloads)
+                if frame.opcode == OpCode::Text {
+                    let payload_str_snippet = String::from_utf8_lossy(
+                        &frame.payload[..std::cmp::min(frame.payload.len(), 200)], // Log first 200 bytes max
+                    );
+                    debug!(socket_id = %task_socket_id, "Frame text payload snippet: '{}'", payload_str_snippet);
+                }
+
                 let mut connection_guard = task_connection_arc.lock().await;
                 if let Some(socket) = &mut connection_guard.socket {
-                    // Attempt to send the frame over the WebSocket.
+                    // Attempt to send the frame. The `frame` is consumed here.
                     if let Err(e) = socket.write_frame(frame).await {
+                        // Log the error, which will include the "Broken pipe" details if that's the cause
                         error!(
-                            "Failed to send frame to socket {}: {}. Closing send loop.",
-                            task_socket_id,
-                            e // Use cloned socket_id
+                            socket_id = %task_socket_id,
+                            error = %e,
+                            "Failed to send frame. Closing send loop."
                         );
-                        // Error likely means the connection is broken or closed.
-                        // Remove the socket write half to prevent further writes.
                         connection_guard.socket.take();
-                        // Break the loop to terminate this sender task.
                         break;
                     }
                 } else {
-                    // If connection_guard.socket is None, it means the socket was already closed/taken elsewhere.
                     info!(
-                        "Send loop for socket {} stopping: WebSocket already closed.",
-                        task_socket_id // Use cloned socket_id
+                        socket_id = %task_socket_id,
+                        "Send loop stopping: WebSocket already closed (socket writer was None)."
                     );
                     break;
                 }
-                // Drop the lock guard before waiting for the next message.
                 drop(connection_guard);
             }
+            // This log helps confirm the send loop for a specific socket has ended.
+            info!(socket_id = %task_socket_id, "Send loop terminated.");
         });
-        Ok(connection_arc) // Return the successfully added connection
+        Ok(connection_arc)
     }
 
     // Retrieves a connection Arc by SocketId.
@@ -341,20 +306,6 @@ impl Namespace {
             let ws_guard = ws_ref.0.lock().await;
             ws_guard.state.socket_id.clone()
         };
-
-        info!("Cleaning up connection for socket: {}", socket_id);
-
-        // Decrement active connections count
-        // This should be done regardless of whether max_connections was > 0,
-        // if active_connections is always incremented in add_socket.
-        let prev_count = self.active_connections.fetch_sub(1, Ordering::Relaxed);
-        // fetch_sub returns the value *before* subtraction.
-        debug!(
-            "Connection count for app {} decremented from {} to {}",
-            self.app_id,
-            prev_count,
-            prev_count.saturating_sub(1) // Use saturating_sub for safety in logs if prev_count could be 0
-        );
 
         let disconnect_message = PusherMessage::error(
             4009, // Example error code for server-initiated close
@@ -607,5 +558,9 @@ impl Namespace {
             channels_with_count.insert(channel_name, socket_count);
         }
         Ok(channels_with_count)
+    }
+    pub async fn get_sockets(&self) -> Result<DashMap<SocketId, Arc<Mutex<WebSocket>>>> {
+        let sockets = self.sockets.clone();
+        Ok(sockets)
     }
 }

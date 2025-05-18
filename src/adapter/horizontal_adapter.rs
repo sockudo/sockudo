@@ -218,8 +218,7 @@ impl HorizontalAdapter {
             RequestType::TerminateUserConnections => {
                 if let Some(user_id) = &request.user_id {
                     // Terminate user connections locally
-                    self
-                        .local_adapter
+                    self.local_adapter
                         .terminate_user_connections(&request.app_id, user_id)
                         .await?;
                     response.exists = true;

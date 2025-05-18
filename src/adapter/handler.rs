@@ -166,7 +166,16 @@ impl ConnectionHandler {
             .ok_or(Error::InvalidAppKey)?;
 
         info!("{}", format!("Placeholder: App {} has {} max connections. Current connection count check would go here.", app_config.id, app_config.max_connections));
-
+        let max_connections = app_config.max_connections;
+        if max_connections > 0 {
+            let mut connection_manager_locked = self.connection_manager.lock().await;
+            let current_connections = connection_manager_locked
+                .get_sockets_count(&app_config.id)
+                .await;
+            if current_connections? >= max_connections as usize {
+                return Err(Error::OverConnectionQuota);
+            }
+        }
         let socket = fut.await?;
         let (socket_rx, socket_tx) = socket.split(tokio::io::split);
         let socket_id = SocketId::new();
@@ -1049,11 +1058,11 @@ impl ConnectionHandler {
 
         let app = self
             .app_manager
-            .find_by_id(&app_key_str)
+            .find_by_key(&app_key_str)
             .await?
             .ok_or_else(|| Error::InvalidAppKey)?;
 
-        if app.enable_client_messages {
+        if !app.enable_client_messages {
             return Err(Error::ClientEventError(
                 "Client events are not enabled for this app".into(),
             ));
@@ -1372,13 +1381,11 @@ impl ConnectionHandler {
                 .await
             {
                 connection_manager_locked
-                    .cleanup_connection(app_id, WebSocketRef(conn_to_cleanup))
-                    .await;
+                    .remove_connection(socket_id, app_id)
+                    .await
+                    .ok();
             }
-            connection_manager_locked
-                .remove_connection(socket_id, app_id)
-                .await
-                .ok();
+
             info!(
                 "{}",
                 format!(

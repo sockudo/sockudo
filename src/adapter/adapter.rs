@@ -105,5 +105,8 @@ pub trait Adapter: Send + Sync {
         &mut self,
         app_id: &str,
     ) -> Result<DashMap<String, usize>>;
+
+    async fn get_sockets_count(&mut self, app_id: &str) -> Result<usize>;
+    async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>>;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
