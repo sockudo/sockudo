@@ -29,7 +29,6 @@ impl Eq for WebSocket {
 }
 
 use crate::app::config::App;
-use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use rand::Rng;
 use serde::{Deserialize, Serialize};

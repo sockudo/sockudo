@@ -5,12 +5,9 @@ use crate::error::Result;
 
 use crate::queue::memory_queue_manager::MemoryQueueManager;
 use crate::queue::redis_queue_manager::RedisQueueManager;
-use crate::queue::{JobProcessorFn, QueueInterface};
+use crate::queue::QueueInterface;
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::sync::Arc;
 use tracing::info;
 
 /// General Queue Manager interface wrapper

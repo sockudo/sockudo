@@ -1,7 +1,6 @@
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
@@ -9,13 +8,10 @@ use fastwebsockets::WebSocketWrite;
 use futures::StreamExt;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use redis::{AsyncCommands, AsyncConnectionConfig};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use redis::AsyncCommands;
 use tokio::io::WriteHalf;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 use crate::adapter::adapter::Adapter;
 use crate::adapter::horizontal_adapter::{
@@ -367,7 +363,7 @@ impl RedisAdapter {
                                     }
                                     // Process the response (already designed to be async)
                                     // Lock only when processing
-                                    let mut horizontal_lock = horizontal_clone.lock().await;
+                                    let horizontal_lock = horizontal_clone.lock().await;
                                     let _ = horizontal_lock.process_response(response).await;
                                     // Lock released automatically
                                 }
@@ -653,7 +649,7 @@ impl Adapter for RedisAdapter {
         let mut horizontal = self.horizontal.lock().await; // Lock for local + remote request
 
         // Start with local channel data
-        let mut result = horizontal
+        let result = horizontal
             .local_adapter
             .get_channel(app_id, channel)
             .await?;

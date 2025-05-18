@@ -12,7 +12,6 @@ use serde_json::json;
 use std::{
     fmt,
     net::SocketAddr,
-    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };

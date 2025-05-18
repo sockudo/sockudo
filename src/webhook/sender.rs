@@ -1,5 +1,5 @@
 // src/webhook/sender.rs
-use crate::app::config::App; // Keep for App struct
+ // Keep for App struct
 use crate::app::manager::AppManager; // Keep for AppManager trait
 use crate::error::{Error, Result};
 
@@ -7,7 +7,7 @@ use crate::webhook::lambda_sender::LambdaWebhookSender;
 // JobData now contains app_secret and its payload.events is Vec<Value>
 // PusherWebhookPayload is the structure for the final POST body
 use crate::token::Token; // For HMAC SHA256 signing
-use crate::webhook::types::{JobData, LambdaConfig, PusherWebhookPayload, Webhook};
+use crate::webhook::types::{JobData, PusherWebhookPayload, Webhook};
 use reqwest::{header, Client};
 use serde_json::{json, Value}; // Keep json! and Value
 use std::collections::HashMap;

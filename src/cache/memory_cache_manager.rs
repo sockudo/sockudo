@@ -1,7 +1,7 @@
 // src/cache/memory_cache_manager.rs
 
 use crate::cache::manager::CacheManager;
-use crate::error::{Error, Result}; // Assuming your project's Error/Result types
+use crate::error::Result; // Assuming your project's Error/Result types
 use crate::options::MemoryCacheOptions; // Using the type-safe options
 use async_trait::async_trait;
 use moka::future::Cache;

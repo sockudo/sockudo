@@ -6,14 +6,11 @@ use crate::options::DatabaseConnection;
 use crate::token::Token;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use futures_util::{stream, StreamExt};
 use moka::future::Cache;
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
-use tokio::time::interval;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 /// Configuration for MySQL App Manager

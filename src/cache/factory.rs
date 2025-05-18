@@ -10,7 +10,7 @@ use crate::cache::redis_cluster_cache_manager::{
 use crate::error::{Error, Result};
 
 use crate::options::{
-    CacheConfig, CacheDriver, MemoryCacheOptions, RedisConfig as OptionsRedisConfig,
+    CacheConfig, CacheDriver, MemoryCacheOptions,
     RedisConnection,
 };
 use std::sync::Arc;

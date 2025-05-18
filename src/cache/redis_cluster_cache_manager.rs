@@ -62,7 +62,7 @@ impl RedisClusterCacheManager {
         })?;
 
         // Get cluster connection
-        let mut connection = client
+        let connection = client
             .get_async_connection()
             .await
             .map_err(|e| Error::CacheError(format!("Failed to connect to Redis Cluster: {}", e)))?;
@@ -121,13 +121,13 @@ impl CacheManager for RedisClusterCacheManager {
         if ttl_seconds > 0 {
             // Set with expiration
             self.connection
-                .set_ex(prefixed_key, value, ttl_seconds)
+                .set_ex::<_, _, ()>(prefixed_key, value, ttl_seconds)
                 .await
                 .map_err(|e| Error::CacheError(format!("Redis Cluster set error: {}", e)))?;
         } else {
             // Set without expiration
             self.connection
-                .set(prefixed_key, value)
+                .set::<_, _, ()>(prefixed_key, value)
                 .await
                 .map_err(|e| Error::CacheError(format!("Redis Cluster set error: {}", e)))?;
         }
@@ -231,12 +231,12 @@ impl RedisClusterCacheManager {
         for (key, value) in &prefixed_pairs {
             if ttl_seconds > 0 {
                 self.connection
-                    .set_ex(key, *value, ttl_seconds)
+                    .set_ex::<_, _, ()>(key, *value, ttl_seconds)
                     .await
                     .map_err(|e| Error::CacheError(format!("Redis Cluster set_ex error: {}", e)))?;
             } else {
                 self.connection
-                    .set(key, *value)
+                    .set::<_, _, ()>(key, *value)
                     .await
                     .map_err(|e| Error::CacheError(format!("Redis Cluster set error: {}", e)))?;
             }

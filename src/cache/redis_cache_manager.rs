@@ -121,13 +121,13 @@ impl CacheManager for RedisCacheManager {
         if ttl_seconds > 0 {
             // Set with expiration
             self.connection
-                .set_ex(prefixed_key, value, ttl_seconds)
+                .set_ex::<_, _, ()>(prefixed_key, value, ttl_seconds)
                 .await
                 .map_err(|e| Error::CacheError(format!("Redis set error: {}", e)))?;
         } else {
             // Set without expiration
             self.connection
-                .set(prefixed_key, value)
+                .set::<_, _, ()>(prefixed_key, value)
                 .await
                 .map_err(|e| Error::CacheError(format!("Redis set error: {}", e)))?;
         }
@@ -228,7 +228,7 @@ impl RedisCacheManager {
         }
 
         // Execute pipeline
-        pipe.query_async(&mut self.connection)
+        pipe.query_async::<()>(&mut self.connection)
             .await
             .map_err(|e| Error::CacheError(format!("Redis pipeline error: {}", e)))?;
 
@@ -270,7 +270,7 @@ impl RedisCacheManager {
     pub async fn flush_db(&mut self) -> Result<()> {
         // Use the cmd method to execute FLUSHDB command
         redis::cmd("FLUSHDB")
-            .query_async(&mut self.connection)
+            .query_async::<()>(&mut self.connection)
             .await
             .map_err(|e| Error::CacheError(format!("Redis flushdb error: {}", e)))?;
 

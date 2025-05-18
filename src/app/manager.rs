@@ -1,8 +1,6 @@
-use std::sync::Arc;
 // src/app/traits.rs
 use crate::app::config::App;
-use crate::error::{Error, Result};
-use crate::websocket::SocketId;
+use crate::error::Result;
 use async_trait::async_trait;
 
 /// Trait defining operations that all AppManager implementations must support

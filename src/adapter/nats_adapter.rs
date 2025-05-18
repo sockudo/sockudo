@@ -303,7 +303,7 @@ impl NatsAdapter {
                         }
                         // Process the response (already designed to be async)
                         // Lock only when processing
-                        let mut horizontal_lock = response_horizontal.lock().await;
+                        let horizontal_lock = response_horizontal.lock().await;
                         let _ = horizontal_lock.process_response(response).await;
                         // Lock released automatically
                     }
@@ -559,7 +559,7 @@ impl Adapter for NatsAdapter {
         let node_count = self.get_node_count().await?;
 
         // Get local channel data with minimal lock duration
-        let mut result = {
+        let result = {
             let mut horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter

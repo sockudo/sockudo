@@ -1,6 +1,6 @@
 // src/metrics/prometheus.rs
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 use super::MetricsInterface;
 use crate::websocket::SocketId;

@@ -1,4 +1,4 @@
-use crate::app::config::App; // Make sure App is in scope
+ // Make sure App is in scope
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result}; // Error should be in scope
@@ -12,7 +12,6 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 // use std::collections::HashSet; // HashSet seems unused
-use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU32, Ordering}; // Added AtomicU32 and Ordering
 use std::sync::Arc;
 use tokio::io::WriteHalf;

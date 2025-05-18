@@ -1,7 +1,6 @@
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
@@ -12,9 +11,8 @@ use hyper_util::rt::TokioIo;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use redis::AsyncCommands;
 use tokio::io::WriteHalf;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 use crate::adapter::adapter::Adapter;
 use crate::adapter::horizontal_adapter::{
@@ -627,7 +625,7 @@ impl Adapter for RedisClusterAdapter {
         let node_count = self.get_node_count().await?;
 
         // Get local channel data with minimal lock duration
-        let mut result = {
+        let result = {
             let mut horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter

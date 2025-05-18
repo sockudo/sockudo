@@ -6,8 +6,7 @@ use crate::adapter::redis_cluster_adapter::{RedisClusterAdapter, RedisClusterAda
 use crate::adapter::Adapter;
 use crate::error::Result;
 
-use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig, RedisConnection}; // Import AdapterDriver, RedisConnection
-use std::sync::Arc;
+use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig}; // Import AdapterDriver, RedisConnection
 use tracing::{info, warn};
 
 pub struct AdapterFactory;

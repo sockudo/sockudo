@@ -22,7 +22,7 @@ use crate::{
 use dashmap::DashMap;
 use fastwebsockets::{upgrade, FragmentCollectorRead, Frame, OpCode, WebSocketError};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -1413,7 +1413,7 @@ impl ConnectionHandler {
             .await;
         let mut response_val = json!({});
 
-        if let Ok(mut channels_map) = channels_map_result {
+        if let Ok(channels_map) = channels_map_result {
             channels_map.iter_mut().for_each(|channel_entry| {
                 let channel_name_str = channel_entry.key().clone();
                 let socket_count_val = channel_entry.value();
@@ -1469,7 +1469,7 @@ impl ConnectionHandler {
         };
 
         if let Some(ref metrics) = self.metrics {
-            let mut metrics_locked = metrics.lock().await;
+            let metrics_locked = metrics.lock().await;
             let message_size_val = match serde_json::to_string(&pusher_message_val) {
                 Ok(msg_str) => msg_str.len(),
                 Err(_) => 0,

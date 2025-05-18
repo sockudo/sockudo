@@ -1,12 +1,10 @@
 // src/app/memory_manager.rs
 use super::config::App;
 use crate::app::manager::AppManager;
-use crate::error::{Error, Result};
-use crate::token::{secure_compare, Token};
-use crate::websocket::SocketId;
+use crate::error::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use hmac::{Hmac, KeyInit, Mac};
+use hmac::{Hmac, KeyInit};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;

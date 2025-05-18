@@ -17,7 +17,7 @@ use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_
 use crate::utils::validate_channel_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, fmt, sync::Arc}; // Added fmt for AppError Display
+use std::{collections::HashMap, sync::Arc}; // Added fmt for AppError Display
 use sysinfo::System;
 use thiserror::Error;
 use tracing::{error, field, info, instrument, warn};

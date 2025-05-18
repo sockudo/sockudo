@@ -16,7 +16,6 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -26,19 +25,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use app::dynamodb_app_manager::DynamoDbConfig;
-use axum::http::header::{HeaderName, AUTHORIZATION, CONTENT_TYPE};
+use axum::http::header::HeaderName;
 use axum::http::uri::Authority;
 use axum::http::Method;
 use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
-use axum::{serve, BoxError, Router, ServiceExt};
+use axum::{BoxError, Router, ServiceExt};
 
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use error::Error;
-use serde_json::{from_str, json, Value};
+use serde_json::{from_str, json};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -58,10 +56,6 @@ use crate::http_handler::{
 use crate::metrics::MetricsFactory;
 use crate::options::{
     AdapterDriver,
-    AppManagerDriver,
-    CacheDriver,
-    MemoryCacheOptions, // Import MemoryCacheOptions
-    MetricsDriver,
     QueueDriver,
     ServerOptions,
 };

@@ -6,7 +6,6 @@ use crate::error::Error;
 use crate::protocol::messages::{MessageData, PusherMessage};
 use crate::token::{secure_compare, Token};
 use crate::websocket::SocketId;
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;

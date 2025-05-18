@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 
-use crate::webhook::types::{LambdaConfig, PusherWebhookPayload, Webhook}; // Added PusherWebhookPayload for clarity
+use crate::webhook::types::{LambdaConfig, Webhook}; // Added PusherWebhookPayload for clarity
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_lambda::config::Region; // Credentials not directly used here for client creation
 use aws_sdk_lambda::error::SdkError; // Keep for sync if needed
