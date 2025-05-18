@@ -16,7 +16,7 @@ pub trait CacheManager: Send + Sync {
     async fn set(&mut self, key: &str, value: &str, ttl_seconds: u64) -> Result<()>;
 
     /// Disconnect the manager's made connections
-    async fn disconnect(&self) -> Result<()>;
+    async fn disconnect(&mut self) -> Result<()>;
 
     async fn is_healthy(&self) -> Result<bool> {
         Ok(true)

@@ -858,22 +858,10 @@ impl SockudoServer {
         let terminate = std::future::pending::<()>();
         tokio::select! {
             _ = ctrl_c => {
-                let mut connection_manager = self.state.connection_manager.lock().await;
-                let namespaces = connection_manager.get_namespaces().await;
-                match namespaces {
-                    Ok(namespaces) => {
-                        for (app_id, namespace) in namespaces {
-                            let sockets= namespace.get_sockets().await.unwrap();
-                            for (_socket_id, ws) in sockets {
-                                connection_manager.cleanup_connection(app_id.as_str(), WebSocketRef(ws)).await;
-                            }
-                        }
-                    }
-                    Err(e) => warn!("{}", format!("Failed to get namespaces: {}", e)),
-                }
+                self.stop().await.expect("Failed to stop server");
             },
             _ = terminate => {
-
+                self.stop().await.expect("Failed to stop server");
             },
         }
         info!(
@@ -884,13 +872,25 @@ impl SockudoServer {
 
     #[allow(dead_code)]
     async fn stop(&self) -> Result<()> {
-        let debug_enabled = self.config.debug;
+        let mut connection_manager = self.state.connection_manager.lock().await;
+        let namespaces = connection_manager.get_namespaces().await;
+        match namespaces {
+            Ok(namespaces) => {
+                for (app_id, namespace) in namespaces {
+                    let sockets= namespace.get_sockets().await?;
+                    for (_socket_id, ws) in sockets {
+                        connection_manager.cleanup_connection(app_id.as_str(), WebSocketRef(ws)).await;
+                    }
+                }
+            }
+            Err(e) => warn!("{}", format!("Failed to get namespaces: {}", e)),
+        }
         info!("{}", "Stopping server...".to_string());
 
         self.state.running.store(false, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
         {
-            let cache_manager_locked = self.state.cache_manager.lock().await;
+            let mut cache_manager_locked = self.state.cache_manager.lock().await;
             cache_manager_locked.disconnect().await?;
         }
         if let Some(queue_manager_arc) = &self.state.queue_manager {

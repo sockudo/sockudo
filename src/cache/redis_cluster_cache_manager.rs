@@ -136,8 +136,9 @@ impl CacheManager for RedisClusterCacheManager {
     }
 
     /// Disconnect the manager's made connections
-    async fn disconnect(&self) -> Result<()> {
-        // Redis clients disconnect automatically when dropped
+    async fn disconnect(&mut self) -> Result<()> {
+        // lcear all the cache
+        self.clear_prefix().await?;
         Ok(())
     }
 

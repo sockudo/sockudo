@@ -334,7 +334,6 @@ impl Namespace {
                 // Ignore send errors during cleanup, as the connection might already be dead.
                 ws_guard.message_sender.send(error_frame);
             }
-            ws_guard.message_sender.send(close_frame);
         } // Lock guard dropped here.
 
         // Remove socket from all channels it was subscribed to.

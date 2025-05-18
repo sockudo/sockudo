@@ -110,7 +110,7 @@ impl QueueInterface for MemoryQueueManager {
     }
 
     async fn disconnect(&self) -> crate::error::Result<()> {
-        // Nothing needed for memory queue
+        self.queues.clear();
         Ok(())
     }
 }

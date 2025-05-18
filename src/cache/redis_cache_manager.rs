@@ -136,8 +136,15 @@ impl CacheManager for RedisCacheManager {
     }
 
     /// Disconnect the manager's made connections
-    async fn disconnect(&self) -> Result<()> {
-        // Redis clients disconnect automatically when dropped
+    async fn disconnect(&mut self) -> Result<()> {
+        // delete all keys with the current prefix
+        let pattern = format!("{}:*", self.prefix);
+        let keys: Vec<String> = self
+            .connection
+            .keys(pattern)
+            .await
+            .map_err(|e| Error::CacheError(format!("Redis keys error: {}", e)))?;
+        
         Ok(())
     }
 

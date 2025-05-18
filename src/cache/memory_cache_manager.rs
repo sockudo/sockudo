@@ -86,7 +86,7 @@ impl CacheManager for MemoryCacheManager {
         Ok(())
     }
 
-    async fn disconnect(&self) -> Result<()> {
+    async fn disconnect(&mut self) -> Result<()> {
         // Moka's cache is in-memory and managed by RAII.
         // "Disconnecting" can mean clearing all entries.
         self.cache.invalidate_all();
