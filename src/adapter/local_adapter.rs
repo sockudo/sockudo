@@ -73,7 +73,7 @@ impl Adapter for LocalAdapter {
         app_manager: &Arc<dyn AppManager + Send + Sync>,
     ) -> Result<()> {
         let namespace = self.get_or_create_namespace(app_id).await;
-        namespace.add_socket(socket_id, socket, app_manager).await;
+        namespace.add_socket(socket_id, socket, app_manager).await?;
 
         Ok(())
     }

@@ -1,4 +1,4 @@
- // Make sure App is in scope
+// Make sure App is in scope
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result}; // Error should be in scope

@@ -269,7 +269,7 @@ impl RedisAdapter {
                                                 .map(|id| SocketId(id.clone()));
                                             // Lock only when interacting with local adapter
                                             let mut horizontal_lock = horizontal_clone.lock().await;
-                                            let _ = horizontal_lock
+                                            match horizontal_lock
                                                 .local_adapter
                                                 .send(
                                                     &broadcast.channel,
@@ -277,7 +277,13 @@ impl RedisAdapter {
                                                     except_id.as_ref(),
                                                     &broadcast.app_id,
                                                 )
-                                                .await;
+                                                .await
+                                            {
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    error!("Error: {}", e)
+                                                }
+                                            }
                                             // Lock released automatically when horizontal_lock goes out of scope
                                         }
                                         Err(e) => {
@@ -364,7 +370,7 @@ impl RedisAdapter {
                                     // Process the response (already designed to be async)
                                     // Lock only when processing
                                     let horizontal_lock = horizontal_clone.lock().await;
-                                    let _ = horizontal_lock.process_response(response).await;
+                                    horizontal_lock.process_response(response).await;
                                     // Lock released automatically
                                 }
                                 Err(e) => {
@@ -776,6 +782,35 @@ impl Adapter for RedisAdapter {
             .await
     }
 
+    async fn terminate_connection(&mut self, app_id: &str, user_id: &str) -> Result<()> {
+        let node_count = self.get_node_count().await?; // Get count first
+        let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
+
+        // First terminate locally
+        horizontal
+            .local_adapter
+            .terminate_connection(app_id, user_id)
+            .await?; // Propagate local errors
+
+        // Then broadcast to other nodes if needed
+        if node_count > 1 {
+            // send_request handles its own locking/timing
+            // We ignore the result here as it's a "fire and forget" termination broadcast
+            horizontal
+                .send_request(
+                    app_id,
+                    RequestType::TerminateUserConnections,
+                    None,
+                    None,
+                    Some(user_id),
+                    node_count,
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+
     async fn add_channel_to_sockets(&mut self, app_id: &str, channel: &str, socket_id: &SocketId) {
         // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
@@ -887,35 +922,6 @@ impl Adapter for RedisAdapter {
         // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.remove_user(ws).await
-    }
-
-    async fn terminate_connection(&mut self, app_id: &str, user_id: &str) -> Result<()> {
-        let node_count = self.get_node_count().await?; // Get count first
-        let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
-
-        // First terminate locally
-        horizontal
-            .local_adapter
-            .terminate_connection(app_id, user_id)
-            .await?; // Propagate local errors
-
-        // Then broadcast to other nodes if needed
-        if node_count > 1 {
-            // send_request handles its own locking/timing
-            // We ignore the result here as it's a "fire and forget" termination broadcast
-            let _ = horizontal
-                .send_request(
-                    app_id,
-                    RequestType::TerminateUserConnections,
-                    None,
-                    None,
-                    Some(user_id),
-                    node_count,
-                )
-                .await;
-        }
-
-        Ok(())
     }
 
     async fn get_channels_with_socket_count(

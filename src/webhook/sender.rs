@@ -1,5 +1,5 @@
 // src/webhook/sender.rs
- // Keep for App struct
+// Keep for App struct
 use crate::app::manager::AppManager; // Keep for AppManager trait
 use crate::error::{Error, Result};
 

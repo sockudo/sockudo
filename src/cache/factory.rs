@@ -9,10 +9,7 @@ use crate::cache::redis_cluster_cache_manager::{
 };
 use crate::error::{Error, Result};
 
-use crate::options::{
-    CacheConfig, CacheDriver, MemoryCacheOptions,
-    RedisConnection,
-};
+use crate::options::{CacheConfig, CacheDriver, MemoryCacheOptions, RedisConnection};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info};

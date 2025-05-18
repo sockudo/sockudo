@@ -362,7 +362,7 @@ impl RedisClusterAdapter {
                                 // Process the response (already designed to be async)
                                 // Lock only when processing
                                 let horizontal_lock = horizontal_clone.lock().await;
-                                let _ = horizontal_lock.process_response(response).await;
+                                horizontal_lock.process_response(response).await;
                                 // Lock released automatically
                             }
                             Err(e) => {
@@ -884,7 +884,7 @@ impl Adapter for RedisClusterAdapter {
         if node_count > 1 {
             // send_request handles its own locking/timing
             // We ignore the result here as it's a "fire and forget" termination broadcast
-            let _ = horizontal
+            horizontal
                 .send_request(
                     app_id,
                     RequestType::TerminateUserConnections,
@@ -893,7 +893,7 @@ impl Adapter for RedisClusterAdapter {
                     Some(user_id),
                     node_count,
                 )
-                .await;
+                .await?;
         }
 
         Ok(())

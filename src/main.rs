@@ -54,11 +54,7 @@ use crate::http_handler::{
 };
 
 use crate::metrics::MetricsFactory;
-use crate::options::{
-    AdapterDriver,
-    QueueDriver,
-    ServerOptions,
-};
+use crate::options::{AdapterDriver, QueueDriver, ServerOptions};
 use crate::queue::manager::{QueueManager, QueueManagerFactory};
 use crate::rate_limiter::factory::RateLimiterFactory;
 use crate::rate_limiter::middleware::IpKeyExtractor;
@@ -872,10 +868,10 @@ impl SockudoServer {
         tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
         {
             let cache_manager_locked = self.state.cache_manager.lock().await;
-            let _ = cache_manager_locked.disconnect().await;
+            cache_manager_locked.disconnect().await?;
         }
         if let Some(queue_manager_arc) = &self.state.queue_manager {
-            let _ = queue_manager_arc.disconnect().await;
+            queue_manager_arc.disconnect().await?;
         }
         info!("{}", "Server stopped".to_string());
         Ok(())
