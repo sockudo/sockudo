@@ -48,10 +48,10 @@ impl WebhookSender {
     pub async fn process_webhook_job(&self, job: JobData) -> Result<()> {
         let app_key = job.app_key.clone();
         let app_id = job.app_id.clone();
-        info!("{}", format!(
-            "Processing webhook job for app_id: {}",
-            app_id.clone()
-        ));
+        info!(
+            "{}",
+            format!("Processing webhook job for app_id: {}", app_id.clone())
+        );
 
         // The App struct (or at least its webhooks configuration) is needed.
         // If JobData doesn't contain the full App.webhooks, we fetch it.
@@ -180,10 +180,10 @@ impl WebhookSender {
                             format!("Webhook send error to URL {}: {}", url_str, e)
                         );
                     } else {
-                        info!("{}", format!(
-                            "Successfully sent Pusher webhook to URL: {}",
-                            url_str
-                        ));
+                        info!(
+                            "{}",
+                            format!("Successfully sent Pusher webhook to URL: {}", url_str)
+                        );
                     }
                 });
                 tasks.push(task);
@@ -219,10 +219,10 @@ impl WebhookSender {
                             format!("Lambda webhook error for app {}: {}", app_id.clone(), e)
                         );
                     } else {
-                        info!("{}", format!(
-                            "Successfully invoked Lambda for app: {}",
-                            app_id.clone()
-                        ));
+                        info!(
+                            "{}",
+                            format!("Successfully invoked Lambda for app: {}", app_id.clone())
+                        );
                     }
                 });
                 tasks.push(task);
@@ -286,10 +286,13 @@ async fn send_pusher_webhook(
             let status = response.status();
             if status.is_success() {
                 // 2XX status codes
-                info!("{}", format!(
-                    "Successfully sent Pusher webhook to {} (status: {})",
-                    url, status
-                ));
+                info!(
+                    "{}",
+                    format!(
+                        "Successfully sent Pusher webhook to {} (status: {})",
+                        url, status
+                    )
+                );
                 Ok(())
             } else {
                 let error_text = response.text().await.unwrap_or_default();

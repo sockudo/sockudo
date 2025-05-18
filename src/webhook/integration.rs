@@ -107,10 +107,10 @@ impl WebhookIntegration {
             let processor: JobProcessorFnAsync = Box::new(move |job_data| {
                 let sender_for_task = sender_clone.clone();
                 Box::pin(async move {
-                    info!("{}", format!(
-                        "Processing webhook job from queue: {:?}",
-                        job_data.app_id
-                    ));
+                    info!(
+                        "{}",
+                        format!("Processing webhook job from queue: {:?}", job_data.app_id)
+                    );
                     sender_for_task.process_webhook_job(job_data).await
                 })
             });
@@ -148,10 +148,13 @@ impl WebhookIntegration {
                 if webhooks_to_process.is_empty() {
                     continue;
                 }
-                info!("{}", format!(
-                    "Processing {} batched webhook queues (Sockudo internal batching)",
-                    webhooks_to_process.len()
-                ));
+                info!(
+                    "{}",
+                    format!(
+                        "Processing {} batched webhook queues (Sockudo internal batching)",
+                        webhooks_to_process.len()
+                    )
+                );
 
                 if let Some(manager_arc) = &queue_manager_clone {
                     for (queue_name, jobs) in webhooks_to_process {

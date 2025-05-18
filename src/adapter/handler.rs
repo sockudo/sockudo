@@ -854,11 +854,7 @@ impl ConnectionHandler {
         } else if let Some(webhook_integration_instance) = &self.webhook_integration {
             info!("{}", format!("Sending subscription_count webhook for channel {} (count: {}) after unsubscribe", channel_name_str, current_sub_count));
             webhook_integration_instance
-                .send_subscription_count_changed(
-                    app_config,
-                    channel_name_str,
-                    current_sub_count,
-                )
+                .send_subscription_count_changed(app_config, channel_name_str, current_sub_count)
                 .await
                 .ok();
         }
@@ -1327,7 +1323,8 @@ impl ConnectionHandler {
                                         .ok();
                                 }
                             }
-                        } else if let Some(webhook_integration_instance) = &self.webhook_integration {
+                        } else if let Some(webhook_integration_instance) = &self.webhook_integration
+                        {
                             info!("{}", format!("Sending subscription_count webhook for channel {} (count: {}) after disconnect processing", channel_str, current_sub_count_after_cm_unsubscribe));
                             webhook_integration_instance
                                 .send_subscription_count_changed(

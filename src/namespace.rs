@@ -55,7 +55,8 @@ impl Namespace {
         socket_id: SocketId,
         socket_writer: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>, // Renamed for clarity
         app_manager: &Arc<dyn AppManager + Send + Sync>,
-    ) -> Result<Arc<Mutex<WebSocket>>> { // Return the connection Arc on success
+    ) -> Result<Arc<Mutex<WebSocket>>> {
+        // Return the connection Arc on success
         // Fetch the application configuration first.
         let app_config = match app_manager.find_by_id(&self.app_id).await {
             Ok(Some(app)) => app,
@@ -124,7 +125,6 @@ impl Namespace {
             );
         }
 
-
         // Create a channel for sending outgoing messages to this specific WebSocket client.
         let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -135,7 +135,7 @@ impl Namespace {
         let connection = WebSocket {
             state: connection_state,
             socket: Some(socket_writer), // The actual write half of the WebSocket.
-            message_sender: tx,   // Sender part of the message channel.
+            message_sender: tx,          // Sender part of the message channel.
         };
 
         let connection_arc = Arc::new(Mutex::new(connection));
@@ -156,7 +156,8 @@ impl Namespace {
                     if let Err(e) = socket.write_frame(frame).await {
                         error!(
                             "Failed to send frame to socket {}: {}. Closing send loop.",
-                            task_socket_id, e // Use cloned socket_id
+                            task_socket_id,
+                            e // Use cloned socket_id
                         );
                         // Error likely means the connection is broken or closed.
                         // Remove the socket write half to prevent further writes.
@@ -213,9 +214,7 @@ impl Namespace {
 
             let conn_guard = connection.lock().await;
             conn_guard.message_sender.send(frame).map_err(|e| {
-                warn!(
-                    "Failed to queue message for {}: {}", socket_id, e
-                );
+                warn!("Failed to queue message for {}: {}", socket_id, e);
                 Error::ConnectionError(format!(
                     "Failed to send message: receiver closed for {}",
                     socket_id
@@ -243,18 +242,21 @@ impl Namespace {
             let socket_ids_snapshot = socket_ids_ref.clone(); // Clone the DashSet for iteration
             drop(socket_ids_ref); // Drop the DashMap RefGuard
 
-            for socket_id_entry in socket_ids_snapshot.iter() { // iter() on DashSet gives &SocketId
+            for socket_id_entry in socket_ids_snapshot.iter() {
+                // iter() on DashSet gives &SocketId
                 let current_socket_id = socket_id_entry.key(); // Get the SocketId itself
                 if except.is_none_or(|excluded_id| excluded_id != current_socket_id) {
                     if let Some(connection) = self.get_connection(current_socket_id) {
                         let current_payload_clone = payload.clone();
-                        let frame = Frame::text(Payload::from(current_payload_clone.as_bytes().to_vec()));
+                        let frame =
+                            Frame::text(Payload::from(current_payload_clone.as_bytes().to_vec()));
 
                         let conn_guard = connection.lock().await;
                         if let Err(e) = conn_guard.message_sender.send(frame) {
                             warn!(
                                 "Failed to queue broadcast message for socket {:?}: {:?}",
-                                current_socket_id.0, e // Accessing the String inside SocketId for logging
+                                current_socket_id.0,
+                                e // Accessing the String inside SocketId for logging
                             );
                         }
                         drop(conn_guard);
@@ -355,7 +357,6 @@ impl Namespace {
             prev_count.saturating_sub(1) // Use saturating_sub for safety in logs if prev_count could be 0
         );
 
-
         let disconnect_message = PusherMessage::error(
             4009, // Example error code for server-initiated close
             "Connection closed by server".to_string(),
@@ -377,7 +378,8 @@ impl Namespace {
         // Send frames using the message sender channel (best effort).
         {
             let ws_guard = ws_ref.0.lock().await;
-            if let Some(payload_str) = error_payload { // Renamed to avoid conflict
+            if let Some(payload_str) = error_payload {
+                // Renamed to avoid conflict
                 let error_frame = Frame::text(Payload::from(payload_str.into_bytes()));
                 // Ignore send errors during cleanup, as the connection might already be dead.
                 let _ = ws_guard.message_sender.send(error_frame);
@@ -403,7 +405,8 @@ impl Namespace {
                 .map(|s| s.to_string()) // Clone the user ID string
         };
 
-        if let Some(user_id_str_val) = user_id_option { // Renamed to avoid conflict
+        if let Some(user_id_str_val) = user_id_option {
+            // Renamed to avoid conflict
             if let Some(user_sockets_ref) = self.users.get_mut(&user_id_str_val) {
                 user_sockets_ref.remove(&ws_ref);
                 let is_empty = user_sockets_ref.is_empty();
@@ -430,7 +433,7 @@ impl Namespace {
     pub async fn terminate_user_connections(&self, user_id: &str) -> Result<()> {
         let connections_to_terminate = match self.users.get(user_id) {
             Some(user_sockets_ref) => user_sockets_ref.clone(), // Clone the DashSet
-            None => DashSet::new(), // No connections for this user.
+            None => DashSet::new(),                             // No connections for this user.
         };
 
         if connections_to_terminate.is_empty() {
@@ -556,7 +559,7 @@ impl Namespace {
             } else {
                 warn!(
                     "User data found for socket {} but missing 'id' string field.",
-                     ws.lock().await.state.socket_id // Re-lock OK for logging
+                    ws.lock().await.state.socket_id // Re-lock OK for logging
                 );
             }
         }

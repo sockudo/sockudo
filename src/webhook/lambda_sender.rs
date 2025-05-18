@@ -128,10 +128,13 @@ impl LambdaWebhookSender {
             .await
         {
             Ok(_) => {
-                info!("{}", format!(
-                    "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
-                    lambda_config_ref.function_name, app_id, triggering_event_name
-                ));
+                info!(
+                    "{}",
+                    format!(
+                        "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
+                        lambda_config_ref.function_name, app_id, triggering_event_name
+                    )
+                );
                 Ok(())
             }
             Err(e) => {
@@ -186,10 +189,13 @@ impl LambdaWebhookSender {
             ))
         })?;
 
-        info!("{}", format!(
-            "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
-            lambda_config_ref.function_name, app_id, triggering_event_name
-        ));
+        info!(
+            "{}",
+            format!(
+                "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
+                lambda_config_ref.function_name, app_id, triggering_event_name
+            )
+        );
 
         let result: core::result::Result<InvokeOutput, SdkError<InvokeError>> = client
             .invoke()
@@ -204,10 +210,13 @@ impl LambdaWebhookSender {
                 if let Some(response_payload_blob) = output.payload() {
                     match serde_json::from_slice::<Value>(response_payload_blob.as_ref()) {
                         Ok(json_response) => {
-                            info!("{}", format!(
-                                "Received response from Lambda function {}: {:?}",
-                                lambda_config_ref.function_name, json_response
-                            ));
+                            info!(
+                                "{}",
+                                format!(
+                                    "Received response from Lambda function {}: {:?}",
+                                    lambda_config_ref.function_name, json_response
+                                )
+                            );
                             Ok(Some(json_response))
                         }
                         Err(e) => {
@@ -224,10 +233,13 @@ impl LambdaWebhookSender {
                         }
                     }
                 } else {
-                    info!("{}", format!(
-                        "Lambda function {} returned no payload",
-                        lambda_config_ref.function_name
-                    ));
+                    info!(
+                        "{}",
+                        format!(
+                            "Lambda function {} returned no payload",
+                            lambda_config_ref.function_name
+                        )
+                    );
                     Ok(None)
                 }
             }

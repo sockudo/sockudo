@@ -41,7 +41,8 @@ impl MemoryRateLimiter {
 
     /// Create a new memory-based rate limiter with a specific configuration
     pub fn with_config(config: RateLimitConfig) -> Self {
-        let limits: Arc<DashMap<String, RateLimitEntry, ahash::RandomState>> = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        let limits: Arc<DashMap<String, RateLimitEntry, ahash::RandomState>> =
+            Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         let limits_clone = Arc::clone(&limits);
 
         // Start cleanup task
