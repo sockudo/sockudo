@@ -5,9 +5,7 @@ use tracing::{error, info, warn};
 // Use the type-safe RedisConfig and CacheDriver from options.rs
 use crate::error::Result;
 
-use crate::options::{
-    CacheDriver, RateLimiterConfig, RedisConfig as RateLimiterRedisBackendConfig, RedisConnection,
-};
+use crate::options::{CacheDriver, RateLimiterConfig, RedisConnection};
 use crate::rate_limiter::memory_limiter::MemoryRateLimiter;
 use crate::rate_limiter::redis_limiter::RedisRateLimiter;
 

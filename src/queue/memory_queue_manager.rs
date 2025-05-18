@@ -1,10 +1,11 @@
 // --- MemoryQueueManager ---
 // No major logical changes, but added comments and ensured consistency.
 
-use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
+use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -13,15 +14,15 @@ use tracing::info;
 pub struct MemoryQueueManager {
     // Use channels to simulate a queue in memory
     // DashMap<String, Vec<JobData>> is implicitly Send + Sync if JobData is Send
-    queues: dashmap::DashMap<String, Vec<JobData>>,
+    queues: DashMap<String, Vec<JobData>, ahash::RandomState>,
     // Store Arc'd callbacks to be consistent with Redis manager and avoid potential issues if Box wasn't 'static
-    processors: dashmap::DashMap<String, ArcJobProcessorFn>,
+    processors: DashMap<String, ArcJobProcessorFn, ahash::RandomState>,
 }
 
 impl MemoryQueueManager {
     pub fn new() -> Self {
-        let queues = dashmap::DashMap::new();
-        let processors = dashmap::DashMap::new();
+        let queues = DashMap::with_hasher(ahash::RandomState::new());
+        let processors = DashMap::with_hasher(ahash::RandomState::new());
 
         Self { queues, processors }
     }

@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::time::interval;
-
 /// Entry in the rate limiter map
 #[derive(Clone)]
 struct RateLimitEntry {
@@ -22,7 +21,7 @@ struct RateLimitEntry {
 /// In-memory rate limiter implementation
 pub struct MemoryRateLimiter {
     /// Storage for rate limit counters
-    limits: Arc<DashMap<String, RateLimitEntry>>,
+    limits: Arc<DashMap<String, RateLimitEntry, ahash::RandomState>>,
     /// Configuration for rate limiting
     config: RateLimitConfig,
     /// Cleanup task handle
@@ -42,8 +41,8 @@ impl MemoryRateLimiter {
 
     /// Create a new memory-based rate limiter with a specific configuration
     pub fn with_config(config: RateLimitConfig) -> Self {
-        let limits: Arc<DashMap<String, RateLimitEntry>> = Arc::new(DashMap::new());
-        let limits_clone = limits.clone();
+        let limits: Arc<DashMap<String, RateLimitEntry, ahash::RandomState>> = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        let limits_clone = Arc::clone(&limits);
 
         // Start cleanup task
         let cleanup_task = tokio::spawn(async move {
