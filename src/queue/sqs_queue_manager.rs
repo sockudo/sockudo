@@ -18,6 +18,8 @@ pub struct SqsQueueManager {
     client: sqs::Client,
     /// Configuration
     config: SqsQueueConfig, // Using the struct from options.rs
+
+    // todo -> change Mutex<Hashmap> to Dashmap
     /// Cache of queue URLs
     queue_urls: Arc<Mutex<HashMap<String, String>>>,
     /// Active workers

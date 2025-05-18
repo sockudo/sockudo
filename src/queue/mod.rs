@@ -16,6 +16,7 @@ pub mod sqs_queue_manager;
 impl JobData where JobData: Serialize + DeserializeOwned {}
 
 // Define a type alias for the callback for clarity and easier management
+#[allow(dead_code)]
 type JobProcessorFn = Box<dyn Fn(JobData) -> Result<()> + Send + Sync + 'static>;
 // Define a type alias for the Arc'd callback used in Redis manager
 type ArcJobProcessorFn = Arc<

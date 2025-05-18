@@ -1,4 +1,4 @@
-use crate::queue::{ArcJobProcessorFn, JobProcessorFn, QueueInterface};
+use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use tracing::{error, info};
 pub struct RedisQueueManager {
     redis_connection: Arc<Mutex<MultiplexedConnection>>,
     // Store Arc'd callbacks to allow cloning them into worker tasks safely
-    job_processors: dashmap::DashMap<String, ArcJobProcessorFn>,
+    job_processors: dashmap::DashMap<String, ArcJobProcessorFn, ahash::RandomState>,
     prefix: String,
     concurrency: usize,
 }
@@ -40,13 +40,14 @@ impl RedisQueueManager {
 
         Ok(Self {
             redis_connection: Arc::new(Mutex::new(connection)),
-            job_processors: dashmap::DashMap::new(),
+            job_processors: dashmap::DashMap::with_hasher(ahash::RandomState::new()),
             prefix: prefix.to_string(),
             concurrency,
         })
     }
 
     // Note: start_processing is effectively done within process_queue for Redis
+    #[allow(dead_code)]
     pub fn start_processing(&self) {
         // This method is not strictly needed for Redis as workers start in process_queue.
         // Could be used for other setup if required in the future.
