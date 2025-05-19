@@ -7,7 +7,7 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/RustNSparks/sockudo?style=social)](https://github.com/RustNSparks/sockudo/stargazers)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 
 ## Overview
 
