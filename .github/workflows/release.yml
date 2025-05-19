@@ -90,29 +90,52 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
+          
           # For aarch64 cross-compilation
           if [[ "${{ matrix.target.triple }}" == "aarch64-unknown-linux-gnu" ]]; then
+            # Add ARM architecture and install required packages
+            sudo dpkg --add-architecture arm64
+            sudo apt-get update
             sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            sudo apt-get install -y libssl-dev:arm64 libc6-dev-arm64-cross
           fi
         shell: bash
 
-      # Fixed build step with properly formatted bash conditionals
+      # Fixed build step with properly configured OpenSSL for cross-compilation
       - name: Build binary (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
+          # Set up proper OpenSSL environment variables for cross-compilation
           if [[ "${{ matrix.target.triple }}" == "aarch64-unknown-linux-gnu" ]]; then
-                export OPENSSL_DIR="/usr/lib/ssl"
-                export OPENSSL_INCLUDE_DIR="/usr/include/openssl"
-                export OPENSSL_LIB_DIR="/usr/lib/aarch64-linux-gnu"
+            # Create pkgconfig directory if it doesn't exist
+            sudo mkdir -p /usr/lib/aarch64-linux-gnu/pkgconfig/
+          
+            # Install required OpenSSL packages specifically for aarch64
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev:arm64
+          
+            # Export the environment variables explicitly with proper paths
+            export OPENSSL_DIR="/usr"
+            export OPENSSL_INCLUDE_DIR="/usr/include"
+            export OPENSSL_LIB_DIR="/usr/lib/aarch64-linux-gnu"
+            export PKG_CONFIG_ALLOW_CROSS=1
+            export PKG_CONFIG_PATH="/usr/lib/aarch64-linux-gnu/pkgconfig"
+            export AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR="/usr/lib/aarch64-linux-gnu"
+            export AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR="/usr/include"
           elif [[ "${{ matrix.target.triple }}" == "x86_64-unknown-linux-gnu" ]]; then
-                export OPENSSL_DIR="/usr/lib/ssl"
-                export OPENSSL_INCLUDE_DIR="/usr/include/openssl"
-                export OPENSSL_LIB_DIR="/usr/lib/x86_64-linux-gnu"
+            export OPENSSL_DIR="/usr"
+            export OPENSSL_INCLUDE_DIR="/usr/include"
+            export OPENSSL_LIB_DIR="/usr/lib/x86_64-linux-gnu"
           fi
           
           if [[ "${{ matrix.target.use_cross }}" == "true" ]]; then
-            OPENSSL_DIR="/usr/include/openssl" cross build --release --target ${{ matrix.target.triple }}
+            # Use cross with proper environment variables
+            OPENSSL_DIR="$OPENSSL_DIR" \
+            OPENSSL_INCLUDE_DIR="$OPENSSL_INCLUDE_DIR" \
+            OPENSSL_LIB_DIR="$OPENSSL_LIB_DIR" \
+            PKG_CONFIG_ALLOW_CROSS=1 \
+            cross build --release --target ${{ matrix.target.triple }}
           else
             cargo build --release --target ${{ matrix.target.triple }}
           fi
