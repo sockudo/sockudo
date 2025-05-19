@@ -94,7 +94,7 @@ impl MessageData {
 
     pub fn as_value(&self) -> Option<&Value> {
         match self {
-            MessageData::Structured { ref extra, .. } => extra.values().next(),
+            MessageData::Structured { extra, .. } => extra.values().next(),
             _ => None,
         }
     }
