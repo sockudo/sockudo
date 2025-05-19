@@ -6,12 +6,12 @@
 </div>
 
 [![GitHub stars](https://img.shields.io/github/stars/RustNSparks/sockudo?style=social)](https://github.com/RustNSparks/sockudo/stargazers)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/License-AGPL-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 
 ## Overview
 
-Sockudo is a robust, memory-efficient WebSockets server that's fully compatible with the Pusher protocol, providing a seamless integration path for applications using Laravel Echo. Built from the ground up in Rust, Sockudo leverages the language's performance, memory safety, and concurrency features to deliver a high-throughput, low-latency real-time communication solution.
+Sockudo is a robust, memory-efficient WebSockets server that's fully compatible with the Pusher protocol, providing a seamless integration path for applications using Laravel Echo. Built from the ground up in Rust, Sockudo leverages the language's performance, memory safety, and concurrency features to deliver a high-throughput, low-latency real-time communication solution. FOr all the docs please go [here](https://sockudo.app)
 
 ## Features
 
@@ -30,7 +30,7 @@ Sockudo is a robust, memory-efficient WebSockets server that's fully compatible 
 
 ### Prerequisites
 
-- Rust 1.70 or newer
+- Rust 1.85 or newer
 - Redis (optional, for scaling)
 
 ### Installation
@@ -57,7 +57,7 @@ Sockudo can be configured through a JSON file or environment variables.
 
 ### Using a Config File
 
-Create a `config.json` file in the root directory:
+Create a `config.json` file in the root directory(see `options.rs` for all the configs available:
 
 ```json
 {
