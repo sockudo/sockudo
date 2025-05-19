@@ -65,13 +65,9 @@ codegen-units = 1
 lto = true
 
 [package.metadata.binstall]
-# URL template for downloading the release archive.
+pkg-url = "https://github.com/RustNSparks/sockudo/releases/download/v{version}/sockudo-v{version}-{target}.{archive_ext}"
 
-pkg-url = "https://github.com/RustNSparks/sockudo/releases/download/v{version}/sockudo-v{version}-{target}.tar.gz"
-
-# Format of the package. "tgz" is for .tar.gz. Use "zip" for .zip.
-pkg-fmt = "tgz" # Use "zip" for Windows if you package .exe in a .zip
-
+pkg-fmt = "tgz"
 supported-targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -79,3 +75,8 @@ supported-targets = [
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc"
 ]
+
+[[package.metadata.binstall.overrides]]
+target = "x86_64-pc-windows-msvc"
+pkg-url = "https://github.com/RustNSparks/sockudo/releases/download/v{version}/sockudo-v{version}-{target}.zip"
+pkg-fmt = "zip"

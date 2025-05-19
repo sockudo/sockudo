@@ -1,0 +1,148 @@
+name: Release Sockudo for cargo-binstall
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on tags like v0.1.0, v1.0.0-alpha, etc.
+
+permissions:
+  contents: write # Needed to create releases and upload assets
+
+jobs:
+  create_release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Sockudo Release v${{ steps.get_version.outputs.version }}
+          body: |
+            Sockudo v${{ steps.get_version.outputs.version }}
+
+            Pre-compiled binaries for various platforms.
+            Install with: `cargo binstall sockudo --version ${{ steps.get_version.outputs.version }}`
+          draft: false
+          prerelease: ${{ contains(github.ref, '-alpha') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
+
+  build_and_upload_assets:
+    name: Build for ${{ matrix.target.name }}
+    needs: create_release
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      matrix:
+        target:
+          - name: linux-x86_64
+            triple: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive_ext: tar.gz
+            binary_name: sockudo
+          - name: linux-aarch64
+            triple: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive_ext: tar.gz
+            binary_name: sockudo
+            use_cross: true # Recommended for ARM targets if runner doesn't natively support
+          - name: macos-x86_64
+            triple: x86_64-apple-darwin
+            os: macos-latest # Older macOS for x86_64 compatibility
+            archive_ext: tar.gz
+            binary_name: sockudo
+          - name: macos-aarch64
+            triple: aarch64-apple-darwin
+            os: macos-latest # Newer macOS for Apple Silicon
+            archive_ext: tar.gz
+            binary_name: sockudo
+          - name: windows-x86_64
+            triple: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive_ext: zip
+            binary_name: sockudo.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.triple }} # Ensure the target is installed for the toolchain
+
+      - name: Install cross-compilation tools (if needed)
+        if: matrix.target.use_cross == true
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev main # Or use a released version
+
+      - name: Build binary
+        run: |
+          if [[ "${{ matrix.target.use_cross }}" == "true" ]]; then
+            cross build --release --target ${{ matrix.target.triple }}
+          else
+            cargo build --release --target ${{ matrix.target.triple }}
+          fi
+        env:
+          CARGO_TERM_COLOR: always # Ensure color output in logs
+
+      - name: Prepare artifact name and path
+        id: artifact_paths
+        shell: bash
+        run: |
+          VERSION="${{ needs.create_release.outputs.release_version }}"
+          TARGET_TRIPLE="${{ matrix.target.triple }}"
+          ARCHIVE_EXT="${{ matrix.target.archive_ext }}"
+          BINARY_NAME="${{ matrix.target.binary_name }}"
+
+          # Determine source path of the binary
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            SOURCE_BINARY_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
+          else
+            SOURCE_BINARY_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
+          fi
+          
+          # Strip the binary (optional, reduces size)
+          # For Linux/macOS, use 'strip'. For Windows, no standard 'strip', but release builds are often optimized.
+          # Ensure strip is available or skip this step.
+          if [[ "$RUNNER_OS" == "Linux" || "$RUNNER_OS" == "macOS" ]]; then
+            echo "Stripping binary: ${SOURCE_BINARY_PATH}"
+            strip "${SOURCE_BINARY_PATH}" || echo "Strip failed or not available, continuing..."
+          fi
+
+          ARCHIVE_NAME="sockudo-v${VERSION}-${TARGET_TRIPLE}.${ARCHIVE_EXT}"
+          
+          echo "SOURCE_BINARY_PATH=${SOURCE_BINARY_PATH}" >> $GITHUB_OUTPUT
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+          echo "BINARY_NAME_IN_ARCHIVE=${BINARY_NAME}" >> $GITHUB_OUTPUT # Binary name inside the archive
+
+      - name: Create archive (Linux/macOS)
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: |
+          cd $(dirname "${{ steps.artifact_paths.outputs.SOURCE_BINARY_PATH }}")
+          tar -czvf "${{ steps.artifact_paths.outputs.ARCHIVE_NAME }}" "${{ steps.artifact_paths.outputs.BINARY_NAME_IN_ARCHIVE }}"
+          mv "${{ steps.artifact_paths.outputs.ARCHIVE_NAME }}" "${{ github.workspace }}/" # Move to workspace root for upload
+        shell: bash
+
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path "${{ steps.artifact_paths.outputs.SOURCE_BINARY_PATH }}" -DestinationPath "${{ github.workspace }}\${{ steps.artifact_paths.outputs.ARCHIVE_NAME }}"
+        shell: pwsh
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          asset_path: ./${{ steps.artifact_paths.outputs.ARCHIVE_NAME }} # Path to the archive in the workspace
+          asset_name: ${{ steps.artifact_paths.outputs.ARCHIVE_NAME }}
+          asset_content_type: ${{ (matrix.target.archive_ext == 'zip' && 'application/zip') || 'application/gzip' }}
