@@ -83,7 +83,10 @@ jobs:
         if: matrix.target.use_cross == true
         run: cargo install cross # Corrected: Install from crates.io
 
-      - name: Build binary
+      # Fixed build step with shell-specific conditionals
+      - name: Build binary (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
           if [[ "${{ matrix.target.use_cross }}" == "true" ]]; then
             cross build --release --target ${{ matrix.target.triple }}
@@ -91,7 +94,19 @@ jobs:
             cargo build --release --target ${{ matrix.target.triple }}
           fi
         env:
-          CARGO_TERM_COLOR: always # Ensure color output in logs
+          CARGO_TERM_COLOR: always
+
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ("${{ matrix.target.use_cross }}" -eq "true") {
+            cross build --release --target ${{ matrix.target.triple }}
+          } else {
+            cargo build --release --target ${{ matrix.target.triple }}
+          }
+        env:
+          CARGO_TERM_COLOR: always
 
       - name: Prepare artifact name and path
         id: artifact_paths
@@ -103,15 +118,9 @@ jobs:
           BINARY_NAME="${{ matrix.target.binary_name }}"
 
           # Determine source path of the binary
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            SOURCE_BINARY_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
-          else
-            SOURCE_BINARY_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
-          fi
+          SOURCE_BINARY_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
           
           # Strip the binary (optional, reduces size)
-          # For Linux/macOS, use 'strip'. For Windows, no standard 'strip', but release builds are often optimized.
-          # Ensure strip is available or skip this step.
           if [[ "$RUNNER_OS" == "Linux" || "$RUNNER_OS" == "macOS" ]]; then
             echo "Stripping binary: ${SOURCE_BINARY_PATH}"
             strip "${SOURCE_BINARY_PATH}" || echo "Strip failed or not available, continuing..."
