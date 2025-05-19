@@ -96,7 +96,7 @@ jobs:
           fi
         shell: bash
 
-      # Fixed build step with shell-specific conditionals
+      # Fixed build step with properly formatted bash conditionals
       - name: Build binary (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
@@ -105,17 +105,17 @@ jobs:
                 export OPENSSL_DIR="/usr/lib/ssl"
                 export OPENSSL_INCLUDE_DIR="/usr/include/openssl"
                 export OPENSSL_LIB_DIR="/usr/lib/aarch64-linux-gnu"
-  
-           else if [[ "${{ matrix.target.triple }}" == "x86_64-unknown-linux-gnu" ]]; then
+          elif [[ "${{ matrix.target.triple }}" == "x86_64-unknown-linux-gnu" ]]; then
                 export OPENSSL_DIR="/usr/lib/ssl"
                 export OPENSSL_INCLUDE_DIR="/usr/include/openssl"
                 export OPENSSL_LIB_DIR="/usr/lib/x86_64-linux-gnu"
-            fi
-            if [[ "${{ matrix.target.use_cross }}" == "true" ]]; then
-              OPENSSL_DIR="/usr/include/openssl" cross build --release --target ${{ matrix.target.triple }}
-            else
-              cargo build --release --target ${{ matrix.target.triple }}
-            fi
+          fi
+          
+          if [[ "${{ matrix.target.use_cross }}" == "true" ]]; then
+            OPENSSL_DIR="/usr/include/openssl" cross build --release --target ${{ matrix.target.triple }}
+          else
+            cargo build --release --target ${{ matrix.target.triple }}
+          fi
         env:
           CARGO_TERM_COLOR: always
           PKG_CONFIG_ALLOW_CROSS: "1"
