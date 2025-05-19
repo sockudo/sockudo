@@ -28,7 +28,11 @@
           "webhooks": [
             {
               "url": "http://localhost:3000/pusher/webhooks",
-              "event_types": ["member_added", "member_removed", "subscription_count"]
+              "event_types": [
+                "member_added",
+                "member_removed",
+                "subscription_count"
+              ]
             }
           ]
         },
@@ -49,7 +53,7 @@
     }
   },
   "adapter": {
-    "driver": "local",
+    "driver": "redis",
     "redis": {
       "prefix": "sockudo",
       "requests_timeout": 5000,

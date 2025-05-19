@@ -1,7 +1,7 @@
 # Sockudo
 
 <div align="center">
-  <img src="docs/images/sockudo-logo.png" alt="Sockudo Logo" width="200" height="200" />
+  <img src="images/logo.svg" alt="Sockudo Logo" width="200" height="200" />
   <p>A high-performance, Pusher-compatible WebSockets server written in Rust</p>
 </div>
 

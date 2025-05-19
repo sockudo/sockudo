@@ -1,12 +1,11 @@
 [package]
 name = "sockudo"
-version = "0.1.0"
-edition = "2021"
+version = "1.0.0"
+edition = "2024"
 
 [dependencies]
 axum = { version = "^0.8.4", features = ["ws"] }
 tokio = { version = "^1", features = ["full"] }
-tower = "0.5.2"
 tower-http = { version = "^0.6.4", features = ["cors"] }
 fastwebsockets = { version = "0.10.0", features = [
     "upgrade",
@@ -29,7 +28,6 @@ hex = "0.4.3"
 rand = "0.9.0"
 hyper-util = "0.1.10"
 hyper = "1.5.0"
-colored = "*"
 chrono = "*"
 sysinfo = "*"
 async-trait = "0.1.83"
@@ -65,3 +63,19 @@ features = [
 [profile.release]
 codegen-units = 1
 lto = true
+
+[package.metadata.binstall]
+# URL template for downloading the release archive.
+
+pkg-url = "https://github.com/RustNSparks/sockudo/releases/download/v{version}/sockudo-v{version}-{target}.tar.gz"
+
+# Format of the package. "tgz" is for .tar.gz. Use "zip" for .zip.
+pkg-fmt = "tgz" # Use "zip" for Windows if you package .exe in a .zip
+
+supported-targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc"
+]

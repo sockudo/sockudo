@@ -874,16 +874,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "colored"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbf2150cce219b664a8a70df7a1f933836724b503f8a413af9365b4dcc4d90b8"
-dependencies = [
- "lazy_static",
- "windows-sys 0.48.0",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3300,7 +3290,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ahash",
  "async-nats",
@@ -3313,7 +3303,6 @@ dependencies = [
  "axum-extra",
  "axum-server",
  "chrono",
- "colored",
  "dashmap",
  "fastwebsockets",
  "futures",
@@ -3337,7 +3326,6 @@ dependencies = [
  "sysinfo",
  "thiserror 2.0.9",
  "tokio",
- "tower",
  "tower-http",
  "tower-layer",
  "tower-service",
