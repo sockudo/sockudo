@@ -41,6 +41,7 @@ jobs:
     needs: create_release
     runs-on: ${{ matrix.target.os }}
     strategy:
+      fail-fast: false  # Continue with other targets if one fails
       matrix:
         target:
           - name: linux-x86_64
@@ -83,18 +84,33 @@ jobs:
         if: matrix.target.use_cross == true
         run: cargo install cross # Corrected: Install from crates.io
 
+      # Install OpenSSL development packages for Linux targets
+      - name: Install OpenSSL dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+          # For aarch64 cross-compilation
+          if [[ "${{ matrix.target.triple }}" == "aarch64-unknown-linux-gnu" ]]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          fi
+        shell: bash
+
       # Fixed build step with shell-specific conditionals
       - name: Build binary (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           if [[ "${{ matrix.target.use_cross }}" == "true" ]]; then
-            cross build --release --target ${{ matrix.target.triple }}
+            OPENSSL_DIR="/usr/include/openssl" cross build --release --target ${{ matrix.target.triple }}
           else
             cargo build --release --target ${{ matrix.target.triple }}
           fi
         env:
           CARGO_TERM_COLOR: always
+          # Set environment variables for cross-compilation
+          OPENSSL_DIR: "/usr/include/openssl"
+          PKG_CONFIG_ALLOW_CROSS: "1"
 
       - name: Build binary (Windows)
         if: runner.os == 'Windows'
