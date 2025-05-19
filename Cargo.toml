@@ -2,7 +2,8 @@
 name = "sockudo"
 version = "1.0.0"
 edition = "2024"
-license = "AGPL-3"
+repository = "https://github.com/RustNSparks/sockudo"
+license = "AGPL"
 description = "A simple, fast, and secure WebSocket server for real-time applications."
 
 [dependencies]
