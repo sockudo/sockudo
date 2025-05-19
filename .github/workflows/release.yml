@@ -49,12 +49,6 @@ jobs:
             os: ubuntu-latest
             archive_ext: tar.gz
             binary_name: sockudo
-          - name: linux-aarch64
-            triple: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive_ext: tar.gz
-            binary_name: sockudo
-            use_cross: true # Recommended for ARM targets if runner doesn't natively support
           - name: macos-x86_64
             triple: x86_64-apple-darwin
             os: macos-latest # Older macOS for x86_64 compatibility
@@ -90,15 +84,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
-          
-          # For aarch64 cross-compilation
-          if [[ "${{ matrix.target.triple }}" == "aarch64-unknown-linux-gnu" ]]; then
-            # Add ARM architecture and install required packages
-            sudo dpkg --add-architecture arm64
-            sudo apt-get update
-            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            sudo apt-get install -y libssl-dev:arm64 libc6-dev-arm64-cross
-          fi
         shell: bash
 
       # Fixed build step with properly configured OpenSSL for cross-compilation
@@ -107,23 +92,7 @@ jobs:
         shell: bash
         run: |
           # Set up proper OpenSSL environment variables for cross-compilation
-          if [[ "${{ matrix.target.triple }}" == "aarch64-unknown-linux-gnu" ]]; then
-            # Create pkgconfig directory if it doesn't exist
-            sudo mkdir -p /usr/lib/aarch64-linux-gnu/pkgconfig/
-          
-            # Install required OpenSSL packages specifically for aarch64
-            sudo apt-get update
-            sudo apt-get install -y libssl-dev:arm64
-          
-            # Export the environment variables explicitly with proper paths
-            export OPENSSL_DIR="/usr"
-            export OPENSSL_INCLUDE_DIR="/usr/include"
-            export OPENSSL_LIB_DIR="/usr/lib/aarch64-linux-gnu"
-            export PKG_CONFIG_ALLOW_CROSS=1
-            export PKG_CONFIG_PATH="/usr/lib/aarch64-linux-gnu/pkgconfig"
-            export AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR="/usr/lib/aarch64-linux-gnu"
-            export AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR="/usr/include"
-          elif [[ "${{ matrix.target.triple }}" == "x86_64-unknown-linux-gnu" ]]; then
+          if [[ "${{ matrix.target.triple }}" == "x86_64-unknown-linux-gnu" ]]; then
             export OPENSSL_DIR="/usr"
             export OPENSSL_INCLUDE_DIR="/usr/include"
             export OPENSSL_LIB_DIR="/usr/lib/x86_64-linux-gnu"
