@@ -57,7 +57,7 @@ Sockudo can be configured through a JSON file or environment variables.
 
 ### Using a Config File
 
-Create a `config.json` file in the root directory:
+Create a `config.json` file in the root directory(see `options.rs` for all the configs available:
 
 ```json
 {
