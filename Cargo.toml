@@ -2,6 +2,8 @@
 name = "sockudo"
 version = "1.0.0"
 edition = "2024"
+license = "AGPL-3"
+description = "A simple, fast, and secure WebSocket server for real-time applications."
 
 [dependencies]
 axum = { version = "^0.8.4", features = ["ws"] }
