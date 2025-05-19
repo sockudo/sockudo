@@ -30,7 +30,7 @@ Sockudo is a robust, memory-efficient WebSockets server that's fully compatible 
 
 ### Prerequisites
 
-- Rust 1.70 or newer
+- Rust 1.85 or newer
 - Redis (optional, for scaling)
 
 ### Installation
