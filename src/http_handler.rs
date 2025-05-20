@@ -1,26 +1,28 @@
 use crate::adapter::ConnectionHandler;
-
+use crate::app::auth::AuthValidator; // Added for API auth
+use crate::app::config::App; // To access app limits
+use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
 use crate::protocol::messages::{
     BatchPusherApiMessage, InfoQueryParser, PusherApiMessage, PusherMessage,
 };
-use crate::utils;
+use crate::utils::{self, validate_channel_name};
 use crate::websocket::SocketId;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, Response, StatusCode},
+    extract::{Path, Query, RawQuery, State}, // Added RawQuery
+    http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri}, // Added Uri
     response::{IntoResponse, Response as AxumResponse},
     Json,
 };
-// use chrono::Duration; // Duration seems unused in this file after changes
-use crate::app::config::App; // To access app limits
-use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
-use crate::utils::validate_channel_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Arc}; // Added fmt for AppError Display
+use std::{
+    collections::{BTreeMap, HashMap}, // Added BTreeMap
+    sync::Arc,
+};
 use sysinfo::System;
 use thiserror::Error;
 use tracing::{error, field, info, instrument, warn};
+
 // --- Custom Error Type ---
 
 #[derive(Debug, Error)]
@@ -29,6 +31,8 @@ pub enum AppError {
     AppNotFound(String),
     #[error("Application validation failed: {0}")]
     AppValidationFailed(String),
+    #[error("API request authentication failed: {0}")]
+    ApiAuthFailed(String),
     #[error("Channel validation failed: Missing 'channels' or 'channel' field")]
     MissingChannelInfo,
     #[error("User connection termination failed: {0}")]
@@ -52,6 +56,7 @@ impl IntoResponse for AppError {
             AppError::AppValidationFailed(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
             }
+            AppError::ApiAuthFailed(msg) => (StatusCode::FORBIDDEN, json!({ "error": msg })),
             AppError::MissingChannelInfo => (
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Request must contain 'channels' (list) or 'channel' (string)" }),
@@ -73,22 +78,15 @@ impl IntoResponse for AppError {
             AppError::LimitExceeded(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
             AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
         };
-
-        // Log the error using the tracing crate, including the specific error message and status code.
-        // The `Display` implementation from `thiserror` will be used for `%self`.
         error!(error.message = %self, status_code = %status, "HTTP request failed");
         (status, Json(error_message)).into_response()
     }
 }
 
-// Implementation to convert from the global `crate::error::Error` to the local `AppError`.
-// This allows the `?` operator to work seamlessly in Axum handlers.
 impl From<crate::error::Error> for AppError {
     fn from(err: crate::error::Error) -> Self {
-        // Log the original error for more detailed backend logs before converting.
         warn!(original_error = ?err, "Converting internal error to AppError for HTTP response");
         match err {
-            // Specific mappings:
             crate::error::Error::InvalidAppKey => {
                 AppError::AppNotFound(format!("Application key not found or invalid: {}", err))
             }
@@ -96,12 +94,8 @@ impl From<crate::error::Error> for AppError {
             crate::error::Error::InvalidChannelName(s) => {
                 AppError::InvalidInput(format!("Invalid channel name: {}", s))
             }
-            crate::error::Error::ChannelError(s) => AppError::InvalidInput(s), // Or map to InternalError if more appropriate
-            crate::error::Error::AuthError(s) => AppError::AppValidationFailed(s), // Or a more specific auth-related AppError
-
-            // General fallback mapping:
-            // Most other internal errors can be mapped to a generic InternalServerError for the client.
-            // The specific `err.to_string()` will provide some context.
+            crate::error::Error::ChannelError(s) => AppError::InvalidInput(s),
+            crate::error::Error::AuthError(s) => AppError::ApiAuthFailed(s),
             _ => AppError::InternalError(err.to_string()),
         }
     }
@@ -109,7 +103,9 @@ impl From<crate::error::Error> for AppError {
 
 // --- Query Parameter Structs ---
 
-#[derive(Deserialize, Debug)]
+// This struct is used by Axum to deserialize the known Pusher auth query parameters.
+// It's also passed to `validate_pusher_api_request` to easily access these specific values.
+#[derive(Deserialize, Debug, Clone)]
 pub struct EventQuery {
     #[serde(default)]
     pub auth_key: String,
@@ -127,6 +123,9 @@ pub struct EventQuery {
 pub struct ChannelQuery {
     #[serde(default)]
     pub info: Option<String>,
+    // EventQuery fields are flattened here for GET requests that also need specific endpoint params
+    #[serde(flatten)]
+    pub auth_params: EventQuery,
 }
 
 #[derive(Deserialize, Debug)]
@@ -135,6 +134,9 @@ pub struct ChannelsQuery {
     pub filter_by_prefix: Option<String>,
     #[serde(default)]
     pub info: Option<String>,
+    // EventQuery fields are flattened here
+    #[serde(flatten)]
+    pub auth_params: EventQuery,
 }
 
 // --- Response Structs ---
@@ -163,16 +165,15 @@ fn build_cache_payload(event_name: &str, event_data: &Value) -> Result<String, s
 }
 
 /// Records API metrics (helper async function)
-#[instrument(skip(handler, incoming_request_size, outgoing_response_size), fields(app_id = %app_id))] // Renamed parameters for clarity
+#[instrument(skip(handler, incoming_request_size, outgoing_response_size), fields(app_id = %app_id))]
 async fn record_api_metrics(
     handler: &Arc<ConnectionHandler>,
     app_id: &str,
-    incoming_request_size: usize, // Renamed for clarity (e.g. size of incoming batch or single event)
-    outgoing_response_size: usize, // Renamed for clarity (size of HTTP response body)
+    incoming_request_size: usize,
+    outgoing_response_size: usize,
 ) {
     if let Some(metrics_arc) = &handler.metrics {
         let metrics = metrics_arc.lock().await;
-        // Pass the sizes as they are: incoming_request_size and outgoing_response_size
         metrics.mark_api_message(app_id, incoming_request_size, outgoing_response_size);
         info!(
             incoming_bytes = incoming_request_size,
@@ -414,11 +415,69 @@ async fn process_single_event(
 #[instrument(skip(handler, event_payload), fields(app_id = %app_id))]
 pub async fn events(
     Path(app_id): Path<String>,
-    Query(_query): Query<EventQuery>,
+    Query(auth_q_params_struct): Query<EventQuery>, // Axum deserializes known auth params here
     State(handler): State<Arc<ConnectionHandler>>,
-    Json(event_payload): Json<PusherApiMessage>,
+    uri: Uri, // To get the request path (e.g., "/apps/app_id_123/events")
+    RawQuery(raw_query_str_option): RawQuery, // Gets the raw query string (e.g., "auth_key=abc&auth_timestamp=123...")
+    Json(event_payload): Json<PusherApiMessage>, // The JSON body of the request
 ) -> Result<impl IntoResponse, AppError> {
-    info!("{}", format!("Received event: {:?}", event_payload));
+    info!("Received event: {:?}", event_payload);
+
+    // --- API Authentication ---
+    // 1. Collect all query parameters from the raw query string for signature validation.
+    //    `auth_signature` itself is excluded as per Pusher protocol.
+    let mut all_query_params_for_sig_map = BTreeMap::new();
+    if let Some(query_str) = raw_query_str_option {
+        // serde_urlencoded::from_str can parse "key=value&key2=value2" into a Vec<(String, String)>
+        for (key, value) in serde_urlencoded::from_str::<Vec<(String, String)>>(&query_str)
+            .map_err(|e| AppError::InvalidInput(format!("Failed to parse query string: {}", e)))?
+        {
+            if key != "auth_signature" {
+                all_query_params_for_sig_map.insert(key, value);
+            }
+        }
+    }
+
+    // 2. Get the request body bytes for MD5 calculation (if body_md5 is present in query).
+    let body_bytes = serde_json::to_vec(&event_payload)?;
+
+    // 3. Perform the validation.
+    let auth_validator = AuthValidator::new(handler.app_manager.clone());
+    if !auth_validator
+        .validate_pusher_api_request(
+            &auth_q_params_struct, // Contains parsed auth_key, auth_timestamp, auth_signature etc.
+            "POST",                // HTTP Method
+            uri.path(),            // Request path (e.g., /apps/app123/events)
+            &all_query_params_for_sig_map, // All query params from URL (excluding auth_signature)
+            Some(&body_bytes),     // Request body for MD5 check
+        )
+        .await?
+    {
+        // If validate_pusher_api_request returns Ok(false) or an Err, it's an auth failure.
+        // The specific error (e.g., timestamp expired, bad signature) is handled by AppError::from conversion.
+        // Here, we explicitly return ApiAuthFailed if Ok(false) was the direct outcome.
+        // Note: The `?` operator after `.await` will propagate `Err(crate::error::Error)` which gets converted by `AppError::from`.
+        // If `validate_pusher_api_request` itself returns `Err(Error::AuthError("..."))`, it will be caught by the `?`
+        // and converted. If it returns `Ok(false)`, the `if !...` condition triggers this.
+        // To be absolutely clear, we can make the error explicit if Ok(false).
+        // However, the current structure where validate_pusher_api_request returns Err for specific failures is cleaner.
+        // The `?` handles those. If it returns `Ok(false)` (which it shouldn't based on its impl, it returns Err), this path is hit.
+        // Let's assume `validate_pusher_api_request` returns `Err` for auth failures.
+        // The `?` will handle it. If it somehow returned Ok(false), this would be the fallback.
+        // Given the current `validate_pusher_api_request` returns `Err(Error::AuthError("Invalid API signature".to_string()))`
+        // on mismatch, this explicit `ApiAuthFailed` might be redundant if `?` handles it.
+        // For robustness, we can keep it, or rely on the `?` and the `From` trait.
+        // The `validate_pusher_api_request` now returns `Err` on signature mismatch, so `?` handles it.
+        // This explicit error is thus not strictly needed if `validate_pusher_api_request` is robust.
+        // However, if `validate_pusher_api_request` were to return `Ok(false)`, this would be the path.
+        // The current implementation of `validate_pusher_api_request` returns `Err(Error::AuthError("Invalid API signature"))`
+        // so the `?` operator will handle this and convert it to `AppError::ApiAuthFailed`.
+        // This explicit return is fine as a safeguard or if the logic changes.
+        return Err(AppError::ApiAuthFailed(
+            "Invalid API signature for events".to_string(),
+        ));
+    }
+    // --- End API Authentication ---
 
     let app = handler
         .app_manager
@@ -445,9 +504,41 @@ pub async fn events(
 #[instrument(skip(handler, batch_message_payload), fields(app_id = %app_id, batch_len = field::Empty))]
 pub async fn batch_events(
     Path(app_id): Path<String>,
+    Query(auth_q_params_struct): Query<EventQuery>,
     State(handler): State<Arc<ConnectionHandler>>,
+    uri: Uri,
+    RawQuery(raw_query_str_option): RawQuery,
     Json(batch_message_payload): Json<BatchPusherApiMessage>,
 ) -> Result<impl IntoResponse, AppError> {
+    // --- API Authentication ---
+    let mut all_query_params_for_sig_map = BTreeMap::new();
+    if let Some(query_str) = raw_query_str_option {
+        for (key, value) in serde_urlencoded::from_str::<Vec<(String, String)>>(&query_str)
+            .map_err(|e| AppError::InvalidInput(format!("Failed to parse query string: {}", e)))?
+        {
+            if key != "auth_signature" {
+                all_query_params_for_sig_map.insert(key, value);
+            }
+        }
+    }
+    let body_bytes = serde_json::to_vec(&batch_message_payload)?;
+    let auth_validator = AuthValidator::new(handler.app_manager.clone());
+    if !auth_validator
+        .validate_pusher_api_request(
+            &auth_q_params_struct,
+            "POST",
+            uri.path(),
+            &all_query_params_for_sig_map,
+            Some(&body_bytes),
+        )
+        .await?
+    {
+        return Err(AppError::ApiAuthFailed(
+            "Invalid API signature for batch_events".to_string(),
+        ));
+    }
+    // --- End API Authentication ---
+
     let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
     tracing::Span::current().record("batch_len", &batch_len);
@@ -469,7 +560,6 @@ pub async fn batch_events(
     }
 
     let incoming_request_size_bytes = serde_json::to_vec(&batch_events_vec)?.len();
-
     let mut batch_response_info_vec = Vec::new();
     let mut any_message_requests_info = false;
 
@@ -477,14 +567,13 @@ pub async fn batch_events(
         if single_event_message.info.is_some() {
             any_message_requests_info = true;
         }
-
         let channel_info_map_for_event = process_single_event(
             &handler,
             &app_config,
             single_event_message.clone(),
             single_event_message.info.is_some(),
         )
-        .await?;
+            .await?;
 
         if any_message_requests_info {
             if let Some(main_channel_for_event) =
@@ -512,17 +601,14 @@ pub async fn batch_events(
     } else {
         json!({ "ok": true })
     };
-
     let outgoing_response_size_bytes_vec = serde_json::to_vec(&final_response_payload)?;
-
     record_api_metrics(
         &handler,
         &app_id,
         incoming_request_size_bytes,
         outgoing_response_size_bytes_vec.len(),
     )
-    .await;
-
+        .await;
     info!("{}", "Batch events processed successfully");
     Ok((StatusCode::OK, Json(final_response_payload)))
 }
@@ -531,10 +617,41 @@ pub async fn batch_events(
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
 pub async fn channel(
     Path((app_id, channel_name)): Path<(String, String)>,
-    Query(query_params): Query<ChannelQuery>,
+    Query(query_params_specific): Query<ChannelQuery>, // Contains specific params like 'info' AND flattened auth_params
     State(handler): State<Arc<ConnectionHandler>>,
+    uri: Uri,
+    RawQuery(raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
     info!("Request for channel info for channel: {}", channel_name);
+
+    // --- API Authentication ---
+    let mut all_query_params_for_sig_map = BTreeMap::new();
+    if let Some(query_str) = raw_query_str_option {
+        for (key, value) in serde_urlencoded::from_str::<Vec<(String, String)>>(&query_str)
+            .map_err(|e| AppError::InvalidInput(format!("Failed to parse query string: {}", e)))?
+        {
+            if key != "auth_signature" {
+                all_query_params_for_sig_map.insert(key, value);
+            }
+        }
+    }
+    let auth_validator = AuthValidator::new(handler.app_manager.clone());
+    // Use the auth_params from the deserialized ChannelQuery struct
+    if !auth_validator
+        .validate_pusher_api_request(
+            &query_params_specific.auth_params, // These are the standard auth fields
+            "GET",
+            uri.path(),
+            &all_query_params_for_sig_map, // This includes ALL query params from URL (auth + specific)
+            None,                          // No body for GET
+        )
+        .await?
+    {
+        return Err(AppError::ApiAuthFailed(
+            "Invalid API signature for channel info".to_string(),
+        ));
+    }
+    // --- End API Authentication ---
 
     let app = handler
         .app_manager
@@ -544,7 +661,7 @@ pub async fn channel(
 
     validate_channel_name(&app, &channel_name).await?;
 
-    let info_query_str = query_params.info.as_ref();
+    let info_query_str = query_params_specific.info.as_ref(); // Use specific params from ChannelQuery
     let wants_subscription_count = info_query_str.wants_subscription_count();
     let wants_user_count = info_query_str.wants_user_count();
     let wants_cache_data = info_query_str.wants_cache();
@@ -604,10 +721,8 @@ pub async fn channel(
         user_count_val,
         cache_data_tuple,
     );
-
     let response_json_bytes = serde_json::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
-
     info!("Channel info for '{}' retrieved successfully", channel_name);
     Ok((StatusCode::OK, Json(response_payload)))
 }
@@ -616,13 +731,46 @@ pub async fn channel(
 #[instrument(skip(handler), fields(app_id = %app_id))]
 pub async fn channels(
     Path(app_id): Path<String>,
-    Query(query_params): Query<ChannelsQuery>,
+    Query(query_params_specific): Query<ChannelsQuery>, // Contains specific params AND flattened auth_params
     State(handler): State<Arc<ConnectionHandler>>,
+    uri: Uri,
+    RawQuery(raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
     info!("Request for channels list for app_id: {}", app_id);
 
-    let filter_prefix_str = query_params.filter_by_prefix.as_deref().unwrap_or("");
-    let wants_user_count = query_params.info.as_ref().wants_user_count();
+    // --- API Authentication ---
+    let mut all_query_params_for_sig_map = BTreeMap::new();
+    if let Some(query_str) = raw_query_str_option {
+        for (key, value) in serde_urlencoded::from_str::<Vec<(String, String)>>(&query_str)
+            .map_err(|e| AppError::InvalidInput(format!("Failed to parse query string: {}", e)))?
+        {
+            if key != "auth_signature" {
+                all_query_params_for_sig_map.insert(key, value);
+            }
+        }
+    }
+    let auth_validator = AuthValidator::new(handler.app_manager.clone());
+    if !auth_validator
+        .validate_pusher_api_request(
+            &query_params_specific.auth_params, // Standard auth fields from ChannelsQuery
+            "GET",
+            uri.path(),
+            &all_query_params_for_sig_map, // All query params from URL
+            None,                          // No body for GET
+        )
+        .await?
+    {
+        return Err(AppError::ApiAuthFailed(
+            "Invalid API signature for channels list".to_string(),
+        ));
+    }
+    // --- End API Authentication ---
+
+    let filter_prefix_str = query_params_specific
+        .filter_by_prefix
+        .as_deref()
+        .unwrap_or("");
+    let wants_user_count = query_params_specific.info.as_ref().wants_user_count();
     let app = handler
         .app_manager
         .find_by_id(&app_id)
@@ -638,16 +786,13 @@ pub async fn channels(
     }
 
     let mut channels_info_response_map = HashMap::new();
-
     for entry in channels_map.iter() {
         let channel_name_str = entry.key();
         if !channel_name_str.starts_with(filter_prefix_str) {
             continue;
         }
         validate_channel_name(&app, channel_name_str).await?;
-
         let mut current_channel_info_map = serde_json::Map::new();
-
         if wants_user_count {
             if channel_name_str.starts_with("presence-") {
                 let members_map = handler
@@ -663,22 +808,19 @@ pub async fn channels(
                 ));
             }
         }
-
         if !current_channel_info_map.is_empty() {
             channels_info_response_map.insert(
                 channel_name_str.clone(),
                 Value::Object(current_channel_info_map),
             );
-        } else if query_params.info.is_none() {
+        } else if query_params_specific.info.is_none() {
             channels_info_response_map.insert(channel_name_str.clone(), json!({}));
         }
     }
 
     let response_payload = PusherMessage::channels_list(channels_info_response_map);
-
     let response_json_bytes = serde_json::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
-
     info!("Channels list for app '{}' retrieved successfully", app_id);
     Ok((StatusCode::OK, Json(response_payload)))
 }
@@ -687,8 +829,39 @@ pub async fn channels(
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
 pub async fn channel_users(
     Path((app_id, channel_name)): Path<(String, String)>,
+    Query(auth_q_params_struct): Query<EventQuery>, // Only auth params for this GET endpoint
     State(handler): State<Arc<ConnectionHandler>>,
+    uri: Uri,
+    RawQuery(raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
+    // --- API Authentication ---
+    let mut all_query_params_for_sig_map = BTreeMap::new();
+    if let Some(query_str) = raw_query_str_option {
+        for (key, value) in serde_urlencoded::from_str::<Vec<(String, String)>>(&query_str)
+            .map_err(|e| AppError::InvalidInput(format!("Failed to parse query string: {}", e)))?
+        {
+            if key != "auth_signature" {
+                all_query_params_for_sig_map.insert(key, value);
+            }
+        }
+    }
+    let auth_validator = AuthValidator::new(handler.app_manager.clone());
+    if !auth_validator
+        .validate_pusher_api_request(
+            &auth_q_params_struct,
+            "GET",
+            uri.path(),
+            &all_query_params_for_sig_map,
+            None, // No body for GET
+        )
+        .await?
+    {
+        return Err(AppError::ApiAuthFailed(
+            "Invalid API signature for channel users".to_string(),
+        ));
+    }
+    // --- End API Authentication ---
+
     let app = handler
         .app_manager
         .find_by_id(&app_id)
@@ -709,17 +882,13 @@ pub async fn channel_users(
         .await
         .get_channel_members(&app_id, &channel_name)
         .await?;
-
     let users_vec = channel_members_map
         .keys()
         .map(|user_id_str| json!({ "id": user_id_str }))
         .collect::<Vec<_>>();
-
     let response_payload_val = json!({ "users": users_vec });
     let response_json_bytes = serde_json::to_vec(&response_payload_val)?;
-
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
-
     info!(
         user_count = users_vec.len(),
         "Channel users for '{}' retrieved successfully", channel_name
@@ -731,12 +900,53 @@ pub async fn channel_users(
 #[instrument(skip(handler), fields(app_id = %app_id, user_id = %user_id))]
 pub async fn terminate_user_connections(
     Path((app_id, user_id)): Path<(String, String)>,
+    Query(auth_q_params_struct): Query<EventQuery>, // Auth params for this POST endpoint
     State(handler): State<Arc<ConnectionHandler>>,
+    uri: Uri,
+    RawQuery(raw_query_str_option): RawQuery,
+    // This endpoint typically does not have a body, but if it could, it would be:
+    // axum::body::Bytes(body_bytes_payload): axum::body::Bytes,
 ) -> Result<impl IntoResponse, AppError> {
     info!(
         "Received request to terminate user connections for user_id: {}",
         user_id
     );
+
+    // --- API Authentication ---
+    let mut all_query_params_for_sig_map = BTreeMap::new();
+    if let Some(query_str) = raw_query_str_option {
+        for (key, value) in serde_urlencoded::from_str::<Vec<(String, String)>>(&query_str)
+            .map_err(|e| AppError::InvalidInput(format!("Failed to parse query string: {}", e)))?
+        {
+            if key != "auth_signature" {
+                all_query_params_for_sig_map.insert(key, value);
+            }
+        }
+    }
+
+    // This endpoint is POST but typically has no body.
+    // If it could have a body, you'd extract it here (e.g., using `axum::body::Bytes`).
+    // For now, assuming no body, so `None` is passed for `request_body_bytes_for_md5_check`.
+    // If a body *could* be present and `body_md5` was in query, `validate_pusher_api_request`
+    // would require the body bytes.
+    let request_body_bytes: Option<&[u8]> = None; // Assuming no body
+
+    let auth_validator = AuthValidator::new(handler.app_manager.clone());
+    if !auth_validator
+        .validate_pusher_api_request(
+            &auth_q_params_struct,
+            "POST", // Method is POST
+            uri.path(),
+            &all_query_params_for_sig_map,
+            request_body_bytes, // Pass None if no body, or Some(&body_bytes) if there is one
+        )
+        .await?
+    {
+        return Err(AppError::ApiAuthFailed(
+            "Invalid API signature for terminate_user_connections".to_string(),
+        ));
+    }
+    // --- End API Authentication ---
 
     let connection_manager_arc = handler.connection_manager.clone();
     connection_manager_arc
@@ -744,7 +954,6 @@ pub async fn terminate_user_connections(
         .await
         .terminate_connection(&app_id, &user_id)
         .await?;
-
     info!(
         "Successfully initiated termination for user_id: {}",
         user_id
@@ -759,11 +968,9 @@ pub async fn up(
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
     info!("Health check received for app_id: {}", app_id);
-
     if handler.app_manager.find_by_id(&app_id).await?.is_none() {
         warn!("Health check for non-existent app_id: {}", app_id);
     }
-
     if handler.metrics.is_some() {
         record_api_metrics(&handler, &app_id, 0, 2).await;
     } else {
@@ -772,12 +979,10 @@ pub async fn up(
             app_id
         );
     }
-
     let response_val = Response::builder()
         .status(StatusCode::OK)
         .header("X-Health-Check", "OK")
         .body("OK".to_string())?;
-
     Ok(response_val)
 }
 
@@ -787,7 +992,6 @@ pub async fn metrics(
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
     info!("{}", "Metrics endpoint called");
-
     let plaintext_metrics_str = match handler.metrics.clone() {
         Some(metrics_arc) => {
             let metrics_data_guard = metrics_arc.lock().await;
@@ -801,13 +1005,11 @@ pub async fn metrics(
             "# Metrics collection is not enabled.\n".to_string()
         }
     };
-
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
     );
-
     info!(
         bytes = plaintext_metrics_str.len(),
         "Successfully generated Prometheus metrics"
