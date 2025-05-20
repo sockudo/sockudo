@@ -11,7 +11,7 @@
 
 ## Overview
 
-Sockudo is a robust, memory-efficient WebSockets server that's fully compatible with the Pusher protocol, providing a seamless integration path for applications using Laravel Echo. Built from the ground up in Rust, Sockudo leverages the language's performance, memory safety, and concurrency features to deliver a high-throughput, low-latency real-time communication solution. FOr all the docs please go [here](https://sockudo.app)
+Sockudo is a robust, memory-efficient WebSockets server that's fully compatible with the Pusher protocol, providing a seamless integration path for applications using Laravel Echo. Built from the ground up in Rust, Sockudo leverages the language's performance, memory safety, and concurrency features to deliver a high-throughput, low-latency real-time communication solution. For complete documentation please go [here](https://sockudo.app).
 
 ## Features
 
