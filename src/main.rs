@@ -16,6 +16,7 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
+use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -35,6 +36,7 @@ use axum::{BoxError, Router, ServiceExt};
 
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
+use clap::Parser;
 use error::Error;
 use serde_json::{from_str, json};
 use tokio::io::AsyncReadExt;
@@ -83,6 +85,13 @@ use crate::cache::memory_cache_manager::MemoryCacheManager; // Import for fallba
 use crate::metrics::MetricsInterface;
 use crate::websocket::WebSocketRef;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Name of the person to greet
+    #[arg(short, long)]
+    config: String,
+}
 /// Server state containing all managers
 #[derive(Clone)]
 struct ServerState {
@@ -1134,8 +1143,13 @@ async fn main() -> Result<()> {
         }
     }
 
-    let config_path =
-        std::env::var("CONFIG_FILE").unwrap_or_else(|_| "src/config.json".to_string());
+    // Load configuration from file if it exists from env variable or from config arg or default
+    let args = Args::parse();
+    let mut config_path = args.config;
+    if config_path.is_empty() {
+        config_path = env::var("CONFIG_FILE")
+            .unwrap_or_else(|_| "config.json".to_string());
+    }
     if Path::new(&config_path).exists() {
         info!(
             "{}",
