@@ -70,7 +70,6 @@ lto = true
 
 [package.metadata.binstall]
 pkg-url = "https://github.com/RustNSparks/sockudo/releases/download/v{version}/sockudo-v{version}-{target}.{archive_ext}"
-
 pkg-fmt = "tgz"
 supported-targets = [
     "x86_64-unknown-linux-gnu",
@@ -80,7 +79,6 @@ supported-targets = [
     "x86_64-pc-windows-msvc"
 ]
 
-[[package.metadata.binstall.overrides]]
-target = "x86_64-pc-windows-msvc"
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-url = "https://github.com/RustNSparks/sockudo/releases/download/v{version}/sockudo-v{version}-{target}.zip"
 pkg-fmt = "zip"
