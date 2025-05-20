@@ -1,6 +1,6 @@
 [package]
 name = "sockudo"
-version = "1.0.2-beta"
+version = "1.0.3-beta"
 edition = "2024"
 repository = "https://github.com/RustNSparks/sockudo"
 license = "AGPL-3.0-only"
