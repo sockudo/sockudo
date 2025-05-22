@@ -36,6 +36,7 @@ use axum::{BoxError, Router, ServiceExt};
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
+use futures_util::future::join_all;
 use error::Error;
 use serde_json::{from_str, json}; // Added json import
 use tokio::io::AsyncReadExt;
@@ -835,23 +836,69 @@ impl SockudoServer {
     async fn stop(&self) -> Result<()> {
         info!("Stopping server...");
         self.state.running.store(false, Ordering::SeqCst); // Signal other tasks to stop
-        let mut connection_manager = self.state.connection_manager.lock().await;
-        // Gracefully shutdown adapter connections
-        let namespaces = connection_manager.get_namespaces().await;
-        match namespaces {
-            Ok(namespaces) => {
-                for (app_id, namespace) in namespaces {
-                    let sockets = namespace.get_sockets().await?;
-                    for (_socket_id, ws) in sockets {
-                        connection_manager
-                            .cleanup_connection(app_id.as_str(), WebSocketRef(ws))
-                            .await;
+
+        let mut connections_to_cleanup: Vec<(String, WebSocketRef)> = Vec::new();
+
+        // --- Step 1: Collect all connection identifiers ---
+        // Scope for the initial lock to quickly gather connection details.
+        {
+            let mut connection_manager_guard = self.state.connection_manager.lock().await;
+            match connection_manager_guard.get_namespaces().await {
+                Ok(namespaces_vec) => { // Assuming get_namespaces returns an iterable collection
+                    for (app_id, namespace_obj) in namespaces_vec {
+                        // The '?' operator implies this function returns a Result.
+                        // Handle the Result from get_sockets appropriately.
+                        match namespace_obj.get_sockets().await {
+                            Ok(sockets_vec) => { // Assuming get_sockets returns an iterable collection
+                                for (_socket_id, ws_raw_obj) in sockets_vec {
+                                    // Ensure ws_raw_obj (your 'ws') is Clone.
+                                    connections_to_cleanup.push((app_id.clone(), websocket::WebSocketRef(ws_raw_obj)));
+                                }
+                            }
+                            Err(e) => {
+                                // Decide how to handle errors for individual namespaces.
+                                // Propagate, log, or collect errors. Here, just warning.
+                                warn!(%app_id, "Failed to get sockets for namespace during shutdown: {}", e);
+                                // If you used `?` here as in original, it would exit the whole function.
+                                // Depending on desired behavior, you might want to collect errors or continue.
+                                // For shutdown, often best-effort cleanup is preferred.
+                            }
+                        }
                     }
                 }
+                Err(e) => {
+                    warn!("Failed to get namespaces during shutdown: {}", e);
+                    // If get_namespaces fails, connections_to_cleanup will be empty.
+                    // Consider if this error should be propagated.
+                }
             }
-            Err(e) => warn!("{}", format!("Failed to get namespaces: {}", e)),
+        } // connection_manager_guard is dropped here, releasing the main lock.
+
+        info!("Collected {} connections to cleanup.", connections_to_cleanup.len());
+
+        // --- Step 2: Parallelize Cleanup ---
+        // Each cleanup task will briefly re-acquire the lock on ConnectionManager.
+        if !connections_to_cleanup.is_empty() {
+            let cleanup_futures = connections_to_cleanup.into_iter().map(|(app_id, ws_raw_obj)| {
+                let cm_arc = Arc::clone(&self.state.connection_manager); // Clone Arc for the task
+                async move {
+                    let mut guard = cm_arc.lock().await;
+                    // Construct WebSocketRef as in your original code
+                    guard.cleanup_connection(app_id.as_str(), ws_raw_obj).await;
+                    // TODO: Consider if cleanup_connection should return a Result to log/handle individual cleanup errors.
+                    // For example:
+                    // if let Err(e) = guard.cleanup_connection(...).await {
+                    //     warn!(%app_id, "Error cleaning up connection: {}", e);
+                    // }
+                }
+            });
+
+            join_all(cleanup_futures).await;
+            info!("All connection cleanup tasks have been processed.");
+        } else {
+            info!("No connections to cleanup.");
         }
-        drop(connection_manager); // Release lock
+
 
         // Disconnect from backend services
         {

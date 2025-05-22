@@ -11,8 +11,8 @@ use crate::protocol::constants::{
     EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH,
 };
 use crate::protocol::messages::{ErrorData, MessageData, PusherApiMessage, PusherMessage};
-use crate::rate_limiter::{memory_limiter::MemoryRateLimiter, RateLimiter};
-use crate::utils::validate_channel_name;
+use crate::rate_limiter::{RateLimiter, memory_limiter::MemoryRateLimiter};
+use crate::utils::{is_cache_channel, validate_channel_name};
 use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::{SocketId, WebSocketRef};
 use crate::{
@@ -21,11 +21,11 @@ use crate::{
 };
 use dashmap::DashMap;
 use fastwebsockets::{
-    upgrade, FragmentCollectorRead, Frame, OpCode, Payload, WebSocketError, WebSocketWrite,
+    FragmentCollectorRead, Frame, OpCode, Payload, WebSocketError, WebSocketWrite, upgrade,
 };
 use hyper::upgrade::Upgraded; // Required for UpgradeFut
 use hyper_util::rt::TokioIo; // Required for UpgradeFut
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf; // Required for WebSocketWrite
@@ -308,7 +308,10 @@ impl ConnectionHandler {
                 // The socket_tx_direct was consumed. This scenario is tricky.
                 // The error from add_socket should ideally be a WebSocketError or similar
                 // that can be returned to ws_handler to signal failure.
-                error!("Fatal error: Failed to add socket {} to connection manager: {}. Connection cannot proceed.", socket_id, e);
+                error!(
+                    "Fatal error: Failed to add socket {} to connection manager: {}. Connection cannot proceed.",
+                    socket_id, e
+                );
                 // The connection is effectively dead from the server's perspective.
                 // The client will eventually time out or detect a broken pipe.
                 return Err(e); // Propagate the error.
@@ -357,7 +360,10 @@ impl ConnectionHandler {
             {
                 let mut conn_locked = conn_arc.lock().await;
                 if let Err(close_err) = conn_locked.close(e.close_code(), e.to_string()).await {
-                    warn!("Failed to send WebSocket close frame to socket {} after send_connection_established failed: {}", socket_id, close_err);
+                    warn!(
+                        "Failed to send WebSocket close frame to socket {} after send_connection_established failed: {}",
+                        socket_id, close_err
+                    );
                 }
                 // Adapter's remove_connection will be called by handle_disconnect later if needed.
             }
@@ -365,7 +371,10 @@ impl ConnectionHandler {
 
             // Perform full disconnect cleanup
             if let Err(disconnect_err) = self.handle_disconnect(&app_config.id, &socket_id).await {
-                error!("Error during handle_disconnect after send_connection_established failed for {}: {}", socket_id, disconnect_err);
+                error!(
+                    "Error during handle_disconnect after send_connection_established failed for {}: {}",
+                    socket_id, disconnect_err
+                );
             }
             self.client_event_limiters.remove(&socket_id); // Ensure limiter is cleaned up
             return Ok(()); // Error handled by closing the connection.
@@ -401,7 +410,10 @@ impl ConnectionHandler {
                     {
                         // handle_message now takes care of sending pusher:error and closing WS for fatal errors.
                         // If an error is returned here, it means it was fatal and the connection should be considered closed.
-                        error!("Message handling for socket {} resulted in error: {}. Connection loop will terminate.", socket_id, e);
+                        error!(
+                            "Message handling for socket {} resulted in error: {}. Connection loop will terminate.",
+                            socket_id, e
+                        );
                         // No need to call handle_disconnect here if handle_message did it for fatal errors.
                         break; // Exit message loop
                     }
@@ -483,7 +495,8 @@ impl ConnectionHandler {
                 }
             } else if app_config.max_client_events_per_second > 0 {
                 // This case indicates a server logic error if a limiter was expected but not found.
-                warn!("Client event rate limiter not found for socket {} though app config expects one. App: {}, Event: {}",
+                warn!(
+                    "Client event rate limiter not found for socket {} though app config expects one. App: {}, Event: {}",
                     socket_id, app_config.id, event_name_str
                 );
                 let err = Error::InternalError("Rate limiter misconfiguration".to_string());
@@ -563,14 +576,20 @@ impl ConnectionHandler {
                         );
                     }
                 } else {
-                    warn!("Fatal error for socket {}: connection not found in manager for explicit close.", socket_id);
+                    warn!(
+                        "Fatal error for socket {}: connection not found in manager for explicit close.",
+                        socket_id
+                    );
                 }
                 drop(connection_manager_locked);
 
                 // Perform full server-side cleanup for the disconnected socket.
                 if let Err(disconnect_err) = self.handle_disconnect(&app_config.id, socket_id).await
                 {
-                    error!("Error during handle_disconnect after fatal error processing message for socket {}: {}", socket_id, disconnect_err);
+                    error!(
+                        "Error during handle_disconnect after fatal error processing message for socket {}: {}",
+                        socket_id, disconnect_err
+                    );
                 }
                 // No need to remove client_event_limiter here, handle_socket's main loop exit will do it.
             }
@@ -646,7 +665,7 @@ impl ConnectionHandler {
             _ => {
                 return Err(Error::InvalidMessageFormat(
                     "Subscribe message data malformed or missing channel".into(),
-                ))
+                ));
             }
         };
 
@@ -910,9 +929,10 @@ impl ConnectionHandler {
                 .send_message(&app_config.id, socket_id, response_msg)
                 .await?;
         }
-
-        self.send_missed_cache_if_exists(&app_config.id, socket_id, channel_str)
-            .await?;
+        if is_cache_channel(channel_str) {
+            self.send_missed_cache_if_exists(&app_config.id, socket_id, channel_str)
+                .await?;
+        }
         Ok(())
     }
 
@@ -1443,7 +1463,10 @@ impl ConnectionHandler {
                                     if let Some(webhook_integration_instance) =
                                         &self.webhook_integration
                                     {
-                                        info!("Sending member_removed webhook for user {} from channel {}", disconnected_user_id, channel_str);
+                                        info!(
+                                            "Sending member_removed webhook for user {} from channel {}",
+                                            disconnected_user_id, channel_str
+                                        );
                                         webhook_integration_instance
                                             .send_member_removed(
                                                 &app_config,
@@ -1472,7 +1495,10 @@ impl ConnectionHandler {
                             }
                         } else if let Some(webhook_integration_instance) = &self.webhook_integration
                         {
-                            info!("Sending subscription_count webhook for channel {} (count: {}) after disconnect processing", channel_str, current_sub_count_after_cm_unsubscribe);
+                            info!(
+                                "Sending subscription_count webhook for channel {} (count: {}) after disconnect processing",
+                                channel_str, current_sub_count_after_cm_unsubscribe
+                            );
                             webhook_integration_instance
                                 .send_subscription_count_changed(
                                     &app_config,
