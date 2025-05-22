@@ -6,10 +6,10 @@ use super::MetricsInterface;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
 use prometheus::{
-    register_counter_vec, register_gauge_vec, register_histogram_vec, CounterVec, GaugeVec,
-    HistogramVec, Opts, TextEncoder,
+    CounterVec, GaugeVec, HistogramVec, Opts, TextEncoder, register_counter_vec,
+    register_gauge_vec, register_histogram_vec,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::{error, info};
 
 /// A Prometheus implementation of the metrics interface

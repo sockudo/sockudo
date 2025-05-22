@@ -215,10 +215,13 @@ impl NatsAdapter {
                                 // Lock released automatically when horizontal_lock goes out of scope
                             }
                             Err(e) => {
-                                warn!("{}", format!(
-                                    "Failed to deserialize broadcast inner message: {}, Payload: {}",
-                                    e, broadcast.message
-                                ));
+                                warn!(
+                                    "{}",
+                                    format!(
+                                        "Failed to deserialize broadcast inner message: {}, Payload: {}",
+                                        e, broadcast.message
+                                    )
+                                );
                             }
                         }
                     }
@@ -663,9 +666,9 @@ impl Adapter for NatsAdapter {
         warn!(
             "{}",
             format!(
-            "Socket {} NOT found in channel {} (only local node checked or remote check negative)",
-            socket_id, channel
-        )
+                "Socket {} NOT found in channel {} (only local node checked or remote check negative)",
+                socket_id, channel
+            )
         );
         Ok(false) // Not found locally, and no other nodes or not found remotely
     }

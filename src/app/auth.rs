@@ -2,7 +2,7 @@ use super::manager::AppManager;
 use crate::app::config::App;
 use crate::error::Error;
 use crate::http_handler::EventQuery; // Assuming EventQuery is in http_handler.rs
-use crate::token::{secure_compare, Token};
+use crate::token::{Token, secure_compare};
 use crate::websocket::SocketId;
 use chrono::Utc; // For timestamp validation
 use serde::Deserialize;
@@ -133,7 +133,9 @@ impl AuthValidator {
                     }
                     _ => {
                         // body_md5 is missing or empty in query, but POST body is non-empty
-                        debug!("POST request has a non-empty body, but 'body_md5' is missing or empty in query parameters.");
+                        debug!(
+                            "POST request has a non-empty body, but 'body_md5' is missing or empty in query parameters."
+                        );
                         return Err(Error::AuthError(
                             "body_md5 is required and must be non-empty in query parameters for POST requests with a non-empty body".to_string(),
                         ));
@@ -142,7 +144,9 @@ impl AuthValidator {
             } else {
                 // POST with an empty body
                 if params_for_signing_string.contains_key("body_md5") {
-                    debug!("POST request has an empty body, but 'body_md5' was found in query parameters.");
+                    debug!(
+                        "POST request has an empty body, but 'body_md5' was found in query parameters."
+                    );
                     return Err(Error::AuthError(
                         "body_md5 must not be present in query parameters for POST requests with an empty body"
                             .to_string(),
@@ -183,17 +187,16 @@ impl AuthValidator {
         let token_signer = Token::new(app_config.key.clone(), app_config.secret.clone());
         let generated_signature = token_signer.sign(&string_to_sign);
 
-        debug!(
-            "Generated signature: {}",
-            generated_signature
-        );
+        debug!("Generated signature: {}", generated_signature);
         debug!(
             "Received signature:  {}",
             auth_params_from_query_struct.auth_signature
         );
 
-
-        if secure_compare(&generated_signature, &auth_params_from_query_struct.auth_signature) {
+        if secure_compare(
+            &generated_signature,
+            &auth_params_from_query_struct.auth_signature,
+        ) {
             Ok(true)
         } else {
             Err(Error::AuthError("Invalid API signature".to_string()))

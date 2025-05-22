@@ -3,9 +3,9 @@
 
 use crate::error::Result;
 
+use crate::queue::QueueInterface;
 use crate::queue::memory_queue_manager::MemoryQueueManager;
 use crate::queue::redis_queue_manager::RedisQueueManager;
-use crate::queue::QueueInterface;
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
 use tracing::info;

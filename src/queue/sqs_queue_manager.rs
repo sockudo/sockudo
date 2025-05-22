@@ -272,27 +272,36 @@ impl SqsQueueManager {
                                                             .send()
                                                             .await
                                                         {
-                                                            error!("{}", format!(
-                                                                "Failed to delete message from SQS queue {}: {}",
-                                                                queue_name, e
-                                                            ));
+                                                            error!(
+                                                                "{}",
+                                                                format!(
+                                                                    "Failed to delete message from SQS queue {}: {}",
+                                                                    queue_name, e
+                                                                )
+                                                            );
                                                         }
                                                     }
                                                 }
                                                 Err(e) => {
                                                     // Processing failed, log the error
-                                                    error!("{}", format!(
-                                                        "Error processing message from SQS queue {}: {}",
-                                                        queue_name, e
-                                                    ));
+                                                    error!(
+                                                        "{}",
+                                                        format!(
+                                                            "Error processing message from SQS queue {}: {}",
+                                                            queue_name, e
+                                                        )
+                                                    );
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            error!("{}", format!(
-                                                "Failed to deserialize message from SQS queue {}: {}",
-                                                queue_name, e
-                                            ));
+                                            error!(
+                                                "{}",
+                                                format!(
+                                                    "Failed to deserialize message from SQS queue {}: {}",
+                                                    queue_name, e
+                                                )
+                                            );
 
                                             // Delete malformed messages
                                             if let Some(receipt_handle) = message.receipt_handle() {
@@ -303,10 +312,13 @@ impl SqsQueueManager {
                                                     .send()
                                                     .await
                                                 {
-                                                    error!("{}", format!(
-                                                        "Failed to delete malformed message from SQS queue {}: {}",
-                                                        queue_name, e
-                                                    ));
+                                                    error!(
+                                                        "{}",
+                                                        format!(
+                                                            "Failed to delete malformed message from SQS queue {}: {}",
+                                                            queue_name, e
+                                                        )
+                                                    );
                                                 }
                                             }
                                         }

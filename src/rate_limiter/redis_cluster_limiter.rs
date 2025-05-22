@@ -2,9 +2,9 @@
 use super::{RateLimitConfig, RateLimitResult, RateLimiter};
 use crate::error::{Error, Result};
 use async_trait::async_trait;
+use redis::AsyncCommands;
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
-use redis::AsyncCommands;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Redis-based rate limiter implementation

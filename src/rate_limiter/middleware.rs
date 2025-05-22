@@ -340,6 +340,9 @@ fn add_rate_limit_headers(
             headers.insert(HEADER_RETRY_AFTER, value);
         }
     } else {
-        warn!(value = result.reset_after, "Failed to convert rate limit reset_after value for header X-RateLimit-Reset/Retry-After");
+        warn!(
+            value = result.reset_after,
+            "Failed to convert rate limit reset_after value for header X-RateLimit-Reset/Retry-After"
+        );
     }
 }

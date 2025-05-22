@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::queue::manager::{QueueManager, QueueManagerFactory};
 use crate::webhook::sender::WebhookSender;
 use crate::webhook::types::{JobData, JobPayload};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;

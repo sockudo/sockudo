@@ -2,7 +2,7 @@ use fastwebsockets::{Frame, Payload, WebSocketError, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use tokio::io::WriteHalf;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 pub struct WebSocket {
     pub state: ConnectionState,

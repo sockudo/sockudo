@@ -1,9 +1,9 @@
 use crate::cache::manager::CacheManager;
 use crate::error::{Error, Result};
 use async_trait::async_trait;
+use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use redis::cluster_async::ClusterConnection;
-use redis::AsyncCommands;
 use std::time::Duration;
 
 /// Configuration for the Redis Cluster cache manager

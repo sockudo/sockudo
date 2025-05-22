@@ -1,10 +1,10 @@
-use super::types::ChannelType;
 use super::PresenceMemberInfo;
+use super::types::ChannelType;
 use crate::adapter::Adapter;
 use crate::app::config::App;
 use crate::error::Error;
 use crate::protocol::messages::{MessageData, PusherMessage};
-use crate::token::{secure_compare, Token};
+use crate::token::{Token, secure_compare};
 use crate::websocket::SocketId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

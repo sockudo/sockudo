@@ -8,8 +8,8 @@ use crate::webhook::lambda_sender::LambdaWebhookSender;
 // PusherWebhookPayload is the structure for the final POST body
 use crate::token::Token; // For HMAC SHA256 signing
 use crate::webhook::types::{JobData, PusherWebhookPayload, Webhook};
-use reqwest::{header, Client};
-use serde_json::{json, Value}; // Keep json! and Value
+use reqwest::{Client, header};
+use serde_json::{Value, json}; // Keep json! and Value
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;

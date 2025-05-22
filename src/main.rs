@@ -5,6 +5,7 @@ mod channel;
 mod error;
 mod http_handler;
 mod metrics;
+mod middleware;
 mod namespace;
 mod options;
 mod protocol;
@@ -21,23 +22,23 @@ use std::io::Read;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use axum::http::Method;
 use axum::http::header::HeaderName;
 use axum::http::uri::Authority;
-use axum::http::Method;
 use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
-use axum::{BoxError, Router, ServiceExt};
+use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
 
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
-use futures_util::future::join_all;
 use error::Error;
+use futures_util::future::join_all;
 use serde_json::{from_str, json}; // Added json import
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
@@ -58,23 +59,23 @@ use crate::http_handler::{
 use crate::metrics::MetricsFactory;
 use crate::options::{AdapterDriver, QueueDriver, ServerOptions}; // Added QueueDriver
 use crate::queue::manager::{QueueManager, QueueManagerFactory};
+use crate::rate_limiter::RateLimiter;
 use crate::rate_limiter::factory::RateLimiterFactory;
 use crate::rate_limiter::middleware::IpKeyExtractor;
-use crate::rate_limiter::RateLimiter;
 use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegration};
 use crate::ws_handler::handle_ws_upgrade;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 // Import tracing and tracing_subscriber parts
-use tracing::{error, info, warn, level_filters::LevelFilter}; // Added LevelFilter
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, fmt};
+use tracing::{error, info, level_filters::LevelFilter, warn}; // Added LevelFilter
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
+use crate::adapter::Adapter;
+use crate::adapter::ConnectionHandler;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::NatsAdapter;
 use crate::adapter::redis_adapter::RedisAdapter;
 use crate::adapter::redis_cluster_adapter::RedisClusterAdapter;
-use crate::adapter::Adapter;
-use crate::adapter::ConnectionHandler;
 use crate::app::auth::AuthValidator;
 use crate::app::config::App;
 // AppManager trait and concrete types
@@ -84,6 +85,7 @@ use crate::cache::manager::CacheManager;
 use crate::cache::memory_cache_manager::MemoryCacheManager; // Import for fallback
 // MetricsInterface trait
 use crate::metrics::MetricsInterface;
+use crate::middleware::pusher_api_auth_middleware;
 use crate::websocket::WebSocketRef;
 
 /// Server state containing all managers
@@ -184,16 +186,14 @@ impl SockudoServer {
                 config.metrics.port,
                 Some(&config.metrics.prometheus.prefix),
             )
-                .await
+            .await
             {
                 Some(metrics_driver) => {
                     info!("Metrics driver initialized successfully");
                     Some(metrics_driver)
                 }
                 None => {
-                    warn!(
-                        "Failed to initialize metrics driver, metrics will be disabled"
-                    );
+                    warn!("Failed to initialize metrics driver, metrics will be disabled");
                     None
                 }
             }
@@ -212,12 +212,11 @@ impl SockudoServer {
                 Arc::new(rate_limiter::memory_limiter::MemoryRateLimiter::new(u32::MAX, 1)) // Permissive limiter
             })
         } else {
-            info!(
-                "HTTP API Rate limiting is globally disabled. Using a permissive limiter."
-            );
-            Arc::new(rate_limiter::memory_limiter::MemoryRateLimiter::new( // Permissive limiter
-                                                                           u32::MAX,
-                                                                           1,
+            info!("HTTP API Rate limiting is globally disabled. Using a permissive limiter.");
+            Arc::new(rate_limiter::memory_limiter::MemoryRateLimiter::new(
+                // Permissive limiter
+                u32::MAX,
+                1,
             ))
         };
         info!(
@@ -252,7 +251,7 @@ impl SockudoServer {
                 ),
                 Some(config.queue.redis.concurrency as usize),
             )
-                .await
+            .await
             {
                 Ok(queue_driver_impl) => {
                     info!(
@@ -262,14 +261,15 @@ impl SockudoServer {
                     Some(Arc::new(QueueManager::new(queue_driver_impl)))
                 }
                 Err(e) => {
-                    warn!("Failed to initialize queue manager with driver '{:?}': {}, queues will be disabled", config.queue.driver, e);
+                    warn!(
+                        "Failed to initialize queue manager with driver '{:?}': {}, queues will be disabled",
+                        config.queue.driver, e
+                    );
                     None
                 }
             }
         } else {
-            info!(
-                "Queue driver set to None, queue manager will be disabled."
-            );
+            info!("Queue driver set to None, queue manager will be disabled.");
             None
         };
 
@@ -296,12 +296,10 @@ impl SockudoServer {
             webhook_config_for_integration,
             app_manager.clone(),
         )
-            .await
+        .await
         {
             Ok(integration) => {
-                info!(
-                    "Webhook integration initialized successfully"
-                );
+                info!("Webhook integration initialized successfully");
                 Arc::new(integration)
             }
             Err(e) => {
@@ -358,9 +356,7 @@ impl SockudoServer {
                             .ok(); // .ok() converts Result to Option, ignoring error
                         info!("Set metrics for RedisAdapter");
                     } else {
-                        warn!(
-                            "Failed to downcast to RedisAdapter for metrics setup"
-                        );
+                        warn!("Failed to downcast to RedisAdapter for metrics setup");
                     }
                 }
                 AdapterDriver::Nats => {
@@ -371,9 +367,7 @@ impl SockudoServer {
                             .ok();
                         info!("Set metrics for NatsAdapter");
                     } else {
-                        warn!(
-                            "Failed to downcast to NatsAdapter for metrics setup"
-                        );
+                        warn!("Failed to downcast to NatsAdapter for metrics setup");
                     }
                 }
                 AdapterDriver::RedisCluster => {
@@ -385,22 +379,16 @@ impl SockudoServer {
                             "Metrics setup for RedisClusterAdapter (call set_metrics if available)"
                         );
                     } else {
-                        warn!(
-                            "Failed to downcast to RedisClusterAdapter for metrics setup"
-                        );
+                        warn!("Failed to downcast to RedisClusterAdapter for metrics setup");
                     }
                 }
                 AdapterDriver::Local => {
                     // Assuming LocalAdapter might have a set_metrics method
                     if let Some(adapter_mut) = adapter_as_any.downcast_mut::<LocalAdapter>() {
                         // adapter_mut.set_metrics(metrics_instance_arc.clone()).await.ok(); // Uncomment if method exists
-                        info!(
-                            "Metrics setup for LocalAdapter (call set_metrics if applicable)"
-                        );
+                        info!("Metrics setup for LocalAdapter (call set_metrics if applicable)");
                     } else {
-                        warn!(
-                            "Failed to downcast to LocalAdapter for metrics setup"
-                        );
+                        warn!("Failed to downcast to LocalAdapter for metrics setup");
                     }
                 }
             }
@@ -418,11 +406,11 @@ impl SockudoServer {
         self.state.app_manager.init().await?; // Assuming AppManager has an init method
 
         // Initialize ConnectionManager (Adapter)
-        { // Scope for MutexGuard
+        {
+            // Scope for MutexGuard
             let mut connection_manager = self.state.connection_manager.lock().await;
             connection_manager.init().await; // Assuming Adapter has an init method
         }
-
 
         // Register apps from configuration
         if !self.config.app_manager.array.apps.is_empty() {
@@ -432,13 +420,13 @@ impl SockudoServer {
             );
             let apps_to_register = self.config.app_manager.array.apps.clone();
             for app in apps_to_register {
-                info!(
-                    "Attempting to register app: id={}, key={}", app.id, app.key
-                );
+                info!("Attempting to register app: id={}, key={}", app.id, app.key);
                 match self.state.app_manager.find_by_id(&app.id).await {
                     Ok(Some(_existing_app)) => {
                         info!("App {} already exists, attempting to update.", app.id);
-                        if let Err(update_err) = self.state.app_manager.update_app(app.clone()).await {
+                        if let Err(update_err) =
+                            self.state.app_manager.update_app(app.clone()).await
+                        {
                             error!("Failed to update existing app {}: {}", app.id, update_err);
                         } else {
                             info!("Successfully updated app: {}", app.id);
@@ -448,19 +436,22 @@ impl SockudoServer {
                         // App does not exist, create it
                         match self.state.app_manager.create_app(app.clone()).await {
                             Ok(_) => info!("Successfully registered new app: {}", app.id),
-                            Err(create_err) => error!("Failed to register new app {}: {}", app.id, create_err),
+                            Err(create_err) => {
+                                error!("Failed to register new app {}: {}", app.id, create_err)
+                            }
                         }
                     }
                     Err(e) => {
                         // Error trying to find the app, could be a DB issue
-                        error!("Error checking existence of app {}: {}. Skipping registration/update.", app.id, e);
+                        error!(
+                            "Error checking existence of app {}: {}. Skipping registration/update.",
+                            app.id, e
+                        );
                     }
                 }
             }
         } else {
-            info!(
-                "No apps found in configuration, registering demo app"
-            );
+            info!("No apps found in configuration, registering demo app");
             let demo_app = App {
                 id: "demo-app".to_string(),
                 key: "demo-key".to_string(),
@@ -474,7 +465,7 @@ impl SockudoServer {
                     lambda_function: None,
                     lambda: None, // Assuming this is an Option<LambdaConfig> or similar
                     event_types: vec!["member_added".to_string(), "member_removed".to_string()],
-                    filter: None, // Assuming Option<WebhookFilter>
+                    filter: None,  // Assuming Option<WebhookFilter>
                     headers: None, // Assuming Option<HashMap<String, String>>
                 }]),
                 ..Default::default()
@@ -502,14 +493,14 @@ impl SockudoServer {
         // Initialize Metrics
         if let Some(metrics) = &self.state.metrics {
             let metrics_guard = metrics.lock().await; // Lock the Mutex to get access
-            if let Err(e) = metrics_guard.init().await { // Call init on the MetricsInterface implementor
+            if let Err(e) = metrics_guard.init().await {
+                // Call init on the MetricsInterface implementor
                 warn!("Failed to initialize metrics: {}", e);
             }
         }
         info!("Server init sequence completed.");
         Ok(())
     }
-
 
     fn configure_http_routes(&self) -> Router {
         let mut cors_builder = CorsLayer::new()
@@ -538,11 +529,16 @@ impl SockudoServer {
             cors_builder = cors_builder.allow_origin(AllowOrigin::any());
             if self.config.cors.credentials {
                 // This is a common pitfall with CORS.
-                warn!("CORS config: 'Access-Control-Allow-Credentials' was true but 'Access-Control-Allow-Origin' is '*'. Forcing credentials to false to comply with CORS specification.");
+                warn!(
+                    "CORS config: 'Access-Control-Allow-Credentials' was true but 'Access-Control-Allow-Origin' is '*'. Forcing credentials to false to comply with CORS specification."
+                );
                 cors_builder = cors_builder.allow_credentials(false);
             }
-            if self.config.cors.origin.len() > 1 { // If "*" is present with others
-                warn!("CORS config: Wildcard '*' or 'Any' is present in origins list along with other specific origins. Wildcard will take precedence, allowing all origins.");
+            if self.config.cors.origin.len() > 1 {
+                // If "*" is present with others
+                warn!(
+                    "CORS config: Wildcard '*' or 'Any' is present in origins list along with other specific origins. Wildcard will take precedence, allowing all origins."
+                );
             }
         } else if !self.config.cors.origin.is_empty() {
             let origins = self
@@ -560,9 +556,13 @@ impl SockudoServer {
             cors_builder = cors_builder.allow_credentials(self.config.cors.credentials);
         } else {
             // No origins specified, and not wildcard. This usually means CORS is effectively off or very restrictive.
-            warn!("CORS origins list is empty and no wildcard ('*' or 'Any') is specified. CORS might be highly restrictive or disabled depending on tower-http defaults. Consider setting origins or '*' for AllowOrigin::any().");
+            warn!(
+                "CORS origins list is empty and no wildcard ('*' or 'Any') is specified. CORS might be highly restrictive or disabled depending on tower-http defaults. Consider setting origins or '*' for AllowOrigin::any()."
+            );
             if self.config.cors.credentials {
-                warn!("CORS origins list is empty, and credentials set to true. Forcing credentials to false for safety as no origin is explicitly allowed.");
+                warn!(
+                    "CORS origins list is empty, and credentials set to true. Forcing credentials to false for safety as no origin is explicitly allowed."
+                );
                 cors_builder = cors_builder.allow_credentials(false);
             }
         }
@@ -572,8 +572,8 @@ impl SockudoServer {
         let rate_limiter_middleware_layer = if self.config.rate_limiter.enabled {
             if let Some(rate_limiter_instance) = &self.state.http_api_rate_limiter {
                 let options = crate::rate_limiter::middleware::RateLimitOptions {
-                    include_headers: true, // Include X-RateLimit-* headers
-                    fail_open: false,      // If rate limiter fails, deny request
+                    include_headers: true,                // Include X-RateLimit-* headers
+                    fail_open: false,                     // If rate limiter fails, deny request
                     key_prefix: Some("api:".to_string()), // Prefix for keys in store
                 };
                 // Get trust_hops from config, default to 0 if not present
@@ -597,29 +597,59 @@ impl SockudoServer {
                     ),
                 )
             } else {
-                warn!("Rate limiting is enabled in config, but no RateLimiter instance found in server state for HTTP API. Rate limiting will not be applied.");
+                warn!(
+                    "Rate limiting is enabled in config, but no RateLimiter instance found in server state for HTTP API. Rate limiting will not be applied."
+                );
                 None
             }
         } else {
-            info!(
-                "Custom HTTP API Rate limiting is disabled in configuration."
-            );
+            info!("Custom HTTP API Rate limiting is disabled in configuration.");
             None
         };
 
         let mut router = Router::new()
             .route("/app/{appKey}", get(handle_ws_upgrade)) // Corrected Axum path param syntax
-            .route("/apps/{appId}/events", post(events))
-            .route("/apps/{appId}/batch_events", post(batch_events))
-            .route("/apps/{appId}/channels", get(channels))
-            .route("/apps/{appId}/channels/{channelName}", get(channel))
+            .route(
+                "/apps/{appId}/events",
+                post(events).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/batch_events",
+                post(batch_events).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels",
+                get(channels).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}",
+                get(channel).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
             .route(
                 "/apps/{appId}/channels/{channelName}/users",
-                get(channel_users),
+                get(channel_users).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
             )
             .route(
                 "/apps/{appId}/users/{userId}/terminate_connections",
-                post(terminate_user_connections),
+                post(terminate_user_connections).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
             )
             .route("/usage", get(usage))
             .route("/up/{appId}", get(up)) // Corrected Axum path param syntax
@@ -633,13 +663,11 @@ impl SockudoServer {
         router.with_state(self.handler.clone()) // Pass the handler state to all routes
     }
 
-
     fn configure_metrics_routes(&self) -> Router {
         Router::new()
             .route("/metrics", get(metrics))
             .with_state(self.handler.clone()) // Metrics endpoint also needs the handler for state
     }
-
 
     async fn start(&self) -> Result<()> {
         info!("Starting Sockudo server services (after init)...");
@@ -689,13 +717,16 @@ impl SockudoServer {
                                 redirect_listener,
                                 redirect_app.into_make_service_with_connect_info::<SocketAddr>(),
                             )
-                                .await
+                            .await
                             {
                                 error!("HTTP redirect server error: {}", e);
                             }
                         });
                     }
-                    Err(e) => warn!("Failed to bind HTTP redirect server on {}: {}. Redirect will not be available.", redirect_addr, e),
+                    Err(e) => warn!(
+                        "Failed to bind HTTP redirect server on {}: {}. Redirect will not be available.",
+                        redirect_addr, e
+                    ),
                 }
             }
 
@@ -703,7 +734,8 @@ impl SockudoServer {
             if self.config.metrics.enabled {
                 if let Ok(metrics_listener) = TcpListener::bind(metrics_addr).await {
                     info!(
-                        "Metrics server listening on http://{}", metrics_addr // Clarify HTTP
+                        "Metrics server listening on http://{}",
+                        metrics_addr // Clarify HTTP
                     );
                     let metrics_router_clone = metrics_router.clone(); // Clone for the new task
                     tokio::spawn(async move {
@@ -716,7 +748,9 @@ impl SockudoServer {
                     });
                 } else {
                     warn!(
-                        "Failed to start metrics server on {}: {}. Metrics will not be available.", metrics_addr, metrics_addr // Corrected variable
+                        "Failed to start metrics server on {}: {}. Metrics will not be available.",
+                        metrics_addr,
+                        metrics_addr // Corrected variable
                     );
                 }
             }
@@ -744,13 +778,14 @@ impl SockudoServer {
             let metrics_listener_opt = if self.config.metrics.enabled {
                 match TcpListener::bind(metrics_addr).await {
                     Ok(listener) => {
-                        info!(
-                            "Metrics server listening on http://{}", metrics_addr
-                        );
+                        info!("Metrics server listening on http://{}", metrics_addr);
                         Some(listener)
                     }
                     Err(e) => {
-                        warn!("Failed to bind metrics server on {}: {}. Metrics will not be available.", metrics_addr, e);
+                        warn!(
+                            "Failed to bind metrics server on {}: {}. Metrics will not be available.",
+                            metrics_addr, e
+                        );
                         None
                     }
                 }
@@ -793,15 +828,20 @@ impl SockudoServer {
         Ok(())
     }
 
-
     async fn load_tls_config(&self) -> Result<RustlsConfig> {
         let cert_path = std::path::PathBuf::from(&self.config.ssl.cert_path);
         let key_path = std::path::PathBuf::from(&self.config.ssl.key_path);
         if !cert_path.exists() {
-            return Err(Error::ConfigFileError(format!("SSL cert_path not found: {:?}", cert_path)));
+            return Err(Error::ConfigFileError(format!(
+                "SSL cert_path not found: {:?}",
+                cert_path
+            )));
         }
         if !key_path.exists() {
-            return Err(Error::ConfigFileError(format!("SSL key_path not found: {:?}", key_path)));
+            return Err(Error::ConfigFileError(format!(
+                "SSL key_path not found: {:?}",
+                key_path
+            )));
         }
         RustlsConfig::from_pem_file(cert_path, key_path)
             .await
@@ -844,15 +884,20 @@ impl SockudoServer {
         {
             let mut connection_manager_guard = self.state.connection_manager.lock().await;
             match connection_manager_guard.get_namespaces().await {
-                Ok(namespaces_vec) => { // Assuming get_namespaces returns an iterable collection
+                Ok(namespaces_vec) => {
+                    // Assuming get_namespaces returns an iterable collection
                     for (app_id, namespace_obj) in namespaces_vec {
                         // The '?' operator implies this function returns a Result.
                         // Handle the Result from get_sockets appropriately.
                         match namespace_obj.get_sockets().await {
-                            Ok(sockets_vec) => { // Assuming get_sockets returns an iterable collection
+                            Ok(sockets_vec) => {
+                                // Assuming get_sockets returns an iterable collection
                                 for (_socket_id, ws_raw_obj) in sockets_vec {
                                     // Ensure ws_raw_obj (your 'ws') is Clone.
-                                    connections_to_cleanup.push((app_id.clone(), websocket::WebSocketRef(ws_raw_obj)));
+                                    connections_to_cleanup.push((
+                                        app_id.clone(),
+                                        websocket::WebSocketRef(ws_raw_obj),
+                                    ));
                                 }
                             }
                             Err(e) => {
@@ -874,31 +919,35 @@ impl SockudoServer {
             }
         } // connection_manager_guard is dropped here, releasing the main lock.
 
-        info!("Collected {} connections to cleanup.", connections_to_cleanup.len());
+        info!(
+            "Collected {} connections to cleanup.",
+            connections_to_cleanup.len()
+        );
 
         // --- Step 2: Parallelize Cleanup ---
         // Each cleanup task will briefly re-acquire the lock on ConnectionManager.
         if !connections_to_cleanup.is_empty() {
-            let cleanup_futures = connections_to_cleanup.into_iter().map(|(app_id, ws_raw_obj)| {
-                let cm_arc = Arc::clone(&self.state.connection_manager); // Clone Arc for the task
-                async move {
-                    let mut guard = cm_arc.lock().await;
-                    // Construct WebSocketRef as in your original code
-                    guard.cleanup_connection(app_id.as_str(), ws_raw_obj).await;
-                    // TODO: Consider if cleanup_connection should return a Result to log/handle individual cleanup errors.
-                    // For example:
-                    // if let Err(e) = guard.cleanup_connection(...).await {
-                    //     warn!(%app_id, "Error cleaning up connection: {}", e);
-                    // }
-                }
-            });
+            let cleanup_futures = connections_to_cleanup
+                .into_iter()
+                .map(|(app_id, ws_raw_obj)| {
+                    let cm_arc = Arc::clone(&self.state.connection_manager); // Clone Arc for the task
+                    async move {
+                        let mut guard = cm_arc.lock().await;
+                        // Construct WebSocketRef as in your original code
+                        guard.cleanup_connection(app_id.as_str(), ws_raw_obj).await;
+                        // TODO: Consider if cleanup_connection should return a Result to log/handle individual cleanup errors.
+                        // For example:
+                        // if let Err(e) = guard.cleanup_connection(...).await {
+                        //     warn!(%app_id, "Error cleaning up connection: {}", e);
+                        // }
+                    }
+                });
 
             join_all(cleanup_futures).await;
             info!("All connection cleanup tasks have been processed.");
         } else {
             info!("No connections to cleanup.");
         }
-
 
         // Disconnect from backend services
         {
@@ -915,13 +964,14 @@ impl SockudoServer {
         // Add disconnect for app_manager if it has such a method
         // self.state.app_manager.disconnect().await?;
 
-
-        info!("Waiting for shutdown grace period: {} seconds", self.config.shutdown_grace_period);
+        info!(
+            "Waiting for shutdown grace period: {} seconds",
+            self.config.shutdown_grace_period
+        );
         tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
         info!("Server stopped");
         Ok(())
     }
-
 
     #[allow(dead_code)]
     pub async fn load_options_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
@@ -987,10 +1037,18 @@ async fn main() -> Result<()> {
 
     // --- Apply environment variables to default config (before loading from file) ---
     // This allows ENV to provide defaults if not in file, or be overridden by file.
-    if let Ok(host) = std::env::var("HOST") { config.host = host; }
+    if let Ok(host) = std::env::var("HOST") {
+        config.host = host;
+    }
     if let Ok(port_str) = std::env::var("PORT") {
-        if let Ok(port) = port_str.parse() { config.port = port; }
-        else { eprintln!("[CONFIG-WARN] Failed to parse PORT env var: '{}'. Using default: {}", port_str, config.port); }
+        if let Ok(port) = port_str.parse() {
+            config.port = port;
+        } else {
+            eprintln!(
+                "[CONFIG-WARN] Failed to parse PORT env var: '{}'. Using default: {}",
+                port_str, config.port
+            );
+        }
     }
 
     // Drivers
@@ -1007,52 +1065,104 @@ async fn main() -> Result<()> {
         config.metrics.driver = parse_driver_enum(driver_str, config.metrics.driver, "Metrics");
     }
     if let Ok(driver_str) = std::env::var("APP_MANAGER_DRIVER") {
-        config.app_manager.driver = parse_driver_enum(driver_str, config.app_manager.driver, "AppManager");
+        config.app_manager.driver =
+            parse_driver_enum(driver_str, config.app_manager.driver, "AppManager");
     }
     if let Ok(driver_str) = std::env::var("RATE_LIMITER_DRIVER") {
-        config.rate_limiter.driver = parse_driver_enum(driver_str, config.rate_limiter.driver, "RateLimiter Backend");
+        config.rate_limiter.driver = parse_driver_enum(
+            driver_str,
+            config.rate_limiter.driver,
+            "RateLimiter Backend",
+        );
     }
 
     // SSL
-    if let Ok(val) = std::env::var("SSL_ENABLED") { config.ssl.enabled = val == "1" || val.to_lowercase() == "true"; }
-    if let Ok(val) = std::env::var("SSL_CERT_PATH") { config.ssl.cert_path = val; }
-    if let Ok(val) = std::env::var("SSL_KEY_PATH") { config.ssl.key_path = val; }
-    if let Ok(val_str) = std::env::var("SSL_HTTP_PORT") {
-        if let Ok(port) = val_str.parse() { config.ssl.http_port = Some(port); }
-        else { eprintln!("[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{}'", val_str); }
+    if let Ok(val) = std::env::var("SSL_ENABLED") {
+        config.ssl.enabled = val == "1" || val.to_lowercase() == "true";
     }
-
+    if let Ok(val) = std::env::var("SSL_CERT_PATH") {
+        config.ssl.cert_path = val;
+    }
+    if let Ok(val) = std::env::var("SSL_KEY_PATH") {
+        config.ssl.key_path = val;
+    }
+    if let Ok(val_str) = std::env::var("SSL_HTTP_PORT") {
+        if let Ok(port) = val_str.parse() {
+            config.ssl.http_port = Some(port);
+        } else {
+            eprintln!(
+                "[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{}'",
+                val_str
+            );
+        }
+    }
 
     // Database - Redis specific (more granular than just REDIS_URL)
-    if let Ok(val) = std::env::var("DATABASE_REDIS_HOST") { config.database.redis.host = val; }
+    if let Ok(val) = std::env::var("DATABASE_REDIS_HOST") {
+        config.database.redis.host = val;
+    }
     if let Ok(val_str) = std::env::var("DATABASE_REDIS_PORT") {
-        if let Ok(port) = val_str.parse() { config.database.redis.port = port; }
-        else { eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{}'", val_str); }
+        if let Ok(port) = val_str.parse() {
+            config.database.redis.port = port;
+        } else {
+            eprintln!(
+                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{}'",
+                val_str
+            );
+        }
     }
-    if let Ok(val) = std::env::var("DATABASE_REDIS_PASSWORD") { config.database.redis.password = Some(val); }
+    if let Ok(val) = std::env::var("DATABASE_REDIS_PASSWORD") {
+        config.database.redis.password = Some(val);
+    }
     if let Ok(val_str) = std::env::var("DATABASE_REDIS_DB") {
-        if let Ok(db) = val_str.parse() { config.database.redis.db = db; }
-        else { eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{}'", val_str); }
+        if let Ok(db) = val_str.parse() {
+            config.database.redis.db = db;
+        } else {
+            eprintln!(
+                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{}'",
+                val_str
+            );
+        }
     }
-    if let Ok(val) = std::env::var("DATABASE_REDIS_KEY_PREFIX") { config.database.redis.key_prefix = val; }
-
+    if let Ok(val) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
+        config.database.redis.key_prefix = val;
+    }
 
     // Metrics specific
-    if let Ok(val) = std::env::var("METRICS_ENABLED") { config.metrics.enabled = val == "1" || val.to_lowercase() == "true"; }
-    if let Ok(val) = std::env::var("METRICS_HOST") { config.metrics.host = val; }
-    if let Ok(val_str) = std::env::var("METRICS_PORT") {
-        if let Ok(port) = val_str.parse() { config.metrics.port = port; }
-        else { eprintln!("[CONFIG-WARN] Failed to parse METRICS_PORT env var: '{}'", val_str); }
+    if let Ok(val) = std::env::var("METRICS_ENABLED") {
+        config.metrics.enabled = val == "1" || val.to_lowercase() == "true";
     }
-    if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") { config.metrics.prometheus.prefix = val; }
+    if let Ok(val) = std::env::var("METRICS_HOST") {
+        config.metrics.host = val;
+    }
+    if let Ok(val_str) = std::env::var("METRICS_PORT") {
+        if let Ok(port) = val_str.parse() {
+            config.metrics.port = port;
+        } else {
+            eprintln!(
+                "[CONFIG-WARN] Failed to parse METRICS_PORT env var: '{}'",
+                val_str
+            );
+        }
+    }
+    if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
+        config.metrics.prometheus.prefix = val;
+    }
 
     // Instance specific
-    if let Ok(val) = std::env::var("INSTANCE_PROCESS_ID") { config.instance.process_id = val; }
-    if let Ok(val_str) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
-        if let Ok(period) = val_str.parse() { config.shutdown_grace_period = period; }
-        else { eprintln!("[CONFIG-WARN] Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{}'", val_str); }
+    if let Ok(val) = std::env::var("INSTANCE_PROCESS_ID") {
+        config.instance.process_id = val;
     }
-
+    if let Ok(val_str) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
+        if let Ok(period) = val_str.parse() {
+            config.shutdown_grace_period = period;
+        } else {
+            eprintln!(
+                "[CONFIG-WARN] Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{}'",
+                val_str
+            );
+        }
+    }
 
     // --- Load configuration from file ---
     // File settings will override ENV vars set above, except for `config.debug` if ENV DEBUG was explicitly set.
@@ -1061,7 +1171,8 @@ async fn main() -> Result<()> {
     let mut config_path = args.config;
     if config_path.is_empty() {
         // Fallback to default path if not provided
-        config_path = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "src/config.json".to_string());
+        config_path =
+            std::env::var("CONFIG_FILE").unwrap_or_else(|_| "src/config.json".to_string());
     }
 
     if Path::new(&config_path).exists() {
@@ -1077,22 +1188,42 @@ async fn main() -> Result<()> {
         match from_str::<ServerOptions>(&contents) {
             Ok(file_config) => {
                 config = file_config; // File config overrides previous defaults and ENV vars
-                println!("[PRE-LOG] Successfully loaded and applied configuration from {}", config_path);
+                println!(
+                    "[PRE-LOG] Successfully loaded and applied configuration from {}",
+                    config_path
+                );
             }
             Err(e) => {
-                eprintln!("[PRE-LOG-ERROR] Failed to parse configuration file {}: {}. Using defaults and environment variables already set.", config_path, e);
+                eprintln!(
+                    "[PRE-LOG-ERROR] Failed to parse configuration file {}: {}. Using defaults and environment variables already set.",
+                    config_path, e
+                );
             }
         }
     } else {
-        println!("[PRE-LOG] No configuration file found at {}, using defaults and environment variables.", config_path);
+        println!(
+            "[PRE-LOG] No configuration file found at {}, using defaults and environment variables.",
+            config_path
+        );
     }
 
     // --- Re-apply specific high-priority ENV vars (to override file) ---
     if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        println!("[PRE-LOG] Applying REDIS_URL environment variable override: {}", redis_url_env);
+        println!(
+            "[PRE-LOG] Applying REDIS_URL environment variable override: {}",
+            redis_url_env
+        );
         // This will override any host/port/db/password from file or previous ENVs for these components
-        config.adapter.redis.redis_pub_options.insert("url".to_string(), json!(redis_url_env.clone()));
-        config.adapter.redis.redis_sub_options.insert("url".to_string(), json!(redis_url_env.clone()));
+        config
+            .adapter
+            .redis
+            .redis_pub_options
+            .insert("url".to_string(), json!(redis_url_env.clone()));
+        config
+            .adapter
+            .redis
+            .redis_sub_options
+            .insert("url".to_string(), json!(redis_url_env.clone()));
         config.cache.redis.url_override = Some(redis_url_env.clone());
         config.queue.redis.url_override = Some(redis_url_env.clone());
         config.rate_limiter.redis.url_override = Some(redis_url_env);
@@ -1102,17 +1233,19 @@ async fn main() -> Result<()> {
     if initial_debug_from_env {
         // If DEBUG env was set to true, make sure config.debug is true, regardless of file.
         if !config.debug {
-            println!("[PRE-LOG] Overriding file config: DEBUG environment variable forces debug mode ON.");
+            println!(
+                "[PRE-LOG] Overriding file config: DEBUG environment variable forces debug mode ON."
+            );
             config.debug = true;
         }
     }
-
 
     // --- Part 2: Initialize logging using final config.debug ---
     let final_debug_is_enabled = config.debug;
 
     let default_log_directive_str = if final_debug_is_enabled {
-        std::env::var("SOCKUDO_LOG_DEBUG").unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string()) // Added tower_http
+        std::env::var("SOCKUDO_LOG_DEBUG")
+            .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string()) // Added tower_http
     } else {
         std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string()) // Changed from "off" to "info" for minimal prod logging
     };
@@ -1136,16 +1269,19 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    info!("Logging initialized. Debug mode: {}. Effective RUST_LOG/default filter: '{}'",
+    info!(
+        "Logging initialized. Debug mode: {}. Effective RUST_LOG/default filter: '{}'",
         final_debug_is_enabled,
-        EnvFilter::try_from_default_env().map(|f| f.to_string()).unwrap_or("None".to_string()) // Show the effective filter
+        EnvFilter::try_from_default_env()
+            .map(|f| f.to_string())
+            .unwrap_or("None".to_string()) // Show the effective filter
     );
-
 
     // --- Part 3: Rest of the application logic ---
     info!("Starting Sockudo server initialization process with resolved configuration...");
 
-    let server = match SockudoServer::new(config).await { // Pass the fully resolved config
+    let server = match SockudoServer::new(config).await {
+        // Pass the fully resolved config
         Ok(s) => s,
         Err(e) => {
             error!("Failed to create server instance: {}", e);
@@ -1188,9 +1324,9 @@ fn make_https(host: &str, uri: Uri, https_port: u16) -> core::result::Result<Uri
     }
 
     // Correctly parse host and replace/add port for HTTPS
-    let authority_val: Authority = host.parse().map_err(|e| {
-        format!("Failed to parse host '{}' into authority: {}", host, e)
-    })?;
+    let authority_val: Authority = host
+        .parse()
+        .map_err(|e| format!("Failed to parse host '{}' into authority: {}", host, e))?;
 
     let bare_host_str = authority_val.host(); // Get just the host part
 

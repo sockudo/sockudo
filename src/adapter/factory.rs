@@ -1,9 +1,9 @@
 // src/adapter/factory.rs
+use crate::adapter::Adapter;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::{NatsAdapter, NatsAdapterConfig};
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterConfig as RedisAdapterOptions};
 use crate::adapter::redis_cluster_adapter::{RedisClusterAdapter, RedisClusterAdapterConfig};
-use crate::adapter::Adapter;
 use crate::error::Result;
 
 use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig}; // Import AdapterDriver, RedisConnection
@@ -47,9 +47,9 @@ impl AdapterFactory {
                         warn!(
                             "{}",
                             format!(
-                            "Failed to initialize Redis adapter: {}, falling back to local adapter",
-                            e
-                        )
+                                "Failed to initialize Redis adapter: {}, falling back to local adapter",
+                                e
+                            )
                         );
                         Ok(Box::new(LocalAdapter::new()))
                     }
@@ -83,7 +83,13 @@ impl AdapterFactory {
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
                     Ok(adapter) => Ok(Box::new(adapter)),
                     Err(e) => {
-                        warn!("{}", format!("Failed to initialize Redis Cluster adapter: {}, falling back to local adapter", e));
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize Redis Cluster adapter: {}, falling back to local adapter",
+                                e
+                            )
+                        );
                         Ok(Box::new(LocalAdapter::new()))
                     }
                 }
@@ -106,9 +112,9 @@ impl AdapterFactory {
                         warn!(
                             "{}",
                             format!(
-                            "Failed to initialize NATS adapter: {}, falling back to local adapter",
-                            e
-                        )
+                                "Failed to initialize NATS adapter: {}, falling back to local adapter",
+                                e
+                            )
                         );
                         Ok(Box::new(LocalAdapter::new()))
                     }

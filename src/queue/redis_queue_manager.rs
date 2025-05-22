@@ -4,8 +4,8 @@ use crate::webhook::types::JobData;
 use async_trait::async_trait;
 use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, RedisResult};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -152,7 +152,13 @@ impl QueueInterface for RedisQueueManager {
                                 }
                                 Err(e) => {
                                     // Failed to deserialize the job data
-                                    error!("{}", format!("[Worker {}] Error deserializing job data from Redis queue {}: {}. Data: '{}'", i, worker_queue_name, e, job_data_str));
+                                    error!(
+                                        "{}",
+                                        format!(
+                                            "[Worker {}] Error deserializing job data from Redis queue {}: {}. Data: '{}'",
+                                            i, worker_queue_name, e, job_data_str
+                                        )
+                                    );
                                     // Potential: Move corrupted data to a specific place?
                                 }
                             }

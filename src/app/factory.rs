@@ -27,7 +27,13 @@ impl AppManagerFactory {
                 match MySQLAppManager::new(mysql_db_config).await {
                     Ok(manager) => Ok(Arc::new(manager)),
                     Err(e) => {
-                        warn!("{}", format!("Failed to initialize MySQL app manager: {}, falling back to memory manager", e));
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize MySQL app manager: {}, falling back to memory manager",
+                                e
+                            )
+                        );
                         Ok(Arc::new(MemoryAppManager::new()))
                     }
                 }
@@ -47,7 +53,13 @@ impl AppManagerFactory {
                 match DynamoDbAppManager::new(dynamo_app_config).await {
                     Ok(manager) => Ok(Arc::new(manager)),
                     Err(e) => {
-                        warn!("{}", format!("Failed to initialize DynamoDB app manager: {}, falling back to memory manager", e));
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize DynamoDB app manager: {}, falling back to memory manager",
+                                e
+                            )
+                        );
                         Ok(Arc::new(MemoryAppManager::new()))
                     }
                 }

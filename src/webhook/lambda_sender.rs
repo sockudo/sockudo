@@ -4,13 +4,13 @@ use crate::error::{Error, Result};
 
 use crate::webhook::types::{LambdaConfig, Webhook}; // Added PusherWebhookPayload for clarity
 use aws_config::meta::region::RegionProviderChain;
+use aws_sdk_lambda::Client as LambdaClient;
 use aws_sdk_lambda::config::Region; // Credentials not directly used here for client creation
 use aws_sdk_lambda::error::SdkError; // Keep for sync if needed
 use aws_sdk_lambda::operation::invoke::{InvokeError, InvokeOutput}; // Keep for sync if needed
 use aws_sdk_lambda::primitives::Blob;
 use aws_sdk_lambda::types::InvocationType;
-use aws_sdk_lambda::Client as LambdaClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -77,10 +77,13 @@ impl LambdaWebhookSender {
             None => {
                 // If 'lambda' is None, try the legacy 'lambda_function' string.
                 if let Some(function_name_str) = &webhook.lambda_function {
-                    warn!("{}", format!(
-                        "Webhook for app {} uses legacy 'lambda_function' field. Defaulting region to 'us-east-1'. Consider updating to structured 'lambda' config.",
-                        app_id
-                    ));
+                    warn!(
+                        "{}",
+                        format!(
+                            "Webhook for app {} uses legacy 'lambda_function' field. Defaulting region to 'us-east-1'. Consider updating to structured 'lambda' config.",
+                            app_id
+                        )
+                    );
                     // Assign to the outer `temp_owned_config`
                     temp_owned_config = LambdaConfig {
                         function_name: function_name_str.clone(),
@@ -114,10 +117,17 @@ impl LambdaWebhookSender {
             ))
         })?;
 
-        info!("{}", format!(
-            "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
-            lambda_config_ref.function_name, lambda_config_ref.region, app_id, triggering_event_name, payload_bytes.len()
-        ));
+        info!(
+            "{}",
+            format!(
+                "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
+                lambda_config_ref.function_name,
+                lambda_config_ref.region,
+                app_id,
+                triggering_event_name,
+                payload_bytes.len()
+            )
+        );
 
         match client
             .invoke()
@@ -223,9 +233,9 @@ impl LambdaWebhookSender {
                             warn!(
                                 "{}",
                                 format!(
-                                "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
-                                e, response_payload_blob
-                            )
+                                    "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
+                                    e, response_payload_blob
+                                )
                             );
                             let response_str =
                                 String::from_utf8_lossy(response_payload_blob.as_ref());
