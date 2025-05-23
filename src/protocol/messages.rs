@@ -248,6 +248,28 @@ impl PusherMessage {
     pub fn success_response() -> Value {
         json!({ "ok": true })
     }
+
+    pub fn watchlist_online_event(user_ids: Vec<String>) -> Self {
+        Self {
+            event: Some("online".to_string()),
+            channel: None, // Watchlist events don't use channels
+            name: None,
+            data: Some(MessageData::Json(json!({
+                "user_ids": user_ids
+            }))),
+        }
+    }
+
+    pub fn watchlist_offline_event(user_ids: Vec<String>) -> Self {
+        Self {
+            event: Some("offline".to_string()),
+            channel: None,
+            name: None,
+            data: Some(MessageData::Json(json!({
+                "user_ids": user_ids
+            }))),
+        }
+    }
 }
 
 // Add a helper extension trait for working with info parameters

@@ -14,7 +14,7 @@ use crate::protocol::messages::{ErrorData, MessageData, PusherApiMessage, Pusher
 use crate::rate_limiter::{RateLimiter, memory_limiter::MemoryRateLimiter};
 use crate::utils::{is_cache_channel, validate_channel_name};
 use crate::webhook::integration::WebhookIntegration;
-use crate::websocket::{SocketId, WebSocketRef};
+use crate::websocket::{SocketId, UserInfo, WebSocketRef};
 use crate::{
     error::{Error, Result}, // Ensure this is crate::error::Result
     utils,
@@ -32,6 +32,7 @@ use tokio::io::WriteHalf; // Required for WebSocketWrite
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
+use crate::watchlist::WatchlistManager;
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -42,6 +43,7 @@ pub struct ConnectionHandler {
     pub(crate) webhook_integration: Option<Arc<WebhookIntegration>>,
     pub(crate) http_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     pub(crate) client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
+    pub(crate) watchlist_manager: Arc<WatchlistManager>,
 }
 
 impl ConnectionHandler {
@@ -63,6 +65,7 @@ impl ConnectionHandler {
             webhook_integration,
             http_rate_limiter,
             client_event_limiters: Arc::new(DashMap::new()),
+            watchlist_manager: Arc::new(WatchlistManager::new()),
         }
     }
 
@@ -1073,12 +1076,14 @@ impl ConnectionHandler {
         data: PusherMessage,
         app_config: &App,
     ) -> Result<()> {
+        // Check if user authentication is enabled for this app
         if !app_config.enable_user_authentication.unwrap_or(false) {
-            // Default to false if None
             return Err(Error::AuthError(
                 "User authentication is disabled for this app".into(),
             ));
         }
+
+        // Extract user_data and auth from the signin message
         let message_data_val = data
             .data
             .ok_or_else(|| Error::AuthError("Missing data in signin message".into()))?;
@@ -1110,9 +1115,28 @@ impl ConnectionHandler {
             (extract_field("user_data")?, extract_field("auth")?)
         };
 
+        // Parse user data JSON
         let user_info_val: Value = serde_json::from_str(user_data_str)
             .map_err(|e| Error::AuthError(format!("Invalid user_data JSON: {}", e)))?;
 
+        // Extract user ID (required)
+        let user_id = user_info_val
+            .get("id")
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| Error::AuthError("Missing 'id' field in user_data".into()))?
+            .to_string();
+
+        // Extract watchlist (optional)
+        let watchlist = user_info_val
+            .get("watchlist")
+            .and_then(|w| w.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<String>>()
+            });
+
+        // Validate authentication signature
         let auth_validator = AuthValidator::new(self.app_manager.clone());
         let is_valid_auth = auth_validator
             .validate_channel_auth(socket_id.clone(), &app_config.key, user_data_str, auth_str)
@@ -1124,24 +1148,37 @@ impl ConnectionHandler {
             ));
         }
 
+        // Get connection and update user state
         let mut connection_manager_locked = self.connection_manager.lock().await;
-
         let connection_arc = connection_manager_locked
             .get_connection(socket_id, &app_config.id)
             .await
             .ok_or_else(|| Error::ConnectionNotFound)?;
 
-        // Temporarily take the WebSocketWrite half to re-add the socket
-        // This is a bit complex; ideally, the adapter would handle user association without needing to re-add.
+        // Cancel authentication timeout on successful signin
+        {
+            let mut conn_locked = connection_arc.lock().await;
+            if let Some(handle) = conn_locked.state.auth_timeout_handle.take() {
+                handle.abort();
+            }
+
+            // Update connection state with user information
+            conn_locked.state.user_id = Some(user_id.clone());
+            conn_locked.state.user_info = Some(UserInfo {
+                id: user_id.clone(),
+                watchlist: watchlist.clone(),
+                info: Some(user_info_val.clone()),
+            });
+            conn_locked.state.user = Some(user_info_val.clone());
+        }
+
+        // Re-add socket to connection manager to update user associations
         let temp_socket_tx = {
             let mut conn_locked = connection_arc.lock().await;
-            conn_locked.state.user = Some(user_info_val.clone());
-            conn_locked.socket.take() // Take ownership of the Option<WebSocketWrite>
+            conn_locked.socket.take()
         };
 
         if let Some(socket_tx_val) = temp_socket_tx {
-            // Re-add the socket to the manager, which might re-initialize its send loop.
-            // This ensures the user state is associated correctly if the adapter's add_socket logic handles it.
             connection_manager_locked
                 .add_socket(
                     socket_id.clone(),
@@ -1149,13 +1186,12 @@ impl ConnectionHandler {
                     app_config.id.as_str(),
                     &self.app_manager,
                 )
-                .await?; // Propagate error if re-adding fails
+                .await?;
         } else {
-            // This should not happen if the connection is live.
             error!(
-                "Socket write half was None during signin for socket {}",
-                socket_id
-            );
+            "Socket write half was None during signin for socket {}",
+            socket_id
+        );
             return Err(Error::InternalError(
                 "Socket state inconsistent during signin".into(),
             ));
@@ -1166,19 +1202,111 @@ impl ConnectionHandler {
             .add_user(connection_arc.clone())
             .await?;
 
+        drop(connection_manager_locked); // Release the lock before watchlist operations
+
+        // Handle watchlist functionality if enabled
+        let mut watchlist_events_for_user = Vec::new();
+        let mut watchers_to_notify = Vec::new();
+
+        if app_config.enable_watchlist_events.unwrap_or(false) && watchlist.is_some() {
+            info!(
+            "Processing watchlist for user {} with {} watched users",
+            user_id,
+            watchlist.as_ref().unwrap().len()
+        );
+
+            // Add user to watchlist manager and get initial status events
+            let events = self
+                .watchlist_manager
+                .add_user_with_watchlist(
+                    &app_config.id,
+                    &user_id,
+                    socket_id.clone(),
+                    watchlist.clone(),
+                )
+                .await?;
+
+            watchlist_events_for_user = events;
+
+            // Get all watchers who should be notified that this user came online
+            watchers_to_notify = self
+                .get_watchers_for_user(&app_config.id, &user_id)
+                .await?;
+
+            info!(
+            "User {} signin: sending {} watchlist events to user, notifying {} watchers",
+            user_id,
+            watchlist_events_for_user.len(),
+            watchers_to_notify.len()
+        );
+        }
+
+        // Send signin success message
         let success_message_val = PusherMessage {
             channel: None,
             name: None,
             event: Some("pusher:signin_success".into()),
-            data: Some(MessageData::Json(user_info_val)),
+            data: Some(MessageData::Json(json!({
+            "user_data": user_data_str,
+            "auth": auth_str
+        }))),
         };
 
-        connection_manager_locked
+        self.connection_manager
+            .lock()
+            .await
             .send_message(&app_config.id, socket_id, success_message_val)
             .await?;
 
+        // Send watchlist events to the newly signed-in user
+        for event in watchlist_events_for_user {
+            if let Err(e) = self
+                .connection_manager
+                .lock()
+                .await
+                .send_message(&app_config.id, socket_id, event)
+                .await
+            {
+                warn!(
+                "Failed to send watchlist event to user {}: {}",
+                user_id, e
+            );
+            }
+        }
+
+        // Notify watchers that this user came online
+        if !watchers_to_notify.is_empty() {
+            let online_event = PusherMessage::watchlist_online_event(vec![user_id.clone()]);
+            if let Some(ref metrics) = self.metrics {
+                let metrics_locked = metrics.lock().await;
+                let online_event_json = serde_json::to_value(&online_event)
+                    .map_err(|e| Error::InternalError(format!("Failed to serialize event: {}", e)))?;
+                let size = utils::data_to_bytes_flexible(vec![online_event_json]);
+                metrics_locked.mark_ws_message_sent(&app_config.id, size);
+            }
+            for watcher_socket_id in watchers_to_notify {
+                if let Err(e) = self
+                    .connection_manager
+                    .lock()
+                    .await
+                    .send_message(&app_config.id, &watcher_socket_id, online_event.clone())
+                    .await
+                {
+                    warn!(
+                    "Failed to send online notification to watcher {}: {}",
+                    watcher_socket_id, e
+                );
+                }
+            }
+        }
+
+        // Update metrics if available
+
+
+        info!("User {} successfully signed in on socket {}", user_id, socket_id);
         Ok(())
     }
+
 
     async fn handle_client_event(
         &self,
@@ -1365,31 +1493,31 @@ impl ConnectionHandler {
 
     pub async fn handle_disconnect(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         info!("Handling disconnect for socket: {}", socket_id);
+
+        // Clean up client event rate limiter
         if self.client_event_limiters.remove(socket_id).is_some() {
-            info!(
-                "Removed client event rate limiter for socket: {}",
-                socket_id
-            );
+            info!("Removed client event rate limiter for socket: {}", socket_id);
         }
 
+        // Get app configuration
         let app_config = match self.app_manager.find_by_id(app_id).await? {
             Some(app) => app,
             None => {
                 error!("App not found during disconnect: {}", app_id);
+                // Attempt cleanup even if app is gone
                 let mut conn_manager = self.connection_manager.lock().await;
-                // Attempt cleanup even if app is gone, as adapter might hold stale socket info.
-                if let Some(conn_to_cleanup) = conn_manager.get_connection(socket_id, app_id).await
-                {
+                if let Some(conn_to_cleanup) = conn_manager.get_connection(socket_id, app_id).await {
                     conn_manager
                         .cleanup_connection(app_id, WebSocketRef(conn_to_cleanup))
                         .await;
                 }
                 conn_manager.remove_connection(socket_id, app_id).await.ok();
-                return Err(Error::ApplicationNotFound); // Use a more specific error
+                return Err(Error::ApplicationNotFound);
             }
         };
 
-        let (subscribed_channels_set, user_id_of_disconnected_socket) = {
+        // Extract connection state before cleanup
+        let (subscribed_channels_set, user_id_of_disconnected_socket, user_watchlist) = {
             let mut connection_manager_locked = self.connection_manager.lock().await;
             match connection_manager_locked
                 .get_connection(socket_id, app_id)
@@ -1397,40 +1525,52 @@ impl ConnectionHandler {
             {
                 Some(conn_val_arc) => {
                     let conn_locked = conn_val_arc.lock().await;
+
+                    // Cancel any active timeouts
+                    if let Some(handle) = &conn_locked.state.activity_timeout_handle {
+                        handle.abort();
+                    }
+                    if let Some(handle) = &conn_locked.state.auth_timeout_handle {
+                        handle.abort();
+                    }
+
+                    let watchlist = conn_locked
+                        .state
+                        .user_info
+                        .as_ref()
+                        .and_then(|ui| ui.watchlist.clone());
+
                     (
                         conn_locked.state.subscribed_channels.clone(),
                         conn_locked.state.user_id.clone(),
+                        watchlist,
                     )
                 }
                 None => {
                     warn!(
-                        "No connection found for socket during disconnect: {}. Already cleaned up?",
-                        socket_id
-                    );
-                    // If no connection state, still attempt adapter-level removal.
-                    connection_manager_locked
-                        .remove_connection(socket_id, app_id)
-                        .await
-                        .ok();
+                    "No connection found for socket during disconnect: {}. Already cleaned up?",
+                    socket_id
+                );
                     return Ok(());
                 }
             }
         };
 
+        // Process channel unsubscriptions
         if !subscribed_channels_set.is_empty() {
             info!(
-                "Processing {} channels for disconnecting socket: {}",
-                subscribed_channels_set.len(),
-                socket_id
-            );
+            "Processing {} channels for disconnecting socket: {}",
+            subscribed_channels_set.len(),
+            socket_id
+        );
 
             let channel_manager_locked = self.channel_manager.write().await;
 
             for channel_str in &subscribed_channels_set {
                 info!(
-                    "Processing channel {} for disconnect of socket {}",
-                    channel_str, socket_id
-                );
+                "Processing channel {} for disconnect of socket {}",
+                channel_str, socket_id
+            );
 
                 match channel_manager_locked
                     .unsubscribe(
@@ -1449,6 +1589,7 @@ impl ConnectionHandler {
                             .get_channel_socket_count(app_id, channel_str)
                             .await;
 
+                        // Handle presence channel member removal
                         if channel_str.starts_with("presence-") {
                             if let Some(ref disconnected_user_id) = user_id_of_disconnected_socket {
                                 let has_other_connections = self
@@ -1460,13 +1601,12 @@ impl ConnectionHandler {
                                     .await?;
 
                                 if !has_other_connections {
-                                    if let Some(webhook_integration_instance) =
-                                        &self.webhook_integration
-                                    {
+                                    // Send member_removed webhook
+                                    if let Some(webhook_integration_instance) = &self.webhook_integration {
                                         info!(
-                                            "Sending member_removed webhook for user {} from channel {}",
-                                            disconnected_user_id, channel_str
-                                        );
+                                        "Sending member_removed webhook for user {} from channel {}",
+                                        disconnected_user_id, channel_str
+                                    );
                                         webhook_integration_instance
                                             .send_member_removed(
                                                 &app_config,
@@ -1476,6 +1616,8 @@ impl ConnectionHandler {
                                             .await
                                             .ok();
                                     }
+
+                                    // Send member_removed event to channel
                                     let member_removed_msg = PusherMessage::member_removed(
                                         channel_str.to_string(),
                                         disconnected_user_id.clone(),
@@ -1493,28 +1635,31 @@ impl ConnectionHandler {
                                         .ok();
                                 }
                             }
-                        } else if let Some(webhook_integration_instance) = &self.webhook_integration
-                        {
-                            info!(
+                        } else {
+                            // Send subscription count webhook for non-presence channels
+                            if let Some(webhook_integration_instance) = &self.webhook_integration {
+                                info!(
                                 "Sending subscription_count webhook for channel {} (count: {}) after disconnect processing",
                                 channel_str, current_sub_count_after_cm_unsubscribe
                             );
-                            webhook_integration_instance
-                                .send_subscription_count_changed(
-                                    &app_config,
-                                    channel_str,
-                                    current_sub_count_after_cm_unsubscribe,
-                                )
-                                .await
-                                .ok();
+                                webhook_integration_instance
+                                    .send_subscription_count_changed(
+                                        &app_config,
+                                        channel_str,
+                                        current_sub_count_after_cm_unsubscribe,
+                                    )
+                                    .await
+                                    .ok();
+                            }
                         }
 
+                        // Send channel_vacated webhook if no subscribers left
                         if current_sub_count_after_cm_unsubscribe == 0 {
                             if let Some(webhook_integration_instance) = &self.webhook_integration {
                                 info!(
-                                    "Sending channel_vacated webhook for channel {}",
-                                    channel_str
-                                );
+                                "Sending channel_vacated webhook for channel {}",
+                                channel_str
+                            );
                                 webhook_integration_instance
                                     .send_channel_vacated(&app_config, channel_str)
                                     .await
@@ -1524,21 +1669,82 @@ impl ConnectionHandler {
                     }
                     Err(e) => {
                         error!(
-                            "Error unsubscribing socket {} from channel {} during disconnect: {}",
-                            socket_id, channel_str, e
-                        );
+                        "Error unsubscribing socket {} from channel {} during disconnect: {}",
+                        socket_id, channel_str, e
+                    );
                     }
                 }
             }
         }
 
-        // Final removal from the adapter's main connection tracking.
-        // This also handles the case where the socket might not have been subscribed to any channels.
+        // Handle watchlist offline events
+        let mut watchers_to_notify = Vec::new();
+        let mut offline_notification_count = 0;
+
+        if let Some(ref user_id_str) = user_id_of_disconnected_socket {
+            if app_config.enable_watchlist_events.unwrap_or(false) && user_watchlist.is_some() {
+                info!(
+                "Processing watchlist disconnect for user {} on socket {}",
+                user_id_str, socket_id
+            );
+
+                // Remove user connection from watchlist manager
+                let offline_events = self
+                    .watchlist_manager
+                    .remove_user_connection(app_id, user_id_str, socket_id)
+                    .await?;
+
+                // Get watchers who should be notified if user went offline
+                if !offline_events.is_empty() {
+                    watchers_to_notify = self
+                        .get_watchers_for_user(app_id, user_id_str)
+                        .await?;
+
+                    info!(
+                    "User {} went offline: notifying {} watchers",
+                    user_id_str,
+                    watchers_to_notify.len()
+                );
+
+                    // Send offline events to watchers
+                    for event in offline_events {
+                        let event_json = serde_json::to_string(&event).unwrap_or_default();
+                        let message_size = event_json.len();
+
+                        for watcher_socket_id in &watchers_to_notify {
+                            match self
+                                .connection_manager
+                                .lock()
+                                .await
+                                .send_message(app_id, watcher_socket_id, event.clone())
+                                .await
+                            {
+                                Ok(_) => {
+                                    offline_notification_count += 1;
+                                    // Track the sent message in metrics
+                                    if let Some(ref metrics) = self.metrics {
+                                        let metrics_locked = metrics.lock().await;
+                                        metrics_locked.mark_ws_message_sent(app_id, message_size);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                    "Failed to send offline notification to watcher {}: {}",
+                                    watcher_socket_id, e
+                                );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Final cleanup from connection manager
         {
             let mut connection_manager_locked = self.connection_manager.lock().await;
-            // cleanup_connection should be called to ensure all adapter-specific resources are freed.
-            // It might be redundant if the connection was already removed due to a fatal error,
-            // but it should be safe to call.
+
+            // Cleanup connection resources
             if let Some(conn_to_cleanup) = connection_manager_locked
                 .get_connection(socket_id, app_id)
                 .await
@@ -1547,19 +1753,37 @@ impl ConnectionHandler {
                     .cleanup_connection(app_id, WebSocketRef(conn_to_cleanup))
                     .await;
             }
-            // Ensure it's removed from the primary map if cleanup_connection doesn't do that.
+
+            // Remove connection from primary tracking
             connection_manager_locked
                 .remove_connection(socket_id, app_id)
                 .await
                 .ok();
         }
 
-        info!(
-            "Successfully processed full disconnect for socket: {}",
-            socket_id
+        // Update metrics using available methods
+        if let Some(ref metrics) = self.metrics {
+            let metrics_locked = metrics.lock().await;
+
+            // Mark disconnection (this should exist based on your original code)
+            metrics_locked.mark_disconnection(app_id, socket_id);
+
+            // If we sent offline notifications, those are already tracked above
+            // We could also track other disconnect-related metrics if needed
+            info!(
+            "Disconnect metrics updated for socket {} (sent {} offline notifications)",
+            socket_id, offline_notification_count
         );
+        }
+
+        info!(
+        "Successfully processed full disconnect for socket: {} (user: {:?}, notified {} watchers)",
+        socket_id, user_id_of_disconnected_socket, watchers_to_notify.len()
+    );
         Ok(())
     }
+
+
 
     // --- HTTP API related methods (not directly part of WebSocket connection handling loop) ---
 
@@ -1656,5 +1880,30 @@ impl ConnectionHandler {
                 channel
             );
         }
+    }
+
+    async fn get_watchers_for_user(&self, app_id: &str, user_id: &str) -> Result<Vec<SocketId>> {
+        let mut watcher_sockets = Vec::new();
+
+        // Get all users who are watching this user
+        let watchers = self
+            .watchlist_manager
+            .get_watchers_for_user(app_id, user_id)
+            .await?;
+
+        // For each watcher, get their active socket IDs
+        let mut connection_manager_locked = self.connection_manager.lock().await;
+        for watcher_user_id in watchers {
+            let user_sockets = connection_manager_locked
+                .get_user_sockets(&watcher_user_id, app_id)
+                .await?;
+
+            for socket_ref in user_sockets {
+                let socket_guard = socket_ref.0.lock().await;
+                watcher_sockets.push(socket_guard.state.socket_id.clone());
+            }
+        }
+
+        Ok(watcher_sockets)
     }
 }

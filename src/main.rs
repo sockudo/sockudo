@@ -16,6 +16,7 @@ pub mod utils;
 mod webhook;
 mod websocket;
 mod ws_handler;
+mod watchlist;
 
 use std::fs::File;
 use std::io::Read;

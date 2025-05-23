@@ -382,7 +382,8 @@ impl MySQLAppManager {
             max_event_name_length,
             max_event_payload_in_kb,
             max_event_batch_size,
-            enable_user_authentication
+            enable_user_authentication,
+            enable_watchlist_events
         FROM `{}`"#,
             self.config.table_name // Ensure config.table_name is safely handled
         );
@@ -564,6 +565,7 @@ impl AppRow {
             max_event_batch_size: self.max_event_batch_size,
             enable_user_authentication: self.enable_user_authentication,
             webhooks: None, // Assuming webhooks are not part of the App struct
+            enable_watchlist_events: None, // Assuming this is not part of the App struct
         }
     }
 }
@@ -651,6 +653,7 @@ mod tests {
             max_event_batch_size: Some(10),
             enable_user_authentication: Some(true),
             webhooks: None,
+            enable_watchlist_events: None,
         }
     }
 

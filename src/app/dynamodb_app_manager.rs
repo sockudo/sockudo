@@ -135,6 +135,7 @@ impl DynamoDbAppManager {
                     None
                 },
                 webhooks: None,
+                enable_watchlist_events: None,
             })
         } else {
             Err(Error::InternalError(

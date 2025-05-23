@@ -71,6 +71,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
+use std::time::Instant;
+use dashmap::DashMap;
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SocketId(pub String);
@@ -114,15 +117,27 @@ impl SocketId {
         format!("{}.{}", random_number(min, max), random_number(min, max))
     }
 }
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserInfo {
+    pub id: String,
+    pub watchlist: Option<Vec<String>>, // Add watchlist field
+    pub info: Option<Value>, // Additional user info
+}
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectionState {
     pub socket_id: SocketId,
     pub app: Option<App>,
     pub subscribed_channels: HashSet<String>,
     pub user_id: Option<String>,
+    pub user_info: Option<UserInfo>, // Enhanced user info with watchlist
     pub last_ping: String,
     pub presence: Option<HashMap<String, PresenceMemberInfo>>,
     pub user: Option<Value>,
+    #[serde(skip)] // Don't serialize task handles
+    pub activity_timeout_handle: Option<JoinHandle<()>>, // Add this
+    #[serde(skip)]
+    pub auth_timeout_handle: Option<JoinHandle<()>>, // Add this
 }
 
 impl ConnectionState {
@@ -135,6 +150,9 @@ impl ConnectionState {
             last_ping: String::new(),
             presence: None,
             user: None,
+            user_info: None, // Initialize with None
+            activity_timeout_handle: None,
+            auth_timeout_handle: None,
         }
     }
 
