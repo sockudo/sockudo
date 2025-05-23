@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub mod manager;
 pub mod memory_queue_manager;
 pub mod redis_queue_manager;
+pub mod redis_cluster_queue_manager; // Add this line
 pub mod sqs_queue_manager;
 
 impl JobData where JobData: Serialize + DeserializeOwned {}

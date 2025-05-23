@@ -237,34 +237,75 @@ impl SockudoServer {
             queue_redis_url_arg = Some(&owned_default_queue_redis_url);
         }
 
+        // In the SockudoServer::new method, replace the queue manager initialization:
+
         let queue_manager_opt = if config.queue.driver != QueueDriver::None {
+            let (queue_redis_url_or_nodes, queue_prefix, queue_concurrency) = match config.queue.driver {
+                QueueDriver::Redis => {
+                    let owned_default_queue_redis_url: String;
+                    let queue_redis_url_arg: Option<&str>;
+
+                    if let Some(url_override) = config.queue.redis.url_override.as_ref() {
+                        queue_redis_url_arg = Some(url_override.as_str());
+                    } else {
+                        owned_default_queue_redis_url = format!(
+                            "redis://{}:{}",
+                            config.database.redis.host, config.database.redis.port
+                        );
+                        queue_redis_url_arg = Some(&owned_default_queue_redis_url);
+                    }
+
+                    (
+                        queue_redis_url_arg.map(|s| s.to_string()),
+                        config.queue.redis.prefix.as_deref().unwrap_or("sockudo_queue:"),
+                        config.queue.redis.concurrency as usize,
+                    )
+                }
+                QueueDriver::RedisCluster => {
+                    // For Redis cluster, use nodes from configuration
+                    let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
+                        // Fallback to default cluster nodes
+                        vec![
+                            "redis://127.0.0.1:7000".to_string(),
+                            "redis://127.0.0.1:7001".to_string(),
+                            "redis://127.0.0.1:7002".to_string(),
+                        ]
+                    } else {
+                        config.queue.redis_cluster.nodes.clone()
+                    };
+
+                    // Join nodes with comma for the factory
+                    let nodes_str = cluster_nodes.join(",");
+
+                    (
+                        Some(nodes_str),
+                        config.queue.redis_cluster.prefix.as_deref().unwrap_or("sockudo_queue:"),
+                        config.queue.redis_cluster.concurrency as usize,
+                    )
+                }
+                _ => (None, "sockudo_queue:", 5), // Default fallback
+            };
+
             match QueueManagerFactory::create(
                 config.queue.driver.as_ref(),
-                queue_redis_url_arg,
-                Some(
-                    config
-                        .queue
-                        .redis
-                        .prefix
-                        .as_deref()
-                        .unwrap_or("sockudo_queue:"),
-                ),
-                Some(config.queue.redis.concurrency as usize),
+                queue_redis_url_or_nodes.as_deref(),
+                Some(queue_prefix),
+                Some(queue_concurrency),
             )
-            .await
+                .await
             {
                 Ok(queue_driver_impl) => {
                     info!(
-                        "Queue manager initialized with driver: {:?}",
-                        config.queue.driver
-                    );
+                "Queue manager initialized with driver: {:?}",
+                config.queue.driver
+            );
                     Some(Arc::new(QueueManager::new(queue_driver_impl)))
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to initialize queue manager with driver '{:?}': {}, queues will be disabled",
-                        config.queue.driver, e
-                    );
+                "Failed to initialize queue manager with driver '{:?}': {}, queues will be disabled",
+                config.queue.driver, e
+            );
                     None
                 }
             }
@@ -272,6 +313,7 @@ impl SockudoServer {
             info!("Queue driver set to None, queue manager will be disabled.");
             None
         };
+
 
         let webhook_redis_url = format!(
             "redis://{}:{}",
@@ -1058,8 +1100,30 @@ async fn main() -> Result<()> {
     if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
         config.cache.driver = parse_driver_enum(driver_str, config.cache.driver, "Cache");
     }
+    // Add after the existing queue driver env var parsing:
     if let Ok(driver_str) = std::env::var("QUEUE_DRIVER") {
         config.queue.driver = parse_driver_enum(driver_str, config.queue.driver, "Queue");
+    }
+
+    // Add Redis Cluster specific environment variables
+    if let Ok(nodes_str) = std::env::var("REDIS_CLUSTER_NODES") {
+        config.queue.redis_cluster.nodes = nodes_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+    }
+    if let Ok(concurrency_str) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
+        if let Ok(concurrency) = concurrency_str.parse() {
+            config.queue.redis_cluster.concurrency = concurrency;
+        } else {
+            eprintln!(
+                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{}'",
+                concurrency_str
+            );
+        }
+    }
+    if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
+        config.queue.redis_cluster.prefix = Some(prefix);
     }
     if let Ok(driver_str) = std::env::var("METRICS_DRIVER") {
         config.metrics.driver = parse_driver_enum(driver_str, config.metrics.driver, "Metrics");

@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::queue::QueueInterface;
 use crate::queue::memory_queue_manager::MemoryQueueManager;
 use crate::queue::redis_queue_manager::RedisQueueManager;
+use crate::queue::redis_cluster_queue_manager::RedisClusterQueueManager; // Add this import
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
 use tracing::info;
@@ -20,7 +21,7 @@ impl QueueManagerFactory {
         redis_url: Option<&str>,
         prefix: Option<&str>,
         concurrency: Option<usize>,
-    ) -> crate::error::Result<Box<dyn QueueInterface>> {
+    ) -> Result<Box<dyn QueueInterface>> {
         // Return Result to propagate errors
         match driver {
             "redis" => {
@@ -39,6 +40,27 @@ impl QueueManagerFactory {
                 // Note: Redis workers are started via process_queue, not here.
                 Ok(Box::new(manager))
             }
+            "redis-cluster" => {
+                // For cluster, redis_url should contain comma-separated cluster nodes
+                let nodes_str = redis_url.unwrap_or("redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002");
+                let cluster_nodes: Vec<String> = nodes_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect();
+                let prefix_str = prefix.unwrap_or("sockudo");
+                let concurrency_val = concurrency.unwrap_or(5);
+
+                info!(
+                    "{}",
+                    format!(
+                        "Creating Redis Cluster queue manager (Nodes: {:?}, Prefix: {}, Concurrency: {})",
+                        cluster_nodes, prefix_str, concurrency_val
+                    )
+                );
+
+                let manager = RedisClusterQueueManager::new(cluster_nodes, prefix_str, concurrency_val).await?;
+                Ok(Box::new(manager))
+            }
             "memory" | _ => {
                 // Default to memory queue manager
                 info!("{}", "Creating Memory queue manager".to_string());
@@ -51,9 +73,11 @@ impl QueueManagerFactory {
         }
     }
 }
+
 pub struct QueueManager {
     driver: Box<dyn QueueInterface>,
 }
+
 impl QueueManager {
     /// Creates a new QueueManager wrapping a specific driver implementation.
     pub fn new(driver: Box<dyn QueueInterface>) -> Self {

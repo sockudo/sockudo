@@ -110,6 +110,8 @@ impl std::str::FromStr for CacheDriver {
 pub enum QueueDriver {
     Memory,
     Redis,
+    #[serde(rename = "redis-cluster")] // Add this variant
+    RedisCluster,
     Sqs,
     None,
 }
@@ -126,6 +128,7 @@ impl std::str::FromStr for QueueDriver {
         match s.to_lowercase().as_str() {
             "memory" => Ok(QueueDriver::Memory),
             "redis" => Ok(QueueDriver::Redis),
+            "redis-cluster" => Ok(QueueDriver::RedisCluster), // Add this case
             "sqs" => Ok(QueueDriver::Sqs),
             "none" => Ok(QueueDriver::None),
             _ => Err(format!("Unknown queue driver: {}", s)),
@@ -139,8 +142,31 @@ impl AsRef<str> for QueueDriver {
         match self {
             QueueDriver::Memory => "memory",
             QueueDriver::Redis => "redis",
+            QueueDriver::RedisCluster => "redis-cluster", // Add this case
             QueueDriver::Sqs => "sqs",
             QueueDriver::None => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RedisClusterQueueConfig {
+    pub concurrency: u32,
+    pub prefix: Option<String>,
+    pub nodes: Vec<String>, // Cluster node URLs
+    pub request_timeout_ms: u64,
+}
+
+impl Default for RedisClusterQueueConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: 5,
+            prefix: Some("sockudo_queue:".to_string()),
+            nodes: vec![
+                "redis://127.0.0.1:6379".to_string(),
+            ],
+            request_timeout_ms: 5000,
         }
     }
 }
@@ -457,7 +483,8 @@ pub struct PresenceConfig {
 #[serde(default)]
 pub struct QueueConfig {
     pub driver: QueueDriver,
-    pub redis: RedisQueueConfig, // This will use the updated RedisQueueConfig
+    pub redis: RedisQueueConfig,
+    pub redis_cluster: RedisClusterQueueConfig, // Add this field
     pub sqs: SqsQueueConfig,
 }
 
