@@ -1,23 +1,22 @@
+use std::sync::LazyLock;
+
 use crate::app::config::App;
 use crate::error::Error;
-use lazy_static::lazy_static; // Added for one-time regex compilation
 use regex::Regex;
 
 // Compile regexes once using lazy_static
-lazy_static! {
-    static ref CACHING_CHANNEL_REGEXES: Vec<Regex> = {
-        let patterns = vec![
-            "cache-*",
-            "private-cache-*",
-            "private-encrypted-cache-*",
-            "presence-cache-*",
-        ];
-        patterns
-            .into_iter()
-            .map(|pattern| Regex::new(&pattern.replace("*", ".*")).unwrap())
-            .collect()
-    };
-}
+static CACHING_CHANNEL_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    let patterns = vec![
+        "cache-*",
+        "private-cache-*",
+        "private-encrypted-cache-*",
+        "presence-cache-*",
+    ];
+    patterns
+        .into_iter()
+        .map(|pattern| Regex::new(&pattern.replace("*", ".*")).unwrap())
+        .collect()
+});
 
 pub fn is_cache_channel(channel: &str) -> bool {
     // Use the pre-compiled regexes
