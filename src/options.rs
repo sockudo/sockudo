@@ -163,9 +163,7 @@ impl Default for RedisClusterQueueConfig {
         Self {
             concurrency: 5,
             prefix: Some("sockudo_queue:".to_string()),
-            nodes: vec![
-                "redis://127.0.0.1:6379".to_string(),
-            ],
+            nodes: vec!["redis://127.0.0.1:6379".to_string()],
             request_timeout_ms: 5000,
         }
     }

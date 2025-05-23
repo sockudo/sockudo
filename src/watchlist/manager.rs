@@ -4,7 +4,7 @@ use crate::error::Result;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::SocketId;
 use dashmap::DashMap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -93,9 +93,9 @@ impl WatchlistManager {
             if was_offline {
                 if let Some(user_entry) = app_watchlists.get(user_id) {
                     for watcher_id in &user_entry.watchers {
-                        events_to_send.push(PusherMessage::watchlist_online_event(
-                            vec![user_id.to_string()],
-                        ));
+                        events_to_send.push(PusherMessage::watchlist_online_event(vec![
+                            user_id.to_string(),
+                        ]));
                     }
                 }
             }
@@ -106,7 +106,8 @@ impl WatchlistManager {
 
             for watched_user_id in &watching_set {
                 if app_online_users.contains_key(watched_user_id)
-                    && !app_online_users.get(watched_user_id).unwrap().is_empty() {
+                    && !app_online_users.get(watched_user_id).unwrap().is_empty()
+                {
                     online_watched_users.push(watched_user_id.clone());
                 } else {
                     offline_watched_users.push(watched_user_id.clone());
@@ -117,7 +118,9 @@ impl WatchlistManager {
                 events_to_send.push(PusherMessage::watchlist_online_event(online_watched_users));
             }
             if !offline_watched_users.is_empty() {
-                events_to_send.push(PusherMessage::watchlist_offline_event(offline_watched_users));
+                events_to_send.push(PusherMessage::watchlist_offline_event(
+                    offline_watched_users,
+                ));
             }
         }
 
@@ -143,9 +146,9 @@ impl WatchlistManager {
                     if let Some(app_watchlists) = self.watchlists.get(app_id) {
                         if let Some(user_entry) = app_watchlists.get(user_id) {
                             for watcher_id in &user_entry.watchers {
-                                events_to_send.push(PusherMessage::watchlist_offline_event(
-                                    vec![user_id.to_string()],
-                                ));
+                                events_to_send.push(PusherMessage::watchlist_offline_event(vec![
+                                    user_id.to_string(),
+                                ]));
                             }
                         }
                     }
@@ -170,7 +173,8 @@ impl WatchlistManager {
                 if let Some(app_online_users) = self.online_users.get(app_id) {
                     for watched_user_id in &user_entry.watching {
                         if app_online_users.contains_key(watched_user_id)
-                            && !app_online_users.get(watched_user_id).unwrap().is_empty() {
+                            && !app_online_users.get(watched_user_id).unwrap().is_empty()
+                        {
                             online_users.push(watched_user_id.clone());
                         } else {
                             offline_users.push(watched_user_id.clone());

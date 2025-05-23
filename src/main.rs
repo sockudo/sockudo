@@ -13,10 +13,10 @@ mod queue;
 mod rate_limiter;
 mod token;
 pub mod utils;
+mod watchlist;
 mod webhook;
 mod websocket;
 mod ws_handler;
-mod watchlist;
 
 use std::fs::File;
 use std::io::Read;
@@ -87,6 +87,7 @@ use crate::cache::memory_cache_manager::MemoryCacheManager; // Import for fallba
 // MetricsInterface trait
 use crate::metrics::MetricsInterface;
 use crate::middleware::pusher_api_auth_middleware;
+use crate::webhook::types::Webhook;
 use crate::websocket::WebSocketRef;
 
 /// Server state containing all managers
@@ -241,51 +242,62 @@ impl SockudoServer {
         // In the SockudoServer::new method, replace the queue manager initialization:
 
         let queue_manager_opt = if config.queue.driver != QueueDriver::None {
-            let (queue_redis_url_or_nodes, queue_prefix, queue_concurrency) = match config.queue.driver {
-                QueueDriver::Redis => {
-                    let owned_default_queue_redis_url: String;
-                    let queue_redis_url_arg: Option<&str>;
+            let (queue_redis_url_or_nodes, queue_prefix, queue_concurrency) =
+                match config.queue.driver {
+                    QueueDriver::Redis => {
+                        let owned_default_queue_redis_url: String;
+                        let queue_redis_url_arg: Option<&str>;
 
-                    if let Some(url_override) = config.queue.redis.url_override.as_ref() {
-                        queue_redis_url_arg = Some(url_override.as_str());
-                    } else {
-                        owned_default_queue_redis_url = format!(
-                            "redis://{}:{}",
-                            config.database.redis.host, config.database.redis.port
-                        );
-                        queue_redis_url_arg = Some(&owned_default_queue_redis_url);
+                        if let Some(url_override) = config.queue.redis.url_override.as_ref() {
+                            queue_redis_url_arg = Some(url_override.as_str());
+                        } else {
+                            owned_default_queue_redis_url = format!(
+                                "redis://{}:{}",
+                                config.database.redis.host, config.database.redis.port
+                            );
+                            queue_redis_url_arg = Some(&owned_default_queue_redis_url);
+                        }
+
+                        (
+                            queue_redis_url_arg.map(|s| s.to_string()),
+                            config
+                                .queue
+                                .redis
+                                .prefix
+                                .as_deref()
+                                .unwrap_or("sockudo_queue:"),
+                            config.queue.redis.concurrency as usize,
+                        )
                     }
+                    QueueDriver::RedisCluster => {
+                        // For Redis cluster, use nodes from configuration
+                        let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
+                            // Fallback to default cluster nodes
+                            vec![
+                                "redis://127.0.0.1:7000".to_string(),
+                                "redis://127.0.0.1:7001".to_string(),
+                                "redis://127.0.0.1:7002".to_string(),
+                            ]
+                        } else {
+                            config.queue.redis_cluster.nodes.clone()
+                        };
 
-                    (
-                        queue_redis_url_arg.map(|s| s.to_string()),
-                        config.queue.redis.prefix.as_deref().unwrap_or("sockudo_queue:"),
-                        config.queue.redis.concurrency as usize,
-                    )
-                }
-                QueueDriver::RedisCluster => {
-                    // For Redis cluster, use nodes from configuration
-                    let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
-                        // Fallback to default cluster nodes
-                        vec![
-                            "redis://127.0.0.1:7000".to_string(),
-                            "redis://127.0.0.1:7001".to_string(),
-                            "redis://127.0.0.1:7002".to_string(),
-                        ]
-                    } else {
-                        config.queue.redis_cluster.nodes.clone()
-                    };
+                        // Join nodes with comma for the factory
+                        let nodes_str = cluster_nodes.join(",");
 
-                    // Join nodes with comma for the factory
-                    let nodes_str = cluster_nodes.join(",");
-
-                    (
-                        Some(nodes_str),
-                        config.queue.redis_cluster.prefix.as_deref().unwrap_or("sockudo_queue:"),
-                        config.queue.redis_cluster.concurrency as usize,
-                    )
-                }
-                _ => (None, "sockudo_queue:", 5), // Default fallback
-            };
+                        (
+                            Some(nodes_str),
+                            config
+                                .queue
+                                .redis_cluster
+                                .prefix
+                                .as_deref()
+                                .unwrap_or("sockudo_queue:"),
+                            config.queue.redis_cluster.concurrency as usize,
+                        )
+                    }
+                    _ => (None, "sockudo_queue:", 5), // Default fallback
+                };
 
             match QueueManagerFactory::create(
                 config.queue.driver.as_ref(),
@@ -293,20 +305,20 @@ impl SockudoServer {
                 Some(queue_prefix),
                 Some(queue_concurrency),
             )
-                .await
+            .await
             {
                 Ok(queue_driver_impl) => {
                     info!(
-                "Queue manager initialized with driver: {:?}",
-                config.queue.driver
-            );
+                        "Queue manager initialized with driver: {:?}",
+                        config.queue.driver
+                    );
                     Some(Arc::new(QueueManager::new(queue_driver_impl)))
                 }
                 Err(e) => {
                     warn!(
-                "Failed to initialize queue manager with driver '{:?}': {}, queues will be disabled",
-                config.queue.driver, e
-            );
+                        "Failed to initialize queue manager with driver '{:?}': {}, queues will be disabled",
+                        config.queue.driver, e
+                    );
                     None
                 }
             }
@@ -314,7 +326,6 @@ impl SockudoServer {
             info!("Queue driver set to None, queue manager will be disabled.");
             None
         };
-
 
         let webhook_redis_url = format!(
             "redis://{}:{}",
@@ -495,25 +506,98 @@ impl SockudoServer {
             }
         } else {
             info!("No apps found in configuration, registering demo app");
-            let demo_app = App {
-                id: "demo-app".to_string(),
-                key: "demo-key".to_string(),
-                secret: "demo-secret".to_string(),
-                enable_client_messages: true,
-                enabled: true,
-                max_connections: 1000,
-                max_client_events_per_second: 100,
-                webhooks: Some(vec![crate::webhook::types::Webhook {
-                    url: Some("http://localhost:3000/pusher/webhooks".parse().unwrap()), // Example URL
-                    lambda_function: None,
-                    lambda: None, // Assuming this is an Option<LambdaConfig> or similar
-                    event_types: vec!["member_added".to_string(), "member_removed".to_string()],
-                    filter: None,  // Assuming Option<WebhookFilter>
-                    headers: None, // Assuming Option<HashMap<String, String>>
-                }]),
-                ..Default::default()
+            let default_app = App {
+                id: std::env::var("SOCKUDO_DEFAULT_APP_ID").unwrap_or("demo-app".to_string()),
+                key: std::env::var("SOCKUDO_DEFAULT_APP_KEY").unwrap_or("demo-key".to_string()),
+                secret: std::env::var("SOCKUDO_DEFAULT_APP_SECRET")
+                    .unwrap_or("demo-secret".to_string()),
+                enable_client_messages: std::env::var("SOCKUDO_ENABLE_CLIENT_MESSAGES")
+                    .unwrap_or("false".to_string())
+                    .parse()
+                    .unwrap_or(false),
+                enabled: std::env::var("SOCKUDO_DEFAULT_APP_ENABLED")
+                    .unwrap_or("true".to_string())
+                    .parse()
+                    .unwrap_or(true),
+                max_connections: std::env::var("SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS")
+                    .unwrap_or("100".to_string())
+                    .parse()
+                    .unwrap_or(100),
+                max_client_events_per_second: std::env::var(
+                    "SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND",
+                )
+                .unwrap_or("100".to_string())
+                .parse()
+                .unwrap_or(100),
+                max_read_requests_per_second: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_presence_members_per_channel: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_presence_member_size_in_kb: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_channel_name_length: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_event_channels_at_once: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_event_name_length: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_event_payload_in_kb: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_event_batch_size: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                enable_user_authentication: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION")
+                        .unwrap_or("false".to_string())
+                        .parse()
+                        .unwrap_or(false),
+                ),
+                webhooks: None,
+                max_backend_events_per_second: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                enable_watchlist_events: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS")
+                        .unwrap_or("false".to_string())
+                        .parse()
+                        .unwrap_or(false),
+                ),
             };
-            match self.state.app_manager.create_app(demo_app).await {
+            match self.state.app_manager.create_app(default_app).await {
                 Ok(_) => info!("Successfully registered demo app"),
                 Err(e) => warn!("Failed to register demo app: {}", e), // It might already exist from a previous run
             }
@@ -1108,10 +1192,8 @@ async fn main() -> Result<()> {
 
     // Add Redis Cluster specific environment variables
     if let Ok(nodes_str) = std::env::var("REDIS_CLUSTER_NODES") {
-        config.queue.redis_cluster.nodes = nodes_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .collect();
+        config.queue.redis_cluster.nodes =
+            nodes_str.split(',').map(|s| s.trim().to_string()).collect();
     }
     if let Ok(concurrency_str) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
         if let Ok(concurrency) = concurrency_str.parse() {

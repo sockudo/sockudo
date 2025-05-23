@@ -65,6 +65,7 @@ impl Eq for WebSocket {
 
 use crate::app::config::App;
 use crate::channel::PresenceMemberInfo;
+use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -72,7 +73,6 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Instant;
-use dashmap::DashMap;
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -122,7 +122,7 @@ impl SocketId {
 pub struct UserInfo {
     pub id: String,
     pub watchlist: Option<Vec<String>>, // Add watchlist field
-    pub info: Option<Value>, // Additional user info
+    pub info: Option<Value>,            // Additional user info
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectionState {

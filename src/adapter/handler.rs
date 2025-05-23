@@ -13,6 +13,7 @@ use crate::protocol::constants::{
 use crate::protocol::messages::{ErrorData, MessageData, PusherApiMessage, PusherMessage};
 use crate::rate_limiter::{RateLimiter, memory_limiter::MemoryRateLimiter};
 use crate::utils::{is_cache_channel, validate_channel_name};
+use crate::watchlist::WatchlistManager;
 use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::{SocketId, UserInfo, WebSocketRef};
 use crate::{
@@ -32,7 +33,6 @@ use tokio::io::WriteHalf; // Required for WebSocketWrite
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use crate::watchlist::WatchlistManager;
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -1189,9 +1189,9 @@ impl ConnectionHandler {
                 .await?;
         } else {
             error!(
-            "Socket write half was None during signin for socket {}",
-            socket_id
-        );
+                "Socket write half was None during signin for socket {}",
+                socket_id
+            );
             return Err(Error::InternalError(
                 "Socket state inconsistent during signin".into(),
             ));
@@ -1210,10 +1210,10 @@ impl ConnectionHandler {
 
         if app_config.enable_watchlist_events.unwrap_or(false) && watchlist.is_some() {
             info!(
-            "Processing watchlist for user {} with {} watched users",
-            user_id,
-            watchlist.as_ref().unwrap().len()
-        );
+                "Processing watchlist for user {} with {} watched users",
+                user_id,
+                watchlist.as_ref().unwrap().len()
+            );
 
             // Add user to watchlist manager and get initial status events
             let events = self
@@ -1229,16 +1229,14 @@ impl ConnectionHandler {
             watchlist_events_for_user = events;
 
             // Get all watchers who should be notified that this user came online
-            watchers_to_notify = self
-                .get_watchers_for_user(&app_config.id, &user_id)
-                .await?;
+            watchers_to_notify = self.get_watchers_for_user(&app_config.id, &user_id).await?;
 
             info!(
-            "User {} signin: sending {} watchlist events to user, notifying {} watchers",
-            user_id,
-            watchlist_events_for_user.len(),
-            watchers_to_notify.len()
-        );
+                "User {} signin: sending {} watchlist events to user, notifying {} watchers",
+                user_id,
+                watchlist_events_for_user.len(),
+                watchers_to_notify.len()
+            );
         }
 
         // Send signin success message
@@ -1247,9 +1245,9 @@ impl ConnectionHandler {
             name: None,
             event: Some("pusher:signin_success".into()),
             data: Some(MessageData::Json(json!({
-            "user_data": user_data_str,
-            "auth": auth_str
-        }))),
+                "user_data": user_data_str,
+                "auth": auth_str
+            }))),
         };
 
         self.connection_manager
@@ -1267,10 +1265,7 @@ impl ConnectionHandler {
                 .send_message(&app_config.id, socket_id, event)
                 .await
             {
-                warn!(
-                "Failed to send watchlist event to user {}: {}",
-                user_id, e
-            );
+                warn!("Failed to send watchlist event to user {}: {}", user_id, e);
             }
         }
 
@@ -1279,8 +1274,9 @@ impl ConnectionHandler {
             let online_event = PusherMessage::watchlist_online_event(vec![user_id.clone()]);
             if let Some(ref metrics) = self.metrics {
                 let metrics_locked = metrics.lock().await;
-                let online_event_json = serde_json::to_value(&online_event)
-                    .map_err(|e| Error::InternalError(format!("Failed to serialize event: {}", e)))?;
+                let online_event_json = serde_json::to_value(&online_event).map_err(|e| {
+                    Error::InternalError(format!("Failed to serialize event: {}", e))
+                })?;
                 let size = utils::data_to_bytes_flexible(vec![online_event_json]);
                 metrics_locked.mark_ws_message_sent(&app_config.id, size);
             }
@@ -1293,20 +1289,21 @@ impl ConnectionHandler {
                     .await
                 {
                     warn!(
-                    "Failed to send online notification to watcher {}: {}",
-                    watcher_socket_id, e
-                );
+                        "Failed to send online notification to watcher {}: {}",
+                        watcher_socket_id, e
+                    );
                 }
             }
         }
 
         // Update metrics if available
 
-
-        info!("User {} successfully signed in on socket {}", user_id, socket_id);
+        info!(
+            "User {} successfully signed in on socket {}",
+            user_id, socket_id
+        );
         Ok(())
     }
-
 
     async fn handle_client_event(
         &self,
@@ -1496,7 +1493,10 @@ impl ConnectionHandler {
 
         // Clean up client event rate limiter
         if self.client_event_limiters.remove(socket_id).is_some() {
-            info!("Removed client event rate limiter for socket: {}", socket_id);
+            info!(
+                "Removed client event rate limiter for socket: {}",
+                socket_id
+            );
         }
 
         // Get app configuration
@@ -1506,7 +1506,8 @@ impl ConnectionHandler {
                 error!("App not found during disconnect: {}", app_id);
                 // Attempt cleanup even if app is gone
                 let mut conn_manager = self.connection_manager.lock().await;
-                if let Some(conn_to_cleanup) = conn_manager.get_connection(socket_id, app_id).await {
+                if let Some(conn_to_cleanup) = conn_manager.get_connection(socket_id, app_id).await
+                {
                     conn_manager
                         .cleanup_connection(app_id, WebSocketRef(conn_to_cleanup))
                         .await;
@@ -1548,9 +1549,9 @@ impl ConnectionHandler {
                 }
                 None => {
                     warn!(
-                    "No connection found for socket during disconnect: {}. Already cleaned up?",
-                    socket_id
-                );
+                        "No connection found for socket during disconnect: {}. Already cleaned up?",
+                        socket_id
+                    );
                     return Ok(());
                 }
             }
@@ -1559,18 +1560,18 @@ impl ConnectionHandler {
         // Process channel unsubscriptions
         if !subscribed_channels_set.is_empty() {
             info!(
-            "Processing {} channels for disconnecting socket: {}",
-            subscribed_channels_set.len(),
-            socket_id
-        );
+                "Processing {} channels for disconnecting socket: {}",
+                subscribed_channels_set.len(),
+                socket_id
+            );
 
             let channel_manager_locked = self.channel_manager.write().await;
 
             for channel_str in &subscribed_channels_set {
                 info!(
-                "Processing channel {} for disconnect of socket {}",
-                channel_str, socket_id
-            );
+                    "Processing channel {} for disconnect of socket {}",
+                    channel_str, socket_id
+                );
 
                 match channel_manager_locked
                     .unsubscribe(
@@ -1602,11 +1603,13 @@ impl ConnectionHandler {
 
                                 if !has_other_connections {
                                     // Send member_removed webhook
-                                    if let Some(webhook_integration_instance) = &self.webhook_integration {
+                                    if let Some(webhook_integration_instance) =
+                                        &self.webhook_integration
+                                    {
                                         info!(
-                                        "Sending member_removed webhook for user {} from channel {}",
-                                        disconnected_user_id, channel_str
-                                    );
+                                            "Sending member_removed webhook for user {} from channel {}",
+                                            disconnected_user_id, channel_str
+                                        );
                                         webhook_integration_instance
                                             .send_member_removed(
                                                 &app_config,
@@ -1639,9 +1642,9 @@ impl ConnectionHandler {
                             // Send subscription count webhook for non-presence channels
                             if let Some(webhook_integration_instance) = &self.webhook_integration {
                                 info!(
-                                "Sending subscription_count webhook for channel {} (count: {}) after disconnect processing",
-                                channel_str, current_sub_count_after_cm_unsubscribe
-                            );
+                                    "Sending subscription_count webhook for channel {} (count: {}) after disconnect processing",
+                                    channel_str, current_sub_count_after_cm_unsubscribe
+                                );
                                 webhook_integration_instance
                                     .send_subscription_count_changed(
                                         &app_config,
@@ -1657,9 +1660,9 @@ impl ConnectionHandler {
                         if current_sub_count_after_cm_unsubscribe == 0 {
                             if let Some(webhook_integration_instance) = &self.webhook_integration {
                                 info!(
-                                "Sending channel_vacated webhook for channel {}",
-                                channel_str
-                            );
+                                    "Sending channel_vacated webhook for channel {}",
+                                    channel_str
+                                );
                                 webhook_integration_instance
                                     .send_channel_vacated(&app_config, channel_str)
                                     .await
@@ -1669,9 +1672,9 @@ impl ConnectionHandler {
                     }
                     Err(e) => {
                         error!(
-                        "Error unsubscribing socket {} from channel {} during disconnect: {}",
-                        socket_id, channel_str, e
-                    );
+                            "Error unsubscribing socket {} from channel {} during disconnect: {}",
+                            socket_id, channel_str, e
+                        );
                     }
                 }
             }
@@ -1684,9 +1687,9 @@ impl ConnectionHandler {
         if let Some(ref user_id_str) = user_id_of_disconnected_socket {
             if app_config.enable_watchlist_events.unwrap_or(false) && user_watchlist.is_some() {
                 info!(
-                "Processing watchlist disconnect for user {} on socket {}",
-                user_id_str, socket_id
-            );
+                    "Processing watchlist disconnect for user {} on socket {}",
+                    user_id_str, socket_id
+                );
 
                 // Remove user connection from watchlist manager
                 let offline_events = self
@@ -1696,15 +1699,13 @@ impl ConnectionHandler {
 
                 // Get watchers who should be notified if user went offline
                 if !offline_events.is_empty() {
-                    watchers_to_notify = self
-                        .get_watchers_for_user(app_id, user_id_str)
-                        .await?;
+                    watchers_to_notify = self.get_watchers_for_user(app_id, user_id_str).await?;
 
                     info!(
-                    "User {} went offline: notifying {} watchers",
-                    user_id_str,
-                    watchers_to_notify.len()
-                );
+                        "User {} went offline: notifying {} watchers",
+                        user_id_str,
+                        watchers_to_notify.len()
+                    );
 
                     // Send offline events to watchers
                     for event in offline_events {
@@ -1729,9 +1730,9 @@ impl ConnectionHandler {
                                 }
                                 Err(e) => {
                                     warn!(
-                                    "Failed to send offline notification to watcher {}: {}",
-                                    watcher_socket_id, e
-                                );
+                                        "Failed to send offline notification to watcher {}: {}",
+                                        watcher_socket_id, e
+                                    );
                                 }
                             }
                         }
@@ -1771,19 +1772,19 @@ impl ConnectionHandler {
             // If we sent offline notifications, those are already tracked above
             // We could also track other disconnect-related metrics if needed
             info!(
-            "Disconnect metrics updated for socket {} (sent {} offline notifications)",
-            socket_id, offline_notification_count
-        );
+                "Disconnect metrics updated for socket {} (sent {} offline notifications)",
+                socket_id, offline_notification_count
+            );
         }
 
         info!(
-        "Successfully processed full disconnect for socket: {} (user: {:?}, notified {} watchers)",
-        socket_id, user_id_of_disconnected_socket, watchers_to_notify.len()
-    );
+            "Successfully processed full disconnect for socket: {} (user: {:?}, notified {} watchers)",
+            socket_id,
+            user_id_of_disconnected_socket,
+            watchers_to_notify.len()
+        );
         Ok(())
     }
-
-
 
     // --- HTTP API related methods (not directly part of WebSocket connection handling loop) ---
 
