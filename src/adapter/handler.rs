@@ -29,10 +29,13 @@ use hyper_util::rt::TokioIo; // Required for UpgradeFut
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::WriteHalf; // Required for WebSocketWrite
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
+use tokio::time::sleep;
 use tracing::{error, info, warn};
+use crate::options::ServerOptions;
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -41,9 +44,9 @@ pub struct ConnectionHandler {
     pub(crate) cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     pub(crate) metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
     pub(crate) webhook_integration: Option<Arc<WebhookIntegration>>,
-    pub(crate) http_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     pub(crate) client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
     pub(crate) watchlist_manager: Arc<WatchlistManager>,
+    pub(crate) server_options: Arc<ServerOptions>,
 }
 
 impl ConnectionHandler {
@@ -54,7 +57,7 @@ impl ConnectionHandler {
         cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
-        http_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
+        server_options: ServerOptions
     ) -> Self {
         Self {
             app_manager,
@@ -63,9 +66,9 @@ impl ConnectionHandler {
             cache_manager,
             metrics,
             webhook_integration,
-            http_rate_limiter,
             client_event_limiters: Arc::new(DashMap::new()),
             watchlist_manager: Arc::new(WatchlistManager::new()),
+            server_options: Arc::new(server_options),
         }
     }
 
@@ -92,7 +95,7 @@ impl ConnectionHandler {
     async fn send_webhook_event<F, Fut>(&self, app: &App, webhook_fn: F) -> Result<()>
     where
         F: FnOnce(&WebhookIntegration, &App) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: Future<Output = Result<()>>,
     {
         if let Some(webhook_integration_instance) = &self.webhook_integration {
             if webhook_integration_instance.is_enabled() {
@@ -203,7 +206,7 @@ impl ConnectionHandler {
         let app_config_option = self.app_manager.find_by_key(&app_key).await;
 
         // Perform upgrade and handle early errors by sending Pusher error and closing.
-        let (mut socket_rx_frag, mut socket_tx_direct) = match fut.await {
+        let (socket_rx_frag, mut socket_tx_direct) = match fut.await {
             Ok(ws) => ws.split(tokio::io::split),
             Err(e) => {
                 // WebSocket upgrade itself failed. Not much we can send back.
@@ -383,6 +386,13 @@ impl ConnectionHandler {
             return Ok(()); // Error handled by closing the connection.
         }
 
+        self.set_activity_timeout(&app_config.id, &socket_id).await?;
+
+        if app_config.enable_user_authentication.unwrap_or(false) {
+            let auth_timeout = self.server_options.user_authentication_timeout;
+            self.set_user_authentication_timeout(&app_config.id, &socket_id, auth_timeout).await?;
+        }
+
         // Main message loop using the read half
         let mut fragment_collector = FragmentCollectorRead::new(socket_rx_frag);
 
@@ -462,6 +472,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: App,
     ) -> Result<()> {
+        self.update_activity_timeout(&app_config.id, socket_id).await?;
         let msg_payload = String::from_utf8(frame.payload.to_vec())
             .map_err(|e| Error::InvalidMessageFormat(format!("Invalid UTF-8: {}", e)))?;
 
@@ -779,7 +790,7 @@ impl ConnectionHandler {
         }
 
         let subscription_result = {
-            let mut channel_manager_locked = self.channel_manager.write().await;
+            let channel_manager_locked = self.channel_manager.write().await;
             channel_manager_locked
                 .subscribe(
                     socket_id.0.as_str(),
@@ -973,7 +984,7 @@ impl ConnectionHandler {
         };
 
         let _leave_response = {
-            let mut channel_manager_locked = self.channel_manager.write().await;
+            let channel_manager_locked = self.channel_manager.write().await;
             channel_manager_locked
                 .unsubscribe(
                     socket_id.0.as_str(),
@@ -1147,6 +1158,8 @@ impl ConnectionHandler {
                 "Connection not authorized for signin.".into(),
             ));
         }
+
+        self.clear_user_authentication_timeout(&app_config.id, socket_id).await?;
 
         // Get connection and update user state
         let mut connection_manager_locked = self.connection_manager.lock().await;
@@ -1490,6 +1503,8 @@ impl ConnectionHandler {
 
     pub async fn handle_disconnect(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         info!("Handling disconnect for socket: {}", socket_id);
+        self.clear_activity_timeout(app_id, socket_id).await?;
+        self.clear_user_authentication_timeout(app_id, socket_id).await?;
 
         // Clean up client event rate limiter
         if self.client_event_limiters.remove(socket_id).is_some() {
@@ -1786,63 +1801,6 @@ impl ConnectionHandler {
         Ok(())
     }
 
-    // --- HTTP API related methods (not directly part of WebSocket connection handling loop) ---
-
-    pub async fn channel(&self, app_id: &str, channel_name: &str) -> Value {
-        let socket_count_val = self
-            .connection_manager
-            .lock()
-            .await
-            .get_channel_socket_count(app_id, channel_name)
-            .await;
-        json!({
-            "occupied": socket_count_val > 0,
-            "subscription_count": socket_count_val,
-        })
-    }
-
-    pub async fn channels(&self, app_id: &str) -> Value {
-        let mut connection_manager_locked = self.connection_manager.lock().await;
-        let channels_map_result = connection_manager_locked
-            .get_channels_with_socket_count(app_id)
-            .await;
-        let mut response_val = json!({});
-
-        if let Ok(channels_map) = channels_map_result {
-            for channel_entry in channels_map.iter() {
-                let channel_name_str = channel_entry.key().clone();
-                let socket_count_val = *channel_entry.value();
-                response_val[channel_name_str] = json!({
-                    "occupied": socket_count_val > 0,
-                    "subscription_count": socket_count_val,
-                });
-            }
-        } else if let Err(e) = channels_map_result {
-            error!(
-                "Failed to get channels with socket count for app {}: {}",
-                app_id, e
-            );
-        }
-        response_val
-    }
-
-    pub async fn channel_users(
-        &self,
-        app_id: &str,
-        channel_name: &str,
-    ) -> Result<HashMap<String, PresenceMemberInfo>> {
-        let channel_type_val = ChannelType::from_name(channel_name);
-        if channel_type_val != ChannelType::Presence {
-            return Err(Error::ChannelError(
-                "Channel is not a presence channel".into(),
-            ));
-        }
-        let channel_manager_locked = self.channel_manager.read().await;
-        channel_manager_locked
-            .get_channel_members(app_id, channel_name)
-            .await
-    }
-
     pub async fn send_message(
         &self,
         app_id: &str,
@@ -1906,5 +1864,123 @@ impl ConnectionHandler {
         }
 
         Ok(watcher_sockets)
+    }
+
+    async fn set_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        let socket_id_clone = socket_id.clone();
+        let app_id_clone = app_id.to_string();
+        let connection_manager = self.connection_manager.clone();
+
+        // Cancel any existing timeout
+        self.clear_activity_timeout(app_id, socket_id).await?;
+
+        // Create new timeout task
+        let timeout_handle = tokio::spawn(async move {
+            // Wait for 120 seconds
+            sleep(Duration::from_secs(120)).await;
+
+            // After timeout, close the connection
+            let mut conn_manager = connection_manager.lock().await;
+            if let Some(conn) = conn_manager.get_connection(&socket_id_clone, &app_id_clone).await {
+                let mut ws = conn.lock().await;
+                // Send error before closing
+                let error_frame = Frame::text(Payload::from(
+                    serde_json::to_string(&PusherMessage::error(
+                        4201,
+                        "Pong reply not received in time".to_string(),
+                        None
+                    )).unwrap_or_default().into_bytes()
+                ));
+                let _ = ws.message_sender.send(error_frame);
+
+                // Close the connection
+                let _ = ws.close(4201, "Activity timeout".to_string()).await;
+            }
+        });
+
+        // Store the timeout handle
+        let mut conn_manager = self.connection_manager.lock().await;
+        if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
+            let mut ws = conn.lock().await;
+            ws.state.activity_timeout_handle = Some(timeout_handle);
+        }
+
+        Ok(())
+    }
+
+    /// Clear the activity timeout for a socket
+    async fn clear_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        let mut conn_manager = self.connection_manager.lock().await;
+        if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
+            let mut ws = conn.lock().await;
+            if let Some(handle) = ws.state.activity_timeout_handle.take() {
+                handle.abort();
+            }
+        }
+        Ok(())
+    }
+
+    /// Update activity timeout (called on any message received/sent)
+    async fn update_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        // Reset the timeout by clearing and setting a new one
+        self.set_activity_timeout(app_id, socket_id).await
+    }
+
+    /// Set user authentication timeout (for signin)
+    async fn set_user_authentication_timeout(&self, app_id: &str, socket_id: &SocketId, timeout_seconds: u64) -> Result<()> {
+        let socket_id_clone = socket_id.clone();
+        let app_id_clone = app_id.to_string();
+        let connection_manager = self.connection_manager.clone();
+
+        // Cancel any existing auth timeout
+        self.clear_user_authentication_timeout(app_id, socket_id).await?;
+
+        // Create new timeout task
+        let timeout_handle = tokio::spawn(async move {
+            // Wait for the specified timeout
+            sleep(Duration::from_secs(timeout_seconds)).await;
+
+            // After timeout, close the connection
+            let mut conn_manager = connection_manager.lock().await;
+            if let Some(conn) = conn_manager.get_connection(&socket_id_clone, &app_id_clone).await {
+                let mut ws = conn.lock().await;
+                // Check if user is still not authenticated
+                if ws.state.user.is_none() {
+                    // Send error before closing
+                    let error_frame = Frame::text(Payload::from(
+                        serde_json::to_string(&PusherMessage::error(
+                            4009,
+                            "Connection not authorized within timeout.".to_string(),
+                            None
+                        )).unwrap_or_default().into_bytes()
+                    ));
+                    let _ = ws.message_sender.send(error_frame);
+
+                    // Close the connection
+                    let _ = ws.close(4009, "Authentication timeout".to_string()).await;
+                }
+            }
+        });
+
+        // Store the timeout handle
+        let mut conn_manager = self.connection_manager.lock().await;
+        if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
+            let mut ws = conn.lock().await;
+            ws.state.auth_timeout_handle = Some(timeout_handle);
+        }
+
+        Ok(())
+    }
+
+    /// Clear the user authentication timeout
+    async fn clear_user_authentication_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        let mut conn_manager = self.connection_manager.lock().await;
+        if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
+            let mut ws = conn.lock().await;
+            if let Some(handle) = ws.state.auth_timeout_handle.take() {
+                handle.abort();
+            }
+        }
+        Ok(())
     }
 }

@@ -152,90 +152,6 @@ impl Namespace {
             .map(|conn_ref| conn_ref.value().clone())
     }
 
-    // Retrieves a connection Arc if it exists and is subscribed to the specified channel.
-    pub fn get_connection_from_channel(
-        &self,
-        channel: &str,
-        socket_id: &SocketId,
-    ) -> Option<Arc<Mutex<WebSocket>>> {
-        // Check if the channel exists and the socket is subscribed.
-        if let Some(channel_sockets) = self.channels.get(channel) {
-            if channel_sockets.contains(socket_id) {
-                // If subscribed, retrieve the connection.
-                return self.get_connection(socket_id);
-            }
-        }
-        None
-    }
-
-    // Sends a single PusherMessage to a specific SocketId.
-    pub async fn send_message(&self, socket_id: &SocketId, message: PusherMessage) -> Result<()> {
-        if let Some(connection) = self.get_connection(socket_id) {
-            // Serialize the message to JSON. Propagate serialization errors.
-            let message_payload = serde_json::to_string(&message)?;
-            // Create a WebSocket text frame.
-            let frame = Frame::text(Payload::from(message_payload.into_bytes()));
-
-            let conn_guard = connection.lock().await;
-            conn_guard.message_sender.send(frame).map_err(|e| {
-                warn!("Failed to queue message for {}: {}", socket_id, e);
-                Error::ConnectionError(format!(
-                    "Failed to send message: receiver closed for {}",
-                    socket_id
-                ))
-            })?;
-        } else {
-            warn!(
-                "Attempted to send message to non-existent socket: {}",
-                socket_id
-            );
-        }
-        Ok(())
-    }
-
-    // Broadcasts a PusherMessage to all sockets subscribed to a channel, optionally excluding one.
-    pub async fn broadcast(
-        &self,
-        channel: &str,
-        message: PusherMessage,
-        except: Option<&SocketId>,
-    ) -> Result<()> {
-        let payload = Arc::new(serde_json::to_string(&message)?);
-
-        if let Some(socket_ids_ref) = self.channels.get(channel) {
-            let socket_ids_snapshot = socket_ids_ref.clone(); // Clone the DashSet for iteration
-            drop(socket_ids_ref); // Drop the DashMap RefGuard
-
-            for socket_id_entry in socket_ids_snapshot.iter() {
-                // iter() on DashSet gives &SocketId
-                let current_socket_id = socket_id_entry.key(); // Get the SocketId itself
-                if except.is_none_or(|excluded_id| excluded_id != current_socket_id) {
-                    if let Some(connection) = self.get_connection(current_socket_id) {
-                        let current_payload_clone = payload.clone();
-                        let frame =
-                            Frame::text(Payload::from(current_payload_clone.as_bytes().to_vec()));
-
-                        let conn_guard = connection.lock().await;
-                        if let Err(e) = conn_guard.message_sender.send(frame) {
-                            warn!(
-                                "Failed to queue broadcast message for socket {:?}: {:?}",
-                                current_socket_id.0,
-                                e // Accessing the String inside SocketId for logging
-                            );
-                        }
-                        drop(conn_guard);
-                    }
-                }
-            }
-        } else {
-            info!(
-                "Broadcast attempted on non-existent or empty channel: {}",
-                channel
-            );
-        }
-        Ok(())
-    }
-
     // Retrieves presence information for all members in a presence channel.
     pub async fn get_channel_members(
         &self,
@@ -438,11 +354,6 @@ impl Namespace {
     pub fn get_channel(&self, channel: &str) -> Result<DashSet<SocketId>> {
         let channel_data = self.channels.entry(channel.to_string()).or_default();
         Ok(channel_data.value().clone())
-    }
-
-    // Read-only alternative to get_channel. Returns None if channel doesn't exist.
-    pub fn get_channel_subscribers(&self, channel: &str) -> Option<DashSet<SocketId>> {
-        self.channels.get(channel).map(|set_ref| set_ref.clone())
     }
 
     // Removes a channel entry entirely, regardless of subscribers.

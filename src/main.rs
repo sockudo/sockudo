@@ -392,7 +392,7 @@ impl SockudoServer {
             state.cache_manager.clone(),
             state.metrics.clone(),
             Some(webhook_integration), // Pass the (potentially disabled) webhook_integration
-            state.http_api_rate_limiter.clone(),
+            config.clone(),
         ));
 
         // Set metrics for adapters
