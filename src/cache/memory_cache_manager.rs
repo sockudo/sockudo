@@ -12,7 +12,7 @@ use std::time::Duration;
 #[derive(Clone)] // Add Clone if CacheManager instances need to be cloned (e.g., for Arc<Mutex<CacheManager>>)
 pub struct MemoryCacheManager {
     /// Moka async cache for storing entries. Key and Value are Strings.
-    cache: Cache<String, String>,
+    cache: Cache<String, String, ahash::RandomState>,
     /// Configuration options for this cache instance.
     options: MemoryCacheOptions,
     /// Prefix for all keys in this cache instance.
@@ -29,14 +29,13 @@ impl MemoryCacheManager {
 
         // Set default time_to_live if options.ttl > 0
         let cache = if options.ttl > 0 {
-            cache_builder
-                .time_to_live(Duration::from_secs(options.ttl))
-                .build()
+            cache_builder.time_to_live(Duration::from_secs(options.ttl))
         } else {
             // No default TTL, entries live forever unless Moka's default (which is no expiry)
             // or if a more complex per-entry expiry was implemented (not done here for simplicity).
-            cache_builder.build()
-        };
+            cache_builder
+        }
+        .build_with_hasher(ahash::RandomState::new());
 
         Self {
             cache,
