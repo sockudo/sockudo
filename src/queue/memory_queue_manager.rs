@@ -44,30 +44,29 @@ impl MemoryQueueManager {
                 // Iterate through queues. DashMap allows concurrent access.
                 for queue_entry in queues.iter() {
                     // Use iter() for read access
-                    let queue_name = queue_entry.key().clone();
+                    let queue_name = queue_entry.key();
 
                     // Get the processor for this queue
-                    if let Some(processor) = processors.get(&queue_name) {
+                    if let Some(processor) = processors.get(queue_name) {
                         // Get a mutable reference to the queue's Vec
-                        if let Some(mut jobs_vec) = queues.get_mut(&queue_name) {
+                        if let Some(mut jobs_vec) = queues.get_mut(queue_name) {
                             // Take all jobs from the queue for this tick
                             // Note: If a job processor is slow, it blocks others in the same queue during this tick.
                             // Consider spawning tasks per job for better isolation if needed.
-                            let jobs_to_process: Vec<JobData> = jobs_vec.drain(..).collect();
 
-                            if !jobs_to_process.is_empty() {
+                            if !jobs_vec.is_empty() {
                                 info!(
                                     "{}",
                                     format!(
                                         "Processing {} jobs from memory queue {}",
-                                        jobs_to_process.len(),
+                                        jobs_vec.len(),
                                         queue_name
                                     )
                                 );
                                 // Process each job sequentially within this tick
-                                for job in jobs_to_process {
+                                for job in jobs_vec.drain(..) {
                                     // Clone the Arc'd processor for the call
-                                    let processor_clone = processor.clone();
+                                    let processor_clone = Arc::clone(&processor);
                                     processor_clone(job).await.unwrap();
                                 }
                             }
