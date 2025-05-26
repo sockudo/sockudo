@@ -1057,16 +1057,9 @@ impl SockudoServer {
             let cleanup_futures = connections_to_cleanup
                 .into_iter()
                 .map(|(app_id, ws_raw_obj)| {
-                    let cm_arc = Arc::clone(&self.state.connection_manager); // Clone Arc for the task
                     async move {
-                        let mut guard = cm_arc.lock().await;
-                        // Construct WebSocketRef as in your original code
-                        guard.cleanup_connection(app_id.as_str(), ws_raw_obj).await;
-                        // TODO: Consider if cleanup_connection should return a Result to log/handle individual cleanup errors.
-                        // For example:
-                        // if let Err(e) = guard.cleanup_connection(...).await {
-                        //     warn!(%app_id, "Error cleaning up connection: {}", e);
-                        // }
+                        let mut ws = ws_raw_obj.0.lock().await; // Lock the WebSocketRef
+                        ws.close(4009, "You got disconnected by the app.".to_string()).await;
                     }
                 });
 

@@ -228,28 +228,12 @@ impl Namespace {
             "Connection closed by server".to_string(),
             None,
         );
-        let close_frame = Frame::close(1000, b"Closing"); // Standard close frame
-
-        let error_payload = match serde_json::to_string(&disconnect_message) {
-            Ok(payload) => Some(payload),
-            Err(e) => {
-                error!(
-                    "Failed to serialize disconnect message for {}: {}",
-                    socket_id, e
-                );
-                None
-            }
-        };
+        
 
         // Send frames using the message sender channel (best effort).
         {
-            let ws_guard = ws_ref.0.lock().await;
-            if let Some(payload_str) = error_payload {
-                // Renamed to avoid conflict
-                let error_frame = Frame::text(Payload::from(payload_str.into_bytes()));
-                // Ignore send errors during cleanup, as the connection might already be dead.
-                ws_guard.message_sender.send(error_frame);
-            }
+            let mut ws_guard = ws_ref.0.lock().await;
+            ws_guard.send_json(disconnect_message.clone()).await;
         } // Lock guard dropped here.
 
         // Remove socket from all channels it was subscribed to.

@@ -43,7 +43,7 @@ pub struct RedisClusterAdapter {
     pub horizontal: Arc<Mutex<HorizontalAdapter>>,
 
     /// Redis client
-    pub client: redis::cluster::ClusterClient,
+    pub client: ClusterClient,
 
     /// Redis connection for publishing (Multiplexed for efficiency)
     pub connection: redis::cluster_async::ClusterConnection,

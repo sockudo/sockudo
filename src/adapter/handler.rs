@@ -1891,10 +1891,10 @@ impl ConnectionHandler {
                         None
                     )).unwrap_or_default().into_bytes()
                 ));
-                let _ = ws.message_sender.send(error_frame);
+                ws.message_sender.send(error_frame);
 
                 // Close the connection
-                let _ = ws.close(4201, "Activity timeout".to_string()).await;
+                ws.close(4201, "Activity timeout".to_string()).await;
             }
         });
 

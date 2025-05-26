@@ -13,8 +13,10 @@ use hyper_util::rt::TokioIo;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
+use futures_util::future::join_all;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 #[derive(Clone)]
@@ -134,32 +136,96 @@ impl Adapter for LocalAdapter {
     ) -> Result<()> {
         info!("{}", format!("Sending message to channel: {}", channel));
         info!("{}", format!("Message: {:?}", message));
+
         if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
             let namespace = self.get_namespace(app_id).await.unwrap();
             let socket_refs = namespace.get_user_sockets(user_id).await?;
 
+            // Collect socket IDs that should receive the message
+            let mut target_sockets = Vec::new();
             for socket_ref in socket_refs {
-                // Get socket_id before sending
                 let socket_id = {
                     let ws = socket_ref.0.lock().await;
                     ws.state.socket_id.clone()
                 };
 
                 if except != Some(&socket_id) {
-                    self.send_message(app_id, &socket_id, message.clone())
-                        .await?;
+                    target_sockets.push(socket_id);
+                }
+            }
+
+            // Send messages in parallel
+            let send_tasks: Vec<JoinHandle<Result<()>>> = target_sockets
+                .into_iter()
+                .map(|socket_id| {
+                    let message_clone = message.clone();
+                    let app_id_clone = app_id.to_string();
+                    let mut self_clone = self.clone(); // Assuming your adapter implements Clone, or use Arc
+
+                    tokio::spawn(async move {
+                        self_clone.send_message(&app_id_clone, &socket_id, message_clone).await
+                    })
+                })
+                .collect();
+
+            // Wait for all sends to complete and collect results
+            let results = join_all(send_tasks).await;
+
+            // Handle any errors from the spawned tasks
+            for result in results {
+                match result {
+                    Ok(send_result) => {
+                        if let Err(e) = send_result {
+                            error!("Failed to send message to user socket: {}", e);
+                            // You can choose to continue or return the error based on your needs
+                        }
+                    }
+                    Err(join_error) => {
+                        error!("Task join error while sending to user: {}", join_error);
+                    }
                 }
             }
         } else {
             let namespace = self.get_namespace(app_id).await.unwrap();
             let sockets = namespace.get_channel_sockets(channel);
 
-            // Iterate through our DashMap of sockets
-            for socket_id in sockets.iter().map(|entry| entry.key().clone()) {
-                if except != Some(&socket_id) {
-                    self.send_message(app_id, &socket_id, message.clone())
-                        .await?;
+            // Collect socket IDs that should receive the message
+            let target_sockets: Vec<SocketId> = sockets
+                .iter()
+                .map(|entry| entry.key().clone())
+                .filter(|socket_id| except != Some(socket_id))
+                .collect();
+
+            // Send messages in parallel
+            let send_tasks: Vec<JoinHandle<Result<()>>> = target_sockets
+                .into_iter()
+                .map(|socket_id| {
+                    let message_clone = message.clone();
+                    let app_id_clone = app_id.to_string();
+                    let mut self_clone = self.clone(); // Assuming your adapter implements Clone, or use Arc
+
+                    tokio::spawn(async move {
+                        self_clone.send_message(&app_id_clone, &socket_id, message_clone).await
+                    })
+                })
+                .collect();
+
+            // Wait for all sends to complete and collect results
+            let results = join_all(send_tasks).await;
+
+            // Handle any errors from the spawned tasks
+            for result in results {
+                match result {
+                    Ok(send_result) => {
+                        if let Err(e) = send_result {
+                            error!("Failed to send message to channel socket: {}", e);
+                            // You can choose to continue or return the error based on your needs
+                        }
+                    }
+                    Err(join_error) => {
+                        error!("Task join error while sending to channel: {}", join_error);
+                    }
                 }
             }
         }
