@@ -6,6 +6,7 @@ use crate::app::manager::AppManager;
 use crate::cache::manager::CacheManager;
 use crate::channel::{ChannelManager, ChannelType, PresenceMemberInfo};
 use crate::metrics::MetricsInterface;
+use crate::options::ServerOptions;
 use crate::protocol::constants::{
     CHANNEL_NAME_MAX_LENGTH as DEFAULT_CHANNEL_NAME_MAX_LENGTH, CLIENT_EVENT_PREFIX,
     EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH,
@@ -35,7 +36,6 @@ use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
-use crate::options::ServerOptions;
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -57,7 +57,7 @@ impl ConnectionHandler {
         cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
-        server_options: ServerOptions
+        server_options: ServerOptions,
     ) -> Self {
         Self {
             app_manager,
@@ -386,11 +386,13 @@ impl ConnectionHandler {
             return Ok(()); // Error handled by closing the connection.
         }
 
-        self.set_activity_timeout(&app_config.id, &socket_id).await?;
+        self.set_activity_timeout(&app_config.id, &socket_id)
+            .await?;
 
         if app_config.enable_user_authentication.unwrap_or(false) {
             let auth_timeout = self.server_options.user_authentication_timeout;
-            self.set_user_authentication_timeout(&app_config.id, &socket_id, auth_timeout).await?;
+            self.set_user_authentication_timeout(&app_config.id, &socket_id, auth_timeout)
+                .await?;
         }
 
         // Main message loop using the read half
@@ -472,7 +474,8 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: App,
     ) -> Result<()> {
-        self.update_activity_timeout(&app_config.id, socket_id).await?;
+        self.update_activity_timeout(&app_config.id, socket_id)
+            .await?;
         let msg_payload = String::from_utf8(frame.payload.to_vec())
             .map_err(|e| Error::InvalidMessageFormat(format!("Invalid UTF-8: {}", e)))?;
 
@@ -1159,7 +1162,8 @@ impl ConnectionHandler {
             ));
         }
 
-        self.clear_user_authentication_timeout(&app_config.id, socket_id).await?;
+        self.clear_user_authentication_timeout(&app_config.id, socket_id)
+            .await?;
 
         // Get connection and update user state
         let mut connection_manager_locked = self.connection_manager.lock().await;
@@ -1504,7 +1508,8 @@ impl ConnectionHandler {
     pub async fn handle_disconnect(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         info!("Handling disconnect for socket: {}", socket_id);
         self.clear_activity_timeout(app_id, socket_id).await?;
-        self.clear_user_authentication_timeout(app_id, socket_id).await?;
+        self.clear_user_authentication_timeout(app_id, socket_id)
+            .await?;
 
         // Clean up client event rate limiter
         if self.client_event_limiters.remove(socket_id).is_some() {
@@ -1881,15 +1886,20 @@ impl ConnectionHandler {
 
             // After timeout, close the connection
             let mut conn_manager = connection_manager.lock().await;
-            if let Some(conn) = conn_manager.get_connection(&socket_id_clone, &app_id_clone).await {
+            if let Some(conn) = conn_manager
+                .get_connection(&socket_id_clone, &app_id_clone)
+                .await
+            {
                 let mut ws = conn.lock().await;
                 // Send error before closing
                 let error_frame = Frame::text(Payload::from(
                     serde_json::to_string(&PusherMessage::error(
                         4201,
                         "Pong reply not received in time".to_string(),
-                        None
-                    )).unwrap_or_default().into_bytes()
+                        None,
+                    ))
+                    .unwrap_or_default()
+                    .into_bytes(),
                 ));
                 ws.message_sender.send(error_frame);
 
@@ -1927,13 +1937,19 @@ impl ConnectionHandler {
     }
 
     /// Set user authentication timeout (for signin)
-    async fn set_user_authentication_timeout(&self, app_id: &str, socket_id: &SocketId, timeout_seconds: u64) -> Result<()> {
+    async fn set_user_authentication_timeout(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+        timeout_seconds: u64,
+    ) -> Result<()> {
         let socket_id_clone = socket_id.clone();
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
 
         // Cancel any existing auth timeout
-        self.clear_user_authentication_timeout(app_id, socket_id).await?;
+        self.clear_user_authentication_timeout(app_id, socket_id)
+            .await?;
 
         // Create new timeout task
         let timeout_handle = tokio::spawn(async move {
@@ -1942,7 +1958,10 @@ impl ConnectionHandler {
 
             // After timeout, close the connection
             let mut conn_manager = connection_manager.lock().await;
-            if let Some(conn) = conn_manager.get_connection(&socket_id_clone, &app_id_clone).await {
+            if let Some(conn) = conn_manager
+                .get_connection(&socket_id_clone, &app_id_clone)
+                .await
+            {
                 let mut ws = conn.lock().await;
                 // Check if user is still not authenticated
                 if ws.state.user.is_none() {
@@ -1951,8 +1970,10 @@ impl ConnectionHandler {
                         serde_json::to_string(&PusherMessage::error(
                             4009,
                             "Connection not authorized within timeout.".to_string(),
-                            None
-                        )).unwrap_or_default().into_bytes()
+                            None,
+                        ))
+                        .unwrap_or_default()
+                        .into_bytes(),
                     ));
                     let _ = ws.message_sender.send(error_frame);
 
@@ -1973,7 +1994,11 @@ impl ConnectionHandler {
     }
 
     /// Clear the user authentication timeout
-    async fn clear_user_authentication_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+    async fn clear_user_authentication_timeout(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+    ) -> Result<()> {
         let mut conn_manager = self.connection_manager.lock().await;
         if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
             let mut ws = conn.lock().await;

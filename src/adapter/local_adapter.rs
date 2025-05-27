@@ -8,12 +8,12 @@ use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocket, WebSocketRef};
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::{Frame, Payload, WebSocketWrite};
+use futures_util::future::join_all;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
-use futures_util::future::join_all;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -164,7 +164,9 @@ impl Adapter for LocalAdapter {
                     let mut self_clone = self.clone(); // Assuming your adapter implements Clone, or use Arc
 
                     tokio::spawn(async move {
-                        self_clone.send_message(&app_id_clone, &socket_id, message_clone).await
+                        self_clone
+                            .send_message(&app_id_clone, &socket_id, message_clone)
+                            .await
                     })
                 })
                 .collect();
@@ -206,7 +208,9 @@ impl Adapter for LocalAdapter {
                     let mut self_clone = self.clone(); // Assuming your adapter implements Clone, or use Arc
 
                     tokio::spawn(async move {
-                        self_clone.send_message(&app_id_clone, &socket_id, message_clone).await
+                        self_clone
+                            .send_message(&app_id_clone, &socket_id, message_clone)
+                            .await
                     })
                 })
                 .collect();
@@ -246,14 +250,9 @@ impl Adapter for LocalAdapter {
         &mut self,
         app_id: &str,
         channel: &str,
-    ) -> Result<DashMap<SocketId, Arc<Mutex<WebSocket>>>> {
+    ) -> Result<DashSet<SocketId>> {
         let namespace = self.get_or_create_namespace(app_id).await;
         Ok(namespace.get_channel_sockets(channel))
-    }
-
-    async fn get_channel(&mut self, app_id: &str, channel: &str) -> Result<DashSet<SocketId>> {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        namespace.get_channel(channel)
     }
 
     async fn remove_channel(&mut self, app_id: &str, channel: &str) {

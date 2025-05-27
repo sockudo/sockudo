@@ -8,6 +8,7 @@ use crate::error::Result;
 use crate::options::{AppManagerConfig, AppManagerDriver, DatabaseConfig}; // Import AppManagerDriver
 use std::sync::Arc;
 use tracing::{info, warn};
+use crate::app::pg_app_manager::PgSQLAppManager;
 
 pub struct AppManagerFactory;
 
@@ -57,6 +58,22 @@ impl AppManagerFactory {
                             "{}",
                             format!(
                                 "Failed to initialize DynamoDB app manager: {}, falling back to memory manager",
+                                e
+                            )
+                        );
+                        Ok(Arc::new(MemoryAppManager::new()))
+                    }
+                }
+            },
+            AppManagerDriver::PgSql => {
+                let pgsql_db_config = db_config.postgres.clone();
+                match PgSQLAppManager::new(pgsql_db_config).await {
+                    Ok(manager) => Ok(Arc::new(manager)),
+                    Err(e) => {
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize PgSQL app manager: {}, falling back to memory manager",
                                 e
                             )
                         );

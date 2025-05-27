@@ -69,7 +69,9 @@ impl ChannelManager {
             .is_in_channel(app_id, channel_name, &socket_id)
             .await?
         {
-            let channel = connection_manager.get_channel(app_id, channel_name).await?;
+            let channel = connection_manager
+                .get_channel_sockets(app_id, channel_name)
+                .await?;
 
             return Ok(JoinResponse {
                 success: true,
@@ -96,7 +98,7 @@ impl ChannelManager {
             .expect("TODO: panic message");
 
         let total_connections = connection_manager
-            .get_channel(app_id, channel_name)
+            .get_channel_sockets(app_id, channel_name)
             .await?
             .len();
 
@@ -144,7 +146,7 @@ impl ChannelManager {
             .await;
 
         let remaining_connections = connection_manager
-            .get_channel(app_id, channel_name)
+            .get_channel_sockets(app_id, channel_name)
             .await?
             .len();
 

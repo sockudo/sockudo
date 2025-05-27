@@ -63,6 +63,7 @@ pub enum AppManagerDriver {
     Memory,
     Mysql,
     Dynamodb,
+    PgSql, // Added PostgreSQL as a potential driver
 }
 impl std::str::FromStr for AppManagerDriver {
     type Err = String;

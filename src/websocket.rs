@@ -26,27 +26,32 @@ impl WebSocket {
 
     pub async fn close(&mut self, code: u16, reason: String) -> crate::error::Result<()> {
         if let Some(mut socket) = self.socket.take() {
-            let close_message = PusherMessage::error(
-                code,
-                reason.clone(),
-                None
-            );
+            let close_message = PusherMessage::error(code, reason.clone(), None);
             self.send_json(close_message).await?;
             let frame = Frame::close(code, &reason.into_bytes());
             socket.write_frame(frame).await?;
             Ok(())
         } else {
-            Err(Error::ConnectionError(format!("Failed to close connection: {}, reason: {}", code, reason)))
+            Err(Error::ConnectionError(format!(
+                "Failed to close connection: {}, reason: {}",
+                code, reason
+            )))
         }
     }
-    pub async fn send_json(&mut self, message: impl serde::Serialize + Deserialize<'_> + Debug) -> crate::error::Result<()> {
+    pub async fn send_json(
+        &mut self,
+        message: impl serde::Serialize + Deserialize<'_> + Debug,
+    ) -> crate::error::Result<()> {
         if let Some(socket) = &mut self.socket {
             let payload = Payload::from(serde_json::to_vec(&message)?);
             let frame = Frame::text(payload);
             socket.write_frame(frame).await?;
             Ok(())
         } else {
-            Err(Error::ConnectionError(format!("Failed to send message: {:?}", message)))
+            Err(Error::ConnectionError(format!(
+                "Failed to send message: {:?}",
+                message
+            )))
         }
     }
 }
@@ -71,6 +76,8 @@ impl Eq for WebSocket {
 
 use crate::app::config::App;
 use crate::channel::PresenceMemberInfo;
+use crate::error::Error;
+use crate::protocol::messages::PusherMessage;
 use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -81,8 +88,6 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
-use crate::error::Error;
-use crate::protocol::messages::PusherMessage;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SocketId(pub String);

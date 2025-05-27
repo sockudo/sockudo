@@ -62,8 +62,7 @@ pub trait Adapter: Send + Sync {
         &mut self,
         app_id: &str,
         channel: &str,
-    ) -> Result<DashMap<SocketId, Arc<Mutex<WebSocket>>>>;
-    async fn get_channel(&mut self, app_id: &str, channel: &str) -> Result<DashSet<SocketId>>;
+    ) -> Result<DashSet<SocketId>>;
     async fn remove_channel(&mut self, app_id: &str, channel: &str);
     async fn is_in_channel(
         &mut self,

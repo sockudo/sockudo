@@ -189,19 +189,21 @@ impl Namespace {
     }
 
     // Retrieves all connection Arcs for sockets subscribed to a specific channel.
-    pub fn get_channel_sockets(&self, channel: &str) -> DashMap<SocketId, Arc<Mutex<WebSocket>>> {
-        let sockets_in_channel = DashMap::new();
+    pub fn get_channel_sockets(&self, channel: &str) -> DashSet<SocketId> {
+        let sockets_in_channel = DashSet::<SocketId>::new();
         if let Some(channel_sockets_ref) = self.channels.get(channel) {
-            let channel_sockets_snapshot = channel_sockets_ref.clone();
-            drop(channel_sockets_ref);
-
-            for socket_id_entry in channel_sockets_snapshot.iter() {
-                let socket_id = socket_id_entry.key();
-                if let Some(connection) = self.get_connection(socket_id) {
-                    sockets_in_channel.insert(socket_id.clone(), connection);
-                }
+            // Clone the set of SocketIds for the channel.
+            let channel_sockets = channel_sockets_ref.value().clone();
+            for socket_id in channel_sockets.iter() {
+                sockets_in_channel.insert(socket_id.clone());
             }
+        } else {
+            info!(
+                "get_channel_sockets called on non-existent channel: {}",
+                channel
+            );
         }
+
         sockets_in_channel
     }
 
@@ -228,7 +230,6 @@ impl Namespace {
             "Connection closed by server".to_string(),
             None,
         );
-        
 
         // Send frames using the message sender channel (best effort).
         {

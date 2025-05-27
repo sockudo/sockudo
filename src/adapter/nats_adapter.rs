@@ -1,11 +1,11 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::adapter::adapter::Adapter;
 use crate::adapter::horizontal_adapter::{
-    BroadcastMessage, HorizontalAdapter, RequestBody, RequestType, ResponseBody,
+    BroadcastMessage, HorizontalAdapter, PendingRequest, RequestBody, RequestType, ResponseBody,
 };
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
@@ -20,6 +20,7 @@ use hyper_util::rt::TokioIo;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
@@ -33,86 +34,58 @@ const BROADCAST_SUFFIX: &str = ".broadcast";
 const REQUESTS_SUFFIX: &str = ".requests";
 const RESPONSES_SUFFIX: &str = ".responses";
 
-/// NATS adapter configuration
-
 /// NATS adapter for horizontal scaling
 pub struct NatsAdapter {
-    /// Base horizontal adapter (protected by a Mutex)
     pub horizontal: Arc<Mutex<HorizontalAdapter>>,
-
-    /// NATS client
     pub client: NatsClient,
-
-    /// Channel names
     pub prefix: String,
     pub broadcast_subject: String,
     pub request_subject: String,
     pub response_subject: String,
-
-    /// Configuration
     pub config: NatsAdapterConfig,
 }
 
 impl NatsAdapter {
-    /// Create a new NATS adapter
     pub async fn new(config: NatsAdapterConfig) -> Result<Self> {
-        // Create the base horizontal adapter
         let mut horizontal = HorizontalAdapter::new();
-        info!("{}", format!("NATS adapter config: {:?}", config)); // Borrows config temporarily
+        info!("NATS adapter config: {:?}", config);
 
-        // Set timeout
-        horizontal.requests_timeout = config.request_timeout_ms; // Accesses field (likely Copy)
+        horizontal.requests_timeout = config.request_timeout_ms;
 
-        // --- Build NATS Options ---
+        // Build NATS Options
         let mut nats_options = NatsOptions::new();
 
-        // Set credentials conditionally: Prefer user/password if both are provided
-        // Use as_deref() assuming the methods take &str.
-        // If they require owned String, use .cloned() instead.
-        if let (Some(username), Some(password)) =
-            (config.username.as_deref(), config.password.as_deref())
-        {
-            nats_options =
-                nats_options.user_and_password(username.to_string(), password.parse().unwrap());
+        // Set credentials conditionally
+        if let (Some(username), Some(password)) = (config.username.as_deref(), config.password.as_deref()) {
+            nats_options = nats_options.user_and_password(username.to_string(), password.to_string());
         } else if let Some(token) = config.token.as_deref() {
-            nats_options = nats_options.token(token.parse().unwrap());
-        };
-        // Note: If both user/pass and token are None, no credentials are set.
+            nats_options = nats_options.token(token.to_string());
+        }
 
         // Set connection timeout
-        nats_options =
-            nats_options.connection_timeout(Duration::from_millis(config.connection_timeout_ms));
+        nats_options = nats_options.connection_timeout(Duration::from_millis(config.connection_timeout_ms));
 
-        // --- Connect to NATS ---
-        // Assuming connect takes a reference to the servers string/list (e.g., &str or &[String])
+        // Connect to NATS
         let client = nats_options.connect(&config.servers).await.map_err(|e| {
-            // Borrow config.servers
             Error::InternalError(format!("Failed to connect to NATS: {}", e))
         })?;
 
         // Build subject names
-        // Clone the prefix string as it's used multiple times and stored
         let broadcast_subject = format!("{}{}", config.prefix, BROADCAST_SUFFIX);
         let request_subject = format!("{}{}", config.prefix, REQUESTS_SUFFIX);
         let response_subject = format!("{}{}", config.prefix, RESPONSES_SUFFIX);
 
-        // Create the adapter instance
-        let adapter = Self {
+        Ok(Self {
             horizontal: Arc::new(Mutex::new(horizontal)),
             client,
-            // Clone prefix again for storing in the struct
             prefix: config.prefix.clone(),
             broadcast_subject,
             request_subject,
             response_subject,
-            // Clone the entire config *once* here to store it
-            config: config.clone(),
-        };
-
-        Ok(adapter)
+            config,
+        })
     }
 
-    /// Create a new NATS adapter with simple configuration
     pub async fn with_servers(servers: Vec<String>) -> Result<Self> {
         let config = NatsAdapterConfig {
             servers,
@@ -121,35 +94,199 @@ impl NatsAdapter {
         Self::new(config).await
     }
 
-    /// Start listening for NATS messages
-    pub async fn start_listeners(&self) -> Result<()> {
-        // Lock needed only for starting cleanup task
-        {
-            let mut horizontal = self.horizontal.lock().await;
-            // Start cleanup task
-            horizontal.start_request_cleanup();
-        } // Lock released here
-
-        // Start NATS listeners
-        self.start_subject_listeners().await?;
-
+    pub async fn set_metrics(
+        &mut self,
+        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
+    ) -> Result<()> {
+        let mut horizontal = self.horizontal.lock().await;
+        horizontal.metrics = Some(metrics);
         Ok(())
     }
 
-    /// Start subject listeners for NATS
+    /// Enhanced send_request that properly integrates with HorizontalAdapter
+    pub async fn send_request(
+        &self,
+        app_id: &str,
+        request_type: RequestType,
+        channel: Option<&str>,
+        socket_id: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<ResponseBody> {
+        let node_count = self.get_node_count().await?;
+
+        // Create the request
+        let request_id = Uuid::new_v4().to_string();
+        let node_id = {
+            let horizontal = self.horizontal.lock().await;
+            horizontal.node_id.clone()
+        };
+
+        let request = RequestBody {
+            request_id: request_id.clone(),
+            node_id,
+            app_id: app_id.to_string(),
+            request_type: request_type.clone(),
+            channel: channel.map(String::from),
+            socket_id: socket_id.map(String::from),
+            user_id: user_id.map(String::from),
+        };
+
+        // Add to pending requests
+        {
+            let horizontal = self.horizontal.lock().await;
+            horizontal.pending_requests.insert(
+                request_id.clone(),
+                PendingRequest {
+                    start_time: Instant::now(),
+                    app_id: app_id.to_string(),
+                    responses: Vec::with_capacity(node_count.saturating_sub(1)),
+                },
+            );
+
+            if let Some(metrics_ref) = &horizontal.metrics {
+                let metrics = metrics_ref.lock().await;
+                metrics.mark_horizontal_adapter_request_sent(app_id);
+            }
+        }
+
+        // Broadcast the request via NATS
+        self.broadcast_request(&request).await?;
+
+        // Wait for responses
+        let timeout_duration = Duration::from_millis(self.config.request_timeout_ms);
+        let max_expected_responses = node_count.saturating_sub(1);
+
+        if max_expected_responses == 0 {
+            self.horizontal.lock().await.pending_requests.remove(&request_id);
+            return Ok(ResponseBody {
+                request_id,
+                node_id: request.node_id,
+                app_id: app_id.to_string(),
+                members: HashMap::new(),
+                socket_ids: Vec::new(),
+                sockets_count: 0,
+                channels_with_sockets_count: HashMap::new(),
+                exists: false,
+                channels: HashSet::new(),
+                members_count: 0,
+            });
+        }
+
+        // Wait for responses
+        let check_interval = Duration::from_millis(50);
+        let mut checks = 0;
+        let max_checks = (timeout_duration.as_millis() / check_interval.as_millis()) as usize;
+        let start = Instant::now();
+
+        let responses = loop {
+            if checks >= max_checks {
+                warn!(
+                    "Request {} timed out after {}ms",
+                    request_id,
+                    start.elapsed().as_millis()
+                );
+                break self
+                    .horizontal
+                    .lock()
+                    .await
+                    .pending_requests
+                    .remove(&request_id)
+                    .map(|(_, req)| req.responses)
+                    .unwrap_or_default();
+            }
+
+            if let Some(pending_request) = self.horizontal.lock().await.pending_requests.get(&request_id) {
+                if pending_request.responses.len() >= max_expected_responses {
+                    info!(
+                        "Request {} completed with {}/{} responses in {}ms",
+                        request_id,
+                        pending_request.responses.len(),
+                        max_expected_responses,
+                        start.elapsed().as_millis()
+                    );
+                    break self
+                        .horizontal
+                        .lock()
+                        .await
+                        .pending_requests
+                        .remove(&request_id)
+                        .map(|(_, req)| req.responses)
+                        .unwrap_or_default();
+                }
+            } else {
+                return Err(Error::Other(format!(
+                    "Request {} was removed unexpectedly",
+                    request_id
+                )));
+            }
+
+            tokio::time::sleep(check_interval).await;
+            checks += 1;
+        };
+
+        // Aggregate responses
+        let horizontal = self.horizontal.lock().await;
+        let combined_response = horizontal.aggregate_responses(
+            request_id,
+            request.node_id,
+            app_id.to_string(),
+            &request_type,
+            responses,
+        );
+
+        // Track metrics
+        if let Some(metrics_ref) = &horizontal.metrics {
+            let metrics = metrics_ref.lock().await;
+            let duration_ms = start.elapsed().as_millis() as f64;
+            metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
+
+            let resolved = combined_response.sockets_count > 0
+                || !combined_response.members.is_empty()
+                || combined_response.exists
+                || !combined_response.channels.is_empty()
+                || combined_response.members_count > 0
+                || !combined_response.channels_with_sockets_count.is_empty();
+
+            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
+        }
+
+        Ok(combined_response)
+    }
+
+    async fn broadcast_request(&self, request: &RequestBody) -> Result<()> {
+        let request_data = serde_json::to_vec(request)
+            .map_err(|e| Error::Other(format!("Failed to serialize request: {}", e)))?;
+
+        self.client
+            .publish(Subject::from(self.request_subject.clone()), request_data.into())
+            .await
+            .map_err(|e| Error::InternalError(format!("Failed to publish request: {}", e)))?;
+
+        info!("Broadcasted request {} via NATS", request.request_id);
+        Ok(())
+    }
+
+    pub async fn start_listeners(&self) -> Result<()> {
+        {
+            let mut horizontal = self.horizontal.lock().await;
+            horizontal.start_request_cleanup();
+        }
+
+        self.start_subject_listeners().await?;
+        Ok(())
+    }
+
     async fn start_subject_listeners(&self) -> Result<()> {
-        // Clone needed values for the async task
         let horizontal_arc = self.horizontal.clone();
         let nats_client = self.client.clone();
         let broadcast_subject = self.broadcast_subject.clone();
         let request_subject = self.request_subject.clone();
         let response_subject = self.response_subject.clone();
 
-        // Get node_id without holding the lock for the whole setup
         let node_id = {
             let horizontal_lock = horizontal_arc.lock().await;
             horizontal_lock.node_id.clone()
-        }; // Lock released
+        };
 
         // Subscribe to broadcast channel
         let mut broadcast_subscription = nats_client
@@ -176,11 +313,8 @@ impl NatsAdapter {
             })?;
 
         info!(
-            "{}",
-            format!(
-                "NATS adapter listening on subjects: {}, {}, {}",
-                broadcast_subject, request_subject, response_subject
-            )
+            "NATS adapter listening on subjects: {}, {}, {}",
+            broadcast_subject, request_subject, response_subject
         );
 
         // Spawn a task to handle broadcast messages
@@ -188,55 +322,30 @@ impl NatsAdapter {
         let broadcast_node_id = node_id.clone();
         tokio::spawn(async move {
             while let Some(msg) = broadcast_subscription.next().await {
-                match serde_json::from_slice::<BroadcastMessage>(&msg.payload) {
-                    Ok(broadcast) => {
-                        // Skip our own messages
-                        if broadcast.node_id == broadcast_node_id {
-                            continue;
-                        }
-                        // Process the broadcast
-                        match serde_json::from_str(&broadcast.message) {
-                            Ok(message) => {
-                                let except_id = broadcast
-                                    .except_socket_id
-                                    .as_ref()
-                                    .map(|id| SocketId(id.clone()));
-                                // Lock only when interacting with local adapter
-                                let mut horizontal_lock = broadcast_horizontal.lock().await;
-                                horizontal_lock
-                                    .local_adapter
-                                    .send(
-                                        &broadcast.channel,
-                                        message,
-                                        except_id.as_ref(),
-                                        &broadcast.app_id,
-                                    )
-                                    .await;
-                                // Lock released automatically when horizontal_lock goes out of scope
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "{}",
-                                    format!(
-                                        "Failed to deserialize broadcast inner message: {}, Payload: {}",
-                                        e, broadcast.message
-                                    )
-                                );
-                            }
-                        }
+                if let Ok(broadcast) = serde_json::from_slice::<BroadcastMessage>(&msg.payload) {
+                    if broadcast.node_id == broadcast_node_id {
+                        continue;
                     }
-                    Err(e) => {
-                        warn!(
-                            "{}",
-                            format!(
-                                "Failed to deserialize broadcast message: {}, Payload: {:?}",
-                                e, msg.payload
+
+                    if let Ok(message) = serde_json::from_str(&broadcast.message) {
+                        let except_id = broadcast
+                            .except_socket_id
+                            .as_ref()
+                            .map(|id| SocketId(id.clone()));
+
+                        let mut horizontal_lock = broadcast_horizontal.lock().await;
+                        let _ = horizontal_lock
+                            .local_adapter
+                            .send(
+                                &broadcast.channel,
+                                message,
+                                except_id.as_ref(),
+                                &broadcast.app_id,
                             )
-                        );
+                            .await;
                     }
                 }
             }
-            info!("{}", "NATS broadcast listener stream ended.");
         });
 
         // Spawn a task to handle request messages
@@ -246,51 +355,28 @@ impl NatsAdapter {
         let request_response_subject = response_subject.clone();
         tokio::spawn(async move {
             while let Some(msg) = request_subscription.next().await {
-                match serde_json::from_slice::<RequestBody>(&msg.payload) {
-                    Ok(request) => {
-                        // Skip our own requests
-                        if request.node_id == request_node_id {
-                            continue;
-                        }
-                        // Process the request (already designed to be async)
-                        // Lock only when processing
-                        let response = {
-                            // Scope for the lock
-                            let mut horizontal_lock = request_horizontal.lock().await;
-                            horizontal_lock.process_request(request).await
-                        }; // Lock released
-                        if let Ok(response) = response {
-                            // Send response
-                            match serde_json::to_vec(&response) {
-                                Ok(response_data) => {
-                                    if let Err(e) = request_client
-                                        .publish(
-                                            Subject::from(request_response_subject.clone()),
-                                            response_data.into(),
-                                        )
-                                        .await
-                                    {
-                                        error!("{}", format!("Failed to publish response: {}", e));
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("{}", format!("Failed to serialize response: {}", e));
-                                }
-                            }
-                        }
+                if let Ok(request) = serde_json::from_slice::<RequestBody>(&msg.payload) {
+                    if request.node_id == request_node_id {
+                        continue;
                     }
-                    Err(e) => {
-                        warn!(
-                            "{}",
-                            format!(
-                                "Failed to deserialize request message: {}, Payload: {:?}",
-                                e, msg.payload
-                            )
-                        );
+
+                    let response = {
+                        let mut horizontal_lock = request_horizontal.lock().await;
+                        horizontal_lock.process_request(request).await
+                    };
+
+                    if let Ok(response) = response {
+                        if let Ok(response_data) = serde_json::to_vec(&response) {
+                            let _ = request_client
+                                .publish(
+                                    Subject::from(request_response_subject.clone()),
+                                    response_data.into(),
+                                )
+                                .await;
+                        }
                     }
                 }
             }
-            info!("{}", "NATS request listener stream ended.");
         });
 
         // Spawn a task to handle response messages
@@ -298,95 +384,42 @@ impl NatsAdapter {
         let response_node_id = node_id.clone();
         tokio::spawn(async move {
             while let Some(msg) = response_subscription.next().await {
-                match serde_json::from_slice::<ResponseBody>(&msg.payload) {
-                    Ok(response) => {
-                        // Skip our own responses
-                        if response.node_id == response_node_id {
-                            continue;
-                        }
-                        // Process the response (already designed to be async)
-                        // Lock only when processing
-                        let horizontal_lock = response_horizontal.lock().await;
-                        horizontal_lock.process_response(response).await;
-                        // Lock released automatically
+                if let Ok(response) = serde_json::from_slice::<ResponseBody>(&msg.payload) {
+                    if response.node_id == response_node_id {
+                        continue;
                     }
-                    Err(e) => {
-                        warn!(
-                            "{}",
-                            format!(
-                                "Failed to deserialize response message: {}, Payload: {:?}",
-                                e, msg.payload
-                            )
-                        );
-                    }
+
+                    let horizontal_lock = response_horizontal.lock().await;
+                    let _ = horizontal_lock.process_response(response).await;
                 }
             }
-            info!("{}", "NATS response listener stream ended.");
         });
 
         Ok(())
     }
 
-    /// Get the number of nodes in the cluster
     pub async fn get_node_count(&self) -> Result<usize> {
         // If nodes_number is explicitly set, use that value
         if let Some(nodes) = self.config.nodes_number {
             return Ok(nodes as usize);
         }
 
-        // Otherwise estimate based on NATS server info
-        // NATS doesn't provide an easy way to count subscriptions like Redis PUBSUB NUMSUB
-        // So we'll either need to:
-        // 1. Maintain our own heartbeat system
-        // 2. Just return a fixed/configured value
+        // NATS doesn't provide an easy way to count subscriptions like Redis
         // For now, we'll assume at least 1 node (ourselves)
         Ok(1)
-    }
-
-    /// Set the metrics instance
-    pub async fn set_metrics(
-        &mut self,
-        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
-    ) -> Result<()> {
-        // Get lock on the horizontal adapter
-        let mut horizontal = self.horizontal.lock().await;
-
-        // Set the metrics in horizontal adapter
-        horizontal.metrics = Some(metrics);
-
-        Ok(())
-    }
-
-    /// Initialize with metrics
-    pub async fn init_with_metrics(
-        &mut self,
-        metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
-    ) -> Result<()> {
-        // First initialize the adapter
-        self.init().await;
-
-        // If metrics are provided, set them in the horizontal adapter
-        if let Some(metrics_instance) = metrics {
-            self.set_metrics(metrics_instance).await?;
-        }
-
-        Ok(())
     }
 }
 
 #[async_trait]
 impl Adapter for NatsAdapter {
     async fn init(&mut self) {
-        // Lock scope minimized
         {
             let mut horizontal = self.horizontal.lock().await;
             horizontal.local_adapter.init().await;
-        } // Lock released
+        }
 
-        // Start NATS listeners (already optimized)
         if let Err(e) = self.start_listeners().await {
-            error!("{}", format!("Failed to start NATS listeners: {}", e));
-            // Consider returning the error or handling it more gracefully
+            error!("Failed to start NATS listeners: {}", e);
         }
     }
 
@@ -435,7 +468,6 @@ impl Adapter for NatsAdapter {
         socket_id: &SocketId,
         message: PusherMessage,
     ) -> Result<()> {
-        // This likely sends directly to a specific socket, lock scope depends on local_adapter.
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
@@ -443,7 +475,6 @@ impl Adapter for NatsAdapter {
             .await
     }
 
-    /// Send to a channel (Optimized Lock Scope)
     async fn send(
         &mut self,
         channel: &str,
@@ -451,56 +482,31 @@ impl Adapter for NatsAdapter {
         except: Option<&SocketId>,
         app_id: &str,
     ) -> Result<()> {
-        // --- Optimization: Minimize lock duration ---
-        let (node_id, broadcast_data) = {
-            // 1. Lock and perform local send
+        // Send locally first
+        let (node_id, local_result) = {
             let mut horizontal_lock = self.horizontal.lock().await;
-            let local_send_result = horizontal_lock
+            let result = horizontal_lock
                 .local_adapter
                 .send(channel, message.clone(), except, app_id)
                 .await;
-
-            // Log local send errors if necessary, but continue to broadcast
-            if let Err(e) = local_send_result {
-                warn!(
-                    "{}",
-                    format!(
-                        "Local send failed during broadcast for channel {}: {}",
-                        channel, e
-                    )
-                );
-            }
-
-            // 2. Prepare data needed for broadcast *outside* the lock
-            (
-                horizontal_lock.node_id.clone(),
-                (
-                    app_id.to_string(),
-                    channel.to_string(),
-                    except.map(|id| id.0.clone()),
-                ),
-            )
-            // 3. Lock released here
+            (horizontal_lock.node_id.clone(), result)
         };
 
-        // 4. Serialize the original message (outside the lock)
+        if let Err(e) = local_result {
+            warn!("Local send failed for channel {}: {}", channel, e);
+        }
+
+        // Broadcast to other nodes
         let message_json = serde_json::to_string(&message)?;
-
-        // 5. Create broadcast message (outside the lock)
         let broadcast = BroadcastMessage {
-            node_id, // Cloned node_id
-            app_id: broadcast_data.0,
-            channel: broadcast_data.1,
-            message: message_json, // Serialized message
-            except_socket_id: broadcast_data.2,
+            node_id,
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            message: message_json,
+            except_socket_id: except.map(|id| id.0.clone()),
         };
 
-        info!("{}", format!("Broadcasting message: {:?}", broadcast));
-
-        // 6. Serialize broadcast message (outside the lock)
         let broadcast_data = serde_json::to_vec(&broadcast)?;
-
-        // 7. Publish to NATS (outside the lock)
         self.client
             .publish(
                 Subject::from(self.broadcast_subject.clone()),
@@ -517,86 +523,69 @@ impl Adapter for NatsAdapter {
         app_id: &str,
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>> {
-        let node_count = self.get_node_count().await?; // Fetch node count first
-        let mut horizontal = self.horizontal.lock().await; // Lock for local + remote request
+        // Get local members
+        let mut members = {
+            let mut horizontal = self.horizontal.lock().await;
+            horizontal
+                .local_adapter
+                .get_channel_members(app_id, channel)
+                .await?
+        };
 
-        // Get local members first
-        let mut members = horizontal
-            .local_adapter
-            .get_channel_members(app_id, channel)
+        // Get distributed members
+        let response = self
+            .send_request(
+                app_id,
+                RequestType::ChannelMembers,
+                Some(channel),
+                None,
+                None,
+            )
             .await?;
 
-        // Get distributed members if needed
-        if node_count > 1 {
-            // send_request handles its own locking/timing
-            let response_data = horizontal
-                .send_request(
-                    app_id,
-                    RequestType::ChannelMembers,
-                    Some(channel),
-                    None,
-                    None,
-                    node_count,
-                )
-                .await?;
-            members.extend(response_data.members);
-        }
-
+        members.extend(response.members);
         Ok(members)
     }
 
-    // Returns only local sockets - inherent limitation
     async fn get_channel_sockets(
         &mut self,
         app_id: &str,
         channel: &str,
-    ) -> Result<DashMap<SocketId, Arc<Mutex<WebSocket>>>> {
-        let mut horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
-            .get_channel_sockets(app_id, channel)
-            .await
-    }
+    ) -> Result<DashSet<SocketId>> {
+        let all_socket_ids = DashSet::new();
 
-    async fn get_channel(&mut self, app_id: &str, channel: &str) -> Result<DashSet<SocketId>> {
-        let node_count = self.get_node_count().await?;
-
-        // Get local channel data with minimal lock duration
-        let result = {
+        // Get local sockets
+        {
             let mut horizontal = self.horizontal.lock().await;
-            horizontal
+            let sockets = horizontal
                 .local_adapter
-                .get_channel(app_id, channel)
-                .await?
-        };
+                .get_channel_sockets(app_id, channel)
+                .await?;
 
-        // Get distributed channels with a separate lock acquisition
-        if node_count > 1 {
-            let response_data = {
-                let mut horizontal = self.horizontal.lock().await;
-                horizontal
-                    .send_request(
-                        app_id,
-                        RequestType::ChannelSockets,
-                        Some(channel),
-                        None,
-                        None,
-                        node_count,
-                    )
-                    .await?
-            };
-
-            // Add remote sockets to the result (outside of lock)
-            for socket_id in response_data.socket_ids {
-                result.insert(SocketId(socket_id));
+            for entry in sockets.iter() {
+                all_socket_ids.insert(entry.key().clone());
             }
         }
 
-        Ok(result)
+        // Get remote sockets
+        let response = self
+            .send_request(
+                app_id,
+                RequestType::ChannelSockets,
+                Some(channel),
+                None,
+                None,
+            )
+            .await?;
+
+        for socket_id in response.socket_ids {
+            all_socket_ids.insert(SocketId(socket_id));
+        }
+
+        Ok(all_socket_ids)
     }
 
     async fn remove_channel(&mut self, app_id: &str, channel: &str) {
-        // This seems purely local, lock scope depends on local_adapter
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
@@ -610,70 +599,33 @@ impl Adapter for NatsAdapter {
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
-        let node_count = self.get_node_count().await?; // Get count first
-        let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
-
-        warn!(
-            "{}",
-            format!(
-                "Checking if socket {} is in channel {} locally",
-                socket_id, channel
-            )
-        );
-        let local_result = horizontal
-            .local_adapter
-            .is_in_channel(app_id, channel, socket_id)
-            .await?;
+        // Check locally first
+        let local_result = {
+            let mut horizontal = self.horizontal.lock().await;
+            horizontal
+                .local_adapter
+                .is_in_channel(app_id, channel, socket_id)
+                .await?
+        };
 
         if local_result {
-            warn!(
-                "{}",
-                format!("Socket {} found in channel {} locally", socket_id, channel)
-            );
             return Ok(true);
         }
 
-        // If not found locally, check other nodes if they exist
-        if node_count > 1 {
-            warn!(
-                "{}",
-                format!(
-                    "Checking remote nodes for socket {} in channel {}",
-                    socket_id, channel
-                )
-            );
-            // send_request handles its own locking/timing
-            let response_data = horizontal
-                .send_request(
-                    app_id,
-                    RequestType::SocketExistsInChannel,
-                    Some(channel),
-                    Some(&socket_id.0),
-                    None,
-                    node_count,
-                )
-                .await?;
-            warn!(
-                "{}",
-                format!(
-                    "Remote check result for socket {} in channel {}: {}",
-                    socket_id, channel, response_data.exists
-                )
-            );
-            return Ok(response_data.exists);
-        }
-
-        warn!(
-            "{}",
-            format!(
-                "Socket {} NOT found in channel {} (only local node checked or remote check negative)",
-                socket_id, channel
+        // Check other nodes
+        let response = self
+            .send_request(
+                app_id,
+                RequestType::SocketExistsInChannel,
+                Some(channel),
+                Some(&socket_id.0),
+                None,
             )
-        );
-        Ok(false) // Not found locally, and no other nodes or not found remotely
+            .await?;
+
+        Ok(response.exists)
     }
 
-    // Returns only local sockets - inherent limitation
     async fn get_user_sockets(
         &mut self,
         user_id: &str,
@@ -695,36 +647,30 @@ impl Adapter for NatsAdapter {
     }
 
     async fn terminate_connection(&mut self, app_id: &str, user_id: &str) -> Result<()> {
-        let node_count = self.get_node_count().await?; // Get count first
-        let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
-
-        // First terminate locally
-        horizontal
-            .local_adapter
-            .terminate_connection(app_id, user_id)
-            .await?; // Propagate local errors
-
-        // Then broadcast to other nodes if needed
-        if node_count > 1 {
-            // send_request handles its own locking/timing
-            // We ignore the result here as it's a "fire and forget" termination broadcast
+        // Terminate locally
+        {
+            let mut horizontal = self.horizontal.lock().await;
             horizontal
-                .send_request(
-                    app_id,
-                    RequestType::TerminateUserConnections,
-                    None,
-                    None,
-                    Some(user_id),
-                    node_count,
-                )
+                .local_adapter
+                .terminate_connection(app_id, user_id)
                 .await?;
         }
+
+        // Broadcast termination to other nodes
+        let _response = self
+            .send_request(
+                app_id,
+                RequestType::TerminateUserConnections,
+                None,
+                None,
+                Some(user_id),
+            )
+            .await?;
 
         Ok(())
     }
 
     async fn add_channel_to_sockets(&mut self, app_id: &str, channel: &str, socket_id: &SocketId) {
-        // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
@@ -733,43 +679,31 @@ impl Adapter for NatsAdapter {
     }
 
     async fn get_channel_socket_count(&mut self, app_id: &str, channel: &str) -> usize {
-        let node_count = self.get_node_count().await.unwrap_or(1); // Get count first
-        let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
-
         // Get local count
-        let local_count = horizontal
-            .local_adapter
-            .get_channel_socket_count(app_id, channel)
-            .await;
-
-        // Get distributed count if needed
-        if node_count > 1 {
-            // send_request handles its own locking/timing
-            match horizontal
-                .send_request(
-                    app_id,
-                    RequestType::ChannelSocketsCount,
-                    Some(channel),
-                    None,
-                    None,
-                    node_count,
-                )
+        let local_count = {
+            let mut horizontal = self.horizontal.lock().await;
+            horizontal
+                .local_adapter
+                .get_channel_socket_count(app_id, channel)
                 .await
-            {
-                Ok(response_data) => local_count + response_data.sockets_count,
-                Err(e) => {
-                    error!(
-                        "{}",
-                        format!(
-                            "Failed to get remote socket count for channel {}: {}",
-                            channel, e
-                        )
-                    );
-                    local_count // Return local count on error
-                }
+        };
+
+        // Get distributed count
+        match self
+            .send_request(
+                app_id,
+                RequestType::ChannelSocketsCount,
+                Some(channel),
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(response) => local_count + response.sockets_count,
+            Err(e) => {
+                error!("Failed to get remote channel socket count: {}", e);
+                local_count
             }
-        } else {
-            local_count
         }
     }
 
@@ -779,12 +713,7 @@ impl Adapter for NatsAdapter {
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
-        // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
-        warn!(
-            "{}",
-            format!("Adding socket {} to channel {}", socket_id, channel)
-        );
         horizontal
             .local_adapter
             .add_to_channel(app_id, channel, socket_id)
@@ -797,7 +726,6 @@ impl Adapter for NatsAdapter {
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
-        // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
@@ -811,7 +739,6 @@ impl Adapter for NatsAdapter {
         channel: &str,
         socket_id: &SocketId,
     ) -> Option<PresenceMemberInfo> {
-        // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
@@ -819,19 +746,16 @@ impl Adapter for NatsAdapter {
             .await
     }
 
-    // Public method using the optimized internal call
     async fn terminate_user_connections(&mut self, app_id: &str, user_id: &str) -> Result<()> {
         self.terminate_connection(app_id, user_id).await
     }
 
     async fn add_user(&mut self, ws: Arc<Mutex<WebSocket>>) -> Result<()> {
-        // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.add_user(ws).await
     }
 
     async fn remove_user(&mut self, ws: Arc<Mutex<WebSocket>>) -> Result<()> {
-        // Seems purely local
         let mut horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.remove_user(ws).await
     }
@@ -840,60 +764,57 @@ impl Adapter for NatsAdapter {
         &mut self,
         app_id: &str,
     ) -> Result<DashMap<String, usize>> {
-        let node_count = self.get_node_count().await?; // Get count first
-        let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
-
         // Get local channels
-        let local_channels = horizontal
-            .local_adapter
-            .get_channels_with_socket_count(app_id)
-            .await?;
+        let channels = {
+            let mut horizontal = self.horizontal.lock().await;
+            horizontal
+                .local_adapter
+                .get_channels_with_socket_count(app_id)
+                .await?
+        };
 
-        // Get distributed channels if needed
-        if node_count > 1 {
-            // send_request handles its own locking/timing
-            let response_data = horizontal
-                .send_request(
-                    app_id,
-                    RequestType::ChannelsWithSocketsCount,
-                    None,
-                    None,
-                    None,
-                    node_count,
-                )
-                .await?;
-            for (channel, count) in response_data.channels_with_sockets_count {
-                local_channels.insert(channel, count);
+        // Get distributed channels
+        match self
+            .send_request(
+                app_id,
+                RequestType::ChannelsWithSocketsCount,
+                None,
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(response) => {
+                for (channel, count) in response.channels_with_sockets_count {
+                    *channels.entry(channel).or_insert(0) += count;
+                }
+            }
+            Err(e) => {
+                error!("Failed to get remote channels with socket count: {}", e);
             }
         }
 
-        Ok(local_channels)
+        Ok(channels)
     }
 
     async fn get_sockets_count(&mut self, app_id: &str) -> Result<usize> {
-        let node_count = self.get_node_count().await?; // Get count first
-        let mut horizontal = self.horizontal.lock().await; // Lock for local + potential remote
-
         // Get local count
-        let local_count = horizontal.local_adapter.get_sockets_count(app_id).await;
+        let local_count = {
+            let mut horizontal = self.horizontal.lock().await;
+            horizontal.local_adapter.get_sockets_count(app_id).await?
+        };
 
-        // Get distributed count if needed
-        if node_count > 1 {
-            // send_request handles its own locking/timing
-            let response_data = horizontal
-                .send_request(
-                    app_id,
-                    RequestType::SocketsCount,
-                    None,
-                    None,
-                    None,
-                    node_count,
-                )
-                .await?;
-            return Ok(local_count? + response_data.sockets_count);
+        // Get distributed count
+        match self
+            .send_request(app_id, RequestType::SocketsCount, None, None, None)
+            .await
+        {
+            Ok(response) => Ok(local_count + response.sockets_count),
+            Err(e) => {
+                error!("Failed to get remote socket count: {}", e);
+                Ok(local_count)
+            }
         }
-
-        Ok(local_count?)
     }
 
     async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {
