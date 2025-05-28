@@ -14,6 +14,9 @@ pub trait CacheManager: Send + Sync {
 
     /// Set or overwrite the value in the cache
     async fn set(&mut self, key: &str, value: &str, ttl_seconds: u64) -> Result<()>;
+    
+    /// Remove a key from the cache
+    async fn remove(&mut self, key: &str) -> Result<()>;
 
     /// Disconnect the manager's made connections
     async fn disconnect(&mut self) -> Result<()>;

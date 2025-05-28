@@ -1,84 +1,11 @@
+// src/websocket.rs
+use crate::app::config::App;
+use crate::channel::PresenceMemberInfo;
+use crate::error::{Error, Result};
+use crate::protocol::messages::PusherMessage;
 use fastwebsockets::{Frame, Payload, WebSocketError, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use tokio::io::WriteHalf;
-use tokio::sync::{Mutex, mpsc};
-
-pub struct WebSocket {
-    pub state: ConnectionState,
-    pub socket: Option<WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>>,
-    pub message_sender: mpsc::UnboundedSender<Frame<'static>>,
-}
-
-impl WebSocket {
-    pub fn new(socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>) -> Self {
-        let (message_sender, _) = mpsc::unbounded_channel();
-        Self {
-            state: ConnectionState::new(),
-            socket: Some(socket),
-            message_sender,
-        }
-    }
-
-    pub fn get_socket_id(&self) -> &SocketId {
-        &self.state.socket_id
-    }
-
-    pub async fn close(&mut self, code: u16, reason: String) -> crate::error::Result<()> {
-        if let Some(mut socket) = self.socket.take() {
-            let close_message = PusherMessage::error(code, reason.clone(), None);
-            self.send_json(close_message).await?;
-            let frame = Frame::close(code, &reason.into_bytes());
-            socket.write_frame(frame).await?;
-            Ok(())
-        } else {
-            Err(Error::ConnectionError(format!(
-                "Failed to close connection: {}, reason: {}",
-                code, reason
-            )))
-        }
-    }
-    pub async fn send_json(
-        &mut self,
-        message: impl serde::Serialize + Deserialize<'_> + Debug,
-    ) -> crate::error::Result<()> {
-        if let Some(socket) = &mut self.socket {
-            let payload = Payload::from(serde_json::to_vec(&message)?);
-            let frame = Frame::text(payload);
-            socket.write_frame(frame).await?;
-            Ok(())
-        } else {
-            Err(Error::ConnectionError(format!(
-                "Failed to send message: {:?}",
-                message
-            )))
-        }
-    }
-}
-
-impl PartialEq for ConnectionState {
-    fn eq(&self, other: &Self) -> bool {
-        self.socket_id == other.socket_id
-    }
-}
-
-impl PartialEq for WebSocket {
-    fn eq(&self, other: &Self) -> bool {
-        self.state == other.state
-    }
-}
-
-impl Eq for WebSocket {
-    fn assert_receiver_is_total_eq(&self) {
-        self.state.socket_id.assert_receiver_is_total_eq();
-    }
-}
-
-use crate::app::config::App;
-use crate::channel::PresenceMemberInfo;
-use crate::error::Error;
-use crate::protocol::messages::PusherMessage;
-use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -87,19 +14,20 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::io::WriteHalf;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
+use tracing::{error, warn};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SocketId(pub String);
 
-// Optional but recommended - implement Display for better debugging
 impl std::fmt::Display for SocketId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-// Optional - implement AsRef for convenient string operations
 impl AsRef<str> for SocketId {
     fn as_ref(&self) -> &str {
         &self.0
@@ -112,46 +40,83 @@ impl Default for SocketId {
     }
 }
 
+impl PartialEq<String> for SocketId {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+
 impl SocketId {
     pub fn new() -> Self {
         Self(Self::generate_socket_id())
     }
 
-    pub(crate) fn generate_socket_id() -> String {
-        let mut rng = rand::rng(); // Get a random number generator
-
-        // Define min and max as u64, since Rust requires specifying the integer type
+    fn generate_socket_id() -> String {
+        let mut rng = rand::rng();
         let min: u64 = 0;
-        let max: u64 = 10000000000;
+        let max: u64 = 10_000_000_000;
 
-        // Rust's rand crate handles generating a random number between min and max differently
-        let mut random_number = |min: u64, max: u64| -> u64 { rng.random_range(min..=max) };
-
-        // Format the random numbers into a String with a dot separator
-        format!("{}.{}", random_number(min, max), random_number(min, max))
+        let mut  random_number = || rng.random_range(min..=max);
+        format!("{}.{}", random_number(), random_number())
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserInfo {
     pub id: String,
-    pub watchlist: Option<Vec<String>>, // Add watchlist field
-    pub info: Option<Value>,            // Additional user info
+    pub watchlist: Option<Vec<String>>,
+    pub info: Option<Value>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+
+#[derive(Debug)]
+pub struct ConnectionTimeouts {
+    pub activity_timeout_handle: Option<JoinHandle<()>>,
+    pub auth_timeout_handle: Option<JoinHandle<()>>,
+}
+
+impl ConnectionTimeouts {
+    pub fn new() -> Self {
+        Self {
+            activity_timeout_handle: None,
+            auth_timeout_handle: None,
+        }
+    }
+
+    pub fn clear_activity_timeout(&mut self) {
+        if let Some(handle) = self.activity_timeout_handle.take() {
+            handle.abort();
+        }
+    }
+
+    pub fn clear_auth_timeout(&mut self) {
+        if let Some(handle) = self.auth_timeout_handle.take() {
+            handle.abort();
+        }
+    }
+
+    pub fn clear_all(&mut self) {
+        self.clear_activity_timeout();
+        self.clear_auth_timeout();
+    }
+}
+
+impl Drop for ConnectionTimeouts {
+    fn drop(&mut self) {
+        self.clear_all();
+    }
+}
+
+#[derive(Debug)]
 pub struct ConnectionState {
     pub socket_id: SocketId,
     pub app: Option<App>,
     pub subscribed_channels: HashSet<String>,
     pub user_id: Option<String>,
-    pub user_info: Option<UserInfo>, // Enhanced user info with watchlist
-    pub last_ping: String,
+    pub user_info: Option<UserInfo>,
+    pub last_ping: Instant,
     pub presence: Option<HashMap<String, PresenceMemberInfo>>,
     pub user: Option<Value>,
-    #[serde(skip)] // Don't serialize task handles
-    pub activity_timeout_handle: Option<JoinHandle<()>>, // Add this
-    #[serde(skip)]
-    pub auth_timeout_handle: Option<JoinHandle<()>>, // Add this
+    pub timeouts: ConnectionTimeouts,
 }
 
 impl ConnectionState {
@@ -161,12 +126,25 @@ impl ConnectionState {
             app: None,
             subscribed_channels: HashSet::new(),
             user_id: None,
-            last_ping: String::new(),
+            user_info: None,
+            last_ping: Instant::now(),
             presence: None,
             user: None,
-            user_info: None, // Initialize with None
-            activity_timeout_handle: None,
-            auth_timeout_handle: None,
+            timeouts: ConnectionTimeouts::new(),
+        }
+    }
+
+    pub fn with_socket_id(socket_id: SocketId) -> Self {
+        Self {
+            socket_id,
+            app: None,
+            subscribed_channels: HashSet::new(),
+            user_id: None,
+            user_info: None,
+            last_ping: Instant::now(),
+            presence: None,
+            user: None,
+            timeouts: ConnectionTimeouts::new(),
         }
     }
 
@@ -182,25 +160,194 @@ impl ConnectionState {
         self.subscribed_channels.insert(channel);
     }
 
-    pub fn remove_subscription(&mut self, channel: &str) {
-        self.subscribed_channels.remove(channel);
+    pub fn remove_subscription(&mut self, channel: &str) -> bool {
+        self.subscribed_channels.remove(channel)
     }
 
     pub fn update_ping(&mut self) {
-        self.last_ping = chrono::Utc::now().to_rfc3339();
+        self.last_ping = Instant::now();
     }
 
     pub fn get_app_key(&self) -> String {
-        match &self.app {
-            Some(app) => app.key.clone(),
-            None => String::new(),
-        }
+        self.app.as_ref()
+            .map(|app| app.key.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn time_since_last_ping(&self) -> std::time::Duration {
+        self.last_ping.elapsed()
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.user.is_some()
+    }
+
+    pub fn clear_timeouts(&mut self) {
+        self.timeouts.clear_all();
     }
 }
 
-impl PartialEq<String> for SocketId {
-    fn eq(&self, other: &String) -> bool {
-        self.0 == *other
+impl PartialEq for ConnectionState {
+    fn eq(&self, other: &Self) -> bool {
+        self.socket_id == other.socket_id
+    }
+}
+
+// Message sender for async message handling
+#[derive(Debug)]
+pub struct MessageSender {
+    sender: mpsc::UnboundedSender<Frame<'static>>,
+    _receiver_handle: JoinHandle<()>,
+}
+
+impl MessageSender {
+    pub fn new(mut socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>) -> Self {
+        let (sender, mut receiver) = mpsc::unbounded_channel::<Frame<'static>>();
+
+        let receiver_handle = tokio::spawn(async move {
+            while let Some(frame) = receiver.recv().await {
+                if let Err(e) = socket.write_frame(frame).await {
+                    error!("Failed to write frame to WebSocket: {}", e);
+                    break;
+                }
+            }
+
+            // Try to close gracefully
+            if let Err(e) = socket.write_frame(Frame::close(1000, b"Normal closure")).await {
+                warn!("Failed to send close frame: {}", e);
+            }
+        });
+
+        Self {
+            sender,
+            _receiver_handle: receiver_handle,
+        }
+    }
+
+    pub fn send(&self, frame: Frame<'static>) -> Result<()> {
+        self.sender.send(frame)
+            .map_err(|_| Error::ConnectionError("Message channel closed".into()))
+    }
+
+    pub fn send_json<T: serde::Serialize>(&self, message: &T) -> Result<()> {
+        let payload = serde_json::to_vec(message)
+            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {}", e)))?;
+
+        let frame = Frame::text(Payload::from(payload));
+        self.send(frame)
+    }
+
+    pub fn send_text(&self, text: String) -> Result<()> {
+        let frame = Frame::text(Payload::from(text.into_bytes()));
+        self.send(frame)
+    }
+
+    pub fn send_close(&self, code: u16, reason: &str) -> Result<()> {
+        let frame = Frame::close(code, reason.as_bytes());
+        self.send(frame)
+    }
+}
+
+pub struct WebSocket {
+    pub state: ConnectionState,
+    pub message_sender: MessageSender,
+}
+
+impl WebSocket {
+    pub fn new(socket_id: SocketId, socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>) -> Self {
+        Self {
+            state: ConnectionState::with_socket_id(socket_id),
+            message_sender: MessageSender::new(socket),
+        }
+    }
+
+    pub fn get_socket_id(&self) -> &SocketId {
+        &self.state.socket_id
+    }
+
+    pub async fn close(&mut self, code: u16, reason: String) -> Result<()> {
+        // Send error message first if it's an error closure
+        if code >= 4000 {
+            let error_message = PusherMessage::error(code, reason.clone(), None);
+            if let Err(e) = self.message_sender.send_json(&error_message) {
+                warn!("Failed to send error message before close: {}", e);
+            }
+        }
+
+        // Send close frame
+        self.message_sender.send_close(code, &reason)?;
+
+        // Clear any active timeouts
+        self.state.clear_timeouts();
+
+        Ok(())
+    }
+
+    pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
+        self.message_sender.send_json(message)
+    }
+
+    pub fn send_text(&self, text: String) -> Result<()> {
+        self.message_sender.send_text(text)
+    }
+
+    pub fn send_frame(&self, frame: Frame<'static>) -> Result<()> {
+        self.message_sender.send(frame)
+    }
+
+    pub fn is_connected(&self) -> bool {
+        // Could add more sophisticated connection state checking here
+        true // For now, assume connected if the struct exists
+    }
+
+    pub fn update_activity(&mut self) {
+        self.state.update_ping();
+    }
+
+    pub fn set_user_info(&mut self, user_info: UserInfo) {
+        self.state.user_id = Some(user_info.id.clone());
+        self.state.user_info = Some(user_info.clone());
+
+        // Also set the user Value for backward compatibility
+        if let Some(info) = &user_info.info {
+            self.state.user = Some(info.clone());
+        }
+    }
+
+    pub fn add_presence_info(&mut self, channel: String, member_info: PresenceMemberInfo) {
+        if self.state.presence.is_none() {
+            self.state.presence = Some(HashMap::new());
+        }
+
+        if let Some(ref mut presence) = self.state.presence {
+            presence.insert(channel, member_info);
+        }
+    }
+
+    pub fn remove_presence_info(&mut self, channel: &str) -> Option<PresenceMemberInfo> {
+        self.state.presence.as_mut()?.remove(channel)
+    }
+
+    pub fn subscribe_to_channel(&mut self, channel: String) {
+        self.state.add_subscription(channel);
+    }
+
+    pub fn unsubscribe_from_channel(&mut self, channel: &str) -> bool {
+        self.state.remove_subscription(channel)
+    }
+
+    pub fn is_subscribed_to(&self, channel: &str) -> bool {
+        self.state.is_subscribed(channel)
+    }
+
+    pub fn get_subscribed_channels(&self) -> &HashSet<String> {
+        &self.state.subscribed_channels
+    }
+}
+
+impl PartialEq for WebSocket {
+    fn eq(&self, other: &Self) -> bool {
+        self.state == other.state
     }
 }
 
@@ -213,18 +360,129 @@ impl Hash for WebSocket {
 #[derive(Clone)]
 pub struct WebSocketRef(pub Arc<Mutex<WebSocket>>);
 
+impl WebSocketRef {
+    pub fn new(websocket: WebSocket) -> Self {
+        Self(Arc::new(Mutex::new(websocket)))
+    }
+
+    pub async fn send_message(&self, message: &PusherMessage) -> Result<()> {
+        let ws = self.0.lock().await;
+        ws.send_message(message)
+    }
+
+    pub async fn close(&self, code: u16, reason: String) -> Result<()> {
+        let mut ws = self.0.lock().await;
+        ws.close(code, reason).await
+    }
+
+    pub async fn get_socket_id(&self) -> SocketId {
+        let ws = self.0.lock().await;
+        ws.get_socket_id().clone()
+    }
+
+    pub async fn is_subscribed_to(&self, channel: &str) -> bool {
+        let ws = self.0.lock().await;
+        ws.is_subscribed_to(channel)
+    }
+
+    pub async fn get_user_id(&self) -> Option<String> {
+        let ws = self.0.lock().await;
+        ws.state.user_id.clone()
+    }
+
+    pub async fn update_activity(&self) {
+        let mut ws = self.0.lock().await;
+        ws.update_activity();
+    }
+
+    pub async fn subscribe_to_channel(&self, channel: String) {
+        let mut ws = self.0.lock().await;
+        ws.subscribe_to_channel(channel);
+    }
+
+    pub async fn unsubscribe_from_channel(&self, channel: &str) -> bool {
+        let mut ws = self.0.lock().await;
+        ws.unsubscribe_from_channel(channel)
+    }
+}
+
 impl Hash for WebSocketRef {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Hash based on the Arc's pointer address
-        std::ptr::addr_of!(self.0).hash(state);
+        // Use the raw pointer address of the Arc for hashing
+        let ptr = Arc::as_ptr(&self.0) as *const () as usize;
+        ptr.hash(state);
     }
 }
 
 impl PartialEq for WebSocketRef {
     fn eq(&self, other: &Self) -> bool {
-        // Compare based on Arc pointer equality
         Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
 impl Eq for WebSocketRef {}
+
+impl Debug for WebSocketRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSocketRef")
+            .field("ptr", &Arc::as_ptr(&self.0))
+            .finish()
+    }
+}
+
+// Helper trait for easier WebSocket operations
+pub trait WebSocketExt {
+    async fn send_pusher_message(&self, message: PusherMessage) -> Result<()>;
+    async fn send_error(&self, code: u16, message: String, channel: Option<String>) -> Result<()>;
+    async fn send_pong(&self) -> Result<()>;
+}
+
+impl WebSocketExt for WebSocketRef {
+    async fn send_pusher_message(&self, message: PusherMessage) -> Result<()> {
+        self.send_message(&message).await
+    }
+
+    async fn send_error(&self, code: u16, message: String, channel: Option<String>) -> Result<()> {
+        let error_msg = PusherMessage::error(code, message, channel);
+        self.send_message(&error_msg).await
+    }
+
+    async fn send_pong(&self) -> Result<()> {
+        let pong_msg = PusherMessage::pong();
+        self.send_message(&pong_msg).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_socket_id_generation() {
+        let id1 = SocketId::new();
+        let id2 = SocketId::new();
+
+        assert_ne!(id1, id2);
+        assert!(id1.0.contains('.'));
+        assert!(id2.0.contains('.'));
+    }
+
+    #[test]
+    fn test_connection_state() {
+        let mut state = ConnectionState::new();
+
+        // Test subscription management
+        assert!(!state.is_subscribed("test-channel"));
+        state.add_subscription("test-channel".to_string());
+        assert!(state.is_subscribed("test-channel"));
+        assert!(state.remove_subscription("test-channel"));
+        assert!(!state.is_subscribed("test-channel"));
+    }
+
+    #[test]
+    fn test_socket_id_display() {
+        let id = SocketId("123.456".to_string());
+        assert_eq!(format!("{}", id), "123.456");
+        assert_eq!(id.as_ref(), "123.456");
+    }
+}

@@ -1023,7 +1023,7 @@ impl SockudoServer {
                                     // Ensure ws_raw_obj (your 'ws') is Clone.
                                     connections_to_cleanup.push((
                                         app_id.clone(),
-                                        websocket::WebSocketRef(ws_raw_obj),
+                                        ws_raw_obj.clone(),
                                     ));
                                 }
                             }

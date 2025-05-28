@@ -135,6 +135,18 @@ impl CacheManager for RedisClusterCacheManager {
         Ok(())
     }
 
+    async fn remove(&mut self, key: &str) -> Result<()> {
+        let deleted: i32 = self
+            .connection
+            .del(self.prefixed_key(key))
+            .await
+            .map_err(|e| Error::CacheError(format!("Redis Cluster delete error: {}", e)))?;
+        if deleted == 0 {
+            return Err(Error::CacheError(format!("Key '{}' not found", key)));
+        }
+        Ok(())
+    }
+
     /// Disconnect the manager's made connections
     async fn disconnect(&mut self) -> Result<()> {
         // lcear all the cache

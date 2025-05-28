@@ -22,7 +22,7 @@ pub struct PresenceMember {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinResponse {
     pub(crate) success: bool,
-    pub channel_connections: Option<i32>,
+    pub channel_connections: Option<usize>,
     pub auth_error: Option<String>,
     pub member: Option<PresenceMember>,
     pub error_message: Option<String>,
@@ -75,7 +75,7 @@ impl ChannelManager {
 
             return Ok(JoinResponse {
                 success: true,
-                channel_connections: Some(channel.len() as i32),
+                channel_connections: Some(channel.len()),
                 member: None,
                 auth_error: None,
                 error_message: None,
@@ -104,7 +104,7 @@ impl ChannelManager {
 
         Ok(JoinResponse {
             success: true,
-            channel_connections: Some(total_connections as i32),
+            channel_connections: Some(total_connections),
             member,
             auth_error: None,
             error_message: None,

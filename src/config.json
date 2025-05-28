@@ -23,18 +23,8 @@
           "secret": "secret1",
           "enable_client_messages": true,
           "enabled": true,
-          "max_connections": "100",
-          "max_client_events_per_second": "10",
-          "webhooks": [
-            {
-              "url": "http://localhost:3000/pusher/webhooks",
-              "event_types": [
-                "member_added",
-                "member_removed",
-                "subscription_count"
-              ]
-            }
-          ]
+          "max_connections": "1000",
+          "max_client_events_per_second": "1000"
         },
         {
           "id": "app2",
@@ -53,7 +43,7 @@
     }
   },
   "adapter": {
-    "driver": "redis",
+    "driver": "local",
     "redis": {
       "prefix": "sockudo",
       "requests_timeout": 5000,

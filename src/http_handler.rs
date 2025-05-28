@@ -341,14 +341,13 @@ async fn process_single_event_parallel(
             };
 
             // Send the message via the connection handler.
-            handler_clone
-                .send_message(
-                    &app.id,
-                    socket_id_for_task.as_ref(),
-                    message_to_send,
-                    &target_channel_str,
-                )
-                .await;
+            // handler_clone
+            //     .send(
+            //         &app.id,
+            //         socket_id_for_task.as_ref(),
+            //         message_to_send,
+            //     )
+            //     .await;
 
             // If info collection is requested, gather details for this channel.
             let mut collected_channel_specific_info: Option<(String, Value)> = None;

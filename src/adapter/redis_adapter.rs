@@ -483,7 +483,7 @@ impl Adapter for RedisAdapter {
         &mut self,
         socket_id: &SocketId,
         app_id: &str,
-    ) -> Option<Arc<Mutex<WebSocket>>> {
+    ) -> Option<WebSocketRef> {
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
@@ -784,12 +784,12 @@ impl Adapter for RedisAdapter {
         self.terminate_connection(app_id, user_id).await
     }
 
-    async fn add_user(&mut self, ws: Arc<Mutex<WebSocket>>) -> Result<()> {
+    async fn add_user(&mut self, ws: WebSocketRef) -> Result<()> {
         let mut horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.add_user(ws).await
     }
 
-    async fn remove_user(&mut self, ws: Arc<Mutex<WebSocket>>) -> Result<()> {
+    async fn remove_user(&mut self, ws: WebSocketRef) -> Result<()> {
         let mut horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.remove_user(ws).await
     }

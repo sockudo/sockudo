@@ -150,7 +150,15 @@ impl PusherMessage {
             name: None,
         }
     }
-
+    
+    pub fn ping() -> Self {
+        Self {
+            event: Some("pusher:ping".to_string()),
+            data: None,
+            channel: None,
+            name: None,
+        }
+    }
     pub fn channel_event<S: Into<String>>(event: S, channel: S, data: Value) -> Self {
         Self {
             event: Some(event.into()),

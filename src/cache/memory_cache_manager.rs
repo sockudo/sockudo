@@ -85,6 +85,13 @@ impl CacheManager for MemoryCacheManager {
         Ok(())
     }
 
+    async fn remove(&mut self, key: &str) -> Result<()> {
+        let prefixed_key = self.prefixed_key(key);
+        // Moka's invalidate does not return a value, it just removes the entry.
+        self.cache.invalidate(&prefixed_key).await;
+        Ok(())
+    }
+
     async fn disconnect(&mut self) -> Result<()> {
         // Moka's cache is in-memory and managed by RAII.
         // "Disconnecting" can mean clearing all entries.

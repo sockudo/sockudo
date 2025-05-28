@@ -14,6 +14,7 @@ use hyper_util::rt::TokioIo;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
+use async_trait::async_trait;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -45,22 +46,21 @@ impl LocalAdapter {
         }
         self.namespaces.get(app_id).unwrap().clone()
     }
+
+    // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
     pub async fn get_all_connections(
         &mut self,
         app_id: &str,
-    ) -> DashMap<SocketId, Arc<Mutex<WebSocket>>> {
-        // First, get or create the namespace for this app
+    ) -> DashMap<SocketId, WebSocketRef> {
         let namespace = self.get_or_create_namespace(app_id).await;
-
-        // Return a clone of the sockets DashMap from the namespace
         namespace.sockets.clone()
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl Adapter for LocalAdapter {
     async fn init(&mut self) {
-        info!("{}", "Initializing local adapter");
+        info!("Initializing local adapter");
     }
 
     async fn get_namespace(&mut self, app_id: &str) -> Option<Arc<Namespace>> {
@@ -76,15 +76,15 @@ impl Adapter for LocalAdapter {
     ) -> Result<()> {
         let namespace = self.get_or_create_namespace(app_id).await;
         namespace.add_socket(socket_id, socket, app_manager).await?;
-
         Ok(())
     }
 
+    // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
     async fn get_connection(
         &mut self,
         socket_id: &SocketId,
         app_id: &str,
-    ) -> Option<Arc<Mutex<WebSocket>>> {
+    ) -> Option<WebSocketRef> {
         let namespace = self.get_or_create_namespace(app_id).await;
         namespace.get_connection(socket_id)
     }
@@ -98,6 +98,7 @@ impl Adapter for LocalAdapter {
         }
     }
 
+    // Updated to use WebSocketRef methods
     async fn send_message(
         &mut self,
         app_id: &str,
@@ -109,22 +110,7 @@ impl Adapter for LocalAdapter {
             .await
             .ok_or_else(|| Error::ConnectionError("Connection not found".to_string()))?;
 
-        let message = serde_json::to_string(&message)
-            .map_err(|e| Error::ConnectionError(format!("Failed to serialize message: {}", e)))?;
-
-        let frame = Frame::text(Payload::from(message.into_bytes()));
-
-        // Get the sender without locking the entire adapter
-        let sender = {
-            let conn = connection.lock().await;
-            conn.message_sender.clone()
-        };
-
-        if let Err(e) = sender.send(frame) {
-            error!("{}", format!("Failed to send message: {}", e));
-        }
-
-        Ok(())
+        connection.send_message(&message).await
     }
 
     async fn send(
@@ -134,39 +120,30 @@ impl Adapter for LocalAdapter {
         except: Option<&SocketId>,
         app_id: &str,
     ) -> Result<()> {
-        info!("{}", format!("Sending message to channel: {}", channel));
-        info!("{}", format!("Message: {:?}", message));
+        info!("Sending message to channel: {}", channel);
+        info!("Message: {:?}", message);
 
         if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
             let namespace = self.get_namespace(app_id).await.unwrap();
             let socket_refs = namespace.get_user_sockets(user_id).await?;
 
-            // Collect socket IDs that should receive the message
-            let mut target_sockets = Vec::new();
-            for socket_ref in socket_refs {
-                let socket_id = {
-                    let ws = socket_ref.0.lock().await;
-                    ws.state.socket_id.clone()
-                };
-
+            // Collect socket IDs that should receive the message, using WebSocketRef methods
+            let mut target_socket_refs = Vec::new();
+            for socket_ref in socket_refs.iter() {
+                let socket_id = socket_ref.get_socket_id().await;
                 if except != Some(&socket_id) {
-                    target_sockets.push(socket_id);
+                    target_socket_refs.push(socket_ref.clone());
                 }
             }
 
-            // Send messages in parallel
-            let send_tasks: Vec<JoinHandle<Result<()>>> = target_sockets
+            // Send messages in parallel using WebSocketRef
+            let send_tasks: Vec<JoinHandle<Result<()>>> = target_socket_refs
                 .into_iter()
-                .map(|socket_id| {
+                .map(|socket_ref| {
                     let message_clone = message.clone();
-                    let app_id_clone = app_id.to_string();
-                    let mut self_clone = self.clone(); // Assuming your adapter implements Clone, or use Arc
-
                     tokio::spawn(async move {
-                        self_clone
-                            .send_message(&app_id_clone, &socket_id, message_clone)
-                            .await
+                        socket_ref.send_message(&message_clone).await
                     })
                 })
                 .collect();
@@ -180,7 +157,6 @@ impl Adapter for LocalAdapter {
                     Ok(send_result) => {
                         if let Err(e) = send_result {
                             error!("Failed to send message to user socket: {}", e);
-                            // You can choose to continue or return the error based on your needs
                         }
                     }
                     Err(join_error) => {
@@ -192,25 +168,24 @@ impl Adapter for LocalAdapter {
             let namespace = self.get_namespace(app_id).await.unwrap();
             let sockets = namespace.get_channel_sockets(channel);
 
-            // Collect socket IDs that should receive the message
-            let target_sockets: Vec<SocketId> = sockets
-                .iter()
-                .map(|entry| entry.key().clone())
-                .filter(|socket_id| except != Some(socket_id))
-                .collect();
+            // Collect socket refs that should receive the message
+            let mut target_socket_refs = Vec::new();
+            for socket_id_entry in sockets.iter() {
+                let socket_id = socket_id_entry.key();
+                if except != Some(socket_id) {
+                    if let Some(socket_ref) = namespace.get_connection(socket_id) {
+                        target_socket_refs.push(socket_ref);
+                    }
+                }
+            }
 
-            // Send messages in parallel
-            let send_tasks: Vec<JoinHandle<Result<()>>> = target_sockets
+            // Send messages in parallel using WebSocketRef
+            let send_tasks: Vec<JoinHandle<Result<()>>> = target_socket_refs
                 .into_iter()
-                .map(|socket_id| {
+                .map(|socket_ref| {
                     let message_clone = message.clone();
-                    let app_id_clone = app_id.to_string();
-                    let mut self_clone = self.clone(); // Assuming your adapter implements Clone, or use Arc
-
                     tokio::spawn(async move {
-                        self_clone
-                            .send_message(&app_id_clone, &socket_id, message_clone)
-                            .await
+                        socket_ref.send_message(&message_clone).await
                     })
                 })
                 .collect();
@@ -224,7 +199,6 @@ impl Adapter for LocalAdapter {
                     Ok(send_result) => {
                         if let Err(e) = send_result {
                             error!("Failed to send message to channel socket: {}", e);
-                            // You can choose to continue or return the error based on your needs
                         }
                     }
                     Err(join_error) => {
@@ -287,7 +261,7 @@ impl Adapter for LocalAdapter {
     async fn terminate_connection(&mut self, app_id: &str, user_id: &str) -> Result<()> {
         let namespace = self.get_or_create_namespace(app_id).await;
         if let Err(e) = namespace.terminate_user_connections(user_id).await {
-            error!("{}", format!("Failed to terminate adapter: {}", e));
+            error!("Failed to terminate adapter: {}", e);
         }
         Ok(())
     }
@@ -335,21 +309,31 @@ impl Adapter for LocalAdapter {
     async fn terminate_user_connections(&mut self, app_id: &str, user_id: &str) -> Result<()> {
         let namespace = self.get_or_create_namespace(app_id).await;
         if let Err(e) = namespace.terminate_user_connections(user_id).await {
-            error!("{}", format!("Failed to terminate user connections: {}", e));
+            error!("Failed to terminate user connections: {}", e);
         }
         Ok(())
     }
 
-    async fn add_user(&mut self, ws: Arc<Mutex<WebSocket>>) -> Result<()> {
-        let app_id = ws.lock().await.state.get_app_key();
+    // Updated to use WebSocketRef
+    async fn add_user(&mut self, ws_ref: WebSocketRef) -> Result<()> {
+        // Get app_id using WebSocketRef async method
+        let app_id = {
+            let ws_guard = ws_ref.0.lock().await;
+            ws_guard.state.get_app_key()
+        };
         let namespace = self.get_namespace(&app_id).await.unwrap();
-        namespace.add_user(ws).await
+        namespace.add_user(ws_ref).await
     }
 
-    async fn remove_user(&mut self, ws: Arc<Mutex<WebSocket>>) -> Result<()> {
-        let app_id = ws.lock().await.state.get_app_key();
+    // Updated to use WebSocketRef
+    async fn remove_user(&mut self, ws_ref: WebSocketRef) -> Result<()> {
+        // Get app_id using WebSocketRef async method
+        let app_id = {
+            let ws_guard = ws_ref.0.lock().await;
+            ws_guard.state.get_app_key()
+        };
         let namespace = self.get_namespace(&app_id).await.unwrap();
-        namespace.remove_user(ws).await
+        namespace.remove_user(ws_ref).await
     }
 
     async fn get_channels_with_socket_count(
@@ -357,8 +341,7 @@ impl Adapter for LocalAdapter {
         app_id: &str,
     ) -> Result<DashMap<String, usize>> {
         let namespace = self.get_or_create_namespace(app_id).await;
-        let channels = namespace.get_channels_with_socket_count().await;
-        Ok(channels?)
+        namespace.get_channels_with_socket_count().await
     }
 
     async fn get_sockets_count(&mut self, app_id: &str) -> Result<usize> {
@@ -368,7 +351,7 @@ impl Adapter for LocalAdapter {
     }
 
     async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {
-        let mut namespaces = DashMap::new();
+        let namespaces = DashMap::new();
         for entry in self.namespaces.iter() {
             namespaces.insert(entry.key().clone(), entry.value().clone());
         }

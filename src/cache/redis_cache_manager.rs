@@ -135,6 +135,19 @@ impl CacheManager for RedisCacheManager {
         Ok(())
     }
 
+    async fn remove(&mut self, key: &str) -> Result<()> {
+        let deleted: i32 = self
+            .connection
+            .del(self.prefixed_key(key))
+            .await
+            .map_err(|e| Error::CacheError(format!("Redis delete error: {}", e)))?;
+        if deleted > 0 {
+            Ok(())
+        } else {
+            Err(Error::CacheError(format!("Key '{}' not found", key)))
+        }
+    }
+
     /// Disconnect the manager's made connections
     async fn disconnect(&mut self) -> Result<()> {
         // delete all keys with the current prefix
