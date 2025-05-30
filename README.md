@@ -52,8 +52,6 @@ Sockudo is a production-ready WebSocket server that provides real-time communica
 
 ### Using Docker (Recommended)
 
-The fastest way to get Sockudo running (refer to `README-Docker.md` for more details):
-
 ```bash
 # Clone the repository
 git clone [https://github.com/RustNSparks/sockudo.git](https://github.com/RustNSparks/sockudo.git)
@@ -67,6 +65,9 @@ cd sockudo
 make quick-start
 # Or, using docker-compose directly:
 # docker-compose up -d
+
+# you can also use 
+docker pull sockudo/sockudo:latest
 ````
 
 Sockudo should now be running. Default endpoints (configurable):
