@@ -1005,7 +1005,7 @@ For more in-depth information:
 
 ## 🗺️ Roadmap
 
-### Current Version (v1.5 - placeholder)
+### Current Version (v1.5)
 
 - ✅ Core WebSocket functionality
 - ✅ Channel system (public, private, presence)
