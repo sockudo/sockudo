@@ -1,0 +1,87 @@
+# =============================================================================
+# Docker Ignore File for Sockudo
+# =============================================================================
+
+# Rust build artifacts
+target/
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git files
+.git/
+.gitignore
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+README.md
+docs/
+*.md
+
+# Test files
+tests/
+test_results/
+
+# Logs
+logs/
+*.log
+
+# Environment files
+.env
+.env.*
+
+# SSL certificates (they should be mounted as volumes)
+ssl/
+*.pem
+*.key
+*.crt
+
+# Temporary files
+tmp/
+temp/
+
+# Database files
+*.db
+*.sqlite
+
+# Node modules (if any)
+node_modules/
+
+# Python files (if any)
+__pycache__/
+*.pyc
+
+# Backup files
+*.bak
+*.backup
+
+# Configuration overrides
+config/local.json
+config/production.json
+config/secrets.json
+
+# Monitoring configuration
+monitoring/
+grafana/
+prometheus/
+
+# Scripts
+scripts/
+deploy/
+
+# Examples
+examples/
+samples/

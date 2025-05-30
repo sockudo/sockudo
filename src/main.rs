@@ -117,7 +117,7 @@ struct SockudoServer {
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(short, long)]
-    config: String,
+    config: Option<String>,
 }
 
 impl SockudoServer {
@@ -1056,7 +1056,7 @@ impl SockudoServer {
         if !connections_to_cleanup.is_empty() {
             let cleanup_futures = connections_to_cleanup
                 .into_iter()
-                .map(|(app_id, ws_raw_obj)| {
+                .map(|(_app_id, ws_raw_obj)| {
                     async move {
                         let mut ws = ws_raw_obj.0.lock().await; // Lock the WebSocketRef
                         ws.close(4009, "You got disconnected by the app.".to_string())
@@ -1309,12 +1309,16 @@ async fn main() -> Result<()> {
     // File settings will override ENV vars set above, except for `config.debug` if ENV DEBUG was explicitly set.
     // And high-priority ENV vars like REDIS_URL which are applied *after* file loading.
     let args = Args::parse();
-    let mut config_path = args.config;
-    if config_path.is_empty() {
-        // Fallback to default path if not provided
-        config_path =
-            std::env::var("CONFIG_FILE").unwrap_or_else(|_| "src/config.json".to_string());
-    }
+    let config_arg = args.config;
+    let config_path = config_arg.unwrap_or_else(|| {
+        // Default to current directory if no config file is specified
+        let default_path = "config/config.json";
+        println!(
+            "[PRE-LOG] No config file specified, using default: {}",
+            default_path
+        );
+        default_path.to_string()
+    });
 
     if Path::new(&config_path).exists() {
         println!("[PRE-LOG] Loading configuration from file: {}", config_path); // Basic print before logging init
@@ -1457,7 +1461,7 @@ async fn main() -> Result<()> {
 
 fn make_https(host: &str, uri: Uri, https_port: u16) -> core::result::Result<Uri, BoxError> {
     let mut parts = uri.into_parts();
-    parts.scheme = Some(axum::http::uri::Scheme::HTTPS); // Use HTTPS scheme
+    parts.scheme = Some(http::uri::Scheme::HTTPS); // Use HTTPS scheme
 
     // Ensure path_and_query is present, default to "/"
     if parts.path_and_query.is_none() {

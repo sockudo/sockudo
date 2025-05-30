@@ -1,0 +1,253 @@
+# =============================================================================
+# Sockudo Production Override - Docker Compose
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # Production-optimized Sockudo configuration
+  sockudo:
+    environment:
+      # Production environment
+      - RUST_LOG=info,sockudo=info
+      - DEBUG=false
+
+      # Enhanced security
+      - SSL_ENABLED=true
+      - SSL_CERT_PATH=/app/ssl/fullchain.pem
+      - SSL_KEY_PATH=/app/ssl/privkey.pem
+      - SSL_REDIRECT_HTTP=true
+      - SSL_HTTP_PORT=80
+
+      # Production app settings
+      - SOCKUDO_DEFAULT_APP_ENABLED=false  # Disable default app in production
+
+    # Production port mapping (SSL)
+    ports:
+      - "80:80"    # HTTP (redirects to HTTPS)
+      - "443:6001" # HTTPS
+      - "9601:9601" # Metrics
+
+    # Production resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '1.0'
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+
+    # Mount SSL certificates
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./ssl:/app/ssl:ro
+      - /etc/letsencrypt/live/${DOMAIN:-localhost}:/app/ssl:ro
+
+    # Production health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-k", "https://localhost:6001/up/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Production Redis with persistence and security
+  redis:
+    command: >
+      sh -c "
+        redis-server 
+        --requirepass $${REDIS_PASSWORD} 
+        --appendonly yes 
+        --appendfsync everysec
+        --maxmemory 512mb 
+        --maxmemory-policy allkeys-lru
+        --save 900 1
+        --save 300 10
+        --save 60 10000
+        --tcp-keepalive 60
+        --timeout 0
+      "
+
+    # Remove external port in production
+    ports: []
+
+    # Production resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+    # Enhanced health check
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Production MySQL with optimized settings
+  mysql:
+    image: mysql:8.0
+    container_name: sockudo-mysql-prod
+    restart: unless-stopped
+
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=sockudo
+      - MYSQL_USER=sockudo
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+
+    # Remove external port in production
+    ports: []
+
+    # Production MySQL configuration
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --innodb-buffer-pool-size=256M
+      --innodb-log-file-size=64M
+      --innodb-flush-log-at-trx-commit=2
+      --max-connections=200
+      --thread-cache-size=16
+      --query-cache-size=32M
+      --query-cache-type=1
+      --slow-query-log=1
+      --long-query-time=2
+
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./sql/init-prod.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./mysql/conf.d:/etc/mysql/conf.d:ro
+
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '1.0'
+
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "sockudo", "-p${MYSQL_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    networks:
+      - sockudo-network
+
+  # Production monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sockudo-prometheus-prod
+    restart: unless-stopped
+
+    ports:
+      - "9090:9090"
+
+    volumes:
+      - ./monitoring/prometheus-prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+    networks:
+      - sockudo-network
+
+  # Production Grafana with persistence
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sockudo-grafana-prod
+    restart: unless-stopped
+
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
+    networks:
+      - sockudo-network
+
+  # Production load balancer
+  nginx:
+    image: nginx:alpine
+    container_name: sockudo-nginx-prod
+    restart: unless-stopped
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./nginx/nginx-prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+
+    depends_on:
+      - sockudo
+
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    networks:
+      - sockudo-network
+
+volumes:
+  mysql-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local

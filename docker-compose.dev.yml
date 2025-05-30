@@ -1,253 +1,205 @@
 # =============================================================================
-# Sockudo Production Override - Docker Compose
-# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Sockudo Development Override - Docker Compose
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 # =============================================================================
 
 version: '3.8'
 
 services:
-  # Production-optimized Sockudo configuration
+  # Development-optimized Sockudo configuration
   sockudo:
+    # Build from source for development
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+
+    # Development environment variables
     environment:
-      # Production environment
-      - RUST_LOG=info,sockudo=info
-      - DEBUG=false
+      # Enhanced logging for development
+      - RUST_LOG=debug,sockudo=debug,tower_http=debug
+      - DEBUG=true
 
-      # Enhanced security
-      - SSL_ENABLED=true
-      - SSL_CERT_PATH=/app/ssl/fullchain.pem
-      - SSL_KEY_PATH=/app/ssl/privkey.pem
-      - SSL_REDIRECT_HTTP=true
-      - SSL_HTTP_PORT=80
+      # Development app settings
+      - SOCKUDO_DEFAULT_APP_ENABLED=true
+      - SOCKUDO_ENABLE_CLIENT_MESSAGES=true
+      - SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS=100
 
-      # Production app settings
-      - SOCKUDO_DEFAULT_APP_ENABLED=false  # Disable default app in production
+      # Relaxed security for development
+      - RATE_LIMITER_ENABLED=false
+      - SSL_ENABLED=false
 
-    # Production port mapping (SSL)
+    # Development port mapping
     ports:
-      - "80:80"    # HTTP (redirects to HTTPS)
-      - "443:6001" # HTTPS
-      - "9601:9601" # Metrics
+      - "6001:6001"  # Main server
+      - "6002:6002"  # Cluster port
+      - "9601:9601"  # Metrics
 
-    # Production resource limits
+    # Development volumes (with hot reload support)
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./src:/app/src:ro  # Mount source for reference
+      - ./.env.example:/app/.env.example:ro
+
+    # Relaxed resource limits for development
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: '2.0'
-        reservations:
-          memory: 512M
-          cpus: '1.0'
-      restart_policy:
-        condition: any
-        delay: 5s
-        max_attempts: 3
-        window: 120s
+          memory: 256M
+          cpus: '0.5'
 
-    # Mount SSL certificates
-    volumes:
-      - ./config:/app/config:ro
-      - ./logs:/app/logs
-      - ./ssl:/app/ssl:ro
-      - /etc/letsencrypt/live/${DOMAIN:-localhost}:/app/ssl:ro
-
-    # Production health check
+    # Development health check (more frequent)
     healthcheck:
-      test: ["CMD", "curl", "-f", "-k", "https://localhost:6001/up/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+      test: ["CMD", "curl", "-f", "http://localhost:6001/up/demo-app"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
-  # Production Redis with persistence and security
+  # Development Redis (less persistence, more logs)
   redis:
+    # Development Redis configuration
     command: >
       sh -c "
         redis-server 
-        --requirepass $${REDIS_PASSWORD} 
-        --appendonly yes 
-        --appendfsync everysec
-        --maxmemory 512mb 
+        --appendonly no
+        --maxmemory 128mb 
         --maxmemory-policy allkeys-lru
-        --save 900 1
-        --save 300 10
-        --save 60 10000
-        --tcp-keepalive 60
-        --timeout 0
+        --loglevel debug
+        --save ''
       "
 
-    # Remove external port in production
-    ports: []
-
-    # Production resource limits
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
-        reservations:
-          memory: 256M
-          cpus: '0.5'
-
-    # Enhanced health check
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  # Production MySQL with optimized settings
-  mysql:
-    image: mysql:8.0
-    container_name: sockudo-mysql-prod
-    restart: unless-stopped
-
-    environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-      - MYSQL_DATABASE=sockudo
-      - MYSQL_USER=sockudo
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-
-    # Remove external port in production
-    ports: []
-
-    # Production MySQL configuration
-    command: >
-      --default-authentication-plugin=mysql_native_password
-      --innodb-buffer-pool-size=256M
-      --innodb-log-file-size=64M
-      --innodb-flush-log-at-trx-commit=2
-      --max-connections=200
-      --thread-cache-size=16
-      --query-cache-size=32M
-      --query-cache-type=1
-      --slow-query-log=1
-      --long-query-time=2
-
-    volumes:
-      - mysql-data:/var/lib/mysql
-      - ./sql/init-prod.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      - ./mysql/conf.d:/etc/mysql/conf.d:ro
-
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '2.0'
-        reservations:
-          memory: 512M
-          cpus: '1.0'
-
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "sockudo", "-p${MYSQL_PASSWORD}"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-
-    networks:
-      - sockudo-network
-
-  # Production monitoring with Prometheus
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: sockudo-prometheus-prod
-    restart: unless-stopped
-
+    # Keep external port for development access
     ports:
-      - "9090:9090"
+      - "6379:6379"
 
-    volumes:
-      - ./monitoring/prometheus-prod.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/rules:/etc/prometheus/rules:ro
-      - prometheus-data:/prometheus
-
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'
-      - '--web.enable-admin-api'
-
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
-
-    networks:
-      - sockudo-network
-
-  # Production Grafana with persistence
-  grafana:
-    image: grafana/grafana:latest
-    container_name: sockudo-grafana-prod
-    restart: unless-stopped
-
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SECURITY_DISABLE_GRAVATAR=true
-      - GF_ANALYTICS_REPORTING_ENABLED=false
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel
-
-    ports:
-      - "3000:3000"
-
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
-
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: '0.5'
-
-    networks:
-      - sockudo-network
-
-  # Production load balancer
-  nginx:
-    image: nginx:alpine
-    container_name: sockudo-nginx-prod
-    restart: unless-stopped
-
-    ports:
-      - "80:80"
-      - "443:443"
-
-    volumes:
-      - ./nginx/nginx-prod.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-
-    depends_on:
-      - sockudo
-
+    # Development resource limits
     deploy:
       resources:
         limits:
           memory: 128M
+          cpus: '0.25'
+
+    # Relaxed health check
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 2
+      start_period: 5s
+
+  # Development MySQL with sample data
+  mysql:
+    image: mysql:8.0
+    container_name: sockudo-mysql-dev
+    restart: unless-stopped
+
+    environment:
+      - MYSQL_ROOT_PASSWORD=root123
+      - MYSQL_DATABASE=sockudo_dev
+      - MYSQL_USER=sockudo
+      - MYSQL_PASSWORD=sockudo123
+
+    # Keep external port for development access
+    ports:
+      - "3306:3306"
+
+    # Development MySQL configuration
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --innodb-buffer-pool-size=64M
+      --max-connections=50
+      --general-log=1
+      --general-log-file=/var/lib/mysql/general.log
+      --slow-query-log=1
+      --long-query-time=1
+
+    volumes:
+      - mysql-dev-data:/var/lib/mysql
+      - ./sql/init-dev.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./sql/sample-data.sql:/docker-entrypoint-initdb.d/sample-data.sql:ro
+
+    deploy:
+      resources:
+        limits:
+          memory: 256M
           cpus: '0.5'
 
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    networks:
+      - sockudo-network
+
+  # Development tools container
+  dev-tools:
+    image: alpine:latest
+    container_name: sockudo-dev-tools
+    restart: "no"
+
+    # Development tools
+    command: >
+      sh -c "
+        apk add --no-cache curl jq redis mysql-client &&
+        echo 'Development tools ready!' &&
+        tail -f /dev/null
+      "
+
+    volumes:
+      - ./scripts:/scripts:ro
+
+    networks:
+      - sockudo-network
+
+  # Redis Commander for development
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: sockudo-redis-commander
+    restart: unless-stopped
+
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+
+    ports:
+      - "8081:8081"
+
+    depends_on:
+      - redis
+
+    networks:
+      - sockudo-network
+
+  # PHPMyAdmin for development (if using MySQL)
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: sockudo-phpmyadmin
+    restart: unless-stopped
+
+    environment:
+      - PMA_HOST=mysql
+      - PMA_USER=sockudo
+      - PMA_PASSWORD=sockudo123
+
+    ports:
+      - "8080:80"
+
+    depends_on:
+      - mysql
+
+    networks:
+      - sockudo-network
+
+  # Mailhog for testing webhooks (development)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: sockudo-mailhog
+    restart: unless-stopped
+
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
 
     networks:
       - sockudo-network
 
 volumes:
-  mysql-data:
-    driver: local
-  prometheus-data:
-    driver: local
-  grafana-data:
+  mysql-dev-data:
     driver: local

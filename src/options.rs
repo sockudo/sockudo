@@ -209,7 +209,6 @@ pub struct ServerOptions {
     pub app_manager: AppManagerConfig,
     pub cache: CacheConfig,
     pub channel_limits: ChannelLimits,
-    pub cluster: ClusterConfig,
     pub cors: CorsConfig,
     pub database: DatabaseConfig,
     pub database_pooling: DatabasePooling,
@@ -339,22 +338,6 @@ pub struct RedisConfig {
 pub struct ChannelLimits {
     pub max_name_length: u32,
     pub cache_ttl: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ClusterConfig {
-    pub hostname: String,
-    pub hello_interval: u64,
-    pub check_interval: u64,
-    pub node_timeout: u64,
-    pub master_timeout: u64,
-    pub port: u16,
-    pub prefix: String,
-    pub ignore_process: bool,
-    pub broadcast: String,
-    pub unicast: Option<String>,
-    pub multicast: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,7 +533,6 @@ impl Default for ServerOptions {
             app_manager: AppManagerConfig::default(),
             cache: CacheConfig::default(),
             channel_limits: ChannelLimits::default(),
-            cluster: ClusterConfig::default(),
             cors: CorsConfig::default(),
             database: DatabaseConfig::default(),
             database_pooling: DatabasePooling::default(),
@@ -690,25 +672,6 @@ impl Default for ChannelLimits {
         }
     }
 }
-
-impl Default for ClusterConfig {
-    fn default() -> Self {
-        Self {
-            hostname: "localhost".to_string(),
-            hello_interval: 5000,
-            check_interval: 10000,
-            node_timeout: 30000,
-            master_timeout: 60000,
-            port: 6002,
-            prefix: "sockudo_cluster:".to_string(),
-            ignore_process: false,
-            broadcast: "cluster:broadcast".to_string(),
-            unicast: Some("cluster:unicast".to_string()),
-            multicast: Some("cluster:multicast".to_string()),
-        }
-    }
-}
-
 impl Default for CorsConfig {
     fn default() -> Self {
         Self {

@@ -1,5 +1,5 @@
 // server.js
-require("dotenv").config(); // Load .env file
+require("dotenv").config(); // Load .env.example file
 const express = require("express");
 const bodyParser = require("body-parser");
 const Pusher = require("pusher"); // Use Pusher library for convenience, especially auth

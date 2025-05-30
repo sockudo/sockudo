@@ -1,0 +1,209 @@
+{
+  "debug": false,
+  "host": "0.0.0.0",
+  "port": 6001,
+  "mode": "production",
+  "path_prefix": "/",
+  "shutdown_grace_period": 10,
+  "websocket_max_payload_kb": 64,
+  "user_authentication_timeout": 3600,
+
+  "adapter": {
+    "driver": "redis",
+    "redis": {
+      "requests_timeout": 5000,
+      "prefix": "sockudo_adapter:",
+      "cluster_mode": false,
+      "redis_pub_options": {},
+      "redis_sub_options": {}
+    },
+    "cluster": {
+      "nodes": [],
+      "prefix": "sockudo_cluster:",
+      "request_timeout_ms": 5000,
+      "use_connection_manager": true
+    },
+    "nats": {
+      "servers": ["nats://nats:4222"],
+      "prefix": "sockudo_nats:",
+      "request_timeout_ms": 5000,
+      "connection_timeout_ms": 5000
+    }
+  },
+
+  "app_manager": {
+    "driver": "memory",
+    "array": {
+      "apps": []
+    },
+    "cache": {
+      "enabled": true,
+      "ttl": 300
+    }
+  },
+
+  "cache": {
+    "driver": "redis",
+    "redis": {
+      "prefix": "sockudo_cache:",
+      "cluster_mode": false
+    },
+    "memory": {
+      "ttl": 300,
+      "cleanup_interval": 60,
+      "max_capacity": 10000
+    }
+  },
+
+  "database": {
+    "redis": {
+      "host": "redis",
+      "port": 6379,
+      "db": 0,
+      "key_prefix": "sockudo:",
+      "sentinels": [],
+      "cluster_nodes": []
+    },
+    "mysql": {
+      "host": "mysql",
+      "port": 3306,
+      "username": "sockudo",
+      "password": "sockudo123",
+      "database": "sockudo",
+      "table_name": "applications",
+      "connection_pool_size": 10,
+      "cache_ttl": 300,
+      "cache_cleanup_interval": 60,
+      "cache_max_capacity": 100
+    },
+    "postgres": {
+      "host": "postgres",
+      "port": 5432,
+      "username": "sockudo",
+      "password": "sockudo123",
+      "database": "sockudo",
+      "table_name": "applications",
+      "connection_pool_size": 10,
+      "cache_ttl": 300,
+      "cache_cleanup_interval": 60,
+      "cache_max_capacity": 100
+    },
+    "dynamodb": {
+      "region": "us-east-1",
+      "table_name": "sockudo-applications"
+    }
+  },
+
+  "queue": {
+    "driver": "redis",
+    "redis": {
+      "concurrency": 5,
+      "prefix": "sockudo_queue:",
+      "cluster_mode": false
+    },
+    "redis_cluster": {
+      "concurrency": 5,
+      "prefix": "sockudo_queue:",
+      "nodes": [],
+      "request_timeout_ms": 5000
+    },
+    "sqs": {
+      "region": "us-east-1",
+      "visibility_timeout": 30,
+      "max_messages": 10,
+      "wait_time_seconds": 5,
+      "concurrency": 5,
+      "fifo": false
+    }
+  },
+
+  "rate_limiter": {
+    "enabled": true,
+    "driver": "redis",
+    "api_rate_limit": {
+      "max_requests": 100,
+      "window_seconds": 60,
+      "identifier": "api",
+      "trust_hops": 0
+    },
+    "websocket_rate_limit": {
+      "max_requests": 20,
+      "window_seconds": 60,
+      "identifier": "websocket_connect",
+      "trust_hops": 0
+    },
+    "redis": {
+      "prefix": "sockudo_rl:",
+      "cluster_mode": false
+    }
+  },
+
+  "metrics": {
+    "enabled": true,
+    "driver": "prometheus",
+    "host": "0.0.0.0",
+    "port": 9601,
+    "prometheus": {
+      "prefix": "sockudo_"
+    }
+  },
+
+  "ssl": {
+    "enabled": false,
+    "cert_path": "/app/ssl/cert.pem",
+    "key_path": "/app/ssl/key.pem",
+    "redirect_http": false,
+    "http_port": 80
+  },
+
+  "cors": {
+    "credentials": true,
+    "origin": ["*"],
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allowed_headers": [
+      "Authorization",
+      "Content-Type",
+      "X-Requested-With",
+      "Accept"
+    ]
+  },
+
+  "channel_limits": {
+    "max_name_length": 200,
+    "cache_ttl": 3600
+  },
+
+  "event_limits": {
+    "max_channels_at_once": 100,
+    "max_name_length": 200,
+    "max_payload_in_kb": 100,
+    "max_batch_size": 10
+  },
+
+  "presence": {
+    "max_members_per_channel": 100,
+    "max_member_size_in_kb": 2
+  },
+
+  "http_api": {
+    "request_limit_in_mb": 10,
+    "accept_traffic": {
+      "memory_threshold": 0.90
+    }
+  },
+
+  "webhooks": {
+    "batching": {
+      "enabled": true,
+      "duration": 50
+    }
+  },
+  "instance": {
+    "process_id": "sockudo-docker-1"
+  },
+  "database_pooling": {
+    "enabled": true,
+    "min": 2,
+    "max": 10
+  }
+}
