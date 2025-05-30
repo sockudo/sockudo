@@ -43,6 +43,7 @@ setup: ## Initial setup (create .env, directories)
 		cp .env.example .env; \
 	fi
 	@mkdir -p config logs ssl scripts/backup
+	@chmod +x setup.sh
 	@echo "$(GREEN)Setup complete!$(RESET)"
 	@echo "$(YELLOW)Please edit .env file with your configuration$(RESET)"
 

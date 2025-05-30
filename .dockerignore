@@ -4,7 +4,8 @@
 
 # Rust build artifacts
 target/
-Cargo.lock
+# Don't ignore Cargo.lock - we need it for reproducible builds
+# Cargo.lock
 
 # IDE files
 .vscode/
@@ -40,7 +41,7 @@ logs/
 *.log
 
 # Environment files
-.env.example
+.env
 .env.*
 
 # SSL certificates (they should be mounted as volumes)

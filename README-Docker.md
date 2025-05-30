@@ -8,12 +8,12 @@ This directory contains a complete Docker setup for running Sockudo WebSocket Se
    ```bash
    git clone <sockudo-repo>
    cd sockudo
-   cp .env.example.example .env.example
+   cp .env.example .env
    ```
 
 2. **Edit the `.env` file:**
    ```bash
-   nano .env.example
+   nano .env
    # Set your passwords and configuration
    ```
 

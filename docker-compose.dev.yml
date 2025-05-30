@@ -3,8 +3,6 @@
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 # =============================================================================
 
-version: '3.8'
-
 services:
   # Development-optimized Sockudo configuration
   sockudo:
@@ -40,7 +38,7 @@ services:
       - ./config:/app/config
       - ./logs:/app/logs
       - ./src:/app/src:ro  # Mount source for reference
-      - ./.env.example:/app/.env.example:ro
+      - ./.env:/app/.env:ro
 
     # Relaxed resource limits for development
     deploy:
