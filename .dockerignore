@@ -40,7 +40,7 @@ logs/
 *.log
 
 # Environment files
-.env
+.env.example
 .env.*
 
 # SSL certificates (they should be mounted as volumes)
