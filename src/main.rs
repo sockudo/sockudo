@@ -959,19 +959,17 @@ impl SockudoServer {
         let key_path = std::path::PathBuf::from(&self.config.ssl.key_path);
         if !cert_path.exists() {
             return Err(Error::ConfigFileError(format!(
-                "SSL cert_path not found: {:?}",
-                cert_path
+                "SSL cert_path not found: {cert_path:?}"
             )));
         }
         if !key_path.exists() {
             return Err(Error::ConfigFileError(format!(
-                "SSL key_path not found: {:?}",
-                key_path
+                "SSL key_path not found: {key_path:?}"
             )));
         }
         RustlsConfig::from_pem_file(cert_path, key_path)
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to load TLS configuration: {}", e)))
+            .map_err(|e| Error::InternalError(format!("Failed to load TLS configuration: {e}")))
     }
 
     async fn shutdown_signal(&self) {
@@ -1079,11 +1077,13 @@ impl SockudoServer {
                 warn!("Error disconnecting cache manager: {}", e);
             }
         }
-        if let Some(queue_manager_arc) = &self.state.queue_manager {
-            if let Err(e) = queue_manager_arc.disconnect().await {
-                warn!("Error disconnecting queue manager: {}", e);
-            }
+
+        if let Some(queue_manager_arc) = &self.state.queue_manager
+            && let Err(e) = queue_manager_arc.disconnect().await
+        {
+            warn!("Error disconnecting queue manager: {}", e);
         }
+
         // Add disconnect for app_manager if it has such a method
         // self.state.app_manager.disconnect().await?;
 
@@ -1140,9 +1140,9 @@ where
         Err(e) => {
             // Using eprintln! as logging might not be fully initialized when this is called
             eprintln!(
-                "[CONFIG-WARN] Failed to parse {} driver from string '{}': {:?}. Using default: {:?}.",
-                driver_name, driver_str, e, default_driver
+                "[CONFIG-WARN] Failed to parse {driver_name} driver from string '{driver_str}': {e:?}. Using default: {default_driver:?}."
             );
+
             default_driver
         }
     }
@@ -1155,8 +1155,10 @@ async fn main() -> Result<()> {
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false); // Default to false if DEBUG env var is not set
 
-    let mut config = ServerOptions::default();
-    config.debug = initial_debug_from_env; // Set initial debug state
+    let mut config = ServerOptions {
+        debug: initial_debug_from_env,
+        ..Default::default()
+    };
 
     // --- Apply environment variables to default config (before loading from file) ---
     // This allows ENV to provide defaults if not in file, or be overridden by file.
@@ -1196,7 +1198,8 @@ async fn main() -> Result<()> {
             config.queue.redis_cluster.concurrency = concurrency;
         } else {
             eprintln!(
-                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{concurrency_str}'");
+                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{concurrency_str}'"
+            );
         }
     }
     if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
@@ -1231,8 +1234,7 @@ async fn main() -> Result<()> {
         if let Ok(port) = val_str.parse() {
             config.ssl.http_port = Some(port);
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{val_str}'");
+            eprintln!("[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{val_str}'");
         }
     }
 
@@ -1244,8 +1246,7 @@ async fn main() -> Result<()> {
         if let Ok(port) = val_str.parse() {
             config.database.redis.port = port;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{val_str}'");
+            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("DATABASE_REDIS_PASSWORD") {
@@ -1255,8 +1256,7 @@ async fn main() -> Result<()> {
         if let Ok(db) = val_str.parse() {
             config.database.redis.db = db;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{val_str}'");
+            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
