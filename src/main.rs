@@ -1196,9 +1196,7 @@ async fn main() -> Result<()> {
             config.queue.redis_cluster.concurrency = concurrency;
         } else {
             eprintln!(
-                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{}'",
-                concurrency_str
-            );
+                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{concurrency_str}'");
         }
     }
     if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
@@ -1234,9 +1232,7 @@ async fn main() -> Result<()> {
             config.ssl.http_port = Some(port);
         } else {
             eprintln!(
-                "[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{}'",
-                val_str
-            );
+                "[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{val_str}'");
         }
     }
 
@@ -1249,9 +1245,7 @@ async fn main() -> Result<()> {
             config.database.redis.port = port;
         } else {
             eprintln!(
-                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{}'",
-                val_str
-            );
+                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("DATABASE_REDIS_PASSWORD") {
@@ -1262,9 +1256,7 @@ async fn main() -> Result<()> {
             config.database.redis.db = db;
         } else {
             eprintln!(
-                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{}'",
-                val_str
-            );
+                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
@@ -1282,10 +1274,7 @@ async fn main() -> Result<()> {
         if let Ok(port) = val_str.parse() {
             config.metrics.port = port;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse METRICS_PORT env var: '{}'",
-                val_str
-            );
+            eprintln!("[CONFIG-WARN] Failed to parse METRICS_PORT env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
@@ -1300,10 +1289,7 @@ async fn main() -> Result<()> {
         if let Ok(period) = val_str.parse() {
             config.shutdown_grace_period = period;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{}'",
-                val_str
-            );
+            eprintln!("[CONFIG-WARN] Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{val_str}'",);
         }
     }
 
@@ -1315,51 +1301,41 @@ async fn main() -> Result<()> {
     let config_path = config_arg.unwrap_or_else(|| {
         // Default to current directory if no config file is specified
         let default_path = "config/config.json";
-        println!(
-            "[PRE-LOG] No config file specified, using default: {}",
-            default_path
-        );
+        println!("[PRE-LOG] No config file specified, using default: {default_path}");
         default_path.to_string()
     });
 
     if Path::new(&config_path).exists() {
-        println!("[PRE-LOG] Loading configuration from file: {}", config_path); // Basic print before logging init
-        let mut file = File::open(&config_path).map_err(|e| {
-            Error::ConfigFileError(format!("Failed to open {}: {}", config_path, e))
-        })?;
+        println!("[PRE-LOG] Loading configuration from file: {config_path}"); // Basic print before logging init
+        let mut file = File::open(&config_path)
+            .map_err(|e| Error::ConfigFileError(format!("Failed to open {config_path}: {e}")))?;
         let mut contents = String::new();
-        file.read_to_string(&mut contents).map_err(|e| {
-            Error::ConfigFileError(format!("Failed to read {}: {}", config_path, e))
-        })?;
+        file.read_to_string(&mut contents)
+            .map_err(|e| Error::ConfigFileError(format!("Failed to read {config_path}: {e}")))?;
 
         match from_str::<ServerOptions>(&contents) {
             Ok(file_config) => {
                 config = file_config; // File config overrides previous defaults and ENV vars
                 println!(
-                    "[PRE-LOG] Successfully loaded and applied configuration from {}",
-                    config_path
+                    "[PRE-LOG] Successfully loaded and applied configuration from {config_path}"
                 );
             }
             Err(e) => {
                 eprintln!(
-                    "[PRE-LOG-ERROR] Failed to parse configuration file {}: {}. Using defaults and environment variables already set.",
-                    config_path, e
+                    "[PRE-LOG-ERROR] Failed to parse configuration file {config_path}: {e}. Using defaults and environment variables already set."
                 );
             }
         }
     } else {
         println!(
-            "[PRE-LOG] No configuration file found at {}, using defaults and environment variables.",
-            config_path
+            "[PRE-LOG] No configuration file found at {config_path}, using defaults and environment variables."
         );
     }
 
     // --- Re-apply specific high-priority ENV vars (to override file) ---
     if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        println!(
-            "[PRE-LOG] Applying REDIS_URL environment variable override: {}",
-            redis_url_env
-        );
+        println!("[PRE-LOG] Applying REDIS_URL environment variable override: {redis_url_env}");
+
         // This will override any host/port/db/password from file or previous ENVs for these components
         config
             .adapter
@@ -1473,13 +1449,13 @@ fn make_https(host: &str, uri: Uri, https_port: u16) -> core::result::Result<Uri
     // Correctly parse host and replace/add port for HTTPS
     let authority_val: Authority = host
         .parse()
-        .map_err(|e| format!("Failed to parse host '{}' into authority: {}", host, e))?;
+        .map_err(|e| format!("Failed to parse host '{host}' into authority: {e}"))?;
 
     let bare_host_str = authority_val.host(); // Get just the host part
 
     // Construct new authority with the HTTPS port
     parts.authority = Some(
-        format!("{}:{}", bare_host_str, https_port)
+        format!("{bare_host_str}:{https_port}")
             .parse()
             .map_err(|e| {
                 format!("Failed to create new authority '{bare_host_str}:{https_port}': {e}")
