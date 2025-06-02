@@ -1,11 +1,9 @@
 // src/adapter/handler/core_methods.rs
 use super::ConnectionHandler;
 use crate::error::{Error, Result};
-use crate::websocket::{SocketId, WebSocketRef};
+use crate::websocket::SocketId;
 use crate::app::config::App;
 use crate::protocol::messages::{PusherMessage, MessageData, ErrorData};
-use crate::channel::ChannelType;
-use crate::utils;
 use serde_json::Value;
 use std::collections::HashSet;
 use tracing::{info, warn, error};

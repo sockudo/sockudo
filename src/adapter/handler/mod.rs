@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::metrics::MetricsInterface;
 use crate::options::ServerOptions;
 use crate::protocol::constants::CLIENT_EVENT_PREFIX;
-use crate::protocol::messages::{MessageData, PusherApiMessage, PusherMessage};
+use crate::protocol::messages::{MessageData, PusherMessage};
 use crate::rate_limiter::{RateLimiter};
 use crate::watchlist::WatchlistManager;
 use crate::webhook::integration::WebhookIntegration;

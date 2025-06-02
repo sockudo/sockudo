@@ -1,5 +1,4 @@
 use crate::adapter::ConnectionHandler;
-use crate::app::auth::AuthValidator; // Added for API auth
 use crate::app::config::App; // To access app limits
 use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
 use crate::protocol::messages::{
@@ -17,7 +16,7 @@ use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap}, // Added BTreeMap
+    collections::HashMap, // Added BTreeMap
     sync::Arc,
 };
 use sysinfo::System;

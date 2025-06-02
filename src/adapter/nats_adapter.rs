@@ -26,7 +26,7 @@ use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 pub(crate) use crate::options::NatsAdapterConfig;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketRef};
 
 /// NATS channels/subjects
 pub const DEFAULT_PREFIX: &str = "sockudo";

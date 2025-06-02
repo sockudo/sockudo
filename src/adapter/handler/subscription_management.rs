@@ -1,7 +1,7 @@
 // src/adapter/handler/subscription_management.rs
 use super::types::*;
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::websocket::SocketId;
 use crate::app::config::App;
 use crate::channel::{ChannelType, PresenceMemberInfo};
@@ -9,7 +9,6 @@ use crate::protocol::messages::{PusherMessage, MessageData};
 use crate::utils::is_cache_channel;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tracing::{info, warn};
 
 #[derive(Debug)]
 pub struct SubscriptionResult {

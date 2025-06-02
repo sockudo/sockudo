@@ -5,8 +5,6 @@ use crate::error::{Error, Result};
 use crate::websocket::SocketId;
 use crate::app::config::App;
 use crate::protocol::messages::PusherMessage;
-use std::sync::Arc;
-use tracing::{info, warn, error};
 
 impl ConnectionHandler {
     pub async fn handle_ping(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {

@@ -6,7 +6,6 @@ use crate::adapter::Adapter;
 use crate::adapter::horizontal_adapter::{
     BroadcastMessage, HorizontalAdapter, PendingRequest, RequestBody, RequestType, ResponseBody,
 };
-use crate::adapter::local_adapter::LocalAdapter;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
@@ -26,7 +25,7 @@ use uuid::Uuid;
 use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketRef};
 
 /// Redis channels
 pub const DEFAULT_PREFIX: &str = "sockudo";

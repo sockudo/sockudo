@@ -4,7 +4,7 @@ use crate::app::manager::AppManager;
 use crate::error::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use hmac::{Hmac, KeyInit};
+use hmac::Hmac;
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;

@@ -1,16 +1,12 @@
 pub mod manager;
 
 // src/watchlist/manager.rs
-use crate::app::config::App;
 use crate::error::Result;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::SocketId;
 use dashmap::DashMap;
-use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct WatchlistEntry {

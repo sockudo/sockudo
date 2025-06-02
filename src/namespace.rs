@@ -3,19 +3,16 @@ use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result}; // Error should be in scope
 
-use crate::protocol::messages::PusherMessage;
-use crate::websocket::{ConnectionState, SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocket, WebSocketRef};
 use dashmap::{DashMap, DashSet};
-use fastwebsockets::{Frame, OpCode, Payload, WebSocketWrite};
+use fastwebsockets::WebSocketWrite;
 use futures::future::join_all;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::io::WriteHalf;
-use tokio::sync::{Mutex, mpsc};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 // Represents a namespace, typically tied to a specific application ID.
 // Manages WebSocket connections, channel subscriptions, and user presence within that app.

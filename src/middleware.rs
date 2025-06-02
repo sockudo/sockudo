@@ -2,15 +2,13 @@ use crate::adapter::ConnectionHandler;
 use crate::app::auth::AuthValidator;
 use crate::http_handler::{AppError, EventQuery};
 use axum::{
-    BoxError,
-    body::{Body, Bytes, HttpBody}, // HttpBody and collect are important for body handling
-    extract::{FromRequestParts, Request, State}, // Using axum::extract::Request for the whole request
-    http::{Method, Request as HttpRequest, StatusCode, Uri, request::Parts},
+    body::Body, // HttpBody and collect are important for body handling
+    extract::State, // Using axum::extract::Request for the whole request
+    http::{Request as HttpRequest},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use http_body_util::BodyExt;
-use serde::de::DeserializeOwned; // For generic JSON payload in original handler
 use std::{collections::BTreeMap, sync::Arc};
 
 // Helper to extract query parameters for the signature

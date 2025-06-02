@@ -9,7 +9,6 @@ use futures_util::{stream, StreamExt};
 use moka::future::Cache;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 

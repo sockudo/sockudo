@@ -5,9 +5,9 @@ use crate::error::{Error, Result};
 
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketRef};
 use dashmap::{DashMap, DashSet};
-use fastwebsockets::{Frame, Payload, WebSocketWrite};
+use fastwebsockets::WebSocketWrite;
 use futures_util::future::join_all;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::io::WriteHalf;
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 

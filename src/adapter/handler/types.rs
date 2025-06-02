@@ -1,6 +1,4 @@
 use std::option::Option;
-// src/adapter/handler/types.rs
-use crate::websocket::SocketId;
 use crate::protocol::messages::{PusherMessage, MessageData};
 use serde_json::Value;
 use crate::channel::ChannelType;
