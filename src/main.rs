@@ -1058,8 +1058,9 @@ impl SockudoServer {
                 .map(|(_app_id, ws_raw_obj)| {
                     async move {
                         let mut ws = ws_raw_obj.0.lock().await; // Lock the WebSocketRef
-                        ws.close(4009, "You got disconnected by the app.".to_string())
-                            .await;
+                        if let Err(e) = ws.close(4009, "You got disconnected by the app.".to_string()).await {
+                            error!("Failed to close WebSocket: {:?}", e);
+                        }
                     }
                 });
 
