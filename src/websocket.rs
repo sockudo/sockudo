@@ -56,7 +56,7 @@ impl SocketId {
         let min: u64 = 0;
         let max: u64 = 10_000_000_000;
 
-        let mut  random_number = || rng.random_range(min..=max);
+        let mut random_number = || rng.random_range(min..=max);
         format!("{}.{}", random_number(), random_number())
     }
 }
@@ -169,7 +169,8 @@ impl ConnectionState {
     }
 
     pub fn get_app_key(&self) -> String {
-        self.app.as_ref()
+        self.app
+            .as_ref()
             .map(|app| app.key.clone())
             .unwrap_or_default()
     }
@@ -213,7 +214,10 @@ impl MessageSender {
             }
 
             // Try to close gracefully
-            if let Err(e) = socket.write_frame(Frame::close(1000, b"Normal closure")).await {
+            if let Err(e) = socket
+                .write_frame(Frame::close(1000, b"Normal closure"))
+                .await
+            {
                 warn!("Failed to send close frame: {}", e);
             }
         });
@@ -225,13 +229,14 @@ impl MessageSender {
     }
 
     pub fn send(&self, frame: Frame<'static>) -> Result<()> {
-        self.sender.send(frame)
+        self.sender
+            .send(frame)
             .map_err(|_| Error::ConnectionError("Message channel closed".into()))
     }
 
     pub fn send_json<T: serde::Serialize>(&self, message: &T) -> Result<()> {
         let payload = serde_json::to_vec(message)
-            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {}", e)))?;
+            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
 
         let frame = Frame::text(Payload::from(payload));
         self.send(frame)

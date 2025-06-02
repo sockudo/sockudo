@@ -5,10 +5,10 @@ use crate::app::memory_app_manager::MemoryAppManager;
 use crate::app::mysql_app_manager::MySQLAppManager;
 use crate::error::Result;
 
+use crate::app::pg_app_manager::PgSQLAppManager;
 use crate::options::{AppManagerConfig, AppManagerDriver, DatabaseConfig}; // Import AppManagerDriver
 use std::sync::Arc;
 use tracing::{info, warn};
-use crate::app::pg_app_manager::PgSQLAppManager;
 
 pub struct AppManagerFactory;
 
@@ -64,7 +64,7 @@ impl AppManagerFactory {
                         Ok(Arc::new(MemoryAppManager::new()))
                     }
                 }
-            },
+            }
             AppManagerDriver::PgSql => {
                 let pgsql_db_config = db_config.postgres.clone();
                 match PgSQLAppManager::new(pgsql_db_config).await {

@@ -959,19 +959,17 @@ impl SockudoServer {
         let key_path = std::path::PathBuf::from(&self.config.ssl.key_path);
         if !cert_path.exists() {
             return Err(Error::ConfigFileError(format!(
-                "SSL cert_path not found: {:?}",
-                cert_path
+                "SSL cert_path not found: {cert_path:?}"
             )));
         }
         if !key_path.exists() {
             return Err(Error::ConfigFileError(format!(
-                "SSL key_path not found: {:?}",
-                key_path
+                "SSL key_path not found: {key_path:?}"
             )));
         }
         RustlsConfig::from_pem_file(cert_path, key_path)
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to load TLS configuration: {}", e)))
+            .map_err(|e| Error::InternalError(format!("Failed to load TLS configuration: {e}")))
     }
 
     async fn shutdown_signal(&self) {
@@ -1020,10 +1018,8 @@ impl SockudoServer {
                                 // Assuming get_sockets returns an iterable collection
                                 for (_socket_id, ws_raw_obj) in sockets_vec {
                                     // Ensure ws_raw_obj (your 'ws') is Clone.
-                                    connections_to_cleanup.push((
-                                        app_id.clone(),
-                                        ws_raw_obj.clone(),
-                                    ));
+                                    connections_to_cleanup
+                                        .push((app_id.clone(), ws_raw_obj.clone()));
                                 }
                             }
                             Err(e) => {
@@ -1053,15 +1049,20 @@ impl SockudoServer {
         // --- Step 2: Parallelize Cleanup ---
         // Each cleanup task will briefly re-acquire the lock on ConnectionManager.
         if !connections_to_cleanup.is_empty() {
-            let cleanup_futures = connections_to_cleanup
-                .into_iter()
-                .map(|(_app_id, ws_raw_obj)| {
-                    async move {
-                        let mut ws = ws_raw_obj.0.lock().await; // Lock the WebSocketRef
-                        ws.close(4009, "You got disconnected by the app.".to_string())
-                            .await;
-                    }
-                });
+            let cleanup_futures =
+                connections_to_cleanup
+                    .into_iter()
+                    .map(|(_app_id, ws_raw_obj)| {
+                        async move {
+                            let mut ws = ws_raw_obj.0.lock().await; // Lock the WebSocketRef
+                            if let Err(e) = ws
+                                .close(4009, "You got disconnected by the app.".to_string())
+                                .await
+                            {
+                                error!("Failed to close WebSocket: {:?}", e);
+                            }
+                        }
+                    });
 
             join_all(cleanup_futures).await;
             info!("All connection cleanup tasks have been processed.");
@@ -1076,11 +1077,13 @@ impl SockudoServer {
                 warn!("Error disconnecting cache manager: {}", e);
             }
         }
-        if let Some(queue_manager_arc) = &self.state.queue_manager {
-            if let Err(e) = queue_manager_arc.disconnect().await {
-                warn!("Error disconnecting queue manager: {}", e);
-            }
+
+        if let Some(queue_manager_arc) = &self.state.queue_manager
+            && let Err(e) = queue_manager_arc.disconnect().await
+        {
+            warn!("Error disconnecting queue manager: {}", e);
         }
+
         // Add disconnect for app_manager if it has such a method
         // self.state.app_manager.disconnect().await?;
 
@@ -1137,9 +1140,9 @@ where
         Err(e) => {
             // Using eprintln! as logging might not be fully initialized when this is called
             eprintln!(
-                "[CONFIG-WARN] Failed to parse {} driver from string '{}': {:?}. Using default: {:?}.",
-                driver_name, driver_str, e, default_driver
+                "[CONFIG-WARN] Failed to parse {driver_name} driver from string '{driver_str}': {e:?}. Using default: {default_driver:?}."
             );
+
             default_driver
         }
     }
@@ -1152,8 +1155,10 @@ async fn main() -> Result<()> {
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false); // Default to false if DEBUG env var is not set
 
-    let mut config = ServerOptions::default();
-    config.debug = initial_debug_from_env; // Set initial debug state
+    let mut config = ServerOptions {
+        debug: initial_debug_from_env,
+        ..Default::default()
+    };
 
     // --- Apply environment variables to default config (before loading from file) ---
     // This allows ENV to provide defaults if not in file, or be overridden by file.
@@ -1193,8 +1198,7 @@ async fn main() -> Result<()> {
             config.queue.redis_cluster.concurrency = concurrency;
         } else {
             eprintln!(
-                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{}'",
-                concurrency_str
+                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{concurrency_str}'"
             );
         }
     }
@@ -1230,10 +1234,7 @@ async fn main() -> Result<()> {
         if let Ok(port) = val_str.parse() {
             config.ssl.http_port = Some(port);
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{}'",
-                val_str
-            );
+            eprintln!("[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{val_str}'");
         }
     }
 
@@ -1245,10 +1246,7 @@ async fn main() -> Result<()> {
         if let Ok(port) = val_str.parse() {
             config.database.redis.port = port;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{}'",
-                val_str
-            );
+            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("DATABASE_REDIS_PASSWORD") {
@@ -1258,10 +1256,7 @@ async fn main() -> Result<()> {
         if let Ok(db) = val_str.parse() {
             config.database.redis.db = db;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{}'",
-                val_str
-            );
+            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
@@ -1279,10 +1274,7 @@ async fn main() -> Result<()> {
         if let Ok(port) = val_str.parse() {
             config.metrics.port = port;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse METRICS_PORT env var: '{}'",
-                val_str
-            );
+            eprintln!("[CONFIG-WARN] Failed to parse METRICS_PORT env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
@@ -1297,10 +1289,7 @@ async fn main() -> Result<()> {
         if let Ok(period) = val_str.parse() {
             config.shutdown_grace_period = period;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{}'",
-                val_str
-            );
+            eprintln!("[CONFIG-WARN] Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{val_str}'",);
         }
     }
 
@@ -1312,51 +1301,41 @@ async fn main() -> Result<()> {
     let config_path = config_arg.unwrap_or_else(|| {
         // Default to current directory if no config file is specified
         let default_path = "config/config.json";
-        println!(
-            "[PRE-LOG] No config file specified, using default: {}",
-            default_path
-        );
+        println!("[PRE-LOG] No config file specified, using default: {default_path}");
         default_path.to_string()
     });
 
     if Path::new(&config_path).exists() {
-        println!("[PRE-LOG] Loading configuration from file: {}", config_path); // Basic print before logging init
-        let mut file = File::open(&config_path).map_err(|e| {
-            Error::ConfigFileError(format!("Failed to open {}: {}", config_path, e))
-        })?;
+        println!("[PRE-LOG] Loading configuration from file: {config_path}"); // Basic print before logging init
+        let mut file = File::open(&config_path)
+            .map_err(|e| Error::ConfigFileError(format!("Failed to open {config_path}: {e}")))?;
         let mut contents = String::new();
-        file.read_to_string(&mut contents).map_err(|e| {
-            Error::ConfigFileError(format!("Failed to read {}: {}", config_path, e))
-        })?;
+        file.read_to_string(&mut contents)
+            .map_err(|e| Error::ConfigFileError(format!("Failed to read {config_path}: {e}")))?;
 
         match from_str::<ServerOptions>(&contents) {
             Ok(file_config) => {
                 config = file_config; // File config overrides previous defaults and ENV vars
                 println!(
-                    "[PRE-LOG] Successfully loaded and applied configuration from {}",
-                    config_path
+                    "[PRE-LOG] Successfully loaded and applied configuration from {config_path}"
                 );
             }
             Err(e) => {
                 eprintln!(
-                    "[PRE-LOG-ERROR] Failed to parse configuration file {}: {}. Using defaults and environment variables already set.",
-                    config_path, e
+                    "[PRE-LOG-ERROR] Failed to parse configuration file {config_path}: {e}. Using defaults and environment variables already set."
                 );
             }
         }
     } else {
         println!(
-            "[PRE-LOG] No configuration file found at {}, using defaults and environment variables.",
-            config_path
+            "[PRE-LOG] No configuration file found at {config_path}, using defaults and environment variables."
         );
     }
 
     // --- Re-apply specific high-priority ENV vars (to override file) ---
     if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        println!(
-            "[PRE-LOG] Applying REDIS_URL environment variable override: {}",
-            redis_url_env
-        );
+        println!("[PRE-LOG] Applying REDIS_URL environment variable override: {redis_url_env}");
+
         // This will override any host/port/db/password from file or previous ENVs for these components
         config
             .adapter
@@ -1470,19 +1449,16 @@ fn make_https(host: &str, uri: Uri, https_port: u16) -> core::result::Result<Uri
     // Correctly parse host and replace/add port for HTTPS
     let authority_val: Authority = host
         .parse()
-        .map_err(|e| format!("Failed to parse host '{}' into authority: {}", host, e))?;
+        .map_err(|e| format!("Failed to parse host '{host}' into authority: {e}"))?;
 
     let bare_host_str = authority_val.host(); // Get just the host part
 
     // Construct new authority with the HTTPS port
     parts.authority = Some(
-        format!("{}:{}", bare_host_str, https_port)
+        format!("{bare_host_str}:{https_port}")
             .parse()
             .map_err(|e| {
-                format!(
-                    "Failed to create new authority '{}:{}': {}",
-                    bare_host_str, https_port, e
-                )
+                format!("Failed to create new authority '{bare_host_str}:{https_port}': {e}")
             })?,
     );
 

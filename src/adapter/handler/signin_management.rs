@@ -1,10 +1,10 @@
 // src/adapter/handler/signin_management.rs
-use super::types::*;
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
-use crate::websocket::{SocketId, UserInfo};
+use super::types::*;
 use crate::app::config::App;
-use crate::protocol::messages::{PusherMessage, MessageData};
+use crate::error::{Error, Result};
+use crate::protocol::messages::{MessageData, PusherMessage};
+use crate::websocket::{SocketId, UserInfo};
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
@@ -42,7 +42,8 @@ impl ConnectionHandler {
         user_info: &UserInfo,
     ) -> Result<()> {
         // Clear authentication timeout since user is now signed in
-        self.clear_user_authentication_timeout(&app_config.id, socket_id).await?;
+        self.clear_user_authentication_timeout(&app_config.id, socket_id)
+            .await?;
 
         // Update connection state
         let mut connection_manager = self.connection_manager.lock().await;
@@ -92,7 +93,9 @@ impl ConnectionHandler {
             watchlist_events = events;
 
             // Get watchers who should be notified that this user came online
-            watchers_to_notify = self.get_watchers_for_user(&app_config.id, &user_info.id).await?;
+            watchers_to_notify = self
+                .get_watchers_for_user(&app_config.id, &user_info.id)
+                .await?;
 
             info!(
                 "User {} signin: {} watchlist events to send, notifying {} watchers",
@@ -110,13 +113,17 @@ impl ConnectionHandler {
                     .send_message(&app_config.id, socket_id, event.clone())
                     .await
                 {
-                    warn!("Failed to send watchlist event to user {}: {}", user_info.id, e);
+                    warn!(
+                        "Failed to send watchlist event to user {}: {}",
+                        user_info.id, e
+                    );
                 }
             }
 
             // Notify watchers that this user came online
             if !watchers_to_notify.is_empty() {
-                let online_event = PusherMessage::watchlist_online_event(vec![user_info.id.clone()]);
+                let online_event =
+                    PusherMessage::watchlist_online_event(vec![user_info.id.clone()]);
 
                 for watcher_socket_id in watchers_to_notify {
                     if let Err(e) = self
@@ -126,7 +133,10 @@ impl ConnectionHandler {
                         .send_message(&app_config.id, &watcher_socket_id, online_event.clone())
                         .await
                     {
-                        warn!("Failed to send online notification to watcher {}: {}", watcher_socket_id, e);
+                        warn!(
+                            "Failed to send online notification to watcher {}: {}",
+                            watcher_socket_id, e
+                        );
                     }
                 }
             }
@@ -158,7 +168,11 @@ impl ConnectionHandler {
             .await
     }
 
-    pub(crate) async fn get_watchers_for_user(&self, app_id: &str, user_id: &str) -> Result<Vec<SocketId>> {
+    pub(crate) async fn get_watchers_for_user(
+        &self,
+        app_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<SocketId>> {
         let mut watcher_sockets = Vec::new();
 
         // Get all users who are watching this user

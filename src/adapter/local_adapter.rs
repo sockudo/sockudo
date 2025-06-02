@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocketRef};
+use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
 use futures_util::future::join_all;
@@ -14,7 +15,6 @@ use hyper_util::rt::TokioIo;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
-use async_trait::async_trait;
 use tokio::io::WriteHalf;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
@@ -47,10 +47,7 @@ impl LocalAdapter {
     }
 
     // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
-    pub async fn get_all_connections(
-        &mut self,
-        app_id: &str,
-    ) -> DashMap<SocketId, WebSocketRef> {
+    pub async fn get_all_connections(&mut self, app_id: &str) -> DashMap<SocketId, WebSocketRef> {
         let namespace = self.get_or_create_namespace(app_id).await;
         namespace.sockets.clone()
     }
@@ -79,11 +76,7 @@ impl Adapter for LocalAdapter {
     }
 
     // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
-    async fn get_connection(
-        &mut self,
-        socket_id: &SocketId,
-        app_id: &str,
-    ) -> Option<WebSocketRef> {
+    async fn get_connection(&mut self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
         let namespace = self.get_or_create_namespace(app_id).await;
         namespace.get_connection(socket_id)
     }
@@ -141,9 +134,7 @@ impl Adapter for LocalAdapter {
                 .into_iter()
                 .map(|socket_ref| {
                     let message_clone = message.clone();
-                    tokio::spawn(async move {
-                        socket_ref.send_message(&message_clone).await
-                    })
+                    tokio::spawn(async move { socket_ref.send_message(&message_clone).await })
                 })
                 .collect();
 
@@ -183,9 +174,7 @@ impl Adapter for LocalAdapter {
                 .into_iter()
                 .map(|socket_ref| {
                     let message_clone = message.clone();
-                    tokio::spawn(async move {
-                        socket_ref.send_message(&message_clone).await
-                    })
+                    tokio::spawn(async move { socket_ref.send_message(&message_clone).await })
                 })
                 .collect();
 

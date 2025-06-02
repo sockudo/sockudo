@@ -1,24 +1,21 @@
 // src/adapter/handler/rate_limiting.rs
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
-use crate::websocket::SocketId;
 use crate::app::config::App;
+use crate::error::{Error, Result};
 use crate::rate_limiter::memory_limiter::MemoryRateLimiter;
+use crate::websocket::SocketId;
 use std::sync::Arc;
 use tracing::{info, warn};
 
 impl ConnectionHandler {
-    pub async fn setup_rate_limiting(
-        &self,
-        socket_id: &SocketId,
-        app_config: &App,
-    ) -> Result<()> {
+    pub async fn setup_rate_limiting(&self, socket_id: &SocketId, app_config: &App) -> Result<()> {
         if app_config.max_client_events_per_second > 0 {
             let limiter = Arc::new(MemoryRateLimiter::new(
                 app_config.max_client_events_per_second,
                 1, // Per second
             ));
-            self.client_event_limiters.insert(socket_id.clone(), limiter);
+            self.client_event_limiters
+                .insert(socket_id.clone(), limiter);
             info!(
                 "Initialized client event rate limiter for socket {}: {} events/sec",
                 socket_id, app_config.max_client_events_per_second
@@ -49,7 +46,9 @@ impl ConnectionHandler {
                 "Client event rate limiter not found for socket {} though app config expects one",
                 socket_id
             );
-            return Err(Error::InternalError("Rate limiter misconfiguration".to_string()));
+            return Err(Error::InternalError(
+                "Rate limiter misconfiguration".to_string(),
+            ));
         }
 
         Ok(())

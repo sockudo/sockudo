@@ -304,22 +304,17 @@ impl SqsQueueManager {
                                             );
 
                                             // Delete malformed messages
-                                            if let Some(receipt_handle) = message.receipt_handle() {
-                                                if let Err(e) = client
+                                            if let Some(receipt_handle) = message.receipt_handle()
+                                                && let Err(e) = client
                                                     .delete_message()
                                                     .queue_url(&queue_url)
                                                     .receipt_handle(receipt_handle)
                                                     .send()
                                                     .await
-                                                {
-                                                    error!(
-                                                        "{}",
-                                                        format!(
-                                                            "Failed to delete malformed message from SQS queue {}: {}",
-                                                            queue_name, e
-                                                        )
-                                                    );
-                                                }
+                                            {
+                                                error!(
+                                                    "Failed to delete malformed message from SQS queue {queue_name}: {e}"
+                                                );
                                             }
                                         }
                                     }
@@ -330,10 +325,7 @@ impl SqsQueueManager {
                     Err(e) => {
                         error!(
                             "{}",
-                            format!(
-                                "Failed to receive messages from SQS queue {}: {}",
-                                queue_name, e
-                            )
+                            format!("Failed to receive messages from SQS queue {queue_name}: {e}")
                         );
 
                         // Add a small delay before retrying on error
@@ -358,7 +350,7 @@ impl QueueInterface for SqsQueueManager {
 
         // Serialize the job data
         let data_json = serde_json::to_string(&data)
-            .map_err(|e| Error::Queue(format!("Failed to serialize job data: {}", e)))?;
+            .map_err(|e| Error::Queue(format!("Failed to serialize job data: {e}")))?;
 
         // Build send message request
         let mut send_message_request = self
@@ -382,18 +374,14 @@ impl QueueInterface for SqsQueueManager {
         // Send the message to SQS
         let result = send_message_request.send().await.map_err(|e| {
             Error::Queue(format!(
-                "Failed to send message to SQS queue {}: {}",
-                queue_name, e
+                "Failed to send message to SQS queue {queue_name}: {e}"
             ))
         })?;
 
         info!(
-            "{}",
-            format!(
-                "Added job to SQS queue {} with ID: {}",
-                queue_name,
-                result.message_id().unwrap_or("unknown")
-            )
+            "Added job to SQS queue {} with ID: {}",
+            queue_name,
+            result.message_id().unwrap_or("unknown")
         );
 
         Ok(())
