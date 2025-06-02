@@ -238,7 +238,6 @@ impl ConnectionHandler {
             "pusher:ping" => self.handle_ping(&app_config.id, socket_id).await,
             "pusher:subscribe" => {
                 let request = SubscriptionRequest::from_message(&message)?;
-                println!("Handling subscribe request: {:?}", request);
                 self.handle_subscribe_request(socket_id, &app_config, request).await
             }
             "pusher:unsubscribe" => {

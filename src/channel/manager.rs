@@ -192,7 +192,6 @@ impl ChannelManager {
         data: &Value,
         extra: &HashMap<String, Value>,
     ) -> Result<PresenceMember, Error> {
-        println!("extract_presence_member: {:?}", data);
         let channel_data = data
             .get("channel_data")
             .and_then(|v| v.as_str())
@@ -222,8 +221,6 @@ impl ChannelManager {
         message: PusherMessage,
     ) -> bool {
         let expected = Self::get_expected_signature(app_config, socket_id, message);
-        println!("Expected signature: {}", expected);
-        println!("Received signature: {}", signature);
         secure_compare(signature, &expected)
     }
 
@@ -242,7 +239,6 @@ impl ChannelManager {
 
     fn get_data_to_sign_for_signature(socket_id: &SocketId, message: PusherMessage) -> String {
         let message_data = message.data.unwrap();
-        println!("Message data: {:?}", message_data);
 
         match message_data {
             MessageData::Structured {

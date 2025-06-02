@@ -39,7 +39,6 @@ impl ConnectionHandler {
         app_config: &App,
         request: &SubscriptionRequest,
     ) -> Result<()> {
-        println!("Validating presence subscription for channel: {:?}", request);
         let channel_data = request.channel_data.as_ref()
             .ok_or_else(|| Error::InvalidMessageFormat(
                 "Missing channel_data for presence channel".into()

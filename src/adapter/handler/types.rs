@@ -27,7 +27,6 @@ pub struct SignInRequest {
 
 impl SubscriptionRequest {
     pub fn from_message(message: &PusherMessage) -> crate::error::Result<Self> {
-        println!("Handling subscription request: {:?}", message);
         let (channel, auth, channel_data) = match &message.data {
             Some(MessageData::Structured { channel, extra,channel_data, .. }) => {
                 let ch = channel.as_ref()
@@ -53,7 +52,6 @@ impl SubscriptionRequest {
                 (ch.to_string(), auth, channel_data)
             },
             Some(MessageData::String(s)) => {
-                println!("Parsing subscription from string data: {}", s);
                 let data: Value = serde_json::from_str(s)
                     .map_err(|_| crate::error::Error::InvalidMessageFormat(
                         "Failed to parse subscription data".into()
