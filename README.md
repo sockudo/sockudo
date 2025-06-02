@@ -54,7 +54,7 @@ Sockudo is a production-ready WebSocket server that provides real-time communica
 
 ```bash
 # Clone the repository
-git clone [https://github.com/RustNSparks/sockudo.git](https://github.com/RustNSparks/sockudo.git)
+git clone https://github.com/RustNSparks/sockudo.git
 cd sockudo
 
 # Ensure you have an .env file (e.g., from .env.example)
@@ -949,47 +949,7 @@ Automated tests can be found in `test/automated/` which might include scripts fo
 
 ## 🤝 Contributing
 
-Contributions are welcome\! Please follow these guidelines:
-
-### Development Setup
-
-```bash
-# Fork the repository
-git clone [https://github.com/your-username/sockudo.git](https://github.com/your-username/sockudo.git)
-cd sockudo
-
-# Ensure Rust toolchain is installed (see Prerequisites)
-# Set up development environment (e.g., start Redis/DB if needed for specific tests)
-# Using Docker for dev is recommended:
-# make dev (if Makefile exists and is configured for this)
-# OR
-# docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-```
-
-### Code Style & Linting
-
-```bash
-# Format code before committing
-cargo fmt
-
-# Check for lints
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-### Submitting Changes
-
-1.  **Fork** the repository.
-2.  Create a new **branch** for your feature or bug fix (`git checkout -b feature/my-new-feature`).
-3.  **Commit** your changes with clear, descriptive messages (`git commit -am 'Add some feature'`).
-4.  **Push** your branch to your fork (`git push origin feature/my-new-feature`).
-5.  Open a **Pull Request** against the `main` branch of `RustNSparks/sockudo`.
-    * Ensure your PR passes all CI checks.
-    * Provide a clear description of the changes.
-
-### Reporting Issues
-
-- Use GitHub Issues for bug reports and feature requests.
-- Include Sockudo version, relevant configuration snippets, steps to reproduce, and any error logs.
+We welcome contributions! Please see our [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines on how to get started, coding standards, and the PR review process.
 
 -----
 
