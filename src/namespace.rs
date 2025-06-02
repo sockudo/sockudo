@@ -159,18 +159,6 @@ impl Namespace {
     // Cleans up a WebSocket connection: sends disconnect messages and removes from internal state.
     pub async fn cleanup_connection(&self, ws_ref: WebSocketRef) {
         let socket_id = ws_ref.get_socket_id().await;
-
-        let disconnect_message = PusherMessage::error(
-            4009, // Example error code for server-initiated close
-            "Connection closed by server".to_string(),
-            None,
-        );
-
-        // Send disconnect message (best effort)
-        if let Err(e) = ws_ref.send_message(&disconnect_message).await {
-            warn!("Failed to send disconnect message to {}: {}", socket_id, e);
-        }
-
         // Remove socket from all channels it was subscribed to.
         self.channels.retain(|_channel_name, socket_set| {
             socket_set.remove(&socket_id);
