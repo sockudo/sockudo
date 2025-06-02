@@ -60,8 +60,7 @@ impl Namespace {
                     self.app_id, socket_id, e
                 );
                 return Err(Error::InternalError(format!(
-                    "Failed to retrieve app config: {}",
-                    e
+                    "Failed to retrieve app config: {e}"
                 )));
             }
         };
@@ -136,10 +135,7 @@ impl Namespace {
                 sockets_in_channel.insert(socket_id.clone());
             }
         } else {
-            info!(
-                "get_channel_sockets called on non-existent channel: {}",
-                channel
-            );
+            info!("get_channel_sockets called on non-existent channel: {channel}");
         }
 
         sockets_in_channel
@@ -175,7 +171,7 @@ impl Namespace {
                 drop(user_sockets_ref);
                 if is_empty {
                     self.users.remove(&user_id);
-                    info!("Removed empty user entry for: {}", user_id);
+                    info!("Removed empty user entry for: {user_id}");
                 }
             }
         }
@@ -184,10 +180,7 @@ impl Namespace {
         if self.sockets.remove(&socket_id).is_some() {
             info!("Removed socket {} from main map.", socket_id);
         } else {
-            warn!(
-                "Socket {} already removed from main map during cleanup.",
-                socket_id
-            );
+            warn!("Socket {socket_id} already removed from main map during cleanup.");
         }
     }
 
@@ -204,7 +197,7 @@ impl Namespace {
                         .close(4009, "You got disconnected by the app.".to_string())
                         .await
                     {
-                        warn!("Failed to close connection: {}", e);
+                        warn!("Failed to close connection: {e}");
                     }
                 })
                 .collect();
@@ -231,7 +224,7 @@ impl Namespace {
             drop(channel_sockets_ref);
             if is_empty {
                 self.channels.remove(channel);
-                info!("Removed empty channel entry: {}", channel);
+                info!("Removed empty channel entry: {channel}");
             }
             return removed.is_some();
         }
@@ -254,7 +247,7 @@ impl Namespace {
     // Removes a channel entry entirely, regardless of subscribers.
     pub fn remove_channel(&self, channel: &str) {
         self.channels.remove(channel);
-        info!("Removed channel entry: {}", channel);
+        info!("Removed channel entry: {channel}");
     }
 
     // Checks if a specific socket is subscribed to a specific channel.
@@ -291,13 +284,10 @@ impl Namespace {
             let user_sockets_ref = self.users.entry(user_id.clone()).or_default();
             user_sockets_ref.insert(ws_ref.clone());
             let socket_id = ws_ref.get_socket_id().await;
-            info!("Added socket {} to user {}", socket_id, user_id);
+            info!("Added socket {socket_id} to user {user_id}");
         } else {
             let socket_id = ws_ref.get_socket_id().await;
-            warn!(
-                "User data found for socket {} but missing user ID.",
-                socket_id
-            );
+            warn!("User data found for socket {socket_id} but missing user ID.");
         }
         Ok(())
     }
@@ -313,18 +303,15 @@ impl Namespace {
                 let is_empty = user_sockets_ref.is_empty();
                 drop(user_sockets_ref);
                 if removed.is_some() {
-                    info!("Removed socket {} from user {}", socket_id, user_id);
+                    info!("Removed socket {socket_id} from user {user_id}");
                 }
                 if is_empty {
                     self.users.remove(&user_id);
-                    info!("Removed empty user entry for: {}", user_id);
+                    info!("Removed empty user entry for: {user_id}");
                 }
             }
         } else {
-            warn!(
-                "User data found for socket {} during removal but missing user ID.",
-                socket_id
-            );
+            warn!("User data found for socket {socket_id} during removal but missing user ID.");
         }
         Ok(())
     }

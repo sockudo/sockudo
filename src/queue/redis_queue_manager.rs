@@ -28,14 +28,14 @@ impl RedisQueueManager {
         concurrency: usize,
     ) -> crate::error::Result<Self> {
         let client = redis::Client::open(redis_url).map_err(|e| {
-            crate::error::Error::Config(format!("Failed to open Redis client: {}", e))
+            crate::error::Error::Config(format!("Failed to open Redis client: {e}"))
         })?; // Use custom error type
 
         let connection = client
             .get_multiplexed_async_connection()
             .await
             .map_err(|e| {
-                crate::error::Error::Connection(format!("Failed to get Redis connection: {}", e))
+                crate::error::Error::Connection(format!("Failed to get Redis connection: {e}"))
             })?; // Use custom error type
 
         Ok(Self {
@@ -76,8 +76,7 @@ impl QueueInterface for RedisQueueManager {
             .await
             .map_err(|e| {
                 crate::error::Error::Queue(format!(
-                    "Redis RPUSH failed for queue {}: {}",
-                    queue_name, e
+                    "Redis RPUSH failed for queue {queue_name}: {e}"
                 ))
             })?; // Use custom error type
 
@@ -105,10 +104,7 @@ impl QueueInterface for RedisQueueManager {
             .insert(queue_name.to_string(), processor_arc.clone());
         info!(
             "{}",
-            format!(
-                "Registered processor and starting workers for Redis queue: {}",
-                queue_name
-            )
+            format!("Registered processor and starting workers for Redis queue: {queue_name}")
         );
 
         // Start worker tasks
@@ -121,10 +117,7 @@ impl QueueInterface for RedisQueueManager {
             tokio::spawn(async move {
                 info!(
                     "{}",
-                    format!(
-                        "Starting Redis queue worker {} for queue: {}",
-                        i, worker_queue_name
-                    )
+                    format!("Starting Redis queue worker {i} for queue: {worker_queue_name}")
                 );
 
                 loop {
@@ -146,7 +139,7 @@ impl QueueInterface for RedisQueueManager {
                                             info!("{}", "Worker finished".to_string());
                                         }
                                         Err(e) => {
-                                            error!("{}", format!("Worker error: {}", e));
+                                            error!("{}", format!("Worker error: {e}"));
                                         }
                                     }
                                 }

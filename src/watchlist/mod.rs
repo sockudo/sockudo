@@ -130,21 +130,21 @@ impl WatchlistManager {
     ) -> Result<Vec<PusherMessage>> {
         let mut events_to_send = Vec::new();
 
-        if let Some(app_online_users) = self.online_users.get(app_id) {
-            if let Some(mut user_sockets) = app_online_users.get_mut(user_id) {
-                user_sockets.remove(socket_id);
+        if let Some(app_online_users) = self.online_users.get(app_id)
+            && let Some(mut user_sockets) = app_online_users.get_mut(user_id)
+        {
+            user_sockets.remove(socket_id);
 
-                // If user has no more connections, they're offline
-                if user_sockets.is_empty() {
-                    // Notify watchers that this user went offline
-                    if let Some(app_watchlists) = self.watchlists.get(app_id)
-                        && let Some(user_entry) = app_watchlists.get(user_id)
-                    {
-                        for watcher_id in &user_entry.watchers {
-                            events_to_send.push(PusherMessage::watchlist_offline_event(vec![
-                                user_id.to_string(),
-                            ]));
-                        }
+            // If user has no more connections, they're offline
+            if user_sockets.is_empty() {
+                // Notify watchers that this user went offline
+                if let Some(app_watchlists) = self.watchlists.get(app_id)
+                    && let Some(user_entry) = app_watchlists.get(user_id)
+                {
+                    for watcher_id in &user_entry.watchers {
+                        events_to_send.push(PusherMessage::watchlist_offline_event(vec![
+                            user_id.to_string(),
+                        ]));
                     }
                 }
             }
