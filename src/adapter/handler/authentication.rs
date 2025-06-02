@@ -5,8 +5,6 @@ use crate::error::{Error, Result};
 use crate::websocket::SocketId;
 use crate::app::config::App;
 use crate::app::auth::AuthValidator;
-use serde_json::Value;
-use tracing::{info, warn};
 
 impl ConnectionHandler {
     pub async fn verify_channel_authentication(

@@ -3,7 +3,7 @@ use crate::app::config::App;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
 use crate::protocol::messages::PusherMessage;
-use fastwebsockets::{Frame, Payload, WebSocketError, WebSocketWrite};
+use fastwebsockets::{Frame, Payload, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use rand::Rng;

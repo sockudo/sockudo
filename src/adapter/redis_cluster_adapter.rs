@@ -25,7 +25,7 @@ use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 pub(crate) use crate::options::RedisClusterAdapterConfig;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketRef};
 
 /// Redis channels
 pub const DEFAULT_PREFIX: &str = "sockudo";

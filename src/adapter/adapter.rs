@@ -3,7 +3,7 @@ use crate::channel::PresenceMemberInfo;
 use crate::error::Result;
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketRef};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
@@ -13,7 +13,6 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
-use tokio::sync::Mutex;
 
 #[async_trait]
 pub trait Adapter: Send + Sync {

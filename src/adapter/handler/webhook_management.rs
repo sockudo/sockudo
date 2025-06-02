@@ -1,10 +1,9 @@
 // src/adapter/handler/webhook_management.rs
 use super::types::*;
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::websocket::SocketId;
 use crate::app::config::App;
-use serde_json::Value;
 use tracing::warn;
 
 impl ConnectionHandler {

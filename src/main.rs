@@ -33,7 +33,7 @@ use axum::http::uri::Authority;
 use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
-use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
+use axum::{BoxError, Router, middleware as axum_middleware};
 
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
@@ -67,8 +67,8 @@ use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegrat
 use crate::ws_handler::handle_ws_upgrade;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 // Import tracing and tracing_subscriber parts
-use tracing::{error, info, level_filters::LevelFilter, warn}; // Added LevelFilter
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing::{error, info, warn}; // Added LevelFilter
+use tracing_subscriber::{EnvFilter, fmt, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
 use crate::adapter::Adapter;
@@ -87,7 +87,6 @@ use crate::cache::memory_cache_manager::MemoryCacheManager; // Import for fallba
 // MetricsInterface trait
 use crate::metrics::MetricsInterface;
 use crate::middleware::pusher_api_auth_middleware;
-use crate::webhook::types::Webhook;
 use crate::websocket::WebSocketRef;
 
 /// Server state containing all managers

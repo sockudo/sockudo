@@ -5,7 +5,6 @@ use crate::error::{Error, Result};
 use crate::websocket::{SocketId, UserInfo};
 use crate::app::config::App;
 use crate::protocol::messages::{PusherMessage, MessageData};
-use crate::utils;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
