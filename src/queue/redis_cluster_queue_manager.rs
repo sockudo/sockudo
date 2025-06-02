@@ -29,14 +29,11 @@ impl RedisClusterQueueManager {
         concurrency: usize,
     ) -> crate::error::Result<Self> {
         let client = ClusterClient::new(cluster_nodes.clone()).map_err(|e| {
-            crate::error::Error::Config(format!("Failed to create Redis cluster client: {}", e))
+            crate::error::Error::Config(format!("Failed to create Redis cluster client: {e}"))
         })?;
 
         let connection = client.get_async_connection().await.map_err(|e| {
-            crate::error::Error::Connection(format!(
-                "Failed to get Redis cluster connection: {}",
-                e
-            ))
+            crate::error::Error::Connection(format!("Failed to get Redis cluster connection: {e}"))
         })?;
 
         info!(
@@ -84,8 +81,7 @@ impl QueueInterface for RedisClusterQueueManager {
             .await
             .map_err(|e| {
                 crate::error::Error::Queue(format!(
-                    "Redis Cluster RPUSH failed for queue {}: {}",
-                    queue_name, e
+                    "Redis Cluster RPUSH failed for queue {queue_name}: {e}"
                 ))
             })?; // Use custom error type
 
@@ -114,8 +110,7 @@ impl QueueInterface for RedisClusterQueueManager {
         info!(
             "{}",
             format!(
-                "Registered processor and starting workers for Redis cluster queue: {}",
-                queue_name
+                "Registered processor and starting workers for Redis cluster queue: {queue_name}"
             )
         );
 
@@ -130,8 +125,7 @@ impl QueueInterface for RedisClusterQueueManager {
                 info!(
                     "{}",
                     format!(
-                        "Starting Redis cluster queue worker {} for queue: {}",
-                        i, worker_queue_name
+                        "Starting Redis cluster queue worker {i} for queue: {worker_queue_name}"
                     )
                 );
 
@@ -154,7 +148,7 @@ impl QueueInterface for RedisClusterQueueManager {
                                             info!("{}", "Cluster worker finished".to_string());
                                         }
                                         Err(e) => {
-                                            error!("{}", format!("Cluster worker error: {}", e));
+                                            error!("{}", format!("Cluster worker error: {e}"));
                                         }
                                     }
                                 }
@@ -203,14 +197,13 @@ impl QueueInterface for RedisClusterQueueManager {
             .await
             .map_err(|e| {
                 crate::error::Error::Queue(format!(
-                    "Redis cluster disconnect error fetching keys: {}",
-                    e
+                    "Redis cluster disconnect error fetching keys: {e}"
                 ))
             })?;
 
         for key in keys {
             if let Err(e) = conn.del::<_, ()>(&key).await {
-                error!("Error deleting key {} during disconnect: {}", key, e);
+                error!("Error deleting key {key} during disconnect: {e}");
             }
         }
         Ok(())

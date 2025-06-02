@@ -221,21 +221,21 @@ impl IpKeyExtractor {
     }
 
     fn get_ip<B>(&self, req: &HyperRequest<B>) -> Option<String> {
-        if self.trust_hops > 0 {
-            if let Some(value) = req.headers().get("x-forwarded-for") {
-                if let Ok(forwarded_str) = value.to_str() {
-                    let ips: Vec<&str> = forwarded_str.split(',').map(str::trim).collect();
-                    let client_ip_index = ips.len().saturating_sub(self.trust_hops);
-                    if let Some(ip_str) = ips.get(client_ip_index) {
-                        if ip_str.parse::<std::net::IpAddr>().is_ok() {
-                            return Some(ip_str.to_string());
-                        }
-                    } else if let Some(ip_str) = ips.first()
-                        && ip_str.parse::<std::net::IpAddr>().is_ok()
-                    {
-                        return Some(ip_str.to_string());
-                    }
-                }
+        if self.trust_hops > 0
+            && let Some(value) = req.headers().get("x-forwarded-for")
+            && let Ok(forwarded_str) = value.to_str()
+        {
+            let ips: Vec<&str> = forwarded_str.split(',').map(str::trim).collect();
+            let client_ip_index = ips.len().saturating_sub(self.trust_hops);
+
+            if let Some(ip_str) = ips.get(client_ip_index)
+                && ip_str.parse::<std::net::IpAddr>().is_ok()
+            {
+                return Some(ip_str.to_string());
+            } else if let Some(ip_str) = ips.first()
+                && ip_str.parse::<std::net::IpAddr>().is_ok()
+            {
+                return Some(ip_str.to_string());
             }
         }
 
