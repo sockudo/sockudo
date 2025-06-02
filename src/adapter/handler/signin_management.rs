@@ -140,7 +140,7 @@ impl ConnectionHandler {
         &self,
         socket_id: &SocketId,
         app_config: &App,
-        request: &SigninRequest,
+        request: &SignInRequest,
     ) -> Result<()> {
         let success_message = PusherMessage {
             channel: None,

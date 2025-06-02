@@ -44,7 +44,7 @@ impl ConnectionHandler {
             name: None,
         };
 
-        let mut channel_manager = self.channel_manager.write().await;
+        let channel_manager = self.channel_manager.write().await;
         let subscription_result = channel_manager
             .subscribe(
                 socket_id.as_ref(),

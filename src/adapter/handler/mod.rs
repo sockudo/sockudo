@@ -12,7 +12,6 @@ pub mod rate_limiting;
 mod core;
 
 use crate::adapter::adapter::Adapter;
-use crate::app::auth::AuthValidator;
 use crate::app::config::App;
 use crate::app::manager::AppManager;
 use crate::cache::manager::CacheManager;
@@ -31,13 +30,12 @@ use dashmap::DashMap;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, WebSocketWrite, upgrade};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use serde_json::{Value, json};
+use serde_json::{Value};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info, warn};
-use crate::adapter::handler::types::{ClientEventRequest, SigninRequest, SubscriptionRequest};
+use crate::adapter::handler::types::{ClientEventRequest, SignInRequest, SubscriptionRequest};
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -240,13 +238,14 @@ impl ConnectionHandler {
             "pusher:ping" => self.handle_ping(&app_config.id, socket_id).await,
             "pusher:subscribe" => {
                 let request = SubscriptionRequest::from_message(&message)?;
+                println!("Handling subscribe request: {:?}", request);
                 self.handle_subscribe_request(socket_id, &app_config, request).await
             }
             "pusher:unsubscribe" => {
                 self.handle_unsubscribe(socket_id, &message, &app_config).await
             }
             "pusher:signin" => {
-                let request = SigninRequest::from_message(&message)?;
+                let request = SignInRequest::from_message(&message)?;
                 self.handle_signin_request(socket_id, &app_config, request).await
             }
             _ if event_name.starts_with(CLIENT_EVENT_PREFIX) => {

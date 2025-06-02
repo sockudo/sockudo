@@ -19,7 +19,7 @@ impl ConnectionHandler {
         }
 
         // Validate channel name
-        crate::utils::validate_channel_name(app_config, &request.channel).await?;
+        utils::validate_channel_name(app_config, &request.channel).await?;
 
         // Check if authentication is required and provided
         let requires_auth = request.channel.starts_with("presence-")
@@ -39,6 +39,7 @@ impl ConnectionHandler {
         app_config: &App,
         request: &SubscriptionRequest,
     ) -> Result<()> {
+        println!("Validating presence subscription for channel: {:?}", request);
         let channel_data = request.channel_data.as_ref()
             .ok_or_else(|| Error::InvalidMessageFormat(
                 "Missing channel_data for presence channel".into()

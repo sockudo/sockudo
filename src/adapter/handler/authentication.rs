@@ -56,7 +56,7 @@ impl ConnectionHandler {
         &self,
         socket_id: &SocketId,
         app_config: &App,
-        request: &SigninRequest,
+        request: &SignInRequest,
     ) -> Result<()> {
         let auth_validator = AuthValidator::new(self.app_manager.clone());
 

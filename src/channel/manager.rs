@@ -192,13 +192,15 @@ impl ChannelManager {
         data: &Value,
         extra: &HashMap<String, Value>,
     ) -> Result<PresenceMember, Error> {
-        let user_id = data
-            .get("user_id")
+        println!("extract_presence_member: {:?}", data);
+        let channel_data = data
+            .get("channel_data")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::ChannelError("Invalid user_id".into()))?
-            .to_string();
-
-        let user_info = data.get("user_info").cloned().unwrap_or_default();
+            .ok_or_else(|| Error::ChannelError("Missing channel_data in presence data".into()))?;
+        let user_info: Value = serde_json::from_str(channel_data)
+            .map_err(|_| Error::ChannelError("Invalid JSON in channel_data".into()))?;
+        let user_id = user_info.get("user_id").and_then(|v| v.as_str())
+            .ok_or_else(|| Error::ChannelError("Missing user_id in channel_data".into()))?;
 
         let socket_id = extra
             .get("socket_id")
@@ -206,7 +208,7 @@ impl ChannelManager {
             .map(ToString::to_string);
 
         Ok(PresenceMember {
-            user_id,
+            user_id: user_id.to_string(),
             user_info,
             socket_id,
         })
@@ -220,6 +222,8 @@ impl ChannelManager {
         message: PusherMessage,
     ) -> bool {
         let expected = Self::get_expected_signature(app_config, socket_id, message);
+        println!("Expected signature: {}", expected);
+        println!("Received signature: {}", signature);
         secure_compare(signature, &expected)
     }
 
@@ -238,6 +242,7 @@ impl ChannelManager {
 
     fn get_data_to_sign_for_signature(socket_id: &SocketId, message: PusherMessage) -> String {
         let message_data = message.data.unwrap();
+        println!("Message data: {:?}", message_data);
 
         match message_data {
             MessageData::Structured {
@@ -251,8 +256,38 @@ impl ChannelManager {
                 } else {
                     format!("{}:{}", socket_id, channel)
                 }
-            }
-            _ => panic!("Invalid message data"),
+            },
+            MessageData::Json(data) => {
+                let channel = data
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let channel_data = data
+                    .get("channel_data")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if ChannelType::from_name(channel) == ChannelType::Presence {
+                    format!("{}:{}:{}", socket_id, channel, channel_data)
+                } else {
+                    format!("{}:{}", socket_id, channel)
+                }
+            },
+            MessageData::String(data) => {
+                let data = serde_json::to_value(data).unwrap();
+                let channel = data
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let channel_data = data
+                    .get("channel_data")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if ChannelType::from_name(channel) == ChannelType::Presence {
+                    format!("{}:{}:{}", socket_id, channel, channel_data)
+                } else {
+                    format!("{}:{}", socket_id, channel)
+                }
+            },
         }
     }
 

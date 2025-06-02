@@ -50,7 +50,7 @@ impl ConnectionHandler {
         &self,
         socket_id: &SocketId,
         app_config: &App,
-        request: SigninRequest,
+        request: SignInRequest,
     ) -> Result<()> {
         // Validate signin is enabled
         if !app_config.enable_user_authentication.unwrap_or(false) {

@@ -1,8 +1,9 @@
+use std::option::Option;
 // src/adapter/handler/types.rs
 use crate::websocket::SocketId;
 use crate::protocol::messages::{PusherMessage, MessageData};
 use serde_json::Value;
-
+use crate::channel::ChannelType;
 
 #[derive(Debug)]
 pub struct SubscriptionRequest {
@@ -19,21 +20,26 @@ pub struct ClientEventRequest {
 }
 
 #[derive(Debug)]
-pub struct SigninRequest {
+pub struct SignInRequest {
     pub user_data: String,
     pub auth: String,
 }
 
 impl SubscriptionRequest {
     pub fn from_message(message: &PusherMessage) -> crate::error::Result<Self> {
+        println!("Handling subscription request: {:?}", message);
         let (channel, auth, channel_data) = match &message.data {
-            Some(MessageData::Structured { channel, extra, .. }) => {
+            Some(MessageData::Structured { channel, extra,channel_data, .. }) => {
                 let ch = channel.as_ref()
                     .ok_or_else(|| crate::error::Error::InvalidMessageFormat(
                         "Missing channel field".into()
                     ))?;
+                let channel_data = if ChannelType::from_name(ch) == ChannelType::Presence {
+                    Some(channel_data.as_ref().unwrap().clone())
+                } else {
+                    None
+                };
                 let auth = extra.get("auth").and_then(Value::as_str).map(String::from);
-                let channel_data = extra.get("channel_data").and_then(Value::as_str).map(String::from);
                 (ch.clone(), auth, channel_data)
             }
             Some(MessageData::Json(data)) => {
@@ -41,6 +47,21 @@ impl SubscriptionRequest {
                     .and_then(Value::as_str)
                     .ok_or_else(|| crate::error::Error::InvalidMessageFormat(
                         "Missing channel field".into()
+                    ))?;
+                let auth = data.get("auth").and_then(Value::as_str).map(String::from);
+                let channel_data = data.get("channel_data").and_then(Value::as_str).map(String::from);
+                (ch.to_string(), auth, channel_data)
+            },
+            Some(MessageData::String(s)) => {
+                println!("Parsing subscription from string data: {}", s);
+                let data: Value = serde_json::from_str(s)
+                    .map_err(|_| crate::error::Error::InvalidMessageFormat(
+                        "Failed to parse subscription data".into()
+                    ))?;
+                let ch = data.get("channel")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| crate::error::Error::InvalidMessageFormat(
+                        "Missing channel field in string data".into()
                     ))?;
                 let auth = data.get("auth").and_then(Value::as_str).map(String::from);
                 let channel_data = data.get("channel_data").and_then(Value::as_str).map(String::from);
@@ -55,7 +76,7 @@ impl SubscriptionRequest {
     }
 }
 
-impl SigninRequest {
+impl SignInRequest {
     pub fn from_message(message: &PusherMessage) -> crate::error::Result<Self> {
         let extract_field = |data: &Value, field: &str| -> crate::error::Result<String> {
             data.get(field)
