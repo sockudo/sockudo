@@ -5,10 +5,10 @@ use crate::options::DatabaseConnection;
 use crate::token::Token;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
-use futures_util::{stream, StreamExt};
+use futures_util::{StreamExt, stream};
 use moka::future::Cache;
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -41,9 +41,7 @@ impl PgSQLAppManager {
             .idle_timeout(Duration::from_secs(180))
             .connect(&connection_string)
             .await
-            .map_err(|e| {
-                Error::InternalError(format!("Failed to connect to PostgreSQL: {}", e))
-            })?;
+            .map_err(|e| Error::InternalError(format!("Failed to connect to PostgreSQL: {}", e)))?;
 
         // Initialize cache
         let app_cache = Cache::builder()
@@ -149,9 +147,7 @@ impl PgSQLAppManager {
             let app = app_row.into_app();
 
             // Update cache
-            self.app_cache
-                .insert(app_id.to_string(), app.clone())
-                .await;
+            self.app_cache.insert(app_id.to_string(), app.clone()).await;
 
             Ok(Some(app))
         } else {

@@ -1,7 +1,7 @@
-use std::option::Option;
-use crate::protocol::messages::{PusherMessage, MessageData};
-use serde_json::Value;
 use crate::channel::ChannelType;
+use crate::protocol::messages::{MessageData, PusherMessage};
+use serde_json::Value;
+use std::option::Option;
 
 #[derive(Debug)]
 pub struct SubscriptionRequest {
@@ -26,11 +26,15 @@ pub struct SignInRequest {
 impl SubscriptionRequest {
     pub fn from_message(message: &PusherMessage) -> crate::error::Result<Self> {
         let (channel, auth, channel_data) = match &message.data {
-            Some(MessageData::Structured { channel, extra,channel_data, .. }) => {
-                let ch = channel.as_ref()
-                    .ok_or_else(|| crate::error::Error::InvalidMessageFormat(
-                        "Missing channel field".into()
-                    ))?;
+            Some(MessageData::Structured {
+                channel,
+                extra,
+                channel_data,
+                ..
+            }) => {
+                let ch = channel.as_ref().ok_or_else(|| {
+                    crate::error::Error::InvalidMessageFormat("Missing channel field".into())
+                })?;
                 let channel_data = if ChannelType::from_name(ch) == ChannelType::Presence {
                     Some(channel_data.as_ref().unwrap().clone())
                 } else {
@@ -40,35 +44,46 @@ impl SubscriptionRequest {
                 (ch.clone(), auth, channel_data)
             }
             Some(MessageData::Json(data)) => {
-                let ch = data.get("channel")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| crate::error::Error::InvalidMessageFormat(
-                        "Missing channel field".into()
-                    ))?;
+                let ch = data.get("channel").and_then(Value::as_str).ok_or_else(|| {
+                    crate::error::Error::InvalidMessageFormat("Missing channel field".into())
+                })?;
                 let auth = data.get("auth").and_then(Value::as_str).map(String::from);
-                let channel_data = data.get("channel_data").and_then(Value::as_str).map(String::from);
-                (ch.to_string(), auth, channel_data)
-            },
-            Some(MessageData::String(s)) => {
-                let data: Value = serde_json::from_str(s)
-                    .map_err(|_| crate::error::Error::InvalidMessageFormat(
-                        "Failed to parse subscription data".into()
-                    ))?;
-                let ch = data.get("channel")
+                let channel_data = data
+                    .get("channel_data")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| crate::error::Error::InvalidMessageFormat(
-                        "Missing channel field in string data".into()
-                    ))?;
-                let auth = data.get("auth").and_then(Value::as_str).map(String::from);
-                let channel_data = data.get("channel_data").and_then(Value::as_str).map(String::from);
+                    .map(String::from);
                 (ch.to_string(), auth, channel_data)
             }
-            _ => return Err(crate::error::Error::InvalidMessageFormat(
-                "Invalid subscription data format".into()
-            )),
+            Some(MessageData::String(s)) => {
+                let data: Value = serde_json::from_str(s).map_err(|_| {
+                    crate::error::Error::InvalidMessageFormat(
+                        "Failed to parse subscription data".into(),
+                    )
+                })?;
+                let ch = data.get("channel").and_then(Value::as_str).ok_or_else(|| {
+                    crate::error::Error::InvalidMessageFormat(
+                        "Missing channel field in string data".into(),
+                    )
+                })?;
+                let auth = data.get("auth").and_then(Value::as_str).map(String::from);
+                let channel_data = data
+                    .get("channel_data")
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                (ch.to_string(), auth, channel_data)
+            }
+            _ => {
+                return Err(crate::error::Error::InvalidMessageFormat(
+                    "Invalid subscription data format".into(),
+                ));
+            }
         };
 
-        Ok(Self { channel, auth, channel_data })
+        Ok(Self {
+            channel,
+            auth,
+            channel_data,
+        })
     }
 }
 
@@ -78,36 +93,39 @@ impl SignInRequest {
             data.get(field)
                 .and_then(Value::as_str)
                 .map(String::from)
-                .ok_or_else(|| crate::error::Error::AuthError(
-                    format!("Missing '{}' field in signin data", field)
-                ))
+                .ok_or_else(|| {
+                    crate::error::Error::AuthError(format!(
+                        "Missing '{}' field in signin data",
+                        field
+                    ))
+                })
         };
 
         match &message.data {
-            Some(MessageData::Json(data)) => {
-                Ok(Self {
-                    user_data: extract_field(data, "user_data")?,
-                    auth: extract_field(data, "auth")?,
-                })
-            }
-            Some(MessageData::Structured { extra, .. }) => {
-                Ok(Self {
-                    user_data: extra.get("user_data")
-                        .and_then(Value::as_str)
-                        .map(String::from)
-                        .ok_or_else(|| crate::error::Error::AuthError(
-                            "Missing 'user_data' field in signin data".into()
-                        ))?,
-                    auth: extra.get("auth")
-                        .and_then(Value::as_str)
-                        .map(String::from)
-                        .ok_or_else(|| crate::error::Error::AuthError(
-                            "Missing 'auth' field in signin data".into()
-                        ))?,
-                })
-            }
+            Some(MessageData::Json(data)) => Ok(Self {
+                user_data: extract_field(data, "user_data")?,
+                auth: extract_field(data, "auth")?,
+            }),
+            Some(MessageData::Structured { extra, .. }) => Ok(Self {
+                user_data: extra
+                    .get("user_data")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .ok_or_else(|| {
+                        crate::error::Error::AuthError(
+                            "Missing 'user_data' field in signin data".into(),
+                        )
+                    })?,
+                auth: extra
+                    .get("auth")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .ok_or_else(|| {
+                        crate::error::Error::AuthError("Missing 'auth' field in signin data".into())
+                    })?,
+            }),
             _ => Err(crate::error::Error::InvalidMessageFormat(
-                "Invalid signin data format".into()
+                "Invalid signin data format".into(),
             )),
         }
     }

@@ -2,9 +2,9 @@ use crate::adapter::ConnectionHandler;
 use crate::app::auth::AuthValidator;
 use crate::http_handler::{AppError, EventQuery};
 use axum::{
-    body::Body, // HttpBody and collect are important for body handling
+    body::Body,     // HttpBody and collect are important for body handling
     extract::State, // Using axum::extract::Request for the whole request
-    http::{Request as HttpRequest},
+    http::Request as HttpRequest,
     middleware::Next,
     response::Response,
 };

@@ -1020,10 +1020,8 @@ impl SockudoServer {
                                 // Assuming get_sockets returns an iterable collection
                                 for (_socket_id, ws_raw_obj) in sockets_vec {
                                     // Ensure ws_raw_obj (your 'ws') is Clone.
-                                    connections_to_cleanup.push((
-                                        app_id.clone(),
-                                        ws_raw_obj.clone(),
-                                    ));
+                                    connections_to_cleanup
+                                        .push((app_id.clone(), ws_raw_obj.clone()));
                                 }
                             }
                             Err(e) => {
@@ -1053,16 +1051,20 @@ impl SockudoServer {
         // --- Step 2: Parallelize Cleanup ---
         // Each cleanup task will briefly re-acquire the lock on ConnectionManager.
         if !connections_to_cleanup.is_empty() {
-            let cleanup_futures = connections_to_cleanup
-                .into_iter()
-                .map(|(_app_id, ws_raw_obj)| {
-                    async move {
-                        let mut ws = ws_raw_obj.0.lock().await; // Lock the WebSocketRef
-                        if let Err(e) = ws.close(4009, "You got disconnected by the app.".to_string()).await {
-                            error!("Failed to close WebSocket: {:?}", e);
+            let cleanup_futures =
+                connections_to_cleanup
+                    .into_iter()
+                    .map(|(_app_id, ws_raw_obj)| {
+                        async move {
+                            let mut ws = ws_raw_obj.0.lock().await; // Lock the WebSocketRef
+                            if let Err(e) = ws
+                                .close(4009, "You got disconnected by the app.".to_string())
+                                .await
+                            {
+                                error!("Failed to close WebSocket: {:?}", e);
+                            }
                         }
-                    }
-                });
+                    });
 
             join_all(cleanup_futures).await;
             info!("All connection cleanup tasks have been processed.");
@@ -1480,10 +1482,7 @@ fn make_https(host: &str, uri: Uri, https_port: u16) -> core::result::Result<Uri
         format!("{}:{}", bare_host_str, https_port)
             .parse()
             .map_err(|e| {
-                format!(
-                    "Failed to create new authority '{}:{}': {}",
-                    bare_host_str, https_port, e
-                )
+                format!("Failed to create new authority '{bare_host_str}:{https_port}': {e}")
             })?,
     );
 
