@@ -95,7 +95,7 @@ impl WebhookSender {
 
         // Serialize the payload body to JSON string for signing and sending
         let body_json_string = serde_json::to_string(&pusher_payload_body).map_err(|e| {
-            Error::SerializationError(format!("Failed to serialize webhook body: {}", e))
+            Error::Serialization(format!("Failed to serialize webhook body: {}", e))
         })?;
 
         // Create the HMAC SHA256 signature

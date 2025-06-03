@@ -45,7 +45,7 @@ impl RateLimiterFactory {
                     );
                     if global_redis_conn_details.cluster_nodes.is_empty() {
                         error!("{}", "RateLimiter: Redis cluster mode enabled, but no cluster_nodes configured.".to_string());
-                        return Err(crate::error::Error::ConfigurationError(
+                        return Err(crate::error::Error::Configuration(
                             "RateLimiter: Redis cluster nodes not configured.".to_string(),
                         ));
                     }
@@ -87,7 +87,7 @@ impl RateLimiterFactory {
                     });
 
                     let client = redis::Client::open(redis_url.as_str()).map_err(|e| {
-                        crate::error::Error::RedisError(format!(
+                        crate::error::Error::Redis(format!(
                             "Failed to create Redis client for rate limiter: {}",
                             e
                         ))
@@ -111,7 +111,7 @@ impl RateLimiterFactory {
                 );
                 if global_redis_conn_details.cluster_nodes.is_empty() {
                     error!("{}", "RateLimiter: Redis cluster driver selected, but no cluster_nodes configured.".to_string());
-                    return Err(crate::error::Error::ConfigurationError("RateLimiter: Redis cluster nodes not configured for explicit cluster driver.".to_string()));
+                    return Err(crate::error::Error::Configuration("RateLimiter: Redis cluster nodes not configured for explicit cluster driver.".to_string()));
                 }
                 // As above, if RedisClusterRateLimiter is implemented:
                 warn!("{}", "RedisClusterRateLimiter not yet implemented. Falling back to MemoryRateLimiter for HTTP API.".to_string());
@@ -121,7 +121,7 @@ impl RateLimiterFactory {
                 );
                 Ok(Arc::new(limiter))
             }
-            CacheDriver::Memory | _ => {
+            CacheDriver::Memory => {
                 // Default to memory for rate limiter if driver is "memory" or unknown
                 info!("{}", "Using memory rate limiter for HTTP API.".to_string());
                 let limiter = MemoryRateLimiter::new(
@@ -130,6 +130,7 @@ impl RateLimiterFactory {
                 );
                 Ok(Arc::new(limiter))
             }
+            CacheDriver::None => todo!(),
         }
     }
 }

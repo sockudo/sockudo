@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::adapter::adapter::Adapter;
+use crate::ConnectionManager;
 use crate::adapter::horizontal_adapter::{
     BroadcastMessage, HorizontalAdapter, PendingRequest, RequestBody, RequestType, ResponseBody,
 };
@@ -51,12 +51,12 @@ impl RedisClusterAdapter {
         horizontal.requests_timeout = config.request_timeout_ms;
 
         let client = ClusterClient::new(config.nodes.clone())
-            .map_err(|e| Error::RedisError(format!("Failed to create Redis client: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to create Redis client: {}", e)))?;
 
         let connection = client
             .get_async_connection()
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to connect to Redis: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
 
         let broadcast_channel = format!("{}:{}", config.prefix, BROADCAST_SUFFIX);
         let request_channel = format!("{}:{}", config.prefix, REQUESTS_SUFFIX);
@@ -259,7 +259,7 @@ impl RedisClusterAdapter {
         let subscriber_count: i32 = conn
             .publish(&self.request_channel, &request_json)
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to publish request: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to publish request: {}", e)))?;
 
         info!(
             "Broadcasted request {} to {} subscribers",
@@ -302,7 +302,7 @@ impl RedisClusterAdapter {
             .use_protocol(redis::ProtocolVersion::RESP3)
             .push_sender(tx)
             .build()
-            .map_err(|e| Error::RedisError(format!("Failed to create PubSub client: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to create PubSub client: {}", e)))?;
 
         // Spawn the main listener task
         tokio::spawn(async move {
@@ -476,7 +476,7 @@ impl RedisClusterAdapter {
 }
 
 #[async_trait]
-impl Adapter for RedisClusterAdapter {
+impl ConnectionManager for RedisClusterAdapter {
     async fn init(&mut self) {
         {
             let mut horizontal = self.horizontal.lock().await;
@@ -571,7 +571,7 @@ impl Adapter for RedisClusterAdapter {
         let mut conn = self.connection.clone();
         conn.publish::<_, _, ()>(&self.broadcast_channel, broadcast_json)
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to publish broadcast: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to publish broadcast: {}", e)))?;
 
         Ok(())
     }

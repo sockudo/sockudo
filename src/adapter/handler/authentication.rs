@@ -20,7 +20,7 @@ impl ConnectionHandler {
 
         // Private/presence channels require authentication
         let signature = request.auth.as_ref().ok_or_else(|| {
-            Error::AuthError("Authentication signature required for this channel".into())
+            Error::Auth("Authentication signature required for this channel".into())
         })?;
 
         let channel_manager = self.channel_manager.read().await;
@@ -67,9 +67,7 @@ impl ConnectionHandler {
             .await?;
 
         if !is_valid {
-            return Err(Error::AuthError(
-                "Connection not authorized for signin.".into(),
-            ));
+            return Err(Error::Auth("Connection not authorized for signin.".into()));
         }
 
         Ok(())

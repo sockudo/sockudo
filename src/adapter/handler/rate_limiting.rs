@@ -46,9 +46,7 @@ impl ConnectionHandler {
                 "Client event rate limiter not found for socket {} though app config expects one",
                 socket_id
             );
-            return Err(Error::InternalError(
-                "Rate limiter misconfiguration".to_string(),
-            ));
+            return Err(Error::Internal("Rate limiter misconfiguration".to_string()));
         }
 
         Ok(())

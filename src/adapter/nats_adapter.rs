@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::adapter::adapter::Adapter;
+use crate::adapter::ConnectionManager;
 use crate::adapter::horizontal_adapter::{
     BroadcastMessage, HorizontalAdapter, PendingRequest, RequestBody, RequestType, ResponseBody,
 };
@@ -73,7 +73,7 @@ impl NatsAdapter {
         let client = nats_options
             .connect(&config.servers)
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to connect to NATS: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to connect to NATS: {}", e)))?;
 
         // Build subject names
         let broadcast_subject = format!("{}{}", config.prefix, BROADCAST_SUFFIX);
@@ -278,7 +278,7 @@ impl NatsAdapter {
                 request_data.into(),
             )
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to publish request: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to publish request: {}", e)))?;
 
         info!("Broadcasted request {} via NATS", request.request_id);
         Ok(())
@@ -311,7 +311,7 @@ impl NatsAdapter {
             .subscribe(Subject::from(broadcast_subject.clone()))
             .await
             .map_err(|e| {
-                Error::InternalError(format!("Failed to subscribe to broadcast subject: {}", e))
+                Error::Internal(format!("Failed to subscribe to broadcast subject: {}", e))
             })?;
 
         // Subscribe to requests channel
@@ -319,7 +319,7 @@ impl NatsAdapter {
             .subscribe(Subject::from(request_subject.clone()))
             .await
             .map_err(|e| {
-                Error::InternalError(format!("Failed to subscribe to request subject: {}", e))
+                Error::Internal(format!("Failed to subscribe to request subject: {}", e))
             })?;
 
         // Subscribe to responses channel
@@ -327,7 +327,7 @@ impl NatsAdapter {
             .subscribe(Subject::from(response_subject.clone()))
             .await
             .map_err(|e| {
-                Error::InternalError(format!("Failed to subscribe to response subject: {}", e))
+                Error::Internal(format!("Failed to subscribe to response subject: {}", e))
             })?;
 
         info!(
@@ -429,7 +429,7 @@ impl NatsAdapter {
 }
 
 #[async_trait]
-impl Adapter for NatsAdapter {
+impl ConnectionManager for NatsAdapter {
     async fn init(&mut self) {
         {
             let mut horizontal = self.horizontal.lock().await;
@@ -527,7 +527,7 @@ impl Adapter for NatsAdapter {
                 broadcast_data.into(),
             )
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to publish broadcast: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to publish broadcast: {}", e)))?;
 
         Ok(())
     }

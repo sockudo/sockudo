@@ -1,5 +1,5 @@
 // src/adapter/factory.rs
-use crate::adapter::Adapter;
+use crate::adapter::ConnectionManager;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::{NatsAdapter, NatsAdapterConfig};
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterConfig as RedisAdapterOptions};
@@ -16,10 +16,13 @@ impl AdapterFactory {
         config: &AdapterConfig,
         db_config: &DatabaseConfig,
         debug_enabled: bool,
-    ) -> Result<Box<dyn Adapter + Send + Sync>> {
+    ) -> Result<Box<dyn ConnectionManager + Send + Sync>> {
         info!(
             "{}",
-            format!("Initializing Adapter with driver: {:?}", config.driver)
+            format!(
+                "Initializing ConnectionManager with driver: {:?}",
+                config.driver
+            )
         );
         match config.driver {
             // Match on the enum
@@ -120,7 +123,7 @@ impl AdapterFactory {
                     }
                 }
             }
-            AdapterDriver::Local | _ => {
+            AdapterDriver::Local => {
                 // Handle unknown as Local or make it an error
                 info!("{}", "Using local adapter.".to_string());
                 Ok(Box::new(LocalAdapter::new()))

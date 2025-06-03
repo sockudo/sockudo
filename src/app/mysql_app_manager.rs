@@ -46,7 +46,7 @@ impl MySQLAppManager {
             .idle_timeout(Duration::from_secs(180))
             .connect(&connection_string)
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to connect to MySQL: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to connect to MySQL: {}", e)))?;
 
         // Initialize cache
         let app_cache = Cache::builder()
@@ -103,7 +103,7 @@ impl MySQLAppManager {
         sqlx::query(&query)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to create MySQL table: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to create MySQL table: {}", e)))?;
 
         info!(
             "{}",
@@ -155,7 +155,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error fetching app {}: {}", app_id, e)
                 );
-                Error::InternalError(format!("Failed to fetch app from MySQL: {}", e))
+                Error::Internal(format!("Failed to fetch app from MySQL: {}", e))
             })?;
 
         if let Some(app_row) = app_result {
@@ -212,7 +212,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error fetching app by key {}: {}", key, e)
                 );
-                Error::InternalError(format!("Failed to fetch app from MySQL: {}", e))
+                Error::Internal(format!("Failed to fetch app from MySQL: {}", e))
             })?;
 
         if let Some(app_row) = app_result {
@@ -270,7 +270,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error registering app {}: {}", app.id, e)
                 );
-                Error::InternalError(format!("Failed to insert app into MySQL: {}", e))
+                Error::Internal(format!("Failed to insert app into MySQL: {}", e))
             })?;
 
         // Update cach
@@ -321,7 +321,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error updating app {}: {}", app.id, e)
                 );
-                Error::InternalError(format!("Failed to update app in MySQL: {}", e))
+                Error::Internal(format!("Failed to update app in MySQL: {}", e))
             })?;
 
         if result.rows_affected() == 0 {
@@ -350,7 +350,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error removing app {}: {}", app_id, e)
                 );
-                Error::InternalError(format!("Failed to delete app from MySQL: {}", e))
+                Error::Internal(format!("Failed to delete app from MySQL: {}", e))
             })?;
 
         if result.rows_affected() == 0 {
@@ -394,7 +394,7 @@ impl MySQLAppManager {
             .map_err(|e| {
                 error!("{}", format!("Database error fetching all apps: {}", e));
                 // Consider a more specific error type if possible
-                Error::InternalError(format!("Failed to fetch apps from MySQL: {}", e))
+                Error::Internal(format!("Failed to fetch apps from MySQL: {}", e))
             })?;
 
         warn!(
@@ -496,7 +496,7 @@ impl MySQLAppManager {
         // Split auth string into key and signature (format: "app_key:signature")
         let parts: Vec<&str> = auth.split(':').collect();
         if parts.len() < 2 {
-            return Err(Error::AuthError("Invalid auth format".into()));
+            return Err(Error::Auth("Invalid auth format".into()));
         }
 
         let app_key = parts[0];
@@ -604,9 +604,7 @@ impl AppManager for MySQLAppManager {
 
     async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
         // For the sync interface, poll the async function in a blocking manner
-        self.find_by_id(app_id)
-            .await
-            .map(|app| app.map(|a| a.clone()))
+        self.find_by_id(app_id).await
     }
 
     async fn find_by_key(&self, key: &str) -> Result<Option<App>> {

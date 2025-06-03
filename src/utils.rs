@@ -32,13 +32,7 @@ pub fn data_to_bytes<T: AsRef<str> + serde::Serialize>(data: &[T]) -> usize {
     data.iter()
         .map(|element| {
             // Convert element to string representation
-            let string_data = if let Ok(s) = element.as_ref().to_string().parse::<String>() {
-                // Element is already a string-like value
-                s
-            } else {
-                // Convert to JSON string representation
-                serde_json::to_string(element).unwrap_or_else(|_| String::new())
-            };
+            let string_data = element.as_ref().to_string();
 
             // Calculate byte length of string
             string_data.len()
@@ -64,7 +58,7 @@ pub fn data_to_bytes_flexible(data: Vec<serde_json::Value>) -> usize {
 
 pub async fn validate_channel_name(app: &App, channel: &str) -> crate::error::Result<()> {
     if channel.len() > app.max_channel_name_length.unwrap_or(200) as usize {
-        return Err(Error::ChannelError(format!(
+        return Err(Error::Channel(format!(
             "Channel name too long. Max length is {}",
             app.max_channel_name_length.unwrap_or(200)
         )));
@@ -72,7 +66,7 @@ pub async fn validate_channel_name(app: &App, channel: &str) -> crate::error::Re
     if !channel.chars().all(|c| {
         c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=' || c == '@' || c == '.'
     }) {
-        return Err(Error::ChannelError(
+        return Err(Error::Channel(
             "Channel name contains invalid characters".to_string(),
         ));
     }
