@@ -75,7 +75,7 @@ impl ConnectionHandler {
     pub async fn handle_socket(&self, fut: upgrade::UpgradeFut, app_key: String) -> Result<()> {
         // Early validation and setup
         let app_config = self.validate_and_get_app(&app_key).await?;
-        let (socket_rx, mut socket_tx) = self.upgrade_websocket(fut).await?;
+        let (socket_rx, socket_tx) = self.upgrade_websocket(fut).await?;
 
         // Connection quota check
         self.check_connection_quota(&app_config).await?;
