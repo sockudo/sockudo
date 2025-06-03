@@ -111,8 +111,7 @@ impl AuthValidator {
 
         // --- Prepare parameters for signing string construction ---
         // Start with a copy of all query parameters received in the URL (excluding auth_signature)
-        let mut params_for_signing_string: BTreeMap<String, String> =
-            all_query_params_from_url.clone();
+        let params_for_signing_string: BTreeMap<String, String> = all_query_params_from_url.clone();
 
         // --- body_md5 validation and inclusion in signature params ---
         let uppercased_http_method = http_method.to_uppercase();

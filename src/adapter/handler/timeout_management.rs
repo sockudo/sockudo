@@ -42,7 +42,7 @@ impl ConnectionHandler {
                 .get_connection(&socket_id_clone, &app_id_clone)
                 .await
             {
-                let mut ws = conn.0.lock().await;
+                let ws = conn.0.lock().await;
 
                 // Send ping first, then set a shorter timeout for pong
                 let ping_message = PusherMessage::ping();
