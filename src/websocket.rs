@@ -236,7 +236,7 @@ impl MessageSender {
 
     pub fn send_json<T: serde::Serialize>(&self, message: &T) -> Result<()> {
         let payload = serde_json::to_vec(message)
-            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {}", e)))?;
+            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
 
         let frame = Frame::text(Payload::from(payload));
         self.send(frame)
