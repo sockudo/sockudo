@@ -19,7 +19,7 @@ Welcome! 🎉 We're thrilled that you'd like to contribute to **Sockudo**, a hig
 ```bash
 git clone https://github.com/RustNSparks/sockudo
 cd sockudo
-````
+```
 
 ### 2. Set Up Your Environment
 

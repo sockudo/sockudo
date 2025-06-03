@@ -1000,11 +1000,9 @@ This project is licensed under the **AGPL-3.0 License** - see the [LICENSE](http
 ### Community Support
 - **GitHub Issues**: [Report bugs and request features](https://github.com/RustNSparks/sockudo/issues)
 - **Crates.io**: [View package details](https://crates.io/crates/sockudo)
+- **Discord**: [Join the RustNSparks server](https://discord.gg/GUuxFbD8pU)
+- **X**: [Follow us on X](https://x.com/sockudorealtime)
 
 **⭐ Star us on GitHub if Sockudo helps your project\! ⭐**
 
 [GitHub Repository](https://github.com/RustNSparks/sockudo) • [Crates.io](https://crates.io/crates/sockudo))
-
-
-```
-```

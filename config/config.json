@@ -9,7 +9,7 @@
   "user_authentication_timeout": 3600,
 
   "adapter": {
-    "driver": "redis",
+    "driver": "local",
     "redis": {
       "requests_timeout": 5000,
       "prefix": "sockudo_adapter:",
@@ -67,7 +67,7 @@
 
   "database": {
     "redis": {
-      "host": "localhost",
+      "host": "redis",
       "port": 6379,
       "db": 0,
       "key_prefix": "sockudo:",
