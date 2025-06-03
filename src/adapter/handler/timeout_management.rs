@@ -1,11 +1,11 @@
 // src/adapter/handler/timeout_management.rs
 use super::ConnectionHandler;
-use crate::error::{Result};
-use crate::websocket::SocketId;
+use crate::error::Result;
 use crate::protocol::messages::PusherMessage;
+use crate::websocket::SocketId;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{warn, info};
+use tracing::{info, warn};
 
 impl ConnectionHandler {
     pub async fn setup_initial_timeouts(
@@ -19,7 +19,8 @@ impl ConnectionHandler {
         // Set user authentication timeout if required
         if app_config.enable_user_authentication.unwrap_or(false) {
             let auth_timeout = self.server_options.user_authentication_timeout;
-            self.set_user_authentication_timeout(&app_config.id, socket_id, auth_timeout).await?;
+            self.set_user_authentication_timeout(&app_config.id, socket_id, auth_timeout)
+                .await?;
         }
 
         Ok(())
@@ -37,24 +38,35 @@ impl ConnectionHandler {
             sleep(Duration::from_secs(120)).await;
 
             let mut conn_manager = connection_manager.lock().await;
-            if let Some(conn) = conn_manager.get_connection(&socket_id_clone, &app_id_clone).await {
+            if let Some(conn) = conn_manager
+                .get_connection(&socket_id_clone, &app_id_clone)
+                .await
+            {
                 let mut ws = conn.0.lock().await;
 
                 // Send ping first, then set a shorter timeout for pong
                 let ping_message = PusherMessage::ping();
                 if ws.send_message(&ping_message).is_ok() {
-                    info!("Sent ping to socket {} due to activity timeout", socket_id_clone);
+                    info!(
+                        "Sent ping to socket {} due to activity timeout",
+                        socket_id_clone
+                    );
 
                     // Wait for pong response (shorter timeout)
                     drop(ws); // Release the lock before sleeping
                     sleep(Duration::from_secs(30)).await;
 
                     // Check if we received a pong (activity was updated)
-                    if let Some(conn) = conn_manager.get_connection(&socket_id_clone, &app_id_clone).await {
+                    if let Some(conn) = conn_manager
+                        .get_connection(&socket_id_clone, &app_id_clone)
+                        .await
+                    {
                         let mut ws = conn.0.lock().await;
                         if ws.state.time_since_last_ping() > Duration::from_secs(140) {
                             // No pong received, close connection
-                            let _ = ws.close(4201, "Pong reply not received in time".to_string()).await;
+                            let _ = ws
+                                .close(4201, "Pong reply not received in time".to_string())
+                                .await;
                         }
                     }
                 } else {
@@ -103,18 +115,27 @@ impl ConnectionHandler {
         let connection_manager = self.connection_manager.clone();
 
         // Clear any existing auth timeout
-        self.clear_user_authentication_timeout(app_id, socket_id).await?;
+        self.clear_user_authentication_timeout(app_id, socket_id)
+            .await?;
 
         let timeout_handle = tokio::spawn(async move {
             sleep(Duration::from_secs(timeout_seconds)).await;
 
             let mut conn_manager = connection_manager.lock().await;
-            if let Some(conn) = conn_manager.get_connection(&socket_id_clone, &app_id_clone).await {
+            if let Some(conn) = conn_manager
+                .get_connection(&socket_id_clone, &app_id_clone)
+                .await
+            {
                 let mut ws = conn.0.lock().await;
 
                 // Check if user is still not authenticated
                 if !ws.state.is_authenticated() {
-                    let _ = ws.close(4009, "Connection not authorized within timeout.".to_string()).await;
+                    let _ = ws
+                        .close(
+                            4009,
+                            "Connection not authorized within timeout.".to_string(),
+                        )
+                        .await;
                 }
             }
         });
@@ -148,7 +169,8 @@ impl ConnectionHandler {
         app_config: &crate::app::config::App,
     ) -> Result<()> {
         // Update activity and send pong
-        self.update_activity_timeout(&app_config.id, socket_id).await?;
+        self.update_activity_timeout(&app_config.id, socket_id)
+            .await?;
 
         let mut conn_manager = self.connection_manager.lock().await;
         if let Some(conn) = conn_manager.get_connection(socket_id, &app_config.id).await {

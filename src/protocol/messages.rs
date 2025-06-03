@@ -150,7 +150,7 @@ impl PusherMessage {
             name: None,
         }
     }
-    
+
     pub fn ping() -> Self {
         Self {
             event: Some("pusher:ping".to_string()),

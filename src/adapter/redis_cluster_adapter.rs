@@ -1,7 +1,3 @@
-use std::any::Any;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
@@ -9,6 +5,10 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -53,7 +53,9 @@ impl RedisClusterAdapter {
         let client = ClusterClient::new(config.nodes.clone())
             .map_err(|e| Error::RedisError(format!("Failed to create Redis client: {}", e)))?;
 
-        let connection = client.get_async_connection().await
+        let connection = client
+            .get_async_connection()
+            .await
             .map_err(|e| Error::RedisError(format!("Failed to connect to Redis: {}", e)))?;
 
         let broadcast_channel = format!("{}:{}", config.prefix, BROADCAST_SUFFIX);
@@ -143,7 +145,11 @@ impl RedisClusterAdapter {
         let max_expected_responses = node_count.saturating_sub(1);
 
         if max_expected_responses == 0 {
-            self.horizontal.lock().await.pending_requests.remove(&request_id);
+            self.horizontal
+                .lock()
+                .await
+                .pending_requests
+                .remove(&request_id);
             return Ok(ResponseBody {
                 request_id,
                 node_id: request.node_id,
@@ -181,7 +187,13 @@ impl RedisClusterAdapter {
                     .unwrap_or_default();
             }
 
-            if let Some(pending_request) = self.horizontal.lock().await.pending_requests.get(&request_id) {
+            if let Some(pending_request) = self
+                .horizontal
+                .lock()
+                .await
+                .pending_requests
+                .get(&request_id)
+            {
                 if pending_request.responses.len() >= max_expected_responses {
                     info!(
                         "Request {} completed with {}/{} responses in {}ms",
@@ -495,11 +507,7 @@ impl Adapter for RedisClusterAdapter {
             .await
     }
 
-    async fn get_connection(
-        &mut self,
-        socket_id: &SocketId,
-        app_id: &str,
-    ) -> Option<WebSocketRef> {
+    async fn get_connection(&mut self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
