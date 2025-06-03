@@ -14,6 +14,7 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 /// Configuration for MySQL App Manager
+
 /// MySQL-based implementation of the AppManager
 pub struct MySQLAppManager {
     config: DatabaseConnection,
