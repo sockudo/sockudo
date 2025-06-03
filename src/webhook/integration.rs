@@ -224,8 +224,7 @@ impl WebhookIntegration {
         if !self.config.enabled {
             return false;
         }
-
-        app.webhooks.as_ref().is_some_and(|webhooks| {
+        app.webhooks.as_ref().map_or(false, |webhooks| {
             webhooks
                 .iter()
                 .any(|wh_config| wh_config.event_types.contains(&event_type_name.to_string()))
@@ -307,10 +306,10 @@ impl WebhookIntegration {
             "socket_id": socket_id,
         });
 
-        if channel.starts_with("presence-")
-            && let Some(uid) = user_id
-        {
-            client_event_pusher_payload["user_id"] = json!(uid);
+        if channel.starts_with("presence-") {
+            if let Some(uid) = user_id {
+                client_event_pusher_payload["user_id"] = json!(uid);
+            }
         }
 
         let signature = format!(
