@@ -14,7 +14,6 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 /// Configuration for MySQL App Manager
-
 /// MySQL-based implementation of the AppManager
 pub struct MySQLAppManager {
     config: DatabaseConnection,
@@ -223,7 +222,7 @@ impl MySQLAppManager {
             let app_id = app.id.clone();
             self.app_cache.insert(app_id, app.clone()).await;
 
-            Ok(Some(app.clone().into()))
+            Ok(Some(app.clone()))
         } else {
             Ok(None)
         }

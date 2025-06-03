@@ -1,3 +1,7 @@
+#![allow(unused_variables)]
+#![allow(dead_code)]
+#![allow(unused_assignments)]
+
 mod adapter;
 mod app;
 mod cache;
@@ -1155,8 +1159,10 @@ async fn main() -> Result<()> {
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false); // Default to false if DEBUG env var is not set
 
-    let mut config = ServerOptions::default();
-    config.debug = initial_debug_from_env; // Set initial debug state
+    let mut config = ServerOptions {
+        debug: initial_debug_from_env,
+        ..Default::default()
+    };
 
     // --- Apply environment variables to default config (before loading from file) ---
     // This allows ENV to provide defaults if not in file, or be overridden by file.

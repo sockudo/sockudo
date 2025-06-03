@@ -74,7 +74,7 @@ pub async fn pusher_api_auth_middleware(
     // 3. Buffer the request body.
     // The body needs to be read for authentication (e.g., for body_md5 or if the full body is signed)
     // and then made available again for the actual route handler (e.g., for `Json` extraction).
-    let (mut parts, body) = request.into_parts();
+    let (parts, body) = request.into_parts();
     let body_bytes = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(err) => {
