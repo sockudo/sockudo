@@ -51,7 +51,7 @@ impl std::str::FromStr for AdapterDriver {
             "redis" => Ok(AdapterDriver::Redis),
             "redis-cluster" => Ok(AdapterDriver::RedisCluster),
             "nats" => Ok(AdapterDriver::Nats),
-            _ => Err(format!("Unknown adapter driver: {s}")),
+            _ => Err(format!("Unknown adapter driver: {}", s)),
         }
     }
 }
@@ -72,7 +72,7 @@ impl std::str::FromStr for AppManagerDriver {
             "memory" => Ok(AppManagerDriver::Memory),
             "mysql" => Ok(AppManagerDriver::Mysql),
             "dynamodb" => Ok(AppManagerDriver::Dynamodb),
-            _ => Err(format!("Unknown app manager driver: {s}")),
+            _ => Err(format!("Unknown app manager driver: {}", s)),
         }
     }
 }
@@ -101,7 +101,7 @@ impl std::str::FromStr for CacheDriver {
             "redis" => Ok(CacheDriver::Redis),
             "redis-cluster" => Ok(CacheDriver::RedisCluster),
             "none" => Ok(CacheDriver::None),
-            _ => Err(format!("Unknown cache driver: {s}")),
+            _ => Err(format!("Unknown cache driver: {}", s)),
         }
     }
 }
@@ -132,7 +132,7 @@ impl std::str::FromStr for QueueDriver {
             "redis-cluster" => Ok(QueueDriver::RedisCluster), // Add this case
             "sqs" => Ok(QueueDriver::Sqs),
             "none" => Ok(QueueDriver::None),
-            _ => Err(format!("Unknown queue driver: {s}")),
+            _ => Err(format!("Unknown queue driver: {}", s)),
         }
     }
 }
@@ -187,7 +187,7 @@ impl std::str::FromStr for MetricsDriver {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "prometheus" => Ok(MetricsDriver::Prometheus),
-            _ => Err(format!("Unknown metrics driver: {s}")),
+            _ => Err(format!("Unknown metrics driver: {}", s)),
         }
     }
 }
