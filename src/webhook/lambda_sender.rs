@@ -112,7 +112,8 @@ impl LambdaWebhookSender {
 
         let payload_bytes = serde_json::to_vec(&pusher_webhook_payload).map_err(|e| {
             Error::Other(format!(
-                "Failed to serialize Pusher Webhook payload for Lambda: {e}"
+                "Failed to serialize Pusher Webhook payload for Lambda: {}",
+                e
             ))
         })?;
 
@@ -155,7 +156,8 @@ impl LambdaWebhookSender {
                     )
                 );
                 Err(Error::Other(format!(
-                    "Failed to invoke Lambda function: {e}"
+                    "Failed to invoke Lambda function: {}",
+                    e
                 )))
             }
         }
@@ -192,7 +194,8 @@ impl LambdaWebhookSender {
 
         let payload_bytes = serde_json::to_vec(&pusher_webhook_payload).map_err(|e| {
             Error::Other(format!(
-                "Failed to serialize Pusher Webhook payload for Lambda sync: {e}"
+                "Failed to serialize Pusher Webhook payload for Lambda sync: {}",
+                e
             ))
         })?;
 
@@ -218,18 +221,22 @@ impl LambdaWebhookSender {
                     match serde_json::from_slice::<Value>(response_payload_blob.as_ref()) {
                         Ok(json_response) => {
                             info!(
-                                "Received response from Lambda function {}: {:?}",
-                                lambda_config_ref.function_name, json_response
+                                "{}",
+                                format!(
+                                    "Received response from Lambda function {}: {:?}",
+                                    lambda_config_ref.function_name, json_response
+                                )
                             );
-
                             Ok(Some(json_response))
                         }
                         Err(e) => {
                             warn!(
-                                "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
-                                e, response_payload_blob
+                                "{}",
+                                format!(
+                                    "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
+                                    e, response_payload_blob
+                                )
                             );
-
                             let response_str =
                                 String::from_utf8_lossy(response_payload_blob.as_ref());
                             Ok(Some(json!({"raw_response": response_str.to_string() })))
@@ -237,21 +244,26 @@ impl LambdaWebhookSender {
                     }
                 } else {
                     info!(
-                        "Lambda function {} returned no payload",
-                        lambda_config_ref.function_name
+                        "{}",
+                        format!(
+                            "Lambda function {} returned no payload",
+                            lambda_config_ref.function_name
+                        )
                     );
-
                     Ok(None)
                 }
             }
             Err(e) => {
                 error!(
-                    "Failed to invoke Lambda function {} synchronously: {}",
-                    lambda_config_ref.function_name, e
+                    "{}",
+                    format!(
+                        "Failed to invoke Lambda function {} synchronously: {}",
+                        lambda_config_ref.function_name, e
+                    )
                 );
-
                 Err(Error::Other(format!(
-                    "Failed to invoke Lambda function synchronously: {e}"
+                    "Failed to invoke Lambda function synchronously: {}",
+                    e
                 )))
             }
         }
