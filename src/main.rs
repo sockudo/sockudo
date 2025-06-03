@@ -1196,7 +1196,8 @@ async fn main() -> Result<()> {
             config.queue.redis_cluster.concurrency = concurrency;
         } else {
             eprintln!(
-                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{concurrency_str}'");
+                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{concurrency_str}'"
+            );
         }
     }
     if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
@@ -1231,8 +1232,7 @@ async fn main() -> Result<()> {
         if let Ok(port) = val_str.parse() {
             config.ssl.http_port = Some(port);
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{val_str}'");
+            eprintln!("[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{val_str}'");
         }
     }
 
@@ -1244,8 +1244,7 @@ async fn main() -> Result<()> {
         if let Ok(port) = val_str.parse() {
             config.database.redis.port = port;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{val_str}'");
+            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("DATABASE_REDIS_PASSWORD") {
@@ -1255,8 +1254,7 @@ async fn main() -> Result<()> {
         if let Ok(db) = val_str.parse() {
             config.database.redis.db = db;
         } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{val_str}'");
+            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{val_str}'");
         }
     }
     if let Ok(val) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
