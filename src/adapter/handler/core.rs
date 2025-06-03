@@ -1,14 +1,12 @@
 // src/adapter/handler/core_methods.rs
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
-use crate::websocket::{SocketId, WebSocketRef};
 use crate::app::config::App;
-use crate::protocol::messages::{PusherMessage, MessageData, ErrorData};
-use crate::channel::ChannelType;
-use crate::utils;
+use crate::error::{Error, Result};
+use crate::protocol::messages::{ErrorData, MessageData, PusherMessage};
+use crate::websocket::SocketId;
 use serde_json::Value;
 use std::collections::HashSet;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 impl ConnectionHandler {
     pub async fn send_connection_established(
@@ -16,8 +14,10 @@ impl ConnectionHandler {
         app_id: &str,
         socket_id: &SocketId,
     ) -> Result<()> {
-        let connection_message = PusherMessage::connection_established(socket_id.as_ref().to_string());
-        self.send_message_to_socket(app_id, socket_id, connection_message).await
+        let connection_message =
+            PusherMessage::connection_established(socket_id.as_ref().to_string());
+        self.send_message_to_socket(app_id, socket_id, connection_message)
+            .await
     }
 
     pub async fn send_error(
@@ -31,12 +31,10 @@ impl ConnectionHandler {
             message: error.to_string(),
             code: Some(error.close_code()),
         };
-        let error_message = PusherMessage::error(
-            error_data.code.unwrap_or(4000),
-            error_data.message,
-            channel,
-        );
-        self.send_message_to_socket(app_id, socket_id, error_message).await
+        let error_message =
+            PusherMessage::error(error_data.code.unwrap_or(4000), error_data.message, channel);
+        self.send_message_to_socket(app_id, socket_id, error_message)
+            .await
     }
 
     pub async fn handle_unsubscribe(
@@ -65,7 +63,8 @@ impl ConnectionHandler {
         }
 
         // Update connection state
-        self.update_connection_unsubscribe_state(socket_id, app_config, &channel_name).await?;
+        self.update_connection_unsubscribe_state(socket_id, app_config, &channel_name)
+            .await?;
 
         // Get current subscription count after unsubscribe
         let current_sub_count = self
@@ -96,17 +95,15 @@ impl ConnectionHandler {
                     }
 
                     // Send member_removed event to channel
-                    let member_removed_msg = PusherMessage::member_removed(
-                        channel_name.clone(),
-                        user_id_str,
-                    );
+                    let member_removed_msg =
+                        PusherMessage::member_removed(channel_name.clone(), user_id_str);
                     self.broadcast_to_channel(
                         app_config,
                         &channel_name,
                         member_removed_msg,
                         Some(socket_id),
                     )
-                        .await?;
+                    .await?;
                 }
             }
         } else {
@@ -137,11 +134,15 @@ impl ConnectionHandler {
 
         // Clear timeouts
         self.clear_activity_timeout(app_id, socket_id).await?;
-        self.clear_user_authentication_timeout(app_id, socket_id).await?;
+        self.clear_user_authentication_timeout(app_id, socket_id)
+            .await?;
 
         // Clean up client event rate limiter
         if self.client_event_limiters.remove(socket_id).is_some() {
-            info!("Removed client event rate limiter for socket: {}", socket_id);
+            info!(
+                "Removed client event rate limiter for socket: {}",
+                socket_id
+            );
         }
 
         // Get app configuration
@@ -150,14 +151,16 @@ impl ConnectionHandler {
             None => {
                 error!("App not found during disconnect: {}", app_id);
                 // Attempt cleanup even if app is gone
-                self.cleanup_connection_from_manager(socket_id, app_id).await;
+                self.cleanup_connection_from_manager(socket_id, app_id)
+                    .await;
                 return Err(Error::ApplicationNotFound);
             }
         };
 
         // Extract connection state before cleanup
-        let (subscribed_channels, user_id, user_watchlist) =
-            self.extract_connection_state_for_disconnect(socket_id, &app_config).await?;
+        let (subscribed_channels, user_id, user_watchlist) = self
+            .extract_connection_state_for_disconnect(socket_id, &app_config)
+            .await?;
 
         // Process channel unsubscriptions
         if !subscribed_channels.is_empty() {
@@ -165,17 +168,25 @@ impl ConnectionHandler {
                 socket_id,
                 &app_config,
                 &subscribed_channels,
-                &user_id
-            ).await?;
+                &user_id,
+            )
+            .await?;
         }
 
         // Handle watchlist offline events
         if let Some(ref user_id_str) = user_id {
-            self.handle_disconnect_watchlist_events(&app_config, user_id_str, socket_id, user_watchlist).await?;
+            self.handle_disconnect_watchlist_events(
+                &app_config,
+                user_id_str,
+                socket_id,
+                user_watchlist,
+            )
+            .await?;
         }
 
         // Final cleanup from connection manager
-        self.cleanup_connection_from_manager(socket_id, app_id).await;
+        self.cleanup_connection_from_manager(socket_id, app_id)
+            .await;
 
         // Update metrics
         if let Some(ref metrics) = self.metrics {
@@ -183,7 +194,10 @@ impl ConnectionHandler {
             metrics_locked.mark_disconnection(app_id, socket_id);
         }
 
-        info!("Successfully processed disconnect for socket: {}", socket_id);
+        info!(
+            "Successfully processed disconnect for socket: {}",
+            socket_id
+        );
         Ok(())
     }
 
@@ -194,7 +208,10 @@ impl ConnectionHandler {
         app_config: &App,
     ) -> Result<(HashSet<String>, Option<String>, Option<Vec<String>>)> {
         let mut connection_manager = self.connection_manager.lock().await;
-        match connection_manager.get_connection(socket_id, &app_config.id).await {
+        match connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        {
             Some(conn_arc) => {
                 let mut conn_locked = conn_arc.0.lock().await;
 
@@ -214,7 +231,10 @@ impl ConnectionHandler {
                 ))
             }
             None => {
-                warn!("No connection found for socket during disconnect: {}", socket_id);
+                warn!(
+                    "No connection found for socket during disconnect: {}",
+                    socket_id
+                );
                 Ok((HashSet::new(), None, None))
             }
         }
@@ -230,7 +250,10 @@ impl ConnectionHandler {
         let channel_manager = self.channel_manager.write().await;
 
         for channel_str in subscribed_channels {
-            info!("Processing channel {} for disconnect of socket {}", channel_str, socket_id);
+            info!(
+                "Processing channel {} for disconnect of socket {}",
+                channel_str, socket_id
+            );
 
             match channel_manager
                 .unsubscribe(
@@ -254,8 +277,9 @@ impl ConnectionHandler {
                         channel_str,
                         user_id,
                         current_sub_count,
-                        socket_id
-                    ).await?;
+                        socket_id,
+                    )
+                    .await?;
                 }
                 Err(e) => {
                     error!(
@@ -307,8 +331,8 @@ impl ConnectionHandler {
                         member_removed_msg,
                         Some(socket_id),
                     )
-                        .await
-                        .ok();
+                    .await
+                    .ok();
                 }
             }
         } else {
@@ -342,7 +366,10 @@ impl ConnectionHandler {
         user_watchlist: Option<Vec<String>>,
     ) -> Result<()> {
         if app_config.enable_watchlist_events.unwrap_or(false) && user_watchlist.is_some() {
-            info!("Processing watchlist disconnect for user {} on socket {}", user_id_str, socket_id);
+            info!(
+                "Processing watchlist disconnect for user {} on socket {}",
+                user_id_str, socket_id
+            );
 
             // Remove user connection from watchlist manager
             let offline_events = self
@@ -352,15 +379,24 @@ impl ConnectionHandler {
 
             // Send offline events to watchers if user went offline
             if !offline_events.is_empty() {
-                let watchers_to_notify = self.get_watchers_for_user(&app_config.id, user_id_str).await?;
+                let watchers_to_notify = self
+                    .get_watchers_for_user(&app_config.id, user_id_str)
+                    .await?;
 
                 for event in offline_events {
                     for watcher_socket_id in &watchers_to_notify {
                         if let Err(e) = self
-                            .send_message_to_socket(&app_config.id, watcher_socket_id, event.clone())
+                            .send_message_to_socket(
+                                &app_config.id,
+                                watcher_socket_id,
+                                event.clone(),
+                            )
                             .await
                         {
-                            warn!("Failed to send offline notification to watcher {}: {}", watcher_socket_id, e);
+                            warn!(
+                                "Failed to send offline notification to watcher {}: {}",
+                                watcher_socket_id, e
+                            );
                         }
                     }
                 }
@@ -395,27 +431,31 @@ impl ConnectionHandler {
 
         match message_data {
             MessageData::String(channel_str) => Ok(channel_str.clone()),
-            MessageData::Json(data) => {
-                data.get("channel")
-                    .and_then(Value::as_str)
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| {
-                        Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
-                    })
-            }
+            MessageData::Json(data) => data
+                .get("channel")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string())
+                .ok_or_else(|| {
+                    Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
+                }),
             MessageData::Structured { channel, .. } => {
-                channel.as_ref()
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| {
-                        Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
-                    })
+                channel.as_ref().map(|s| s.to_string()).ok_or_else(|| {
+                    Error::InvalidMessageFormat("Missing channel in unsubscribe message".into())
+                })
             }
         }
     }
 
-    async fn get_user_id_for_socket(&self, socket_id: &SocketId, app_config: &App) -> Result<Option<String>> {
+    async fn get_user_id_for_socket(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+    ) -> Result<Option<String>> {
         let mut connection_manager = self.connection_manager.lock().await;
-        if let Some(conn) = connection_manager.get_connection(socket_id, &app_config.id).await {
+        if let Some(conn) = connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        {
             let conn_locked = conn.0.lock().await;
             Ok(conn_locked.state.user_id.clone())
         } else {
@@ -430,7 +470,10 @@ impl ConnectionHandler {
         channel_name: &str,
     ) -> Result<()> {
         let mut connection_manager = self.connection_manager.lock().await;
-        if let Some(conn_arc) = connection_manager.get_connection(socket_id, &app_config.id).await {
+        if let Some(conn_arc) = connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        {
             let mut conn_locked = conn_arc.0.lock().await;
             conn_locked.unsubscribe_from_channel(channel_name);
 
@@ -473,13 +516,17 @@ impl ConnectionHandler {
         match cache_manager.get(&cache_key).await {
             Ok(Some(cache_content)) => {
                 // Found cached content, send it to the socket
-                let cache_message: PusherMessage = serde_json::from_str(&cache_content)
-                    .map_err(|e| Error::InvalidMessageFormat(
-                        format!("Invalid cached message format: {}", e)
-                    ))?;
+                let cache_message: PusherMessage =
+                    serde_json::from_str(&cache_content).map_err(|e| {
+                        Error::InvalidMessageFormat(format!("Invalid cached message format: {}", e))
+                    })?;
 
-                self.send_message_to_socket(app_id, socket_id, cache_message).await?;
-                info!("Sent cached content to socket {} for channel {}", socket_id, channel);
+                self.send_message_to_socket(app_id, socket_id, cache_message)
+                    .await?;
+                info!(
+                    "Sent cached content to socket {} for channel {}",
+                    socket_id, channel
+                );
             }
             Ok(None) => {
                 // No cache found, send cache miss event
@@ -490,7 +537,8 @@ impl ConnectionHandler {
                     data: None,
                 };
 
-                self.send_message_to_socket(app_id, socket_id, cache_miss_message).await?;
+                self.send_message_to_socket(app_id, socket_id, cache_miss_message)
+                    .await?;
 
                 // Send cache miss webhook if configured
                 if let Some(app_config) = self.app_manager.find_by_id(app_id).await? {
@@ -499,12 +547,18 @@ impl ConnectionHandler {
                             .send_cache_missed(&app_config, channel)
                             .await
                         {
-                            warn!("Failed to send cache_missed webhook for channel {}: {}", channel, e);
+                            warn!(
+                                "Failed to send cache_missed webhook for channel {}: {}",
+                                channel, e
+                            );
                         }
                     }
                 }
 
-                info!("No cached content found for channel: {}, sent cache_miss event", channel);
+                info!(
+                    "No cached content found for channel: {}, sent cache_miss event",
+                    channel
+                );
             }
             Err(e) => {
                 error!("Failed to get cache for channel {}: {}", channel, e);
@@ -517,11 +571,13 @@ impl ConnectionHandler {
                     data: None,
                 };
 
-                self.send_message_to_socket(app_id, socket_id, cache_miss_message).await?;
+                self.send_message_to_socket(app_id, socket_id, cache_miss_message)
+                    .await?;
 
-                return Err(Error::InternalError(
-                    format!("Cache retrieval failed for channel {}: {}", channel, e)
-                ));
+                return Err(Error::InternalError(format!(
+                    "Cache retrieval failed for channel {}: {}",
+                    channel, e
+                )));
             }
         }
 
@@ -539,23 +595,24 @@ impl ConnectionHandler {
         let mut cache_manager = self.cache_manager.lock().await;
         let cache_key = format!("app:{}:channel:{}:cache_miss", app_id, channel);
 
-        let message_json = serde_json::to_string(message)
-            .map_err(|e| Error::InvalidMessageFormat(
-                format!("Failed to serialize message for cache: {}", e)
-            ))?;
+        let message_json = serde_json::to_string(message).map_err(|e| {
+            Error::InvalidMessageFormat(format!("Failed to serialize message for cache: {}", e))
+        })?;
 
         match ttl_seconds {
             Some(ttl) => {
-                cache_manager.set(&cache_key, &message_json, ttl).await
-                    .map_err(|e| Error::InternalError(
-                        format!("Failed to store cache with TTL: {}", e)
-                    ))?;
+                cache_manager
+                    .set(&cache_key, &message_json, ttl)
+                    .await
+                    .map_err(|e| {
+                        Error::InternalError(format!("Failed to store cache with TTL: {}", e))
+                    })?;
             }
             None => {
-                cache_manager.set(&cache_key, &message_json, 0).await
-                    .map_err(|e| Error::InternalError(
-                        format!("Failed to store cache: {}", e)
-                    ))?;
+                cache_manager
+                    .set(&cache_key, &message_json, 0)
+                    .await
+                    .map_err(|e| Error::InternalError(format!("Failed to store cache: {}", e)))?;
             }
         }
 
@@ -568,10 +625,12 @@ impl ConnectionHandler {
         let mut cache_manager = self.cache_manager.lock().await;
         let cache_key = format!("app:{}:channel:{}:cache_miss", app_id, channel);
 
-        cache_manager.remove(&cache_key).await
-            .map_err(|e| Error::InternalError(
-                format!("Failed to clear cache for channel {}: {}", channel, e)
-            ))?;
+        cache_manager.remove(&cache_key).await.map_err(|e| {
+            Error::InternalError(format!(
+                "Failed to clear cache for channel {}: {}",
+                channel, e
+            ))
+        })?;
 
         info!("Cleared cache for channel {} in app {}", channel, app_id);
         Ok(())
@@ -592,4 +651,3 @@ impl ConnectionHandler {
         }
     }
 }
-

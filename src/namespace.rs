@@ -3,19 +3,16 @@ use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result}; // Error should be in scope
 
-use crate::protocol::messages::PusherMessage;
-use crate::websocket::{ConnectionState, SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocket, WebSocketRef};
 use dashmap::{DashMap, DashSet};
-use fastwebsockets::{Frame, OpCode, Payload, WebSocketWrite};
+use fastwebsockets::WebSocketWrite;
 use futures::future::join_all;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::io::WriteHalf;
-use tokio::sync::{Mutex, mpsc};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 // Represents a namespace, typically tied to a specific application ID.
 // Manages WebSocket connections, channel subscriptions, and user presence within that app.
@@ -79,7 +76,8 @@ impl Namespace {
         let websocket_ref = WebSocketRef::new(websocket);
 
         // Store the connection in the central map
-        self.sockets.insert(socket_id.clone(), websocket_ref.clone());
+        self.sockets
+            .insert(socket_id.clone(), websocket_ref.clone());
 
         info!(socket_id = %socket_id, "WebSocket connection added successfully");
 
@@ -88,7 +86,9 @@ impl Namespace {
 
     // Retrieves a connection by SocketId.
     pub fn get_connection(&self, socket_id: &SocketId) -> Option<WebSocketRef> {
-        self.sockets.get(socket_id).map(|conn_ref| conn_ref.value().clone())
+        self.sockets
+            .get(socket_id)
+            .map(|conn_ref| conn_ref.value().clone())
     }
 
     // Retrieves presence information for all members in a presence channel.
@@ -200,7 +200,10 @@ impl Namespace {
             let cleanup_tasks: Vec<_> = user_sockets_snapshot
                 .iter()
                 .map(|ws_ref| async move {
-                    if let Err(e) = ws_ref.close(4009, "You got disconnected by the app.".to_string()).await {
+                    if let Err(e) = ws_ref
+                        .close(4009, "You got disconnected by the app.".to_string())
+                        .await
+                    {
                         warn!("Failed to close connection: {}", e);
                     }
                 })
@@ -291,7 +294,10 @@ impl Namespace {
             info!("Added socket {} to user {}", socket_id, user_id);
         } else {
             let socket_id = ws_ref.get_socket_id().await;
-            warn!("User data found for socket {} but missing user ID.", socket_id);
+            warn!(
+                "User data found for socket {} but missing user ID.",
+                socket_id
+            );
         }
         Ok(())
     }

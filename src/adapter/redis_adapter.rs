@@ -6,7 +6,6 @@ use crate::adapter::Adapter;
 use crate::adapter::horizontal_adapter::{
     BroadcastMessage, HorizontalAdapter, PendingRequest, RequestBody, RequestType, ResponseBody,
 };
-use crate::adapter::local_adapter::LocalAdapter;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
@@ -26,7 +25,7 @@ use uuid::Uuid;
 use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketRef};
 
 /// Redis channels
 pub const DEFAULT_PREFIX: &str = "sockudo";
@@ -86,7 +85,7 @@ impl RedisAdapter {
         } else {
             client.get_multiplexed_tokio_connection().await
         }
-            .map_err(|e| Error::RedisError(format!("Failed to connect to Redis: {}", e)))?;
+        .map_err(|e| Error::RedisError(format!("Failed to connect to Redis: {}", e)))?;
 
         let broadcast_channel = format!("{}:{}", config.prefix, BROADCAST_SUFFIX);
         let request_channel = format!("{}:{}", config.prefix, REQUESTS_SUFFIX);
@@ -175,7 +174,11 @@ impl RedisAdapter {
         let max_expected_responses = node_count.saturating_sub(1);
 
         if max_expected_responses == 0 {
-            self.horizontal.lock().await.pending_requests.remove(&request_id);
+            self.horizontal
+                .lock()
+                .await
+                .pending_requests
+                .remove(&request_id);
             return Ok(ResponseBody {
                 request_id,
                 node_id: request.node_id,
@@ -213,7 +216,13 @@ impl RedisAdapter {
                     .unwrap_or_default();
             }
 
-            if let Some(pending_request) = self.horizontal.lock().await.pending_requests.get(&request_id) {
+            if let Some(pending_request) = self
+                .horizontal
+                .lock()
+                .await
+                .pending_requests
+                .get(&request_id)
+            {
                 if pending_request.responses.len() >= max_expected_responses {
                     info!(
                         "Request {} completed with {}/{} responses in {}ms",
@@ -331,7 +340,9 @@ impl RedisAdapter {
 
             info!(
                 "Redis adapter listening on channels: {}, {}, {}",
-                broadcast_channel, request_channel, response_channel.clone()
+                broadcast_channel,
+                request_channel,
+                response_channel.clone()
             );
 
             let mut message_stream = pubsub.on_message();
@@ -351,7 +362,9 @@ impl RedisAdapter {
                     tokio::spawn(async move {
                         if channel == broadcast_channel_clone {
                             // Handle broadcast message
-                            if let Ok(broadcast) = serde_json::from_str::<BroadcastMessage>(&payload) {
+                            if let Ok(broadcast) =
+                                serde_json::from_str::<BroadcastMessage>(&payload)
+                            {
                                 if broadcast.node_id == node_id_clone {
                                     return;
                                 }
@@ -390,7 +403,10 @@ impl RedisAdapter {
                                     if let Ok(response_json) = serde_json::to_string(&response) {
                                         let mut conn = pub_connection_clone.clone();
                                         let _ = conn
-                                            .publish::<_, _, ()>(&response_channel_clone, response_json)
+                                            .publish::<_, _, ()>(
+                                                &response_channel_clone,
+                                                response_json,
+                                            )
                                             .await;
                                     }
                                 }
@@ -479,11 +495,7 @@ impl Adapter for RedisAdapter {
             .await
     }
 
-    async fn get_connection(
-        &mut self,
-        socket_id: &SocketId,
-        app_id: &str,
-    ) -> Option<WebSocketRef> {
+    async fn get_connection(&mut self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter

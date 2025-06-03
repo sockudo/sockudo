@@ -1,17 +1,16 @@
 // src/adapter/handler/message_handlers.rs
-use super::types::*;
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
-use crate::websocket::SocketId;
+use super::types::*;
 use crate::app::config::App;
+use crate::error::{Error, Result};
 use crate::protocol::messages::PusherMessage;
-use std::sync::Arc;
-use tracing::{info, warn, error};
+use crate::websocket::SocketId;
 
 impl ConnectionHandler {
     pub async fn handle_ping(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         let pong_message = PusherMessage::pong();
-        self.send_message_to_socket(app_id, socket_id, pong_message).await
+        self.send_message_to_socket(app_id, socket_id, pong_message)
+            .await
     }
 
     pub async fn handle_subscribe_request(
@@ -21,27 +20,28 @@ impl ConnectionHandler {
         request: SubscriptionRequest,
     ) -> Result<()> {
         // Validate the request
-        self.validate_subscription_request(app_config, &request).await?;
+        self.validate_subscription_request(app_config, &request)
+            .await?;
 
         // Check authentication if required
-        let is_authenticated = self.verify_channel_authentication(
-            app_config, socket_id, &request
-        ).await?;
+        let is_authenticated = self
+            .verify_channel_authentication(app_config, socket_id, &request)
+            .await?;
 
         // Validate presence channel specifics
         if request.channel.starts_with("presence-") {
-            self.validate_presence_subscription(app_config, &request).await?;
+            self.validate_presence_subscription(app_config, &request)
+                .await?;
         }
 
         // Perform the subscription
-        let subscription_result = self.execute_subscription(
-            socket_id, app_config, &request, is_authenticated
-        ).await?;
+        let subscription_result = self
+            .execute_subscription(socket_id, app_config, &request, is_authenticated)
+            .await?;
 
         // Handle post-subscription logic
-        self.handle_post_subscription(
-            socket_id, app_config, &request, &subscription_result
-        ).await?;
+        self.handle_post_subscription(socket_id, app_config, &request, &subscription_result)
+            .await?;
 
         Ok(())
     }
@@ -55,7 +55,7 @@ impl ConnectionHandler {
         // Validate signin is enabled
         if !app_config.enable_user_authentication.unwrap_or(false) {
             return Err(Error::AuthError(
-                "User authentication is disabled for this app".into()
+                "User authentication is disabled for this app".into(),
             ));
         }
 
@@ -63,16 +63,20 @@ impl ConnectionHandler {
         let user_info = self.parse_and_validate_user_data(&request.user_data)?;
 
         // Verify authentication
-        self.verify_signin_authentication(socket_id, app_config, &request).await?;
+        self.verify_signin_authentication(socket_id, app_config, &request)
+            .await?;
 
         // Update connection state
-        self.update_connection_with_user_info(socket_id, app_config, &user_info).await?;
+        self.update_connection_with_user_info(socket_id, app_config, &user_info)
+            .await?;
 
         // Handle watchlist functionality
-        self.handle_signin_watchlist(socket_id, app_config, &user_info).await?;
+        self.handle_signin_watchlist(socket_id, app_config, &user_info)
+            .await?;
 
         // Send success response
-        self.send_signin_success(socket_id, app_config, &request).await?;
+        self.send_signin_success(socket_id, app_config, &request)
+            .await?;
 
         Ok(())
     }
@@ -87,7 +91,8 @@ impl ConnectionHandler {
         self.validate_client_event(app_config, &request).await?;
 
         // Check if socket is subscribed to the channel
-        self.verify_channel_subscription(socket_id, app_config, &request.channel).await?;
+        self.verify_channel_subscription(socket_id, app_config, &request.channel)
+            .await?;
 
         // Rate limit check is handled in the main message handler
 
@@ -95,14 +100,18 @@ impl ConnectionHandler {
         let message = PusherMessage {
             channel: Some(request.channel.clone()),
             event: Some(request.event.clone()),
-            data: Some(crate::protocol::messages::MessageData::Json(request.data.clone())),
+            data: Some(crate::protocol::messages::MessageData::Json(
+                request.data.clone(),
+            )),
             name: None,
         };
 
-        self.broadcast_to_channel(app_config, &request.channel, message, Some(socket_id)).await?;
+        self.broadcast_to_channel(app_config, &request.channel, message, Some(socket_id))
+            .await?;
 
         // Send webhook if configured
-        self.send_client_event_webhook(socket_id, app_config, &request).await?;
+        self.send_client_event_webhook(socket_id, app_config, &request)
+            .await?;
 
         Ok(())
     }

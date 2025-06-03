@@ -1,12 +1,10 @@
 // src/adapter/handler/authentication.rs
-use super::types::*;
 use super::ConnectionHandler;
+use super::types::*;
+use crate::app::auth::AuthValidator;
+use crate::app::config::App;
 use crate::error::{Error, Result};
 use crate::websocket::SocketId;
-use crate::app::config::App;
-use crate::app::auth::AuthValidator;
-use serde_json::Value;
-use tracing::{info, warn};
 
 impl ConnectionHandler {
     pub async fn verify_channel_authentication(
@@ -21,10 +19,9 @@ impl ConnectionHandler {
         }
 
         // Private/presence channels require authentication
-        let signature = request.auth.as_ref()
-            .ok_or_else(|| Error::AuthError(
-                "Authentication signature required for this channel".into()
-            ))?;
+        let signature = request.auth.as_ref().ok_or_else(|| {
+            Error::AuthError("Authentication signature required for this channel".into())
+        })?;
 
         let channel_manager = self.channel_manager.read().await;
 
@@ -37,7 +34,7 @@ impl ConnectionHandler {
                     "channel": request.channel,
                     "auth": signature,
                     "channel_data": request.channel_data
-                })
+                }),
             )),
             name: None,
         };
@@ -70,7 +67,9 @@ impl ConnectionHandler {
             .await?;
 
         if !is_valid {
-            return Err(Error::AuthError("Connection not authorized for signin.".into()));
+            return Err(Error::AuthError(
+                "Connection not authorized for signin.".into(),
+            ));
         }
 
         Ok(())

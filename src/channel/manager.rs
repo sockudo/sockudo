@@ -198,7 +198,9 @@ impl ChannelManager {
             .ok_or_else(|| Error::ChannelError("Missing channel_data in presence data".into()))?;
         let user_info: Value = serde_json::from_str(channel_data)
             .map_err(|_| Error::ChannelError("Invalid JSON in channel_data".into()))?;
-        let user_id = user_info.get("user_id").and_then(|v| v.as_str())
+        let user_id = user_info
+            .get("user_id")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ChannelError("Missing user_id in channel_data".into()))?;
 
         let socket_id = extra
@@ -252,7 +254,7 @@ impl ChannelManager {
                 } else {
                     format!("{}:{}", socket_id, channel)
                 }
-            },
+            }
             MessageData::Json(data) => {
                 let channel = data
                     .get("channel")
@@ -267,7 +269,7 @@ impl ChannelManager {
                 } else {
                     format!("{}:{}", socket_id, channel)
                 }
-            },
+            }
             MessageData::String(data) => {
                 let data = serde_json::to_value(data).unwrap();
                 let channel = data
@@ -283,7 +285,7 @@ impl ChannelManager {
                 } else {
                     format!("{}:{}", socket_id, channel)
                 }
-            },
+            }
         }
     }
 

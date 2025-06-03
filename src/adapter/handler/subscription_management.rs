@@ -1,15 +1,14 @@
 // src/adapter/handler/subscription_management.rs
-use super::types::*;
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
-use crate::websocket::SocketId;
+use super::types::*;
 use crate::app::config::App;
 use crate::channel::{ChannelType, PresenceMemberInfo};
-use crate::protocol::messages::{PusherMessage, MessageData};
+use crate::error::Result;
+use crate::protocol::messages::{MessageData, PusherMessage};
 use crate::utils::is_cache_channel;
+use crate::websocket::SocketId;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tracing::{info, warn};
 
 #[derive(Debug)]
 pub struct SubscriptionResult {
@@ -85,16 +84,29 @@ impl ConnectionHandler {
         }
 
         // Update connection state
-        self.update_connection_subscription_state(socket_id, app_config, request, subscription_result).await?;
+        self.update_connection_subscription_state(
+            socket_id,
+            app_config,
+            request,
+            subscription_result,
+        )
+        .await?;
 
         // Handle channel-specific logic
         let channel_type = ChannelType::from_name(&request.channel);
         match channel_type {
             ChannelType::Presence => {
-                self.handle_presence_subscription_success(socket_id, app_config, request, subscription_result).await?;
+                self.handle_presence_subscription_success(
+                    socket_id,
+                    app_config,
+                    request,
+                    subscription_result,
+                )
+                .await?;
             }
             _ => {
-                self.send_subscription_succeeded(socket_id, app_config, &request.channel, None).await?;
+                self.send_subscription_succeeded(socket_id, app_config, &request.channel, None)
+                    .await?;
             }
         }
 
@@ -117,7 +129,8 @@ impl ConnectionHandler {
 
         // Handle cache channels
         if is_cache_channel(&request.channel) {
-            self.send_missed_cache_if_exists(&app_config.id, socket_id, &request.channel).await?;
+            self.send_missed_cache_if_exists(&app_config.id, socket_id, &request.channel)
+                .await?;
         }
 
         Ok(())
@@ -131,7 +144,10 @@ impl ConnectionHandler {
         subscription_result: &SubscriptionResult,
     ) -> Result<()> {
         let mut connection_manager = self.connection_manager.lock().await;
-        if let Some(conn_arc) = connection_manager.get_connection(socket_id, &app_config.id).await {
+        if let Some(conn_arc) = connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        {
             let mut conn_locked = conn_arc.0.lock().await;
             conn_locked.subscribe_to_channel(request.channel.clone());
 
@@ -169,11 +185,17 @@ impl ConnectionHandler {
             self.connection_manager
                 .lock()
                 .await
-                .send(&request.channel, member_added_msg, Some(socket_id), &app_config.id)
+                .send(
+                    &request.channel,
+                    member_added_msg,
+                    Some(socket_id),
+                    &app_config.id,
+                )
                 .await?;
 
             // Get current members and send presence data to new member
-            let members_map = self.connection_manager
+            let members_map = self
+                .connection_manager
                 .lock()
                 .await
                 .get_channel_members(&app_config.id, &request.channel)
@@ -189,7 +211,13 @@ impl ConnectionHandler {
                 }
             });
 
-            self.send_subscription_succeeded(socket_id, app_config, &request.channel, Some(presence_data)).await?;
+            self.send_subscription_succeeded(
+                socket_id,
+                app_config,
+                &request.channel,
+                Some(presence_data),
+            )
+            .await?;
 
             // Send member_added webhook
             if let Some(webhook_integration) = &self.webhook_integration {

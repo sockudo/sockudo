@@ -1,41 +1,41 @@
 // src/adapter/handler/mod.rs
-pub mod types;
-pub mod message_handlers;
-pub mod validation;
-pub mod connection_management;
-pub mod timeout_management;
 pub mod authentication;
-pub mod subscription_management;
-pub mod signin_management;
-pub mod webhook_management;
-pub mod rate_limiting;
+pub mod connection_management;
 mod core;
+pub mod message_handlers;
+pub mod rate_limiting;
+pub mod signin_management;
+pub mod subscription_management;
+pub mod timeout_management;
+pub mod types;
+pub mod validation;
+pub mod webhook_management;
 
 use crate::adapter::adapter::Adapter;
 use crate::app::config::App;
 use crate::app::manager::AppManager;
 use crate::cache::manager::CacheManager;
-use crate::channel::{ChannelManager};
+use crate::channel::ChannelManager;
 use crate::error::{Error, Result};
 use crate::metrics::MetricsInterface;
 use crate::options::ServerOptions;
 use crate::protocol::constants::CLIENT_EVENT_PREFIX;
-use crate::protocol::messages::{MessageData, PusherApiMessage, PusherMessage};
-use crate::rate_limiter::{RateLimiter};
+use crate::protocol::messages::{MessageData, PusherMessage};
+use crate::rate_limiter::RateLimiter;
 use crate::watchlist::WatchlistManager;
 use crate::webhook::integration::WebhookIntegration;
-use crate::websocket::{SocketId};
+use crate::websocket::SocketId;
 
+use crate::adapter::handler::types::{ClientEventRequest, SignInRequest, SubscriptionRequest};
 use dashmap::DashMap;
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, WebSocketWrite, upgrade};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use serde_json::{Value};
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info, warn};
-use crate::adapter::handler::types::{ClientEventRequest, SignInRequest, SubscriptionRequest};
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -82,19 +82,23 @@ impl ConnectionHandler {
 
         // Initialize socket
         let socket_id = SocketId::new();
-        self.initialize_socket(socket_id.clone(), socket_tx, &app_config).await?;
+        self.initialize_socket(socket_id.clone(), socket_tx, &app_config)
+            .await?;
 
         // Setup rate limiting if needed
         self.setup_rate_limiting(&socket_id, &app_config).await?;
 
         // Send connection established
-        self.send_connection_established(&app_config.id, &socket_id).await?;
+        self.send_connection_established(&app_config.id, &socket_id)
+            .await?;
 
         // Setup timeouts
         self.setup_initial_timeouts(&socket_id, &app_config).await?;
 
         // Main message loop
-        let result = self.run_message_loop(socket_rx, &socket_id, &app_config).await;
+        let result = self
+            .run_message_loop(socket_rx, &socket_id, &app_config)
+            .await;
 
         // Cleanup
         self.cleanup_socket(&socket_id, &app_config).await;
@@ -111,17 +115,24 @@ impl ConnectionHandler {
         let mut connection_manager = self.connection_manager.lock().await;
 
         // Remove any existing connection with the same socket_id (unlikely but safe)
-        if let Some(conn) = connection_manager.get_connection(&socket_id, &app_config.id).await {
-            connection_manager.cleanup_connection(&app_config.id, conn).await;
+        if let Some(conn) = connection_manager
+            .get_connection(&socket_id, &app_config.id)
+            .await
+        {
+            connection_manager
+                .cleanup_connection(&app_config.id, conn)
+                .await;
         }
 
         // Add the new socket
-        connection_manager.add_socket(
-            socket_id.clone(),
-            socket_tx,
-            &app_config.id,
-            &self.app_manager,
-        ).await?;
+        connection_manager
+            .add_socket(
+                socket_id.clone(),
+                socket_tx,
+                &app_config.id,
+                &self.app_manager,
+            )
+            .await?;
 
         // Update metrics
         if let Some(ref metrics) = self.metrics {
@@ -138,7 +149,10 @@ impl ConnectionHandler {
             Ok(Some(_)) => Err(Error::ApplicationDisabled),
             Ok(None) => Err(Error::ApplicationNotFound),
             Err(e) => {
-                error!("Database error during app lookup for key {}: {}", app_key, e);
+                error!(
+                    "Database error during app lookup for key {}: {}",
+                    app_key, e
+                );
                 Err(Error::InternalError("App lookup failed".to_string()))
             }
         }
@@ -147,7 +161,10 @@ impl ConnectionHandler {
     async fn upgrade_websocket(
         &self,
         fut: upgrade::UpgradeFut,
-    ) -> Result<(FragmentCollectorRead<tokio::io::ReadHalf<TokioIo<Upgraded>>>, WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>)> {
+    ) -> Result<(
+        FragmentCollectorRead<tokio::io::ReadHalf<TokioIo<Upgraded>>>,
+        WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
+    )> {
         let ws = fut.await.map_err(Error::WebSocketError)?;
         let (rx, tx) = ws.split(tokio::io::split);
         Ok((FragmentCollectorRead::new(rx), tx))
@@ -158,13 +175,17 @@ impl ConnectionHandler {
             return Ok(());
         }
 
-        let current_count = self.connection_manager
+        let current_count = self
+            .connection_manager
             .lock()
             .await
             .get_sockets_count(&app_config.id)
             .await
             .map_err(|e| {
-                error!("Error getting sockets count for app {}: {}", app_config.id, e);
+                error!(
+                    "Error getting sockets count for app {}: {}",
+                    app_config.id, e
+                );
                 Error::InternalError("Failed to check connection quota".to_string())
             })?;
 
@@ -192,7 +213,10 @@ impl ConnectionHandler {
                     break;
                 }
                 OpCode::Text | OpCode::Binary => {
-                    if let Err(e) = self.handle_message(frame, socket_id, app_config.clone()).await {
+                    if let Err(e) = self
+                        .handle_message(frame, socket_id, app_config.clone())
+                        .await
+                    {
                         error!("Message handling error for socket {}: {}", socket_id, e);
                         if e.is_fatal() {
                             self.handle_fatal_error(socket_id, app_config, &e).await?;
@@ -219,18 +243,25 @@ impl ConnectionHandler {
         app_config: App,
     ) -> Result<()> {
         // Update activity timeout
-        self.update_activity_timeout(&app_config.id, socket_id).await?;
+        self.update_activity_timeout(&app_config.id, socket_id)
+            .await?;
 
         // Parse message
         let message = self.parse_message(&frame)?;
-        let event_name = message.event.as_deref()
+        let event_name = message
+            .event
+            .as_deref()
             .ok_or_else(|| Error::InvalidEventName("Event name is required".into()))?;
 
-        info!("Received message from {}: event '{}'", socket_id, event_name);
+        info!(
+            "Received message from {}: event '{}'",
+            socket_id, event_name
+        );
 
         // Handle rate limiting for client events
         if event_name.starts_with(CLIENT_EVENT_PREFIX) {
-            self.check_client_event_rate_limit(socket_id, &app_config, event_name).await?;
+            self.check_client_event_rate_limit(socket_id, &app_config, event_name)
+                .await?;
         }
 
         // Route message to appropriate handler
@@ -238,18 +269,22 @@ impl ConnectionHandler {
             "pusher:ping" => self.handle_ping(&app_config.id, socket_id).await,
             "pusher:subscribe" => {
                 let request = SubscriptionRequest::from_message(&message)?;
-                self.handle_subscribe_request(socket_id, &app_config, request).await
+                self.handle_subscribe_request(socket_id, &app_config, request)
+                    .await
             }
             "pusher:unsubscribe" => {
-                self.handle_unsubscribe(socket_id, &message, &app_config).await
+                self.handle_unsubscribe(socket_id, &message, &app_config)
+                    .await
             }
             "pusher:signin" => {
                 let request = SignInRequest::from_message(&message)?;
-                self.handle_signin_request(socket_id, &app_config, request).await
+                self.handle_signin_request(socket_id, &app_config, request)
+                    .await
             }
             _ if event_name.starts_with(CLIENT_EVENT_PREFIX) => {
                 let request = self.parse_client_event(&message)?;
-                self.handle_client_event_request(socket_id, &app_config, request).await
+                self.handle_client_event_request(socket_id, &app_config, request)
+                    .await
             }
             _ => {
                 warn!("Unknown event '{}' from socket {}", event_name, socket_id);
@@ -267,11 +302,15 @@ impl ConnectionHandler {
     }
 
     fn parse_client_event(&self, message: &PusherMessage) -> Result<ClientEventRequest> {
-        let event = message.event.as_ref()
+        let event = message
+            .event
+            .as_ref()
             .ok_or_else(|| Error::InvalidEventName("Event name required".into()))?
             .clone();
 
-        let channel = message.channel.as_ref()
+        let channel = message
+            .channel
+            .as_ref()
             .ok_or_else(|| Error::ClientEventError("Channel required for client event".into()))?
             .clone();
 
@@ -283,7 +322,11 @@ impl ConnectionHandler {
             _ => Value::Null,
         };
 
-        Ok(ClientEventRequest { event, channel, data })
+        Ok(ClientEventRequest {
+            event,
+            channel,
+            data,
+        })
     }
 
     async fn handle_fatal_error(
@@ -293,13 +336,20 @@ impl ConnectionHandler {
         error: &Error,
     ) -> Result<()> {
         // Send error message
-        self.send_error(&app_config.id, socket_id, error, None).await
+        self.send_error(&app_config.id, socket_id, error, None)
+            .await
             .unwrap_or_else(|e| {
                 error!("Failed to send error to socket {}: {}", socket_id, e);
             });
 
         // Close connection
-        self.close_connection(socket_id, app_config, error.close_code(), &error.to_string()).await?;
+        self.close_connection(
+            socket_id,
+            app_config,
+            error.close_code(),
+            &error.to_string(),
+        )
+        .await?;
 
         // Handle disconnect cleanup
         self.handle_disconnect(&app_config.id, socket_id).await?;
@@ -316,7 +366,10 @@ impl ConnectionHandler {
             warn!("Failed to clear activity timeout for {}: {}", socket_id, e);
         }
 
-        if let Err(e) = self.clear_user_authentication_timeout(&app_config.id, socket_id).await {
+        if let Err(e) = self
+            .clear_user_authentication_timeout(&app_config.id, socket_id)
+            .await
+        {
             warn!("Failed to clear auth timeout for {}: {}", socket_id, e);
         }
 

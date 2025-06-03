@@ -1,14 +1,14 @@
 // src/adapter/handler/connection_management.rs
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
-use crate::websocket::SocketId;
 use crate::app::config::App;
+use crate::error::{Error, Result};
 use crate::protocol::messages::PusherMessage;
+use crate::websocket::SocketId;
 use fastwebsockets::{Frame, Payload, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use tokio::io::WriteHalf;
-use tracing::{info, warn, error};
+use tracing::warn;
 
 impl ConnectionHandler {
     pub async fn send_message_to_socket(
@@ -48,7 +48,9 @@ impl ConnectionHandler {
         let mut conn_manager = self.connection_manager.lock().await;
         if let Some(conn) = conn_manager.get_connection(socket_id, &app_config.id).await {
             let mut conn_locked = conn.0.lock().await;
-            conn_locked.close(code, reason.to_string()).await
+            conn_locked
+                .close(code, reason.to_string())
+                .await
                 .map_err(|e| Error::InternalError(format!("Failed to close connection: {}", e)))
         } else {
             warn!("Connection not found for close: {}", socket_id);
@@ -71,7 +73,8 @@ impl ConnectionHandler {
         app_config: &App,
         channel: &str,
     ) -> Result<()> {
-        let is_subscribed = self.connection_manager
+        let is_subscribed = self
+            .connection_manager
             .lock()
             .await
             .is_in_channel(&app_config.id, channel, socket_id)
@@ -91,11 +94,7 @@ impl ConnectionHandler {
         ws_tx: &mut WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
         error: &Error,
     ) {
-        let error_message = PusherMessage::error(
-            error.close_code(),
-            error.to_string(),
-            None,
-        );
+        let error_message = PusherMessage::error(error.close_code(), error.to_string(), None);
 
         if let Ok(payload) = serde_json::to_string(&error_message) {
             let payload = Payload::from(payload.as_bytes());
@@ -104,10 +103,13 @@ impl ConnectionHandler {
             }
         }
 
-        if let Err(e) = ws_tx.write_frame(Frame::close(
-            error.close_code(),
-            error.to_string().as_bytes(),
-        )).await {
+        if let Err(e) = ws_tx
+            .write_frame(Frame::close(
+                error.close_code(),
+                error.to_string().as_bytes(),
+            ))
+            .await
+        {
             warn!("Failed to send close frame: {}", e);
         }
     }

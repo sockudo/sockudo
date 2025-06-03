@@ -1,10 +1,9 @@
 // src/adapter/handler/webhook_management.rs
-use super::types::*;
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
-use crate::websocket::SocketId;
+use super::types::*;
 use crate::app::config::App;
-use serde_json::Value;
+use crate::error::Result;
+use crate::websocket::SocketId;
 use tracing::warn;
 
 impl ConnectionHandler {
@@ -18,9 +17,14 @@ impl ConnectionHandler {
             // Get user_id for presence channels - clone the string to avoid lifetime issues
             let user_id = if request.channel.starts_with("presence-") {
                 let mut connection_manager = self.connection_manager.lock().await;
-                if let Some(conn_arc) = connection_manager.get_connection(socket_id, &app_config.id).await {
+                if let Some(conn_arc) = connection_manager
+                    .get_connection(socket_id, &app_config.id)
+                    .await
+                {
                     let conn_locked = conn_arc.0.lock().await;
-                    conn_locked.state.presence
+                    conn_locked
+                        .state
+                        .presence
                         .as_ref()
                         .and_then(|p_map| p_map.get(&request.channel))
                         .map(|pi| pi.user_id.clone()) // Clone the String instead of borrowing
@@ -42,7 +46,10 @@ impl ConnectionHandler {
                 )
                 .await
                 .unwrap_or_else(|e| {
-                    warn!("Failed to send client_event webhook for {}: {}", request.channel, e);
+                    warn!(
+                        "Failed to send client_event webhook for {}: {}",
+                        request.channel, e
+                    );
                 });
         }
 

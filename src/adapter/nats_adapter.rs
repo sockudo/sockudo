@@ -26,7 +26,7 @@ use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 pub(crate) use crate::options::NatsAdapterConfig;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketRef};
 
 /// NATS channels/subjects
 pub const DEFAULT_PREFIX: &str = "sockudo";
@@ -56,19 +56,24 @@ impl NatsAdapter {
         let mut nats_options = NatsOptions::new();
 
         // Set credentials conditionally
-        if let (Some(username), Some(password)) = (config.username.as_deref(), config.password.as_deref()) {
-            nats_options = nats_options.user_and_password(username.to_string(), password.to_string());
+        if let (Some(username), Some(password)) =
+            (config.username.as_deref(), config.password.as_deref())
+        {
+            nats_options =
+                nats_options.user_and_password(username.to_string(), password.to_string());
         } else if let Some(token) = config.token.as_deref() {
             nats_options = nats_options.token(token.to_string());
         }
 
         // Set connection timeout
-        nats_options = nats_options.connection_timeout(Duration::from_millis(config.connection_timeout_ms));
+        nats_options =
+            nats_options.connection_timeout(Duration::from_millis(config.connection_timeout_ms));
 
         // Connect to NATS
-        let client = nats_options.connect(&config.servers).await.map_err(|e| {
-            Error::InternalError(format!("Failed to connect to NATS: {}", e))
-        })?;
+        let client = nats_options
+            .connect(&config.servers)
+            .await
+            .map_err(|e| Error::InternalError(format!("Failed to connect to NATS: {}", e)))?;
 
         // Build subject names
         let broadcast_subject = format!("{}{}", config.prefix, BROADCAST_SUFFIX);
@@ -157,7 +162,11 @@ impl NatsAdapter {
         let max_expected_responses = node_count.saturating_sub(1);
 
         if max_expected_responses == 0 {
-            self.horizontal.lock().await.pending_requests.remove(&request_id);
+            self.horizontal
+                .lock()
+                .await
+                .pending_requests
+                .remove(&request_id);
             return Ok(ResponseBody {
                 request_id,
                 node_id: request.node_id,
@@ -195,7 +204,13 @@ impl NatsAdapter {
                     .unwrap_or_default();
             }
 
-            if let Some(pending_request) = self.horizontal.lock().await.pending_requests.get(&request_id) {
+            if let Some(pending_request) = self
+                .horizontal
+                .lock()
+                .await
+                .pending_requests
+                .get(&request_id)
+            {
                 if pending_request.responses.len() >= max_expected_responses {
                     info!(
                         "Request {} completed with {}/{} responses in {}ms",
@@ -258,7 +273,10 @@ impl NatsAdapter {
             .map_err(|e| Error::Other(format!("Failed to serialize request: {}", e)))?;
 
         self.client
-            .publish(Subject::from(self.request_subject.clone()), request_data.into())
+            .publish(
+                Subject::from(self.request_subject.clone()),
+                request_data.into(),
+            )
             .await
             .map_err(|e| Error::InternalError(format!("Failed to publish request: {}", e)))?;
 
@@ -442,11 +460,7 @@ impl Adapter for NatsAdapter {
             .await
     }
 
-    async fn get_connection(
-        &mut self,
-        socket_id: &SocketId,
-        app_id: &str,
-    ) -> Option<WebSocketRef> {
+    async fn get_connection(&mut self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
         let mut horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter

@@ -1,9 +1,9 @@
 // src/adapter/handler/validation.rs
-use super::types::*;
 use super::ConnectionHandler;
-use crate::error::{Error, Result};
+use super::types::*;
 use crate::app::config::App;
 use crate::channel::ChannelType;
+use crate::error::{Error, Result};
 use crate::protocol::constants::*;
 use crate::utils;
 use serde_json::Value;
@@ -22,12 +22,12 @@ impl ConnectionHandler {
         utils::validate_channel_name(app_config, &request.channel).await?;
 
         // Check if authentication is required and provided
-        let requires_auth = request.channel.starts_with("presence-")
-            || request.channel.starts_with("private-");
+        let requires_auth =
+            request.channel.starts_with("presence-") || request.channel.starts_with("private-");
 
         if requires_auth && request.auth.is_none() {
             return Err(Error::AuthError(
-                "Authentication signature required for this channel".into()
+                "Authentication signature required for this channel".into(),
             ));
         }
 
@@ -39,18 +39,19 @@ impl ConnectionHandler {
         app_config: &App,
         request: &SubscriptionRequest,
     ) -> Result<()> {
-        let channel_data = request.channel_data.as_ref()
-            .ok_or_else(|| Error::InvalidMessageFormat(
-                "Missing channel_data for presence channel".into()
-            ))?;
+        let channel_data = request.channel_data.as_ref().ok_or_else(|| {
+            Error::InvalidMessageFormat("Missing channel_data for presence channel".into())
+        })?;
 
         // Parse and validate user info size
-        let user_info_payload: Value = serde_json::from_str(channel_data)
-            .map_err(|_| Error::InvalidMessageFormat(
-                "Invalid channel_data JSON for presence".into()
-            ))?;
+        let user_info_payload: Value = serde_json::from_str(channel_data).map_err(|_| {
+            Error::InvalidMessageFormat("Invalid channel_data JSON for presence".into())
+        })?;
 
-        let user_info = user_info_payload.get("user_info").cloned().unwrap_or_default();
+        let user_info = user_info_payload
+            .get("user_info")
+            .cloned()
+            .unwrap_or_default();
         let user_info_size_kb = utils::data_to_bytes_flexible(vec![user_info]) / 1024;
 
         if let Some(max_size) = app_config.max_presence_member_size_in_kb {
@@ -64,7 +65,9 @@ impl ConnectionHandler {
 
         // Check member count limit
         if let Some(max_members) = app_config.max_presence_members_per_channel {
-            let current_count = self.get_channel_member_count(app_config, &request.channel).await?;
+            let current_count = self
+                .get_channel_member_count(app_config, &request.channel)
+                .await?;
             if current_count >= max_members as usize {
                 return Err(Error::OverCapacity);
             }
@@ -81,32 +84,36 @@ impl ConnectionHandler {
         // Check if client events are enabled
         if !app_config.enable_client_messages {
             return Err(Error::ClientEventError(
-                "Client events are not enabled for this app".into()
+                "Client events are not enabled for this app".into(),
             ));
         }
 
         // Validate event name
         if !request.event.starts_with(CLIENT_EVENT_PREFIX) {
             return Err(Error::InvalidEventName(
-                "Client events must start with 'client-'".into()
+                "Client events must start with 'client-'".into(),
             ));
         }
 
         // Validate event name length
-        let max_event_len = app_config.max_event_name_length
+        let max_event_len = app_config
+            .max_event_name_length
             .unwrap_or(DEFAULT_EVENT_NAME_MAX_LENGTH as u32);
         if request.event.len() > max_event_len as usize {
             return Err(Error::InvalidEventName(format!(
-                "Event name exceeds maximum length of {}", max_event_len
+                "Event name exceeds maximum length of {}",
+                max_event_len
             )));
         }
 
         // Validate channel name length
-        let max_channel_len = app_config.max_channel_name_length
+        let max_channel_len = app_config
+            .max_channel_name_length
             .unwrap_or(DEFAULT_CHANNEL_NAME_MAX_LENGTH as u32);
         if request.channel.len() > max_channel_len as usize {
             return Err(Error::InvalidChannelName(format!(
-                "Channel name exceeds maximum length of {}", max_channel_len
+                "Channel name exceeds maximum length of {}",
+                max_channel_len
             )));
         }
 
@@ -114,7 +121,7 @@ impl ConnectionHandler {
         let channel_type = ChannelType::from_name(&request.channel);
         if !matches!(channel_type, ChannelType::Private | ChannelType::Presence) {
             return Err(Error::ClientEventError(
-                "Client events can only be sent to private or presence channels".into()
+                "Client events can only be sent to private or presence channels".into(),
             ));
         }
 
