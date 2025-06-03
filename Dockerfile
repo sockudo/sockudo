@@ -11,6 +11,8 @@ FROM rust:latest as builder
 RUN rustup toolchain install nightly
 RUN rustup default nightly
 
+RUN apt-get update && apt install -y openssl
+
 # Install system dependencies required for building
 RUN apt-get update && apt-get install -y \
     pkg-config \
@@ -50,12 +52,12 @@ RUN strip target/release/sockudo
 # -----------------------------------------------------------------------------
 # Runtime Stage: Create minimal runtime image
 # -----------------------------------------------------------------------------
-FROM debian:bullseye-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl1.1 \
+    libssl3 \
     libpq5 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
