@@ -355,7 +355,7 @@ async fn process_single_event_parallel(
                 let mut current_channel_info_map = serde_json::Map::new();
 
                 // Get user count for presence channels if requested.
-                if is_presence && info_for_task.as_deref().map_or(false, |s| s.contains("user_count")) {
+                if is_presence && info_for_task.as_deref().is_some_and(|s| s.contains("user_count")) {
                     match handler_clone
                         .channel_manager
                         .read()
@@ -377,9 +377,9 @@ async fn process_single_event_parallel(
                 }
 
                 // Get subscription count if requested.
-                if info_for_task
-                    .as_deref()
-                    .map_or(false, |s| s.contains("subscription_count"))
+if info_for_task
+    .as_deref()
+    .is_some_and(|s| s.contains("subscription_count"))
                 {
                     let count = handler_clone
                         .connection_manager
