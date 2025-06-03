@@ -24,7 +24,7 @@ pub async fn handle_ws_upgrade(
     let (response, fut) = ws.upgrade().unwrap();
     tokio::task::spawn(async move {
         if let Err(e) = handler.handle_socket(fut, app_key).await {
-            error!("{}", format!("Error handling socket: {e}"));
+            error!("Error handling socket: {e}");
         }
     });
     response

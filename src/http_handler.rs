@@ -94,8 +94,8 @@ impl From<crate::error::Error> for AppError {
             crate::error::Error::InvalidChannelName(s) => {
                 AppError::InvalidInput(format!("Invalid channel name: {}", s))
             }
-            crate::error::Error::ChannelError(s) => AppError::InvalidInput(s),
-            crate::error::Error::AuthError(s) => AppError::ApiAuthFailed(s),
+            crate::error::Error::Channel(s) => AppError::InvalidInput(s),
+            crate::error::Error::Auth(s) => AppError::ApiAuthFailed(s),
             _ => AppError::InternalError(err.to_string()),
         }
     }
@@ -567,8 +567,9 @@ pub async fn batch_events(
     });
 
     // Execute all event processing futures concurrently.
-    let results: Vec<Result<(PusherApiMessage, HashMap<String, Value>), AppError>> =
-        join_all(event_processing_futures).await;
+    type EventResult = Result<(PusherApiMessage, HashMap<String, Value>), AppError>;
+
+    let results: Vec<EventResult> = join_all(event_processing_futures).await;
 
     // Aggregate results and construct the batch response.
     let mut batch_response_info_vec = Vec::with_capacity(batch_len);

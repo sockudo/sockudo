@@ -26,7 +26,7 @@ impl ConnectionHandler {
             request.channel.starts_with("presence-") || request.channel.starts_with("private-");
 
         if requires_auth && request.auth.is_none() {
-            return Err(Error::AuthError(
+            return Err(Error::Auth(
                 "Authentication signature required for this channel".into(),
             ));
         }
@@ -56,7 +56,7 @@ impl ConnectionHandler {
 
         if let Some(max_size) = app_config.max_presence_member_size_in_kb {
             if user_info_size_kb > max_size as usize {
-                return Err(Error::ChannelError(format!(
+                return Err(Error::Channel(format!(
                     "Presence member data size ({}KB) exceeds limit ({}KB)",
                     user_info_size_kb, max_size
                 )));
@@ -83,7 +83,7 @@ impl ConnectionHandler {
     ) -> Result<()> {
         // Check if client events are enabled
         if !app_config.enable_client_messages {
-            return Err(Error::ClientEventError(
+            return Err(Error::ClientEvent(
                 "Client events are not enabled for this app".into(),
             ));
         }
@@ -120,7 +120,7 @@ impl ConnectionHandler {
         // Validate channel type
         let channel_type = ChannelType::from_name(&request.channel);
         if !matches!(channel_type, ChannelType::Private | ChannelType::Presence) {
-            return Err(Error::ClientEventError(
+            return Err(Error::ClientEvent(
                 "Client events can only be sent to private or presence channels".into(),
             ));
         }
@@ -129,7 +129,7 @@ impl ConnectionHandler {
         if let Some(max_payload_kb) = app_config.max_event_payload_in_kb {
             let payload_size = utils::data_to_bytes_flexible(vec![request.data.clone()]);
             if payload_size > (max_payload_kb as usize * 1024) {
-                return Err(Error::ClientEventError(format!(
+                return Err(Error::ClientEvent(format!(
                     "Event payload size ({} bytes) exceeds limit ({}KB)",
                     payload_size, max_payload_kb
                 )));

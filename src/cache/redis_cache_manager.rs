@@ -54,13 +54,13 @@ impl RedisCacheManager {
 
         // Create Redis client
         let client = Client::open(redis_url)
-            .map_err(|e| Error::CacheError(format!("Failed to create Redis client: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Failed to create Redis client: {}", e)))?;
 
         // Get multiplexed connection for better performance
         let mut connection = client
             .get_multiplexed_tokio_connection()
             .await
-            .map_err(|e| Error::CacheError(format!("Failed to connect to Redis: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Failed to connect to Redis: {}", e)))?;
 
         // Set response timeout if configured
         if let Some(timeout) = config.response_timeout {
@@ -99,7 +99,7 @@ impl CacheManager for RedisCacheManager {
             .connection
             .exists(self.prefixed_key(key))
             .await
-            .map_err(|e| Error::CacheError(format!("Redis exists error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis exists error: {}", e)))?;
         Ok(exists)
     }
 
@@ -110,7 +110,7 @@ impl CacheManager for RedisCacheManager {
             .connection
             .get(self.prefixed_key(key))
             .await
-            .map_err(|e| Error::CacheError(format!("Redis get error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis get error: {}", e)))?;
         Ok(value)
     }
 
@@ -123,13 +123,13 @@ impl CacheManager for RedisCacheManager {
             self.connection
                 .set_ex::<_, _, ()>(prefixed_key, value, ttl_seconds)
                 .await
-                .map_err(|e| Error::CacheError(format!("Redis set error: {}", e)))?;
+                .map_err(|e| Error::Cache(format!("Redis set error: {}", e)))?;
         } else {
             // Set without expiration
             self.connection
                 .set::<_, _, ()>(prefixed_key, value)
                 .await
-                .map_err(|e| Error::CacheError(format!("Redis set error: {}", e)))?;
+                .map_err(|e| Error::Cache(format!("Redis set error: {}", e)))?;
         }
 
         Ok(())
@@ -140,11 +140,11 @@ impl CacheManager for RedisCacheManager {
             .connection
             .del(self.prefixed_key(key))
             .await
-            .map_err(|e| Error::CacheError(format!("Redis delete error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis delete error: {}", e)))?;
         if deleted > 0 {
             Ok(())
         } else {
-            Err(Error::CacheError(format!("Key '{}' not found", key)))
+            Err(Error::Cache(format!("Key '{}' not found", key)))
         }
     }
 
@@ -156,7 +156,7 @@ impl CacheManager for RedisCacheManager {
             .connection
             .keys(pattern)
             .await
-            .map_err(|e| Error::CacheError(format!("Redis keys error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis keys error: {}", e)))?;
 
         Ok(())
     }
@@ -178,7 +178,7 @@ impl CacheManager for RedisCacheManager {
             .connection
             .ttl(self.prefixed_key(key))
             .await
-            .map_err(|e| Error::CacheError(format!("Redis TTL error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis TTL error: {}", e)))?;
         if ttl > 0 {
             Ok(Some(Duration::from_secs(ttl as u64)))
         } else {
@@ -195,7 +195,7 @@ impl RedisCacheManager {
             .connection
             .del(self.prefixed_key(key))
             .await
-            .map_err(|e| Error::CacheError(format!("Redis delete error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis delete error: {}", e)))?;
         Ok(deleted > 0)
     }
 
@@ -208,7 +208,7 @@ impl RedisCacheManager {
             .connection
             .keys(pattern)
             .await
-            .map_err(|e| Error::CacheError(format!("Redis keys error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis keys error: {}", e)))?;
 
         if keys.is_empty() {
             return Ok(0);
@@ -219,7 +219,7 @@ impl RedisCacheManager {
             .connection
             .del(keys)
             .await
-            .map_err(|e| Error::CacheError(format!("Redis delete error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis delete error: {}", e)))?;
 
         Ok(deleted as usize)
     }
@@ -250,7 +250,7 @@ impl RedisCacheManager {
         // Execute pipeline
         pipe.query_async::<()>(&mut self.connection)
             .await
-            .map_err(|e| Error::CacheError(format!("Redis pipeline error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis pipeline error: {}", e)))?;
 
         Ok(())
     }
@@ -261,7 +261,7 @@ impl RedisCacheManager {
             .connection
             .incr(self.prefixed_key(key), by)
             .await
-            .map_err(|e| Error::CacheError(format!("Redis increment error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis increment error: {}", e)))?;
         Ok(value)
     }
 
@@ -284,7 +284,7 @@ impl RedisCacheManager {
             .connection
             .mget(prefixed_keys)
             .await
-            .map_err(|e| Error::CacheError(format!("Redis mget error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis mget error: {}", e)))?;
 
         Ok(values)
     }
@@ -295,7 +295,7 @@ impl RedisCacheManager {
         redis::cmd("FLUSHDB")
             .query_async::<()>(&mut self.connection)
             .await
-            .map_err(|e| Error::CacheError(format!("Redis flushdb error: {}", e)))?;
+            .map_err(|e| Error::Cache(format!("Redis flushdb error: {}", e)))?;
 
         Ok(())
     }

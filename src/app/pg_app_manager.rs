@@ -41,7 +41,7 @@ impl PgSQLAppManager {
             .idle_timeout(Duration::from_secs(180))
             .connect(&connection_string)
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to connect to PostgreSQL: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to connect to PostgreSQL: {}", e)))?;
 
         // Initialize cache
         let app_cache = Cache::builder()
@@ -94,9 +94,7 @@ impl PgSQLAppManager {
         sqlx::query(&create_table_query)
             .execute(&self.pool)
             .await
-            .map_err(|e| {
-                Error::InternalError(format!("Failed to create PostgreSQL table: {}", e))
-            })?;
+            .map_err(|e| Error::Internal(format!("Failed to create PostgreSQL table: {}", e)))?;
 
         info!("Ensured table '{}' exists", self.config.table_name);
         Ok(())
@@ -139,7 +137,7 @@ impl PgSQLAppManager {
             .await
             .map_err(|e| {
                 error!("Database error fetching app {}: {}", app_id, e);
-                Error::InternalError(format!("Failed to fetch app from PostgreSQL: {}", e))
+                Error::Internal(format!("Failed to fetch app from PostgreSQL: {}", e))
             })?;
 
         if let Some(app_row) = app_result {
@@ -186,7 +184,7 @@ impl PgSQLAppManager {
             .await
             .map_err(|e| {
                 error!("Database error fetching app by key {}: {}", key, e);
-                Error::InternalError(format!("Failed to fetch app from PostgreSQL: {}", e))
+                Error::Internal(format!("Failed to fetch app from PostgreSQL: {}", e))
             })?;
 
         if let Some(app_row) = app_result {
@@ -242,7 +240,7 @@ impl PgSQLAppManager {
             .await
             .map_err(|e| {
                 error!("Database error registering app {}: {}", app.id, e);
-                Error::InternalError(format!("Failed to insert app into PostgreSQL: {}", e))
+                Error::Internal(format!("Failed to insert app into PostgreSQL: {}", e))
             })?;
 
         // Update cache
@@ -293,7 +291,7 @@ impl PgSQLAppManager {
             .await
             .map_err(|e| {
                 error!("Database error updating app {}: {}", app.id, e);
-                Error::InternalError(format!("Failed to update app in PostgreSQL: {}", e))
+                Error::Internal(format!("Failed to update app in PostgreSQL: {}", e))
             })?;
 
         if result.rows_affected() == 0 {
@@ -319,7 +317,7 @@ impl PgSQLAppManager {
             .await
             .map_err(|e| {
                 error!("Database error removing app {}: {}", app_id, e);
-                Error::InternalError(format!("Failed to delete app from PostgreSQL: {}", e))
+                Error::Internal(format!("Failed to delete app from PostgreSQL: {}", e))
             })?;
 
         if result.rows_affected() == 0 {
@@ -362,7 +360,7 @@ impl PgSQLAppManager {
             .await
             .map_err(|e| {
                 error!("Database error fetching all apps: {}", e);
-                Error::InternalError(format!("Failed to fetch apps from PostgreSQL: {}", e))
+                Error::Internal(format!("Failed to fetch apps from PostgreSQL: {}", e))
             })?;
 
         warn!("Fetched {} app rows from database.", app_rows.len());
@@ -447,7 +445,7 @@ impl PgSQLAppManager {
         // Split auth string into key and signature (format: "app_key:signature")
         let parts: Vec<&str> = auth.split(':').collect();
         if parts.len() < 2 {
-            return Err(Error::AuthError("Invalid auth format".into()));
+            return Err(Error::Auth("Invalid auth format".into()));
         }
 
         let app_key = parts[0];
@@ -569,7 +567,6 @@ impl Clone for PgSQLAppManager {
 mod tests {
     use super::*;
     use std::time::Duration;
-    use tokio::runtime::Runtime;
 
     // Helper to create a test app
     fn create_test_app(id: &str) -> App {

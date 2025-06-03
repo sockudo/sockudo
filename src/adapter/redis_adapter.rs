@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::adapter::Adapter;
+use crate::adapter::ConnectionManager;
 use crate::adapter::horizontal_adapter::{
     BroadcastMessage, HorizontalAdapter, PendingRequest, RequestBody, RequestType, ResponseBody,
 };
@@ -78,14 +78,14 @@ impl RedisAdapter {
         horizontal.requests_timeout = config.request_timeout_ms;
 
         let client = redis::Client::open(&*config.url)
-            .map_err(|e| Error::RedisError(format!("Failed to create Redis client: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to create Redis client: {}", e)))?;
 
         let connection = if config.use_connection_manager {
             client.get_multiplexed_async_connection().await
         } else {
             client.get_multiplexed_tokio_connection().await
         }
-        .map_err(|e| Error::RedisError(format!("Failed to connect to Redis: {}", e)))?;
+        .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
 
         let broadcast_channel = format!("{}:{}", config.prefix, BROADCAST_SUFFIX);
         let request_channel = format!("{}:{}", config.prefix, REQUESTS_SUFFIX);
@@ -288,7 +288,7 @@ impl RedisAdapter {
         let subscriber_count: i32 = conn
             .publish(&self.request_channel, &request_json)
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to publish request: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to publish request: {}", e)))?;
 
         info!(
             "Broadcasted request {} to {} subscribers",
@@ -464,7 +464,7 @@ impl RedisAdapter {
 }
 
 #[async_trait]
-impl Adapter for RedisAdapter {
+impl ConnectionManager for RedisAdapter {
     async fn init(&mut self) {
         {
             let mut horizontal = self.horizontal.lock().await;
@@ -559,7 +559,7 @@ impl Adapter for RedisAdapter {
         let mut conn = self.connection.clone();
         conn.publish::<_, _, ()>(&self.broadcast_channel, broadcast_json)
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to publish broadcast: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to publish broadcast: {}", e)))?;
 
         Ok(())
     }

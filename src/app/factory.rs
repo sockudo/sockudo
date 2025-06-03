@@ -81,7 +81,7 @@ impl AppManagerFactory {
                     }
                 }
             }
-            AppManagerDriver::Memory | _ => {
+            AppManagerDriver::Memory => {
                 // Handle unknown as Memory or make it an error
                 info!("{}", "Using memory app manager.".to_string());
                 Ok(Arc::new(MemoryAppManager::new()))

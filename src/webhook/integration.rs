@@ -194,7 +194,7 @@ impl WebhookIntegration {
             let manager = qm_arc.lock().await;
             manager.add_to_queue(queue_name, job_data).await?;
         } else {
-            return Err(Error::InternalError(
+            return Err(Error::Internal(
                 "Queue manager not initialized for webhooks".to_string(),
             ));
         }

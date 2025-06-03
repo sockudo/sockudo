@@ -1,6 +1,6 @@
 use super::PresenceMemberInfo;
 use super::types::ChannelType;
-use crate::adapter::Adapter;
+use crate::adapter::ConnectionManager;
 use crate::app::config::App;
 use crate::error::Error;
 use crate::protocol::messages::{MessageData, PusherMessage};
@@ -38,11 +38,11 @@ pub struct LeaveResponse {
 }
 
 pub struct ChannelManager {
-    connection_manager: Arc<Mutex<Box<dyn Adapter + Send + Sync>>>,
+    connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>,
 }
 
 impl ChannelManager {
-    pub fn new(connection_manager: Arc<Mutex<Box<dyn Adapter + Send + Sync>>>) -> Self {
+    pub fn new(connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>) -> Self {
         Self { connection_manager }
     }
 
@@ -57,7 +57,7 @@ impl ChannelManager {
         let channel_type = ChannelType::from_name(channel_name);
 
         if channel_type.requires_authentication() && !is_authenticated {
-            return Err(Error::AuthError("Channel requires authentication".into()));
+            return Err(Error::Auth("Channel requires authentication".into()));
         }
 
         // Create SocketId without clone by using borrowed str
@@ -166,7 +166,7 @@ impl ChannelManager {
     fn parse_presence_data(&self, data: &Option<MessageData>) -> Result<PresenceMember, Error> {
         let channel_data = data
             .as_ref()
-            .ok_or_else(|| Error::ChannelError("Missing presence data".into()))?;
+            .ok_or_else(|| Error::Channel("Missing presence data".into()))?;
 
         match channel_data {
             MessageData::Structured {
@@ -177,13 +177,13 @@ impl ChannelManager {
                 let data: Value = serde_json::from_str(
                     channel_data
                         .as_ref()
-                        .ok_or_else(|| Error::ChannelError("Missing channel_data".into()))?,
+                        .ok_or_else(|| Error::Channel("Missing channel_data".into()))?,
                 )?;
 
                 self.extract_presence_member(&data, extra)
             }
             MessageData::Json(data) => self.extract_presence_member(data, &Default::default()),
-            _ => Err(Error::ChannelError("Invalid presence data format".into())),
+            _ => Err(Error::Channel("Invalid presence data format".into())),
         }
     }
 
@@ -195,13 +195,13 @@ impl ChannelManager {
         let channel_data = data
             .get("channel_data")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::ChannelError("Missing channel_data in presence data".into()))?;
+            .ok_or_else(|| Error::Channel("Missing channel_data in presence data".into()))?;
         let user_info: Value = serde_json::from_str(channel_data)
-            .map_err(|_| Error::ChannelError("Invalid JSON in channel_data".into()))?;
+            .map_err(|_| Error::Channel("Invalid JSON in channel_data".into()))?;
         let user_id = user_info
             .get("user_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::ChannelError("Missing user_id in channel_data".into()))?;
+            .ok_or_else(|| Error::Channel("Missing user_id in channel_data".into()))?;
 
         let socket_id = extra
             .get("socket_id")

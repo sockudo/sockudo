@@ -100,7 +100,7 @@ impl LambdaWebhookSender {
                             app_id
                         )
                     );
-                    return Err(Error::InternalError(
+                    return Err(Error::Internal(
                         "Missing Lambda configuration: Neither 'lambda' struct nor 'lambda_function' string provided.".to_string(),
                     ));
                 }
@@ -183,9 +183,7 @@ impl LambdaWebhookSender {
                     };
                     &temp_owned_config
                 } else {
-                    return Err(Error::InternalError(
-                        "Missing Lambda configuration".to_string(),
-                    ));
+                    return Err(Error::Internal("Missing Lambda configuration".to_string()));
                 }
             }
         };
