@@ -510,7 +510,7 @@ pub async fn batch_events(
     let body_bytes = serde_json::to_vec(&batch_message_payload)?;
     let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
-    tracing::Span::current().record("batch_len", &batch_len);
+    tracing::Span::current().record("batch_len", batch_len);
     info!("Received batch events request with {} events", batch_len);
 
     // Fetch app configuration once.

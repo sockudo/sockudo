@@ -266,6 +266,9 @@ impl RedisCacheManager {
     }
 
     /// Get the remaining TTL for a key in seconds - todo
+    pub async fn get_remaining_ttl() {
+        todo!()
+    }
 
     /// Get multiple keys at once
     pub async fn get_many(&mut self, keys: &[&str]) -> Result<Vec<Option<String>>> {
