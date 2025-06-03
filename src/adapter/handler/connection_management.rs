@@ -98,8 +98,8 @@ impl ConnectionHandler {
 
         if let Ok(payload) = serde_json::to_string(&error_message) {
             let payload = Payload::from(payload.as_bytes());
-            if let Err(e) = ws_tx.write_frame(Frame::text(payload.into())).await {
-                warn!("Failed to send error frame: {}", e);
+            if let Err(e) = ws_tx.write_frame(Frame::text(payload)).await {
+                warn!("Failed to send error frame: {e}");
             }
         }
 

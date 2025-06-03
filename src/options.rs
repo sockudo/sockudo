@@ -77,20 +77,15 @@ impl std::str::FromStr for AppManagerDriver {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CacheDriver {
+    #[default]
     Memory,
     Redis,
     #[serde(rename = "redis-cluster")]
     RedisCluster,
     None,
-}
-
-impl Default for CacheDriver {
-    fn default() -> Self {
-        CacheDriver::Memory
-    }
 }
 
 impl std::str::FromStr for CacheDriver {
@@ -106,21 +101,16 @@ impl std::str::FromStr for CacheDriver {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum QueueDriver {
     Memory,
+    #[default]
     Redis,
     #[serde(rename = "redis-cluster")] // Add this variant
     RedisCluster,
     Sqs,
     None,
-}
-
-impl Default for QueueDriver {
-    fn default() -> Self {
-        QueueDriver::Redis
-    }
 }
 
 impl std::str::FromStr for QueueDriver {
@@ -170,16 +160,11 @@ impl Default for RedisClusterQueueConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricsDriver {
+    #[default]
     Prometheus,
-}
-
-impl Default for MetricsDriver {
-    fn default() -> Self {
-        MetricsDriver::Prometheus
-    }
 }
 
 impl std::str::FromStr for MetricsDriver {
@@ -349,13 +334,13 @@ pub struct CorsConfig {
     pub allowed_headers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DatabaseConfig {
     pub mysql: DatabaseConnection,
     pub postgres: DatabaseConnection,
     pub redis: RedisConnection,
-    pub dynamodb: DynamoDbSettings, // ⬅️ Add this
+    pub dynamodb: DynamoDbSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -688,16 +673,16 @@ impl Default for CorsConfig {
     }
 }
 
-impl Default for DatabaseConfig {
-    fn default() -> Self {
-        Self {
-            mysql: DatabaseConnection::default(),
-            postgres: DatabaseConnection::default(),
-            redis: RedisConnection::default(),
-            dynamodb: Default::default(),
-        }
-    }
-}
+// impl Default for DatabaseConfig {
+//     fn default() -> Self {
+//         Self {
+//             mysql: DatabaseConnection::default(),
+//             postgres: DatabaseConnection::default(),
+//             redis: RedisConnection::default(),
+//             dynamodb: Default::default(),
+//         }
+//     }
+// }
 
 impl Default for DatabaseConnection {
     fn default() -> Self {

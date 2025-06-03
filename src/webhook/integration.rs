@@ -224,7 +224,7 @@ impl WebhookIntegration {
         if !self.config.enabled {
             return false;
         }
-        app.webhooks.as_ref().map_or(false, |webhooks| {
+        app.webhooks.as_ref().is_some_and(|webhooks| {
             webhooks
                 .iter()
                 .any(|wh_config| wh_config.event_types.contains(&event_type_name.to_string()))

@@ -51,9 +51,8 @@ impl WatchlistManager {
 
         // Track this socket as online for the user
         let was_offline = {
-            let mut user_sockets = app_online_users
-                .entry(user_id.to_string())
-                .or_insert_with(HashSet::new);
+            let mut user_sockets = app_online_users.entry(user_id.to_string()).or_default();
+
             let was_empty = user_sockets.is_empty();
             user_sockets.insert(socket_id);
             was_empty
