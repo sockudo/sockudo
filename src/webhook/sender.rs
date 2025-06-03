@@ -95,7 +95,7 @@ impl WebhookSender {
 
         // Serialize the payload body to JSON string for signing and sending
         let body_json_string = serde_json::to_string(&pusher_payload_body).map_err(|e| {
-            Error::SerializationError(format!("Failed to serialize webhook body: {e}"))
+            Error::SerializationError(format!("Failed to serialize webhook body: {}", e))
         })?;
 
         // Create the HMAC SHA256 signature
@@ -147,7 +147,7 @@ impl WebhookSender {
         for (_endpoint_key, webhook_config) in relevant_webhook_configs {
             let permit_semaphore = self.webhook_semaphore.clone();
             let permit = permit_semaphore.acquire_owned().await.map_err(|e| {
-                Error::Other(format!("Failed to acquire webhook semaphore permit: {e}"))
+                Error::Other(format!("Failed to acquire webhook semaphore permit: {}", e))
             })?;
             let app_id = app_id.clone(); // Clone app_id for the async task
             let current_app_key = app_key.clone();
@@ -288,24 +288,35 @@ async fn send_pusher_webhook(
                 // 2XX status codes
                 info!(
                     "{}",
-                    format!("Successfully sent Pusher webhook to {url} (status: {status})")
+                    format!(
+                        "Successfully sent Pusher webhook to {} (status: {})",
+                        url, status
+                    )
                 );
                 Ok(())
             } else {
                 let error_text = response.text().await.unwrap_or_default();
                 error!(
                     "{}",
-                    format!("Pusher webhook to {url} failed with status {status}: {error_text}")
+                    format!(
+                        "Pusher webhook to {} failed with status {}: {}",
+                        url, status, error_text
+                    )
                 );
                 Err(Error::Other(format!(
-                    "Webhook to {url} failed with status {status}"
+                    "Webhook to {} failed with status {}",
+                    url, status
                 )))
             }
         }
         Err(e) => {
-            error!("{}", format!("Failed to send Pusher webhook to {url}: {e}"));
+            error!(
+                "{}",
+                format!("Failed to send Pusher webhook to {}: {}", url, e)
+            );
             Err(Error::Other(format!(
-                "HTTP request failed for webhook to {url}: {e}"
+                "HTTP request failed for webhook to {}: {}",
+                url, e
             )))
         }
     }
