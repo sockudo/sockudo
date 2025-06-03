@@ -29,10 +29,10 @@ impl fmt::Display for RateLimitMiddlewareError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RateLimitMiddlewareError::InvalidHeaderName(e) => {
-                write!(f, "Invalid header name for key extraction: {e}")
+                write!(f, "Invalid header name for key extraction: {}", e)
             }
             RateLimitMiddlewareError::ExtractionFailed(e) => {
-                write!(f, "Key extraction failed: {e}")
+                write!(f, "Key extraction failed: {}", e)
             }
         }
     }
@@ -155,7 +155,7 @@ where
             debug!(key = %key, "Extracted rate limit key");
 
             let final_key = if let Some(prefix) = &options.key_prefix {
-                format!("{prefix}:{key}")
+                format!("{}:{}", prefix, key)
             } else {
                 key
             };
@@ -164,7 +164,7 @@ where
             let rate_limit_result = match limiter.increment(&final_key).await {
                 Ok(result) => result,
                 Err(e) => {
-                    error!("Rate limiter backend error for key '{final_key}': {e}");
+                    error!("Rate limiter backend error for key '{}': {}", final_key, e);
                     if options.fail_open {
                         warn!("{}", "Rate limiter failed open");
                         RateLimitResult {
@@ -230,21 +230,21 @@ impl IpKeyExtractor {
                         if ip_str.parse::<std::net::IpAddr>().is_ok() {
                             return Some(ip_str.to_string());
                         }
-                    } else if let Some(ip_str) = ips.first()
-                        && ip_str.parse::<std::net::IpAddr>().is_ok()
-                    {
-                        return Some(ip_str.to_string());
+                    } else if let Some(ip_str) = ips.first() {
+                        if ip_str.parse::<std::net::IpAddr>().is_ok() {
+                            return Some(ip_str.to_string());
+                        }
                     }
                 }
             }
         }
 
-        if let Some(value) = req.headers().get("x-real-ip")
-            && let Ok(real_ip_str) = value.to_str()
-        {
-            let real_ip = real_ip_str.trim();
-            if real_ip.parse::<std::net::IpAddr>().is_ok() {
-                return Some(real_ip.to_string());
+        if let Some(value) = req.headers().get("x-real-ip") {
+            if let Ok(real_ip_str) = value.to_str() {
+                let real_ip = real_ip_str.trim();
+                if real_ip.parse::<std::net::IpAddr>().is_ok() {
+                    return Some(real_ip.to_string());
+                }
             }
         }
 
