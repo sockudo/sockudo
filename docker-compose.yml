@@ -1,0 +1,372 @@
+# =============================================================================
+# Sockudo WebSocket Server - Docker Compose Configuration
+# =============================================================================
+
+name: sockudo-ws  # Add this line to set project name
+
+services:
+  # ---------------------------------------------------------------------------
+  # Sockudo WebSocket Server
+  # ---------------------------------------------------------------------------
+  sockudo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    # Alternative: Use simple dockerfile if main one fails
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.simple
+    #   target: runtime
+    container_name: sockudo-server
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      RUST_LOG: "info,sockudo=debug"
+      DEBUG: "false"
+      HOST: "0.0.0.0"
+      PORT: "6001"
+      METRICS_PORT: "9601"
+      
+      # Database Configuration
+      DATABASE_REDIS_HOST: "redis"
+      DATABASE_REDIS_PORT: "6379"
+      DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      DATABASE_REDIS_DB: "0"
+      DATABASE_REDIS_KEY_PREFIX: "sockudo:"
+      
+      # Driver Configuration
+      ADAPTER_DRIVER: "redis"
+      CACHE_DRIVER: "redis"
+      QUEUE_DRIVER: "redis"
+      APP_MANAGER_DRIVER: "memory"
+      METRICS_DRIVER: "prometheus"
+      RATE_LIMITER_DRIVER: "redis"
+      
+      # Application Configuration
+      INSTANCE_PROCESS_ID: "${HOSTNAME:-sockudo-1}"
+      SHUTDOWN_GRACE_PERIOD: "10"
+      
+      # Metrics Configuration
+      METRICS_ENABLED: "true"
+      METRICS_HOST: "0.0.0.0"
+      METRICS_PROMETHEUS_PREFIX: "sockudo_"
+      
+      # Default App Configuration (for development)
+      SOCKUDO_DEFAULT_APP_ID: "demo-app"
+      SOCKUDO_DEFAULT_APP_KEY: "demo-key"
+      SOCKUDO_DEFAULT_APP_SECRET: "demo-secret"
+      SOCKUDO_ENABLE_CLIENT_MESSAGES: "true"
+      SOCKUDO_DEFAULT_APP_ENABLED: "true"
+      SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS: "1000"
+      SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND: "100"
+      SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND: "100"
+      SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION: "false"
+      SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS: "false"
+    
+    # Port mappings
+    ports:
+      - "6001:6001"  # WebSocket/HTTP API port
+      - "9601:9601"  # Metrics port
+    
+    # Volume mounts
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      # Uncomment for SSL certificates
+      # - ./ssl:/app/ssl:ro
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6001/up/demo-app"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    # Dependencies
+    depends_on:
+      redis:
+        condition: service_healthy
+      # mysql:
+      #   condition: service_healthy
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Networks
+    networks:
+      - sockudo-network
+
+  # ---------------------------------------------------------------------------
+  # Redis - Primary cache and message broker
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: sockudo-redis
+    restart: unless-stopped
+    
+    # Redis configuration
+    command: >
+      sh -c "
+        if [ -n \"$${REDIS_PASSWORD}\" ]; then
+          redis-server --requirepass $${REDIS_PASSWORD} --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+        else
+          redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+        fi
+      "
+    
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    
+    # Port mapping (optional, for external access)
+    ports:
+      - "6379:6379"
+    
+    # Persistent storage
+    volumes:
+      - redis-data:/data
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    networks:
+      - sockudo-network
+
+  # ---------------------------------------------------------------------------
+  # MySQL Database (Optional - uncomment if using MySQL for app management)
+  # ---------------------------------------------------------------------------
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: sockudo-mysql
+  #   restart: unless-stopped
+  #   
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
+  #     - MYSQL_DATABASE=sockudo
+  #     - MYSQL_USER=sockudo
+  #     - MYSQL_PASSWORD=${MYSQL_PASSWORD:-sockudo123}
+  #   
+  #   ports:
+  #     - "3306:3306"
+  #   
+  #   volumes:
+  #     - mysql-data:/var/lib/mysql
+  #     - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  #   
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "sockudo", "-p${MYSQL_PASSWORD:-sockudo123}"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 30s
+  #   
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 512M
+  #         cpus: '1.0'
+  #   
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+  #   
+  #   networks:
+  #     - sockudo-network
+
+  # ---------------------------------------------------------------------------
+  # Redis Cluster Setup (Optional - uncomment for high availability)
+  # ---------------------------------------------------------------------------
+  # redis-cluster-1:
+  #   image: redis:7-alpine
+  #   container_name: sockudo-redis-cluster-1
+  #   restart: unless-stopped
+  #   command: redis-server --port 7000 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+  #   ports:
+  #     - "7000:7000"
+  #   volumes:
+  #     - redis-cluster-1-data:/data
+  #   networks:
+  #     - sockudo-network
+  # 
+  # redis-cluster-2:
+  #   image: redis:7-alpine
+  #   container_name: sockudo-redis-cluster-2
+  #   restart: unless-stopped
+  #   command: redis-server --port 7001 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+  #   ports:
+  #     - "7001:7001"
+  #   volumes:
+  #     - redis-cluster-2-data:/data
+  #   networks:
+  #     - sockudo-network
+  # 
+  # redis-cluster-3:
+  #   image: redis:7-alpine
+  #   container_name: sockudo-redis-cluster-3
+  #   restart: unless-stopped
+  #   command: redis-server --port 7002 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+  #   ports:
+  #     - "7002:7002"
+  #   volumes:
+  #     - redis-cluster-3-data:/data
+  #   networks:
+  #     - sockudo-network
+
+  # ---------------------------------------------------------------------------
+  # Prometheus (Optional - for advanced metrics collection)
+  # ---------------------------------------------------------------------------
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: sockudo-prometheus
+  #   restart: unless-stopped
+  #   
+  #   ports:
+  #     - "9090:9090"
+  #   
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus-data:/prometheus
+  #   
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.path=/prometheus'
+  #     - '--web.console.libraries=/etc/prometheus/console_libraries'
+  #     - '--web.console.templates=/etc/prometheus/consoles'
+  #     - '--storage.tsdb.retention.time=200h'
+  #     - '--web.enable-lifecycle'
+  #   
+  #   networks:
+  #     - sockudo-network
+
+  # ---------------------------------------------------------------------------
+  # Grafana (Optional - for metrics visualization)
+  # ---------------------------------------------------------------------------
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: sockudo-grafana
+  #   restart: unless-stopped
+  #   
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+  #     - GF_USERS_ALLOW_SIGN_UP=false
+  #   
+  #   ports:
+  #     - "3000:3000"
+  #   
+  #   volumes:
+  #     - grafana-data:/var/lib/grafana
+  #     - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+  #     - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+  #   
+  #   networks:
+  #     - sockudo-network
+
+  # ---------------------------------------------------------------------------
+  # NATS (Optional - alternative message broker)
+  # ---------------------------------------------------------------------------
+  # nats:
+  #   image: nats:latest
+  #   container_name: sockudo-nats
+  #   restart: unless-stopped
+  #   
+  #   ports:
+  #     - "4222:4222"
+  #     - "8222:8222"  # HTTP monitoring
+  #   
+  #   command: ["-js", "-m", "8222"]
+  #   
+  #   volumes:
+  #     - nats-data:/data
+  #   
+  #   networks:
+  #     - sockudo-network
+
+  # ---------------------------------------------------------------------------
+  # Load Balancer (Optional - for multiple Sockudo instances)
+  # ---------------------------------------------------------------------------
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: sockudo-nginx
+  #   restart: unless-stopped
+  #   
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./nginx/ssl:/etc/nginx/ssl:ro
+  #   
+  #   depends_on:
+  #     - sockudo
+  #   
+  #   networks:
+  #     - sockudo-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  redis-data:
+    driver: local
+  # mysql-data:
+  #   driver: local
+  # redis-cluster-1-data:
+  #   driver: local
+  # redis-cluster-2-data:
+  #   driver: local
+  # redis-cluster-3-data:
+  #   driver: local
+  # prometheus-data:
+  #   driver: local
+  # grafana-data:
+  #   driver: local
+  # nats-data:
+  #   driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  sockudo-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
