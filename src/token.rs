@@ -85,10 +85,10 @@ mod tests {
         let token = Token::new("test_key".to_string(), "test_secret".to_string());
         let input = "test_input";
         let signature = token.sign(input);
-        
+
         // Verify the signature is a valid hex string
         assert!(hex::decode(&signature).is_ok());
-        
+
         // Verify the signature can be verified
         assert!(token.verify(input, &signature));
     }
@@ -98,7 +98,7 @@ mod tests {
         let token = Token::new("test_key".to_string(), "test_secret".to_string());
         let input = "test_input";
         let signature = token.sign(input);
-        
+
         assert!(token.verify(input, &signature));
     }
 
@@ -108,7 +108,7 @@ mod tests {
         let input = "test_input";
         let wrong_input = "wrong_input";
         let signature = token.sign(input);
-        
+
         assert!(!token.verify(wrong_input, &signature));
         assert!(!token.verify(input, "invalid_hex"));
     }
@@ -119,7 +119,7 @@ mod tests {
         let token2 = Token::new("test_key".to_string(), "secret2".to_string());
         let input = "test_input";
         let signature = token1.sign(input);
-        
+
         assert!(!token2.verify(input, &signature));
     }
 }

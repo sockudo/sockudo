@@ -673,17 +673,6 @@ impl Default for CorsConfig {
     }
 }
 
-// impl Default for DatabaseConfig {
-//     fn default() -> Self {
-//         Self {
-//             mysql: DatabaseConnection::default(),
-//             postgres: DatabaseConnection::default(),
-//             redis: RedisConnection::default(),
-//             dynamodb: Default::default(),
-//         }
-//     }
-// }
-
 impl Default for DatabaseConnection {
     fn default() -> Self {
         Self {
