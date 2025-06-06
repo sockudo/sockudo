@@ -1,5 +1,6 @@
 // src/webhook/sender.rs
 // Keep for App struct
+use crate::app::config::App;
 use crate::app::manager::AppManager; // Keep for AppManager trait
 use crate::error::{Error, Result};
 
@@ -46,12 +47,10 @@ impl WebhookSender {
     }
 
     pub async fn process_webhook_job(&self, job: JobData) -> Result<()> {
+        // todo add errors
         let app_key = job.app_key.clone();
         let app_id = job.app_id.clone();
-        info!(
-            "{}",
-            format!("Processing webhook job for app_id: {}", app_id.clone())
-        );
+        info!("Processing webhook job for app_id: {}", app_id.clone());
 
         // The App struct (or at least its webhooks configuration) is needed.
         // If JobData doesn't contain the full App.webhooks, we fetch it.
@@ -59,10 +58,7 @@ impl WebhookSender {
         let app_config = match self.app_manager.find_by_id(&app_id.clone()).await? {
             Some(app) => app,
             None => {
-                error!(
-                    "{}",
-                    format!("Webhook: Failed to find app with ID: {}", app_id.clone())
-                );
+                error!("Webhook: Failed to find app with ID: {}", app_id.clone());
                 return Err(Error::InvalidAppKey); // Or handle as non-retryable error
             }
         };
@@ -70,19 +66,13 @@ impl WebhookSender {
         let webhook_configurations = match &app_config.webhooks {
             Some(hooks) => hooks,
             None => {
-                info!(
-                    "{}",
-                    format!("No webhooks configured for app: {}", app_id.clone())
-                );
+                info!("No webhooks configured for app: {}", app_id);
                 return Ok(());
             }
         };
 
         if job.payload.events.is_empty() {
-            warn!(
-                "{}",
-                format!("Webhook job for app {} has no events.", app_id.clone())
-            );
+            warn!("Webhook job for app {} has no events.", app_id.clone());
             return Ok(());
         }
 
@@ -95,7 +85,7 @@ impl WebhookSender {
 
         // Serialize the payload body to JSON string for signing and sending
         let body_json_string = serde_json::to_string(&pusher_payload_body).map_err(|e| {
-            Error::SerializationError(format!("Failed to serialize webhook body: {}", e))
+            Error::SerializationError(format!("Failed to serialize webhook body: {e}"))
         })?;
 
         // Create the HMAC SHA256 signature
@@ -133,11 +123,8 @@ impl WebhookSender {
 
         if relevant_webhook_configs.is_empty() {
             info!(
-                "{}",
-                format!(
-                    "No matching webhook configurations for events in job for app {}",
-                    app_id.clone()
-                )
+                "No matching webhook configurations for events in job for app {}",
+                app_id.clone()
             );
             return Ok(());
         }
@@ -328,5 +315,53 @@ fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPay
     info!("{}", format!("Time (ms): {}", payload.time_ms));
     for event in &payload.events {
         info!("{}", format!("  Event: {:?}", event));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::memory_app_manager::MemoryAppManager;
+
+    use crate::webhook::types::JobPayload;
+    
+    use super::*;
+
+    #[tokio::test]
+    async fn test_creating_webhook_sender() {
+        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        assert!(webhook_sender.webhook_semaphore.available_permits() > 0);
+        // Remove the timeout check since reqwest::Client doesn't have a timeout() method
+        assert!(webhook_sender.app_manager.get_apps().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_no_events() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "test_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_ok());
     }
 }
