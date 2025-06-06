@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value; // Keep this for Value type
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Webhook {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<url::Url>,
@@ -38,7 +38,7 @@ pub struct WebhookHeaders {
     pub headers: std::collections::HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LambdaConfig {
     pub function_name: String,
     pub region: String,
