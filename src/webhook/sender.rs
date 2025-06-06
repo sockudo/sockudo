@@ -292,7 +292,7 @@ async fn send_pusher_webhook(
     json_body: String, // Expects already serialized JSON string
     custom_headers_config: HashMap<String, String>,
 ) -> Result<()> {
-    info!("{}", format!("Sending Pusher webhook to URL: {}", url));
+    info!("Sending Pusher webhook to URL: {}", url);
 
     let mut request_builder = client
         .post(url)
@@ -310,11 +310,8 @@ async fn send_pusher_webhook(
             if status.is_success() {
                 // 2XX status codes
                 info!(
-                    "{}",
-                    format!(
-                        "Successfully sent Pusher webhook to {} (status: {})",
-                        url, status
-                    )
+                    "Successfully sent Pusher webhook to {} (status: {})",
+                    url, status
                 );
                 Ok(())
             } else {
@@ -347,10 +344,10 @@ async fn send_pusher_webhook(
 
 // Helper function to log webhook processing details (Pusher format)
 fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPayload) {
-    info!("{}", format!("Pusher Webhook for app ID: {}", app_id));
-    info!("{}", format!("Time (ms): {}", payload.time_ms));
+    info!("Pusher Webhook for app ID: {}", app_id);
+    info!("Time (ms): {}", payload.time_ms);
     for event in &payload.events {
-        info!("{}", format!("  Event: {:?}", event));
+        info!("  Event: {:?}", event);
     }
 }
 
