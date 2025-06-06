@@ -1159,10 +1159,23 @@ async fn main() -> Result<()> {
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false); // Default to false if DEBUG env var is not set
 
-    let mut config = ServerOptions {
-        debug: initial_debug_from_env,
-        ..Default::default()
-    };
+    let mut config = ServerOptions::load_from_file("config/config.json")
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("[CONFIG-ERROR] Failed to load config file: {e}. Using defaults.");
+            ServerOptions::default() // Use default if file loading fails
+        });
+    match config.override_from_env().await {
+        Ok(_) => {
+            if initial_debug_from_env {
+                config.debug = true; // Force debug mode if DEBUG env var is set
+            }
+        }
+        Err(e) => {
+            error!("[CONFIG-ERROR] Failed to override config from environment: {e}");
+            // Continue with the loaded config, but log the error
+        }
+    }
 
     // --- Apply environment variables to default config (before loading from file) ---
     // This allows ENV to provide defaults if not in file, or be overridden by file.
