@@ -18,12 +18,15 @@ fn get_params_for_signature(
     let mut params_map = BTreeMap::new();
     if let Some(query_str) = query_str_option {
         // Validate query string format
-        if query_str.contains("==") || query_str.contains("&&") || query_str.matches('=').count() > 1 {
+        if query_str.contains("==")
+            || query_str.contains("&&")
+            || query_str.matches('=').count() > 1
+        {
             return Err(AppError::InvalidInput(
                 "Invalid query string format".to_string(),
             ));
         }
-        
+
         for (key, value) in
             serde_urlencoded::from_str::<Vec<(String, String)>>(query_str).map_err(|e| {
                 AppError::InvalidInput(format!(
@@ -151,7 +154,10 @@ mod tests {
         let result = get_params_for_signature(Some(query)).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result.get("auth_key"), Some(&"key123".to_string()));
-        assert_eq!(result.get("auth_timestamp"), Some(&"1234567890".to_string()));
+        assert_eq!(
+            result.get("auth_timestamp"),
+            Some(&"1234567890".to_string())
+        );
         assert_eq!(result.get("auth_signature"), None);
     }
 
