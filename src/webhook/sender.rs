@@ -400,4 +400,101 @@ mod tests {
         let result = webhook_sender.process_webhook_job(job).await;
         assert!(result.is_ok());
     }
+    #[tokio::test]
+    async fn test_process_webhook_job_with_events() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "test_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![serde_json::json!({
+                    "name": "channel_occupied",
+                    "channel": "test-channel"
+                })],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_invalid_app() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "non_existent_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_concurrent_requests() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = Arc::new(WebhookSender::new(app_manager.clone()));
+
+        let mut handles = vec![];
+        for i in 0..10 {
+            let sender_clone = webhook_sender.clone();
+            let job = JobData {
+                app_id: "test_app".to_string(),
+                app_key: "test_key".to_string(),
+                app_secret: "test_secret".to_string(),
+                payload: JobPayload {
+                    time_ms: 1234567890 + i,
+                    events: vec![serde_json::json!({
+                        "name": "channel_occupied",
+                        "channel": format!("test-channel-{}", i)
+                    })],
+                },
+                original_signature: format!("test_signature_{}", i),
+            };
+
+            handles.push(tokio::spawn(async move {
+                sender_clone.process_webhook_job(job).await
+            }));
+        }
+
+        let results = futures::future::join_all(handles).await;
+        for result in results {
+            assert!(result.unwrap().is_ok());
+        }
+    }
 }
