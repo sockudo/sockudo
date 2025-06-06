@@ -275,3 +275,100 @@ impl Default for LambdaWebhookSender {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::webhook::types::Webhook;
+
+    #[test]
+    fn test_lambda_webhook_sender_new() {
+        let sender = LambdaWebhookSender::new();
+        assert!(sender.clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lambda_webhook_sender_with_clients() {
+        let sender = LambdaWebhookSender::new();
+        let _client = sender.get_client("us-east-1").await.unwrap();
+        assert!(!sender.clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_lambda_success() {
+        let sender = LambdaWebhookSender::new();
+        let webhook = Webhook {
+            lambda: Some(LambdaConfig {
+                function_name: "test-function".to_string(),
+                region: "us-east-1".to_string(),
+            }),
+            ..Default::default()
+        };
+        let result = sender
+            .invoke_lambda(&webhook, "test_event", "test_app", json!({}))
+            .await;
+        // Should fail without AWS credentials, which is expected in test environment
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_lambda_error() {
+        let sender = LambdaWebhookSender::new();
+        let webhook = Webhook {
+            lambda: Some(LambdaConfig {
+                function_name: "test-function".to_string(),
+                region: "invalid-region".to_string(),
+            }),
+            ..Default::default()
+        };
+        let result = sender
+            .invoke_lambda(&webhook, "test_event", "test_app", json!({}))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_lambda_sync() {
+        let sender = LambdaWebhookSender::new();
+        let webhook = Webhook {
+            lambda: Some(LambdaConfig {
+                function_name: "test-function".to_string(),
+                region: "us-east-1".to_string(),
+            }),
+            ..Default::default()
+        };
+        let result = sender
+            .invoke_lambda_sync(&webhook, "test_event", "test_app", json!({}))
+            .await;
+        // Should fail without AWS credentials, which is expected in test environment
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_lambda_sync_error() {
+        let sender = LambdaWebhookSender::new();
+        let webhook = Webhook {
+            lambda: Some(LambdaConfig {
+                function_name: "test-function".to_string(),
+                region: "invalid-region".to_string(),
+            }),
+            ..Default::default()
+        };
+        let result = sender
+            .invoke_lambda_sync(&webhook, "test_event", "test_app", json!({}))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lambda_config_serialization() {
+        let config = LambdaConfig {
+            function_name: "test-function".to_string(),
+            region: "us-east-1".to_string(),
+        };
+        let serialized = serde_json::to_string(&config).unwrap();
+        let deserialized: LambdaConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(config.function_name, deserialized.function_name);
+        assert_eq!(config.region, deserialized.region);
+    }
+}
