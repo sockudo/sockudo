@@ -1,5 +1,6 @@
 // src/webhook/sender.rs
 // Keep for App struct
+use crate::app::config::App;
 use crate::app::manager::AppManager; // Keep for AppManager trait
 use crate::error::{Error, Result};
 
@@ -45,207 +46,229 @@ impl WebhookSender {
         }
     }
 
-    pub async fn process_webhook_job(&self, job: JobData) -> Result<()> {
-        let app_key = job.app_key.clone();
-        let app_id = job.app_id.clone();
-        info!(
-            "{}",
-            format!("Processing webhook job for app_id: {}", app_id.clone())
-        );
-
-        // The App struct (or at least its webhooks configuration) is needed.
-        // If JobData doesn't contain the full App.webhooks, we fetch it.
-        // For simplicity, let's assume JobData might not have the Webhook configs, so we fetch the app.
-        let app_config = match self.app_manager.find_by_id(&app_id.clone()).await? {
-            Some(app) => app,
+    async fn get_app_config(&self, app_id: &str) -> Result<App> {
+        match self.app_manager.find_by_id(app_id).await? {
+            Some(app) => Ok(app),
             None => {
-                error!(
-                    "{}",
-                    format!("Webhook: Failed to find app with ID: {}", app_id.clone())
-                );
-                return Err(Error::InvalidAppKey); // Or handle as non-retryable error
+                error!("Webhook: Failed to find app with ID: {}", app_id);
+                Err(Error::InvalidAppKey)
             }
-        };
+        }
+    }
 
-        let webhook_configurations = match &app_config.webhooks {
-            Some(hooks) => hooks,
-            None => {
-                info!(
-                    "{}",
-                    format!("No webhooks configured for app: {}", app_id.clone())
-                );
-                return Ok(());
-            }
-        };
-
-        if job.payload.events.is_empty() {
-            warn!(
-                "{}",
-                format!("Webhook job for app {} has no events.", app_id.clone())
-            );
+    async fn validate_webhook_job(&self, app_id: &str, events: &[Value]) -> Result<()> {
+        if events.is_empty() {
+            warn!("Webhook job for app {} has no events.", app_id);
             return Ok(());
         }
+        Ok(())
+    }
 
-        // Construct the Pusher-compatible payload body
-        // The `job.payload.events` is already a Vec<Value> where each Value is a Pusher event object.
-        let pusher_payload_body = PusherWebhookPayload {
+    fn create_pusher_payload(&self, job: &JobData) -> Result<(PusherWebhookPayload, String)> {
+        let pusher_payload = PusherWebhookPayload {
             time_ms: job.payload.time_ms,
-            events: job.payload.events.clone(), // Clone the events for the payload
+            events: job.payload.events.clone(),
         };
 
-        // Serialize the payload body to JSON string for signing and sending
-        let body_json_string = serde_json::to_string(&pusher_payload_body).map_err(|e| {
-            Error::SerializationError(format!("Failed to serialize webhook body: {}", e))
+        let body_json_string = serde_json::to_string(&pusher_payload).map_err(|e| {
+            Error::SerializationError(format!("Failed to serialize webhook body: {e}"))
         })?;
 
-        // Create the HMAC SHA256 signature
-        // The app_secret is now in JobData
         let signature =
             Token::new(job.app_key.clone(), job.app_secret.clone()).sign(&body_json_string);
+        Ok((pusher_payload, body_json_string))
+    }
 
-        let mut tasks = Vec::new();
+    fn find_relevant_webhooks<'a>(
+        &self,
+        events: &[Value],
+        webhook_configs: &'a [Webhook],
+    ) -> HashMap<String, &'a Webhook> {
+        let mut relevant_configs = HashMap::new();
 
-        // Iterate through events in the job to find matching webhook configurations
-        // Pusher webhooks are configured per event type. A single job might trigger webhooks
-        // if any of its contained events match a webhook configuration.
-        let mut relevant_webhook_configs: HashMap<String, &Webhook> = HashMap::new();
-
-        for event_value in &job.payload.events {
+        for event_value in events {
             if let Some(event_name) = event_value.get("name").and_then(Value::as_str) {
-                for wh_config in webhook_configurations {
+                for wh_config in webhook_configs {
                     if wh_config.event_types.contains(&event_name.to_string()) {
-                        // Use webhook URL or function name as key to avoid duplicate tasks for the same endpoint
                         let key = wh_config
                             .url
                             .as_ref()
                             .map(|u| u.to_string())
                             .or_else(|| wh_config.lambda_function.clone())
                             .or_else(|| wh_config.lambda.as_ref().map(|l| l.function_name.clone()))
-                            .unwrap_or_else(String::new); // Should have one
+                            .unwrap_or_else(String::new);
 
                         if !key.is_empty() {
-                            relevant_webhook_configs.entry(key).or_insert(wh_config);
+                            relevant_configs.entry(key).or_insert(wh_config);
                         }
                     }
                 }
             }
         }
+        relevant_configs
+    }
 
-        if relevant_webhook_configs.is_empty() {
+    pub async fn process_webhook_job(&self, job: JobData) -> Result<()> {
+        let app_id = job.app_id.clone();
+        let app_key = job.app_key.clone();
+        info!("Processing webhook job for app_id: {}", app_id);
+
+        // Get app configuration
+        let app_config = self.get_app_config(&app_id).await?;
+
+        // Get webhook configurations
+        let webhook_configs = match &app_config.webhooks {
+            Some(hooks) => hooks,
+            None => {
+                info!("No webhooks configured for app: {}", app_id);
+                return Ok(());
+            }
+        };
+
+        // Validate job
+        self.validate_webhook_job(&app_id, &job.payload.events)
+            .await?;
+
+        // Create payload and signature
+        let (pusher_payload, body_json_string) = self.create_pusher_payload(&job)?;
+        let signature =
+            Token::new(job.app_key.clone(), job.app_secret.clone()).sign(&body_json_string);
+
+        // Find relevant webhooks
+        let relevant_webhooks = self.find_relevant_webhooks(&job.payload.events, webhook_configs);
+        if relevant_webhooks.is_empty() {
             info!(
-                "{}",
-                format!(
-                    "No matching webhook configurations for events in job for app {}",
-                    app_id.clone()
-                )
+                "No matching webhook configurations for events in job for app {}",
+                app_id
             );
             return Ok(());
         }
 
-        log_webhook_processing_pusher_format(&app_id, &pusher_payload_body);
+        log_webhook_processing_pusher_format(&app_id, &pusher_payload);
 
-        for (_endpoint_key, webhook_config) in relevant_webhook_configs {
-            let permit_semaphore = self.webhook_semaphore.clone();
-            let permit = permit_semaphore.acquire_owned().await.map_err(|e| {
-                Error::Other(format!("Failed to acquire webhook semaphore permit: {}", e))
-            })?;
-            let app_id = app_id.clone(); // Clone app_id for the async task
-            let current_app_key = app_key.clone();
-            let current_signature = signature.clone();
-            let body_to_send = body_json_string.clone(); // Clone the already serialized body
+        // Process webhooks
+        let mut tasks = Vec::new();
+        for (_endpoint_key, webhook_config) in relevant_webhooks {
+            let permit = self
+                .webhook_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| {
+                    Error::Other(format!("Failed to acquire webhook semaphore permit: {}", e))
+                })?;
 
-            if let Some(url) = &webhook_config.url {
-                let client = self.client.clone();
-                let url_str = url.to_string();
-                let custom_headers_config = webhook_config
-                    .headers
-                    .as_ref()
-                    .map(|h| h.headers.clone())
-                    .unwrap_or_default();
-
-                let task = tokio::spawn(async move {
-                    let _permit = permit; // Permit dropped when task finishes
-                    if let Err(e) = send_pusher_webhook(
-                        &client,
-                        &url_str,
-                        &current_app_key,
-                        &current_signature,
-                        body_to_send, // Send the pre-serialized JSON string
-                        custom_headers_config,
-                    )
-                    .await
-                    {
-                        error!(
-                            "{}",
-                            format!("Webhook send error to URL {}: {}", url_str, e)
-                        );
-                    } else {
-                        info!(
-                            "{}",
-                            format!("Successfully sent Pusher webhook to URL: {}", url_str)
-                        );
-                    }
-                });
-                tasks.push(task);
-            } else if webhook_config.lambda.is_some() || webhook_config.lambda_function.is_some() {
-                // Lambda sending needs to be adapted if it's to receive the Pusher format.
-                // For now, we assume Lambda might expect a different format or handle the Pusher format.
-                // The body_to_send is the Pusher JSON string.
-                let lambda_sender = self.lambda_sender.clone();
-                let webhook_clone = webhook_config.clone();
-                // For Lambda, we might need to pass the raw Pusher payload or a structured version of it.
-                // The current lambda_sender.invoke_lambda expects a Value.
-                // Let's parse the body_to_send back to Value for the lambda_sender.
-                let payload_for_lambda: Value =
-                    serde_json::from_str(&body_to_send).unwrap_or(json!({}));
-
-                let task = tokio::spawn(async move {
-                    let _permit = permit;
-                    // The lambda_sender.invoke_lambda might need adjustment if it's also to send
-                    // X-Pusher-Key and X-Pusher-Signature as part of its invocation,
-                    // or if the Lambda function itself expects to verify these from an API Gateway.
-                    // This example passes the Pusher payload body to Lambda.
-                    if let Err(e) = lambda_sender
-                        .invoke_lambda(
-                            &webhook_clone,
-                            "batch_events",  // Generic event type for batched lambda
-                            &app_id.clone(), // Pass app_id for context
-                            payload_for_lambda, // Pass the parsed Value
-                        )
-                        .await
-                    {
-                        error!(
-                            "{}",
-                            format!("Lambda webhook error for app {}: {}", app_id.clone(), e)
-                        );
-                    } else {
-                        info!(
-                            "{}",
-                            format!("Successfully invoked Lambda for app: {}", app_id.clone())
-                        );
-                    }
-                });
-                tasks.push(task);
-            } else {
-                warn!(
-                    "{}",
-                    format!(
-                        "Webhook for app {} has neither URL nor Lambda config.",
-                        app_id.clone()
-                    )
-                );
-                drop(permit);
-            }
+            let task = self.create_webhook_task(
+                webhook_config,
+                permit,
+                app_id.clone(),
+                app_key.clone(),
+                signature.clone(),
+                body_json_string.clone(),
+            );
+            tasks.push(task);
         }
 
+        // Wait for all tasks to complete
         for task_handle in tasks {
-            // Renamed variable
             if let Err(e) = task_handle.await {
-                error!("{}", format!("Webhook task execution failed: {}", e));
+                error!("Webhook task execution failed: {}", e);
             }
         }
 
         Ok(())
+    }
+
+    fn create_webhook_task(
+        &self,
+        webhook_config: &Webhook,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        app_id: String,
+        app_key: String,
+        signature: String,
+        body_to_send: String,
+    ) -> tokio::task::JoinHandle<()> {
+        if let Some(url) = &webhook_config.url {
+            self.create_http_webhook_task(
+                url,
+                webhook_config,
+                permit,
+                app_id,
+                app_key,
+                signature,
+                body_to_send,
+            )
+        } else if webhook_config.lambda.is_some() || webhook_config.lambda_function.is_some() {
+            self.create_lambda_webhook_task(webhook_config, permit, app_id, body_to_send)
+        } else {
+            warn!(
+                "Webhook for app {} has neither URL nor Lambda config.",
+                app_id
+            );
+            drop(permit);
+            tokio::spawn(async {})
+        }
+    }
+
+    fn create_http_webhook_task(
+        &self,
+        url: &url::Url,
+        webhook_config: &Webhook,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        app_id: String,
+        app_key: String,
+        signature: String,
+        body_to_send: String,
+    ) -> tokio::task::JoinHandle<()> {
+        let client = self.client.clone();
+        let url_str = url.to_string();
+        let custom_headers = webhook_config
+            .headers
+            .as_ref()
+            .map(|h| h.headers.clone())
+            .unwrap_or_default();
+
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(e) = send_pusher_webhook(
+                &client,
+                &url_str,
+                &app_key,
+                &signature,
+                body_to_send,
+                custom_headers,
+            )
+            .await
+            {
+                error!("Webhook send error to URL {}: {}", url_str, e);
+            } else {
+                info!("Successfully sent Pusher webhook to URL: {}", url_str);
+            }
+        })
+    }
+
+    fn create_lambda_webhook_task(
+        &self,
+        webhook_config: &Webhook,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        app_id: String,
+        body_to_send: String,
+    ) -> tokio::task::JoinHandle<()> {
+        let lambda_sender = self.lambda_sender.clone();
+        let webhook_clone = webhook_config.clone();
+        let payload_for_lambda: Value = serde_json::from_str(&body_to_send).unwrap_or(json!({}));
+
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(e) = lambda_sender
+                .invoke_lambda(&webhook_clone, "batch_events", &app_id, payload_for_lambda)
+                .await
+            {
+                error!("Lambda webhook error for app {}: {}", app_id, e);
+            } else {
+                info!("Successfully invoked Lambda for app: {}", app_id);
+            }
+        })
     }
 }
 
@@ -328,5 +351,150 @@ fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPay
     info!("{}", format!("Time (ms): {}", payload.time_ms));
     for event in &payload.events {
         info!("{}", format!("  Event: {:?}", event));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::memory_app_manager::MemoryAppManager;
+
+    use crate::webhook::types::JobPayload;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_creating_webhook_sender() {
+        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        assert!(webhook_sender.webhook_semaphore.available_permits() > 0);
+        // Remove the timeout check since reqwest::Client doesn't have a timeout() method
+        assert!(webhook_sender.app_manager.get_apps().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_no_events() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "test_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_ok());
+    }
+    #[tokio::test]
+    async fn test_process_webhook_job_with_events() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "test_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![serde_json::json!({
+                    "name": "channel_occupied",
+                    "channel": "test-channel"
+                })],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_invalid_app() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "non_existent_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_concurrent_requests() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = Arc::new(WebhookSender::new(app_manager.clone()));
+
+        let mut handles = vec![];
+        for i in 0..10 {
+            let sender_clone = webhook_sender.clone();
+            let job = JobData {
+                app_id: "test_app".to_string(),
+                app_key: "test_key".to_string(),
+                app_secret: "test_secret".to_string(),
+                payload: JobPayload {
+                    time_ms: 1234567890 + i,
+                    events: vec![serde_json::json!({
+                        "name": "channel_occupied",
+                        "channel": format!("test-channel-{}", i)
+                    })],
+                },
+                original_signature: format!("test_signature_{}", i),
+            };
+
+            handles.push(tokio::spawn(async move {
+                sender_clone.process_webhook_job(job).await
+            }));
+        }
+
+        let results = futures::future::join_all(handles).await;
+        for result in results {
+            assert!(result.unwrap().is_ok());
+        }
     }
 }
