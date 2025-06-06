@@ -70,7 +70,13 @@ pub async fn validate_channel_name(app: &App, channel: &str) -> crate::error::Re
         )));
     }
     if !channel.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=' || c == '@' || c == '.' || c == ':'
+        c.is_ascii_alphanumeric()
+            || c == '-'
+            || c == '_'
+            || c == '='
+            || c == '@'
+            || c == '.'
+            || c == ':'
     }) {
         return Err(Error::ChannelError(
             "Channel name contains invalid characters".to_string(),
@@ -99,7 +105,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_channel_name() {
-        let app = App {
+        let app: App = App {
+            id: "test-app".to_string(),
+            key: "test-key".to_string(),
+            secret: "test-secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
             max_channel_name_length: Some(50),
             ..Default::default()
         };
@@ -110,8 +123,19 @@ mod tests {
         assert!(validate_channel_name(&app, "channel.name").await.is_ok());
 
         // Test invalid channel names
-        assert!(validate_channel_name(&app, "invalid#channel").await.is_err());
-        assert!(validate_channel_name(&app, "too_long_channel_name_that_exceeds_fifty_characters_and_should_fail").await.is_err());
+        assert!(
+            validate_channel_name(&app, "invalid#channel")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_channel_name(
+                &app,
+                "too_long_channel_name_that_exceeds_fifty_characters_and_should_fail"
+            )
+            .await
+            .is_err()
+        );
         assert!(validate_channel_name(&app, "space in name").await.is_err());
     }
 }

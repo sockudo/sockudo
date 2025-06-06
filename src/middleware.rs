@@ -17,6 +17,16 @@ fn get_params_for_signature(
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut params_map = BTreeMap::new();
     if let Some(query_str) = query_str_option {
+        // Validate query string format
+        if query_str.contains("==")
+            || query_str.contains("&&")
+            || query_str.matches('=').count() > 1
+        {
+            return Err(AppError::InvalidInput(
+                "Invalid query string format".to_string(),
+            ));
+        }
+
         for (key, value) in
             serde_urlencoded::from_str::<Vec<(String, String)>>(query_str).map_err(|e| {
                 AppError::InvalidInput(format!(
@@ -125,5 +135,36 @@ pub async fn pusher_api_auth_middleware(
             );
             Err(e.into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_params_for_signature_empty() {
+        let result = get_params_for_signature(None).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_params_for_signature_with_auth() {
+        let query = "auth_key=key123&auth_timestamp=1234567890&auth_signature=abc123";
+        let result = get_params_for_signature(Some(query)).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("auth_key"), Some(&"key123".to_string()));
+        assert_eq!(
+            result.get("auth_timestamp"),
+            Some(&"1234567890".to_string())
+        );
+        assert_eq!(result.get("auth_signature"), None);
+    }
+
+    #[test]
+    fn test_get_params_for_signature_invalid_query() {
+        let query = "invalid=query=string";
+        let result = get_params_for_signature(Some(query));
+        assert!(result.is_err());
     }
 }
