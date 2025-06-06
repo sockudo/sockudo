@@ -99,7 +99,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_channel_name() {
-        let app = App {
+        let app: App = App {
+            id: "test-app".to_string(),
+            key: "test-key".to_string(),
+            secret: "test-secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
             max_channel_name_length: Some(50),
             ..Default::default()
         };

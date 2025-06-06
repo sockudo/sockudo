@@ -75,3 +75,51 @@ impl Token {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_token_sign() {
+        let token = Token::new("test_key".to_string(), "test_secret".to_string());
+        let input = "test_input";
+        let signature = token.sign(input);
+        
+        // Verify the signature is a valid hex string
+        assert!(hex::decode(&signature).is_ok());
+        
+        // Verify the signature can be verified
+        assert!(token.verify(input, &signature));
+    }
+
+    #[test]
+    fn test_token_verify_valid() {
+        let token = Token::new("test_key".to_string(), "test_secret".to_string());
+        let input = "test_input";
+        let signature = token.sign(input);
+        
+        assert!(token.verify(input, &signature));
+    }
+
+    #[test]
+    fn test_token_verify_invalid() {
+        let token = Token::new("test_key".to_string(), "test_secret".to_string());
+        let input = "test_input";
+        let wrong_input = "wrong_input";
+        let signature = token.sign(input);
+        
+        assert!(!token.verify(wrong_input, &signature));
+        assert!(!token.verify(input, "invalid_hex"));
+    }
+
+    #[test]
+    fn test_token_verify_different_secrets() {
+        let token1 = Token::new("test_key".to_string(), "secret1".to_string());
+        let token2 = Token::new("test_key".to_string(), "secret2".to_string());
+        let input = "test_input";
+        let signature = token1.sign(input);
+        
+        assert!(!token2.verify(input, &signature));
+    }
+}
