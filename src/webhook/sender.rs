@@ -74,7 +74,7 @@ impl WebhookSender {
             Error::SerializationError(format!("Failed to serialize webhook body: {e}"))
         })?;
 
-        let signature =
+        let _signature =
             Token::new(job.app_key.clone(), job.app_secret.clone()).sign(&body_json_string);
         Ok((pusher_payload, body_json_string))
     }
@@ -215,7 +215,7 @@ impl WebhookSender {
         url: &url::Url,
         webhook_config: &Webhook,
         permit: tokio::sync::OwnedSemaphorePermit,
-        app_id: String,
+        _app_id: String,
         app_key: String,
         signature: String,
         body_to_send: String,

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // src/cache/factory.rs
 use crate::cache::manager::CacheManager;
 use crate::cache::memory_cache_manager::MemoryCacheManager; // Assuming MemoryCacheConfig is from options
@@ -20,7 +22,6 @@ impl CacheManagerFactory {
     pub async fn create(
         config: &CacheConfig,
         global_redis_conn_details: &RedisConnection,
-        debug_enabled: bool,
     ) -> Result<Arc<Mutex<dyn CacheManager + Send + Sync>>> {
         // Corrected return type
         info!(
@@ -115,7 +116,7 @@ impl CacheManagerFactory {
             CacheDriver::Memory => {
                 info!("{}", "Using memory cache manager.".to_string());
                 // Assuming MemoryCacheOptions is the correct config struct for MemoryCacheManager
-                let mem_config = MemoryCacheOptions {
+                let _mem_config = MemoryCacheOptions {
                     ttl: config.memory.ttl,
                     cleanup_interval: config.memory.cleanup_interval,
                     max_capacity: config.memory.max_capacity,

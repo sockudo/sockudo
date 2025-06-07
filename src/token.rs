@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 

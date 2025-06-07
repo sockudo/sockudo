@@ -32,13 +32,7 @@ pub fn data_to_bytes<T: AsRef<str> + serde::Serialize>(data: &[T]) -> usize {
     data.iter()
         .map(|element| {
             // Convert element to string representation
-            let string_data = if let Ok(s) = element.as_ref().to_string().parse::<String>() {
-                // Element is already a string-like value
-                s
-            } else {
-                // Convert to JSON string representation
-                serde_json::to_string(element).unwrap_or_else(|_| String::new())
-            };
+            let string_data = element.as_ref().to_string();
 
             // Calculate byte length of string
             string_data.len()
