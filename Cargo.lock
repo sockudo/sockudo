@@ -3457,7 +3457,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo"
-version = "1.9.1"
+version = "1.9.3"
 dependencies = [
  "ahash",
  "async-nats",
