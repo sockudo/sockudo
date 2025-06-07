@@ -94,11 +94,8 @@ impl LambdaWebhookSender {
                 } else {
                     // If both 'lambda' and 'lambda_function' are None, it's an error.
                     error!(
-                        "{}",
-                        format!(
-                            "Missing Lambda configuration in webhook for app_id: {}",
-                            app_id
-                        )
+                        "Missing Lambda configuration in webhook for app_id: {}",
+                        app_id
                     );
                     return Err(Error::InternalError(
                         "Missing Lambda configuration: Neither 'lambda' struct nor 'lambda_function' string provided.".to_string(),
@@ -118,15 +115,12 @@ impl LambdaWebhookSender {
         })?;
 
         info!(
-            "{}",
-            format!(
-                "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
-                lambda_config_ref.function_name,
-                lambda_config_ref.region,
-                app_id,
-                triggering_event_name,
-                payload_bytes.len()
-            )
+            "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
+            lambda_config_ref.function_name,
+            lambda_config_ref.region,
+            app_id,
+            triggering_event_name,
+            payload_bytes.len()
         );
 
         match client
@@ -139,21 +133,15 @@ impl LambdaWebhookSender {
         {
             Ok(_) => {
                 info!(
-                    "{}",
-                    format!(
-                        "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
-                        lambda_config_ref.function_name, app_id, triggering_event_name
-                    )
+                    "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
+                    lambda_config_ref.function_name, app_id, triggering_event_name
                 );
                 Ok(())
             }
             Err(e) => {
                 error!(
-                    "{}",
-                    format!(
-                        "Failed to invoke Lambda function {}: {}",
-                        lambda_config_ref.function_name, e
-                    )
+                    "Failed to invoke Lambda function {}: {}",
+                    lambda_config_ref.function_name, e
                 );
                 Err(Error::Other(format!(
                     "Failed to invoke Lambda function: {}",
@@ -200,11 +188,8 @@ impl LambdaWebhookSender {
         })?;
 
         info!(
-            "{}",
-            format!(
-                "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
-                lambda_config_ref.function_name, app_id, triggering_event_name
-            )
+            "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
+            lambda_config_ref.function_name, app_id, triggering_event_name
         );
 
         let result: core::result::Result<InvokeOutput, SdkError<InvokeError>> = client
@@ -221,21 +206,15 @@ impl LambdaWebhookSender {
                     match serde_json::from_slice::<Value>(response_payload_blob.as_ref()) {
                         Ok(json_response) => {
                             info!(
-                                "{}",
-                                format!(
-                                    "Received response from Lambda function {}: {:?}",
-                                    lambda_config_ref.function_name, json_response
-                                )
+                                "Received response from Lambda function {}: {:?}",
+                                lambda_config_ref.function_name, json_response
                             );
                             Ok(Some(json_response))
                         }
                         Err(e) => {
                             warn!(
-                                "{}",
-                                format!(
-                                    "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
-                                    e, response_payload_blob
-                                )
+                                "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
+                                e, response_payload_blob
                             );
                             let response_str =
                                 String::from_utf8_lossy(response_payload_blob.as_ref());
@@ -244,11 +223,8 @@ impl LambdaWebhookSender {
                     }
                 } else {
                     info!(
-                        "{}",
-                        format!(
-                            "Lambda function {} returned no payload",
-                            lambda_config_ref.function_name
-                        )
+                        "Lambda function {} returned no payload",
+                        lambda_config_ref.function_name
                     );
                     Ok(None)
                 }
