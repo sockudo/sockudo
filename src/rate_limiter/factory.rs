@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+
 // src/rate_limiter/factory.rs
 use crate::rate_limiter::RateLimiter;
 use std::sync::Arc;
@@ -15,7 +18,6 @@ impl RateLimiterFactory {
     pub async fn create(
         config: &RateLimiterConfig,
         global_redis_conn_details: &RedisConnection, // For Redis URL/nodes if not in RateLimiterConfig.redis.url_override
-        debug_enabled: bool,
     ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
         if !config.enabled {
             info!(

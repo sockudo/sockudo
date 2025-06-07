@@ -1,3 +1,6 @@
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 use crate::adapter::ConnectionHandler;
 
 use axum::extract::{Path, Query, State};
@@ -17,7 +20,7 @@ pub struct ConnectionQuery {
 // WebSocket upgrade handler
 pub async fn handle_ws_upgrade(
     Path(app_key): Path<String>,
-    Query(params): Query<ConnectionQuery>,
+    Query(_params): Query<ConnectionQuery>,
     ws: upgrade::IncomingUpgrade,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> impl IntoResponse {

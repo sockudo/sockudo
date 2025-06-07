@@ -15,7 +15,6 @@ impl AdapterFactory {
     pub async fn create(
         config: &AdapterConfig,
         db_config: &DatabaseConfig,
-        debug_enabled: bool,
     ) -> Result<Box<dyn Adapter + Send + Sync>> {
         info!(
             "{}",
@@ -120,7 +119,7 @@ impl AdapterFactory {
                     }
                 }
             }
-            AdapterDriver::Local | _ => {
+            AdapterDriver::Local => {
                 // Handle unknown as Local or make it an error
                 info!("{}", "Using local adapter.".to_string());
                 Ok(Box::new(LocalAdapter::new()))

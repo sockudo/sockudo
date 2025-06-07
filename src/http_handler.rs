@@ -330,7 +330,7 @@ async fn process_single_event_parallel(
             validate_channel_name(app, &target_channel_str).await?;
 
             // Construct the message to be sent to this specific channel.
-            let message_to_send = PusherApiMessage {
+            let _message_to_send = PusherApiMessage {
                 name: name_for_task, // Use cloned name
                 data: payload_for_task.clone(), // Clone payload again for this message
                 channels: None,
@@ -501,10 +501,10 @@ pub async fn events(
 #[instrument(skip_all, fields(app_id = %app_id, batch_len = field::Empty))]
 pub async fn batch_events(
     Path(app_id): Path<String>,
-    Query(auth_q_params_struct): Query<EventQuery>,
+    Query(_auth_q_params_struct): Query<EventQuery>,
     State(handler): State<Arc<ConnectionHandler>>,
-    uri: Uri,
-    RawQuery(raw_query_str_option): RawQuery,
+    _uri: Uri,
+    RawQuery(_raw_query_str_option): RawQuery,
     Json(batch_message_payload): Json<BatchPusherApiMessage>,
 ) -> Result<impl IntoResponse, AppError> {
     let body_bytes = serde_json::to_vec(&batch_message_payload)?;
