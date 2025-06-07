@@ -46,7 +46,7 @@ pub struct LambdaConfig {
 
 // This is the JobData structure that Sockudo uses internally for its queue.
 // The `payload` field will be structured to produce the Pusher-compatible format when sent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct JobData {
     pub app_key: String,    // Needed for X-Pusher-Key and signing
     pub app_id: String,     // For logging and potentially for the webhook receiver
@@ -57,7 +57,7 @@ pub struct JobData {
 
 // This is the JobPayload structure.
 // The `events` field will now hold a vector of fully formed Pusher event objects.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct JobPayload {
     pub time_ms: i64, // Unix timestamp in milliseconds
     pub events: Vec<Value>, // Each Value is a JSON object representing a Pusher event,
