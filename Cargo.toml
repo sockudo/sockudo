@@ -1,6 +1,6 @@
 [package]
 name = "sockudo"
-version = "1.9.5"
+version = "1.9.6"
 edition = "2024"
 repository = "https://github.com/RustNSparks/sockudo"
 license-file = "LICENSE"
