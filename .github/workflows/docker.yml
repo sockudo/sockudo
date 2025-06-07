@@ -1,0 +1,458 @@
+name: Docker - Build and Push Images
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+      - '.github/workflows/docker.yml'
+  
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+      - '.github/workflows/docker.yml'
+  
+  schedule:
+    # Rebuild weekly on Sundays at 2 AM UTC for base image updates
+    - cron: '0 2 * * 0'
+  
+  workflow_dispatch:
+    inputs:
+      push_latest:
+        description: 'Push as latest tag'
+        required: false
+        type: boolean
+        default: false
+      platforms:
+        description: 'Platforms to build for'
+        required: false
+        type: string
+        default: 'linux/amd64,linux/arm64'
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+env:
+  REGISTRY_GHCR: ghcr.io
+  REGISTRY_DOCKER: docker.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # =============================================================================
+  # Determine Build Configuration
+  # =============================================================================
+  setup:
+    name: Setup Build Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      should_push: ${{ steps.config.outputs.should_push }}
+      tags_ghcr: ${{ steps.config.outputs.tags_ghcr }}
+      tags_docker: ${{ steps.config.outputs.tags_docker }}
+      platforms: ${{ steps.config.outputs.platforms }}
+      cache_scope: ${{ steps.config.outputs.cache_scope }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure build
+        id: config
+        run: |
+          SHOULD_PUSH="false"
+          PLATFORMS="${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}"
+          CACHE_SCOPE="${{ github.ref_name }}"
+          
+          # Determine if we should push images
+          if [[ "${{ github.event_name }}" == "push" && ("${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/develop") ]]; then
+            SHOULD_PUSH="true"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            SHOULD_PUSH="true"
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            SHOULD_PUSH="true"
+          fi
+          
+          # Generate tags
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAGS_GHCR="${{ env.REGISTRY_GHCR }}/${REPO_LOWER}:latest,${{ env.REGISTRY_GHCR }}/${REPO_LOWER}:main"
+            TAGS_DOCKER="sockudo/sockudo:latest,sockudo/sockudo:main"
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            TAGS_GHCR="${{ env.REGISTRY_GHCR }}/${REPO_LOWER}:develop"
+            TAGS_DOCKER="sockudo/sockudo:develop"
+          else
+            # For PRs and other branches
+            BRANCH_NAME=$(echo "${{ github.ref_name }}" | sed 's/[^a-zA-Z0-9._-]/-/g')
+            TAGS_GHCR="${{ env.REGISTRY_GHCR }}/${REPO_LOWER}:${BRANCH_NAME}"
+            TAGS_DOCKER="sockudo/sockudo:${BRANCH_NAME}"
+          fi
+          
+          # Override for manual workflow dispatch
+          if [[ "${{ github.event.inputs.push_latest }}" == "true" ]]; then
+            TAGS_GHCR="${{ env.REGISTRY_GHCR }}/${REPO_LOWER}:latest"
+            TAGS_DOCKER="sockudo/sockudo:latest"
+          fi
+          
+          echo "should_push=${SHOULD_PUSH}" >> $GITHUB_OUTPUT
+          echo "tags_ghcr=${TAGS_GHCR}" >> $GITHUB_OUTPUT
+          echo "tags_docker=${TAGS_DOCKER}" >> $GITHUB_OUTPUT
+          echo "platforms=${PLATFORMS}" >> $GITHUB_OUTPUT
+          echo "cache_scope=${CACHE_SCOPE}" >> $GITHUB_OUTPUT
+          
+          echo "Build Configuration:"
+          echo "  Should Push: ${SHOULD_PUSH}"
+          echo "  GHCR Tags: ${TAGS_GHCR}"
+          echo "  Docker Hub Tags: ${TAGS_DOCKER}"
+          echo "  Platforms: ${PLATFORMS}"
+          echo "  Cache Scope: ${CACHE_SCOPE}"
+
+  # =============================================================================
+  # Build and Test Docker Image
+  # =============================================================================
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: setup
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: ${{ needs.setup.outputs.platforms }}
+
+      - name: Log in to GitHub Container Registry
+        if: needs.setup.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_GHCR }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: needs.setup.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+            sockudo/sockudo
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and optionally push to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ needs.setup.outputs.platforms }}
+          push: ${{ needs.setup.outputs.should_push }}
+          tags: ${{ needs.setup.outputs.tags_ghcr }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ needs.setup.outputs.cache_scope }}
+          cache-to: type=gha,mode=max,scope=${{ needs.setup.outputs.cache_scope }}
+          build-args: |
+            BUILDPLATFORM=${{ runner.arch }}
+            TARGETPLATFORM=${{ runner.arch }}
+            GIT_SHA=${{ github.sha }}
+            GIT_REF=${{ github.ref }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+      - name: Build and optionally push to Docker Hub
+        if: needs.setup.outputs.should_push == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ needs.setup.outputs.platforms }}
+          push: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+          tags: ${{ needs.setup.outputs.tags_docker }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ needs.setup.outputs.cache_scope }}
+          build-args: |
+            BUILDPLATFORM=${{ runner.arch }}
+            TARGETPLATFORM=${{ runner.arch }}
+            GIT_SHA=${{ github.sha }}
+            GIT_REF=${{ github.ref }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+  # =============================================================================
+  # Test Docker Image
+  # =============================================================================
+  test:
+    name: Test Docker Image
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: sockudo:test
+          cache-from: type=gha,scope=${{ needs.setup.outputs.cache_scope }}
+
+      - name: Run basic functionality tests
+        run: |
+          echo "🧪 Running Docker image tests..."
+          
+          # Start the container
+          docker run -d --name sockudo-test \
+            --network host \
+            -e RUST_LOG=info \
+            -e DATABASE_REDIS_HOST=localhost \
+            -e DATABASE_REDIS_PORT=6379 \
+            -e SOCKUDO_DEFAULT_APP_ENABLED=true \
+            sockudo:test
+          
+          # Wait for startup
+          echo "⏳ Waiting for Sockudo to start..."
+          sleep 15
+          
+          # Check if container is running
+          if ! docker ps | grep -q sockudo-test; then
+            echo "❌ Container failed to start"
+            docker logs sockudo-test
+            exit 1
+          fi
+          
+          # Test health endpoint
+          echo "🔍 Testing health endpoint..."
+          if curl -f http://localhost:6001/up/demo-app; then
+            echo "✅ Health check passed"
+          else
+            echo "❌ Health check failed"
+            docker logs sockudo-test
+            exit 1
+          fi
+          
+          # Test metrics endpoint
+          echo "📊 Testing metrics endpoint..."
+          if curl -f http://localhost:9601/metrics > /dev/null; then
+            echo "✅ Metrics endpoint accessible"
+          else
+            echo "❌ Metrics endpoint failed"
+            docker logs sockudo-test
+            exit 1
+          fi
+          
+          # Test WebSocket connection
+          echo "🔌 Testing WebSocket connection..."
+          timeout 10s docker run --rm --network host curlimages/curl:latest \
+            curl -i -N -H "Connection: Upgrade" \
+            -H "Upgrade: websocket" \
+            -H "Sec-WebSocket-Version: 13" \
+            -H "Sec-WebSocket-Key: test" \
+            http://localhost:6001/app/demo-key || echo "WebSocket test completed"
+          
+          echo "✅ All tests passed!"
+
+      - name: Cleanup test container
+        if: always()
+        run: |
+          docker stop sockudo-test || true
+          docker rm sockudo-test || true
+
+  # =============================================================================
+  # Security Scanning
+  # =============================================================================
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    if: needs.setup.outputs.should_push == 'true'
+    
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Trivy vulnerability scanner (table output)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          format: 'table'
+
+  # =============================================================================
+  # Multi-Architecture Build Test
+  # =============================================================================
+  multi-arch-test:
+    name: Multi-Architecture Build Test
+    runs-on: ubuntu-latest
+    needs: setup
+    if: contains(needs.setup.outputs.platforms, 'linux/arm64')
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Test ARM64 build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          push: false
+          cache-from: type=gha,scope=${{ needs.setup.outputs.cache_scope }}-arm64
+          cache-to: type=gha,mode=max,scope=${{ needs.setup.outputs.cache_scope }}-arm64
+
+  # =============================================================================
+  # Update Docker Compose Files
+  # =============================================================================
+  update-compose:
+    name: Update Docker Compose References
+    runs-on: ubuntu-latest
+    needs: [setup, build, test]
+    if: needs.setup.outputs.should_push == 'true' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update docker-compose.yml image references
+        run: |
+          # Update the image tag in docker-compose files if they reference a specific tag
+          if grep -q "sockudo.*:" docker-compose.yml; then
+            echo "📝 Updating docker-compose.yml image references..."
+            sed -i 's|sockudo/sockudo:[^"]*|sockudo/sockudo:latest|g' docker-compose.yml
+            sed -i 's|ghcr.io/.*/sockudo:[^"]*|ghcr.io/${{ github.repository }}:latest|g' docker-compose.yml
+          fi
+          
+          # Check if files were modified
+          if git diff --quiet; then
+            echo "📝 No changes needed in docker-compose files"
+          else
+            echo "📝 Docker compose files updated"
+            git diff
+          fi
+
+      - name: Commit and push changes
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          if ! git diff --quiet; then
+            git add docker-compose*.yml
+            git commit -m "chore: update Docker image references to latest [skip ci]" || exit 0
+            git push
+          fi
+
+  # =============================================================================
+  # Cleanup and Notification
+  # =============================================================================
+  cleanup:
+    name: Cleanup and Notify
+    runs-on: ubuntu-latest
+    needs: [setup, build, test, security]
+    if: always()
+    
+    steps:
+      - name: Summary
+        run: |
+          echo "## Docker Build Summary 🐳" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Event:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Should Push:** ${{ needs.setup.outputs.should_push }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Platforms:** ${{ needs.setup.outputs.platforms }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.setup.outputs.should_push }}" == "true" ]]; then
+            echo "### 📦 Published Images" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**GitHub Container Registry:**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "${{ needs.setup.outputs.tags_ghcr }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Docker Hub:**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "${{ needs.setup.outputs.tags_docker }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 🔨 Build Only" >> $GITHUB_STEP_SUMMARY
+            echo "Images were built but not pushed (PR or non-main branch)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Setup: ${{ needs.setup.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Test: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security: ${{ needs.security.result }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Docker workflow failed!"
+          echo "Check the individual job logs for more details."
+          exit 1
+
+      - name: Cleanup old images (scheduled runs only)
+        if: github.event_name == 'schedule'
+        run: |
+          echo "🧹 This is a scheduled run - consider implementing cleanup of old images"
+          echo "You can use GitHub's package cleanup policies or implement custom cleanup here"
