@@ -1,3 +1,5 @@
+#![allow(async_fn_in_trait)]
+
 // src/websocket.rs
 use crate::app::config::App;
 use crate::channel::PresenceMemberInfo;

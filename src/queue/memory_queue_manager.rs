@@ -113,3 +113,57 @@ impl QueueInterface for MemoryQueueManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::queue::JobData;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn test_add_to_queue() {
+        let manager = MemoryQueueManager::new();
+        let data = JobData {
+            app_key: "test_key".to_string(),
+            app_id: "test_id".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: chrono::Utc::now().timestamp_millis(),
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        manager
+            .add_to_queue("test_queue", data.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(manager.queues.get("test_queue").unwrap().len(), 1);
+    }
+
+    //todo think how to test process_queue
+
+    #[tokio::test]
+    async fn test_disconnect() {
+        let manager = MemoryQueueManager::new();
+        let data = JobData {
+            app_key: "test_key".to_string(),
+            app_id: "test_id".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: chrono::Utc::now().timestamp_millis(),
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        manager.add_to_queue("test_queue", data).await.unwrap();
+        assert!(!manager.queues.is_empty());
+
+        manager.disconnect().await.unwrap();
+        assert!(manager.queues.is_empty());
+    }
+}

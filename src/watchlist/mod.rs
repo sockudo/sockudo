@@ -88,7 +88,7 @@ impl WatchlistManager {
             // If user just came online, notify their watchers
             if was_offline {
                 if let Some(user_entry) = app_watchlists.get(user_id) {
-                    for watcher_id in &user_entry.watchers {
+                    for _ in &user_entry.watchers {
                         events_to_send.push(PusherMessage::watchlist_online_event(vec![
                             user_id.to_string(),
                         ]));
@@ -141,7 +141,7 @@ impl WatchlistManager {
                     // Notify watchers that this user went offline
                     if let Some(app_watchlists) = self.watchlists.get(app_id) {
                         if let Some(user_entry) = app_watchlists.get(user_id) {
-                            for watcher_id in &user_entry.watchers {
+                            for _ in &user_entry.watchers {
                                 events_to_send.push(PusherMessage::watchlist_offline_event(vec![
                                     user_id.to_string(),
                                 ]));
