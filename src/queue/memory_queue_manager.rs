@@ -1,13 +1,17 @@
 // --- MemoryQueueManager ---
 // No major logical changes, but added comments and ensured consistency.
 
+use crate::error::Result;
 use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
-use crate::webhook::types::JobData;
+use crate::webhook::types::{JobData, JobPayload};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tracing::info;
 
 /// Memory-based queue manager for simple deployments
@@ -111,5 +115,59 @@ impl QueueInterface for MemoryQueueManager {
     async fn disconnect(&self) -> crate::error::Result<()> {
         self.queues.clear();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::queue::JobData;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn test_add_to_queue() {
+        let manager = MemoryQueueManager::new();
+        let data = JobData {
+            app_key: "test_key".to_string(),
+            app_id: "test_id".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: chrono::Utc::now().timestamp_millis(),
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        manager
+            .add_to_queue("test_queue", data.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(manager.queues.get("test_queue").unwrap().len(), 1);
+    }
+
+    //todo think how to test process_queue
+
+    #[tokio::test]
+    async fn test_disconnect() {
+        let manager = MemoryQueueManager::new();
+        let data = JobData {
+            app_key: "test_key".to_string(),
+            app_id: "test_id".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: chrono::Utc::now().timestamp_millis(),
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        manager.add_to_queue("test_queue", data).await.unwrap();
+        assert!(!manager.queues.is_empty());
+
+        manager.disconnect().await.unwrap();
+        assert!(manager.queues.is_empty());
     }
 }
