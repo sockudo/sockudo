@@ -19,7 +19,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # IMAGE_NAME: ${{ github.repository }} # Removed: We will derive this in a step
 
 jobs:
   # =============================================================================
@@ -32,6 +32,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      lowercase_image_name: ${{ steps.lowercase_repo.outputs.name }} # New output for lowercased repo name
     
     steps:
       - name: Checkout repository
@@ -57,6 +58,10 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Get repository name in lowercase
+        id: lowercase_repo # New step to convert repo name to lowercase
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
   # =============================================================================
   # Build Cross-Platform Binaries
@@ -184,7 +189,7 @@ jobs:
             
             ### Using Docker
             ```bash
-            docker pull ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.version }}
+            docker pull ghcr.io/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
             ```
             
             ## Platform Support
@@ -241,8 +246,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest
           cache-from: type=gha
       - name: Build and push to Docker Hub
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
