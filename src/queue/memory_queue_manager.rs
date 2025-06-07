@@ -118,9 +118,7 @@ impl QueueInterface for MemoryQueueManager {
 mod tests {
     use super::*;
     use crate::queue::JobData;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::Mutex;
+    use crate::webhook::types::JobPayload;
 
     #[tokio::test]
     async fn test_add_to_queue() {

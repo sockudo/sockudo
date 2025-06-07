@@ -4,8 +4,8 @@ use fastwebsockets::WebSocketWrite;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use serde_json::Value;
-use sockudo::adapter::Adapter;
 use sockudo::adapter::handler::ConnectionHandler;
+use sockudo::adapter::ConnectionManager;
 use sockudo::app::config::App;
 use sockudo::app::manager::AppManager;
 use sockudo::cache::manager::CacheManager;
@@ -52,7 +52,7 @@ impl MockAdapter {
 }
 
 #[async_trait]
-impl Adapter for MockAdapter {
+impl ConnectionManager for MockAdapter {
     async fn init(&mut self) {}
     async fn get_namespace(&mut self, _app_id: &str) -> Option<Arc<Namespace>> {
         None
@@ -418,10 +418,10 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager, M
     let handler = ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(RwLock::new(ChannelManager::new(Arc::new(Mutex::new(
-            Box::new(MockAdapter::new()) as Box<dyn Adapter + Send + Sync>,
+            Box::new(MockAdapter::new()) as Box<dyn ConnectionManager + Send + Sync>,
         ))))),
         Arc::new(Mutex::new(
-            Box::new(MockAdapter::new()) as Box<dyn Adapter + Send + Sync>
+            Box::new(MockAdapter::new()) as Box<dyn ConnectionManager + Send + Sync>
         )),
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
@@ -438,10 +438,10 @@ pub fn create_test_connection_handler_with_app_manager(
     ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(RwLock::new(ChannelManager::new(Arc::new(Mutex::new(
-            Box::new(MockAdapter::new()) as Box<dyn Adapter + Send + Sync>,
+            Box::new(MockAdapter::new()) as Box<dyn ConnectionManager + Send + Sync>,
         ))))),
         Arc::new(Mutex::new(
-            Box::new(MockAdapter::new()) as Box<dyn Adapter + Send + Sync>
+            Box::new(MockAdapter::new()) as Box<dyn ConnectionManager + Send + Sync>
         )),
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),

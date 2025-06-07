@@ -1,9 +1,9 @@
 // src/adapter/factory.rs
-use crate::adapter::ConnectionManager;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::{NatsAdapter, NatsAdapterConfig};
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterConfig as RedisAdapterOptions};
 use crate::adapter::redis_cluster_adapter::{RedisClusterAdapter, RedisClusterAdapterConfig};
+use crate::adapter::ConnectionManager;
 use crate::error::Result;
 
 use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig}; // Import AdapterDriver, RedisConnection
@@ -15,7 +15,7 @@ impl AdapterFactory {
     pub async fn create(
         config: &AdapterConfig,
         db_config: &DatabaseConfig,
-    ) -> Result<Box<dyn Adapter + Send + Sync>> {
+    ) -> Result<Box<dyn ConnectionManager + Send + Sync>> {
         info!(
             "{}",
             format!(
