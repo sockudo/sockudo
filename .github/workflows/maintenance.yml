@@ -117,10 +117,10 @@ jobs:
             ### Security Status
             ${{ env.security_issues == 'true' && '⚠️ Security issues detected - see details below' || '✅ No security vulnerabilities detected' }}
             
-            ${{ env.security_issues == 'true' && '${{ github.workspace }}/security_issues.md' || '' }}
+            ${{ env.security_issues == 'true' && 'See security_issues.md for details' || '' }}
             
             ### Dependency Changes
-            ${{ github.workspace }}/dependency_changes.md
+            $(cat dependency_changes.md 2>/dev/null || echo "See commit for details")
             
             ---
             

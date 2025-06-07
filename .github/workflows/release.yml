@@ -3,24 +3,18 @@ name: Release - Build and Publish
 on:
   push:
     tags:
-      - 'v*.*.*'          # v1.0.0, v2.1.3, etc.
-      - 'v*.*.*-*'        # v1.0.0-alpha.1, v1.0.0-beta.2, etc.
-  workflow_dispatch:      # Allow manual triggering
+      - 'v*.*.*'
+      - 'v*.*.*-*'
+  workflow_dispatch:
     inputs:
       tag:
         description: 'Tag to release (e.g., v1.0.0)'
         required: true
         type: string
-      prerelease:
-        description: 'Is this a prerelease?'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: write
   packages: write
-  security-events: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -38,8 +32,6 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      release_id: ${{ steps.create_release.outputs.id }}
     
     steps:
       - name: Checkout repository
@@ -52,86 +44,19 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
-            PRERELEASE="${{ github.event.inputs.prerelease }}"
           else
             TAG="${GITHUB_REF#refs/tags/}"
-            PRERELEASE="false"
-            if [[ "$TAG" =~ (alpha|beta|rc) ]]; then
-              PRERELEASE="true"
-            fi
           fi
           
           VERSION="${TAG#v}"
+          PRERELEASE="false"
+          if [[ "$TAG" =~ (alpha|beta|rc) ]]; then
+            PRERELEASE="true"
+          fi
+          
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
-          
-          echo "Release version: ${VERSION}"
-          echo "Release tag: ${TAG}"
-          echo "Prerelease: ${PRERELEASE}"
-
-      - name: Generate changelog
-        id: changelog
-        run: |
-          # Get the previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
-          
-          # Generate changelog
-          if [ -n "$PREV_TAG" ]; then
-            echo "## Changes since ${PREV_TAG}" > CHANGELOG.md
-            echo "" >> CHANGELOG.md
-            git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD >> CHANGELOG.md
-          else
-            echo "## Initial Release" > CHANGELOG.md
-            echo "" >> CHANGELOG.md
-            echo "First release of Sockudo WebSocket Server" >> CHANGELOG.md
-          fi
-          
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          cat CHANGELOG.md >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: "Sockudo ${{ steps.version.outputs.tag }}"
-          body: |
-            # Sockudo WebSocket Server ${{ steps.version.outputs.version }}
-            
-            ${{ steps.changelog.outputs.changelog }}
-            
-            ## Installation
-            
-            ### Using cargo-binstall (Recommended)
-            ```bash
-            cargo binstall sockudo --version ${{ steps.version.outputs.version }}
-            ```
-            
-            ### Using cargo
-            ```bash
-            cargo install sockudo --version ${{ steps.version.outputs.version }}
-            ```
-            
-            ### Using Docker
-            ```bash
-            docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
-            ```
-            
-            ## Platform Support
-            - ✅ Linux x86_64 (GNU)
-            - ✅ Linux x86_64 (musl)
-            - ✅ macOS x86_64 (Intel)
-            - ✅ macOS ARM64 (Apple Silicon)
-            - ✅ Windows x86_64
-            
-            ## Docker Images
-            - `ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}`
-            - `ghcr.io/${{ github.repository }}:latest` (for stable releases)
-          draft: false
-          prerelease: ${{ steps.version.outputs.prerelease }}
-          generate_release_notes: true
 
   # =============================================================================
   # Build Cross-Platform Binaries
@@ -150,31 +75,26 @@ jobs:
             os: ubuntu-latest
             archive_ext: tar.gz
             binary_name: sockudo
-            use_cross: false
           - name: Linux x86_64 (musl)
             triple: x86_64-unknown-linux-musl
             os: ubuntu-latest
             archive_ext: tar.gz
             binary_name: sockudo
-            use_cross: false
           - name: macOS x86_64
             triple: x86_64-apple-darwin
             os: macos-13
             archive_ext: tar.gz
             binary_name: sockudo
-            use_cross: false
           - name: macOS ARM64
             triple: aarch64-apple-darwin
             os: macos-latest
             archive_ext: tar.gz
             binary_name: sockudo
-            use_cross: false
           - name: Windows x86_64
             triple: x86_64-pc-windows-msvc
             os: windows-latest
             archive_ext: zip
             binary_name: sockudo.exe
-            use_cross: false
 
     steps:
       - name: Checkout repository
@@ -194,10 +114,6 @@ jobs:
             sudo apt-get install -y musl-tools
           fi
 
-      - name: Install cross-compilation tools
-        if: matrix.target.use_cross
-        run: cargo install cross
-
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -206,9 +122,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-release-${{ matrix.target.triple }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-${{ matrix.target.triple }}-
-            ${{ runner.os }}-cargo-
 
       - name: Build release binary
         shell: bash
@@ -219,13 +132,9 @@ jobs:
             export PKG_CONFIG_ALL_STATIC=1
           fi
           
-          if [[ "${{ matrix.target.use_cross }}" == "true" ]]; then
-            cross build --release --target ${{ matrix.target.triple }}
-          else
-            cargo build --release --target ${{ matrix.target.triple }}
-          fi
+          cargo build --release --target ${{ matrix.target.triple }}
 
-      - name: Prepare binary
+      - name: Prepare binary and create archive
         id: prepare
         shell: bash
         run: |
@@ -242,33 +151,56 @@ jobs:
             strip "${SOURCE_PATH}" || echo "Strip failed, continuing..."
           fi
           
-          echo "source_path=${SOURCE_PATH}" >> $GITHUB_OUTPUT
+          # Create archive
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            powershell Compress-Archive -Path "${SOURCE_PATH}" -DestinationPath "${ARCHIVE_NAME}"
+          else
+            cd $(dirname "${SOURCE_PATH}")
+            tar -czf "${GITHUB_WORKSPACE}/${ARCHIVE_NAME}" "${BINARY_NAME}"
+          fi
+          
           echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
 
-      - name: Create archive (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          cd $(dirname "${{ steps.prepare.outputs.source_path }}")
-          tar -czf "${{ github.workspace }}/${{ steps.prepare.outputs.archive_name }}" "${{ matrix.target.binary_name }}"
-
-      - name: Create archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "${{ steps.prepare.outputs.source_path }}" -DestinationPath "${{ github.workspace }}/${{ steps.prepare.outputs.archive_name }}"
+      - name: Create GitHub Release
+        if: matrix.target.name == 'Linux x86_64 (GNU)'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: "Sockudo ${{ needs.prepare.outputs.tag }}"
+          body: |
+            # Sockudo WebSocket Server ${{ needs.prepare.outputs.version }}
+            
+            ## Installation
+            
+            ### Using cargo-binstall (Recommended)
+            ```bash
+            cargo binstall sockudo --version ${{ needs.prepare.outputs.version }}
+            ```
+            
+            ### Using cargo
+            ```bash
+            cargo install sockudo --version ${{ needs.prepare.outputs.version }}
+            ```
+            
+            ### Using Docker
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.version }}
+            ```
+            
+            ## Platform Support
+            - ✅ Linux x86_64 (GNU)
+            - ✅ Linux x86_64 (musl)
+            - ✅ macOS x86_64 (Intel)
+            - ✅ macOS ARM64 (Apple Silicon)
+            - ✅ Windows x86_64
+          draft: false
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           files: ${{ steps.prepare.outputs.archive_name }}
-
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: binary-${{ matrix.target.triple }}
-          path: ${{ steps.prepare.outputs.source_path }}
-          retention-days: 7
 
   # =============================================================================
   # Build and Push Docker Images
@@ -293,40 +225,39 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-            sockudo/sockudo
-          tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
+      - name: Build and push to GitHub Container Registry
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            VERSION=${{ needs.prepare.outputs.version }}
-            GIT_SHA=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+      - name: Build and push to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}
+            sockudo/sockudo:latest
+          cache-from: type=gha
 
   # =============================================================================
   # Publish to Crates.io
@@ -349,70 +280,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Publish to crates.io
+        env:
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        if: env.CRATES_IO_TOKEN != ''
         run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
-
-  # =============================================================================
-  # Security Scan
-  # =============================================================================
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    needs: build-docker
-    
-    steps:
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-  # =============================================================================
-  # Post-Release Actions
-  # =============================================================================
-  post-release:
-    name: Post-Release Actions
-    runs-on: ubuntu-latest
-    needs: [prepare, build-binaries, build-docker, publish-crates]
-    if: always()
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Update release notes with download stats
-        run: |
-          echo "Release ${{ needs.prepare.outputs.tag }} completed successfully!"
-          echo "🎉 Binaries built for all platforms"
-          echo "🐳 Docker images published"
-          if [ "${{ needs.publish-crates.result }}" = "success" ]; then
-            echo "📦 Published to crates.io"
-          fi
-
-      - name: Notify on failure
-        if: failure()
-        run: |
-          echo "❌ Release ${{ needs.prepare.outputs.tag }} failed!"
-          echo "Check the workflow logs for details."
-          exit 1
-
-      - name: Create next development version
-        if: needs.prepare.outputs.prerelease != 'true'
-        run: |
-          echo "🚀 Release ${{ needs.prepare.outputs.tag }} completed successfully!"
-          echo "Consider updating the version in Cargo.toml for the next development cycle."

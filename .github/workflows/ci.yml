@@ -12,10 +12,10 @@ env:
 
 jobs:
   # =============================================================================
-  # Code Quality and Linting
+  # Lint and Format Check
   # =============================================================================
   lint:
-    name: Lint and Format Check
+    name: Lint and Format
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -34,9 +34,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-lint-
-            ${{ runner.os }}-cargo-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -45,7 +42,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # =============================================================================
-  # Build and Test
+  # Test Suite
   # =============================================================================
   test:
     name: Test Suite
@@ -82,17 +79,9 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-
-            ${{ runner.os }}-cargo-
 
       - name: Run tests
         run: cargo test --verbose --all-features
-        env:
-          REDIS_URL: redis://localhost:6379
-
-      - name: Run integration tests
-        run: cargo test --verbose --test '*' --all-features
         env:
           REDIS_URL: redis://localhost:6379
 
@@ -106,9 +95,7 @@ jobs:
     
     strategy:
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
+        target: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl]
 
     steps:
       - name: Checkout repository
@@ -135,9 +122,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-${{ matrix.target }}-
-            ${{ runner.os }}-cargo-
 
       - name: Build release binary
         run: |
@@ -148,10 +132,6 @@ jobs:
           fi
           cargo build --release --target ${{ matrix.target }} --verbose
 
-      - name: Strip binary (Linux)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: strip target/${{ matrix.target }}/release/sockudo
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -160,9 +140,9 @@ jobs:
           retention-days: 7
 
   # =============================================================================
-  # Docker Build and Test
+  # Docker Build
   # =============================================================================
-  docker-build:
+  docker:
     name: Docker Build
     runs-on: ubuntu-latest
     needs: [lint, test]
@@ -188,12 +168,11 @@ jobs:
         run: |
           docker run --rm -d --name sockudo-test -p 6001:6001 -e RUST_LOG=info sockudo:ci-test
           sleep 10
-          # Basic health check
           curl -f http://localhost:6001/up/demo-app || exit 1
           docker stop sockudo-test
 
   # =============================================================================
-  # Security Scan
+  # Security Audit
   # =============================================================================
   security:
     name: Security Audit
@@ -211,111 +190,3 @@ jobs:
 
       - name: Security audit
         run: cargo audit
-
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-  # =============================================================================
-  # Documentation
-  # =============================================================================
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Generate documentation
-        run: cargo doc --no-deps --all-features
-
-      - name: Upload documentation
-        uses: actions/upload-artifact@v4
-        with:
-          name: documentation
-          path: target/doc/
-          retention-days: 7
-
-  # =============================================================================
-  # Benchmarks (optional, runs on main branch only)
-  # =============================================================================
-  benchmark:
-    name: Performance Benchmarks
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Run benchmarks
-        run: cargo bench
-        env:
-          REDIS_URL: redis://localhost:6379
-
-  # =============================================================================
-  # Notification
-  # =============================================================================
-  notify:
-    name: Notify Build Status
-    runs-on: ubuntu-latest
-    needs: [lint, test, build, docker-build, security]
-    if: always() && github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Notify success
-        if: needs.lint.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && needs.docker-build.result == 'success' && needs.security.result == 'success'
-        run: echo "✅ All CI checks passed successfully!"
-
-      - name: Notify failure
-        if: needs.lint.result == 'failure' || needs.test.result == 'failure' || needs.build.result == 'failure' || needs.docker-build.result == 'failure' || needs.security.result == 'failure'
-        run: |
-          echo "❌ CI checks failed!"
-          echo "Lint: ${{ needs.lint.result }}"
-          echo "Test: ${{ needs.test.result }}"
-          echo "Build: ${{ needs.build.result }}"
-          echo "Docker: ${{ needs.docker-build.result }}"
-          echo "Security: ${{ needs.security.result }}"
-          exit 1
