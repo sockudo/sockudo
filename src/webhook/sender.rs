@@ -71,7 +71,7 @@ impl WebhookSender {
         };
 
         let body_json_string = serde_json::to_string(&pusher_payload).map_err(|e| {
-            Error::SerializationError(format!("Failed to serialize webhook body: {e}"))
+            Error::Serialization(format!("Failed to serialize webhook body: {e}"))
         })?;
 
         let _signature =
