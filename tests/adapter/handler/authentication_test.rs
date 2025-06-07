@@ -42,7 +42,7 @@ async fn test_verify_channel_authentication_private_channel_no_auth() {
         .await;
     assert!(result.is_err());
     match result {
-        Err(Error::AuthError(_)) => (),
+        Err(Error::Auth(_)) => (),
         _ => panic!("Expected AuthError"),
     }
 }
