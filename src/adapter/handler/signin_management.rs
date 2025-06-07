@@ -13,12 +13,12 @@ use tracing::{info, warn};
 impl ConnectionHandler {
     pub fn parse_and_validate_user_data(&self, user_data_str: &str) -> Result<UserInfo> {
         let user_info_val: Value = serde_json::from_str(user_data_str)
-            .map_err(|e| Error::AuthError(format!("Invalid user_data JSON: {}", e)))?;
+            .map_err(|e| Error::Auth(format!("Invalid user_data JSON: {}", e)))?;
 
         let user_id = user_info_val
             .get("id")
             .and_then(|id| id.as_str())
-            .ok_or_else(|| Error::AuthError("Missing 'id' field in user_data".into()))?
+            .ok_or_else(|| Error::Auth("Missing 'id' field in user_data".into()))?
             .to_string();
 
         let watchlist = user_info_val

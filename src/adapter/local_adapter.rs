@@ -1,4 +1,4 @@
-use crate::adapter::adapter::Adapter;
+use crate::adapter::ConnectionManager;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
@@ -54,7 +54,7 @@ impl LocalAdapter {
 }
 
 #[async_trait]
-impl Adapter for LocalAdapter {
+impl ConnectionManager for LocalAdapter {
     async fn init(&mut self) {
         info!("Initializing local adapter");
     }
@@ -86,7 +86,7 @@ impl Adapter for LocalAdapter {
             namespace.remove_connection(socket_id);
             Ok(())
         } else {
-            Err(Error::ConnectionError("Namespace not found".to_string()))
+            Err(Error::Connection("Namespace not found".to_string()))
         }
     }
 
@@ -100,7 +100,7 @@ impl Adapter for LocalAdapter {
         let connection = self
             .get_connection(socket_id, app_id)
             .await
-            .ok_or_else(|| Error::ConnectionError("Connection not found".to_string()))?;
+            .ok_or_else(|| Error::Connection("Connection not found".to_string()))?;
 
         connection.send_message(&message).await
     }

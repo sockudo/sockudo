@@ -1,5 +1,5 @@
 // src/adapter/factory.rs
-use crate::adapter::Adapter;
+use crate::adapter::ConnectionManager;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::{NatsAdapter, NatsAdapterConfig};
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterConfig as RedisAdapterOptions};
@@ -18,7 +18,10 @@ impl AdapterFactory {
     ) -> Result<Box<dyn Adapter + Send + Sync>> {
         info!(
             "{}",
-            format!("Initializing Adapter with driver: {:?}", config.driver)
+            format!(
+                "Initializing ConnectionManager with driver: {:?}",
+                config.driver
+            )
         );
         match config.driver {
             // Match on the enum

@@ -63,7 +63,7 @@ impl QueueManagerFactory {
                         .await?;
                 Ok(Box::new(manager))
             }
-            "memory" | _ => {
+            "memory" => {
                 // Default to memory queue manager
                 info!("{}", "Creating Memory queue manager".to_string());
                 let manager = MemoryQueueManager::new();
@@ -72,6 +72,9 @@ impl QueueManagerFactory {
                 manager.start_processing(); // Start its background task here
                 Ok(Box::new(manager))
             }
+            other => Err(crate::error::Error::Queue(format!(
+                "Unsupported queue driver: {other}"
+            ))),
         }
     }
 }

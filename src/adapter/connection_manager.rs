@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::io::WriteHalf;
 
 #[async_trait]
-pub trait Adapter: Send + Sync {
+pub trait ConnectionManager: Send + Sync {
     async fn init(&mut self);
     // Namespace management
     async fn get_namespace(&mut self, app_id: &str) -> Option<Arc<Namespace>>;

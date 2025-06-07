@@ -85,7 +85,7 @@ impl DynamoDbAppManager {
                 if let Some(aws_sdk_dynamodb::types::AttributeValue::S(s)) = map.get(key) {
                     Ok(s.clone())
                 } else {
-                    Err(Error::InternalError(format!(
+                    Err(Error::Internal(format!(
                         "Missing or invalid {} attribute",
                         key
                     )))
@@ -138,9 +138,7 @@ impl DynamoDbAppManager {
                 enable_watchlist_events: None,
             })
         } else {
-            Err(Error::InternalError(
-                "Invalid DynamoDB item format".to_string(),
-            ))
+            Err(Error::Internal("Invalid DynamoDB item format".to_string()))
         }
     }
 
@@ -325,7 +323,7 @@ impl DynamoDbAppManager {
             )
             .send()
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to create DynamoDB table: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to create DynamoDB table: {}", e)))?;
 
         // Wait for table to be created
         let mut retries = 0;
@@ -353,7 +351,7 @@ impl DynamoDbAppManager {
             retries += 1;
         }
 
-        Err(Error::InternalError(
+        Err(Error::Internal(
             "Timeout waiting for DynamoDB table to be created".to_string(),
         ))
     }
@@ -371,9 +369,7 @@ impl DynamoDbAppManager {
             )
             .send()
             .await
-            .map_err(|e| {
-                Error::InternalError(format!("Failed to get item from DynamoDB: {}", e))
-            })?;
+            .map_err(|e| Error::Internal(format!("Failed to get item from DynamoDB: {}", e)))?;
 
         if let Some(item) = response.item() {
             // Convert DynamoDB item to App
@@ -406,9 +402,7 @@ impl AppManager for DynamoDbAppManager {
             .set_item(Some(item))
             .send()
             .await
-            .map_err(|e| {
-                Error::InternalError(format!("Failed to insert app into DynamoDB: {}", e))
-            })?;
+            .map_err(|e| Error::Internal(format!("Failed to insert app into DynamoDB: {}", e)))?;
 
         // Update cache
 
@@ -426,9 +420,7 @@ impl AppManager for DynamoDbAppManager {
             .set_item(Some(item))
             .send()
             .await
-            .map_err(|e| {
-                Error::InternalError(format!("Failed to update app in DynamoDB: {}", e))
-            })?;
+            .map_err(|e| Error::Internal(format!("Failed to update app in DynamoDB: {}", e)))?;
         Ok(())
     }
 
@@ -443,9 +435,7 @@ impl AppManager for DynamoDbAppManager {
             )
             .send()
             .await
-            .map_err(|e| {
-                Error::InternalError(format!("Failed to delete app from DynamoDB: {}", e))
-            })?;
+            .map_err(|e| Error::Internal(format!("Failed to delete app from DynamoDB: {}", e)))?;
         Ok(())
     }
 
@@ -457,7 +447,7 @@ impl AppManager for DynamoDbAppManager {
             .table_name(&self.config.table_name)
             .send()
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to scan DynamoDB: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to scan DynamoDB: {}", e)))?;
 
         // Process items and convert to App objects
         let mut apps = Vec::new();
@@ -487,7 +477,7 @@ impl AppManager for DynamoDbAppManager {
             )
             .send()
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to query DynamoDB: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to query DynamoDB: {}", e)))?;
 
         let items = response.items();
         if !items.is_empty() {

@@ -11,7 +11,7 @@ pub mod types;
 pub mod validation;
 pub mod webhook_management;
 
-use crate::adapter::adapter::Adapter;
+use crate::adapter::ConnectionManager;
 use crate::app::config::App;
 use crate::app::manager::AppManager;
 use crate::cache::manager::CacheManager;
@@ -40,7 +40,7 @@ use tracing::{error, info, warn};
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
     pub(crate) channel_manager: Arc<RwLock<ChannelManager>>,
-    pub(crate) connection_manager: Arc<Mutex<Box<dyn Adapter + Send + Sync>>>,
+    pub(crate) connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>,
     pub(crate) cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     pub(crate) metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -53,7 +53,7 @@ impl ConnectionHandler {
     pub fn new(
         app_manager: Arc<dyn AppManager + Send + Sync>,
         channel_manager: Arc<RwLock<ChannelManager>>,
-        connection_manager: Arc<Mutex<Box<dyn Adapter + Send + Sync>>>,
+        connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>,
         cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -153,7 +153,7 @@ impl ConnectionHandler {
                     "Database error during app lookup for key {}: {}",
                     app_key, e
                 );
-                Err(Error::InternalError("App lookup failed".to_string()))
+                Err(Error::Internal("App lookup failed".to_string()))
             }
         }
     }
@@ -165,7 +165,7 @@ impl ConnectionHandler {
         FragmentCollectorRead<tokio::io::ReadHalf<TokioIo<Upgraded>>>,
         WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
     )> {
-        let ws = fut.await.map_err(Error::WebSocketError)?;
+        let ws = fut.await.map_err(Error::WebSocket)?;
         let (rx, tx) = ws.split(tokio::io::split);
         Ok((FragmentCollectorRead::new(rx), tx))
     }
@@ -186,7 +186,7 @@ impl ConnectionHandler {
                     "Error getting sockets count for app {}: {}",
                     app_config.id, e
                 );
-                Error::InternalError("Failed to check connection quota".to_string())
+                Error::Internal("Failed to check connection quota".to_string())
             })?;
 
         if current_count >= app_config.max_connections as usize {
@@ -311,7 +311,7 @@ impl ConnectionHandler {
         let channel = message
             .channel
             .as_ref()
-            .ok_or_else(|| Error::ClientEventError("Channel required for client event".into()))?
+            .ok_or_else(|| Error::ClientEvent("Channel required for client event".into()))?
             .clone();
 
         let data = match &message.data {

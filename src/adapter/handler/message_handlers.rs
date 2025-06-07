@@ -54,7 +54,7 @@ impl ConnectionHandler {
     ) -> Result<()> {
         // Validate signin is enabled
         if !app_config.enable_user_authentication.unwrap_or(false) {
-            return Err(Error::AuthError(
+            return Err(Error::Auth(
                 "User authentication is disabled for this app".into(),
             ));
         }

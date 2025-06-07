@@ -32,7 +32,7 @@ impl RedisRateLimiter {
         let connection = client
             .get_multiplexed_tokio_connection()
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to connect to Redis: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
 
         let config = RateLimitConfig {
             max_requests,
@@ -57,7 +57,7 @@ impl RedisRateLimiter {
         let connection = client
             .get_multiplexed_tokio_connection()
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to connect to Redis: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
 
         Ok(Self {
             client,
@@ -98,30 +98,29 @@ impl RedisRateLimiter {
         let _: () = conn
             .zrevrangebyscore(&redis_key, 0, window_start as i64)
             .await
-            .map_err(|e| {
-                Error::RedisError(format!("Failed to clean up Redis sorted set: {}", e))
-            })?;
+            .map_err(|e| Error::Redis(format!("Failed to clean up Redis sorted set: {}", e)))?;
 
         // Count current elements in the window
         let count: u32 = conn
             .zcard(&redis_key)
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to count Redis sorted set: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to count Redis sorted set: {}", e)))?;
 
         // Set expiry on the key for automatic cleanup
         let _: () = conn
             .expire(&redis_key, self.config.window_secs as usize as i64)
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to set expiry on Redis key: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to set expiry on Redis key: {}", e)))?;
 
         let remaining = self.config.max_requests.saturating_sub(count);
         let allowed = remaining > 0;
 
         // If we should increment and we're allowed, add the current timestamp
         if increment && allowed {
-            let _: () = conn.zadd(&redis_key, now, now).await.map_err(|e| {
-                Error::RedisError(format!("Failed to increment Redis counter: {}", e))
-            })?;
+            let _: () = conn
+                .zadd(&redis_key, now, now)
+                .await
+                .map_err(|e| Error::Redis(format!("Failed to increment Redis counter: {}", e)))?;
 
             // Recalculate remaining after increment
             let new_remaining = remaining.saturating_sub(1);
@@ -160,7 +159,7 @@ impl RateLimiter for RedisRateLimiter {
         let _: () = conn
             .del(&redis_key)
             .await
-            .map_err(|e| Error::RedisError(format!("Failed to delete Redis key: {}", e)))?;
+            .map_err(|e| Error::Redis(format!("Failed to delete Redis key: {}", e)))?;
 
         Ok(())
     }
