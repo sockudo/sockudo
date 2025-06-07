@@ -274,7 +274,7 @@ pub struct NatsAdapterConfig {
     pub nodes_number: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AppManagerConfig {
     pub driver: AppManagerDriver,
@@ -311,7 +311,7 @@ pub struct CacheConfig {
     pub memory: MemoryCacheOptions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RedisConfig {
     pub prefix: Option<String>,
@@ -597,16 +597,6 @@ impl Default for NatsAdapterConfig {
     }
 }
 
-impl Default for AppManagerConfig {
-    fn default() -> Self {
-        Self {
-            driver: AppManagerDriver::default(),
-            array: ArrayConfig::default(),
-            cache: CacheSettings::default(),
-        }
-    }
-}
-
 impl Default for CacheSettings {
     fn default() -> Self {
         Self {
@@ -636,16 +626,6 @@ impl Default for CacheConfig {
                 cluster_mode: false,
             },
             memory: MemoryCacheOptions::default(),
-        }
-    }
-}
-
-impl Default for RedisConfig {
-    fn default() -> Self {
-        Self {
-            prefix: None,
-            url_override: None,
-            cluster_mode: false,
         }
     }
 }

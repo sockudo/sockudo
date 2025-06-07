@@ -574,7 +574,7 @@ impl ConnectionHandler {
                 self.send_message_to_socket(app_id, socket_id, cache_miss_message)
                     .await?;
 
-                return Err(Error::InternalError(format!(
+                return Err(Error::Internal(format!(
                     "Cache retrieval failed for channel {}: {}",
                     channel, e
                 )));
@@ -605,14 +605,14 @@ impl ConnectionHandler {
                     .set(&cache_key, &message_json, ttl)
                     .await
                     .map_err(|e| {
-                        Error::InternalError(format!("Failed to store cache with TTL: {}", e))
+                        Error::Internal(format!("Failed to store cache with TTL: {}", e))
                     })?;
             }
             None => {
                 cache_manager
                     .set(&cache_key, &message_json, 0)
                     .await
-                    .map_err(|e| Error::InternalError(format!("Failed to store cache: {}", e)))?;
+                    .map_err(|e| Error::Internal(format!("Failed to store cache: {}", e)))?;
             }
         }
 
@@ -626,7 +626,7 @@ impl ConnectionHandler {
         let cache_key = format!("app:{}:channel:{}:cache_miss", app_id, channel);
 
         cache_manager.remove(&cache_key).await.map_err(|e| {
-            Error::InternalError(format!(
+            Error::Internal(format!(
                 "Failed to clear cache for channel {}: {}",
                 channel, e
             ))

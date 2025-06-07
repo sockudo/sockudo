@@ -233,7 +233,7 @@ impl MessageSender {
     pub fn send(&self, frame: Frame<'static>) -> Result<()> {
         self.sender
             .send(frame)
-            .map_err(|_| Error::ConnectionError("Message channel closed".into()))
+            .map_err(|_| Error::Connection("Message channel closed".into()))
     }
 
     pub fn send_json<T: serde::Serialize>(&self, message: &T) -> Result<()> {

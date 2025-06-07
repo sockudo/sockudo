@@ -75,8 +75,8 @@ use tracing::{error, info, warn}; // Added LevelFilter
 use tracing_subscriber::{EnvFilter, fmt, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
-use crate::adapter::Adapter;
 use crate::adapter::ConnectionHandler;
+use crate::adapter::ConnectionManager;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::NatsAdapter;
 use crate::adapter::redis_adapter::RedisAdapter;
@@ -98,7 +98,7 @@ use crate::websocket::WebSocketRef;
 struct ServerState {
     app_manager: Arc<dyn AppManager + Send + Sync>,
     channel_manager: Arc<RwLock<ChannelManager>>,
-    connection_manager: Arc<Mutex<Box<dyn Adapter + Send + Sync>>>,
+    connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>,
     auth_validator: Arc<AuthValidator>,
     cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     queue_manager: Option<Arc<QueueManager>>,
@@ -960,20 +960,20 @@ impl SockudoServer {
         let cert_path = std::path::PathBuf::from(&self.config.ssl.cert_path);
         let key_path = std::path::PathBuf::from(&self.config.ssl.key_path);
         if !cert_path.exists() {
-            return Err(Error::ConfigFileError(format!(
+            return Err(Error::ConfigFile(format!(
                 "SSL cert_path not found: {:?}",
                 cert_path
             )));
         }
         if !key_path.exists() {
-            return Err(Error::ConfigFileError(format!(
+            return Err(Error::ConfigFile(format!(
                 "SSL key_path not found: {:?}",
                 key_path
             )));
         }
         RustlsConfig::from_pem_file(cert_path, key_path)
             .await
-            .map_err(|e| Error::InternalError(format!("Failed to load TLS configuration: {}", e)))
+            .map_err(|e| Error::Internal(format!("Failed to load TLS configuration: {}", e)))
     }
 
     async fn shutdown_signal(&self) {
@@ -1323,10 +1323,10 @@ async fn main() -> Result<()> {
     if Path::new(&config_path).exists() {
         println!("[PRE-LOG] Loading configuration from file: {config_path}"); // Basic print before logging init
         let mut file = File::open(&config_path)
-            .map_err(|e| Error::ConfigFileError(format!("Failed to open {config_path}: {e}")))?;
+            .map_err(|e| Error::ConfigFile(format!("Failed to open {config_path}: {e}")))?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)
-            .map_err(|e| Error::ConfigFileError(format!("Failed to read {config_path}: {e}")))?;
+            .map_err(|e| Error::ConfigFile(format!("Failed to read {config_path}: {e}")))?;
 
         match from_str::<ServerOptions>(&contents) {
             Ok(file_config) => {

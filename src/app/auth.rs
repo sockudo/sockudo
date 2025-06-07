@@ -83,15 +83,13 @@ impl AuthValidator {
         let auth_ts_str = &auth_params_from_query_struct.auth_timestamp;
         if auth_ts_str.is_empty() {
             debug!("auth_timestamp is missing from query parameters.");
-            return Err(Error::AuthError("auth_timestamp is missing".to_string()));
+            return Err(Error::Auth("auth_timestamp is missing".to_string()));
         }
         let auth_ts: i64 = match auth_ts_str.parse() {
             Ok(ts) => ts,
             Err(_) => {
                 debug!("Invalid auth_timestamp format: {}", auth_ts_str);
-                return Err(Error::AuthError(
-                    "Invalid auth_timestamp format".to_string(),
-                ));
+                return Err(Error::Auth("Invalid auth_timestamp format".to_string()));
             }
         };
 
@@ -104,7 +102,7 @@ impl AuthValidator {
                 auth_ts,
                 (current_ts - auth_ts).abs()
             );
-            return Err(Error::AuthError(
+            return Err(Error::Auth(
                 "Timestamp expired or too far in the future".to_string(),
             ));
         }
@@ -126,7 +124,7 @@ impl AuthValidator {
                                 "body_md5 mismatch. Expected from query: {}, Calculated from body: {}",
                                 body_md5_from_query, actual_body_md5
                             );
-                            return Err(Error::AuthError("body_md5 mismatch".to_string()));
+                            return Err(Error::Auth("body_md5 mismatch".to_string()));
                         }
                         // body_md5 is valid and already in params_for_signing_string
                     }
@@ -135,7 +133,7 @@ impl AuthValidator {
                         debug!(
                             "POST request has a non-empty body, but 'body_md5' is missing or empty in query parameters."
                         );
-                        return Err(Error::AuthError(
+                        return Err(Error::Auth(
                             "body_md5 is required and must be non-empty in query parameters for POST requests with a non-empty body".to_string(),
                         ));
                     }
@@ -146,7 +144,7 @@ impl AuthValidator {
                     debug!(
                         "POST request has an empty body, but 'body_md5' was found in query parameters."
                     );
-                    return Err(Error::AuthError(
+                    return Err(Error::Auth(
                         "body_md5 must not be present in query parameters for POST requests with an empty body"
                             .to_string(),
                     ));
@@ -160,7 +158,7 @@ impl AuthValidator {
                     "{} request should not contain 'body_md5' in query parameters.",
                     uppercased_http_method
                 );
-                return Err(Error::AuthError(format!(
+                return Err(Error::Auth(format!(
                     "body_md5 must not be present in query parameters for {} requests",
                     uppercased_http_method
                 )));
@@ -198,7 +196,7 @@ impl AuthValidator {
         ) {
             Ok(true)
         } else {
-            Err(Error::AuthError("Invalid API signature".to_string()))
+            Err(Error::Auth("Invalid API signature".to_string()))
         }
     }
 

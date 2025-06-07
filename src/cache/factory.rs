@@ -35,7 +35,7 @@ impl CacheManagerFactory {
                     info!("{}", "Cache: Using Redis Cluster driver.".to_string());
                     if global_redis_conn_details.cluster_nodes.is_empty() {
                         error!("{}", "Cache: Redis cluster mode enabled, but no cluster_nodes configured in database.redis section.".to_string());
-                        return Err(Error::CacheError(
+                        return Err(Error::Cache(
                             "Cache: Redis cluster nodes not configured.".to_string(),
                         ));
                     }
@@ -88,7 +88,7 @@ impl CacheManagerFactory {
                 );
                 if global_redis_conn_details.cluster_nodes.is_empty() {
                     error!("{}", "Cache: Redis cluster driver selected, but no cluster_nodes configured in database.redis section.".to_string());
-                    return Err(Error::CacheError(
+                    return Err(Error::Cache(
                         "Cache: Redis cluster nodes not configured for explicit cluster driver."
                             .to_string(),
                     ));
@@ -130,7 +130,7 @@ impl CacheManagerFactory {
                     "{}",
                     "Cache driver is 'None'. Cache will be disabled.".to_string()
                 );
-                Err(Error::CacheError(
+                Err(Error::Cache(
                     "Cache driver explicitly set to 'None'.".to_string(),
                 ))
             }

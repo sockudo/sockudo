@@ -94,10 +94,7 @@ impl SignInRequest {
                 .and_then(Value::as_str)
                 .map(String::from)
                 .ok_or_else(|| {
-                    crate::error::Error::AuthError(format!(
-                        "Missing '{}' field in signin data",
-                        field
-                    ))
+                    crate::error::Error::Auth(format!("Missing '{}' field in signin data", field))
                 })
         };
 
@@ -112,16 +109,14 @@ impl SignInRequest {
                     .and_then(Value::as_str)
                     .map(String::from)
                     .ok_or_else(|| {
-                        crate::error::Error::AuthError(
-                            "Missing 'user_data' field in signin data".into(),
-                        )
+                        crate::error::Error::Auth("Missing 'user_data' field in signin data".into())
                     })?,
                 auth: extra
                     .get("auth")
                     .and_then(Value::as_str)
                     .map(String::from)
                     .ok_or_else(|| {
-                        crate::error::Error::AuthError("Missing 'auth' field in signin data".into())
+                        crate::error::Error::Auth("Missing 'auth' field in signin data".into())
                     })?,
             }),
             _ => Err(crate::error::Error::InvalidMessageFormat(

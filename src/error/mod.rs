@@ -53,7 +53,7 @@ pub enum Error {
 
     // Channel specific errors
     #[error("Channel error: {0}")]
-    ChannelError(String),
+    Channel(String),
 
     #[error("Channel name invalid: {0}")]
     InvalidChannelName(String),
@@ -66,7 +66,7 @@ pub enum Error {
 
     // Authentication errors
     #[error("Authentication error: {0}")]
-    AuthError(String),
+    Auth(String),
 
     #[error("Invalid signature")]
     InvalidSignature,
@@ -76,7 +76,7 @@ pub enum Error {
 
     // Connection errors
     #[error("Connection error: {0}")]
-    ConnectionError(String),
+    Connection(String),
 
     #[error("Connection already exists")]
     ConnectionExists,
@@ -86,7 +86,7 @@ pub enum Error {
 
     // Protocol errors
     #[error("Protocol error: {0}")]
-    ProtocolError(String),
+    Protocol(String),
 
     #[error("Invalid message format: {0}")]
     InvalidMessageFormat(String),
@@ -96,41 +96,41 @@ pub enum Error {
 
     // WebSocket errors
     #[error("WebSocket error: {0}")]
-    WebSocketError(#[from] fastwebsockets::WebSocketError),
+    WebSocket(#[from] fastwebsockets::WebSocketError),
 
     // Internal errors
     #[error("Internal server error: {0}")]
-    InternalError(String),
+    Internal(String),
 
     // JSON serialization/deserialization errors
     #[error("JSON error: {0}")]
-    JsonError(#[from] serde_json::Error),
+    Json(#[from] serde_json::Error),
 
     #[error("Client event error: {0}")]
-    ClientEventError(String), // Add this variant
+    ClientEvent(String), // Add this variant
 
     // I/O errors
     #[error("I/O error: {0}")]
-    IoError(#[from] std::io::Error),
+    Io(#[from] std::io::Error),
 
     // Generic errors
     #[error("Invalid app key")]
     InvalidAppKey,
 
     #[error("Cache error: {0}")]
-    CacheError(String),
+    Cache(String),
 
     #[error("Invalid JSON")]
-    SerializationError(String),
+    Serialization(String),
 
     #[error("Broadcast error: {0}")]
-    BroadcastError(String),
+    Broadcast(String),
 
     #[error("Other: {0}")]
     Other(String),
 
     #[error("Redis error: {0}")]
-    RedisError(String),
+    Redis(String),
 
     #[error("Request timeout")]
     RequestTimeout,
@@ -139,7 +139,7 @@ pub enum Error {
     OwnRequestIgnored,
 
     #[error("Horizontal adapter error: {0}")]
-    HorizontalAdapterError(String),
+    HorizontalAdapter(String),
 
     #[error("Queue error: {0}")]
     Queue(String),
@@ -147,14 +147,11 @@ pub enum Error {
     #[error("Config")]
     Config(String),
 
-    #[error("Connection Error: {0}")]
-    Connection(String),
-
-    #[error("Configuration Error: {0}")]
-    ConfigurationError(String),
+    #[error("Configuration error: {0}")]
+    Configuration(String),
 
     #[error("Config file Error: {0}")]
-    ConfigFileError(String),
+    ConfigFile(String),
 }
 
 // Add conversion to WebSocket close codes
@@ -184,19 +181,19 @@ impl Error {
             Error::ClientEventRateLimit => 4301,
             Error::WatchlistLimitExceeded => 4302,
 
-            Error::BroadcastError(_) => 4303,
+            Error::Broadcast(_) => 4303,
 
             // Map other errors to appropriate ranges
-            Error::ChannelError(_)
+            Error::Channel(_)
             | Error::InvalidChannelName(_)
             | Error::ChannelExists
             | Error::ChannelNotFound => 4300,
 
-            Error::ClientEventError(_) => 4301,
+            Error::ClientEvent(_) => 4301,
 
-            Error::AuthError(_) | Error::InvalidSignature | Error::InvalidKey => 4009,
+            Error::Auth(_) | Error::InvalidSignature | Error::InvalidKey => 4009,
 
-            Error::ConnectionError(_) | Error::ConnectionExists | Error::ConnectionNotFound => 4000,
+            Error::Connection(_) | Error::ConnectionExists | Error::ConnectionNotFound => 4000,
 
             _ => 4000, // Default to don't reconnect for unknown errors
         }
