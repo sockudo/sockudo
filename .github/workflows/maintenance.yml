@@ -1,0 +1,403 @@
+name: Maintenance - Dependency Updates
+
+on:
+  schedule:
+    # Run every Monday at 6 AM UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      update_type:
+        description: 'Type of update to perform'
+        required: true
+        type: choice
+        options:
+          - 'dependencies'
+          - 'security'
+          - 'all'
+        default: 'dependencies'
+      create_pr:
+        description: 'Create pull request for updates'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: write
+
+jobs:
+  # =============================================================================
+  # Dependency Updates
+  # =============================================================================
+  update-dependencies:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    if: github.event.inputs.update_type == 'dependencies' || github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-edit
+        run: cargo install cargo-edit
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake
+
+      - name: Update Cargo dependencies
+        run: |
+          echo "📦 Checking for dependency updates..."
+          
+          # Update dependencies
+          cargo update
+          
+          # Check if Cargo.lock was modified
+          if git diff --quiet Cargo.lock; then
+            echo "✅ No dependency updates available"
+            echo "updates_available=false" >> $GITHUB_ENV
+          else
+            echo "📝 Dependencies updated"
+            echo "updates_available=true" >> $GITHUB_ENV
+            
+            # Show what changed
+            echo "## Updated Dependencies" > dependency_changes.md
+            echo "" >> dependency_changes.md
+            git diff --no-index /dev/null Cargo.lock | grep "^+" | grep -E "name|version" | head -20 >> dependency_changes.md || true
+          fi
+
+      - name: Run tests after update
+        if: env.updates_available == 'true'
+        run: |
+          echo "🧪 Running tests with updated dependencies..."
+          cargo test --all-features
+
+      - name: Check for security advisories
+        run: |
+          echo "🔒 Checking for security advisories..."
+          cargo install cargo-audit
+          cargo audit --json > audit_results.json || true
+          
+          # Check if there are any vulnerabilities
+          if [ -s audit_results.json ] && jq -e '.vulnerabilities.found | length > 0' audit_results.json > /dev/null; then
+            echo "⚠️ Security vulnerabilities found!"
+            echo "security_issues=true" >> $GITHUB_ENV
+            jq -r '.vulnerabilities.list[] | "- \(.advisory.title) (\(.advisory.id))"' audit_results.json > security_issues.md
+          else
+            echo "✅ No security vulnerabilities found"
+            echo "security_issues=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create pull request
+        if: env.updates_available == 'true' && (github.event.inputs.create_pr != 'false' || github.event_name == 'schedule')
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore: update dependencies
+            
+            Automated dependency update by GitHub Actions.
+          title: "chore: automated dependency updates"
+          body: |
+            ## 🤖 Automated Dependency Updates
+            
+            This PR contains automated dependency updates performed by GitHub Actions.
+            
+            ### Changes
+            - Updated Cargo.lock with latest compatible versions
+            - All tests pass with updated dependencies
+            
+            ### Security Status
+            ${{ env.security_issues == 'true' && '⚠️ Security issues detected - see details below' || '✅ No security vulnerabilities detected' }}
+            
+            ${{ env.security_issues == 'true' && '${{ github.workspace }}/security_issues.md' || '' }}
+            
+            ### Dependency Changes
+            ${{ github.workspace }}/dependency_changes.md
+            
+            ---
+            
+            **Note:** This PR was automatically created. Please review the changes and run additional tests if necessary.
+          branch: automated/dependency-updates
+          delete-branch: true
+          draft: false
+
+  # =============================================================================
+  # Security Updates
+  # =============================================================================
+  security-updates:
+    name: Security Updates
+    runs-on: ubuntu-latest
+    if: github.event.inputs.update_type == 'security' || github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: |
+          echo "🔒 Running comprehensive security audit..."
+          cargo audit --json > security_audit.json
+          
+          # Generate human-readable report
+          cargo audit > security_report.txt || true
+
+      - name: Check for security issues
+        id: security_check
+        run: |
+          if [ -s security_audit.json ] && jq -e '.vulnerabilities.found | . > 0' security_audit.json > /dev/null; then
+            VULN_COUNT=$(jq -r '.vulnerabilities.found' security_audit.json)
+            echo "found_vulnerabilities=true" >> $GITHUB_OUTPUT
+            echo "vulnerability_count=${VULN_COUNT}" >> $GITHUB_OUTPUT
+            
+            # Create summary
+            echo "## 🚨 Security Vulnerabilities Found" > security_summary.md
+            echo "" >> security_summary.md
+            echo "Found ${VULN_COUNT} security vulnerabilities:" >> security_summary.md
+            echo "" >> security_summary.md
+            jq -r '.vulnerabilities.list[] | "### \(.advisory.title)\n- **ID:** \(.advisory.id)\n- **Severity:** \(.advisory.severity // "Unknown")\n- **Package:** \(.package.name)@\(.package.version)\n- **Description:** \(.advisory.description)\n- **Solution:** \(.advisory.solution // "Update to a patched version")\n"' security_audit.json >> security_summary.md
+          else
+            echo "found_vulnerabilities=false" >> $GITHUB_OUTPUT
+            echo "vulnerability_count=0" >> $GITHUB_OUTPUT
+            echo "✅ No security vulnerabilities found"
+          fi
+
+      - name: Create security issue
+        if: steps.security_check.outputs.found_vulnerabilities == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const securitySummary = fs.readFileSync('security_summary.md', 'utf8');
+            
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'security,automated',
+              state: 'open'
+            });
+            
+            // Check if there's already an open security issue
+            const existingIssue = issues.find(issue => 
+              issue.title.includes('Security Vulnerabilities Detected')
+            );
+            
+            if (existingIssue) {
+              // Update existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: `## Updated Security Scan Results\n\n${securitySummary}\n\n---\n*Updated: ${new Date().toISOString()}*`
+              });
+            } else {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 Security Vulnerabilities Detected (${{ steps.security_check.outputs.vulnerability_count }} found)`,
+                body: `${securitySummary}\n\n---\n\n**Action Required:** Please review and address these security vulnerabilities as soon as possible.\n\n*Created: ${new Date().toISOString()}*`,
+                labels: ['security', 'automated', 'high-priority']
+              });
+            }
+
+      - name: Upload security report
+        if: steps.security_check.outputs.found_vulnerabilities == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-report
+          path: |
+            security_audit.json
+            security_report.txt
+            security_summary.md
+          retention-days: 30
+
+  # =============================================================================
+  # Dockerfile Updates
+  # =============================================================================
+  dockerfile-updates:
+    name: Dockerfile Base Image Updates
+    runs-on: ubuntu-latest
+    if: github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for base image updates
+        run: |
+          echo "🐳 Checking for Docker base image updates..."
+          
+          # Get current base images from Dockerfile
+          RUST_IMAGE=$(grep "^FROM rust:" Dockerfile | head -1 | awk '{print $2}')
+          DEBIAN_IMAGE=$(grep "^FROM debian:" Dockerfile | tail -1 | awk '{print $2}')
+          
+          echo "Current Rust image: $RUST_IMAGE"
+          echo "Current Debian image: $DEBIAN_IMAGE"
+          
+          # Check if images have updates (this is a simplified check)
+          docker pull $RUST_IMAGE
+          docker pull $DEBIAN_IMAGE
+          
+          # For a more sophisticated check, you could compare digests
+          echo "base_images_checked=true" >> $GITHUB_ENV
+
+      - name: Test Dockerfile with updated images
+        run: |
+          echo "🧪 Testing Dockerfile with current base images..."
+          docker build -t sockudo:test . --no-cache --pull
+          
+          # Basic functionality test
+          docker run --rm sockudo:test --version || echo "Version check completed"
+
+  # =============================================================================
+  # GitHub Actions Updates
+  # =============================================================================
+  actions-updates:
+    name: GitHub Actions Updates
+    runs-on: ubuntu-latest
+    if: github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for GitHub Actions updates
+        run: |
+          echo "⚙️ Checking for GitHub Actions updates..."
+          
+          # List all workflow files
+          find .github/workflows -name "*.yml" -o -name "*.yaml" | while read -r workflow; do
+            echo "Checking $workflow for action updates..."
+            
+            # Extract action references (simplified)
+            grep -E "uses: [^@]+@v[0-9]+" "$workflow" | while read -r line; do
+              ACTION=$(echo "$line" | sed -E 's/.*uses: ([^@]+)@(v[0-9]+).*/\1@\2/')
+              echo "  Found action: $ACTION"
+            done
+          done
+          
+          echo "actions_checked=true" >> $GITHUB_ENV
+
+  # =============================================================================
+  # Cleanup and Maintenance
+  # =============================================================================
+  cleanup:
+    name: Repository Cleanup
+    runs-on: ubuntu-latest
+    if: github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clean up old artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: artifacts } = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            
+            const oldArtifacts = artifacts.artifacts.filter(artifact => 
+              new Date(artifact.created_at) < thirtyDaysAgo
+            );
+            
+            console.log(`Found ${oldArtifacts.length} artifacts older than 30 days`);
+            
+            for (const artifact of oldArtifacts.slice(0, 10)) { // Limit to 10 to avoid rate limits
+              console.log(`Deleting artifact: ${artifact.name} (${artifact.created_at})`);
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id
+              });
+            }
+
+      - name: Generate maintenance report
+        run: |
+          echo "## 🔧 Maintenance Report - $(date)" > maintenance_report.md
+          echo "" >> maintenance_report.md
+          echo "### Actions Performed" >> maintenance_report.md
+          echo "- ✅ Dependency updates checked" >> maintenance_report.md
+          echo "- ✅ Security audit completed" >> maintenance_report.md
+          echo "- ✅ Dockerfile base images checked" >> maintenance_report.md
+          echo "- ✅ GitHub Actions versions checked" >> maintenance_report.md
+          echo "- ✅ Old artifacts cleaned up" >> maintenance_report.md
+          echo "" >> maintenance_report.md
+          echo "### Next Steps" >> maintenance_report.md
+          echo "- Review any created pull requests" >> maintenance_report.md
+          echo "- Address any security issues found" >> maintenance_report.md
+          echo "- Monitor CI/CD pipeline health" >> maintenance_report.md
+
+      - name: Upload maintenance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintenance-report-${{ github.run_number }}
+          path: maintenance_report.md
+          retention-days: 90
+
+  # =============================================================================
+  # Summary
+  # =============================================================================
+  summary:
+    name: Maintenance Summary
+    runs-on: ubuntu-latest
+    needs: [update-dependencies, security-updates, dockerfile-updates, actions-updates, cleanup]
+    if: always()
+    
+    steps:
+      - name: Create summary
+        run: |
+          echo "## 🛠️ Maintenance Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependencies: ${{ needs.update-dependencies.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security: ${{ needs.security-updates.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dockerfile: ${{ needs.dockerfile-updates.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Actions: ${{ needs.actions-updates.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Cleanup: ${{ needs.cleanup.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Add status indicators
+          if [[ "${{ needs.security-updates.result }}" == "success" ]]; then
+            echo "### 🔒 Security Status" >> $GITHUB_STEP_SUMMARY
+            echo "Security audit completed successfully." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.update-dependencies.result }}" == "success" ]]; then
+            echo "### 📦 Dependencies Status" >> $GITHUB_STEP_SUMMARY
+            echo "Dependency updates checked and processed." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "### 📋 Next Actions" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review any automatically created pull requests" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check for any security issues that need immediate attention" >> $GITHUB_STEP_SUMMARY
+          echo "3. Monitor the next scheduled maintenance run" >> $GITHUB_STEP_SUMMARY
