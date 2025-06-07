@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // src/metrics/prometheus.rs
 
 use crate::error::Result;

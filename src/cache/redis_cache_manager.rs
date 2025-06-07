@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::cache::manager::CacheManager;
 use crate::error::{Error, Result};
 use async_trait::async_trait;
@@ -152,7 +154,7 @@ impl CacheManager for RedisCacheManager {
     async fn disconnect(&mut self) -> Result<()> {
         // delete all keys with the current prefix
         let pattern = format!("{}:*", self.prefix);
-        let keys: Vec<String> = self
+        let _keys: Vec<String> = self
             .connection
             .keys(pattern)
             .await

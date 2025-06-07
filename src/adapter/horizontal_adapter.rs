@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -111,7 +113,7 @@ impl HorizontalAdapter {
     /// Start the request cleanup task
     pub fn start_request_cleanup(&mut self) {
         // Clone data needed for the task
-        let node_id = self.node_id.clone();
+        // let node_id = self.node_id.clone();
         let timeout = self.requests_timeout;
         let pending_requests_clone = self.pending_requests.clone();
 
@@ -311,7 +313,7 @@ impl HorizontalAdapter {
         let start = Instant::now();
 
         // Create the request
-        let request = RequestBody {
+        let _request = RequestBody {
             request_id: request_id.clone(),
             node_id: self.node_id.clone(),
             app_id: app_id.to_string(),

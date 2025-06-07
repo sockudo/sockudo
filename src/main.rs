@@ -150,27 +150,26 @@ impl SockudoServer {
         );
 
         let connection_manager_box =
-            AdapterFactory::create(&config.adapter, &config.database, debug_enabled).await?;
+            AdapterFactory::create(&config.adapter, &config.database).await?;
         let connection_manager_arc = Arc::new(Mutex::new(connection_manager_box));
         info!(
             "Adapter initialized with driver: {:?}",
             config.adapter.driver
         );
 
-        let cache_manager =
-            CacheManagerFactory::create(&config.cache, &config.database.redis, debug_enabled)
-                .await
-                .unwrap_or_else(|e| {
-                    warn!(
-                        "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
-                        e
-                    );
-                    let fallback_cache_options = config.cache.memory.clone();
-                    Arc::new(Mutex::new(MemoryCacheManager::new(
-                        "fallback_cache".to_string(),
-                        fallback_cache_options,
-                    )))
-                });
+        let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(
+                    "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
+                    e
+                );
+                let fallback_cache_options = config.cache.memory.clone();
+                Arc::new(Mutex::new(MemoryCacheManager::new(
+                    "fallback_cache".to_string(),
+                    fallback_cache_options,
+                )))
+            });
         info!(
             "CacheManager initialized with driver: {:?}",
             config.cache.driver
@@ -210,8 +209,7 @@ impl SockudoServer {
         let http_api_rate_limiter_instance = if config.rate_limiter.enabled {
             RateLimiterFactory::create(
                 &config.rate_limiter,
-                &config.database.redis,
-                debug_enabled
+                &config.database.redis
             ).await.unwrap_or_else(|e| {
                 error!("Failed to initialize HTTP API rate limiter: {}. Using a permissive limiter.", e);
                 Arc::new(rate_limiter::memory_limiter::MemoryRateLimiter::new(u32::MAX, 1)) // Permissive limiter
