@@ -150,27 +150,26 @@ impl SockudoServer {
         );
 
         let connection_manager_box =
-            AdapterFactory::create(&config.adapter, &config.database, debug_enabled).await?;
+            AdapterFactory::create(&config.adapter, &config.database).await?;
         let connection_manager_arc = Arc::new(Mutex::new(connection_manager_box));
         info!(
             "Adapter initialized with driver: {:?}",
             config.adapter.driver
         );
 
-        let cache_manager =
-            CacheManagerFactory::create(&config.cache, &config.database.redis, debug_enabled)
-                .await
-                .unwrap_or_else(|e| {
-                    warn!(
-                        "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
-                        e
-                    );
-                    let fallback_cache_options = config.cache.memory.clone();
-                    Arc::new(Mutex::new(MemoryCacheManager::new(
-                        "fallback_cache".to_string(),
-                        fallback_cache_options,
-                    )))
-                });
+        let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(
+                    "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
+                    e
+                );
+                let fallback_cache_options = config.cache.memory.clone();
+                Arc::new(Mutex::new(MemoryCacheManager::new(
+                    "fallback_cache".to_string(),
+                    fallback_cache_options,
+                )))
+            });
         info!(
             "CacheManager initialized with driver: {:?}",
             config.cache.driver
@@ -210,8 +209,7 @@ impl SockudoServer {
         let http_api_rate_limiter_instance = if config.rate_limiter.enabled {
             RateLimiterFactory::create(
                 &config.rate_limiter,
-                &config.database.redis,
-                debug_enabled
+                &config.database.redis
             ).await.unwrap_or_else(|e| {
                 error!("Failed to initialize HTTP API rate limiter: {}. Using a permissive limiter.", e);
                 Arc::new(rate_limiter::memory_limiter::MemoryRateLimiter::new(u32::MAX, 1)) // Permissive limiter
@@ -1159,10 +1157,23 @@ async fn main() -> Result<()> {
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false); // Default to false if DEBUG env var is not set
 
-    let mut config = ServerOptions {
-        debug: initial_debug_from_env,
-        ..Default::default()
-    };
+    let mut config = ServerOptions::load_from_file("config/config.json")
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("[CONFIG-ERROR] Failed to load config file: {e}. Using defaults.");
+            ServerOptions::default() // Use default if file loading fails
+        });
+    match config.override_from_env().await {
+        Ok(_) => {
+            if initial_debug_from_env {
+                config.debug = true; // Force debug mode if DEBUG env var is set
+            }
+        }
+        Err(e) => {
+            error!("[CONFIG-ERROR] Failed to override config from environment: {e}");
+            // Continue with the loaded config, but log the error
+        }
+    }
 
     // --- Apply environment variables to default config (before loading from file) ---
     // This allows ENV to provide defaults if not in file, or be overridden by file.

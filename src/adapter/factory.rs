@@ -15,8 +15,7 @@ impl AdapterFactory {
     pub async fn create(
         config: &AdapterConfig,
         db_config: &DatabaseConfig,
-        debug_enabled: bool,
-    ) -> Result<Box<dyn ConnectionManager + Send + Sync>> {
+    ) -> Result<Box<dyn Adapter + Send + Sync>> {
         info!(
             "{}",
             format!(

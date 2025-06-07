@@ -1,6 +1,7 @@
 use crate::app::config::App;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 // Assuming DEFAULT_PREFIX is pub const in nats_adapter or imported appropriately
 use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
 use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
@@ -653,17 +654,6 @@ impl Default for CorsConfig {
     }
 }
 
-// impl Default for DatabaseConfig {
-//     fn default() -> Self {
-//         Self {
-//             mysql: DatabaseConnection::default(),
-//             postgres: DatabaseConnection::default(),
-//             redis: RedisConnection::default(),
-//             dynamodb: Default::default(),
-//         }
-//     }
-// }
-
 impl Default for DatabaseConnection {
     fn default() -> Self {
         Self {
@@ -860,5 +850,299 @@ impl Default for BatchingConfig {
             enabled: true,
             duration: 50,
         }
+    }
+}
+
+impl ServerOptions {
+    pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = tokio::fs::read_to_string(path).await?;
+        let options: Self = serde_json::from_str(&content)?;
+        Ok(options)
+    }
+
+    pub async fn override_from_env(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // --- General Settings ---
+        if let Ok(mode) = std::env::var("ENVIRONMENT") {
+            self.mode = mode;
+        }
+        if let Ok(debug) = std::env::var("DEBUG_MODE") {
+            self.debug = debug.parse()?;
+        }
+        if let Ok(host) = std::env::var("HOST") {
+            self.host = host;
+        }
+        if let Ok(port) = std::env::var("PORT") {
+            self.port = port.parse()?;
+        }
+        if let Ok(grace_period) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
+            self.shutdown_grace_period = grace_period.parse()?;
+        }
+        if let Ok(timeout) = std::env::var("USER_AUTHENTICATION_TIMEOUT") {
+            self.user_authentication_timeout = timeout.parse()?;
+        }
+        if let Ok(payload_kb) = std::env::var("WEBSOCKET_MAX_PAYLOAD_KB") {
+            self.websocket_max_payload_kb = payload_kb.parse()?;
+        }
+        if let Ok(id) = std::env::var("INSTANCE_PROCESS_ID") {
+            self.instance.process_id = id;
+        }
+
+        // --- Driver Configuration ---
+        if let Ok(driver) = std::env::var("ADAPTER_DRIVER") {
+            self.adapter.driver = AdapterDriver::from_str(&driver)?;
+        }
+        if let Ok(driver) = std::env::var("CACHE_DRIVER") {
+            self.cache.driver = CacheDriver::from_str(&driver)?;
+        }
+        if let Ok(driver) = std::env::var("QUEUE_DRIVER") {
+            self.queue.driver = QueueDriver::from_str(&driver)?;
+        }
+        if let Ok(driver) = std::env::var("APP_MANAGER_DRIVER") {
+            self.app_manager.driver = AppManagerDriver::from_str(&driver)?;
+        }
+        if let Ok(driver) = std::env::var("RATE_LIMITER_DRIVER") {
+            self.rate_limiter.driver = CacheDriver::from_str(&driver)?;
+        }
+
+        // --- Database: Redis ---
+        if let Ok(host) = std::env::var("DATABASE_REDIS_HOST") {
+            self.database.redis.host = host;
+        }
+        if let Ok(port) = std::env::var("DATABASE_REDIS_PORT") {
+            self.database.redis.port = port.parse()?;
+        }
+        if let Ok(password) = std::env::var("DATABASE_REDIS_PASSWORD") {
+            self.database.redis.password = Some(password);
+        }
+        if let Ok(db) = std::env::var("DATABASE_REDIS_DB") {
+            self.database.redis.db = db.parse()?;
+        }
+        if let Ok(prefix) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
+            self.database.redis.key_prefix = prefix;
+        }
+
+        // --- Database: MySQL ---
+        if let Ok(host) = std::env::var("DATABASE_MYSQL_HOST") {
+            self.database.mysql.host = host;
+        }
+        if let Ok(port) = std::env::var("DATABASE_MYSQL_PORT") {
+            self.database.mysql.port = port.parse()?;
+        }
+        if let Ok(user) = std::env::var("DATABASE_MYSQL_USERNAME") {
+            self.database.mysql.username = user;
+        }
+        if let Ok(pass) = std::env::var("DATABASE_MYSQL_PASSWORD") {
+            self.database.mysql.password = pass;
+        }
+        if let Ok(db) = std::env::var("DATABASE_MYSQL_DATABASE") {
+            self.database.mysql.database = db;
+        }
+        if let Ok(table) = std::env::var("DATABASE_MYSQL_TABLE_NAME") {
+            self.database.mysql.table_name = table;
+        }
+
+        // --- Database: PostgreSQL ---
+        if let Ok(host) = std::env::var("DATABASE_POSTGRES_HOST") {
+            self.database.postgres.host = host;
+        }
+        if let Ok(port) = std::env::var("DATABASE_POSTGRES_PORT") {
+            self.database.postgres.port = port.parse()?;
+        }
+        if let Ok(user) = std::env::var("DATABASE_POSTGRES_USERNAME") {
+            self.database.postgres.username = user;
+        }
+        if let Ok(pass) = std::env::var("DATABASE_POSTGRES_PASSWORD") {
+            self.database.postgres.password = pass;
+        }
+        if let Ok(db) = std::env::var("DATABASE_POSTGRES_DATABASE") {
+            self.database.postgres.database = db;
+        }
+
+        // --- Database: DynamoDB ---
+        if let Ok(region) = std::env::var("DATABASE_DYNAMODB_REGION") {
+            self.database.dynamodb.region = region;
+        }
+        if let Ok(table) = std::env::var("DATABASE_DYNAMODB_TABLE_NAME") {
+            self.database.dynamodb.table_name = table;
+        }
+        if let Ok(endpoint) = std::env::var("DATABASE_DYNAMODB_ENDPOINT_URL") {
+            self.database.dynamodb.endpoint_url = Some(endpoint);
+        }
+        if let Ok(key_id) = std::env::var("AWS_ACCESS_KEY_ID") {
+            self.database.dynamodb.aws_access_key_id = Some(key_id);
+        }
+        if let Ok(secret) = std::env::var("AWS_SECRET_ACCESS_KEY") {
+            self.database.dynamodb.aws_secret_access_key = Some(secret);
+        }
+
+        // --- Redis Cluster ---
+        if let Ok(nodes) = std::env::var("REDIS_CLUSTER_NODES") {
+            let node_list: Vec<String> = nodes.split(',').map(|s| s.trim().to_string()).collect();
+            self.adapter.cluster.nodes = node_list.clone();
+            self.queue.redis_cluster.nodes = node_list;
+        }
+        if let Ok(concurrency) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
+            self.queue.redis_cluster.concurrency = concurrency.parse()?;
+        }
+        if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
+            self.queue.redis_cluster.prefix = Some(prefix);
+        }
+
+        // --- SSL Configuration ---
+        if let Ok(enabled) = std::env::var("SSL_ENABLED") {
+            self.ssl.enabled = enabled.parse()?;
+        }
+        if let Ok(path) = std::env::var("SSL_CERT_PATH") {
+            self.ssl.cert_path = path;
+        }
+        if let Ok(path) = std::env::var("SSL_KEY_PATH") {
+            self.ssl.key_path = path;
+        }
+        if let Ok(redirect) = std::env::var("SSL_REDIRECT_HTTP") {
+            self.ssl.redirect_http = redirect.parse()?;
+        }
+        if let Ok(port) = std::env::var("SSL_HTTP_PORT") {
+            self.ssl.http_port = Some(port.parse()?);
+        }
+
+        // --- Metrics ---
+        if let Ok(enabled) = std::env::var("METRICS_ENABLED") {
+            self.metrics.enabled = enabled.parse()?;
+        }
+        if let Ok(host) = std::env::var("METRICS_HOST") {
+            self.metrics.host = host;
+        }
+        if let Ok(port) = std::env::var("METRICS_PORT") {
+            self.metrics.port = port.parse()?;
+        }
+        if let Ok(prefix) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
+            self.metrics.prometheus.prefix = prefix;
+        }
+
+        // --- Rate Limiter ---
+        if let Ok(enabled) = std::env::var("RATE_LIMITER_ENABLED") {
+            self.rate_limiter.enabled = enabled.parse()?;
+        }
+        if let Ok(max) = std::env::var("RATE_LIMITER_API_MAX_REQUESTS") {
+            self.rate_limiter.api_rate_limit.max_requests = max.parse()?;
+        }
+        if let Ok(window) = std::env::var("RATE_LIMITER_API_WINDOW_SECONDS") {
+            self.rate_limiter.api_rate_limit.window_seconds = window.parse()?;
+        }
+        if let Ok(hops) = std::env::var("RATE_LIMITER_API_TRUST_HOPS") {
+            self.rate_limiter.api_rate_limit.trust_hops = Some(hops.parse()?);
+        }
+        if let Ok(max) = std::env::var("RATE_LIMITER_WS_MAX_REQUESTS") {
+            self.rate_limiter.websocket_rate_limit.max_requests = max.parse()?;
+        }
+        if let Ok(window) = std::env::var("RATE_LIMITER_WS_WINDOW_SECONDS") {
+            self.rate_limiter.websocket_rate_limit.window_seconds = window.parse()?;
+        }
+
+        // --- Queue: Redis ---
+        if let Ok(concurrency) = std::env::var("QUEUE_REDIS_CONCURRENCY") {
+            self.queue.redis.concurrency = concurrency.parse()?;
+        }
+        if let Ok(prefix) = std::env::var("QUEUE_REDIS_PREFIX") {
+            self.queue.redis.prefix = Some(prefix);
+        }
+
+        // --- Queue: SQS ---
+        if let Ok(region) = std::env::var("QUEUE_SQS_REGION") {
+            self.queue.sqs.region = region;
+        }
+        if let Ok(timeout) = std::env::var("QUEUE_SQS_VISIBILITY_TIMEOUT") {
+            self.queue.sqs.visibility_timeout = timeout.parse()?;
+        }
+        if let Ok(max) = std::env::var("QUEUE_SQS_MAX_MESSAGES") {
+            self.queue.sqs.max_messages = max.parse()?;
+        }
+        if let Ok(wait) = std::env::var("QUEUE_SQS_WAIT_TIME_SECONDS") {
+            self.queue.sqs.wait_time_seconds = wait.parse()?;
+        }
+        if let Ok(concurrency) = std::env::var("QUEUE_SQS_CONCURRENCY") {
+            self.queue.sqs.concurrency = concurrency.parse()?;
+        }
+        if let Ok(fifo) = std::env::var("QUEUE_SQS_FIFO") {
+            self.queue.sqs.fifo = fifo.parse()?;
+        }
+        if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
+            self.queue.sqs.endpoint_url = Some(endpoint);
+        }
+
+        // --- Webhooks ---
+        if let Ok(enabled) = std::env::var("WEBHOOK_BATCHING_ENABLED") {
+            self.webhooks.batching.enabled = enabled.parse()?;
+        }
+        if let Ok(duration) = std::env::var("WEBHOOK_BATCHING_DURATION") {
+            self.webhooks.batching.duration = duration.parse()?;
+        }
+
+        // --- NATS Adapter ---
+        if let Ok(servers) = std::env::var("NATS_SERVERS") {
+            self.adapter.nats.servers = servers.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(user) = std::env::var("NATS_USERNAME") {
+            self.adapter.nats.username = Some(user);
+        }
+        if let Ok(pass) = std::env::var("NATS_PASSWORD") {
+            self.adapter.nats.password = Some(pass);
+        }
+        if let Ok(token) = std::env::var("NATS_TOKEN") {
+            self.adapter.nats.token = Some(token);
+        }
+        if let Ok(timeout) = std::env::var("NATS_CONNECTION_TIMEOUT_MS") {
+            self.adapter.nats.connection_timeout_ms = timeout.parse()?;
+        }
+        if let Ok(timeout) = std::env::var("NATS_REQUEST_TIMEOUT_MS") {
+            self.adapter.nats.request_timeout_ms = timeout.parse()?;
+        }
+
+        // --- CORS ---
+        if let Ok(origins) = std::env::var("CORS_ORIGINS") {
+            self.cors.origin = origins.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(methods) = std::env::var("CORS_METHODS") {
+            self.cors.methods = methods.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(headers) = std::env::var("CORS_HEADERS") {
+            self.cors.allowed_headers = headers.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(credentials) = std::env::var("CORS_CREDENTIALS") {
+            self.cors.credentials = credentials.parse()?;
+        }
+
+        // --- Performance Tuning ---
+        if let Ok(size) = std::env::var("DATABASE_CONNECTION_POOL_SIZE") {
+            let pool_size = size.parse()?;
+            self.database.mysql.connection_pool_size = pool_size;
+            self.database.postgres.connection_pool_size = pool_size;
+        }
+        if let Ok(ttl) = std::env::var("CACHE_TTL_SECONDS") {
+            let cache_ttl = ttl.parse()?;
+            self.app_manager.cache.ttl = cache_ttl;
+            self.channel_limits.cache_ttl = cache_ttl;
+            self.database.mysql.cache_ttl = cache_ttl;
+            self.database.postgres.cache_ttl = cache_ttl;
+            self.cache.memory.ttl = cache_ttl;
+        }
+        if let Ok(interval) = std::env::var("CACHE_CLEANUP_INTERVAL") {
+            let cleanup_interval = interval.parse()?;
+            self.database.mysql.cache_cleanup_interval = cleanup_interval;
+            self.database.postgres.cache_cleanup_interval = cleanup_interval;
+            self.cache.memory.cleanup_interval = cleanup_interval;
+        }
+        if let Ok(capacity) = std::env::var("CACHE_MAX_CAPACITY") {
+            let max_capacity = capacity.parse()?;
+            self.database.mysql.cache_max_capacity = max_capacity;
+            self.database.postgres.cache_max_capacity = max_capacity;
+            self.cache.memory.max_capacity = max_capacity;
+        }
+
+        // Note: SOCKUDO_DEFAULT_APP_* variables would require instantiating
+        // the `App` struct and adding it to `self.app_manager.array.apps`.
+        // This is omitted as the `App` struct definition is not provided.
+
+        Ok(())
     }
 }

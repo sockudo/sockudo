@@ -94,11 +94,8 @@ impl LambdaWebhookSender {
                 } else {
                     // If both 'lambda' and 'lambda_function' are None, it's an error.
                     error!(
-                        "{}",
-                        format!(
-                            "Missing Lambda configuration in webhook for app_id: {}",
-                            app_id
-                        )
+                        "Missing Lambda configuration in webhook for app_id: {}",
+                        app_id
                     );
                     return Err(Error::Internal(
                         "Missing Lambda configuration: Neither 'lambda' struct nor 'lambda_function' string provided.".to_string(),
@@ -118,15 +115,12 @@ impl LambdaWebhookSender {
         })?;
 
         info!(
-            "{}",
-            format!(
-                "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
-                lambda_config_ref.function_name,
-                lambda_config_ref.region,
-                app_id,
-                triggering_event_name,
-                payload_bytes.len()
-            )
+            "Invoking Lambda function '{}' in region '{}' for app '{}', triggered by '{}'. Payload size: {} bytes.",
+            lambda_config_ref.function_name,
+            lambda_config_ref.region,
+            app_id,
+            triggering_event_name,
+            payload_bytes.len()
         );
 
         match client
@@ -139,21 +133,15 @@ impl LambdaWebhookSender {
         {
             Ok(_) => {
                 info!(
-                    "{}",
-                    format!(
-                        "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
-                        lambda_config_ref.function_name, app_id, triggering_event_name
-                    )
+                    "Successfully invoked Lambda function {} for app '{}', triggered by '{}'",
+                    lambda_config_ref.function_name, app_id, triggering_event_name
                 );
                 Ok(())
             }
             Err(e) => {
                 error!(
-                    "{}",
-                    format!(
-                        "Failed to invoke Lambda function {}: {}",
-                        lambda_config_ref.function_name, e
-                    )
+                    "Failed to invoke Lambda function {}: {}",
+                    lambda_config_ref.function_name, e
                 );
                 Err(Error::Other(format!(
                     "Failed to invoke Lambda function: {}",
@@ -198,11 +186,8 @@ impl LambdaWebhookSender {
         })?;
 
         info!(
-            "{}",
-            format!(
-                "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
-                lambda_config_ref.function_name, app_id, triggering_event_name
-            )
+            "Invoking Lambda function {} synchronously for app '{}', triggered by '{}'",
+            lambda_config_ref.function_name, app_id, triggering_event_name
         );
 
         let result: core::result::Result<InvokeOutput, SdkError<InvokeError>> = client
@@ -219,21 +204,15 @@ impl LambdaWebhookSender {
                     match serde_json::from_slice::<Value>(response_payload_blob.as_ref()) {
                         Ok(json_response) => {
                             info!(
-                                "{}",
-                                format!(
-                                    "Received response from Lambda function {}: {:?}",
-                                    lambda_config_ref.function_name, json_response
-                                )
+                                "Received response from Lambda function {}: {:?}",
+                                lambda_config_ref.function_name, json_response
                             );
                             Ok(Some(json_response))
                         }
                         Err(e) => {
                             warn!(
-                                "{}",
-                                format!(
-                                    "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
-                                    e, response_payload_blob
-                                )
+                                "Failed to parse Lambda response as JSON: {}. Raw response: {:?}",
+                                e, response_payload_blob
                             );
                             let response_str =
                                 String::from_utf8_lossy(response_payload_blob.as_ref());
@@ -242,11 +221,8 @@ impl LambdaWebhookSender {
                     }
                 } else {
                     info!(
-                        "{}",
-                        format!(
-                            "Lambda function {} returned no payload",
-                            lambda_config_ref.function_name
-                        )
+                        "Lambda function {} returned no payload",
+                        lambda_config_ref.function_name
                     );
                     Ok(None)
                 }
@@ -271,5 +247,102 @@ impl LambdaWebhookSender {
 impl Default for LambdaWebhookSender {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::webhook::types::Webhook;
+
+    #[test]
+    fn test_lambda_webhook_sender_new() {
+        let sender = LambdaWebhookSender::new();
+        assert!(sender.clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lambda_webhook_sender_with_clients() {
+        let sender = LambdaWebhookSender::new();
+        let _client = sender.get_client("us-east-1").await.unwrap();
+        assert!(!sender.clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_lambda_success() {
+        let sender = LambdaWebhookSender::new();
+        let webhook = Webhook {
+            lambda: Some(LambdaConfig {
+                function_name: "test-function".to_string(),
+                region: "us-east-1".to_string(),
+            }),
+            ..Default::default()
+        };
+        let result = sender
+            .invoke_lambda(&webhook, "test_event", "test_app", json!({}))
+            .await;
+        // Should fail without AWS credentials, which is expected in test environment
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_lambda_error() {
+        let sender = LambdaWebhookSender::new();
+        let webhook = Webhook {
+            lambda: Some(LambdaConfig {
+                function_name: "test-function".to_string(),
+                region: "invalid-region".to_string(),
+            }),
+            ..Default::default()
+        };
+        let result = sender
+            .invoke_lambda(&webhook, "test_event", "test_app", json!({}))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_lambda_sync() {
+        let sender = LambdaWebhookSender::new();
+        let webhook = Webhook {
+            lambda: Some(LambdaConfig {
+                function_name: "test-function".to_string(),
+                region: "us-east-1".to_string(),
+            }),
+            ..Default::default()
+        };
+        let result = sender
+            .invoke_lambda_sync(&webhook, "test_event", "test_app", json!({}))
+            .await;
+        // Should fail without AWS credentials, which is expected in test environment
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_lambda_sync_error() {
+        let sender = LambdaWebhookSender::new();
+        let webhook = Webhook {
+            lambda: Some(LambdaConfig {
+                function_name: "test-function".to_string(),
+                region: "invalid-region".to_string(),
+            }),
+            ..Default::default()
+        };
+        let result = sender
+            .invoke_lambda_sync(&webhook, "test_event", "test_app", json!({}))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lambda_config_serialization() {
+        let config = LambdaConfig {
+            function_name: "test-function".to_string(),
+            region: "us-east-1".to_string(),
+        };
+        let serialized = serde_json::to_string(&config).unwrap();
+        let deserialized: LambdaConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(config.function_name, deserialized.function_name);
+        assert_eq!(config.region, deserialized.region);
     }
 }

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // src/adapter/handler/connection_management.rs
 use super::ConnectionHandler;
 use crate::app::config::App;

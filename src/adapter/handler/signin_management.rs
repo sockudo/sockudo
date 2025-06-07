@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+#![allow(unused_assignments)]
 // src/adapter/handler/signin_management.rs
 use super::ConnectionHandler;
 use super::types::*;
