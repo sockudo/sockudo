@@ -1,17 +1,13 @@
 // --- MemoryQueueManager ---
 // No major logical changes, but added comments and ensured consistency.
 
-use crate::error::Result;
 use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
-use crate::webhook::types::{JobData, JobPayload};
+use crate::webhook::types::JobData;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tracing::info;
 
 /// Memory-based queue manager for simple deployments

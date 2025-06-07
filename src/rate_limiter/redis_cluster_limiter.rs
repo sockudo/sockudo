@@ -1,3 +1,7 @@
+#![allow(unused_assignments)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 // src/rate_limiter/redis_limiter.rs
 use super::{RateLimitConfig, RateLimitResult, RateLimiter};
 use crate::error::{Error, Result};

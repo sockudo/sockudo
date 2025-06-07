@@ -57,7 +57,7 @@ impl Default for RedisAdapterConfig {
 
 /// Enhanced HorizontalAdapter that can broadcast requests
 pub trait RequestBroadcaster {
-    async fn broadcast_request(&self, request: &RequestBody) -> Result<()>;
+    fn broadcast_request(&self, request: &RequestBody) -> Result<()>;
 }
 
 /// Redis adapter for horizontal scaling
