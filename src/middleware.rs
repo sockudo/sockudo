@@ -176,12 +176,4 @@ mod tests {
         );
         assert_eq!(result.get("auth_signature"), None);
     }
-
-    // this test is broken and needs to be reworked
-    // #[test]
-    // fn test_get_params_for_signature_invalid_query() {
-    //     let query = "invalid=query=string";
-    //     let result = get_params_for_signature(Some(query));
-    //     assert!(result.is_err());
-    // }
 }
