@@ -168,11 +168,11 @@ mod tests {
     fn test_get_params_for_signature_with_auth2() {
         let query = "auth_key=key1&auth_timestamp=1749377222&auth_version=1.0&body_md5=fc820aa38714282f8300c2ca039cd034&auth_signature=737d666bce65766b2447e5fd3907b8855507305afcb4a25c6f1607d3eb3a2aa7";
         let result = get_params_for_signature(Some(query)).unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result.get("auth_key"), Some(&"key123".to_string()));
+        assert_eq!(result.len(), 4);
+        assert_eq!(result.get("auth_key"), Some(&"key1".to_string()));
         assert_eq!(
             result.get("auth_timestamp"),
-            Some(&"1234567890".to_string())
+            Some(&"1749377222".to_string())
         );
         assert_eq!(result.get("auth_signature"), None);
     }
