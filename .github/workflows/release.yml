@@ -120,35 +120,41 @@ jobs:
           if [[ "${{ matrix.target.triple }}" == *"musl"* ]]; then
             sudo apt-get install -y musl-tools build-essential curl
           else
-            sudo apt-get install -y libssl-dev # Install for GNU targets
+            sudo apt-get install -y libssl-dev curl # Install for GNU targets
           fi
 
       - name: Build and install OpenSSL for musl (x86_64)
         if: runner.os == 'Linux' && matrix.target.triple == 'x86_64-unknown-linux-musl'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y curl wget
           OPENSSL_VERSION="3.2.1" # Specify a stable OpenSSL version
           OPENSSL_INSTALL_DIR="/usr/local/musl-openssl"
-
-          echo "Downloading OpenSSL ${OPENSSL_VERSION} source..."
-          curl -L https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz -o /tmp/openssl.tar.gz
-          tar -xf /tmp/openssl.tar.gz -C /tmp
-          cd /tmp/openssl-${OPENSSL_VERSION}
+          
+          wget "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz" -O "/tmp/openssl-${OPENSSL_VERSION}.tar.gz"
+          
+          echo "Extracting OpenSSL source..."
+          tar -xf "/tmp/openssl-${OPENSSL_VERSION}.tar.gz" -C /tmp
+          cd "/tmp/openssl-${OPENSSL_VERSION}"
 
           echo "Configuring and building OpenSSL for x86_64-linux-musl..."
-          # Configure for static linking (--prefix for installation path)
-          ./config no-shared no-zlib \
-            --prefix=${OPENSSL_INSTALL_DIR} \
-            --cross-compile-prefix=x86_64-linux-musl-
+          # Configure for static linking with musl
+          ./Configure linux-x86_64 no-shared no-zlib \
+            --prefix="${OPENSSL_INSTALL_DIR}" \
+            --openssldir="${OPENSSL_INSTALL_DIR}/ssl" \
+            -static \
+            -fPIC
 
           echo "Running make..."
           make -j$(nproc)
+          
           echo "Installing OpenSSL (software only) to ${OPENSSL_INSTALL_DIR}..."
           sudo make install_sw
 
           echo "Cleaning up OpenSSL build artifacts..."
-          rm -rf /tmp/openssl-${OPENSSL_VERSION} /tmp/openssl.tar.gz
+          rm -rf "/tmp/openssl-${OPENSSL_VERSION}" "/tmp/openssl-${OPENSSL_VERSION}.tar.gz"
 
-          echo "Setting OPENSSL_DIR and PKG_CONFIG_PATH for subsequent steps."
+          echo "Setting OPENSSL_DIR and PKG_CONFIG_PATH for subsequent steps..."
           echo "OPENSSL_DIR=${OPENSSL_INSTALL_DIR}" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=${OPENSSL_INSTALL_DIR}/lib/pkgconfig" >> $GITHUB_ENV
         env:
