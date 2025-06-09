@@ -79,11 +79,6 @@ jobs:
             os: ubuntu-latest
             archive_ext: tar.gz
             binary_name: sockudo
-          - name: Linux x86_64 (musl)
-            triple: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            archive_ext: tar.gz
-            binary_name: sockudo
           - name: macOS x86_64
             triple: x86_64-apple-darwin
             os: macos-13
@@ -114,52 +109,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake
-          # libssl-dev is deliberately omitted here for musl builds,
-          # as we'll build OpenSSL specifically for musl.
-          # For GNU builds, libssl-dev from apt is sufficient.
-          if [[ "${{ matrix.target.triple }}" == *"musl"* ]]; then
-            sudo apt-get install -y musl-tools build-essential curl
-          else
-            sudo apt-get install -y libssl-dev curl # Install for GNU targets
-          fi
-
-      - name: Build and install OpenSSL for musl (x86_64)
-        if: runner.os == 'Linux' && matrix.target.triple == 'x86_64-unknown-linux-musl'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl wget
-          OPENSSL_VERSION="3.2.1" # Specify a stable OpenSSL version
-          OPENSSL_INSTALL_DIR="/usr/local/musl-openssl"
-          
-          wget "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz" -O "/tmp/openssl-${OPENSSL_VERSION}.tar.gz"
-          
-          echo "Extracting OpenSSL source..."
-          tar -xf "/tmp/openssl-${OPENSSL_VERSION}.tar.gz" -C /tmp
-          cd "/tmp/openssl-${OPENSSL_VERSION}"
-
-          echo "Configuring and building OpenSSL for x86_64-linux-musl..."
-          # Configure for static linking with musl
-          ./Configure linux-x86_64 no-shared no-zlib \
-            --prefix="${OPENSSL_INSTALL_DIR}" \
-            --openssldir="${OPENSSL_INSTALL_DIR}/ssl" \
-            -static \
-            -fPIC
-
-          echo "Running make..."
-          make -j$(nproc)
-          
-          echo "Installing OpenSSL (software only) to ${OPENSSL_INSTALL_DIR}..."
-          sudo make install_sw
-
-          echo "Cleaning up OpenSSL build artifacts..."
-          rm -rf "/tmp/openssl-${OPENSSL_VERSION}" "/tmp/openssl-${OPENSSL_VERSION}.tar.gz"
-
-          echo "Setting OPENSSL_DIR and PKG_CONFIG_PATH for subsequent steps..."
-          echo "OPENSSL_DIR=${OPENSSL_INSTALL_DIR}" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=${OPENSSL_INSTALL_DIR}/lib/pkgconfig" >> $GITHUB_ENV
-        env:
-          # Ensure musl-gcc is discoverable for OpenSSL's build system
-          PATH: "/usr/local/musl/bin:${PATH}" # Path to musl-tools
+          sudo apt-get install -y libssl-dev curl # Install for GNU targets
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -173,13 +123,6 @@ jobs:
       - name: Build release binary
         shell: bash
         run: |
-          if [[ "${{ matrix.target.triple }}" == *"musl"* ]]; then
-            # These are already set by the previous step if it ran for musl target
-            # export CC_x86_64_unknown_linux_musl=musl-gcc
-            export OPENSSL_STATIC=1
-            export PKG_CONFIG_ALL_STATIC=1
-          fi
-          
           cargo build --release --target ${{ matrix.target.triple }}
 
       - name: Prepare binary and create archive
@@ -237,7 +180,6 @@ jobs:
             
             ## Platform Support
             - ✅ Linux x86_64 (GNU)
-            - ✅ Linux x86_64 (musl)
             - ✅ macOS x86_64 (Intel)
             - ✅ macOS ARM64 (Apple Silicon)
             - ✅ Windows x86_64
