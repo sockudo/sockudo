@@ -17,8 +17,8 @@ fn get_params_for_signature(
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut params_map = BTreeMap::new();
     if let Some(query_str) = query_str_option {
-        let parsed_pairs = serde_urlencoded::from_str::<Vec<(String, String)>>(query_str)
-            .map_err(|e| {
+        let parsed_pairs =
+            serde_urlencoded::from_str::<Vec<(String, String)>>(query_str).map_err(|e| {
                 AppError::InvalidInput(format!(
                     "Failed to parse query string for signature map: {}",
                     e
@@ -145,8 +145,6 @@ mod tests {
         assert!(result.is_empty());
     }
 
- 
-
     #[test]
     fn test_get_params_for_signature_with_auth() {
         let query = "auth_key=key123&auth_timestamp=1234567890&auth_signature=abc123";
@@ -160,7 +158,6 @@ mod tests {
         assert_eq!(result.get("auth_signature"), None);
     }
 
-
     #[test]
     fn test_get_params_for_signature_with_auth2() {
         let query = "auth_key=key1&auth_timestamp=1749377222&auth_version=1.0&body_md5=fc820aa38714282f8300c2ca039cd034&auth_signature=737d666bce65766b2447e5fd3907b8855507305afcb4a25c6f1607d3eb3a2aa7";
@@ -172,5 +169,19 @@ mod tests {
             Some(&"1749377222".to_string())
         );
         assert_eq!(result.get("auth_signature"), None);
+    }
+
+    #[test]
+    fn test_get_params_for_signature_invalid_queries() {
+        let invalid_queries = ["&", ""];
+
+        for query in invalid_queries.iter() {
+            let result = get_params_for_signature(Some(query));
+            assert!(
+                result.is_err(),
+                "Expected error for invalid query: {:?}",
+                query
+            );
+        }
     }
 }
