@@ -17,24 +17,21 @@ fn get_params_for_signature(
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut params_map = BTreeMap::new();
     if let Some(query_str) = query_str_option {
-        // Validate query string format
-        if query_str.contains("==")
-            || query_str.contains("&&")
-            || query_str.matches('=').count() < 1
-        {
-            return Err(AppError::InvalidInput(
-                "Invalid query string format".to_string(),
-            ));
-        }
-
-        for (key, value) in
-            serde_urlencoded::from_str::<Vec<(String, String)>>(query_str).map_err(|e| {
+        let parsed_pairs = serde_urlencoded::from_str::<Vec<(String, String)>>(query_str)
+            .map_err(|e| {
                 AppError::InvalidInput(format!(
                     "Failed to parse query string for signature map: {}",
                     e
                 ))
-            })?
-        {
+            })?;
+
+        if parsed_pairs.is_empty() {
+            return Err(AppError::InvalidInput(
+                "Query string is empty or invalid".to_string(),
+            ));
+        }
+
+        for (key, value) in parsed_pairs {
             if key != "auth_signature" {
                 params_map.insert(key, value);
             }
