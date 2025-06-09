@@ -95,7 +95,7 @@ jobs:
     
     strategy:
       matrix:
-        target: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl]
+        target: [x86_64-unknown-linux-gnu]
 
     steps:
       - name: Checkout repository
@@ -110,9 +110,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake
-          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            sudo apt-get install -y musl-tools
-          fi
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -125,11 +122,6 @@ jobs:
 
       - name: Build release binary
         run: |
-          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            export CC_x86_64_unknown_linux_musl=musl-gcc
-            export OPENSSL_STATIC=1
-            export PKG_CONFIG_ALL_STATIC=1
-          fi
           cargo build --release --target ${{ matrix.target }} --verbose
 
       - name: Upload build artifacts
