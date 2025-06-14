@@ -70,9 +70,8 @@ impl WebhookSender {
             events: job.payload.events.clone(),
         };
 
-        let body_json_string = serde_json::to_string(&pusher_payload).map_err(|e| {
-            Error::Serialization(format!("Failed to serialize webhook body: {e}"))
-        })?;
+        let body_json_string = serde_json::to_string(&pusher_payload)
+            .map_err(|e| Error::Serialization(format!("Failed to serialize webhook body: {e}")))?;
 
         let _signature =
             Token::new(job.app_key.clone(), job.app_secret.clone()).sign(&body_json_string);

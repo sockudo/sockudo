@@ -1,15 +1,15 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use crate::error::Result;
 use crate::rate_limiter::RateLimiter;
 use std::sync::Arc;
 use tracing::{error, info, warn};
-use crate::error::Result;
 
 use crate::options::{CacheDriver, RateLimiterConfig, RedisConnection};
 use crate::rate_limiter::memory_limiter::MemoryRateLimiter;
-use crate::rate_limiter::redis_limiter::RedisRateLimiter;
 use crate::rate_limiter::redis_cluster_limiter::RedisClusterRateLimiter;
+use crate::rate_limiter::redis_limiter::RedisRateLimiter;
 
 pub struct RateLimiterFactory;
 
@@ -35,9 +35,7 @@ impl RateLimiterFactory {
             CacheDriver::RedisCluster => {
                 Self::create_redis_cluster_limiter(config, global_redis_conn_details).await
             }
-            CacheDriver::Memory => {
-                Self::create_memory_limiter(config)
-            }
+            CacheDriver::Memory => Self::create_memory_limiter(config),
             CacheDriver::None => {
                 warn!("Rate limiter driver set to 'None'. Using memory limiter as fallback.");
                 Ok(Arc::new(MemoryRateLimiter::new(
@@ -61,9 +59,11 @@ impl RateLimiterFactory {
             )
         });
 
-        let prefix = config.redis.prefix.clone().unwrap_or_else(|| {
-            global_redis_conn_details.key_prefix.clone() + "rl_http:"
-        });
+        let prefix = config
+            .redis
+            .prefix
+            .clone()
+            .unwrap_or_else(|| global_redis_conn_details.key_prefix.clone() + "rl_http:");
 
         let client = redis::Client::open(redis_url.as_str()).map_err(|e| {
             crate::error::Error::Redis(format!(
@@ -78,7 +78,7 @@ impl RateLimiterFactory {
             config.api_rate_limit.max_requests,
             config.api_rate_limit.window_seconds,
         )
-            .await?;
+        .await?;
 
         Ok(Arc::new(limiter))
     }
@@ -102,9 +102,11 @@ impl RateLimiterFactory {
             .map(|node| format!("redis://{}:{}", node.host, node.port))
             .collect();
 
-        let prefix = config.redis.prefix.clone().unwrap_or_else(|| {
-            global_redis_conn_details.key_prefix.clone() + "rl_http:"
-        });
+        let prefix = config
+            .redis
+            .prefix
+            .clone()
+            .unwrap_or_else(|| global_redis_conn_details.key_prefix.clone() + "rl_http:");
 
         let client = redis::cluster::ClusterClient::new(nodes).map_err(|e| {
             crate::error::Error::Redis(format!(
@@ -119,7 +121,7 @@ impl RateLimiterFactory {
             config.api_rate_limit.max_requests,
             config.api_rate_limit.window_seconds,
         )
-            .await?;
+        .await?;
 
         Ok(Arc::new(limiter))
     }

@@ -1,9 +1,7 @@
 use crate::adapter::ConnectionHandler;
 use crate::app::config::App; // To access app limits
 use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
-use crate::protocol::messages::{
-    ApiMessageData, BatchPusherApiMessage, InfoQueryParser, PusherApiMessage, PusherMessage,
-};
+use crate::protocol::messages::{ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MessageData, PusherApiMessage, PusherMessage};
 use crate::utils::{self, validate_channel_name};
 use crate::websocket::SocketId;
 use axum::{
@@ -330,23 +328,20 @@ async fn process_single_event_parallel(
             validate_channel_name(app, &target_channel_str).await?;
 
             // Construct the message to be sent to this specific channel.
-            let _message_to_send = PusherApiMessage {
-                name: name_for_task, // Use cloned name
-                data: payload_for_task.clone(), // Clone payload again for this message
-                channels: None,
-                channel: Some(target_channel_str.clone()),
-                socket_id: socket_id_for_task.as_ref().map(|sid| sid.0.clone()),
-                info: info_for_task.clone(), // Use cloned info
+            let message_data = match payload_for_task {
+                Some(ApiMessageData::String(s)) => MessageData::String(s),
+                Some(ApiMessageData::Json(j_val)) => MessageData::Json(j_val),
+                None => MessageData::Json(json!(null)), // Default to null if no data
             };
+            let _message_to_send = PusherMessage {
+                channel: Some(target_channel_str.clone()),
+                name: None,
+                event: name_for_task,
+                data: Some(message_data.clone()),
+            };
+            handler_clone.broadcast_to_channel(app, &target_channel_str, _message_to_send, socket_id_for_task.as_ref())
+                .await?;
 
-            // Send the message via the connection handler.
-            // handler_clone
-            //     .send(
-            //         &app.id,
-            //         socket_id_for_task.as_ref(),
-            //         message_to_send,
-            //     )
-            //     .await;
 
             // If info collection is requested, gather details for this channel.
             let mut collected_channel_specific_info: Option<(String, Value)> = None;
@@ -377,9 +372,9 @@ async fn process_single_event_parallel(
                 }
 
                 // Get subscription count if requested.
-if info_for_task
-    .as_deref()
-    .is_some_and(|s| s.contains("subscription_count"))
+            if info_for_task
+                .as_deref()
+                .is_some_and(|s| s.contains("subscription_count"))
                 {
                     let count = handler_clone
                         .connection_manager
@@ -400,15 +395,16 @@ if info_for_task
 
             // Handle caching for cacheable channels.
             if utils::is_cache_channel(&target_channel_str) {
-                // Use the payload cloned for the task (payload_for_task)
-                let payload_value_for_cache = match payload_for_task {
-                    Some(ApiMessageData::String(s)) => json!(s),
-                    Some(ApiMessageData::Json(j_val)) => j_val, // Already a Value
-                    None => json!(null),
-                };
-
+                // // Use the payload cloned for the task (payload_for_task)
+                // let payload_value_for_cache = match payload_for_task {
+                //     Some(ApiMessageData::String(s)) => json!(s),
+                //     Some(ApiMessageData::Json(j_val)) => j_val, // Already a Value
+                //     None => json!(null),
+                // };
+                let message_data = serde_json::to_value(&message_data)
+                    .map_err(|e| AppError::SerializationError(e))?;
                 // Attempt to build the cache payload string.
-                match build_cache_payload(&event_name_for_task, &payload_value_for_cache) {
+                match build_cache_payload(&event_name_for_task, &message_data) {
                     Ok(cache_payload_str) => {
                         let mut cache_manager_locked = handler_clone.cache_manager.lock().await;
                         let cache_key_str =
