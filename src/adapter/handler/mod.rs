@@ -281,6 +281,7 @@ impl ConnectionHandler {
                 self.handle_signin_request(socket_id, &app_config, request)
                     .await
             }
+            "pusher:pong" => self.handle_pong(&*app_config.id, socket_id).await,
             _ if event_name.starts_with(CLIENT_EVENT_PREFIX) => {
                 let request = self.parse_client_event(&message)?;
                 self.handle_client_event_request(socket_id, &app_config, request)

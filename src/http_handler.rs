@@ -1,7 +1,10 @@
 use crate::adapter::ConnectionHandler;
 use crate::app::config::App; // To access app limits
 use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
-use crate::protocol::messages::{ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MessageData, PusherApiMessage, PusherMessage};
+use crate::protocol::messages::{
+    ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MessageData, PusherApiMessage,
+    PusherMessage,
+};
 use crate::utils::{self, validate_channel_name};
 use crate::websocket::SocketId;
 use axum::{
