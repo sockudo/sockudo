@@ -1,532 +1,855 @@
-// public/app.js
+// app.js - Enhanced Pusher WebSocket Testing Dashboard
 
 document.addEventListener("DOMContentLoaded", () => {
-  // --- DOM Elements ---
-  const configDisplay = document.getElementById("config-display");
-  const connectBtn = document.getElementById("connect-btn");
-  const disconnectBtn = document.getElementById("disconnect-btn");
-  const connectionStatus = document.getElementById("connection-status");
-  const channelNameInput = document.getElementById("channel-name");
-  const subscribeBtn = document.getElementById("subscribe-btn");
-  const subscribedChannelsList = document.getElementById("subscribed-channels");
-  const clientEventChannelSelect = document.getElementById(
-    "client-event-channel-select",
-  );
-  const clientEventNameInput = document.getElementById("client-event-name");
-  const clientEventDataInput = document.getElementById("client-event-data");
-  const sendClientEventBtn = document.getElementById("send-client-event-btn");
-  const eventsLog = document.getElementById("events-log");
-  const clearEventsLogBtn = document.getElementById("clear-events-log-btn");
-  const presenceChannelName = document.getElementById("presence-channel-name");
-  const presenceMembersCount = document.getElementById(
-    "presence-members-count",
-  );
-  const presenceMembersList = document.getElementById("presence-members");
-  const fetchWebhooksBtn = document.getElementById("fetch-webhooks-btn");
-  const clearWebhooksLogBtn = document.getElementById("clear-webhooks-log-btn");
-  const webhooksLog = document.getElementById("webhooks-log");
+  // DOM Elements
+  const elements = {
+    // Connection
+    configDisplay: document.getElementById("config-display"),
+    connectBtn: document.getElementById("connect-btn"),
+    disconnectBtn: document.getElementById("disconnect-btn"),
+    connectionStatus: document.getElementById("connection-status"),
+    statusDot: document.getElementById("status-dot"),
 
-  // --- State ---
-  let pusher = null;
-  let config = null;
-  let channels = {}; // Store subscribed channel objects { channelName: channel }
-  let currentPresenceChannel = null; // Track the latest subscribed presence channel for UI display
+    // Channels
+    channelNameInput: document.getElementById("channel-name"),
+    subscribeBtn: document.getElementById("subscribe-btn"),
+    subscribedChannels: document.getElementById("subscribed-channels"),
+    channelCount: document.getElementById("channel-count"),
 
-  // --- Logging Helper ---
-  function logEvent(message, type = "info", data = null) {
-    const li = document.createElement("li");
-    const timestamp = new Date().toLocaleTimeString();
-    li.classList.add(`event-${type}`);
-    li.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
-    if (data) {
+    // Server Events
+    serverEventChannel: document.getElementById("server-event-channel"),
+    serverEventName: document.getElementById("server-event-name"),
+    serverEventData: document.getElementById("server-event-data"),
+    sendServerEventBtn: document.getElementById("send-server-event-btn"),
+    sendBatchEventsBtn: document.getElementById("send-batch-events-btn"),
+
+    // Client Events
+    clientEventChannel: document.getElementById("client-event-channel"),
+    clientEventName: document.getElementById("client-event-name"),
+    clientEventData: document.getElementById("client-event-data"),
+    sendClientEventBtn: document.getElementById("send-client-event-btn"),
+
+    // Events Log
+    eventsLog: document.getElementById("events-log"),
+    clearEventsBtn: document.getElementById("clear-events-btn"),
+    exportEventsBtn: document.getElementById("export-events-btn"),
+
+    // Presence
+    presenceChannelName: document.getElementById("presence-channel-name"),
+    presenceCount: document.getElementById("presence-count"),
+    presenceMembers: document.getElementById("presence-members"),
+
+    // Statistics
+    totalEvents: document.getElementById("total-events"),
+    totalChannels: document.getElementById("total-channels"),
+    connectionTime: document.getElementById("connection-time"),
+    webhookCount: document.getElementById("webhook-count"),
+
+    // Webhooks
+    webhooksLog: document.getElementById("webhooks-log"),
+    fetchWebhooksBtn: document.getElementById("fetch-webhooks-btn"),
+    clearWebhooksBtn: document.getElementById("clear-webhooks-btn"),
+  };
+
+  // Application State
+  let state = {
+    pusher: null,
+    config: null,
+    channels: new Map(),
+    currentPresenceChannel: null,
+    events: [],
+    webhooks: [],
+    stats: {
+      totalEvents: 0,
+      connectionStartTime: null,
+      connectionTimer: null,
+    },
+    currentEventFilter: "all",
+  };
+
+  // Utility Functions
+  const utils = {
+    formatTime(timestamp) {
+      return new Date(timestamp).toLocaleTimeString();
+    },
+
+    formatJSON(obj) {
       try {
-        li.innerHTML += `<pre class="data">${JSON.stringify(data, null, 2)}</pre>`;
+        return JSON.stringify(obj, null, 2);
       } catch (e) {
-        li.innerHTML += `<pre class="data">Error stringifying data: ${e.message}</pre>`;
+        return String(obj);
       }
-    }
-    eventsLog.prepend(li); // Add new events to the top
-  }
+    },
 
-  function logWebhook(webhook) {
-    const li = document.createElement("li");
-    const timestamp = new Date(webhook.timestamp).toLocaleString();
-    let events =
-      webhook.body?.events
-        ?.map(
-          (e) =>
-            `<span class="event-meta">${e.name} (${e.channel || "N/A"})</span>`,
-        )
-        .join(", ") || "No events array";
-    li.innerHTML = `<span class="timestamp">[${timestamp}]</span> Events: ${events}`;
-    li.innerHTML += `<pre class="data">${JSON.stringify(webhook.body, null, 2)}</pre>`;
-    webhooksLog.appendChild(li); // Add new webhooks to the bottom (chronological)
-  }
+    getChannelType(channelName) {
+      if (channelName.startsWith("presence-")) return "presence";
+      if (channelName.startsWith("private-")) return "private";
+      return "public";
+    },
 
-  // --- Configuration Fetch ---
-  async function fetchConfig() {
+    exportEvents() {
+      const dataStr = JSON.stringify(state.events, null, 2);
+      const dataBlob = new Blob([dataStr], { type: "application/json" });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `pusher-events-${Date.now()}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    },
+
+    updateConnectionTimer() {
+      if (state.stats.connectionStartTime) {
+        const elapsed = Date.now() - state.stats.connectionStartTime;
+        const minutes = Math.floor(elapsed / 60000);
+        const seconds = Math.floor((elapsed % 60000) / 1000);
+        elements.connectionTime.textContent = `${minutes
+            .toString()
+            .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+      }
+    },
+
+    addAnimation(element, animation = "fade-in") {
+      element.classList.add(animation);
+      setTimeout(() => element.classList.remove(animation), 300);
+    },
+  };
+
+  // Event Management
+  const eventManager = {
+    add(event) {
+      event.id = Date.now() + Math.random();
+      state.events.unshift(event);
+      state.stats.totalEvents++;
+
+      // Keep only latest 500 events
+      if (state.events.length > 500) {
+        state.events = state.events.slice(0, 500);
+      }
+
+      eventManager.render();
+      eventManager.updateStats();
+    },
+
+    render() {
+      const filteredEvents = state.events.filter((event) => {
+        if (state.currentEventFilter === "all") return true;
+        return event.type === state.currentEventFilter;
+      });
+
+      elements.eventsLog.innerHTML = "";
+
+      filteredEvents.forEach((event) => {
+        const li = document.createElement("li");
+        li.className = "event-item";
+        li.innerHTML = `
+          <div class="event-header">
+            <div>
+              <span class="event-type ${event.type}">${event.type}</span>
+              <span class="event-title">${event.title}</span>
+            </div>
+            <span class="event-timestamp">${utils.formatTime(
+            event.timestamp
+        )}</span>
+          </div>
+          ${
+            event.data
+                ? `<div class="event-data">${utils.formatJSON(event.data)}</div>`
+                : ""
+        }
+        `;
+        utils.addAnimation(li);
+        elements.eventsLog.appendChild(li);
+      });
+    },
+
+    updateStats() {
+      elements.totalEvents.textContent = state.stats.totalEvents;
+      elements.totalChannels.textContent = state.channels.size;
+    },
+
+    clear() {
+      state.events = [];
+      state.stats.totalEvents = 0;
+      eventManager.render();
+      eventManager.updateStats();
+    },
+  };
+
+  // Channel Management
+  const channelManager = {
+    subscribe(channelName) {
+      if (!state.pusher || state.pusher.connection.state !== "connected") {
+        eventManager.add({
+          type: "error",
+          title: "Cannot subscribe: Not connected",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      if (state.channels.has(channelName)) {
+        eventManager.add({
+          type: "system",
+          title: `Already subscribed to ${channelName}`,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      const channel = state.pusher.subscribe(channelName);
+      state.channels.set(channelName, channel);
+
+      channelManager.bindChannelEvents(channel, channelName);
+      channelManager.render();
+      channelManager.updateDropdowns();
+    },
+
+    unsubscribe(channelName) {
+      if (state.channels.has(channelName)) {
+        state.pusher.unsubscribe(channelName);
+        state.channels.delete(channelName);
+
+        if (
+            state.currentPresenceChannel &&
+            state.currentPresenceChannel.name === channelName
+        ) {
+          presenceManager.clear();
+        }
+
+        channelManager.render();
+        channelManager.updateDropdowns();
+      }
+    },
+
+    bindChannelEvents(channel, channelName) {
+      // Subscription events
+      channel.bind("pusher:subscription_succeeded", (data) => {
+        eventManager.add({
+          type: "system",
+          title: `✅ Subscribed to ${channelName}`,
+          timestamp: Date.now(),
+          data: data,
+        });
+
+        if (channelName.startsWith("presence-")) {
+          state.currentPresenceChannel = channel;
+          presenceManager.update(channel.members);
+        }
+      });
+
+      channel.bind("pusher:subscription_error", (status) => {
+        eventManager.add({
+          type: "error",
+          title: `❌ Subscription failed: ${channelName}`,
+          timestamp: Date.now(),
+          data: { status, channelName },
+        });
+      });
+
+      // Presence events
+      if (channelName.startsWith("presence-")) {
+        channel.bind("pusher:member_added", (member) => {
+          eventManager.add({
+            type: "member",
+            title: `👋 Member joined ${channelName}`,
+            timestamp: Date.now(),
+            data: member,
+          });
+          if (state.currentPresenceChannel === channel) {
+            presenceManager.update(channel.members);
+          }
+        });
+
+        channel.bind("pusher:member_removed", (member) => {
+          eventManager.add({
+            type: "member",
+            title: `👋 Member left ${channelName}`,
+            timestamp: Date.now(),
+            data: member,
+          });
+          if (state.currentPresenceChannel === channel) {
+            presenceManager.update(channel.members);
+          }
+        });
+      }
+
+      // Custom events (catch-all)
+      channel.bind_global((eventName, data) => {
+        if (!eventName.startsWith("pusher:")) {
+          const eventType = eventName.startsWith("client-") ? "client" : "custom";
+          eventManager.add({
+            type: eventType,
+            title: `📡 ${eventName} on ${channelName}`,
+            timestamp: Date.now(),
+            data: data,
+          });
+        }
+      });
+    },
+
+    render() {
+      elements.subscribedChannels.innerHTML = "";
+
+      state.channels.forEach((channel, channelName) => {
+        const div = document.createElement("div");
+        div.className = "channel-item";
+
+        const channelType = utils.getChannelType(channelName);
+        div.innerHTML = `
+          <div>
+            <span class="channel-name">${channelName}</span>
+            <span class="channel-type ${channelType}">${channelType}</span>
+          </div>
+          <button class="btn btn-small btn-danger" onclick="channelManager.unsubscribe('${channelName}')">
+            <i class="fas fa-times"></i> Unsubscribe
+          </button>
+        `;
+
+        utils.addAnimation(div);
+        elements.subscribedChannels.appendChild(div);
+      });
+
+      elements.channelCount.textContent = state.channels.size;
+    },
+
+    updateDropdowns() {
+      [elements.serverEventChannel, elements.clientEventChannel].forEach(
+          (select) => {
+            const currentValue = select.value;
+            select.innerHTML = '<option value="">Select channel...</option>';
+
+            state.channels.forEach((channel, channelName) => {
+              const option = document.createElement("option");
+              option.value = channelName;
+              option.textContent = channelName;
+              if (channelName === currentValue) {
+                option.selected = true;
+              }
+              select.appendChild(option);
+            });
+          }
+      );
+
+      // Update client event button state
+      const hasSelectedChannel = elements.clientEventChannel.value !== "";
+      const isConnected = state.pusher?.connection?.state === "connected";
+      elements.sendClientEventBtn.disabled = !hasSelectedChannel || !isConnected;
+    },
+  };
+
+  // Presence Management
+  const presenceManager = {
+    update(members) {
+      if (!members) {
+        presenceManager.clear();
+        return;
+      }
+
+      elements.presenceChannelName.textContent =
+          state.currentPresenceChannel?.name || "None";
+      elements.presenceCount.textContent = members.count || 0;
+
+      elements.presenceMembers.innerHTML = "";
+
+      if (members.count > 0) {
+        members.each((member) => {
+          const div = document.createElement("div");
+          div.className = "member-item";
+          console.log("Member:", member);
+
+          const isMe = member.id === members.me?.id;
+          div.innerHTML = `
+            <img src="${
+              member.info.user_info?.avatar ||
+              `https://ui-avatars.com/api/?name=${encodeURIComponent(
+                  member.info.user_info.name
+              )}&background=random`
+          }" alt="${member.info.user_info.name}" class="member-avatar">
+            <div class="member-info">
+              <div class="member-name">${member.info.user_info.name}</div>
+              <div class="member-id">${member.info.user_id}</div>
+            </div>
+            ${isMe ? '<span class="member-badge">You</span>' : ""}
+          `;
+
+          utils.addAnimation(div);
+          elements.presenceMembers.appendChild(div);
+        });
+      } else {
+        elements.presenceMembers.innerHTML =
+            '<div class="member-item">No members present</div>';
+      }
+    },
+
+    clear() {
+      elements.presenceChannelName.textContent = "None";
+      elements.presenceCount.textContent = "0";
+      elements.presenceMembers.innerHTML =
+          '<div class="member-item">Not subscribed to a presence channel</div>';
+      state.currentPresenceChannel = null;
+    },
+  };
+
+  // Connection Management
+  const connectionManager = {
+    async connect() {
+      if (!state.config) {
+        eventManager.add({
+          type: "error",
+          title: "Configuration not loaded",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      if (
+          state.pusher &&
+          state.pusher.connection.state !== "disconnected"
+      ) {
+        eventManager.add({
+          type: "system",
+          title: "Already connected or connecting",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      connectionManager.updateStatus("connecting", "Connecting...");
+
+      const pusherConfig = {
+        cluster: state.config.pusherCluster || "mt1",
+        wsHost: state.config.pusherHost,
+        wsPort: state.config.pusherPort,
+        wssPort: state.config.pusherPort,
+        forceTLS: state.config.pusherUseTLS,
+        enabledTransports: ["ws", "wss"],
+        disabledTransports: ["sockjs"],
+        authEndpoint: state.config.authEndpoint,
+        authTransport: "ajax",
+      };
+
+      state.pusher = new Pusher(state.config.pusherKey, pusherConfig);
+      connectionManager.bindConnectionEvents();
+    },
+
+    disconnect() {
+      if (state.pusher) {
+        state.pusher.disconnect();
+      }
+    },
+
+    bindConnectionEvents() {
+      state.pusher.connection.bind("connected", () => {
+        state.stats.connectionStartTime = Date.now();
+        state.stats.connectionTimer = setInterval(
+            utils.updateConnectionTimer,
+            1000
+        );
+
+        connectionManager.updateStatus(
+            "connected",
+            `Connected (${state.pusher.connection.socket_id})`
+        );
+
+        eventManager.add({
+          type: "system",
+          title: `🚀 Connected to WebSocket server`,
+          timestamp: Date.now(),
+          data: { socketId: state.pusher.connection.socket_id },
+        });
+
+        elements.connectBtn.disabled = true;
+        elements.disconnectBtn.disabled = false;
+        elements.subscribeBtn.disabled = false;
+        channelManager.updateDropdowns();
+      });
+
+      state.pusher.connection.bind("disconnected", () => {
+        if (state.stats.connectionTimer) {
+          clearInterval(state.stats.connectionTimer);
+          state.stats.connectionTimer = null;
+        }
+
+        connectionManager.updateStatus("disconnected", "Disconnected");
+
+        eventManager.add({
+          type: "system",
+          title: "🔌 Disconnected from server",
+          timestamp: Date.now(),
+        });
+
+        elements.connectBtn.disabled = false;
+        elements.disconnectBtn.disabled = true;
+        elements.subscribeBtn.disabled = true;
+
+        // Clear channels and presence
+        state.channels.clear();
+        channelManager.render();
+        channelManager.updateDropdowns();
+        presenceManager.clear();
+      });
+
+      state.pusher.connection.bind("connecting", () => {
+        connectionManager.updateStatus("connecting", "Connecting...");
+      });
+
+      state.pusher.connection.bind("error", (err) => {
+        let errorMsg = "Connection Error";
+        if (err.error?.data) {
+          errorMsg += `: ${err.error.data.code} - ${err.error.data.message}`;
+        } else if (err.message) {
+          errorMsg += `: ${err.message}`;
+        }
+
+        eventManager.add({
+          type: "error",
+          title: errorMsg,
+          timestamp: Date.now(),
+          data: err,
+        });
+
+        connectionManager.updateStatus("error", "Connection Error");
+      });
+
+      state.pusher.connection.bind("failed", () => {
+        eventManager.add({
+          type: "error",
+          title: "❌ Connection failed permanently",
+          timestamp: Date.now(),
+        });
+
+        connectionManager.updateStatus("failed", "Connection Failed");
+        elements.disconnectBtn.disabled = true;
+      });
+    },
+
+    updateStatus(status, text) {
+      elements.connectionStatus.textContent = text;
+      elements.statusDot.className = `status-dot ${status}`;
+    },
+  };
+
+  // Server Events
+  const serverEventManager = {
+    async send() {
+      const channel = elements.serverEventChannel.value;
+      const eventName = elements.serverEventName.value.trim();
+      const eventDataStr = elements.serverEventData.value.trim();
+
+      if (!channel || !eventName) {
+        eventManager.add({
+          type: "error",
+          title: "Channel and event name are required",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      let eventData = {};
+      if (eventDataStr) {
+        try {
+          eventData = JSON.parse(eventDataStr);
+        } catch (e) {
+          eventManager.add({
+            type: "error",
+            title: `Invalid JSON data: ${e.message}`,
+            timestamp: Date.now(),
+          });
+          return;
+        }
+      }
+
+      try {
+        const response = await fetch("/trigger-event", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel, event: eventName, data: eventData }),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          eventManager.add({
+            type: "system",
+            title: `📤 Server event sent: ${eventName} → ${channel}`,
+            timestamp: Date.now(),
+            data: eventData,
+          });
+
+          // Clear form
+          elements.serverEventName.value = "";
+          elements.serverEventData.value = "";
+        } else {
+          throw new Error(result.error || "Failed to send event");
+        }
+      } catch (error) {
+        eventManager.add({
+          type: "error",
+          title: `Failed to send server event: ${error.message}`,
+          timestamp: Date.now(),
+        });
+      }
+    },
+
+    async sendBatch() {
+      const channel = elements.serverEventChannel.value;
+
+      if (!channel) {
+        eventManager.add({
+          type: "error",
+          title: "Channel is required for batch events",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      try {
+        const response = await fetch("/trigger-batch-events", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel, count: 5, delay: 500 }),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          eventManager.add({
+            type: "system",
+            title: `📤 Batch events triggered on ${channel}`,
+            timestamp: Date.now(),
+            data: { message: result.message },
+          });
+        } else {
+          throw new Error(result.error || "Failed to trigger batch events");
+        }
+      } catch (error) {
+        eventManager.add({
+          type: "error",
+          title: `Failed to trigger batch events: ${error.message}`,
+          timestamp: Date.now(),
+        });
+      }
+    },
+  };
+
+  // Client Events
+  const clientEventManager = {
+    send() {
+      const channelName = elements.clientEventChannel.value;
+      const eventName = elements.clientEventName.value.trim();
+      const eventDataStr = elements.clientEventData.value.trim();
+
+      if (!channelName || !eventName) {
+        eventManager.add({
+          type: "error",
+          title: "Channel and event name are required",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      if (!eventName.startsWith("client-")) {
+        eventManager.add({
+          type: "error",
+          title: 'Client event names must start with "client-"',
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      let eventData = {};
+      if (eventDataStr) {
+        try {
+          eventData = JSON.parse(eventDataStr);
+        } catch (e) {
+          eventManager.add({
+            type: "error",
+            title: `Invalid JSON data: ${e.message}`,
+            timestamp: Date.now(),
+          });
+          return;
+        }
+      }
+
+      const channel = state.channels.get(channelName);
+      if (!channel) {
+        eventManager.add({
+          type: "error",
+          title: `Not subscribed to channel: ${channelName}`,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      try {
+        const triggered = channel.trigger(eventName, eventData);
+        if (triggered) {
+          eventManager.add({
+            type: "client",
+            title: `📱 Client event sent: ${eventName} → ${channelName}`,
+            timestamp: Date.now(),
+            data: eventData,
+          });
+
+          // Clear form
+          elements.clientEventName.value = "";
+          elements.clientEventData.value = "";
+        } else {
+          throw new Error("Failed to trigger client event");
+        }
+      } catch (error) {
+        eventManager.add({
+          type: "error",
+          title: `Failed to send client event: ${error.message}`,
+          timestamp: Date.now(),
+        });
+      }
+    },
+  };
+
+  // Webhook Management
+  const webhookManager = {
+    async fetch() {
+      try {
+        const response = await fetch("/webhooks-log");
+        const webhooks = await response.json();
+
+        elements.webhooksLog.innerHTML = "";
+        elements.webhookCount.textContent = webhooks.length;
+
+        if (webhooks.length === 0) {
+          elements.webhooksLog.innerHTML =
+              '<li class="webhook-item">No webhooks received yet</li>';
+          return;
+        }
+
+        webhooks.forEach((webhook) => {
+          const li = document.createElement("li");
+          li.className = "webhook-item";
+
+          const events =
+              webhook.body?.events
+                  ?.map((e) => `${e.name} (${e.channel || "N/A"})`)
+                  .join(", ") || "No events";
+
+          li.innerHTML = `
+            <div class="event-header">
+              <div class="event-title">🪝 ${events}</div>
+              <div class="event-timestamp">${utils.formatTime(
+              webhook.timestamp
+          )}</div>
+            </div>
+            <div class="event-data">${utils.formatJSON(webhook.body)}</div>
+          `;
+
+          utils.addAnimation(li);
+          elements.webhooksLog.appendChild(li);
+        });
+      } catch (error) {
+        eventManager.add({
+          type: "error",
+          title: `Failed to fetch webhooks: ${error.message}`,
+          timestamp: Date.now(),
+        });
+      }
+    },
+
+    clear() {
+      elements.webhooksLog.innerHTML = "";
+      elements.webhookCount.textContent = "0";
+    },
+  };
+
+  // Configuration Loading
+  const loadConfig = async () => {
     try {
       const response = await fetch("/config");
-      if (!response.ok)
-        throw new Error(`HTTP error("{}", status: ${response.status}`);
-      config = await response.json();
-      configDisplay.textContent = JSON.stringify(config, null, 2);
-      connectBtn.disabled = false;
-      logEvent("Configuration loaded successfully", "system");
-    } catch (error) {
-      configDisplay.textContent = `Error loading config: ${error.message}`;
-      logEvent(`Error loading config: ${error.message}`, "error");
-      connectBtn.disabled = true;
-    }
-  }
-
-  // --- Pusher Connection ---
-  function connect() {
-    if (!config) {
-      logEvent("Configuration not loaded.", "error");
-      return;
-    }
-    if (pusher && pusher.connection.state !== "disconnected") {
-      logEvent("Already connected or connecting.", "system");
-      return;
-    }
-
-    logEvent("Connecting...", "system");
-    connectionStatus.textContent = "Connecting...";
-    connectionStatus.style.color = "orange";
-
-    // --- IMPORTANT: pusher-js configuration for self-hosted ---
-    const pusherConfig = {
-      cluster: config.pusherCluster || "mt1", // Often required syntactically
-      wsHost: config.pusherHost,
-      wsPort: config.pusherPort,
-      wssPort: config.pusherPort, // Use same port for WSS if TLS enabled
-      forceTLS: config.pusherUseTLS,
-      enabledTransports: ["ws", "wss"], // Prioritize WebSocket
-      disabledTransports: ["sockjs"], // Disable SockJS if not supported/needed
-      authEndpoint: config.authEndpoint,
-      authTransport: "ajax", // Or 'jsonp' if needed, 'ajax' is default/modern
-      auth: {
-        headers: {
-          // Add any custom headers needed for your auth endpoint if required
-          // 'X-CSRF-Token': 'some-token'
-        },
-      },
-    };
-
-    console.log("Initializing Pusher with config:", pusherConfig);
-    pusher = new Pusher(config.pusherKey, pusherConfig);
-
-    // --- Global Connection Event Bindings ---
-    pusher.connection.bind("connected", () => {
-      logEvent(
-        `Connected! Socket ID: ${pusher.connection.socket_id}`,
-        "system",
-      );
-      connectionStatus.textContent = `Connected (${pusher.connection.socket_id})`;
-      connectionStatus.style.color = "green";
-      connectBtn.disabled = true;
-      disconnectBtn.disabled = false;
-      subscribeBtn.disabled = false;
-      updateClientEventSendability();
-    });
-
-    pusher.connection.bind("disconnected", () => {
-      logEvent("Disconnected.", "system");
-      connectionStatus.textContent = "Disconnected";
-      connectionStatus.style.color = "red";
-      connectBtn.disabled = false;
-      disconnectBtn.disabled = true;
-      subscribeBtn.disabled = true;
-      updateClientEventSendability();
-      // Clear presence info on disconnect
-      clearPresenceInfo();
-      // Optionally clear subscribed channels list or mark them as inactive
-      channels = {};
-      subscribedChannelsList.innerHTML = "";
-      updateClientEventChannelDropdown();
-    });
-
-    pusher.connection.bind("connecting", () => {
-      logEvent("Connecting...", "system");
-      connectionStatus.textContent = "Connecting...";
-      connectionStatus.style.color = "orange";
-    });
-
-    pusher.connection.bind("unavailable", () => {
-      logEvent("Connection unavailable. Will attempt to reconnect.", "error");
-      connectionStatus.textContent = "Unavailable";
-      connectionStatus.style.color = "red";
-    });
-
-    pusher.connection.bind("error", (err) => {
-      let errorMsg = "Connection Error";
-      if (err.error && err.error.data) {
-        errorMsg += `: ${err.error.data.code} - ${err.error.data.message}`;
-      } else if (err.message) {
-        errorMsg += `: ${err.message}`;
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-      logEvent(errorMsg, "error", err);
-      connectionStatus.textContent = "Error";
-      connectionStatus.style.color = "red";
-      // Depending on the error, pusher might try to reconnect or move to disconnected/failed
-    });
 
-    pusher.connection.bind("failed", () => {
-      logEvent(
-        "Connection failed permanently (check host/port/TLS settings).",
-        "error",
-      );
-      connectionStatus.textContent = "Failed";
-      connectionStatus.style.color = "red";
-      disconnectBtn.disabled = true; // Can't disconnect if failed
-    });
+      state.config = await response.json();
+      elements.configDisplay.textContent = utils.formatJSON(state.config);
+      elements.connectBtn.disabled = false;
 
-    // Global event catcher (optional)
-    pusher.bind_global((eventName, data) => {
-      // console.log(`Globally caught event: ${eventName}`, data);
-      // Avoid logging internal pusher events here if they are handled elsewhere
-      if (!eventName.startsWith("pusher:")) {
-        logEvent(
-          `Global Event: <span class="event-meta">${eventName}</span>`,
-          "info",
-          data,
-        );
-      }
-    });
-  }
-
-  function disconnect() {
-    if (pusher) {
-      logEvent("Disconnecting...", "system");
-      pusher.disconnect();
-      // State updates handled by 'disconnected' event binding
-    }
-  }
-
-  // --- Channel Subscription ---
-  function subscribeToChannel(channelName) {
-    if (!pusher || pusher.connection.state !== "connected") {
-      logEvent("Cannot subscribe: Not connected.", "error");
-      return;
-    }
-    if (!channelName) {
-      logEvent("Cannot subscribe: Channel name is empty.", "error");
-      return;
-    }
-    if (channels[channelName]) {
-      logEvent(
-        `Already subscribed or subscribing to ${channelName}.`,
-        "system",
-      );
-      return;
-    }
-
-    logEvent(`Subscribing to channel: ${channelName}...`, "system");
-    const channel = pusher.subscribe(channelName);
-    channels[channelName] = channel; // Store channel object immediately
-    updateSubscribedChannelsUI(); // Add to list immediately
-    updateClientEventChannelDropdown();
-
-    // --- Channel Specific Event Bindings ---
-
-    channel.bind("pusher:subscription_succeeded", (data) => {
-      logEvent(
-        `Subscription successful: <span class="event-meta channel">${channelName}</span>`,
-        "system",
-        data,
-      );
-      // If it's a presence channel, update member list
-      if (channelName.startsWith("presence-")) {
-        currentPresenceChannel = channel; // Track this one
-        presenceChannelName.textContent = channelName;
-        updatePresenceMembers(channel.members);
-      }
-      // Re-enable buttons associated with this channel if needed
-      updateClientEventSendability();
-    });
-
-    channel.bind("pusher:subscription_error", (status) => {
-      logEvent(
-        `Subscription failed: <span class="event-meta channel">${channelName}</span> - Status: ${status}`,
-        "error",
-      );
-      // Handle specific statuses (e.g., 401/403 for auth issues)
-      if (status === 403 || status === 401) {
-        logEvent(
-          `Auth failed for ${channelName}. Check backend auth endpoint and credentials.`,
-          "error",
-        );
-      } else {
-        logEvent(
-          `Check WebSocket server logs for ${channelName} subscription error.`,
-          "error",
-        );
-      }
-      delete channels[channelName]; // Remove failed subscription
-      updateSubscribedChannelsUI();
-      updateClientEventChannelDropdown();
-      if (currentPresenceChannel === channel) clearPresenceInfo(); // Clear presence if this was the one
-    });
-
-    // --- Bindings for Presence Channels ---
-    if (channelName.startsWith("presence-")) {
-      channel.bind("pusher:member_added", (member) => {
-        logEvent(
-          `Member joined <span class="event-meta channel">${channelName}</span>: ${member.info.name || member.id}`,
-          "member",
-          member,
-        );
-        if (currentPresenceChannel === channel) {
-          updatePresenceMembers(channel.members); // Update list with fresh data
-        }
+      eventManager.add({
+        type: "system",
+        title: "⚙️ Configuration loaded successfully",
+        timestamp: Date.now(),
       });
+    } catch (error) {
+      elements.configDisplay.textContent = `Error loading config: ${error.message}`;
+      elements.connectBtn.disabled = true;
 
-      channel.bind("pusher:member_removed", (member) => {
-        logEvent(
-          `Member left <span class="event-meta channel">${channelName}</span>: ${member.info.name || member.id}`,
-          "member",
-          member,
-        );
-        if (currentPresenceChannel === channel) {
-          updatePresenceMembers(channel.members); // Update list with fresh data
-        }
+      eventManager.add({
+        type: "error",
+        title: `Configuration load failed: ${error.message}`,
+        timestamp: Date.now(),
       });
     }
+  };
 
-    // Catch-all for custom events on this channel
-    channel.bind_global((eventName, data) => {
-      // Avoid double-logging internal events if also using pusher.bind_global
-      if (!eventName.startsWith("pusher:")) {
-        const eventType = eventName.startsWith("client-") ? "client" : "custom";
-        logEvent(
-          `Event on <span class="event-meta channel">${channelName}</span>: <span class="event-meta">${eventName}</span>`,
-          eventType,
-          data,
-        );
-      }
-    });
-  }
+  // Event Listeners
+  elements.connectBtn.addEventListener("click", connectionManager.connect);
+  elements.disconnectBtn.addEventListener("click", connectionManager.disconnect);
 
-  function unsubscribeFromChannel(channelName) {
-    if (!pusher) return;
-    const channel = channels[channelName];
-    if (channel) {
-      logEvent(`Unsubscribing from ${channelName}...`, "system");
-      // Only call unsubscribe if subscription might have succeeded previously
-      // Check internal state if available, otherwise just call it
-      // if (channel.subscribed) { // pusher-js doesn't expose 'subscribed' reliably like this anymore in v8+
-      pusher.unsubscribe(channelName);
-      // } else {
-      //    logEvent(`Channel ${channelName} was not fully subscribed, removing locally.`, 'system');
-      // }
-
-      if (currentPresenceChannel === channel) {
-        clearPresenceInfo();
-      }
-      delete channels[channelName];
-      updateSubscribedChannelsUI();
-      updateClientEventChannelDropdown();
-      updateClientEventSendability();
-      logEvent(`Unsubscribed from ${channelName}.`, "system");
-    } else {
-      logEvent(`Not subscribed to ${channelName}.`, "system");
+  elements.subscribeBtn.addEventListener("click", () => {
+    const channelName = elements.channelNameInput.value.trim();
+    if (channelName) {
+      channelManager.subscribe(channelName);
+      elements.channelNameInput.value = "";
     }
-  }
+  });
 
-  // --- Update UI Elements ---
-
-  function updateSubscribedChannelsUI() {
-    subscribedChannelsList.innerHTML = "";
-    Object.keys(channels).forEach((name) => {
-      const li = document.createElement("li");
-      li.textContent = name;
-      const unsubBtn = document.createElement("button");
-      unsubBtn.textContent = "Unsubscribe";
-      unsubBtn.onclick = () => unsubscribeFromChannel(name);
-      li.appendChild(unsubBtn);
-      subscribedChannelsList.appendChild(li);
-    });
-  }
-
-  function updateClientEventChannelDropdown() {
-    const currentSelection = clientEventChannelSelect.value;
-    clientEventChannelSelect.innerHTML =
-      '<option value="">-- Select Channel --</option>';
-    let foundSelected = false;
-    Object.keys(channels).forEach((name) => {
-      // Typically, client events need auth or server enablement, often used with private/presence
-      // Allow selecting any subscribed channel for testing flexibility
-      const option = document.createElement("option");
-      option.value = name;
-      option.textContent = name;
-      clientEventChannelSelect.appendChild(option);
-      if (name === currentSelection) {
-        option.selected = true;
-        foundSelected = true;
-      }
-    });
-    clientEventChannelSelect.disabled = Object.keys(channels).length === 0;
-    // If previous selection is gone, reset selection
-    if (!foundSelected) {
-      clientEventChannelSelect.value = "";
+  elements.channelNameInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      elements.subscribeBtn.click();
     }
-    updateClientEventSendability(); // Update button based on selection
-  }
+  });
 
-  function updatePresenceMembers(members) {
-    presenceMembersList.innerHTML = "";
-    let count = 0;
-    // members object structure: { count: number, me: myInfo, hash: { user_id1: userInfo1, ... } }
-    if (members && members.count > 0) {
-      count = members.count;
-      members.each((member) => {
-        // Use the 'each' iterator
-        const li = document.createElement("li");
-        li.textContent = `ID: ${member.id} - Info: ${JSON.stringify(member.info)}`;
-        if (member.id === members.me.id) {
-          li.textContent += " (You)";
-          li.style.fontWeight = "bold";
-        }
-        presenceMembersList.appendChild(li);
+  elements.sendServerEventBtn.addEventListener("click", serverEventManager.send);
+  elements.sendBatchEventsBtn.addEventListener(
+      "click",
+      serverEventManager.sendBatch
+  );
+
+  elements.sendClientEventBtn.addEventListener(
+      "click",
+      clientEventManager.send
+  );
+  elements.clientEventChannel.addEventListener(
+      "change",
+      channelManager.updateDropdowns
+  );
+
+  elements.clearEventsBtn.addEventListener("click", eventManager.clear);
+  elements.exportEventsBtn.addEventListener("click", utils.exportEvents);
+
+  elements.fetchWebhooksBtn.addEventListener("click", webhookManager.fetch);
+  elements.clearWebhooksBtn.addEventListener("click", webhookManager.clear);
+
+  // Event filter buttons
+  document.querySelectorAll(".filter-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".filter-btn").forEach((b) => {
+        b.classList.remove("active");
       });
-    } else {
-      count = members?.count ?? 0; // Handle cases where members might be null/undefined initially
-      const li = document.createElement("li");
-      li.textContent =
-        count === 0 ? "No members present." : "Member data not available.";
-      presenceMembersList.appendChild(li);
-    }
-    presenceMembersCount.textContent = count;
-  }
+      btn.classList.add("active");
+      state.currentEventFilter = btn.dataset.filter;
+      eventManager.render();
+    });
+  });
 
-  function clearPresenceInfo() {
-    presenceChannelName.textContent = "N/A";
-    presenceMembersCount.textContent = "0";
-    presenceMembersList.innerHTML =
-      "<li>Not subscribed to a presence channel.</li>";
-    currentPresenceChannel = null;
-  }
+  // Make managers globally available for onclick handlers
+  window.channelManager = channelManager;
 
-  function updateClientEventSendability() {
-    const channelName = clientEventChannelSelect.value;
-    const channel = channels[channelName];
-    // Check connection and if the selected channel exists and is likely subscribed
-    // Note: pusher-js v8+ doesn't have a simple channel.subscribed flag.
-    // We rely on the channel object existing in our 'channels' map as a proxy.
-    const canSend = pusher?.connection?.state === "connected" && channel;
-    sendClientEventBtn.disabled = !canSend;
-  }
+  // Initialize
+  loadConfig();
+  eventManager.render();
+  presenceManager.clear();
+  webhookManager.fetch();
 
-  // --- Sending Client Events ---
-  function sendClientEvent() {
-    const channelName = clientEventChannelSelect.value;
-    const eventName = clientEventNameInput.value.trim();
-    const eventDataStr = clientEventDataInput.value.trim();
-
-    if (!channelName) {
-      logEvent("Select a channel to send a client event.", "error");
-      return;
-    }
-    if (!eventName) {
-      logEvent("Client event name cannot be empty.", "error");
-      return;
-    }
-    if (!eventName.startsWith("client-")) {
-      logEvent('Client event names must start with "client-".', "error");
-      return;
-    }
-
-    let eventData;
-    try {
-      eventData = eventDataStr ? JSON.parse(eventDataStr) : {};
-    } catch (e) {
-      logEvent(`Invalid JSON data for client event: ${e.message}`, "error");
-      return;
-    }
-
-    const channel = channels[channelName];
-    if (!channel) {
-      logEvent(`Cannot send event: Not subscribed to ${channelName}.`, "error");
-      updateClientEventSendability(); // Re-check state
-      return;
-    }
-
-    logEvent(
-      `Attempting to send client event <span class="event-meta">${eventName}</span> on <span class="event-meta channel">${channelName}</span>...`,
-      "client",
-      eventData,
-    );
-
-    // Use trigger() - check pusher-js docs for limitations (e.g., payload size)
-    try {
-      const triggered = channel.trigger(eventName, eventData);
-      if (triggered) {
-        logEvent(
-          `Client event <span class="event-meta">${eventName}</span> sent successfully (check if received by other clients).`,
-          "client",
-        );
-        clientEventNameInput.value = ""; // Clear fields on success
-        clientEventDataInput.value = "";
-      } else {
-        // This 'else' might occur if the channel isn't ready, connection dropped, etc.
-        // Pusher-js v8 might not return false directly on simple trigger failure,
-        // errors are often handled via connection state or specific error events.
-        logEvent(
-          `Failed to send client event <span class="event-meta">${eventName}</span>. Channel might not be ready or client events disabled on server.`,
-          "error",
-        );
-      }
-    } catch (error) {
-      logEvent(
-        `Error triggering client event <span class="event-meta">${eventName}</span>: ${error.message}`,
-        "error",
-      );
-    }
-  }
-
-  // --- Webhook Fetching ---
-  async function fetchWebhooks() {
-    logEvent("Fetching webhooks log from backend...", "system");
-    webhooksLog.innerHTML = "<li>Loading...</li>"; // Clear previous logs
-    try {
-      const response = await fetch("/webhooks-log");
-      if (!response.ok)
-        throw new Error(`HTTP error!("{}", status: ${response.status}`);
-      const webhooks = await response.json();
-      webhooksLog.innerHTML = ""; // Clear loading message
-      if (webhooks.length === 0) {
-        webhooksLog.innerHTML =
-          "<li>No webhooks received by the backend yet.</li>";
-      } else {
-        webhooks.forEach(logWebhook); // Display received webhooks
-      }
-    } catch (error) {
-      webhooksLog.innerHTML = `<li>Error fetching webhooks: ${error.message}</li>`;
-      logEvent(`Error fetching webhooks: ${error.message}`, "error");
-    }
-  }
-
-  // --- Event Listeners ---
-  connectBtn.addEventListener("click", connect);
-  disconnectBtn.addEventListener("click", disconnect);
-  subscribeBtn.addEventListener("click", () =>
-    subscribeToChannel(channelNameInput.value.trim()),
-  );
-  sendClientEventBtn.addEventListener("click", sendClientEvent);
-  clearEventsLogBtn.addEventListener("click", () => (eventsLog.innerHTML = ""));
-  fetchWebhooksBtn.addEventListener("click", fetchWebhooks);
-  clearWebhooksLogBtn.addEventListener(
-    "click",
-    () => (webhooksLog.innerHTML = ""),
-  );
-  clientEventChannelSelect.addEventListener(
-    "change",
-    updateClientEventSendability,
-  );
-
-  // --- Initial Load ---
-  fetchConfig();
-  clearPresenceInfo(); // Set initial state for presence UI
-  updateClientEventChannelDropdown(); // Set initial state for dropdown/button
+  // Auto-refresh webhooks every 30 seconds
+  setInterval(webhookManager.fetch, 30000);
 });

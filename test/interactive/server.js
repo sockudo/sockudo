@@ -1,56 +1,52 @@
 // server.js
-require("dotenv").config(); // Load .env.example file
+require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
-const Pusher = require("pusher"); // Use Pusher library for convenience, especially auth
+const Pusher = require("pusher");
 const crypto = require("crypto");
 
 const app = express();
 const port = process.env.BACKEND_PORT || 3000;
 
-// --- IMPORTANT: Configure with YOUR WebSocket server's credentials ---
+// Configure Pusher for your WebSocket server
 const pusher = new Pusher({
   appId: process.env.PUSHER_APP_ID,
   key: process.env.PUSHER_APP_KEY,
   secret: process.env.PUSHER_APP_SECRET,
-  // Cluster is usually irrelevant for self-hosted, but required by the library
-  cluster: "mt1", // Provide a dummy cluster if needed, or omit if library allows
-  // --- Crucial for self-hosted ---
+  cluster: "mt1",
   host: process.env.PUSHER_HOST,
   port: process.env.PUSHER_PORT,
   useTLS: process.env.PUSHER_USE_TLS === "true",
-  // Use httpAgent/httpsAgent for custom TLS settings if needed
 });
 
 console.log("Pusher Server SDK configured for:", {
   appId: process.env.PUSHER_APP_ID,
-  key: process.env.PUSHER_APP_KEY ? "***" : "Not Set", // Hide key in logs
-  secret: process.env.PUSHER_APP_SECRET ? "***" : "Not Set", // Hide secret in logs
+  key: process.env.PUSHER_APP_KEY ? "***" : "Not Set",
+  secret: process.env.PUSHER_APP_SECRET ? "***" : "Not Set",
   host: process.env.PUSHER_HOST,
   port: process.env.PUSHER_PORT,
   useTLS: process.env.PUSHER_USE_TLS === "true",
 });
 
-// --- Store received webhooks temporarily ---
+// Store received webhooks and active channels
 let receivedWebhooks = [];
+let activeChannels = new Set();
+let eventHistory = [];
 
-// --- Middleware ---
-// Serve static files from 'public' directory
+// Middleware
 app.use(express.static("public"));
-// Need raw body for webhook verification
 app.use(
-  bodyParser.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
+    bodyParser.json({
+      verify: (req, res, buf) => {
+        req.rawBody = buf;
+      },
+    })
 );
-// Use urlencoded parser for auth endpoint POST data
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// --- Routes ---
+// Routes
 
-// Endpoint for frontend config
+// Frontend config endpoint
 app.get("/config", (req, res) => {
   res.json({
     pusherKey: process.env.PUSHER_APP_KEY,
@@ -58,26 +54,23 @@ app.get("/config", (req, res) => {
     pusherPort: process.env.PUSHER_PORT,
     pusherUseTLS: process.env.PUSHER_USE_TLS === "true",
     authEndpoint: `${process.env.BACKEND_BASE_URL}/pusher/auth`,
-    // Cluster is often needed by pusher-js even if server doesn't use it
-    pusherCluster: "mt1", // Or make this configurable if needed
+    pusherCluster: "mt1",
   });
 });
 
-// 1. AUTHENTICATION Endpoint (for Private and Presence channels)
+// Authentication endpoint
 app.post("/pusher/auth", (req, res) => {
   const socketId = req.body.socket_id;
   const channel = req.body.channel_name;
 
   console.log(`Auth attempt for socket_id: ${socketId}, channel: ${channel}`);
 
-  // --- !!! Basic Mock Authentication - Replace with real logic if needed !!! ---
-  // For testing, we'll authenticate anyone. In a real app, you'd check session/token.
-  const MOCK_USER_ID = `user_${Date.now()}`; // Simple unique ID
+  const MOCK_USER_ID = `user_${Math.random().toString(36).substr(2, 9)}`;
   const MOCK_USER_INFO = {
-    name: `Test User ${MOCK_USER_ID}`,
+    name: `Test User ${MOCK_USER_ID.split("_")[1]}`,
     id: MOCK_USER_ID,
+    avatar: `https://ui-avatars.com/api/?name=${MOCK_USER_ID}&background=random`,
   };
-  // --- End Mock Authentication ---
 
   try {
     if (channel.startsWith("private-")) {
@@ -85,22 +78,20 @@ app.post("/pusher/auth", (req, res) => {
       console.log("Auth success (private):", authResponse);
       res.send(authResponse);
     } else if (channel.startsWith("presence-")) {
-      // For presence channels, you need presenceData
       const presenceData = {
         user_id: MOCK_USER_ID,
         user_info: MOCK_USER_INFO,
       };
       const authResponse = pusher.authorizeChannel(
-        socketId,
-        channel,
-        presenceData,
+          socketId,
+          channel,
+          presenceData
       );
       console.log("Auth success (presence):", authResponse);
       res.send(authResponse);
     } else {
-      // If it's not private or presence, deny auth request (shouldn't happen)
       console.error(
-        `Auth failed: Channel ${channel} is not private or presence.`,
+          `Auth failed: Channel ${channel} is not private or presence.`
       );
       res.status(403).send("Forbidden: Channel is not private or presence");
     }
@@ -110,74 +101,143 @@ app.post("/pusher/auth", (req, res) => {
   }
 });
 
-// 2. WEBHOOK Endpoint (Receives events FROM your WebSocket server)
+// Webhook endpoint
 app.post("/pusher/webhooks", (req, res) => {
   console.log("\n--- Webhook Received ---");
 
-  // --- IMPORTANT: Verify Webhook Signature (Security!) ---
-  // Pusher (and compatible servers) send signatures in headers
   const receivedSignature = req.headers["x-pusher-signature"];
   const expectedSignature = crypto
-    .createHmac("sha256", process.env.PUSHER_APP_SECRET)
-    .update(req.rawBody) // Use the raw body buffer
-    .digest("hex");
+      .createHmac("sha256", process.env.PUSHER_APP_SECRET)
+      .update(req.rawBody)
+      .digest("hex");
 
-  if (!receivedSignature) {
-    console.warn(
-      "Webhook received without signature. Skipping verification (Configure your server to send signatures!).",
-    );
-    // Decide if you want to proceed without signature for testing
-    // return res.status(400).send('Webhook signature missing');
-  } else if (receivedSignature !== expectedSignature) {
+  if (receivedSignature && receivedSignature !== expectedSignature) {
     console.error("Webhook signature invalid!");
-    console.error(`Received: ${receivedSignature}`);
-    console.error(`Expected: ${expectedSignature}`);
     return res.status(403).send("Webhook signature invalid");
-  } else {
-    console.log("Webhook signature verified successfully.");
   }
-  // --- End Signature Verification ---
 
-  const webhookBody = req.body; // Already parsed by bodyParser.json
+  const webhookBody = req.body;
   console.log("Webhook Body:", JSON.stringify(webhookBody, null, 2));
 
-  // Store webhook for potential display on frontend
   const webhookData = {
     timestamp: new Date().toISOString(),
     headers: req.headers,
     body: webhookBody,
   };
-  receivedWebhooks.unshift(webhookData); // Add to beginning
-  // Keep only the latest N webhooks (e.g., 50)
-  if (receivedWebhooks.length > 50) {
+  receivedWebhooks.unshift(webhookData);
+  if (receivedWebhooks.length > 100) {
     receivedWebhooks.pop();
   }
 
-  // Respond to the webhook sender (your WebSocket server)
   res.status(200).json({ message: "Webhook received" });
 });
 
-// Endpoint for frontend to fetch received webhooks
+// Server-side event trigger endpoint
+app.post("/trigger-event", async (req, res) => {
+  try {
+    const { channel, event, data } = req.body;
+
+    if (!channel || !event) {
+      return res.status(400).json({ error: "Channel and event are required" });
+    }
+
+    console.log(`Triggering server event: ${event} on ${channel}`);
+
+    const result = await pusher.trigger(channel, event, data || {});
+
+    const eventRecord = {
+      timestamp: new Date().toISOString(),
+      type: "server-triggered",
+      channel,
+      event,
+      data: data || {},
+      result,
+    };
+    eventHistory.unshift(eventRecord);
+    if (eventHistory.length > 100) {
+      eventHistory.pop();
+    }
+
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error("Error triggering event:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch events endpoint
+app.post("/trigger-batch-events", async (req, res) => {
+  try {
+    const { channel, count = 5, delay = 1000 } = req.body;
+
+    if (!channel) {
+      return res.status(400).json({ error: "Channel is required" });
+    }
+
+    res.json({ success: true, message: `Triggering ${count} events...` });
+
+    // Trigger events with delay
+    for (let i = 1; i <= count; i++) {
+      setTimeout(async () => {
+        try {
+          await pusher.trigger(channel, "batch-test", {
+            message: `Batch message ${i} of ${count}`,
+            timestamp: new Date().toISOString(),
+            sequence: i,
+          });
+          console.log(`Batch event ${i}/${count} sent to ${channel}`);
+        } catch (error) {
+          console.error(`Error sending batch event ${i}:`, error);
+        }
+      }, (i - 1) * delay);
+    }
+  } catch (error) {
+    console.error("Error triggering batch events:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get various logs
 app.get("/webhooks-log", (req, res) => {
   res.json(receivedWebhooks);
 });
 
-// --- Start Server ---
+app.get("/event-history", (req, res) => {
+  res.json(eventHistory);
+});
+
+app.get("/channel-info", async (req, res) => {
+  try {
+    const { channel } = req.query;
+    if (!channel) {
+      return res.status(400).json({ error: "Channel parameter required" });
+    }
+
+    const info = await pusher.get({ path: `/channels/${channel}` });
+    res.json(info);
+  } catch (error) {
+    console.error("Error getting channel info:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/channels", async (req, res) => {
+  try {
+    const channels = await pusher.get({ path: "/channels" });
+    res.json(channels);
+  } catch (error) {
+    console.error("Error getting channels:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Start server
 app.listen(port, () => {
-  console.log(`\n--- Pusher Test Backend Server ---`);
-  console.log(
-    `Authentication & Webhook server running at ${process.env.BACKEND_BASE_URL}`,
-  );
-  console.log(` - Serving frontend from: ./public`);
-  console.log(
-    ` - Auth Endpoint: POST ${process.env.BACKEND_BASE_URL}/pusher/auth`,
-  );
-  console.log(
-    ` - Webhook Endpoint: POST ${process.env.BACKEND_BASE_URL}/pusher/webhooks`,
-  );
-  console.log(` - Config Endpoint: GET ${process.env.BACKEND_BASE_URL}/config`);
-  console.log(
-    ` - Webhook Log: GET ${process.env.BACKEND_BASE_URL}/webhooks-log`,
-  );
-  console.log(`----------------------------------\n`);
+  console.log(`\n🚀 Pusher Test Backend Server`);
+  console.log(`📡 Running at ${process.env.BACKEND_BASE_URL}`);
+  console.log(`🔐 Auth Endpoint: POST /pusher/auth`);
+  console.log(`🪝 Webhook Endpoint: POST /pusher/webhooks`);
+  console.log(`⚡ Trigger Event: POST /trigger-event`);
+  console.log(`📊 Dashboard available at: ${process.env.BACKEND_BASE_URL}`);
+  console.log(`================================\n`);
 });
