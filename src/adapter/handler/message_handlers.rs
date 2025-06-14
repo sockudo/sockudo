@@ -13,6 +13,18 @@ impl ConnectionHandler {
             .await
     }
 
+    pub async fn handle_pong(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        tracing::debug!("Received pong from socket: {}", socket_id);
+        let mut connection_manager = self.connection_manager.lock().await;
+        if let Some(connection) = connection_manager.get_connection(socket_id, &app_id).await {
+            let mut conn_locked = connection.0.lock().await;
+            conn_locked.update_activity();
+        } else {
+            tracing::warn!("Pong received for unknown socket: {}", socket_id);
+        }
+        Ok(())
+    }
+
     pub async fn handle_subscribe_request(
         &self,
         socket_id: &SocketId,
