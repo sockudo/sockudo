@@ -94,7 +94,6 @@ use crate::middleware::pusher_api_auth_middleware;
 use crate::websocket::WebSocketRef;
 
 /// Server state containing all managers
-#[derive(Clone)]
 struct ServerState {
     app_manager: Arc<dyn AppManager + Send + Sync>,
     channel_manager: Arc<RwLock<ChannelManager>>,
@@ -104,7 +103,7 @@ struct ServerState {
     queue_manager: Option<Arc<QueueManager>>,
     webhooks_integration: Arc<WebhookIntegration>,
     metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
-    running: Arc<AtomicBool>,
+    running: AtomicBool,
     http_api_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     debug_enabled: bool,
 }
@@ -381,7 +380,7 @@ impl SockudoServer {
             queue_manager: queue_manager_opt,
             webhooks_integration: webhook_integration.clone(),
             metrics: metrics.clone(),
-            running: Arc::new(AtomicBool::new(true)),
+            running: AtomicBool::new(true),
             http_api_rate_limiter: Some(http_api_rate_limiter_instance.clone()),
             debug_enabled,
         };
@@ -885,7 +884,7 @@ impl SockudoServer {
 
             // Main HTTPS server
             info!("HTTPS server listening on https://{}", http_addr); // Clarify HTTPS
-            let running = self.state.running.clone();
+            let running = &self.state.running;
             let server = axum_server::bind_rustls(http_addr, tls_config);
             tokio::select! {
                 result = server.serve(http_router.into_make_service_with_connect_info::<SocketAddr>()) => {
@@ -922,7 +921,7 @@ impl SockudoServer {
             };
 
             info!("HTTP server listening on http://{}", http_addr);
-            let running = self.state.running.clone();
+            let running = &self.state.running;
 
             if let Some(metrics_listener) = metrics_listener_opt {
                 let metrics_router_clone = metrics_router.clone(); // Clone for the new task
