@@ -14,15 +14,15 @@ use tracing::info;
 pub struct MemoryQueueManager {
     // Use channels to simulate a queue in memory
     // DashMap<String, Vec<JobData>> is implicitly Send + Sync if JobData is Send
-    queues: DashMap<String, Vec<JobData>, ahash::RandomState>,
+    queues: Arc<DashMap<String, Vec<JobData>, ahash::RandomState>>,
     // Store Arc'd callbacks to be consistent with Redis manager and avoid potential issues if Box wasn't 'static
-    processors: DashMap<String, ArcJobProcessorFn, ahash::RandomState>,
+    processors: Arc<DashMap<String, ArcJobProcessorFn, ahash::RandomState>>,
 }
 
 impl MemoryQueueManager {
     pub fn new() -> Self {
-        let queues = DashMap::with_hasher(ahash::RandomState::new());
-        let processors = DashMap::with_hasher(ahash::RandomState::new());
+        let queues = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        let processors = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
 
         Self { queues, processors }
     }
@@ -30,8 +30,8 @@ impl MemoryQueueManager {
     /// Starts the background processing loop. Should be called once after setup.
     pub fn start_processing(&self) {
         // Clone Arcs for the background task
-        let queues = self.queues.clone();
-        let processors = self.processors.clone();
+        let queues = Arc::clone(&self.queues);
+        let processors = Arc::clone(&self.processors);
 
         info!("{}", "Starting memory queue processing loop...".to_string());
 
