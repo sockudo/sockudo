@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use tokio::sync::Mutex;
 // src/adapter/factory.rs
 use crate::adapter::ConnectionManager;
 use crate::adapter::local_adapter::LocalAdapter;
@@ -8,6 +10,7 @@ use crate::error::Result;
 
 use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig}; // Import AdapterDriver, RedisConnection
 use tracing::{info, warn};
+use crate::cache::manager::CacheManager;
 
 pub struct AdapterFactory;
 
@@ -15,7 +18,7 @@ impl AdapterFactory {
     pub async fn create(
         config: &AdapterConfig,
         db_config: &DatabaseConfig,
-    ) -> Result<Box<dyn ConnectionManager + Send + Sync>> {
+    ) -> Result<Arc<Mutex<dyn ConnectionManager + Send + Sync>>> {
         info!(
             "{}",
             format!(
@@ -44,7 +47,7 @@ impl AdapterFactory {
                     cluster_mode: config.redis.cluster_mode,
                 };
                 match RedisAdapter::new(adapter_options).await {
-                    Ok(adapter) => Ok(Box::new(adapter)),
+                    Ok(adapter) => Ok(Arc::new(Mutex::new(adapter))),
                     Err(e) => {
                         warn!(
                             "{}",
@@ -53,7 +56,7 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Box::new(LocalAdapter::new()))
+                        Ok(Arc::new(Mutex::new(LocalAdapter::new())))
                     }
                 }
             }
@@ -72,7 +75,7 @@ impl AdapterFactory {
 
                 if nodes.is_empty() {
                     warn!("{}", "Redis Cluster Adapter selected, but no nodes configured. Falling back to local adapter.".to_string());
-                    return Ok(Box::new(LocalAdapter::new()));
+                    return Ok(Arc::new(Mutex::new(LocalAdapter::new())));
                 }
 
                 let cluster_adapter_config = RedisClusterAdapterConfig {
@@ -83,7 +86,7 @@ impl AdapterFactory {
                     use_connection_manager: config.cluster.use_connection_manager,
                 };
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
-                    Ok(adapter) => Ok(Box::new(adapter)),
+                    Ok(adapter) => Ok(Arc::new(Mutex::new(adapter))),
                     Err(e) => {
                         warn!(
                             "{}",
@@ -92,7 +95,7 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Box::new(LocalAdapter::new()))
+                        Ok(Arc::new(Mutex::new(LocalAdapter::new())))
                     }
                 }
             }
@@ -109,7 +112,7 @@ impl AdapterFactory {
                     nodes_number: config.nats.nodes_number,
                 };
                 match NatsAdapter::new(nats_cfg).await {
-                    Ok(adapter) => Ok(Box::new(adapter)),
+                    Ok(adapter) => Ok(Arc::new(Mutex::new(adapter))),
                     Err(e) => {
                         warn!(
                             "{}",
@@ -118,14 +121,14 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Box::new(LocalAdapter::new()))
+                        Ok(Arc::new(Mutex::new(LocalAdapter::new())))
                     }
                 }
             }
             AdapterDriver::Local => {
                 // Handle unknown as Local or make it an error
                 info!("{}", "Using local adapter.".to_string());
-                Ok(Box::new(LocalAdapter::new()))
+                Ok(Arc::new(Mutex::new(LocalAdapter::new())))
             }
         }
     }

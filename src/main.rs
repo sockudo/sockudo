@@ -97,7 +97,7 @@ use crate::websocket::WebSocketRef;
 struct ServerState {
     app_manager: Arc<dyn AppManager + Send + Sync>,
     channel_manager: Arc<RwLock<ChannelManager>>,
-    connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>,
+    connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
     auth_validator: Arc<AuthValidator>,
     cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     queue_manager: Option<Arc<QueueManager>>,
@@ -148,9 +148,9 @@ impl SockudoServer {
             config.app_manager.driver
         );
 
-        let connection_manager_box =
+        let connection_manager =
             AdapterFactory::create(&config.adapter, &config.database).await?;
-        let connection_manager_arc = Arc::new(Mutex::new(connection_manager_box));
+
         info!(
             "Adapter initialized with driver: {:?}",
             config.adapter.driver
@@ -175,7 +175,7 @@ impl SockudoServer {
         );
 
         let channel_manager = Arc::new(RwLock::new(ChannelManager::new(
-            connection_manager_arc.clone(),
+            connection_manager.clone(),
         )));
         let auth_validator = Arc::new(AuthValidator::new(app_manager.clone()));
 
@@ -374,7 +374,7 @@ impl SockudoServer {
         let state = ServerState {
             app_manager: app_manager.clone(),
             channel_manager: channel_manager.clone(),
-            connection_manager: connection_manager_arc.clone(),
+            connection_manager: connection_manager.clone(),
             auth_validator,
             cache_manager,
             queue_manager: queue_manager_opt,

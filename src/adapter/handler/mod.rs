@@ -40,7 +40,7 @@ use tracing::{error, info, warn};
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
     pub(crate) channel_manager: Arc<RwLock<ChannelManager>>,
-    pub(crate) connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>,
+    pub(crate) connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
     pub(crate) cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     pub(crate) metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -53,7 +53,7 @@ impl ConnectionHandler {
     pub fn new(
         app_manager: Arc<dyn AppManager + Send + Sync>,
         channel_manager: Arc<RwLock<ChannelManager>>,
-        connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>,
+        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
         cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
