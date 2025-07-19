@@ -38,11 +38,11 @@ pub struct LeaveResponse {
 }
 
 pub struct ChannelManager {
-    connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>,
+    connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
 }
 
 impl ChannelManager {
-    pub fn new(connection_manager: Arc<Mutex<Box<dyn ConnectionManager + Send + Sync>>>) -> Self {
+    pub fn new(connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>) -> Self {
         Self { connection_manager }
     }
 
