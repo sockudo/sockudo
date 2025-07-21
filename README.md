@@ -964,22 +964,6 @@ For more in-depth information:
 
 -----
 
-## 🗺️ Roadmap
-
-### Current Version (v1.5)
-
-- ✅ Core WebSocket functionality
-- ✅ Channel system (public, private, presence)
-- ✅ Authentication and rate limiting
-- ✅ Docker deployment
-- ✅ Prometheus metrics
-- ✅ Support for Redis, NATS, Redis Cluster adapters
-- ✅ Support for Memory, MySQL, PgSQL, DynamoDB AppManagers
-
-*(Update this section with your actual roadmap and completed features)*
-
------
-
 ## 📄 License
 
 This project is licensed under the **AGPL-3.0 License** - see the [LICENSE](https://www.google.com/search?q=LICENSE) file for details. (Updated based on the badge at the top of your README).
