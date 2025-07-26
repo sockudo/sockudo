@@ -2870,8 +2870,10 @@ dependencies = [
  "sha1_smol",
  "socket2 0.6.0",
  "tokio",
+ "tokio-rustls 0.26.2",
  "tokio-util",
  "url",
+ "webpki-roots 1.0.0",
 ]
 
 [[package]]
@@ -3469,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "ahash",
  "async-nats",
