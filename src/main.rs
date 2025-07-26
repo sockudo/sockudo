@@ -30,7 +30,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-
+use async_nats::rustls::crypto::CryptoProvider;
 use axum::http::Method;
 use axum::http::header::HeaderName;
 use axum::http::uri::Authority;
@@ -1236,6 +1236,7 @@ async fn main() -> Result<()> {
 
     // SSL
     if let Ok(val) = std::env::var("SSL_ENABLED") {
+        rustls::crypto::ring::default_provider().install_default().unwrap();
         config.ssl.enabled = val == "1" || val.to_lowercase() == "true";
     }
     if let Ok(val) = std::env::var("SSL_CERT_PATH") {
