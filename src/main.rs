@@ -1151,6 +1151,11 @@ where
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize crypto provider at the very beginning for any TLS usage (HTTPS or Redis TLS)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|e| Error::Internal(format!("Failed to install default crypto provider: {:?}", e)))?;
+
     // --- Part 1: Determine final config.debug ---
     let initial_debug_from_env = std::env::var("DEBUG")
         .map(|v| v == "1" || v.to_lowercase() == "true")
@@ -1236,7 +1241,6 @@ async fn main() -> Result<()> {
 
     // SSL
     if let Ok(val) = std::env::var("SSL_ENABLED") {
-        rustls::crypto::ring::default_provider().install_default().unwrap();
         config.ssl.enabled = val == "1" || val.to_lowercase() == "true";
     }
     if let Ok(val) = std::env::var("SSL_CERT_PATH") {
