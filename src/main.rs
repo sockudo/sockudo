@@ -327,10 +327,14 @@ impl SockudoServer {
             None
         };
 
-        let webhook_redis_url = format!(
-            "redis://{}:{}",
-            config.database.redis.host, config.database.redis.port
-        );
+        let webhook_redis_url = if let Some(url_override) = config.queue.redis.url_override.as_ref() {
+            url_override.clone()
+        } else {
+            format!(
+                "redis://{}:{}",
+                config.database.redis.host, config.database.redis.port
+            )
+        };
 
         let webhook_config_for_integration = WebhookConfig {
             enabled: true, // Assuming webhooks are generally enabled if configured
