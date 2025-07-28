@@ -36,9 +36,24 @@ impl ConnectionHandler {
             .await?;
 
         // Check authentication if required
-        let is_authenticated = self
+        let is_authenticated = match self
             .verify_channel_authentication(app_config, socket_id, &request)
-            .await?;
+            .await
+        {
+            Ok(authenticated) => authenticated,
+            Err(e) => {
+                // Track authentication failures
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    let error_type = match &e {
+                        Error::Auth(_) => "authentication_failed",
+                        _ => "authentication_error",
+                    };
+                    metrics_locked.mark_connection_error(&app_config.id, error_type);
+                }
+                return Err(e);
+            }
+        };
 
         // Validate presence channel specifics
         if request.channel.starts_with("presence-") {

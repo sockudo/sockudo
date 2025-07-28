@@ -23,6 +23,7 @@ pub struct PrometheusMetricsDriver {
     connected_sockets: GaugeVec,
     new_connections_total: CounterVec,
     new_disconnections_total: CounterVec,
+    connection_errors_total: CounterVec,
     socket_bytes_received: CounterVec,
     socket_bytes_transmitted: CounterVec,
     ws_messages_received: CounterVec,
@@ -68,6 +69,15 @@ impl PrometheusMetricsDriver {
                 "Total amount of sockudo disconnections"
             ),
             &["app_id", "port"]
+        )
+        .unwrap();
+
+        let connection_errors_total = register_counter_vec!(
+            Opts::new(
+                format!("{}connection_errors_total", prefix),
+                "Total amount of connection errors by type"
+            ),
+            &["app_id", "port", "error_type"]
         )
         .unwrap();
 
@@ -192,6 +202,7 @@ impl PrometheusMetricsDriver {
             connected_sockets,
             new_connections_total,
             new_disconnections_total,
+            connection_errors_total,
             socket_bytes_received,
             socket_bytes_transmitted,
             ws_messages_received,
@@ -246,6 +257,20 @@ impl MetricsInterface for PrometheusMetricsDriver {
                 "Metrics: Disconnection for app {}, socket {}",
                 app_id, socket_id
             )
+        );
+    }
+
+    fn mark_connection_error(&self, app_id: &str, error_type: &str) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            error_type.to_string(),
+        ];
+        self.connection_errors_total.with_label_values(&tags).inc();
+
+        info!(
+            "Metrics: Connection error for app {}, error type: {}",
+            app_id, error_type
         );
     }
 

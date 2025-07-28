@@ -74,8 +74,34 @@ impl ConnectionHandler {
 
     pub async fn handle_socket(&self, fut: upgrade::UpgradeFut, app_key: String) -> Result<()> {
         // Early validation and setup
-        let app_config = self.validate_and_get_app(&app_key).await?;
-        let (socket_rx, socket_tx) = self.upgrade_websocket(fut).await?;
+        let app_config = match self.validate_and_get_app(&app_key).await {
+            Ok(app) => app,
+            Err(e) => {
+                // Track application validation errors
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    let error_type = match &e {
+                        Error::ApplicationNotFound => "app_not_found",
+                        Error::ApplicationDisabled => "app_disabled",
+                        _ => "app_validation_failed",
+                    };
+                    metrics_locked.mark_connection_error(&app_key, error_type);
+                }
+                return Err(e);
+            }
+        };
+
+        let (socket_rx, socket_tx) = match self.upgrade_websocket(fut).await {
+            Ok(sockets) => sockets,
+            Err(e) => {
+                // Track WebSocket upgrade errors
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    metrics_locked.mark_connection_error(&app_config.id, "websocket_upgrade_error");
+                }
+                return Err(e);
+            }
+        };
 
         // Connection quota check
         self.check_connection_quota(&app_config).await?;
@@ -247,11 +273,33 @@ impl ConnectionHandler {
             .await?;
 
         // Parse message
-        let message = self.parse_message(&frame)?;
-        let event_name = message
-            .event
-            .as_deref()
-            .ok_or_else(|| Error::InvalidEventName("Event name is required".into()))?;
+        let message = match self.parse_message(&frame) {
+            Ok(msg) => msg,
+            Err(e) => {
+                // Track message parsing errors
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    let error_type = match &e {
+                        Error::InvalidMessageFormat(_) => "invalid_message_format",
+                        _ => "message_parse_error",
+                    };
+                    metrics_locked.mark_connection_error(&app_config.id, error_type);
+                }
+                return Err(e);
+            }
+        };
+
+        let event_name = match message.event.as_deref() {
+            Some(name) => name,
+            None => {
+                // Track missing event name errors
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    metrics_locked.mark_connection_error(&app_config.id, "missing_event_name");
+                }
+                return Err(Error::InvalidEventName("Event name is required".into()));
+            }
+        };
 
         // Track WebSocket message received metrics
         if let Some(ref metrics) = self.metrics {

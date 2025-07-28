@@ -22,6 +22,9 @@ pub trait MetricsInterface: Send + Sync {
     /// Handle a disconnection
     fn mark_disconnection(&self, app_id: &str, socket_id: &SocketId);
 
+    /// Handle a connection error
+    fn mark_connection_error(&self, app_id: &str, error_type: &str);
+
     /// Handle a new API message event being received and sent out
     fn mark_api_message(
         &self,
