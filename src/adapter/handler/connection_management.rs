@@ -19,11 +19,26 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         message: PusherMessage,
     ) -> Result<()> {
-        self.connection_manager
+        // Calculate message size for metrics
+        let message_size = serde_json::to_string(&message).unwrap_or_default().len();
+
+        // Send the message
+        let result = self
+            .connection_manager
             .lock()
             .await
             .send_message(app_id, socket_id, message)
-            .await
+            .await;
+
+        // Track metrics if message was sent successfully
+        if result.is_ok() {
+            if let Some(ref metrics) = self.metrics {
+                let metrics_locked = metrics.lock().await;
+                metrics_locked.mark_ws_message_sent(app_id, message_size);
+            }
+        }
+
+        result
     }
 
     pub async fn broadcast_to_channel(
@@ -33,11 +48,44 @@ impl ConnectionHandler {
         message: PusherMessage,
         exclude_socket: Option<&SocketId>,
     ) -> Result<()> {
-        self.connection_manager
+        // Calculate message size for metrics
+        let message_size = serde_json::to_string(&message).unwrap_or_default().len();
+
+        // Get the number of sockets in the channel before sending
+        let socket_count = {
+            let mut conn_manager = self.connection_manager.lock().await;
+            conn_manager
+                .get_channel_socket_count(&app_config.id, channel)
+                .await
+        };
+
+        // Adjust for excluded socket
+        let target_socket_count = if exclude_socket.is_some() && socket_count > 0 {
+            socket_count - 1
+        } else {
+            socket_count
+        };
+
+        // Send the message
+        let result = self
+            .connection_manager
             .lock()
             .await
             .send(channel, message, exclude_socket, &app_config.id)
-            .await
+            .await;
+
+        // Track metrics if message was sent successfully
+        if result.is_ok() && target_socket_count > 0 {
+            if let Some(ref metrics) = self.metrics {
+                let metrics_locked = metrics.lock().await;
+                // Track metrics for each socket that received the message
+                for _ in 0..target_socket_count {
+                    metrics_locked.mark_ws_message_sent(&app_config.id, message_size);
+                }
+            }
+        }
+
+        result
     }
 
     pub async fn close_connection(
