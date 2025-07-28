@@ -253,6 +253,12 @@ impl ConnectionHandler {
             .as_deref()
             .ok_or_else(|| Error::InvalidEventName("Event name is required".into()))?;
 
+        // Track WebSocket message received metrics
+        if let Some(ref metrics) = self.metrics {
+            let metrics_locked = metrics.lock().await;
+            metrics_locked.mark_ws_message_received(&app_config.id, frame.payload.len());
+        }
+
         info!(
             "Received message from {}: event '{}'",
             socket_id, event_name
