@@ -206,7 +206,7 @@ impl PrometheusMetricsDriver {
                 format!("{}rate_limit_checks_total", prefix),
                 "Total number of rate limit checks performed"
             ),
-            &["app_id", "port", "limiter_type"]
+            &["app_id", "port", "limiter_type", "request_context"]
         )
         .unwrap();
 
@@ -215,7 +215,7 @@ impl PrometheusMetricsDriver {
                 format!("{}rate_limit_triggered_total", prefix),
                 "Total number of times rate limit was triggered"
             ),
-            &["app_id", "port", "limiter_type"]
+            &["app_id", "port", "limiter_type", "request_context"]
         )
         .unwrap();
 
@@ -324,32 +324,52 @@ impl MetricsInterface for PrometheusMetricsDriver {
     }
 
     fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str) {
+        self.mark_rate_limit_check_with_context(app_id, limiter_type, "unknown");
+    }
+
+    fn mark_rate_limit_check_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    ) {
         let tags = vec![
             app_id.to_string(),
             self.port.to_string(),
             limiter_type.to_string(),
+            request_context.to_string(),
         ];
         self.rate_limit_checks_total.with_label_values(&tags).inc();
 
         debug!(
-            "Metrics: Rate limit check for app {}, limiter type: {}",
-            app_id, limiter_type
+            "Metrics: Rate limit check for app {}, limiter type: {}, context: {}",
+            app_id, limiter_type, request_context
         );
     }
 
     fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str) {
+        self.mark_rate_limit_triggered_with_context(app_id, limiter_type, "unknown");
+    }
+
+    fn mark_rate_limit_triggered_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    ) {
         let tags = vec![
             app_id.to_string(),
             self.port.to_string(),
             limiter_type.to_string(),
+            request_context.to_string(),
         ];
         self.rate_limit_triggered_total
             .with_label_values(&tags)
             .inc();
 
         debug!(
-            "Metrics: Rate limit triggered for app {}, limiter type: {}",
-            app_id, limiter_type
+            "Metrics: Rate limit triggered for app {}, limiter type: {}, context: {}",
+            app_id, limiter_type, request_context
         );
     }
 
@@ -359,7 +379,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             self.port.to_string(),
             channel_type.to_string(),
         ];
-        self.channel_subscriptions_total.with_label_values(&tags).inc();
+        self.channel_subscriptions_total
+            .with_label_values(&tags)
+            .inc();
 
         debug!(
             "Metrics: Channel subscription for app {}, channel type: {}",
@@ -373,7 +395,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             self.port.to_string(),
             channel_type.to_string(),
         ];
-        self.channel_unsubscriptions_total.with_label_values(&tags).inc();
+        self.channel_unsubscriptions_total
+            .with_label_values(&tags)
+            .inc();
 
         debug!(
             "Metrics: Channel unsubscription for app {}, channel type: {}",
@@ -387,7 +411,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             self.port.to_string(),
             channel_type.to_string(),
         ];
-        self.active_channels.with_label_values(&tags).set(count as f64);
+        self.active_channels
+            .with_label_values(&tags)
+            .set(count as f64);
 
         debug!(
             "Metrics: Active channels updated for app {}, channel type: {}, count: {}",
@@ -643,8 +669,6 @@ impl MetricsInterface for PrometheusMetricsDriver {
     async fn clear(&self) {
         // Reset individual metrics counters - not fully supported by Prometheus Rust client
         // So we'll just log a message
-        debug!(
-            "Metrics cleared (note: Prometheus metrics can't be fully cleared)"
-        );
+        debug!("Metrics cleared (note: Prometheus metrics can't be fully cleared)");
     }
 }
