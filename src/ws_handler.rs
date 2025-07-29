@@ -45,10 +45,26 @@ pub async fn handle_ws_upgrade(
     tokio::task::spawn(async move {
         if let Err(e) = handler.handle_socket(fut, app_key.clone()).await {
             error!("Error handling socket: {e}");
-            // Track socket handling errors
+            // Only track generic socket handling errors for cases not already tracked
+            // Most specific errors (app_not_found, authentication_failed, etc.)
+            // are already tracked within handle_socket()
             if let Some(ref metrics) = handler.metrics {
                 let metrics_locked = metrics.lock().await;
-                metrics_locked.mark_connection_error(&app_key, "socket_handling_failed");
+                // Only track for errors that might not have been tracked elsewhere
+                match &e {
+                    // These are already tracked in handle_socket(), don't double-count
+                    crate::error::Error::ApplicationNotFound
+                    | crate::error::Error::ApplicationDisabled
+                    | crate::error::Error::Auth(_)
+                    | crate::error::Error::InvalidMessageFormat(_)
+                    | crate::error::Error::InvalidEventName(_) => {
+                        // Already tracked with specific error types, don't track again
+                    }
+                    // Track other unexpected errors that might not be caught elsewhere
+                    _ => {
+                        metrics_locked.mark_connection_error(&app_key, "socket_handling_failed");
+                    }
+                }
             }
         }
     });
