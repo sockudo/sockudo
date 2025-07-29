@@ -74,25 +74,24 @@ impl ConnectionHandler {
             .get_channel_socket_count(&app_config.id, &channel_name)
             .await;
 
-        // // Track unsubscription metrics
-        // if let Some(ref metrics) = self.metrics {
-        //     let channel_type = crate::channel::ChannelType::from_name(&channel_name);
-        //     let channel_type_str = channel_type.as_str();
-        //     
-        //     // Mark unsubscription metric without holding the lock during decrement_active_channel_count
-        //     {
-        //         let metrics_locked = metrics.lock().await;
-        //         metrics_locked.mark_channel_unsubscription(&app_config.id, channel_type_str);
-        //     }
-        //     
-        //     // Update active channel count if this was the last connection to the channel  
-        //     if current_sub_count == 0 {
-        //         // Channel became inactive - decrement the count for this channel type
-        //         // Get the metrics lock again after releasing it to avoid deadlock
-        //         let metrics_locked = metrics.lock().await;
-        //         self.decrement_active_channel_count(&app_config.id, channel_type_str, &*metrics_locked).await;
-        //     }
-        // }
+        // Track unsubscription metrics
+        if let Some(ref metrics) = self.metrics {
+            let channel_type = crate::channel::ChannelType::from_name(&channel_name);
+            let channel_type_str = channel_type.as_str();
+            
+            // Mark unsubscription metric
+            {
+                let metrics_locked = metrics.lock().await;
+                metrics_locked.mark_channel_unsubscription(&app_config.id, channel_type_str);
+            }
+            
+            // Update active channel count if this was the last connection to the channel  
+            if current_sub_count == 0 {
+                // Channel became inactive - decrement the count for this channel type
+                // Pass the Arc directly to avoid holding any locks
+                self.decrement_active_channel_count(&app_config.id, channel_type_str, metrics.clone()).await;
+            }
+        }
 
         // Handle presence channel member removal
         if channel_name.starts_with("presence-") {
