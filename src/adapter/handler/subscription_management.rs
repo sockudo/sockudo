@@ -57,26 +57,26 @@ impl ConnectionHandler {
         };
 
         // Track subscription metrics if successful
-        if subscription_result.success {
-            if let Some(ref metrics) = self.metrics {
-                let channel_type = ChannelType::from_name(&request.channel);
-                let channel_type_str = channel_type.as_str();
-                
-                // Mark subscription metric without holding the lock during increment_active_channel_count
-                {
-                    let metrics_locked = metrics.lock().await;
-                    metrics_locked.mark_channel_subscription(&app_config.id, channel_type_str);
-                }
-                
-                // Update active channel count if this is the first connection to the channel
-                if subscription_result.channel_connections == Some(1) {
-                    // Channel became active - increment the count for this channel type
-                    // Get the metrics lock again after releasing it to avoid deadlock
-                    let metrics_locked = metrics.lock().await;
-                    self.increment_active_channel_count(&app_config.id, channel_type_str, &*metrics_locked).await;
-                }
-            }
-        }
+        // if subscription_result.success {
+        //     if let Some(ref metrics) = self.metrics {
+        //         let channel_type = ChannelType::from_name(&request.channel);
+        //         let channel_type_str = channel_type.as_str();
+        //
+        //         // Mark subscription metric without holding the lock during increment_active_channel_count
+        //         {
+        //             let metrics_locked = metrics.lock().await;
+        //             metrics_locked.mark_channel_subscription(&app_config.id, channel_type_str);
+        //         }
+        //
+        //         // Update active channel count if this is the first connection to the channel
+        //         if subscription_result.channel_connections == Some(1) {
+        //             // Channel became active - increment the count for this channel type
+        //             // Get the metrics lock again after releasing it to avoid deadlock
+        //             let metrics_locked = metrics.lock().await;
+        //             self.increment_active_channel_count(&app_config.id, channel_type_str, &*metrics_locked).await;
+        //         }
+        //     }
+        // }
 
         // Convert the channel manager result to our result type
         Ok(SubscriptionResult {
