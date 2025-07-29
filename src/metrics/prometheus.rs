@@ -12,7 +12,7 @@ use prometheus::{
     register_gauge_vec, register_histogram_vec,
 };
 use serde_json::{Value, json};
-use tracing::{error, info};
+use tracing::{debug, error};
 
 /// A Prometheus implementation of the metrics interface
 pub struct PrometheusMetricsDriver {
@@ -292,12 +292,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connected_sockets.with_label_values(&tags).inc();
         self.new_connections_total.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: New connection for app {}, socket {}",
-                app_id, socket_id
-            )
+        debug!(
+            "Metrics: New connection for app {}, socket {}",
+            app_id, socket_id
         );
     }
 
@@ -306,12 +303,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connected_sockets.with_label_values(&tags).dec();
         self.new_disconnections_total.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Disconnection for app {}, socket {}",
-                app_id, socket_id
-            )
+        debug!(
+            "Metrics: Disconnection for app {}, socket {}",
+            app_id, socket_id
         );
     }
 
@@ -323,12 +317,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
         ];
         self.connection_errors_total.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Connection error for app {}, error type: {}",
-                app_id, error_type
-            )
+        debug!(
+            "Metrics: Connection error for app {}, error type: {}",
+            app_id, error_type
         );
     }
 
@@ -340,12 +331,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
         ];
         self.rate_limit_checks_total.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Rate limit check for app {}, limiter type: {}",
-                app_id, limiter_type
-            )
+        debug!(
+            "Metrics: Rate limit check for app {}, limiter type: {}",
+            app_id, limiter_type
         );
     }
 
@@ -359,12 +347,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Rate limit triggered for app {}, limiter type: {}",
-                app_id, limiter_type
-            )
+        debug!(
+            "Metrics: Rate limit triggered for app {}, limiter type: {}",
+            app_id, limiter_type
         );
     }
 
@@ -376,12 +361,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
         ];
         self.channel_subscriptions_total.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Channel subscription for app {}, channel type: {}",
-                app_id, channel_type
-            )
+        debug!(
+            "Metrics: Channel subscription for app {}, channel type: {}",
+            app_id, channel_type
         );
     }
 
@@ -393,12 +375,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
         ];
         self.channel_unsubscriptions_total.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Channel unsubscription for app {}, channel type: {}",
-                app_id, channel_type
-            )
+        debug!(
+            "Metrics: Channel unsubscription for app {}, channel type: {}",
+            app_id, channel_type
         );
     }
 
@@ -410,12 +389,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
         ];
         self.active_channels.with_label_values(&tags).set(count as f64);
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Active channels updated for app {}, channel type: {}, count: {}",
-                app_id, channel_type, count
-            )
+        debug!(
+            "Metrics: Active channels updated for app {}, channel type: {}, count: {}",
+            app_id, channel_type, count
         );
     }
 
@@ -434,12 +410,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc_by(sent_message_size as f64);
         self.http_calls_received.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: API message for app {}, incoming size: {}, sent size: {}",
-                app_id, incoming_message_size, sent_message_size
-            )
+        debug!(
+            "Metrics: API message for app {}, incoming size: {}, sent size: {}",
+            app_id, incoming_message_size, sent_message_size
         );
     }
 
@@ -450,12 +423,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc_by(sent_message_size as f64);
         self.ws_messages_sent.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: WS message sent for app {}, size: {}",
-                app_id, sent_message_size
-            )
+        debug!(
+            "Metrics: WS message sent for app {}, size: {}",
+            app_id, sent_message_size
         );
     }
 
@@ -466,12 +436,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc_by(message_size as f64);
         self.ws_messages_received.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: WS message received for app {}, size: {}",
-                app_id, message_size
-            )
+        debug!(
+            "Metrics: WS message received for app {}, size: {}",
+            app_id, message_size
         );
     }
 
@@ -481,12 +448,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .observe(time_ms);
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Horizontal adapter resolve time for app {}, time: {} ms",
-                app_id, time_ms
-            )
+        debug!(
+            "Metrics: Horizontal adapter resolve time for app {}, time: {} ms",
+            app_id, time_ms
         );
     }
 
@@ -503,13 +467,10 @@ impl MetricsInterface for PrometheusMetricsDriver {
                 .inc();
         }
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Horizontal adapter promise {} for app {}",
-                if resolved { "resolved" } else { "unresolved" },
-                app_id
-            )
+        debug!(
+            "Metrics: Horizontal adapter promise {} for app {}",
+            if resolved { "resolved" } else { "unresolved" },
+            app_id
         );
     }
 
@@ -519,12 +480,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Horizontal adapter request sent for app {}",
-                app_id
-            )
+        debug!(
+            "Metrics: Horizontal adapter request sent for app {}",
+            app_id
         );
     }
 
@@ -534,12 +492,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Horizontal adapter request received for app {}",
-                app_id
-            )
+        debug!(
+            "Metrics: Horizontal adapter request received for app {}",
+            app_id
         );
     }
 
@@ -549,12 +504,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Horizontal adapter response received for app {}",
-                app_id
-            )
+        debug!(
+            "Metrics: Horizontal adapter response received for app {}",
+            app_id
         );
     }
 
@@ -691,8 +643,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
     async fn clear(&self) {
         // Reset individual metrics counters - not fully supported by Prometheus Rust client
         // So we'll just log a message
-        info!(
-            "{}",
+        debug!(
             "Metrics cleared (note: Prometheus metrics can't be fully cleared)"
         );
     }
