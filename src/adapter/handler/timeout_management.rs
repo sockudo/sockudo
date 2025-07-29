@@ -5,7 +5,7 @@ use crate::protocol::messages::PusherMessage;
 use crate::websocket::SocketId;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 impl ConnectionHandler {
     pub async fn setup_initial_timeouts(
@@ -47,7 +47,7 @@ impl ConnectionHandler {
                 // Send ping first, then set a shorter timeout for pong
                 let ping_message = PusherMessage::ping();
                 if ws.send_message(&ping_message).is_ok() {
-                    info!(
+                    debug!(
                         "Sent ping to socket {} due to activity timeout",
                         socket_id_clone
                     );

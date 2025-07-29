@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[derive(Clone)]
 pub struct LocalAdapter {
@@ -112,8 +112,8 @@ impl ConnectionManager for LocalAdapter {
         except: Option<&SocketId>,
         app_id: &str,
     ) -> Result<()> {
-        info!("Sending message to channel: {}", channel);
-        info!("Message: {:?}", message);
+        debug!("Sending message to channel: {}", channel);
+        debug!("Message: {:?}", message);
 
         if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");

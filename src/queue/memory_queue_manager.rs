@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{debug, info};
 
 /// Memory-based queue manager for simple deployments
 pub struct MemoryQueueManager {
@@ -55,7 +55,7 @@ impl MemoryQueueManager {
                             // Consider spawning tasks per job for better isolation if needed.
 
                             if !jobs_vec.is_empty() {
-                                info!(
+                                debug!(
                                     "{}",
                                     format!(
                                         "Processing {} jobs from memory queue {}",
@@ -100,7 +100,7 @@ impl QueueInterface for MemoryQueueManager {
         // Register processor, wrapping it in Arc
         self.processors
             .insert(queue_name.to_string(), Arc::from(callback)); // Store as Arc
-        info!(
+        debug!(
             "{}",
             format!("Registered processor for memory queue: {}", queue_name)
         );

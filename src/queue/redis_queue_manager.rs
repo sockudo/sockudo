@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub struct RedisQueueManager {
     redis_connection: Arc<Mutex<MultiplexedConnection>>,
@@ -103,7 +103,7 @@ impl QueueInterface for RedisQueueManager {
         // Store the Arc'd callback
         self.job_processors
             .insert(queue_name.to_string(), processor_arc.clone());
-        info!(
+        debug!(
             "{}",
             format!(
                 "Registered processor and starting workers for Redis queue: {}",
@@ -119,7 +119,7 @@ impl QueueInterface for RedisQueueManager {
             let worker_queue_name = queue_name.to_string(); // Clone queue name for logging
 
             tokio::spawn(async move {
-                info!(
+                debug!(
                     "{}",
                     format!(
                         "Starting Redis queue worker {} for queue: {}",
@@ -143,7 +143,7 @@ impl QueueInterface for RedisQueueManager {
                                     // Execute the job processing callback
                                     match worker_processor(job_data).await {
                                         Ok(_) => {
-                                            info!("{}", "Worker finished".to_string());
+                                            debug!("{}", "Worker finished".to_string());
                                         }
                                         Err(e) => {
                                             error!("{}", format!("Worker error: {}", e));

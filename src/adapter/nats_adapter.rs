@@ -19,7 +19,7 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::metrics::MetricsInterface;
@@ -48,7 +48,15 @@ pub struct NatsAdapter {
 impl NatsAdapter {
     pub async fn new(config: NatsAdapterConfig) -> Result<Self> {
         let mut horizontal = HorizontalAdapter::new();
-        info!("NATS adapter config: {:?}", config);
+        info!(
+            "NATS adapter config: servers={:?}, prefix={}, request_timeout={}ms, connection_timeout={}ms", 
+            config.servers, config.prefix, config.request_timeout_ms, config.connection_timeout_ms
+        );
+        debug!("NATS adapter credentials: username={:?}, password={:?}, token={:?}", 
+            config.username,
+            config.password,
+            config.token
+        );
 
         horizontal.requests_timeout = config.request_timeout_ms;
 
@@ -280,7 +288,7 @@ impl NatsAdapter {
             .await
             .map_err(|e| Error::Internal(format!("Failed to publish request: {}", e)))?;
 
-        info!("Broadcasted request {} via NATS", request.request_id);
+        debug!("Broadcasted request {} via NATS", request.request_id);
         Ok(())
     }
 
