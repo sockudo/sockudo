@@ -25,6 +25,12 @@ pub trait MetricsInterface: Send + Sync {
     /// Handle a connection error
     fn mark_connection_error(&self, app_id: &str, error_type: &str);
 
+    /// Track a rate limit check
+    fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str);
+
+    /// Track a rate limit trigger (when limit is exceeded)
+    fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str);
+
     /// Handle a new API message event being received and sent out
     fn mark_api_message(
         &self,
