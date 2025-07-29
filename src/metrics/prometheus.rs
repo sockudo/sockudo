@@ -37,6 +37,8 @@ pub struct PrometheusMetricsDriver {
     horizontal_adapter_sent_requests: CounterVec,
     horizontal_adapter_received_requests: CounterVec,
     horizontal_adapter_received_responses: CounterVec,
+    rate_limit_checks_total: CounterVec,
+    rate_limit_triggered_total: CounterVec,
 }
 
 impl PrometheusMetricsDriver {
@@ -196,6 +198,24 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let rate_limit_checks_total = register_counter_vec!(
+            Opts::new(
+                format!("{}rate_limit_checks_total", prefix),
+                "Total number of rate limit checks performed"
+            ),
+            &["app_id", "port", "limiter_type"]
+        )
+        .unwrap();
+
+        let rate_limit_triggered_total = register_counter_vec!(
+            Opts::new(
+                format!("{}rate_limit_triggered_total", prefix),
+                "Total number of times rate limit was triggered"
+            ),
+            &["app_id", "port", "limiter_type"]
+        )
+        .unwrap();
+
         Self {
             prefix,
             port,
@@ -216,6 +236,8 @@ impl PrometheusMetricsDriver {
             horizontal_adapter_sent_requests,
             horizontal_adapter_received_requests,
             horizontal_adapter_received_responses,
+            rate_limit_checks_total,
+            rate_limit_triggered_total,
         }
     }
 
@@ -271,6 +293,31 @@ impl MetricsInterface for PrometheusMetricsDriver {
         info!(
             "Metrics: Connection error for app {}, error type: {}",
             app_id, error_type
+        );
+    }
+
+    fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            limiter_type.to_string(),
+        ];
+        self.rate_limit_checks_total.with_label_values(&tags).inc();
+    }
+
+    fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            limiter_type.to_string(),
+        ];
+        self.rate_limit_triggered_total
+            .with_label_values(&tags)
+            .inc();
+
+        info!(
+            "Metrics: Rate limit triggered for app {}, limiter type: {}",
+            app_id, limiter_type
         );
     }
 
