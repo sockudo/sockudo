@@ -431,7 +431,7 @@ impl ConnectionHandler {
         info!("Socket {} cleanup completed", socket_id);
     }
 
-    /// Efficiently increment the active channel count for a specific channel type
+    /// Increment the active channel count for a specific channel type
     async fn increment_active_channel_count(
         &self,
         app_id: &str,
@@ -441,16 +441,15 @@ impl ConnectionHandler {
         // Get current count for this channel type
         let current_count = self.get_active_channel_count_for_type(app_id, channel_type).await;
         
-        // Increment by 1
         metrics.update_active_channels(app_id, channel_type, current_count + 1);
-        
+
         debug!(
             "Incremented active {} channels for app {} to {}",
             channel_type, app_id, current_count + 1
         );
     }
 
-    /// Efficiently decrement the active channel count for a specific channel type
+    /// Decrement the active channel count for a specific channel type
     async fn decrement_active_channel_count(
         &self,
         app_id: &str,
