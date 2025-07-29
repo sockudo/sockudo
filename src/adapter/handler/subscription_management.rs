@@ -43,16 +43,18 @@ impl ConnectionHandler {
             name: None,
         };
 
-        let channel_manager = self.channel_manager.write().await;
-        let subscription_result = channel_manager
-            .subscribe(
-                socket_id.as_ref(),
-                &temp_message,
-                &request.channel,
-                is_authenticated,
-                &app_config.id,
-            )
-            .await?;
+        let subscription_result = {
+            let channel_manager = self.channel_manager.write().await;
+            channel_manager
+                .subscribe(
+                    socket_id.as_ref(),
+                    &temp_message,
+                    &request.channel,
+                    is_authenticated,
+                    &app_config.id,
+                )
+                .await?
+        };
 
         // Track subscription metrics if successful
         if subscription_result.success {
