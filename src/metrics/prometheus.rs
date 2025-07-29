@@ -324,8 +324,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connection_errors_total.with_label_values(&tags).inc();
 
         info!(
-            "Metrics: Connection error for app {}, error type: {}",
-            app_id, error_type
+            "{}",
+            format!(
+                "Metrics: Connection error for app {}, error type: {}",
+                app_id, error_type
+            )
         );
     }
 
@@ -336,6 +339,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
             limiter_type.to_string(),
         ];
         self.rate_limit_checks_total.with_label_values(&tags).inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Rate limit check for app {}, limiter type: {}",
+                app_id, limiter_type
+            )
+        );
     }
 
     fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str) {
@@ -349,8 +360,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc();
 
         info!(
-            "Metrics: Rate limit triggered for app {}, limiter type: {}",
-            app_id, limiter_type
+            "{}",
+            format!(
+                "Metrics: Rate limit triggered for app {}, limiter type: {}",
+                app_id, limiter_type
+            )
         );
     }
 
@@ -361,6 +375,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
             channel_type.to_string(),
         ];
         self.channel_subscriptions_total.with_label_values(&tags).inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Channel subscription for app {}, channel type: {}",
+                app_id, channel_type
+            )
+        );
     }
 
     fn mark_channel_unsubscription(&self, app_id: &str, channel_type: &str) {
@@ -370,6 +392,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
             channel_type.to_string(),
         ];
         self.channel_unsubscriptions_total.with_label_values(&tags).inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Channel unsubscription for app {}, channel type: {}",
+                app_id, channel_type
+            )
+        );
     }
 
     fn update_active_channels(&self, app_id: &str, channel_type: &str, count: i64) {
@@ -379,6 +409,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
             channel_type.to_string(),
         ];
         self.active_channels.with_label_values(&tags).set(count as f64);
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Active channels updated for app {}, channel type: {}, count: {}",
+                app_id, channel_type, count
+            )
+        );
     }
 
     fn mark_api_message(
@@ -395,6 +433,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc_by(sent_message_size as f64);
         self.http_calls_received.with_label_values(&tags).inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: API message for app {}, incoming size: {}, sent size: {}",
+                app_id, incoming_message_size, sent_message_size
+            )
+        );
     }
 
     fn mark_ws_message_sent(&self, app_id: &str, sent_message_size: usize) {
@@ -403,6 +449,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc_by(sent_message_size as f64);
         self.ws_messages_sent.with_label_values(&tags).inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: WS message sent for app {}, size: {}",
+                app_id, sent_message_size
+            )
+        );
     }
 
     fn mark_ws_message_received(&self, app_id: &str, message_size: usize) {
@@ -411,6 +465,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc_by(message_size as f64);
         self.ws_messages_received.with_label_values(&tags).inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: WS message received for app {}, size: {}",
+                app_id, message_size
+            )
+        );
     }
 
     fn track_horizontal_adapter_resolve_time(&self, app_id: &str, time_ms: f64) {
@@ -418,6 +480,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.horizontal_adapter_resolve_time
             .with_label_values(&tags)
             .observe(time_ms);
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Horizontal adapter resolve time for app {}, time: {} ms",
+                app_id, time_ms
+            )
+        );
     }
 
     fn track_horizontal_adapter_resolved_promises(&self, app_id: &str, resolved: bool) {
@@ -432,6 +502,15 @@ impl MetricsInterface for PrometheusMetricsDriver {
                 .with_label_values(&tags)
                 .inc();
         }
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Horizontal adapter promise {} for app {}",
+                if resolved { "resolved" } else { "unresolved" },
+                app_id
+            )
+        );
     }
 
     fn mark_horizontal_adapter_request_sent(&self, app_id: &str) {
@@ -439,6 +518,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.horizontal_adapter_sent_requests
             .with_label_values(&tags)
             .inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Horizontal adapter request sent for app {}",
+                app_id
+            )
+        );
     }
 
     fn mark_horizontal_adapter_request_received(&self, app_id: &str) {
@@ -446,6 +533,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.horizontal_adapter_received_requests
             .with_label_values(&tags)
             .inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Horizontal adapter request received for app {}",
+                app_id
+            )
+        );
     }
 
     fn mark_horizontal_adapter_response_received(&self, app_id: &str) {
@@ -453,6 +548,14 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.horizontal_adapter_received_responses
             .with_label_values(&tags)
             .inc();
+
+        info!(
+            "{}",
+            format!(
+                "Metrics: Horizontal adapter response received for app {}",
+                app_id
+            )
+        );
     }
 
     async fn get_metrics_as_plaintext(&self) -> String {
