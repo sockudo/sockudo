@@ -39,6 +39,9 @@ pub struct PrometheusMetricsDriver {
     horizontal_adapter_received_responses: CounterVec,
     rate_limit_checks_total: CounterVec,
     rate_limit_triggered_total: CounterVec,
+    channel_subscriptions_total: CounterVec,
+    channel_unsubscriptions_total: CounterVec,
+    active_channels: GaugeVec,
 }
 
 impl PrometheusMetricsDriver {
@@ -216,6 +219,33 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let channel_subscriptions_total = register_counter_vec!(
+            Opts::new(
+                format!("{}channel_subscriptions_total", prefix),
+                "Total number of channel subscriptions"
+            ),
+            &["app_id", "port", "channel_type"]
+        )
+        .unwrap();
+
+        let channel_unsubscriptions_total = register_counter_vec!(
+            Opts::new(
+                format!("{}channel_unsubscriptions_total", prefix),
+                "Total number of channel unsubscriptions"
+            ),
+            &["app_id", "port", "channel_type"]
+        )
+        .unwrap();
+
+        let active_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{}active_channels", prefix),
+                "Number of currently active channels"
+            ),
+            &["app_id", "port", "channel_type"]
+        )
+        .unwrap();
+
         Self {
             prefix,
             port,
@@ -238,6 +268,9 @@ impl PrometheusMetricsDriver {
             horizontal_adapter_received_responses,
             rate_limit_checks_total,
             rate_limit_triggered_total,
+            channel_subscriptions_total,
+            channel_unsubscriptions_total,
+            active_channels,
         }
     }
 
@@ -319,6 +352,33 @@ impl MetricsInterface for PrometheusMetricsDriver {
             "Metrics: Rate limit triggered for app {}, limiter type: {}",
             app_id, limiter_type
         );
+    }
+
+    fn mark_channel_subscription(&self, app_id: &str, channel_type: &str) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            channel_type.to_string(),
+        ];
+        self.channel_subscriptions_total.with_label_values(&tags).inc();
+    }
+
+    fn mark_channel_unsubscription(&self, app_id: &str, channel_type: &str) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            channel_type.to_string(),
+        ];
+        self.channel_unsubscriptions_total.with_label_values(&tags).inc();
+    }
+
+    fn update_active_channels(&self, app_id: &str, channel_type: &str, count: i64) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            channel_type.to_string(),
+        ];
+        self.active_channels.with_label_values(&tags).set(count as f64);
     }
 
     fn mark_api_message(

@@ -74,6 +74,25 @@ impl ConnectionHandler {
             .get_channel_socket_count(&app_config.id, &channel_name)
             .await;
 
+        // Track unsubscription metrics
+        if let Some(ref metrics) = self.metrics {
+            let metrics_locked = metrics.lock().await;
+            let channel_type = crate::channel::ChannelType::from_name(&channel_name);
+            let channel_type_str = match channel_type {
+                crate::channel::ChannelType::Public => "public",
+                crate::channel::ChannelType::Private => "private", 
+                crate::channel::ChannelType::Presence => "presence",
+                crate::channel::ChannelType::PrivateEncrypted => "private_encrypted",
+            };
+            metrics_locked.mark_channel_unsubscription(&app_config.id, channel_type_str);
+            
+            // Update active channel count if this was the last connection to the channel  
+            if current_sub_count == 0 {
+                // Channel became inactive - decrement the count for this channel type
+                self.decrement_active_channel_count(&app_config.id, channel_type_str, &*metrics_locked).await;
+            }
+        }
+
         // Handle presence channel member removal
         if channel_name.starts_with("presence-") {
             if let Some(user_id_str) = user_id {
@@ -650,4 +669,5 @@ impl ConnectionHandler {
             }
         }
     }
+
 }

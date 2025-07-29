@@ -31,6 +31,15 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a rate limit trigger (when limit is exceeded)
     fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str);
 
+    /// Track a channel subscription
+    fn mark_channel_subscription(&self, app_id: &str, channel_type: &str);
+
+    /// Track a channel unsubscription
+    fn mark_channel_unsubscription(&self, app_id: &str, channel_type: &str);
+
+    /// Update the count of active channels
+    fn update_active_channels(&self, app_id: &str, channel_type: &str, count: i64);
+
     /// Handle a new API message event being received and sent out
     fn mark_api_message(
         &self,
