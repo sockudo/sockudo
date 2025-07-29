@@ -720,13 +720,18 @@ impl SockudoServer {
                     "Applying custom rate limiting middleware with trust_hops: {}",
                     trust_hops
                 );
-                Some(
-                    crate::rate_limiter::middleware::RateLimitLayer::with_options(
-                        rate_limiter_instance.clone(),
-                        ip_key_extractor,
-                        options,
-                    ),
-                )
+                let mut rate_limit_layer = crate::rate_limiter::middleware::RateLimitLayer::with_options(
+                    rate_limiter_instance.clone(),
+                    ip_key_extractor,
+                    options,
+                );
+                
+                // Add metrics if available
+                if let Some(ref metrics) = self.state.metrics {
+                    rate_limit_layer = rate_limit_layer.with_metrics(metrics.clone());
+                }
+                
+                Some(rate_limit_layer)
             } else {
                 warn!(
                     "Rate limiting is enabled in config, but no RateLimiter instance found in server state for HTTP API. Rate limiting will not be applied."

@@ -68,6 +68,7 @@ pub struct RateLimitLayer<K> {
     limiter: Arc<dyn RateLimiter>,
     key_extractor: Arc<K>,
     options: RateLimitOptions,
+    metrics: Option<Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>>,
 }
 
 impl<K> RateLimitLayer<K>
@@ -88,7 +89,16 @@ where
             limiter,
             key_extractor: Arc::new(key_extractor),
             options,
+            metrics: None,
         }
+    }
+
+    pub fn with_metrics(
+        mut self,
+        metrics: Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>,
+    ) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 }
 
@@ -107,6 +117,7 @@ where
             limiter: self.limiter.clone(),
             key_extractor: self.key_extractor.clone(),
             options: self.options.clone(),
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -117,6 +128,7 @@ pub struct RateLimitService<S, K> {
     limiter: Arc<dyn RateLimiter>,
     key_extractor: Arc<K>,
     options: RateLimitOptions,
+    metrics: Option<Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>>,
 }
 
 impl<S, K> Service<AxumRequest<AxumBody>> for RateLimitService<S, K>
@@ -139,6 +151,7 @@ where
         let limiter = self.limiter.clone();
         let key_extractor = self.key_extractor.clone();
         let options = self.options.clone();
+        let metrics = self.metrics.clone();
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
@@ -160,6 +173,13 @@ where
                 key
             };
             debug!(final_key = %final_key, "Final rate limit key");
+
+            // Track rate limit check
+            if let Some(ref metrics) = metrics {
+                let metrics_locked = metrics.lock().await;
+                // Use "global" as app_id for IP-based rate limiting
+                metrics_locked.mark_rate_limit_check("global", "http_api");
+            }
 
             let rate_limit_result = match limiter.increment(&final_key).await {
                 Ok(result) => result,
@@ -184,6 +204,13 @@ where
 
             if !rate_limit_result.allowed {
                 debug!(key = %final_key, "Rate limit exceeded");
+                
+                // Track rate limit triggered
+                if let Some(ref metrics) = metrics {
+                    let metrics_locked = metrics.lock().await;
+                    metrics_locked.mark_rate_limit_triggered("global", "http_api");
+                }
+                
                 return Ok(rate_limit_error_response(Some(&rate_limit_result)));
             }
 
