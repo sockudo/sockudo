@@ -489,12 +489,7 @@ impl ConnectionHandler {
             // Only count channels that have active connections
             if socket_count > 0 {
                 let ch_type = crate::channel::ChannelType::from_name(channel_name);
-                let ch_type_str = match ch_type {
-                    crate::channel::ChannelType::Public => "public",
-                    crate::channel::ChannelType::Private => "private", 
-                    crate::channel::ChannelType::Presence => "presence",
-                    crate::channel::ChannelType::PrivateEncrypted => "private_encrypted",
-                };
+                let ch_type_str = ch_type.as_str();
                 
                 if ch_type_str == channel_type {
                     count += 1;
