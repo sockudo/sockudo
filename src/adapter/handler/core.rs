@@ -78,12 +78,7 @@ impl ConnectionHandler {
         if let Some(ref metrics) = self.metrics {
             let metrics_locked = metrics.lock().await;
             let channel_type = crate::channel::ChannelType::from_name(&channel_name);
-            let channel_type_str = match channel_type {
-                crate::channel::ChannelType::Public => "public",
-                crate::channel::ChannelType::Private => "private", 
-                crate::channel::ChannelType::Presence => "presence",
-                crate::channel::ChannelType::PrivateEncrypted => "private_encrypted",
-            };
+            let channel_type_str = channel_type.as_str();
             metrics_locked.mark_channel_unsubscription(&app_config.id, channel_type_str);
             
             // Update active channel count if this was the last connection to the channel  

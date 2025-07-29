@@ -59,12 +59,7 @@ impl ConnectionHandler {
             if let Some(ref metrics) = self.metrics {
                 let metrics_locked = metrics.lock().await;
                 let channel_type = ChannelType::from_name(&request.channel);
-                let channel_type_str = match channel_type {
-                    ChannelType::Public => "public",
-                    ChannelType::Private => "private",
-                    ChannelType::Presence => "presence",
-                    ChannelType::PrivateEncrypted => "private_encrypted",
-                };
+                let channel_type_str = channel_type.as_str();
                 metrics_locked.mark_channel_subscription(&app_config.id, channel_type_str);
                 
                 // Update active channel count if this is the first connection to the channel
