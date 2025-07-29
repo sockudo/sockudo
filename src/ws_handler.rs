@@ -33,12 +33,8 @@ pub async fn handle_ws_upgrade(
                 let metrics_locked = metrics.lock().await;
                 metrics_locked.mark_connection_error(&app_key, "websocket_upgrade_failed");
             }
-            // Return HTTP error response
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                "WebSocket upgrade failed",
-            )
-                .into_response();
+
+            return (http::StatusCode::BAD_REQUEST, "WebSocket upgrade failed").into_response();
         }
     };
 
@@ -50,15 +46,13 @@ pub async fn handle_ws_upgrade(
             // are already tracked within handle_socket()
             if let Some(ref metrics) = handler.metrics {
                 let metrics_locked = metrics.lock().await;
-                // Only track for errors that might not have been tracked elsewhere
                 match &e {
-                    // These are already tracked in handle_socket(), don't double-count
                     crate::error::Error::ApplicationNotFound
                     | crate::error::Error::ApplicationDisabled
                     | crate::error::Error::Auth(_)
                     | crate::error::Error::InvalidMessageFormat(_)
                     | crate::error::Error::InvalidEventName(_) => {
-                        // Already tracked with specific error types, don't track again
+                        //Do nothing, these errors are already tracked in handle_socket(), don't double-count
                     }
                     // Track other unexpected errors that might not be caught elsewhere
                     _ => {
