@@ -35,7 +35,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -429,5 +429,128 @@ impl ConnectionHandler {
         }
 
         info!("Socket {} cleanup completed", socket_id);
+    }
+
+    /// Efficiently increment the active channel count for a specific channel type
+    async fn increment_active_channel_count(
+        &self,
+        app_id: &str,
+        channel_type: &str,
+        metrics: &dyn MetricsInterface,
+    ) {
+        // Get current count for this channel type
+        let current_count = self.get_active_channel_count_for_type(app_id, channel_type).await;
+        
+        // Increment by 1
+        metrics.update_active_channels(app_id, channel_type, current_count + 1);
+        
+        debug!(
+            "Incremented active {} channels for app {} to {}",
+            channel_type, app_id, current_count + 1
+        );
+    }
+
+    /// Efficiently decrement the active channel count for a specific channel type
+    async fn decrement_active_channel_count(
+        &self,
+        app_id: &str,
+        channel_type: &str,
+        metrics: &dyn MetricsInterface,
+    ) {
+        // Get current count for this channel type
+        let current_count = self.get_active_channel_count_for_type(app_id, channel_type).await;
+        
+        // Decrement by 1, but never go below 0
+        let new_count = std::cmp::max(0, current_count - 1);
+        metrics.update_active_channels(app_id, channel_type, new_count);
+        
+        debug!(
+            "Decremented active {} channels for app {} to {}",
+            channel_type, app_id, new_count
+        );
+    }
+
+    /// Get the current count of active channels for a specific type
+    async fn get_active_channel_count_for_type(&self, app_id: &str, channel_type: &str) -> i64 {
+        // Get all channels with their socket counts
+        let channels_map = match self.connection_manager.lock().await.get_channels_with_socket_count(app_id).await {
+            Ok(map) => map,
+            Err(e) => {
+                error!("Failed to get channels for metrics update: {}", e);
+                return 0;
+            }
+        };
+
+        // Count active channels of the specified type
+        let mut count = 0i64;
+        for channel_entry in channels_map.iter() {
+            let channel_name = channel_entry.key();
+            let socket_count = *channel_entry.value();
+            
+            // Only count channels that have active connections
+            if socket_count > 0 {
+                let ch_type = crate::channel::ChannelType::from_name(channel_name);
+                let ch_type_str = match ch_type {
+                    crate::channel::ChannelType::Public => "public",
+                    crate::channel::ChannelType::Private => "private", 
+                    crate::channel::ChannelType::Presence => "presence",
+                    crate::channel::ChannelType::PrivateEncrypted => "private_encrypted",
+                };
+                
+                if ch_type_str == channel_type {
+                    count += 1;
+                }
+            }
+        }
+        
+        count
+    }
+
+    /// Comprehensive update of all active channel metrics (for initialization)
+    async fn update_active_channel_metrics(
+        &self,
+        app_id: &str,
+        metrics: &dyn MetricsInterface,
+    ) {
+        // Get all channels with their socket counts
+        let channels_map = match self.connection_manager.lock().await.get_channels_with_socket_count(app_id).await {
+            Ok(map) => map,
+            Err(e) => {
+                error!("Failed to get channels for metrics update: {}", e);
+                return;
+            }
+        };
+
+        // Count active channels by type
+        let mut counts: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+        counts.insert("public", 0);
+        counts.insert("private", 0);
+        counts.insert("presence", 0);
+        counts.insert("private_encrypted", 0);
+
+        for channel_entry in channels_map.iter() {
+            let channel_name = channel_entry.key();
+            let socket_count = *channel_entry.value();
+            
+            // Only count channels that have active connections
+            if socket_count > 0 {
+                let channel_type = crate::channel::ChannelType::from_name(channel_name);
+                let channel_type_str = match channel_type {
+                    crate::channel::ChannelType::Public => "public",
+                    crate::channel::ChannelType::Private => "private", 
+                    crate::channel::ChannelType::Presence => "presence",
+                    crate::channel::ChannelType::PrivateEncrypted => "private_encrypted",
+                };
+                *counts.get_mut(channel_type_str).unwrap() += 1;
+            }
+        }
+
+        // Debug log before updating
+        debug!("Updated all active channel metrics for app {}: {:?}", app_id, counts);
+        
+        // Update the metrics
+        for (channel_type, count) in counts {
+            metrics.update_active_channels(app_id, channel_type, count);
+        }
     }
 }

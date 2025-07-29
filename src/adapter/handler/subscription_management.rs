@@ -54,6 +54,27 @@ impl ConnectionHandler {
             )
             .await?;
 
+        // Track subscription metrics if successful
+        if subscription_result.success {
+            if let Some(ref metrics) = self.metrics {
+                let metrics_locked = metrics.lock().await;
+                let channel_type = ChannelType::from_name(&request.channel);
+                let channel_type_str = match channel_type {
+                    ChannelType::Public => "public",
+                    ChannelType::Private => "private",
+                    ChannelType::Presence => "presence",
+                    ChannelType::PrivateEncrypted => "private_encrypted",
+                };
+                metrics_locked.mark_channel_subscription(&app_config.id, channel_type_str);
+                
+                // Update active channel count if this is the first connection to the channel
+                if subscription_result.channel_connections == Some(1) {
+                    // Channel became active - increment the count for this channel type
+                    self.increment_active_channel_count(&app_config.id, channel_type_str, &*metrics_locked).await;
+                }
+            }
+        }
+
         // Convert the channel manager result to our result type
         Ok(SubscriptionResult {
             success: subscription_result.success,
@@ -245,4 +266,5 @@ impl ConnectionHandler {
             .send_message(&app_config.id, socket_id, response_msg)
             .await
     }
+
 }
