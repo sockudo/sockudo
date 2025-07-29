@@ -69,6 +69,7 @@ pub struct RateLimitLayer<K> {
     key_extractor: Arc<K>,
     options: RateLimitOptions,
     metrics: Option<Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>>,
+    config_name: String, // Track which rate limit config this is using
 }
 
 impl<K> RateLimitLayer<K>
@@ -90,7 +91,13 @@ where
             key_extractor: Arc::new(key_extractor),
             options,
             metrics: None,
+            config_name: "unknown".to_string(),
         }
+    }
+
+    pub fn with_config_name(mut self, config_name: String) -> Self {
+        self.config_name = config_name;
+        self
     }
 
     pub fn with_metrics(
@@ -118,6 +125,7 @@ where
             key_extractor: self.key_extractor.clone(),
             options: self.options.clone(),
             metrics: self.metrics.clone(),
+            config_name: self.config_name.clone(),
         }
     }
 }
@@ -129,6 +137,7 @@ pub struct RateLimitService<S, K> {
     key_extractor: Arc<K>,
     options: RateLimitOptions,
     metrics: Option<Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>>,
+    config_name: String,
 }
 
 impl<S, K> Service<AxumRequest<AxumBody>> for RateLimitService<S, K>
@@ -152,6 +161,7 @@ where
         let key_extractor = self.key_extractor.clone();
         let options = self.options.clone();
         let metrics = self.metrics.clone();
+        let config_name = self.config_name.clone();
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
@@ -174,11 +184,30 @@ where
             };
             debug!(final_key = %final_key, "Final rate limit key");
 
-            // Track rate limit check
+            // Use the config name as the primary limiter type
+            let primary_limiter_type = &config_name;
+
+            // Track request context for additional granularity
+            let path = req.uri().path();
+            let request_context = if path.starts_with("/app/") {
+                "websocket_upgrade"
+            } else if path.starts_with("/apps/") {
+                "http_api"
+            } else if path.starts_with("/up/") {
+                "health_check"
+            } else {
+                "other"
+            };
+
+            // Track rate limit check with config name
             if let Some(ref metrics) = metrics {
                 let metrics_locked = metrics.lock().await;
                 // Use "global" as app_id for IP-based rate limiting
-                metrics_locked.mark_rate_limit_check("global", "http_api");
+                metrics_locked.mark_rate_limit_check_with_context(
+                    "global",
+                    primary_limiter_type,
+                    request_context,
+                );
             }
 
             let rate_limit_result = match limiter.increment(&final_key).await {
@@ -203,14 +232,18 @@ where
             };
 
             if !rate_limit_result.allowed {
-                debug!(key = %final_key, "Rate limit exceeded");
-                
-                // Track rate limit triggered
+                debug!(key = %final_key, "Rate limit exceeded for config: {}", config_name);
+
+                // Track rate limit triggered with config name
                 if let Some(ref metrics) = metrics {
                     let metrics_locked = metrics.lock().await;
-                    metrics_locked.mark_rate_limit_triggered("global", "http_api");
+                    metrics_locked.mark_rate_limit_triggered_with_context(
+                        "global",
+                        primary_limiter_type,
+                        request_context,
+                    );
                 }
-                
+
                 return Ok(rate_limit_error_response(Some(&rate_limit_result)));
             }
 

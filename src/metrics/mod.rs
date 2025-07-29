@@ -28,8 +28,24 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a rate limit check
     fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str);
 
+    /// Track a rate limit check with request context
+    fn mark_rate_limit_check_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    );
+
     /// Track a rate limit trigger (when limit is exceeded)
     fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str);
+
+    /// Track a rate limit trigger with request context
+    fn mark_rate_limit_triggered_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    );
 
     /// Track a channel subscription
     fn mark_channel_subscription(&self, app_id: &str, channel_type: &str);
