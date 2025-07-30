@@ -12,6 +12,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::error::Error as StdError;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use std::time::Instant;
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SocketId(pub String);
@@ -108,6 +109,14 @@ impl Drop for ConnectionTimeouts {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConnectionStatus {
+    Active,
+    PingSent(Instant),
+    Closing,
+    Closed,
+}
+
 #[derive(Debug)]
 pub struct ConnectionState {
     pub socket_id: SocketId,
@@ -119,6 +128,7 @@ pub struct ConnectionState {
     pub presence: Option<HashMap<String, PresenceMemberInfo>>,
     pub user: Option<Value>,
     pub timeouts: ConnectionTimeouts,
+    pub status: ConnectionStatus,
 }
 
 impl ConnectionState {
@@ -133,6 +143,7 @@ impl ConnectionState {
             presence: None,
             user: None,
             timeouts: ConnectionTimeouts::new(),
+            status: ConnectionStatus::Active,
         }
     }
 
@@ -147,6 +158,7 @@ impl ConnectionState {
             presence: None,
             user: None,
             timeouts: ConnectionTimeouts::new(),
+            status: ConnectionStatus::Active,
         }
     }
 
@@ -203,14 +215,82 @@ pub struct MessageSender {
     _receiver_handle: JoinHandle<()>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SocketOperation {
+    WriteFrame,
+    SendCloseFrame,
+}
+
+impl std::fmt::Display for SocketOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SocketOperation::WriteFrame => write!(f, "write frame to WebSocket"),
+            SocketOperation::SendCloseFrame => write!(f, "send close frame"),
+        }
+    }
+}
+
+impl SocketOperation {
+    fn is_close_operation(&self) -> bool {
+        matches!(self, SocketOperation::SendCloseFrame)
+    }
+}
+
 impl MessageSender {
+    fn is_connection_error(error: &fastwebsockets::WebSocketError) -> bool {
+        // For now, let's use a different approach to check if it's an IO error
+        // We'll pattern match on the error's source or check if it contains IO error
+        if let Some(source) = StdError::source(error) {
+            if let Some(io_err) = source.downcast_ref::<std::io::Error>() {
+                matches!(
+                    io_err.kind(),
+                    std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                )
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    fn log_connection_error(error: &fastwebsockets::WebSocketError, operation: SocketOperation, frame_count: usize, is_shutting_down: bool) {
+        let is_conn_err = Self::is_connection_error(error);
+        
+        if is_conn_err && is_shutting_down {
+            debug!("{} failed during shutdown (expected): {}", operation, error);
+        } else if is_conn_err && frame_count <= 2 {
+            warn!("Early connection {} failed (after {} frames): {}", operation, frame_count, error);
+        } else if is_conn_err {
+            warn!("Connection {} failed during operation (after {} frames): {}", operation, frame_count, error);
+        } else {
+            if operation.is_close_operation() {
+                warn!("Failed to {}: {}", operation, error);
+            } else {
+                error!("Failed to {}: {}", operation, error);
+            }
+        }
+    }
+
     pub fn new(mut socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>) -> Self {
         let (sender, mut receiver) = mpsc::unbounded_channel::<Frame<'static>>();
 
         let receiver_handle = tokio::spawn(async move {
+            let mut frame_count = 0;
+            let mut is_shutting_down = false;
+            
             while let Some(frame) = receiver.recv().await {
+                frame_count += 1;
+                
+                // Detect if this is a close frame (indicates shutdown)
+                if matches!(frame.opcode, fastwebsockets::OpCode::Close) {
+                    is_shutting_down = true;
+                }
+                
                 if let Err(e) = socket.write_frame(frame).await {
-                    error!("Failed to write frame to WebSocket: {}", e);
+                    Self::log_connection_error(&e, SocketOperation::WriteFrame, frame_count, is_shutting_down);
                     break;
                 }
             }
@@ -220,7 +300,7 @@ impl MessageSender {
                 .write_frame(Frame::close(1000, b"Normal closure"))
                 .await
             {
-                warn!("Failed to send close frame: {}", e);
+                Self::log_connection_error(&e, SocketOperation::SendCloseFrame, frame_count, true);
             }
         });
 
@@ -273,6 +353,18 @@ impl WebSocket {
     }
 
     pub async fn close(&mut self, code: u16, reason: String) -> Result<()> {
+        // Check if already closing or closed
+        match self.state.status {
+            ConnectionStatus::Closing | ConnectionStatus::Closed => {
+                debug!("Connection already closing or closed, skipping close frames");
+                return Ok(());
+            }
+            _ => {}
+        }
+        
+        // Update connection status
+        self.state.status = ConnectionStatus::Closing;
+        
         // Send error message first if it's an error closure
         if code >= 4000 {
             let error_message = PusherMessage::error(code, reason.clone(), None);
@@ -286,12 +378,23 @@ impl WebSocket {
 
         // Clear any active timeouts
         self.state.clear_timeouts();
+        
+        // Mark as closed
+        self.state.status = ConnectionStatus::Closed;
 
         Ok(())
     }
 
     pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
-        self.message_sender.send_json(message)
+        // Check if connection is in a valid state to send messages
+        match self.state.status {
+            ConnectionStatus::Active | ConnectionStatus::PingSent(_) => {
+                self.message_sender.send_json(message)
+            }
+            ConnectionStatus::Closing | ConnectionStatus::Closed => {
+                Err(Error::ConnectionClosed("Cannot send message on closed connection".to_string()))
+            }
+        }
     }
 
     pub fn send_text(&self, text: String) -> Result<()> {
@@ -303,8 +406,7 @@ impl WebSocket {
     }
 
     pub fn is_connected(&self) -> bool {
-        // Could add more sophisticated connection state checking here
-        true // For now, assume connected if the struct exists
+        matches!(self.state.status, ConnectionStatus::Active | ConnectionStatus::PingSent(_))
     }
 
     pub fn update_activity(&mut self) {
