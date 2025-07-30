@@ -17,7 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub type JobProcessorFnAsync = Box<
     dyn Fn(JobData) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync + 'static,
@@ -110,7 +110,7 @@ impl WebhookSender {
     pub async fn process_webhook_job(&self, job: JobData) -> Result<()> {
         let app_id = job.app_id.clone();
         let app_key = job.app_key.clone();
-        info!("Processing webhook job for app_id: {}", app_id);
+        debug!("Processing webhook job for app_id: {}", app_id);
 
         // Get app configuration
         let app_config = self.get_app_config(&app_id).await?;
@@ -119,7 +119,7 @@ impl WebhookSender {
         let webhook_configs = match &app_config.webhooks {
             Some(hooks) => hooks,
             None => {
-                info!("No webhooks configured for app: {}", app_id);
+                debug!("No webhooks configured for app: {}", app_id);
                 return Ok(());
             }
         };
@@ -136,7 +136,7 @@ impl WebhookSender {
         // Find relevant webhooks
         let relevant_webhooks = self.find_relevant_webhooks(&job.payload.events, webhook_configs);
         if relevant_webhooks.is_empty() {
-            info!(
+            debug!(
                 "No matching webhook configurations for events in job for app {}",
                 app_id
             );
@@ -241,7 +241,7 @@ impl WebhookSender {
             {
                 error!("Webhook send error to URL {}: {}", url_str, e);
             } else {
-                info!("Successfully sent Pusher webhook to URL: {}", url_str);
+                debug!("Successfully sent Pusher webhook to URL: {}", url_str);
             }
         })
     }
@@ -265,7 +265,7 @@ impl WebhookSender {
             {
                 error!("Lambda webhook error for app {}: {}", app_id, e);
             } else {
-                info!("Successfully invoked Lambda for app: {}", app_id);
+                debug!("Successfully invoked Lambda for app: {}", app_id);
             }
         })
     }
@@ -291,7 +291,7 @@ async fn send_pusher_webhook(
     json_body: String, // Expects already serialized JSON string
     custom_headers_config: HashMap<String, String>,
 ) -> Result<()> {
-    info!("Sending Pusher webhook to URL: {}", url);
+    debug!("Sending Pusher webhook to URL: {}", url);
 
     let mut request_builder = client
         .post(url)
@@ -343,10 +343,10 @@ async fn send_pusher_webhook(
 
 // Helper function to log webhook processing details (Pusher format)
 fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPayload) {
-    info!("Pusher Webhook for app ID: {}", app_id);
+    debug!("Pusher Webhook for app ID: {}", app_id);
     info!("Time (ms): {}", payload.time_ms);
     for event in &payload.events {
-        info!("  Event: {:?}", event);
+        debug!("  Event: {:?}", event);
     }
 }
 
