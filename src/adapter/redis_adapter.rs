@@ -19,7 +19,7 @@ use redis::AsyncCommands;
 use std::any::Any;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::metrics::MetricsInterface;

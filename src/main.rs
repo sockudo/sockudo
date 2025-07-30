@@ -22,7 +22,6 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
-use async_nats::rustls::crypto::CryptoProvider;
 use axum::http::Method;
 use axum::http::header::HeaderName;
 use axum::http::uri::Authority;
