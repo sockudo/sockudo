@@ -43,16 +43,39 @@ impl ConnectionHandler {
             name: None,
         };
 
-        let channel_manager = self.channel_manager.write().await;
-        let subscription_result = channel_manager
-            .subscribe(
-                socket_id.as_ref(),
-                &temp_message,
-                &request.channel,
-                is_authenticated,
-                &app_config.id,
-            )
-            .await?;
+        let subscription_result = {
+            let channel_manager = self.channel_manager.write().await;
+            channel_manager
+                .subscribe(
+                    socket_id.as_ref(),
+                    &temp_message,
+                    &request.channel,
+                    is_authenticated,
+                    &app_config.id,
+                )
+                .await?
+        };
+
+        // Track subscription metrics if successful
+        if subscription_result.success {
+            if let Some(ref metrics) = self.metrics {
+                let channel_type = ChannelType::from_name(&request.channel);
+                let channel_type_str = channel_type.as_str();
+
+                // Mark subscription metric
+                {
+                    let metrics_locked = metrics.lock().await;
+                    metrics_locked.mark_channel_subscription(&app_config.id, channel_type_str);
+                }
+
+                // Update active channel count if this is the first connection to the channel
+                if subscription_result.channel_connections == Some(1) {
+                    // Channel became active - increment the count for this channel type
+                    // Pass the Arc directly to avoid holding any locks
+                    self.increment_active_channel_count(&app_config.id, channel_type_str, metrics.clone()).await;
+                }
+            }
+        }
 
         // Convert the channel manager result to our result type
         Ok(SubscriptionResult {
@@ -245,4 +268,5 @@ impl ConnectionHandler {
             .send_message(&app_config.id, socket_id, response_msg)
             .await
     }
+
 }

@@ -22,14 +22,6 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
-use std::fs::File;
-use std::io::Read;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 use async_nats::rustls::crypto::CryptoProvider;
 use axum::http::Method;
 use axum::http::header::HeaderName;
@@ -38,6 +30,14 @@ use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::{BoxError, Router, middleware as axum_middleware};
+use std::fs::File;
+use std::io::Read;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
@@ -148,8 +148,7 @@ impl SockudoServer {
             config.app_manager.driver
         );
 
-        let connection_manager =
-            AdapterFactory::create(&config.adapter, &config.database).await?;
+        let connection_manager = AdapterFactory::create(&config.adapter, &config.database).await?;
 
         info!(
             "Adapter initialized with driver: {:?}",
@@ -174,9 +173,8 @@ impl SockudoServer {
             config.cache.driver
         );
 
-        let channel_manager = Arc::new(RwLock::new(ChannelManager::new(
-            connection_manager.clone(),
-        )));
+        let channel_manager =
+            Arc::new(RwLock::new(ChannelManager::new(connection_manager.clone())));
         let auth_validator = Arc::new(AuthValidator::new(app_manager.clone()));
 
         let metrics = if config.metrics.enabled {
@@ -327,7 +325,8 @@ impl SockudoServer {
             None
         };
 
-        let webhook_redis_url = if let Some(url_override) = config.queue.redis.url_override.as_ref() {
+        let webhook_redis_url = if let Some(url_override) = config.queue.redis.url_override.as_ref()
+        {
             url_override.clone()
         } else {
             format!(
@@ -720,13 +719,20 @@ impl SockudoServer {
                     "Applying custom rate limiting middleware with trust_hops: {}",
                     trust_hops
                 );
-                Some(
+                let mut rate_limit_layer =
                     crate::rate_limiter::middleware::RateLimitLayer::with_options(
                         rate_limiter_instance.clone(),
                         ip_key_extractor,
                         options,
-                    ),
-                )
+                    )
+                    .with_config_name("api_rate_limit".to_string()); // Set the config name
+
+                // Add metrics if available
+                if let Some(ref metrics) = self.state.metrics {
+                    rate_limit_layer = rate_limit_layer.with_metrics(metrics.clone());
+                }
+
+                Some(rate_limit_layer)
             } else {
                 warn!(
                     "Rate limiting is enabled in config, but no RateLimiter instance found in server state for HTTP API. Rate limiting will not be applied."
@@ -1158,7 +1164,12 @@ async fn main() -> Result<()> {
     // Initialize crypto provider at the very beginning for any TLS usage (HTTPS or Redis TLS)
     rustls::crypto::ring::default_provider()
         .install_default()
-        .map_err(|e| Error::Internal(format!("Failed to install default crypto provider: {:?}", e)))?;
+        .map_err(|e| {
+            Error::Internal(format!(
+                "Failed to install default crypto provider: {:?}",
+                e
+            ))
+        })?;
 
     // --- Part 1: Determine final config.debug ---
     let initial_debug_from_env = std::env::var("DEBUG")

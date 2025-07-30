@@ -354,6 +354,21 @@ impl MetricsInterface for MockMetricsInterface {
     }
     fn mark_new_connection(&self, _app_id: &str, _socket_id: &SocketId) {}
     fn mark_disconnection(&self, _app_id: &str, _socket_id: &SocketId) {}
+    fn mark_connection_error(&self, _app_id: &str, _error_type: &str) {}
+    fn mark_rate_limit_check(&self, _app_id: &str, _limiter_type: &str) {}
+    fn mark_rate_limit_check_with_context(
+        &self,
+        _app_id: &str,
+        _limiter_type: &str,
+        _request_context: &str,
+    ) {}
+    fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str) {
+    }
+    fn mark_rate_limit_triggered_with_context(&self, app_id: &str, limiter_type: &str, request_context: &str) {
+    }
+    fn mark_channel_subscription(&self, _app_id: &str, _channel_type: &str) {}
+    fn mark_channel_unsubscription(&self, _app_id: &str, _channel_type: &str) {}
+    fn update_active_channels(&self, _app_id: &str, _channel_type: &str, _count: i64) {}
     fn mark_api_message(
         &self,
         _app_id: &str,
