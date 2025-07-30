@@ -8,6 +8,15 @@ use crate::websocket::SocketId;
 
 impl ConnectionHandler {
     pub async fn handle_ping(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        // Reset connection status to Active when we receive a ping from client
+        {
+            let mut connection_manager = self.connection_manager.lock().await;
+            if let Some(connection) = connection_manager.get_connection(socket_id, &app_id).await {
+                let mut conn_locked = connection.0.lock().await;
+                conn_locked.state.status = crate::websocket::ConnectionStatus::Active;
+            }
+        }
+        
         let pong_message = PusherMessage::pong();
         self.send_message_to_socket(app_id, socket_id, pong_message)
             .await
@@ -18,7 +27,9 @@ impl ConnectionHandler {
         let mut connection_manager = self.connection_manager.lock().await;
         if let Some(connection) = connection_manager.get_connection(socket_id, &app_id).await {
             let mut conn_locked = connection.0.lock().await;
-            conn_locked.update_activity();
+            // Note: activity timestamp is already updated by handle_message() for ALL messages
+            // We just need to reset connection status to Active when we receive a pong
+            conn_locked.state.status = crate::websocket::ConnectionStatus::Active;
         } else {
             tracing::warn!("Pong received for unknown socket: {}", socket_id);
         }
