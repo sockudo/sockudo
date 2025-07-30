@@ -84,6 +84,9 @@ pub enum Error {
     #[error("Connection not found")]
     ConnectionNotFound,
 
+    #[error("Connection closed: {0}")]
+    ConnectionClosed(String),
+
     // Protocol errors
     #[error("Protocol error: {0}")]
     Protocol(String),
