@@ -72,6 +72,10 @@ impl ConnectionHandler {
         }
     }
 
+    pub fn app_manager(&self) -> &Arc<dyn AppManager + Send + Sync> {
+        &self.app_manager
+    }
+
     pub async fn handle_socket(&self, fut: upgrade::UpgradeFut, app_key: String) -> Result<()> {
         // Early validation and setup
         let app_config = match self.validate_and_get_app(&app_key).await {
