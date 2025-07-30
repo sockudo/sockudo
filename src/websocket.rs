@@ -19,7 +19,7 @@ use std::time::Instant;
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SocketId(pub String);
@@ -284,6 +284,15 @@ impl WebSocket {
     }
 
     pub async fn close(&mut self, code: u16, reason: String) -> Result<()> {
+        // Check if already closing or closed
+        match self.state.status {
+            ConnectionStatus::Closing | ConnectionStatus::Closed => {
+                debug!("Connection already closing or closed, skipping close frames");
+                return Ok(());
+            }
+            _ => {}
+        }
+        
         // Update connection status
         self.state.status = ConnectionStatus::Closing;
         
