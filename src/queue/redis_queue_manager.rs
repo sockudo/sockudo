@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 pub struct RedisQueueManager {
     redis_connection: Arc<Mutex<MultiplexedConnection>>,
