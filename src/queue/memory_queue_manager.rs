@@ -101,7 +101,6 @@ impl QueueInterface for MemoryQueueManager {
         self.processors
             .insert(queue_name.to_string(), Arc::from(callback)); // Store as Arc
         debug!("Registered processor for memory queue: {}", queue_name);
-        );
 
         Ok(())
     }
