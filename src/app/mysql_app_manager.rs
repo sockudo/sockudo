@@ -120,9 +120,7 @@ impl MySQLAppManager {
         }
 
         // Not in cache or expired, fetch from database
-        debug!(
-            "{}",
-            format!("Cache miss for app {}, fetching from database", app_id)
+        debug!("Cache miss for app {}, fetching from database", app_id);
         );
 
         // Use a query_as that matches your App struct
@@ -179,9 +177,7 @@ impl MySQLAppManager {
         }
 
         // Not found in cache, query database
-        debug!(
-            "{}",
-            format!("Cache miss for app key {}, fetching from database", key)
+        debug!("Cache miss for app key {}, fetching from database", key);
         );
 
         let query = format!(
