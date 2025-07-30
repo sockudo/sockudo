@@ -475,6 +475,9 @@ pub async fn events(
     RawQuery(raw_query_str_option): RawQuery, // Gets the raw query string (e.g., "auth_key=abc&auth_timestamp=123...")
     Json(event_payload): Json<PusherApiMessage>, // The JSON body of the request
 ) -> Result<impl IntoResponse, AppError> {
+    // Calculate request size for metrics
+    let incoming_request_size_bytes = serde_json::to_vec(&event_payload)?.len();
+
     let app = handler
         .app_manager
         .find_by_id(app_id.as_str())
@@ -486,14 +489,25 @@ pub async fn events(
     let channels_info_map =
         process_single_event_parallel(&handler, &app, event_payload, need_channel_info).await?;
 
-    if need_channel_info && !channels_info_map.is_empty() {
-        let response_payload = json!({
+    let response_payload = if need_channel_info && !channels_info_map.is_empty() {
+        json!({
             "channels": channels_info_map
-        });
-        Ok((StatusCode::OK, Json(response_payload)))
+        })
     } else {
-        Ok((StatusCode::OK, Json(json!({ "ok": true }))))
-    }
+        json!({ "ok": true })
+    };
+
+    // Calculate response size for metrics and record metrics
+    let outgoing_response_size_bytes = serde_json::to_vec(&response_payload)?.len();
+    record_api_metrics(
+        &handler,
+        &app_id,
+        incoming_request_size_bytes,
+        outgoing_response_size_bytes,
+    )
+    .await;
+
+    Ok((StatusCode::OK, Json(response_payload)))
 }
 
 /// POST /apps/{app_id}/batch_events
@@ -838,11 +852,17 @@ pub async fn terminate_user_connections(
         .await
         .terminate_connection(&app_id, &user_id)
         .await?;
+
     info!(
         "Successfully initiated termination for user_id: {}",
         user_id
     );
-    Ok((StatusCode::OK, Json(json!({ "ok": true }))))
+
+    let response_payload = json!({ "ok": true });
+    let response_size = serde_json::to_vec(&response_payload)?.len();
+    record_api_metrics(&handler, &app_id, 0, response_size).await;
+
+    Ok((StatusCode::OK, Json(response_payload)))
 }
 
 /// GET /up/{app_id}

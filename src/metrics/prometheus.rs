@@ -12,7 +12,7 @@ use prometheus::{
     register_gauge_vec, register_histogram_vec,
 };
 use serde_json::{Value, json};
-use tracing::{error, info};
+use tracing::{debug, error};
 
 /// A Prometheus implementation of the metrics interface
 pub struct PrometheusMetricsDriver {
@@ -23,6 +23,7 @@ pub struct PrometheusMetricsDriver {
     connected_sockets: GaugeVec,
     new_connections_total: CounterVec,
     new_disconnections_total: CounterVec,
+    connection_errors_total: CounterVec,
     socket_bytes_received: CounterVec,
     socket_bytes_transmitted: CounterVec,
     ws_messages_received: CounterVec,
@@ -36,6 +37,11 @@ pub struct PrometheusMetricsDriver {
     horizontal_adapter_sent_requests: CounterVec,
     horizontal_adapter_received_requests: CounterVec,
     horizontal_adapter_received_responses: CounterVec,
+    rate_limit_checks_total: CounterVec,
+    rate_limit_triggered_total: CounterVec,
+    channel_subscriptions_total: CounterVec,
+    channel_unsubscriptions_total: CounterVec,
+    active_channels: GaugeVec,
 }
 
 impl PrometheusMetricsDriver {
@@ -68,6 +74,15 @@ impl PrometheusMetricsDriver {
                 "Total amount of sockudo disconnections"
             ),
             &["app_id", "port"]
+        )
+        .unwrap();
+
+        let connection_errors_total = register_counter_vec!(
+            Opts::new(
+                format!("{}connection_errors_total", prefix),
+                "Total amount of connection errors by type"
+            ),
+            &["app_id", "port", "error_type"]
         )
         .unwrap();
 
@@ -186,12 +201,58 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let rate_limit_checks_total = register_counter_vec!(
+            Opts::new(
+                format!("{}rate_limit_checks_total", prefix),
+                "Total number of rate limit checks performed"
+            ),
+            &["app_id", "port", "limiter_type", "request_context"]
+        )
+        .unwrap();
+
+        let rate_limit_triggered_total = register_counter_vec!(
+            Opts::new(
+                format!("{}rate_limit_triggered_total", prefix),
+                "Total number of times rate limit was triggered"
+            ),
+            &["app_id", "port", "limiter_type", "request_context"]
+        )
+        .unwrap();
+
+        let channel_subscriptions_total = register_counter_vec!(
+            Opts::new(
+                format!("{}channel_subscriptions_total", prefix),
+                "Total number of channel subscriptions"
+            ),
+            &["app_id", "port", "channel_type"]
+        )
+        .unwrap();
+
+        let channel_unsubscriptions_total = register_counter_vec!(
+            Opts::new(
+                format!("{}channel_unsubscriptions_total", prefix),
+                "Total number of channel unsubscriptions"
+            ),
+            &["app_id", "port", "channel_type"]
+        )
+        .unwrap();
+
+        let active_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{}active_channels", prefix),
+                "Number of currently active channels"
+            ),
+            &["app_id", "port", "channel_type"]
+        )
+        .unwrap();
+
         Self {
             prefix,
             port,
             connected_sockets,
             new_connections_total,
             new_disconnections_total,
+            connection_errors_total,
             socket_bytes_received,
             socket_bytes_transmitted,
             ws_messages_received,
@@ -205,6 +266,11 @@ impl PrometheusMetricsDriver {
             horizontal_adapter_sent_requests,
             horizontal_adapter_received_requests,
             horizontal_adapter_received_responses,
+            rate_limit_checks_total,
+            rate_limit_triggered_total,
+            channel_subscriptions_total,
+            channel_unsubscriptions_total,
+            active_channels,
         }
     }
 
@@ -226,12 +292,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connected_sockets.with_label_values(&tags).inc();
         self.new_connections_total.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: New connection for app {}, socket {}",
-                app_id, socket_id
-            )
+        debug!(
+            "Metrics: New connection for app {}, socket {}",
+            app_id, socket_id
         );
     }
 
@@ -240,12 +303,121 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.connected_sockets.with_label_values(&tags).dec();
         self.new_disconnections_total.with_label_values(&tags).inc();
 
-        info!(
-            "{}",
-            format!(
-                "Metrics: Disconnection for app {}, socket {}",
-                app_id, socket_id
-            )
+        debug!(
+            "Metrics: Disconnection for app {}, socket {}",
+            app_id, socket_id
+        );
+    }
+
+    fn mark_connection_error(&self, app_id: &str, error_type: &str) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            error_type.to_string(),
+        ];
+        self.connection_errors_total.with_label_values(&tags).inc();
+
+        debug!(
+            "Metrics: Connection error for app {}, error type: {}",
+            app_id, error_type
+        );
+    }
+
+    fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str) {
+        self.mark_rate_limit_check_with_context(app_id, limiter_type, "unknown");
+    }
+
+    fn mark_rate_limit_check_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    ) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            limiter_type.to_string(),
+            request_context.to_string(),
+        ];
+        self.rate_limit_checks_total.with_label_values(&tags).inc();
+
+        debug!(
+            "Metrics: Rate limit check for app {}, limiter type: {}, context: {}",
+            app_id, limiter_type, request_context
+        );
+    }
+
+    fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str) {
+        self.mark_rate_limit_triggered_with_context(app_id, limiter_type, "unknown");
+    }
+
+    fn mark_rate_limit_triggered_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    ) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            limiter_type.to_string(),
+            request_context.to_string(),
+        ];
+        self.rate_limit_triggered_total
+            .with_label_values(&tags)
+            .inc();
+
+        debug!(
+            "Metrics: Rate limit triggered for app {}, limiter type: {}, context: {}",
+            app_id, limiter_type, request_context
+        );
+    }
+
+    fn mark_channel_subscription(&self, app_id: &str, channel_type: &str) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            channel_type.to_string(),
+        ];
+        self.channel_subscriptions_total
+            .with_label_values(&tags)
+            .inc();
+
+        debug!(
+            "Metrics: Channel subscription for app {}, channel type: {}",
+            app_id, channel_type
+        );
+    }
+
+    fn mark_channel_unsubscription(&self, app_id: &str, channel_type: &str) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            channel_type.to_string(),
+        ];
+        self.channel_unsubscriptions_total
+            .with_label_values(&tags)
+            .inc();
+
+        debug!(
+            "Metrics: Channel unsubscription for app {}, channel type: {}",
+            app_id, channel_type
+        );
+    }
+
+    fn update_active_channels(&self, app_id: &str, channel_type: &str, count: i64) {
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            channel_type.to_string(),
+        ];
+        self.active_channels
+            .with_label_values(&tags)
+            .set(count as f64);
+
+        debug!(
+            "Metrics: Active channels updated for app {}, channel type: {}, count: {}",
+            app_id, channel_type, count
         );
     }
 
@@ -263,6 +435,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc_by(sent_message_size as f64);
         self.http_calls_received.with_label_values(&tags).inc();
+
+        debug!(
+            "Metrics: API message for app {}, incoming size: {}, sent size: {}",
+            app_id, incoming_message_size, sent_message_size
+        );
     }
 
     fn mark_ws_message_sent(&self, app_id: &str, sent_message_size: usize) {
@@ -271,6 +448,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc_by(sent_message_size as f64);
         self.ws_messages_sent.with_label_values(&tags).inc();
+
+        debug!(
+            "Metrics: WS message sent for app {}, size: {}",
+            app_id, sent_message_size
+        );
     }
 
     fn mark_ws_message_received(&self, app_id: &str, message_size: usize) {
@@ -279,6 +461,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc_by(message_size as f64);
         self.ws_messages_received.with_label_values(&tags).inc();
+
+        debug!(
+            "Metrics: WS message received for app {}, size: {}",
+            app_id, message_size
+        );
     }
 
     fn track_horizontal_adapter_resolve_time(&self, app_id: &str, time_ms: f64) {
@@ -286,6 +473,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.horizontal_adapter_resolve_time
             .with_label_values(&tags)
             .observe(time_ms);
+
+        debug!(
+            "Metrics: Horizontal adapter resolve time for app {}, time: {} ms",
+            app_id, time_ms
+        );
     }
 
     fn track_horizontal_adapter_resolved_promises(&self, app_id: &str, resolved: bool) {
@@ -300,6 +492,12 @@ impl MetricsInterface for PrometheusMetricsDriver {
                 .with_label_values(&tags)
                 .inc();
         }
+
+        debug!(
+            "Metrics: Horizontal adapter promise {} for app {}",
+            if resolved { "resolved" } else { "unresolved" },
+            app_id
+        );
     }
 
     fn mark_horizontal_adapter_request_sent(&self, app_id: &str) {
@@ -307,6 +505,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.horizontal_adapter_sent_requests
             .with_label_values(&tags)
             .inc();
+
+        debug!(
+            "Metrics: Horizontal adapter request sent for app {}",
+            app_id
+        );
     }
 
     fn mark_horizontal_adapter_request_received(&self, app_id: &str) {
@@ -314,6 +517,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.horizontal_adapter_received_requests
             .with_label_values(&tags)
             .inc();
+
+        debug!(
+            "Metrics: Horizontal adapter request received for app {}",
+            app_id
+        );
     }
 
     fn mark_horizontal_adapter_response_received(&self, app_id: &str) {
@@ -321,6 +529,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.horizontal_adapter_received_responses
             .with_label_values(&tags)
             .inc();
+
+        debug!(
+            "Metrics: Horizontal adapter response received for app {}",
+            app_id
+        );
     }
 
     async fn get_metrics_as_plaintext(&self) -> String {
@@ -456,9 +669,6 @@ impl MetricsInterface for PrometheusMetricsDriver {
     async fn clear(&self) {
         // Reset individual metrics counters - not fully supported by Prometheus Rust client
         // So we'll just log a message
-        info!(
-            "{}",
-            "Metrics cleared (note: Prometheus metrics can't be fully cleared)"
-        );
+        debug!("Metrics cleared (note: Prometheus metrics can't be fully cleared)");
     }
 }

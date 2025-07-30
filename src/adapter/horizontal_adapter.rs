@@ -159,6 +159,12 @@ impl HorizontalAdapter {
             return Err(Error::OwnRequestIgnored);
         }
 
+        // Track metrics for received request
+        if let Some(ref metrics) = self.metrics {
+            let metrics = metrics.lock().await;
+            metrics.mark_horizontal_adapter_request_received(&request.app_id);
+        }
+
         // Initialize empty response
         let mut response = ResponseBody {
             request_id: request.request_id.clone(),

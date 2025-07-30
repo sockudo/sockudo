@@ -24,6 +24,15 @@ impl ChannelType {
             ChannelType::Private | ChannelType::Presence | ChannelType::PrivateEncrypted
         )
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChannelType::Public => "public",
+            ChannelType::Private => "private",
+            ChannelType::Presence => "presence",
+            ChannelType::PrivateEncrypted => "private_encrypted",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

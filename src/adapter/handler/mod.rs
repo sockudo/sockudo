@@ -35,7 +35,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -74,8 +74,34 @@ impl ConnectionHandler {
 
     pub async fn handle_socket(&self, fut: upgrade::UpgradeFut, app_key: String) -> Result<()> {
         // Early validation and setup
-        let app_config = self.validate_and_get_app(&app_key).await?;
-        let (socket_rx, socket_tx) = self.upgrade_websocket(fut).await?;
+        let app_config = match self.validate_and_get_app(&app_key).await {
+            Ok(app) => app,
+            Err(e) => {
+                // Track application validation errors
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    let error_type = match &e {
+                        Error::ApplicationNotFound => "app_not_found",
+                        Error::ApplicationDisabled => "app_disabled",
+                        _ => "app_validation_failed",
+                    };
+                    metrics_locked.mark_connection_error(&app_key, error_type);
+                }
+                return Err(e);
+            }
+        };
+
+        let (socket_rx, socket_tx) = match self.upgrade_websocket(fut).await {
+            Ok(sockets) => sockets,
+            Err(e) => {
+                // Track WebSocket upgrade errors
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    metrics_locked.mark_connection_error(&app_config.id, "websocket_upgrade_error");
+                }
+                return Err(e);
+            }
+        };
 
         // Connection quota check
         self.check_connection_quota(&app_config).await?;
@@ -247,11 +273,39 @@ impl ConnectionHandler {
             .await?;
 
         // Parse message
-        let message = self.parse_message(&frame)?;
-        let event_name = message
-            .event
-            .as_deref()
-            .ok_or_else(|| Error::InvalidEventName("Event name is required".into()))?;
+        let message = match self.parse_message(&frame) {
+            Ok(msg) => msg,
+            Err(e) => {
+                // Track message parsing errors
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    let error_type = match &e {
+                        Error::InvalidMessageFormat(_) => "invalid_message_format",
+                        _ => "message_parse_error",
+                    };
+                    metrics_locked.mark_connection_error(&app_config.id, error_type);
+                }
+                return Err(e);
+            }
+        };
+
+        let event_name = match message.event.as_deref() {
+            Some(name) => name,
+            None => {
+                // Track missing event name errors
+                if let Some(ref metrics) = self.metrics {
+                    let metrics_locked = metrics.lock().await;
+                    metrics_locked.mark_connection_error(&app_config.id, "missing_event_name");
+                }
+                return Err(Error::InvalidEventName("Event name is required".into()));
+            }
+        };
+
+        // Track WebSocket message received metrics
+        if let Some(ref metrics) = self.metrics {
+            let metrics_locked = metrics.lock().await;
+            metrics_locked.mark_ws_message_received(&app_config.id, frame.payload.len());
+        }
 
         info!(
             "Received message from {}: event '{}'",
@@ -375,5 +429,86 @@ impl ConnectionHandler {
         }
 
         info!("Socket {} cleanup completed", socket_id);
+    }
+
+    /// Increment the active channel count for a specific channel type
+    async fn increment_active_channel_count(
+        &self,
+        app_id: &str,
+        channel_type: &str,
+        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
+    ) {
+        // Get current count for this channel type
+        // IMPORTANT: We must get the count BEFORE acquiring the metrics lock to avoid deadlock
+        let current_count = self.get_active_channel_count_for_type(app_id, channel_type).await;
+        
+        // Now acquire the metrics lock and update
+        let metrics_locked = metrics.lock().await;
+        metrics_locked.update_active_channels(app_id, channel_type, current_count + 1);
+
+        debug!(
+            "Incremented active {} channels for app {} to {}",
+            channel_type, app_id, current_count + 1
+        );
+    }
+
+    /// Decrement the active channel count for a specific channel type
+    async fn decrement_active_channel_count(
+        &self,
+        app_id: &str,
+        channel_type: &str,
+        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
+    ) {
+        // Get current count for this channel type
+        // IMPORTANT: We must get the count BEFORE acquiring the metrics lock to avoid deadlock
+        let current_count = self.get_active_channel_count_for_type(app_id, channel_type).await;
+        
+        // Decrement by 1, but never go below 0
+        let new_count = std::cmp::max(0, current_count - 1);
+        
+        // Now acquire the metrics lock and update
+        let metrics_locked = metrics.lock().await;
+        metrics_locked.update_active_channels(app_id, channel_type, new_count);
+        
+        debug!(
+            "Decremented active {} channels for app {} to {}",
+            channel_type, app_id, new_count
+        );
+    }
+
+    /// Get the current count of active channels for a specific type
+    async fn get_active_channel_count_for_type(&self, app_id: &str, channel_type: &str) -> i64 {
+        // Get all channels with their socket counts
+        let channels_map = {
+            // Acquire lock in a scoped block to ensure it's released immediately after use
+            let mut conn_manager = self.connection_manager.lock().await;
+            match conn_manager.get_channels_with_socket_count(app_id).await {
+                Ok(map) => map,
+                Err(e) => {
+                    error!("Failed to get channels for metrics update: {}", e);
+                    return 0;
+                }
+            }
+        };
+
+        // Count active channels of the specified type
+        // This processing happens AFTER the connection_manager lock is released
+        let mut count = 0i64;
+        for channel_entry in channels_map.iter() {
+            let channel_name = channel_entry.key();
+            let socket_count = *channel_entry.value();
+            
+            // Only count channels that have active connections
+            if socket_count > 0 {
+                let ch_type = crate::channel::ChannelType::from_name(channel_name);
+                let ch_type_str = ch_type.as_str();
+                
+                if ch_type_str == channel_type {
+                    count += 1;
+                }
+            }
+        }
+        
+        count
     }
 }

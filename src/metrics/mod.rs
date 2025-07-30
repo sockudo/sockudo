@@ -22,6 +22,40 @@ pub trait MetricsInterface: Send + Sync {
     /// Handle a disconnection
     fn mark_disconnection(&self, app_id: &str, socket_id: &SocketId);
 
+    /// Handle a connection error
+    fn mark_connection_error(&self, app_id: &str, error_type: &str);
+
+    /// Track a rate limit check
+    fn mark_rate_limit_check(&self, app_id: &str, limiter_type: &str);
+
+    /// Track a rate limit check with request context
+    fn mark_rate_limit_check_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    );
+
+    /// Track a rate limit trigger (when limit is exceeded)
+    fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str);
+
+    /// Track a rate limit trigger with request context
+    fn mark_rate_limit_triggered_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    );
+
+    /// Track a channel subscription
+    fn mark_channel_subscription(&self, app_id: &str, channel_type: &str);
+
+    /// Track a channel unsubscription
+    fn mark_channel_unsubscription(&self, app_id: &str, channel_type: &str);
+
+    /// Update the count of active channels
+    fn update_active_channels(&self, app_id: &str, channel_type: &str, count: i64);
+
     /// Handle a new API message event being received and sent out
     fn mark_api_message(
         &self,
