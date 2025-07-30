@@ -108,6 +108,14 @@ impl Drop for ConnectionTimeouts {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConnectionStatus {
+    Active,
+    PingSent(Instant),
+    Closing,
+    Closed,
+}
+
 #[derive(Debug)]
 pub struct ConnectionState {
     pub socket_id: SocketId,
@@ -119,6 +127,7 @@ pub struct ConnectionState {
     pub presence: Option<HashMap<String, PresenceMemberInfo>>,
     pub user: Option<Value>,
     pub timeouts: ConnectionTimeouts,
+    pub status: ConnectionStatus,
 }
 
 impl ConnectionState {
@@ -133,6 +142,7 @@ impl ConnectionState {
             presence: None,
             user: None,
             timeouts: ConnectionTimeouts::new(),
+            status: ConnectionStatus::Active,
         }
     }
 
@@ -147,6 +157,7 @@ impl ConnectionState {
             presence: None,
             user: None,
             timeouts: ConnectionTimeouts::new(),
+            status: ConnectionStatus::Active,
         }
     }
 
@@ -273,6 +284,9 @@ impl WebSocket {
     }
 
     pub async fn close(&mut self, code: u16, reason: String) -> Result<()> {
+        // Update connection status
+        self.state.status = ConnectionStatus::Closing;
+        
         // Send error message first if it's an error closure
         if code >= 4000 {
             let error_message = PusherMessage::error(code, reason.clone(), None);
@@ -286,12 +300,23 @@ impl WebSocket {
 
         // Clear any active timeouts
         self.state.clear_timeouts();
+        
+        // Mark as closed
+        self.state.status = ConnectionStatus::Closed;
 
         Ok(())
     }
 
     pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
-        self.message_sender.send_json(message)
+        // Check if connection is in a valid state to send messages
+        match self.state.status {
+            ConnectionStatus::Active | ConnectionStatus::PingSent(_) => {
+                self.message_sender.send_json(message)
+            }
+            ConnectionStatus::Closing | ConnectionStatus::Closed => {
+                Err(Error::ConnectionClosed("Cannot send message on closed connection".to_string()))
+            }
+        }
     }
 
     pub fn send_text(&self, text: String) -> Result<()> {
@@ -303,8 +328,7 @@ impl WebSocket {
     }
 
     pub fn is_connected(&self) -> bool {
-        // Could add more sophisticated connection state checking here
-        true // For now, assume connected if the struct exists
+        matches!(self.state.status, ConnectionStatus::Active | ConnectionStatus::PingSent(_))
     }
 
     pub fn update_activity(&mut self) {
