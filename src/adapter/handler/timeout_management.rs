@@ -37,40 +37,74 @@ impl ConnectionHandler {
         let timeout_handle = tokio::spawn(async move {
             sleep(Duration::from_secs(120)).await;
 
+            // Perform ping operation atomically
             let mut conn_manager = connection_manager.lock().await;
-            if let Some(conn) = conn_manager
+            let conn = match conn_manager
                 .get_connection(&socket_id_clone, &app_id_clone)
                 .await
             {
-                let ws = conn.0.lock().await;
+                Some(c) => c,
+                None => {
+                    // Connection already cleaned up, nothing to do
+                    return;
+                }
+            };
 
-                // Send ping first, then set a shorter timeout for pong
+            // Try to send ping while holding the connection manager lock
+            let ping_result = {
+                let mut ws = conn.0.lock().await;
+                // Update connection status to indicate ping sent
+                ws.state.status = crate::websocket::ConnectionStatus::PingSent(std::time::Instant::now());
                 let ping_message = PusherMessage::ping();
-                if ws.send_message(&ping_message).is_ok() {
+                ws.send_message(&ping_message)
+            };
+
+            match ping_result {
+                Ok(_) => {
                     info!(
                         "Sent ping to socket {} due to activity timeout",
                         socket_id_clone
                     );
-
-                    // Wait for pong response (shorter timeout)
-                    drop(ws); // Release the lock before sleeping
+                    
+                    // Release locks before waiting for pong
+                    drop(conn_manager);
+                    
+                    // Wait for pong response
                     sleep(Duration::from_secs(30)).await;
 
-                    // Check if we received a pong (activity was updated)
+                    // Re-acquire lock to check pong status
+                    let mut conn_manager = connection_manager.lock().await;
                     if let Some(conn) = conn_manager
                         .get_connection(&socket_id_clone, &app_id_clone)
                         .await
                     {
                         let mut ws = conn.0.lock().await;
-                        if ws.state.time_since_last_ping() > Duration::from_secs(140) {
-                            // No pong received, close connection
-                            let _ = ws
-                                .close(4201, "Pong reply not received in time".to_string())
-                                .await;
+                        // Check if we're still in PingSent state (no pong received)
+                        if let crate::websocket::ConnectionStatus::PingSent(ping_time) = ws.state.status {
+                            if ping_time.elapsed() > Duration::from_secs(30) {
+                                // No pong received, close connection gracefully
+                                warn!(
+                                    "No pong received from socket {} after ping, closing connection",
+                                    socket_id_clone
+                                );
+                                let _ = ws
+                                    .close(4201, "Pong reply not received in time".to_string())
+                                    .await;
+                            }
                         }
                     }
-                } else {
-                    warn!("Failed to send ping to socket {}", socket_id_clone);
+                }
+                Err(e) => {
+                    // Connection is broken (e.g., broken pipe)
+                    // This is expected when client disconnects abruptly
+                    info!(
+                        "Failed to send ping to socket {} (connection likely closed by client): {}",
+                        socket_id_clone, e
+                    );
+                    
+                    // Clean up the connection since it's broken
+                    // Note: cleanup_connection expects the connection to still exist
+                    conn_manager.cleanup_connection(&app_id_clone, conn).await;
                 }
             }
         });
@@ -174,7 +208,9 @@ impl ConnectionHandler {
 
         let mut conn_manager = self.connection_manager.lock().await;
         if let Some(conn) = conn_manager.get_connection(socket_id, &app_config.id).await {
-            let ws = conn.0.lock().await;
+            let mut ws = conn.0.lock().await;
+            // Reset connection status to Active when we receive a ping (client is alive)
+            ws.state.status = crate::websocket::ConnectionStatus::Active;
             let pong_message = PusherMessage::pong();
             ws.send_message(&pong_message)?;
         }
