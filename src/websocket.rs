@@ -214,6 +214,27 @@ pub struct MessageSender {
     _receiver_handle: JoinHandle<()>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SocketOperation {
+    WriteFrame,
+    SendCloseFrame,
+}
+
+impl std::fmt::Display for SocketOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SocketOperation::WriteFrame => write!(f, "write frame to WebSocket"),
+            SocketOperation::SendCloseFrame => write!(f, "send close frame"),
+        }
+    }
+}
+
+impl SocketOperation {
+    fn is_close_operation(&self) -> bool {
+        matches!(self, SocketOperation::SendCloseFrame)
+    }
+}
+
 impl MessageSender {
     fn is_connection_error<E: std::fmt::Display>(error: &E) -> bool {
         let error_str = error.to_string();
@@ -222,7 +243,7 @@ impl MessageSender {
         error_str.contains("os error 32")
     }
 
-    fn log_connection_error<E: std::fmt::Display>(error: &E, operation: &str, frame_count: usize, is_shutting_down: bool) {
+    fn log_connection_error<E: std::fmt::Display>(error: &E, operation: SocketOperation, frame_count: usize, is_shutting_down: bool) {
         let is_conn_err = Self::is_connection_error(error);
         
         if is_conn_err && is_shutting_down {
@@ -232,7 +253,7 @@ impl MessageSender {
         } else if is_conn_err {
             warn!("Connection {} failed during operation (after {} frames): {}", operation, frame_count, error);
         } else {
-            if operation.contains("close") {
+            if operation.is_close_operation() {
                 warn!("Failed to {}: {}", operation, error);
             } else {
                 error!("Failed to {}: {}", operation, error);
@@ -256,7 +277,7 @@ impl MessageSender {
                 }
                 
                 if let Err(e) = socket.write_frame(frame).await {
-                    Self::log_connection_error(&e, "write frame to WebSocket", frame_count, is_shutting_down);
+                    Self::log_connection_error(&e, SocketOperation::WriteFrame, frame_count, is_shutting_down);
                     break;
                 }
             }
@@ -266,7 +287,7 @@ impl MessageSender {
                 .write_frame(Frame::close(1000, b"Normal closure"))
                 .await
             {
-                Self::log_connection_error(&e, "send close frame", frame_count, false);
+                Self::log_connection_error(&e, SocketOperation::SendCloseFrame, frame_count, false);
             }
         });
 
