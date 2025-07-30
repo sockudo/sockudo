@@ -35,76 +35,104 @@ impl ConnectionHandler {
         self.clear_activity_timeout(app_id, socket_id).await?;
 
         let timeout_handle = tokio::spawn(async move {
+            // Initial sleep before first check
             sleep(Duration::from_secs(120)).await;
 
-            // Perform ping operation atomically
-            let mut conn_manager = connection_manager.lock().await;
-            let conn = match conn_manager
-                .get_connection(&socket_id_clone, &app_id_clone)
-                .await
-            {
-                Some(c) => c,
-                None => {
-                    // Connection already cleaned up, nothing to do
-                    return;
-                }
-            };
+            loop {
+                // Check if connection still exists and get actual inactivity time
+                let mut conn_manager = connection_manager.lock().await;
+                let conn = match conn_manager
+                    .get_connection(&socket_id_clone, &app_id_clone)
+                    .await
+                {
+                    Some(c) => c,
+                    None => {
+                        // Connection already cleaned up, nothing to do
+                        return;
+                    }
+                };
 
-            // Try to send ping while holding the connection manager lock
-            let ping_result = {
-                let mut ws = conn.0.lock().await;
-                // Update connection status to indicate ping sent
-                ws.state.status = crate::websocket::ConnectionStatus::PingSent(std::time::Instant::now());
-                let ping_message = PusherMessage::ping();
-                ws.send_message(&ping_message)
-            };
+                // Check actual time since last activity
+                let time_since_activity = {
+                    let ws = conn.0.lock().await;
+                    ws.state.time_since_last_ping()
+                };
 
-            match ping_result {
-                Ok(_) => {
+                // If less than 120 seconds have passed since last activity, wait more
+                if time_since_activity < Duration::from_secs(120) {
+                    let remaining = Duration::from_secs(120) - time_since_activity;
                     debug!(
-                        "Sent ping to socket {} due to activity timeout",
-                        socket_id_clone
+                        "Socket {} still active ({}s ago), waiting {} more seconds",
+                        socket_id_clone,
+                        time_since_activity.as_secs(),
+                        remaining.as_secs()
                     );
-                    
-                    // Release locks before waiting for pong
                     drop(conn_manager);
-                    
-                    // Wait for pong response
-                    sleep(Duration::from_secs(30)).await;
+                    sleep(remaining).await;
+                    // Continue to check again without additional delay
+                    continue;
+                }
 
-                    // Re-acquire lock to check pong status
-                    let mut conn_manager = connection_manager.lock().await;
-                    if let Some(conn) = conn_manager
-                        .get_connection(&socket_id_clone, &app_id_clone)
-                        .await
-                    {
-                        let mut ws = conn.0.lock().await;
-                        // Check if we're still in PingSent state (no pong received)
-                        if let crate::websocket::ConnectionStatus::PingSent(ping_time) = ws.state.status {
-                            if ping_time.elapsed() > Duration::from_secs(30) {
-                                // No pong received, close connection gracefully
-                                warn!(
-                                    "No pong received from socket {} after ping, closing connection",
-                                    socket_id_clone
-                                );
-                                let _ = ws
-                                    .close(4201, "Pong reply not received in time".to_string())
-                                    .await;
+                // Truly inactive for 120+ seconds, send ping
+                let ping_result = {
+                    let mut ws = conn.0.lock().await;
+                    // Update connection status to indicate ping sent
+                    ws.state.status = crate::websocket::ConnectionStatus::PingSent(std::time::Instant::now());
+                    let ping_message = PusherMessage::ping();
+                    ws.send_message(&ping_message)
+                };
+
+                match ping_result {
+                    Ok(_) => {
+                        debug!(
+                            "Sent ping to socket {} due to activity timeout",
+                            socket_id_clone
+                        );
+                        
+                        // Release locks before waiting for pong
+                        drop(conn_manager);
+                        
+                        // Wait for pong response
+                        sleep(Duration::from_secs(30)).await;
+
+                        // Re-acquire lock to check pong status
+                        let mut conn_manager = connection_manager.lock().await;
+                        if let Some(conn) = conn_manager
+                            .get_connection(&socket_id_clone, &app_id_clone)
+                            .await
+                        {
+                            let mut ws = conn.0.lock().await;
+                            // Check if we're still in PingSent state (no pong received)
+                            if let crate::websocket::ConnectionStatus::PingSent(ping_time) = ws.state.status {
+                                if ping_time.elapsed() > Duration::from_secs(30) {
+                                    // No pong received, close connection gracefully
+                                    warn!(
+                                        "No pong received from socket {} after ping, closing connection",
+                                        socket_id_clone
+                                    );
+                                    let _ = ws
+                                        .close(4201, "Pong reply not received in time".to_string())
+                                        .await;
+                                }
                             }
                         }
+                        // After handling ping/pong, wait full 120s before next check
+                        drop(conn_manager);
+                        sleep(Duration::from_secs(120)).await;
                     }
-                }
-                Err(e) => {
-                    // Connection is broken (e.g., broken pipe)
-                    // This is expected when client disconnects abruptly
-                    debug!(
-                        "Failed to send ping to socket {} (connection likely closed by client): {}",
-                        socket_id_clone, e
-                    );
-                    
-                    // Clean up the connection since it's broken
-                    // Note: cleanup_connection expects the connection to still exist
-                    conn_manager.cleanup_connection(&app_id_clone, conn).await;
+                    Err(e) => {
+                        // Connection is broken (e.g., broken pipe)
+                        // This is expected when client disconnects abruptly
+                        debug!(
+                            "Failed to send ping to socket {} (connection likely closed by client): {}",
+                            socket_id_clone, e
+                        );
+                        
+                        // Clean up the connection since it's broken
+                        // Note: cleanup_connection expects the connection to still exist
+                        conn_manager.cleanup_connection(&app_id_clone, conn).await;
+                        break; // Exit the loop after cleanup
+                    }
                 }
             }
         });
