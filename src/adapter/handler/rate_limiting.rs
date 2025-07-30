@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::rate_limiter::memory_limiter::MemoryRateLimiter;
 use crate::websocket::SocketId;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 impl ConnectionHandler {
     pub async fn setup_rate_limiting(&self, socket_id: &SocketId, app_config: &App) -> Result<()> {
@@ -16,7 +16,7 @@ impl ConnectionHandler {
             ));
             self.client_event_limiters
                 .insert(socket_id.clone(), limiter);
-            info!(
+            debug!(
                 "Initialized client event rate limiter for socket {}: {} events/sec",
                 socket_id, app_config.max_client_events_per_second
             );

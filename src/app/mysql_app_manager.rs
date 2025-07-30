@@ -11,7 +11,7 @@ use moka::future::Cache;
 use sqlx::{MySqlPool, mysql::MySqlPoolOptions};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Configuration for MySQL App Manager
 /// MySQL-based implementation of the AppManager
@@ -120,9 +120,7 @@ impl MySQLAppManager {
         }
 
         // Not in cache or expired, fetch from database
-        info!(
-            "{}",
-            format!("Cache miss for app {}, fetching from database", app_id)
+        debug!("Cache miss for app {}, fetching from database", app_id);
         );
 
         // Use a query_as that matches your App struct
@@ -179,9 +177,7 @@ impl MySQLAppManager {
         }
 
         // Not found in cache, query database
-        info!(
-            "{}",
-            format!("Cache miss for app key {}, fetching from database", key)
+        debug!("Cache miss for app key {}, fetching from database", key);
         );
 
         let query = format!(

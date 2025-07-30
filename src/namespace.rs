@@ -12,7 +12,7 @@ use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 // Represents a namespace, typically tied to a specific application ID.
 // Manages WebSocket connections, channel subscriptions, and user presence within that app.
@@ -79,7 +79,7 @@ impl Namespace {
         self.sockets
             .insert(socket_id.clone(), websocket_ref.clone());
 
-        info!(socket_id = %socket_id, "WebSocket connection added successfully");
+        debug!(socket_id = %socket_id, "WebSocket connection added successfully");
 
         Ok(websocket_ref)
     }
@@ -136,7 +136,7 @@ impl Namespace {
                 sockets_in_channel.insert(socket_id.clone());
             }
         } else {
-            info!(
+            debug!(
                 "get_channel_sockets called on non-existent channel: {}",
                 channel
             );
@@ -175,14 +175,14 @@ impl Namespace {
                 drop(user_sockets_ref);
                 if is_empty {
                     self.users.remove(&user_id);
-                    info!("Removed empty user entry for: {}", user_id);
+                    debug!("Removed empty user entry for: {}", user_id);
                 }
             }
         }
 
         // Finally, remove the socket from the main sockets map.
         if self.sockets.remove(&socket_id).is_some() {
-            info!("Removed socket {} from main map.", socket_id);
+            debug!("Removed socket {} from main map.", socket_id);
         } else {
             warn!(
                 "Socket {} already removed from main map during cleanup.",
@@ -231,7 +231,7 @@ impl Namespace {
             drop(channel_sockets_ref);
             if is_empty {
                 self.channels.remove(channel);
-                info!("Removed empty channel entry: {}", channel);
+                debug!("Removed empty channel entry: {}", channel);
             }
             return removed.is_some();
         }
@@ -241,7 +241,7 @@ impl Namespace {
     // Removes a connection entirely from the main socket map.
     pub fn remove_connection(&self, socket_id: &SocketId) {
         if self.sockets.remove(socket_id).is_some() {
-            info!("Explicitly removed socket: {}", socket_id);
+            debug!("Explicitly removed socket: {}", socket_id);
         }
     }
 
@@ -254,7 +254,7 @@ impl Namespace {
     // Removes a channel entry entirely, regardless of subscribers.
     pub fn remove_channel(&self, channel: &str) {
         self.channels.remove(channel);
-        info!("Removed channel entry: {}", channel);
+        debug!("Removed channel entry: {}", channel);
     }
 
     // Checks if a specific socket is subscribed to a specific channel.
@@ -291,7 +291,7 @@ impl Namespace {
             let user_sockets_ref = self.users.entry(user_id.clone()).or_default();
             user_sockets_ref.insert(ws_ref.clone());
             let socket_id = ws_ref.get_socket_id().await;
-            info!("Added socket {} to user {}", socket_id, user_id);
+            debug!("Added socket {} to user {}", socket_id, user_id);
         } else {
             let socket_id = ws_ref.get_socket_id().await;
             warn!(
@@ -313,11 +313,11 @@ impl Namespace {
                 let is_empty = user_sockets_ref.is_empty();
                 drop(user_sockets_ref);
                 if removed.is_some() {
-                    info!("Removed socket {} from user {}", socket_id, user_id);
+                    debug!("Removed socket {} from user {}", socket_id, user_id);
                 }
                 if is_empty {
                     self.users.remove(&user_id);
-                    info!("Removed empty user entry for: {}", user_id);
+                    debug!("Removed empty user entry for: {}", user_id);
                 }
             }
         } else {

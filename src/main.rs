@@ -22,7 +22,6 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
-use async_nats::rustls::crypto::CryptoProvider;
 use axum::http::Method;
 use axum::http::header::HeaderName;
 use axum::http::uri::Authority;
@@ -71,7 +70,7 @@ use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegrat
 use crate::ws_handler::handle_ws_upgrade;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 // Import tracing and tracing_subscriber parts
-use tracing::{error, info, warn}; // Added LevelFilter
+use tracing::{debug, error, info, warn}; // Added LevelFilter
 use tracing_subscriber::{EnvFilter, fmt, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
@@ -1368,7 +1367,8 @@ async fn main() -> Result<()> {
 
     // --- Re-apply specific high-priority ENV vars (to override file) ---
     if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        println!("[PRE-LOG] Applying REDIS_URL environment variable override: {redis_url_env}");
+        println!("[PRE-LOG] Applying REDIS_URL environment variable override");
+        debug!("REDIS_URL override value: {}", redis_url_env);
 
         // This will override any host/port/db/password from file or previous ENVs for these components
         config
