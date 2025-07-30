@@ -14,6 +14,8 @@ impl ConnectionHandler {
             if let Some(connection) = connection_manager.get_connection(socket_id, &app_id).await {
                 let mut conn_locked = connection.0.lock().await;
                 conn_locked.state.status = crate::websocket::ConnectionStatus::Active;
+            } else {
+                tracing::warn!("Ping received for unknown socket: {}", socket_id);
             }
         }
         
