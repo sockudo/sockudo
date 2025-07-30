@@ -215,13 +215,48 @@ pub struct MessageSender {
 }
 
 impl MessageSender {
+    fn is_connection_error<E: std::fmt::Display>(error: &E) -> bool {
+        let error_str = error.to_string();
+        error_str.contains("Broken pipe") || 
+        error_str.contains("Connection reset") || 
+        error_str.contains("os error 32")
+    }
+
+    fn log_connection_error<E: std::fmt::Display>(error: &E, operation: &str, frame_count: usize, is_shutting_down: bool) {
+        let is_conn_err = Self::is_connection_error(error);
+        
+        if is_conn_err && is_shutting_down {
+            debug!("{} failed during shutdown (expected): {}", operation, error);
+        } else if is_conn_err && frame_count <= 2 {
+            warn!("Early connection {} failed (after {} frames): {}", operation, frame_count, error);
+        } else if is_conn_err {
+            warn!("Connection {} failed during operation (after {} frames): {}", operation, frame_count, error);
+        } else {
+            if operation.contains("close") {
+                warn!("Failed to {}: {}", operation, error);
+            } else {
+                error!("Failed to {}: {}", operation, error);
+            }
+        }
+    }
+
     pub fn new(mut socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>) -> Self {
         let (sender, mut receiver) = mpsc::unbounded_channel::<Frame<'static>>();
 
         let receiver_handle = tokio::spawn(async move {
+            let mut frame_count = 0;
+            let mut is_shutting_down = false;
+            
             while let Some(frame) = receiver.recv().await {
+                frame_count += 1;
+                
+                // Detect if this is a close frame (indicates shutdown)
+                if matches!(frame.opcode, fastwebsockets::OpCode::Close) {
+                    is_shutting_down = true;
+                }
+                
                 if let Err(e) = socket.write_frame(frame).await {
-                    error!("Failed to write frame to WebSocket: {}", e);
+                    Self::log_connection_error(&e, "write frame to WebSocket", frame_count, is_shutting_down);
                     break;
                 }
             }
@@ -231,7 +266,7 @@ impl MessageSender {
                 .write_frame(Frame::close(1000, b"Normal closure"))
                 .await
             {
-                warn!("Failed to send close frame: {}", e);
+                Self::log_connection_error(&e, "send close frame", frame_count, false);
             }
         });
 
