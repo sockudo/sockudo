@@ -35,7 +35,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -234,7 +234,7 @@ impl ConnectionHandler {
         {
             match frame.opcode {
                 OpCode::Close => {
-                    info!("Received Close frame from socket {}", socket_id);
+                    debug!("Received Close frame from socket {}", socket_id);
                     self.handle_disconnect(&app_config.id, socket_id).await?;
                     break;
                 }
@@ -307,7 +307,7 @@ impl ConnectionHandler {
             metrics_locked.mark_ws_message_received(&app_config.id, frame.payload.len());
         }
 
-        info!(
+        debug!(
             "Received message from {}: event '{}'",
             socket_id, event_name
         );
@@ -428,7 +428,7 @@ impl ConnectionHandler {
             warn!("Failed to clear auth timeout for {}: {}", socket_id, e);
         }
 
-        info!("Socket {} cleanup completed", socket_id);
+        debug!("Socket {} cleanup completed", socket_id);
     }
 
     /// Increment the active channel count for a specific channel type

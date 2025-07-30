@@ -6,7 +6,7 @@ use crate::protocol::messages::{ErrorData, MessageData, PusherMessage};
 use crate::websocket::SocketId;
 use serde_json::Value;
 use std::collections::HashSet;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 impl ConnectionHandler {
     pub async fn send_connection_established(
@@ -149,7 +149,7 @@ impl ConnectionHandler {
     }
 
     pub async fn handle_disconnect(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
-        info!("Handling disconnect for socket: {}", socket_id);
+        debug!("Handling disconnect for socket: {}", socket_id);
 
         // Clear timeouts
         self.clear_activity_timeout(app_id, socket_id).await?;
@@ -158,7 +158,7 @@ impl ConnectionHandler {
 
         // Clean up client event rate limiter
         if self.client_event_limiters.remove(socket_id).is_some() {
-            info!(
+            debug!(
                 "Removed client event rate limiter for socket: {}",
                 socket_id
             );
@@ -213,7 +213,7 @@ impl ConnectionHandler {
             metrics_locked.mark_disconnection(app_id, socket_id);
         }
 
-        info!(
+        debug!(
             "Successfully processed disconnect for socket: {}",
             socket_id
         );
@@ -269,7 +269,7 @@ impl ConnectionHandler {
         let channel_manager = self.channel_manager.write().await;
 
         for channel_str in subscribed_channels {
-            info!(
+            debug!(
                 "Processing channel {} for disconnect of socket {}",
                 channel_str, socket_id
             );
@@ -635,7 +635,7 @@ impl ConnectionHandler {
             }
         }
 
-        info!("Stored cache for channel {} in app {}", channel, app_id);
+        debug!("Stored cache for channel {} in app {}", channel, app_id);
         Ok(())
     }
 
@@ -651,7 +651,7 @@ impl ConnectionHandler {
             ))
         })?;
 
-        info!("Cleared cache for channel {} in app {}", channel, app_id);
+        debug!("Cleared cache for channel {} in app {}", channel, app_id);
         Ok(())
     }
 

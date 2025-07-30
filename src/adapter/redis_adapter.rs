@@ -19,7 +19,7 @@ use redis::AsyncCommands;
 use std::any::Any;
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::metrics::MetricsInterface;
@@ -224,7 +224,7 @@ impl RedisAdapter {
                 .get(&request_id)
             {
                 if pending_request.responses.len() >= max_expected_responses {
-                    info!(
+                    debug!(
                         "Request {} completed with {}/{} responses in {}ms",
                         request_id,
                         pending_request.responses.len(),
@@ -290,7 +290,7 @@ impl RedisAdapter {
             .await
             .map_err(|e| Error::Redis(format!("Failed to publish request: {}", e)))?;
 
-        info!(
+        debug!(
             "Broadcasted request {} to {} subscribers",
             request.request_id, subscriber_count
         );
@@ -338,7 +338,7 @@ impl RedisAdapter {
                 return;
             }
 
-            info!(
+            debug!(
                 "Redis adapter listening on channels: {}, {}, {}",
                 broadcast_channel,
                 request_channel,

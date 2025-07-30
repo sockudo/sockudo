@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::adapter::ConnectionManager;
@@ -195,7 +195,7 @@ impl RedisClusterAdapter {
                 .get(&request_id)
             {
                 if pending_request.responses.len() >= max_expected_responses {
-                    info!(
+                    debug!(
                         "Request {} completed with {}/{} responses in {}ms",
                         request_id,
                         pending_request.responses.len(),
@@ -261,7 +261,7 @@ impl RedisClusterAdapter {
             .await
             .map_err(|e| Error::Redis(format!("Failed to publish request: {}", e)))?;
 
-        info!(
+        debug!(
             "Broadcasted request {} to {} subscribers",
             request.request_id, subscriber_count
         );
@@ -324,7 +324,7 @@ impl RedisClusterAdapter {
                 return;
             }
 
-            info!(
+            debug!(
                 "Redis Cluster adapter listening on channels: {}, {}, {}",
                 broadcast_channel, request_channel, response_channel
             );
