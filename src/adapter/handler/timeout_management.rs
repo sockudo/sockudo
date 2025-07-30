@@ -5,7 +5,7 @@ use crate::protocol::messages::PusherMessage;
 use crate::websocket::SocketId;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 impl ConnectionHandler {
     pub async fn setup_initial_timeouts(
@@ -61,7 +61,7 @@ impl ConnectionHandler {
 
             match ping_result {
                 Ok(_) => {
-                    info!(
+                    debug!(
                         "Sent ping to socket {} due to activity timeout",
                         socket_id_clone
                     );
@@ -97,7 +97,7 @@ impl ConnectionHandler {
                 Err(e) => {
                     // Connection is broken (e.g., broken pipe)
                     // This is expected when client disconnects abruptly
-                    info!(
+                    debug!(
                         "Failed to send ping to socket {} (connection likely closed by client): {}",
                         socket_id_clone, e
                     );
