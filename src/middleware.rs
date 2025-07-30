@@ -95,7 +95,7 @@ pub async fn pusher_api_auth_middleware(
     tracing::debug!("Request body buffered, {} bytes", body_bytes.len());
 
     // 4. Perform the authentication using AuthValidator.
-    let auth_validator = AuthValidator::new(handler_state.app_manager.clone());
+    let auth_validator = AuthValidator::new(handler_state.app_manager().clone());
 
     // `validate_pusher_api_request` should return `Result<bool, AppError>` or `Result<(), AppError>`
     // If it returns `Result<bool, AppError>`:
