@@ -9,7 +9,7 @@ use crate::queue::redis_cluster_queue_manager::RedisClusterQueueManager; // Add 
 use crate::queue::redis_queue_manager::RedisQueueManager;
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
-use tracing::info;
+use tracing::{debug, info};
 
 /// General Queue Manager interface wrapper
 pub struct QueueManagerFactory;
@@ -29,12 +29,10 @@ impl QueueManagerFactory {
                 let prefix_str = prefix.unwrap_or("sockudo"); // Consider a more generic default or make it mandatory?
                 let concurrency_val = concurrency.unwrap_or(5); // Default concurrency
                 info!(
-                    "{}",
-                    format!(
-                        "Creating Redis queue manager (URL: {}, Prefix: {}, Concurrency: {})",
-                        url, prefix_str, concurrency_val
-                    )
+                    "Creating Redis queue manager (Prefix: {}, Concurrency: {})",
+                    prefix_str, concurrency_val
                 );
+                debug!("Redis queue manager URL: {}", url);
                 // Use `?` to propagate potential errors from RedisQueueManager::new
                 let manager = RedisQueueManager::new(url, prefix_str, concurrency_val).await?;
                 // Note: Redis workers are started via process_queue, not here.
@@ -51,12 +49,10 @@ impl QueueManagerFactory {
                 let concurrency_val = concurrency.unwrap_or(5);
 
                 info!(
-                    "{}",
-                    format!(
-                        "Creating Redis Cluster queue manager (Nodes: {:?}, Prefix: {}, Concurrency: {})",
-                        cluster_nodes, prefix_str, concurrency_val
-                    )
+                    "Creating Redis Cluster queue manager (Prefix: {}, Concurrency: {})",
+                    prefix_str, concurrency_val
                 );
+                debug!("Redis Cluster queue manager nodes: {:?}", cluster_nodes);
 
                 let manager =
                     RedisClusterQueueManager::new(cluster_nodes, prefix_str, concurrency_val)

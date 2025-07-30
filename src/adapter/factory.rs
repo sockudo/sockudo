@@ -10,7 +10,6 @@ use crate::error::Result;
 
 use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig}; // Import AdapterDriver, RedisConnection
 use tracing::{info, warn};
-use crate::cache::manager::CacheManager;
 
 pub struct AdapterFactory;
 

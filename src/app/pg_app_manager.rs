@@ -10,7 +10,7 @@ use moka::future::Cache;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// PostgreSQL-based implementation of the AppManager
 pub struct PgSQLAppManager {
@@ -108,7 +108,7 @@ impl PgSQLAppManager {
         }
 
         // Not in cache or expired, fetch from database
-        info!("Cache miss for app {}, fetching from database", app_id);
+        debug!("Cache miss for app {}, fetching from database", app_id);
 
         // Create the query with the correct table name
         let query = format!(
@@ -156,7 +156,7 @@ impl PgSQLAppManager {
     /// Get an app by key from cache or database
     pub async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
         // For PostgreSQL, we need to query by key since cache is by ID
-        info!("Fetching app by key {} from database", key);
+        debug!("Fetching app by key {} from database", key);
 
         let query = format!(
             r#"SELECT

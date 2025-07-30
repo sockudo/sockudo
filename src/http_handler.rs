@@ -22,7 +22,7 @@ use std::{
 };
 use sysinfo::System;
 use thiserror::Error;
-use tracing::{error, field, info, instrument, warn};
+use tracing::{debug, error, field, info, instrument, warn};
 
 // --- Custom Error Type ---
 
@@ -176,7 +176,7 @@ async fn record_api_metrics(
     if let Some(metrics_arc) = &handler.metrics {
         let metrics = metrics_arc.lock().await;
         metrics.mark_api_message(app_id, incoming_request_size, outgoing_response_size);
-        info!(
+        debug!(
             incoming_bytes = incoming_request_size,
             outgoing_bytes = outgoing_response_size,
             "Recorded API message metrics"
@@ -324,7 +324,7 @@ async fn process_single_event_parallel(
 
         async move {
             // This block processes a single channel.
-            info!(channel = %target_channel_str, "Processing channel for event (parallel task)");
+            debug!(channel = %target_channel_str, "Processing channel for event (parallel task)");
 
             // Validate the channel name.
             // `app` is captured by reference from the outer scope.
@@ -419,7 +419,7 @@ async fn process_single_event_parallel(
                             .await
                         {
                             Ok(_) => {
-                                info!(channel = %target_channel_str, cache_key = %cache_key_str, "Cached event for channel");
+                                debug!(channel = %target_channel_str, cache_key = %cache_key_str, "Cached event for channel");
                             }
                             Err(e) => {
                                 error!(channel = %target_channel_str, cache_key = %cache_key_str, error = %e, "Failed to cache event (internal error: {:?})", e);
@@ -524,7 +524,7 @@ pub async fn batch_events(
     let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
     tracing::Span::current().record("batch_len", batch_len);
-    info!("Received batch events request with {} events", batch_len);
+    debug!("Received batch events request with {} events", batch_len);
 
     // Fetch app configuration once.
     let app_config = handler
@@ -631,7 +631,7 @@ pub async fn batch_events(
         outgoing_response_size_bytes_vec.len(),
     )
     .await;
-    info!("{}", "Batch events processed successfully");
+    debug!("{}", "Batch events processed successfully");
     Ok((StatusCode::OK, Json(final_response_payload)))
 }
 
@@ -644,7 +644,7 @@ pub async fn channel(
     uri: Uri,
     RawQuery(raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Request for channel info for channel: {}", channel_name);
+    debug!("Request for channel info for channel: {}", channel_name);
     let app = handler
         .app_manager
         .find_by_id(&app_id)
@@ -715,7 +715,7 @@ pub async fn channel(
     );
     let response_json_bytes = serde_json::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
-    info!("Channel info for '{}' retrieved successfully", channel_name);
+    debug!("Channel info for '{}' retrieved successfully", channel_name);
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
@@ -728,7 +728,7 @@ pub async fn channels(
     uri: Uri,
     RawQuery(raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Request for channels list for app_id: {}", app_id);
+    debug!("Request for channels list for app_id: {}", app_id);
 
     let filter_prefix_str = query_params_specific
         .filter_by_prefix
@@ -785,7 +785,7 @@ pub async fn channels(
     let response_payload = PusherMessage::channels_list(channels_info_response_map);
     let response_json_bytes = serde_json::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
-    info!("Channels list for app '{}' retrieved successfully", app_id);
+    debug!("Channels list for app '{}' retrieved successfully", app_id);
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
@@ -801,7 +801,7 @@ pub async fn channel_users(
         .find_by_id(&app_id)
         .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
-    info!("Request for users in channel: {}", channel_name);
+    debug!("Request for users in channel: {}", channel_name);
     validate_channel_name(&app, &channel_name).await?;
 
     if !channel_name.starts_with("presence-") {
@@ -871,7 +871,7 @@ pub async fn up(
     Path(app_id): Path<String>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Health check received for app_id: {}", app_id);
+    debug!("Health check received for app_id: {}", app_id);
     if handler.app_manager.find_by_id(&app_id).await?.is_none() {
         warn!("Health check for non-existent app_id: {}", app_id);
     }
@@ -895,7 +895,7 @@ pub async fn up(
 pub async fn metrics(
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("{}", "Metrics endpoint called");
+    debug!("{}", "Metrics endpoint called");
     let plaintext_metrics_str = match handler.metrics.clone() {
         Some(metrics_arc) => {
             let metrics_data_guard = metrics_arc.lock().await;
@@ -914,7 +914,7 @@ pub async fn metrics(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
     );
-    info!(
+    debug!(
         bytes = plaintext_metrics_str.len(),
         "Successfully generated Prometheus metrics"
     );

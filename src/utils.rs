@@ -79,6 +79,8 @@ pub async fn validate_channel_name(app: &App, channel: &str) -> crate::error::Re
 
     Ok(())
 }
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,4 +134,5 @@ mod tests {
         );
         assert!(validate_channel_name(&app, "space in name").await.is_err());
     }
+
 }
