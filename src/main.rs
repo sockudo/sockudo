@@ -129,7 +129,14 @@ impl SockudoServer {
     }
 
     fn get_metrics_addr(&self) -> SocketAddr {
-        format!("{}:{}", self.config.metrics.host, self.config.metrics.port)
+        // Handle hostname resolution for metrics address
+        let host = if self.config.metrics.host == "localhost" {
+            "127.0.0.1"
+        } else {
+            &self.config.metrics.host
+        };
+
+        format!("{}:{}", host, self.config.metrics.port)
             .parse()
             .unwrap_or_else(|_| "127.0.0.1:9601".parse().unwrap())
     }
