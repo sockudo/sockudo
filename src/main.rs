@@ -128,8 +128,23 @@ impl SockudoServer {
         let host_port = format!("{}:{}", self.config.metrics.host, self.config.metrics.port);
         
         match tokio::net::lookup_host(&host_port).await {
-            Ok(mut addrs) => {
-                if let Some(addr) = addrs.next() {
+            Ok(addrs) => {
+                // Prefer IPv4 addresses to avoid potential IPv6 issues
+                let mut ipv4_addr = None;
+                let mut ipv6_addr = None;
+                
+                for addr in addrs {
+                    if addr.is_ipv4() && ipv4_addr.is_none() {
+                        ipv4_addr = Some(addr);
+                    } else if addr.is_ipv6() && ipv6_addr.is_none() {
+                        ipv6_addr = Some(addr);
+                    }
+                }
+                
+                if let Some(addr) = ipv4_addr {
+                    addr
+                } else if let Some(addr) = ipv6_addr {
+                    warn!("Only IPv6 address found for {}, using: {}", host_port, addr);
                     addr
                 } else {
                     let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), self.config.metrics.port);
