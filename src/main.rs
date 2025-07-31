@@ -29,8 +29,6 @@ use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::{BoxError, Router, middleware as axum_middleware};
-use std::fs::File;
-use std::io::Read;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
@@ -128,17 +126,26 @@ impl SockudoServer {
             .unwrap_or_else(|_| "127.0.0.1:6001".parse().unwrap())
     }
 
-    fn get_metrics_addr(&self) -> SocketAddr {
-        // Handle hostname resolution for metrics address
-        let host = if self.config.metrics.host == "localhost" {
-            "127.0.0.1"
-        } else {
-            &self.config.metrics.host
-        };
-
-        format!("{}:{}", host, self.config.metrics.port)
-            .parse()
-            .unwrap_or_else(|_| "127.0.0.1:9601".parse().unwrap())
+    async fn get_metrics_addr(&self) -> SocketAddr {
+        // Use tokio::net::lookup_host for proper hostname resolution
+        let host_port = format!("{}:{}", self.config.metrics.host, self.config.metrics.port);
+        
+        match tokio::net::lookup_host(&host_port).await {
+            Ok(mut addrs) => {
+                if let Some(addr) = addrs.next() {
+                    addr
+                } else {
+                    let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), self.config.metrics.port);
+                    warn!("No addresses found for {}. Using fallback {}", host_port, fallback);
+                    fallback
+                }
+            }
+            Err(e) => {
+                let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), self.config.metrics.port);
+                warn!("Failed to resolve {}: {}. Using fallback {}", host_port, e, fallback);
+                fallback
+            }
+        }
     }
 
     async fn new(config: ServerOptions) -> Result<Self> {
@@ -819,7 +826,7 @@ impl SockudoServer {
         let metrics_router = self.configure_metrics_routes();
 
         let http_addr = self.get_http_addr();
-        let metrics_addr = self.get_metrics_addr();
+        let metrics_addr = self.get_metrics_addr().await;
 
         if self.config.ssl.enabled
             && !self.config.ssl.cert_path.is_empty()
@@ -891,9 +898,8 @@ impl SockudoServer {
                     });
                 } else {
                     warn!(
-                        "Failed to start metrics server on {}: {}. Metrics will not be available.",
-                        metrics_addr,
-                        metrics_addr // Corrected variable
+                        "Failed to start metrics server on {}. Metrics will not be available.",
+                        metrics_addr
                     );
                 }
             }
@@ -1160,6 +1166,16 @@ async fn main() -> Result<()> {
     // We initialize logging early based on the DEBUG env var so we can use logging macros
     // throughout the configuration loading process. We use the reload functionality to
     // allow updating both the filter and fmt layer configuration after loading the full config.
+    // Helper function to get log directive based on debug mode
+    fn get_log_directive(is_debug: bool) -> String {
+        if is_debug {
+            std::env::var("SOCKUDO_LOG_DEBUG")
+                .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string())
+        } else {
+            std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string())
+        }
+    }
+
     // Check both DEBUG_MODE and DEBUG env vars, with DEBUG taking precedence (same as options.rs)
     let initial_debug_from_env = if std::env::var("DEBUG").is_ok() {
         // DEBUG env var takes precedence
@@ -1169,12 +1185,7 @@ async fn main() -> Result<()> {
         utils::parse_bool_env("DEBUG_MODE", false)
     };
 
-    let initial_log_directive = if initial_debug_from_env {
-        std::env::var("SOCKUDO_LOG_DEBUG")
-            .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string())
-    } else {
-        std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string())
-    };
+    let initial_log_directive = get_log_directive(initial_debug_from_env);
 
     let initial_env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(initial_log_directive));
@@ -1217,31 +1228,19 @@ async fn main() -> Result<()> {
     // 3. Load --config file if provided (overrides previous config)
     let args = Args::parse();
     if let Some(config_path) = args.config {
-        if Path::new(&config_path).exists() {
-            info!("Loading configuration from file: {}", config_path);
-            let mut file = File::open(&config_path)
-                .map_err(|e| Error::ConfigFile(format!("Failed to open {config_path}: {e}")))?;
-            let mut contents = String::new();
-            file.read_to_string(&mut contents)
-                .map_err(|e| Error::ConfigFile(format!("Failed to read {config_path}: {e}")))?;
-
-            match from_str::<ServerOptions>(&contents) {
-                Ok(file_config) => {
-                    config = file_config;
-                    info!(
-                        "Successfully loaded and applied configuration from {}", config_path
-                    );
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to parse configuration file {config_path}: {e}. Continuing with previously loaded config."
-                    );
-                }
+        match ServerOptions::load_from_file(&config_path).await {
+            Ok(file_config) => {
+                config = file_config;
+                info!(
+                    "Successfully loaded and applied configuration from {}", config_path
+                );
             }
-        } else {
-            error!(
-                "Configuration file specified but not found at {}. Continuing with previously loaded config.", config_path
-            );
+            Err(e) => {
+                error!(
+                    "Failed to load configuration file {}: {}. Continuing with previously loaded config.", 
+                    config_path, e
+                );
+            }
         }
     }
 
@@ -1265,12 +1264,7 @@ async fn main() -> Result<()> {
             initial_debug_from_env, config.debug
         );
 
-        let new_log_directive = if config.debug {
-            std::env::var("SOCKUDO_LOG_DEBUG")
-                .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string())
-        } else {
-            std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string())
-        };
+        let new_log_directive = get_log_directive(config.debug);
 
         let new_env_filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new(new_log_directive));
