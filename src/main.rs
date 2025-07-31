@@ -1118,35 +1118,6 @@ impl SockudoServer {
         info!("Server stopped");
         Ok(())
     }
-
-    #[allow(dead_code)]
-    pub async fn load_options_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let mut file = tokio::fs::File::open(path).await?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).await?;
-        let options: ServerOptions = from_str(&contents)?;
-        self.config = options; // Replace current config
-        info!(
-            "Successfully loaded and applied options from file, app_manager config: {:?}",
-            self.config.app_manager // Example to show new config is active
-        );
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    async fn register_apps(&self, apps: Vec<App>) -> Result<()> {
-        for app in apps {
-            let existing_app = self.state.app_manager.find_by_id(&app.id).await?;
-            if existing_app.is_some() {
-                info!("Updating app during dynamic registration: {}", app.id);
-                self.state.app_manager.update_app(app).await?;
-            } else {
-                info!("Registering new app dynamically: {}", app.id);
-                self.state.app_manager.create_app(app).await?;
-            }
-        }
-        Ok(())
-    }
 }
 
 
