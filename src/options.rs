@@ -1224,11 +1224,15 @@ impl ServerOptions {
         if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
             info!("Applying REDIS_URL environment variable override");
 
-            // This will override any host/port/db/password from file or previous ENVs
+            let redis_url_json = serde_json::json!(redis_url_env);
+            
+            // Adapter uses HashMap approach (for flexible configuration)
             self.adapter.redis.redis_pub_options
-                .insert("url".to_string(), serde_json::json!(redis_url_env.clone()));
+                .insert("url".to_string(), redis_url_json.clone());
             self.adapter.redis.redis_sub_options
-                .insert("url".to_string(), serde_json::json!(redis_url_env.clone()));
+                .insert("url".to_string(), redis_url_json);
+                
+            // Other components use direct url_override approach (simpler, more direct)
             self.cache.redis.url_override = Some(redis_url_env.clone());
             self.queue.redis.url_override = Some(redis_url_env.clone());
             self.rate_limiter.redis.url_override = Some(redis_url_env);
