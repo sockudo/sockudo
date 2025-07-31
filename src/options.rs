@@ -893,6 +893,13 @@ impl ServerOptions {
                 Err(_) => warn!("Failed to parse DEBUG_MODE env var: '{}'", debug_str),
             }
         }
+        // Special handling for DEBUG env var (takes precedence over DEBUG_MODE)
+        if let Ok(debug_str) = std::env::var("DEBUG") {
+            if debug_str == "1" || debug_str.to_lowercase() == "true" {
+                self.debug = true;
+                eprintln!("[PRE-LOG][INFO] DEBUG environment variable forces debug mode ON");
+            }
+        }
         if let Ok(host) = std::env::var("HOST") {
             self.host = host;
         }
@@ -1212,6 +1219,20 @@ impl ServerOptions {
         // Note: SOCKUDO_DEFAULT_APP_* variables would require instantiating
         // the `App` struct and adding it to `self.app_manager.array.apps`.
         // This is omitted as the `App` struct definition is not provided.
+
+        // Special handling for REDIS_URL - overrides all Redis-related configs
+        if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
+            eprintln!("[PRE-LOG][INFO] Applying REDIS_URL environment variable override");
+
+            // This will override any host/port/db/password from file or previous ENVs
+            self.adapter.redis.redis_pub_options
+                .insert("url".to_string(), serde_json::json!(redis_url_env.clone()));
+            self.adapter.redis.redis_sub_options
+                .insert("url".to_string(), serde_json::json!(redis_url_env.clone()));
+            self.cache.redis.url_override = Some(redis_url_env.clone());
+            self.queue.redis.url_override = Some(redis_url_env.clone());
+            self.rate_limiter.redis.url_override = Some(redis_url_env);
+        }
 
         Ok(())
     }
