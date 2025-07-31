@@ -1164,7 +1164,7 @@ async fn main() -> Result<()> {
     let mut config = ServerOptions::load_from_file("config/config.json")
         .await
         .unwrap_or_else(|e| {
-            error!("Failed to load config file: {e}. Using defaults.");
+            eprintln!("[PRE-LOG][ERROR] Failed to load config file: {e}. Using defaults.");
             ServerOptions::default() // Use default if file loading fails
         });
 
@@ -1176,8 +1176,7 @@ async fn main() -> Result<()> {
             }
         }
         Err(e) => {
-            error!("Failed to override config from environment: {e}");
-            // Continue with the loaded config, but log the error
+            eprintln!("[PRE-LOG][ERROR] Failed to override config from environment: {e}");
         }
     }
 
@@ -1189,12 +1188,12 @@ async fn main() -> Result<()> {
     let config_path = config_arg.unwrap_or_else(|| {
         // Default to current directory if no config file is specified
         let default_path = "config/config.json";
-        info!("No config file specified, using default: {}", default_path);
+        eprintln!("[PRE-LOG][INFO] No config file specified, using default: {}", default_path);
         default_path.to_string()
     });
 
     if Path::new(&config_path).exists() {
-        info!("Loading configuration from file: {}", config_path);
+        eprintln!("[PRE-LOG][INFO] Loading configuration from file: {}", config_path);
         let mut file = File::open(&config_path)
             .map_err(|e| Error::ConfigFile(format!("Failed to open {config_path}: {e}")))?;
         let mut contents = String::new();
@@ -1204,26 +1203,25 @@ async fn main() -> Result<()> {
         match from_str::<ServerOptions>(&contents) {
             Ok(file_config) => {
                 config = file_config; // File config overrides previous defaults and ENV vars
-                info!(
-                    "Successfully loaded and applied configuration from {}", config_path
+                eprintln!(
+                    "[PRE-LOG][INFO] Successfully loaded and applied configuration from {}", config_path
                 );
             }
             Err(e) => {
-                error!(
-                    "Failed to parse configuration file {config_path}: {e}. Using defaults and environment variables already set."
+                eprintln!(
+                    "[PRE-LOG][ERROR] Failed to parse configuration file {config_path}: {e}. Using defaults and environment variables already set."
                 );
             }
         }
     } else {
-        info!(
-            "No configuration file found at {}, using defaults and environment variables.", config_path
+        eprintln!(
+            "[PRE-LOG][INFO] No configuration file found at {}, using defaults and environment variables.", config_path
         );
     }
 
     // --- Re-apply specific high-priority ENV vars (to override file) ---
     if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        info!("Applying REDIS_URL environment variable override");
-        debug!("REDIS_URL override value: {}", redis_url_env);
+        eprintln!("[PRE-LOG][INFO] Applying REDIS_URL environment variable override");
 
         // This will override any host/port/db/password from file or previous ENVs for these components
         config
@@ -1245,8 +1243,8 @@ async fn main() -> Result<()> {
     if initial_debug_from_env {
         // If DEBUG env was set to true, make sure config.debug is true, regardless of file.
         if !config.debug {
-            info!(
-                "Overriding file config: DEBUG environment variable forces debug mode ON."
+            eprintln!(
+                "[PRE-LOG][INFO] Overriding file config: DEBUG environment variable forces debug mode ON."
             );
             config.debug = true;
         }
