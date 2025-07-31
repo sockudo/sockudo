@@ -71,7 +71,7 @@ use crate::ws_handler::handle_ws_upgrade;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 // Import tracing and tracing_subscriber parts
 use tracing::{error, info, warn}; // Added LevelFilter
-use tracing_subscriber::{EnvFilter, fmt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, fmt, reload, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
 use crate::adapter::ConnectionHandler;
@@ -1156,19 +1156,53 @@ async fn main() -> Result<()> {
             ))
         })?;
 
+    // --- Early Logging Initialization with Reload Support ---
+    // We initialize logging early based on the DEBUG env var so we can use logging macros
+    // throughout the configuration loading process. We use the reload functionality to
+    // allow updating the log configuration after loading the full config.
+    let initial_debug_from_env = std::env::var("DEBUG")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    let initial_log_directive = if initial_debug_from_env {
+        std::env::var("SOCKUDO_LOG_DEBUG")
+            .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string())
+    } else {
+        std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string())
+    };
+
+    let initial_env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(initial_log_directive));
+
+    // Create a reload layer for the filter
+    let (filter_layer, reload_handle) = tracing_subscriber::reload::Layer::new(initial_env_filter);
+
+    // Build the subscriber with the reloadable filter
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(
+            fmt::layer()
+                .with_target(true)
+                .with_file(initial_debug_from_env)
+                .with_line_number(initial_debug_from_env)
+        )
+        .init();
+
+    info!("Initial logging initialized with DEBUG={}", initial_debug_from_env);
+
     // --- Configuration Loading Order ---
     // 1. Start with defaults
     let mut config = ServerOptions::default();
-    eprintln!("[PRE-LOG][INFO] Starting with default configuration");
+    info!("Starting with default configuration");
 
     // 2. Load default config file if it exists (overrides defaults)
     match ServerOptions::load_from_file("config/config.json").await {
         Ok(file_config) => {
             config = file_config;
-            eprintln!("[PRE-LOG][INFO] Loaded configuration from config/config.json");
+            info!("Loaded configuration from config/config.json");
         }
         Err(e) => {
-            eprintln!("[PRE-LOG][INFO] No config/config.json found or failed to load: {e}. Using defaults.");
+            info!("No config/config.json found or failed to load: {e}. Using defaults.");
         }
     }
 
@@ -1176,7 +1210,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     if let Some(config_path) = args.config {
         if Path::new(&config_path).exists() {
-            eprintln!("[PRE-LOG][INFO] Loading configuration from file: {}", config_path);
+            info!("Loading configuration from file: {}", config_path);
             let mut file = File::open(&config_path)
                 .map_err(|e| Error::ConfigFile(format!("Failed to open {config_path}: {e}")))?;
             let mut contents = String::new();
@@ -1186,19 +1220,19 @@ async fn main() -> Result<()> {
             match from_str::<ServerOptions>(&contents) {
                 Ok(file_config) => {
                     config = file_config;
-                    eprintln!(
-                        "[PRE-LOG][INFO] Successfully loaded and applied configuration from {}", config_path
+                    info!(
+                        "Successfully loaded and applied configuration from {}", config_path
                     );
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[PRE-LOG][ERROR] Failed to parse configuration file {config_path}: {e}. Continuing with previously loaded config."
+                    error!(
+                        "Failed to parse configuration file {config_path}: {e}. Continuing with previously loaded config."
                     );
                 }
             }
         } else {
-            eprintln!(
-                "[PRE-LOG][ERROR] Configuration file specified but not found at {}. Continuing with previously loaded config.", config_path
+            error!(
+                "Configuration file specified but not found at {}. Continuing with previously loaded config.", config_path
             );
         }
     }
@@ -1206,49 +1240,61 @@ async fn main() -> Result<()> {
     // 4. Apply ALL environment variables (highest priority - overrides everything)
     match config.override_from_env().await {
         Ok(_) => {
-            eprintln!("[PRE-LOG][INFO] Applied environment variable overrides");
+            info!("Applied environment variable overrides");
         }
         Err(e) => {
-            eprintln!("[PRE-LOG][ERROR] Failed to override config from environment: {e}");
+            error!("Failed to override config from environment: {e}");
         }
     }
 
-    // --- Part 2: Initialize logging using final config.debug ---
-    let default_log_directive_str = if config.debug {
-        std::env::var("SOCKUDO_LOG_DEBUG")
-            .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string()) // Added tower_http
-    } else {
-        std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string()) // Changed from "off" to "info" for minimal prod logging
-    };
+    // --- Update logging configuration if needed ---
+    // Now that we have the final configuration, update the logging filter if config.debug
+    // differs from the initial setting. This ensures config.debug from files is respected.
+    if config.debug != initial_debug_from_env {
+        info!(
+            "Debug mode changed from {} to {} after loading configuration, updating logger",
+            initial_debug_from_env, config.debug
+        );
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_log_directive_str));
+        let new_log_directive = if config.debug {
+            std::env::var("SOCKUDO_LOG_DEBUG")
+                .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string())
+        } else {
+            std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string())
+        };
 
-    let subscriber_builder = fmt::Subscriber::builder().with_env_filter(env_filter);
+        let new_env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(new_log_directive));
 
-    if config.debug {
-        subscriber_builder
-            .with_file(true)
-            .with_line_number(true)
-            .with_target(true) // Show module paths
-            .finish()
-            .init();
-    } else {
-        subscriber_builder
-            .with_target(true) // Keep target for prod for some context
-            .finish()
-            .init();
+        // Reload the filter with the new configuration
+        match reload_handle.reload(new_env_filter) {
+            Ok(()) => {
+                info!("Successfully updated logging configuration for debug={}", config.debug);
+            }
+            Err(e) => {
+                error!("Failed to reload logging configuration: {}", e);
+            }
+        }
+
+        // Note: We can't dynamically change file/line_number settings in the fmt layer,
+        // but the filter change will control verbosity levels
+        if !initial_debug_from_env && config.debug {
+            info!(
+                "Note: Debug mode is now enabled, but file names and line numbers \
+                were not enabled at startup. Restart with DEBUG=1 for full debug output."
+            );
+        }
     }
 
     info!(
-        "Logging initialized. Debug mode: {}. Effective RUST_LOG/default filter: '{}'",
+        "Configuration loading complete. Debug mode: {}. Effective RUST_LOG/default filter: '{}'",
         config.debug,
         EnvFilter::try_from_default_env()
             .map(|f| f.to_string())
-            .unwrap_or("None".to_string()) // Show the effective filter
+            .unwrap_or("None".to_string())
     );
 
-    // --- Part 3: Rest of the application logic ---
+    // --- Rest of the application logic ---
     info!("Starting Sockudo server initialization process with resolved configuration...");
 
     let server = match SockudoServer::new(config).await {
