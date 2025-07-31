@@ -1006,6 +1006,9 @@ impl ServerOptions {
         }
 
         // --- Metrics ---
+        if let Ok(driver) = std::env::var("METRICS_DRIVER") {
+            self.metrics.driver = driver.parse()?;
+        }
         if let Ok(enabled) = std::env::var("METRICS_ENABLED") {
             self.metrics.enabled = enabled.parse()?;
         }
