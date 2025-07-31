@@ -1100,6 +1100,9 @@ impl SockudoServer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse command line arguments first - this handles --help and --version without any other output
+    let args = Args::parse();
+
     // Initialize crypto provider at the very beginning for any TLS usage (HTTPS or Redis TLS)
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -1174,7 +1177,6 @@ async fn main() -> Result<()> {
     }
 
     // 3. Load --config file if provided (overrides previous config)
-    let args = Args::parse();
     if let Some(config_path) = args.config {
         match ServerOptions::load_from_file(&config_path).await {
             Ok(file_config) => {
