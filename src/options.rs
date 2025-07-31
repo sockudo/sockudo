@@ -2,7 +2,7 @@ use crate::app::config::App;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
-use tracing::warn;
+use tracing::{info, warn};
 // Assuming DEFAULT_PREFIX is pub const in nats_adapter or imported appropriately
 use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
 use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
@@ -897,7 +897,7 @@ impl ServerOptions {
         if let Ok(debug_str) = std::env::var("DEBUG") {
             if debug_str == "1" || debug_str.to_lowercase() == "true" {
                 self.debug = true;
-                eprintln!("[PRE-LOG][INFO] DEBUG environment variable forces debug mode ON");
+                info!("DEBUG environment variable forces debug mode ON");
             }
         }
         if let Ok(host) = std::env::var("HOST") {
@@ -1222,7 +1222,7 @@ impl ServerOptions {
 
         // Special handling for REDIS_URL - overrides all Redis-related configs
         if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-            eprintln!("[PRE-LOG][INFO] Applying REDIS_URL environment variable override");
+            info!("Applying REDIS_URL environment variable override");
 
             // This will override any host/port/db/password from file or previous ENVs
             self.adapter.redis.redis_pub_options
