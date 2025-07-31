@@ -887,15 +887,14 @@ impl ServerOptions {
         if let Ok(mode) = std::env::var("ENVIRONMENT") {
             self.mode = mode;
         }
-        if let Ok(debug_str) = std::env::var("DEBUG_MODE") {
-            match debug_str.parse() {
-                Ok(val) => self.debug = val,
-                Err(_) => warn!("Failed to parse DEBUG_MODE env var: '{}'", debug_str),
-            }
+        // Handle DEBUG_MODE first
+        if std::env::var("DEBUG_MODE").is_ok() {
+            self.debug = crate::utils::parse_bool_env("DEBUG_MODE", self.debug);
         }
         // Special handling for DEBUG env var (takes precedence over DEBUG_MODE)
-        if let Ok(debug_str) = std::env::var("DEBUG") {
-            if debug_str == "1" || debug_str.to_lowercase() == "true" {
+        if std::env::var("DEBUG").is_ok() {
+            let debug_value = crate::utils::parse_bool_env("DEBUG", self.debug);
+            if debug_value {
                 self.debug = true;
                 info!("DEBUG environment variable forces debug mode ON");
             }
@@ -1048,11 +1047,8 @@ impl ServerOptions {
         }
 
         // --- SSL Configuration ---
-        if let Ok(enabled_str) = std::env::var("SSL_ENABLED") {
-            match enabled_str.parse() {
-                Ok(enabled) => self.ssl.enabled = enabled,
-                Err(_) => warn!("Failed to parse SSL_ENABLED env var: '{}'", enabled_str),
-            }
+        if std::env::var("SSL_ENABLED").is_ok() {
+            self.ssl.enabled = crate::utils::parse_bool_env("SSL_ENABLED", self.ssl.enabled);
         }
         if let Ok(val) = std::env::var("SSL_CERT_PATH") {
             self.ssl.cert_path = val;
@@ -1060,11 +1056,8 @@ impl ServerOptions {
         if let Ok(val) = std::env::var("SSL_KEY_PATH") {
             self.ssl.key_path = val;
         }
-        if let Ok(redirect_str) = std::env::var("SSL_REDIRECT_HTTP") {
-            match redirect_str.parse() {
-                Ok(redirect) => self.ssl.redirect_http = redirect,
-                Err(_) => warn!("Failed to parse SSL_REDIRECT_HTTP env var: '{}'", redirect_str),
-            }
+        if std::env::var("SSL_REDIRECT_HTTP").is_ok() {
+            self.ssl.redirect_http = crate::utils::parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
         }
         if let Ok(port_str) = std::env::var("SSL_HTTP_PORT") {
             match port_str.parse() {
@@ -1077,11 +1070,8 @@ impl ServerOptions {
         if let Ok(driver_str) = std::env::var("METRICS_DRIVER") {
             self.metrics.driver = parse_driver_enum(driver_str, self.metrics.driver.clone(), "Metrics");
         }
-        if let Ok(enabled_str) = std::env::var("METRICS_ENABLED") {
-            match enabled_str.parse() {
-                Ok(enabled) => self.metrics.enabled = enabled,
-                Err(_) => warn!("Failed to parse METRICS_ENABLED env var: '{}'", enabled_str),
-            }
+        if std::env::var("METRICS_ENABLED").is_ok() {
+            self.metrics.enabled = crate::utils::parse_bool_env("METRICS_ENABLED", self.metrics.enabled);
         }
         if let Ok(val) = std::env::var("METRICS_HOST") {
             self.metrics.host = val;
@@ -1097,8 +1087,8 @@ impl ServerOptions {
         }
 
         // --- Rate Limiter ---
-        if let Ok(enabled) = std::env::var("RATE_LIMITER_ENABLED") {
-            self.rate_limiter.enabled = enabled.parse()?;
+        if std::env::var("RATE_LIMITER_ENABLED").is_ok() {
+            self.rate_limiter.enabled = crate::utils::parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
         }
         if let Ok(max) = std::env::var("RATE_LIMITER_API_MAX_REQUESTS") {
             self.rate_limiter.api_rate_limit.max_requests = max.parse()?;
@@ -1140,16 +1130,16 @@ impl ServerOptions {
         if let Ok(concurrency) = std::env::var("QUEUE_SQS_CONCURRENCY") {
             self.queue.sqs.concurrency = concurrency.parse()?;
         }
-        if let Ok(fifo) = std::env::var("QUEUE_SQS_FIFO") {
-            self.queue.sqs.fifo = fifo.parse()?;
+        if std::env::var("QUEUE_SQS_FIFO").is_ok() {
+            self.queue.sqs.fifo = crate::utils::parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
         }
         if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
             self.queue.sqs.endpoint_url = Some(endpoint);
         }
 
         // --- Webhooks ---
-        if let Ok(enabled) = std::env::var("WEBHOOK_BATCHING_ENABLED") {
-            self.webhooks.batching.enabled = enabled.parse()?;
+        if std::env::var("WEBHOOK_BATCHING_ENABLED").is_ok() {
+            self.webhooks.batching.enabled = crate::utils::parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
         }
         if let Ok(duration) = std::env::var("WEBHOOK_BATCHING_DURATION") {
             self.webhooks.batching.duration = duration.parse()?;
@@ -1185,8 +1175,8 @@ impl ServerOptions {
         if let Ok(headers) = std::env::var("CORS_HEADERS") {
             self.cors.allowed_headers = headers.split(',').map(|s| s.trim().to_string()).collect();
         }
-        if let Ok(credentials) = std::env::var("CORS_CREDENTIALS") {
-            self.cors.credentials = credentials.parse()?;
+        if std::env::var("CORS_CREDENTIALS").is_ok() {
+            self.cors.credentials = crate::utils::parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
         }
 
         // --- Performance Tuning ---

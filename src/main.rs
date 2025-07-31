@@ -1161,14 +1161,12 @@ async fn main() -> Result<()> {
     // throughout the configuration loading process. We use the reload functionality to
     // allow updating both the filter and fmt layer configuration after loading the full config.
     // Check both DEBUG_MODE and DEBUG env vars, with DEBUG taking precedence (same as options.rs)
-    let initial_debug_from_env = if let Ok(debug_str) = std::env::var("DEBUG") {
+    let initial_debug_from_env = if std::env::var("DEBUG").is_ok() {
         // DEBUG env var takes precedence
-        debug_str == "1" || debug_str.to_lowercase() == "true"
-    } else if let Ok(debug_mode_str) = std::env::var("DEBUG_MODE") {
-        // Fallback to DEBUG_MODE
-        debug_mode_str.parse().unwrap_or(false)
+        utils::parse_bool_env("DEBUG", false)
     } else {
-        false
+        // Fallback to DEBUG_MODE
+        utils::parse_bool_env("DEBUG_MODE", false)
     };
 
     let initial_log_directive = if initial_debug_from_env {
