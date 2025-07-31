@@ -43,7 +43,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use error::Error;
 use futures_util::future::join_all;
-use serde_json::{from_str, json}; // Added json import
+use serde_json::from_str; // Added json import
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -1156,104 +1156,65 @@ async fn main() -> Result<()> {
             ))
         })?;
 
-    // --- Part 1: Determine final config.debug ---
-    let initial_debug_from_env = std::env::var("DEBUG")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false); // Default to false if DEBUG env var is not set
+    // --- Configuration Loading Order ---
+    // 1. Start with defaults
+    let mut config = ServerOptions::default();
+    eprintln!("[PRE-LOG][INFO] Starting with default configuration");
 
-    let mut config = ServerOptions::load_from_file("config/config.json")
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("[PRE-LOG][ERROR] Failed to load config file: {e}. Using defaults.");
-            ServerOptions::default() // Use default if file loading fails
-        });
+    // 2. Load default config file if it exists (overrides defaults)
+    match ServerOptions::load_from_file("config/config.json").await {
+        Ok(file_config) => {
+            config = file_config;
+            eprintln!("[PRE-LOG][INFO] Loaded configuration from config/config.json");
+        }
+        Err(e) => {
+            eprintln!("[PRE-LOG][INFO] No config/config.json found or failed to load: {e}. Using defaults.");
+        }
+    }
 
-    // --- Load configuration from env variables ---
+    // 3. Load --config file if provided (overrides previous config)
+    let args = Args::parse();
+    if let Some(config_path) = args.config {
+        if Path::new(&config_path).exists() {
+            eprintln!("[PRE-LOG][INFO] Loading configuration from file: {}", config_path);
+            let mut file = File::open(&config_path)
+                .map_err(|e| Error::ConfigFile(format!("Failed to open {config_path}: {e}")))?;
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)
+                .map_err(|e| Error::ConfigFile(format!("Failed to read {config_path}: {e}")))?;
+
+            match from_str::<ServerOptions>(&contents) {
+                Ok(file_config) => {
+                    config = file_config;
+                    eprintln!(
+                        "[PRE-LOG][INFO] Successfully loaded and applied configuration from {}", config_path
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[PRE-LOG][ERROR] Failed to parse configuration file {config_path}: {e}. Continuing with previously loaded config."
+                    );
+                }
+            }
+        } else {
+            eprintln!(
+                "[PRE-LOG][ERROR] Configuration file specified but not found at {}. Continuing with previously loaded config.", config_path
+            );
+        }
+    }
+
+    // 4. Apply ALL environment variables (highest priority - overrides everything)
     match config.override_from_env().await {
         Ok(_) => {
-            if initial_debug_from_env {
-                config.debug = true; // Force debug mode if DEBUG env var is set
-            }
+            eprintln!("[PRE-LOG][INFO] Applied environment variable overrides");
         }
         Err(e) => {
             eprintln!("[PRE-LOG][ERROR] Failed to override config from environment: {e}");
         }
     }
 
-    // --- Load configuration from file ---
-    // File settings will override ENV vars set above, except for `config.debug` if ENV DEBUG was explicitly set.
-    // And high-priority ENV vars like REDIS_URL which are applied *after* file loading.
-    let args = Args::parse();
-    let config_arg = args.config;
-    let config_path = config_arg.unwrap_or_else(|| {
-        // Default to current directory if no config file is specified
-        let default_path = "config/config.json";
-        eprintln!("[PRE-LOG][INFO] No config file specified, using default: {}", default_path);
-        default_path.to_string()
-    });
-
-    if Path::new(&config_path).exists() {
-        eprintln!("[PRE-LOG][INFO] Loading configuration from file: {}", config_path);
-        let mut file = File::open(&config_path)
-            .map_err(|e| Error::ConfigFile(format!("Failed to open {config_path}: {e}")))?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)
-            .map_err(|e| Error::ConfigFile(format!("Failed to read {config_path}: {e}")))?;
-
-        match from_str::<ServerOptions>(&contents) {
-            Ok(file_config) => {
-                config = file_config; // File config overrides previous defaults and ENV vars
-                eprintln!(
-                    "[PRE-LOG][INFO] Successfully loaded and applied configuration from {}", config_path
-                );
-            }
-            Err(e) => {
-                eprintln!(
-                    "[PRE-LOG][ERROR] Failed to parse configuration file {config_path}: {e}. Using defaults and environment variables already set."
-                );
-            }
-        }
-    } else {
-        eprintln!(
-            "[PRE-LOG][INFO] No configuration file found at {}, using defaults and environment variables.", config_path
-        );
-    }
-
-    // --- Re-apply specific high-priority ENV vars (to override file) ---
-    if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        eprintln!("[PRE-LOG][INFO] Applying REDIS_URL environment variable override");
-
-        // This will override any host/port/db/password from file or previous ENVs for these components
-        config
-            .adapter
-            .redis
-            .redis_pub_options
-            .insert("url".to_string(), json!(redis_url_env.clone()));
-        config
-            .adapter
-            .redis
-            .redis_sub_options
-            .insert("url".to_string(), json!(redis_url_env.clone()));
-        config.cache.redis.url_override = Some(redis_url_env.clone());
-        config.queue.redis.url_override = Some(redis_url_env.clone());
-        config.rate_limiter.redis.url_override = Some(redis_url_env);
-        // Note: This doesn't clear individual host/port fields in config.database.redis, but components using url_override will prefer it.
-    }
-    // Re-assert DEBUG from ENV if it should always override file
-    if initial_debug_from_env {
-        // If DEBUG env was set to true, make sure config.debug is true, regardless of file.
-        if !config.debug {
-            eprintln!(
-                "[PRE-LOG][INFO] Overriding file config: DEBUG environment variable forces debug mode ON."
-            );
-            config.debug = true;
-        }
-    }
-
     // --- Part 2: Initialize logging using final config.debug ---
-    let final_debug_is_enabled = config.debug;
-
-    let default_log_directive_str = if final_debug_is_enabled {
+    let default_log_directive_str = if config.debug {
         std::env::var("SOCKUDO_LOG_DEBUG")
             .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string()) // Added tower_http
     } else {
@@ -1265,7 +1226,7 @@ async fn main() -> Result<()> {
 
     let subscriber_builder = fmt::Subscriber::builder().with_env_filter(env_filter);
 
-    if final_debug_is_enabled {
+    if config.debug {
         subscriber_builder
             .with_file(true)
             .with_line_number(true)
@@ -1281,7 +1242,7 @@ async fn main() -> Result<()> {
 
     info!(
         "Logging initialized. Debug mode: {}. Effective RUST_LOG/default filter: '{}'",
-        final_debug_is_enabled,
+        config.debug,
         EnvFilter::try_from_default_env()
             .map(|f| f.to_string())
             .unwrap_or("None".to_string()) // Show the effective filter
