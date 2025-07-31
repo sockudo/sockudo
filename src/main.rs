@@ -30,7 +30,6 @@ use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::{BoxError, Router, middleware as axum_middleware};
 use std::net::SocketAddr;
-use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,8 +40,6 @@ use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use error::Error;
 use futures_util::future::join_all;
-use serde_json::from_str; // Added json import
-use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
