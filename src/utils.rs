@@ -1,8 +1,10 @@
+use std::env;
 use std::sync::LazyLock;
 
 use crate::app::config::App;
 use crate::error::Error;
 use regex::Regex;
+use tracing::warn;
 
 // Compile regexes once using lazy_static
 static CACHING_CHANNEL_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -135,4 +137,32 @@ mod tests {
         assert!(validate_channel_name(&app, "space in name").await.is_err());
     }
 
+}
+
+/// Parse a boolean value from an environment variable with flexible format support.
+/// 
+/// Supports the following formats (case-insensitive):
+/// - true: "true", "1", "yes", "on" 
+/// - false: "false", "0", "no", "off"
+/// 
+/// Returns the default value if the environment variable is not set.
+/// Logs a warning and returns the default value for unrecognized formats.
+pub fn parse_bool_env(var_name: &str, default: bool) -> bool {
+    match env::var(var_name) {
+        Ok(s) => {
+            let lowercased_s = s.to_lowercase();
+            match lowercased_s.as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" => false,
+                _ => {
+                    warn!(
+                        "Unrecognized value for {}: '{}'. Defaulting to {}.",
+                        var_name, s, default
+                    );
+                    default
+                }
+            }
+        }
+        Err(_) => default, // Variable not set, use default
+    }
 }
