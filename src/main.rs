@@ -70,8 +70,8 @@ use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegrat
 use crate::ws_handler::handle_ws_upgrade;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 // Import tracing and tracing_subscriber parts
-use tracing::{error, info, warn}; // Added LevelFilter
-use tracing_subscriber::{layer::SubscriberExt, EnvFilter, fmt, util::SubscriberInitExt};
+use tracing::{error, info, warn, debug}; // Added LevelFilter
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, fmt, reload, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
 use crate::adapter::ConnectionHandler;
@@ -1159,10 +1159,17 @@ async fn main() -> Result<()> {
     // --- Early Logging Initialization with Reload Support ---
     // We initialize logging early based on the DEBUG env var so we can use logging macros
     // throughout the configuration loading process. We use the reload functionality to
-    // allow updating the log configuration after loading the full config.
-    let initial_debug_from_env = std::env::var("DEBUG")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
+    // allow updating both the filter and fmt layer configuration after loading the full config.
+    // Check both DEBUG_MODE and DEBUG env vars, with DEBUG taking precedence (same as options.rs)
+    let initial_debug_from_env = if let Ok(debug_str) = std::env::var("DEBUG") {
+        // DEBUG env var takes precedence
+        debug_str == "1" || debug_str.to_lowercase() == "true"
+    } else if let Ok(debug_mode_str) = std::env::var("DEBUG_MODE") {
+        // Fallback to DEBUG_MODE
+        debug_mode_str.parse().unwrap_or(false)
+    } else {
+        false
+    };
 
     let initial_log_directive = if initial_debug_from_env {
         std::env::var("SOCKUDO_LOG_DEBUG")
@@ -1174,18 +1181,21 @@ async fn main() -> Result<()> {
     let initial_env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(initial_log_directive));
 
-    // Create a reload layer for the filter
-    let (filter_layer, reload_handle) = tracing_subscriber::reload::Layer::new(initial_env_filter);
+    // Create both filter and fmt layers with reload support
+    let (filter_layer, filter_reload_handle) = reload::Layer::new(initial_env_filter);
+    
+    // Create initial fmt layer based on debug setting
+    let initial_fmt_layer = fmt::layer()
+        .with_target(true)
+        .with_file(initial_debug_from_env)
+        .with_line_number(initial_debug_from_env);
+    
+    let (fmt_layer, fmt_reload_handle) = reload::Layer::new(initial_fmt_layer);
 
-    // Build the subscriber with the reloadable filter
+    // Build the subscriber with reloadable layers
     tracing_subscriber::registry()
         .with(filter_layer)
-        .with(
-            fmt::layer()
-                .with_target(true)
-                .with_file(initial_debug_from_env)
-                .with_line_number(initial_debug_from_env)
-        )
+        .with(fmt_layer)
         .init();
 
     info!("Initial logging initialized with DEBUG={}", initial_debug_from_env);
@@ -1248,8 +1258,9 @@ async fn main() -> Result<()> {
     }
 
     // --- Update logging configuration if needed ---
-    // Now that we have the final configuration, update the logging filter if config.debug
-    // differs from the initial setting. This ensures config.debug from files is respected.
+    // Now that we have the final configuration, update both the logging filter and fmt layer
+    // if config.debug differs from the initial setting. This ensures config.debug from files
+    // is fully respected, including file/line number display.
     if config.debug != initial_debug_from_env {
         info!(
             "Debug mode changed from {} to {} after loading configuration, updating logger",
@@ -1267,22 +1278,28 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|_| EnvFilter::new(new_log_directive));
 
         // Reload the filter with the new configuration
-        match reload_handle.reload(new_env_filter) {
+        match filter_reload_handle.reload(new_env_filter) {
             Ok(()) => {
-                info!("Successfully updated logging configuration for debug={}", config.debug);
+                debug!("Successfully updated logging filter for debug={}", config.debug);
             }
             Err(e) => {
-                error!("Failed to reload logging configuration: {}", e);
+                error!("Failed to reload logging filter: {}", e);
             }
         }
-
-        // Note: We can't dynamically change file/line_number settings in the fmt layer,
-        // but the filter change will control verbosity levels
-        if !initial_debug_from_env && config.debug {
-            info!(
-                "Note: Debug mode is now enabled, but file names and line numbers \
-                were not enabled at startup. Restart with DEBUG=1 for full debug output."
-            );
+        
+        // Update the fmt layer to enable/disable file and line numbers based on debug mode
+        let new_fmt_layer = fmt::layer()
+            .with_target(true)
+            .with_file(config.debug)
+            .with_line_number(config.debug);
+            
+        match fmt_reload_handle.reload(new_fmt_layer) {
+            Ok(()) => {
+                debug!("Successfully updated fmt layer for debug={}", config.debug);
+            }
+            Err(e) => {
+                error!("Failed to reload fmt layer: {}", e);
+            }
         }
     }
 
