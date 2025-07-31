@@ -70,7 +70,7 @@ use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegrat
 use crate::ws_handler::handle_ws_upgrade;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 // Import tracing and tracing_subscriber parts
-use tracing::{debug, error, info, warn}; // Added LevelFilter
+use tracing::{error, info, warn}; // Added LevelFilter
 use tracing_subscriber::{EnvFilter, fmt, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
