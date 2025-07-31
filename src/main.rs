@@ -1143,27 +1143,6 @@ impl SockudoServer {
     }
 }
 
-// Helper function to parse string to enum, with improved error message
-fn parse_driver_enum<T: FromStr + Default + std::fmt::Debug>(
-    driver_str: String,
-    default_driver: T, // Pass the default value for logging
-    driver_name: &str,
-) -> T
-where
-    <T as FromStr>::Err: std::fmt::Debug, // Ensure the error type is Debug
-{
-    match T::from_str(&driver_str.to_lowercase()) {
-        Ok(driver_enum) => driver_enum,
-        Err(e) => {
-            // Using eprintln! as logging might not be fully initialized when this is called
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse {} driver from string '{}': {:?}. Using default: {:?}.",
-                driver_name, driver_str, e, default_driver
-            );
-            default_driver
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -1185,9 +1164,11 @@ async fn main() -> Result<()> {
     let mut config = ServerOptions::load_from_file("config/config.json")
         .await
         .unwrap_or_else(|e| {
-            eprintln!("[CONFIG-ERROR] Failed to load config file: {e}. Using defaults.");
+            error!("Failed to load config file: {e}. Using defaults.");
             ServerOptions::default() // Use default if file loading fails
         });
+
+    // --- Load configuration from env variables ---
     match config.override_from_env().await {
         Ok(_) => {
             if initial_debug_from_env {
@@ -1195,141 +1176,8 @@ async fn main() -> Result<()> {
             }
         }
         Err(e) => {
-            error!("[CONFIG-ERROR] Failed to override config from environment: {e}");
+            error!("Failed to override config from environment: {e}");
             // Continue with the loaded config, but log the error
-        }
-    }
-
-    // --- Apply environment variables to default config (before loading from file) ---
-    // This allows ENV to provide defaults if not in file, or be overridden by file.
-    if let Ok(host) = std::env::var("HOST") {
-        config.host = host;
-    }
-    if let Ok(port_str) = std::env::var("PORT") {
-        if let Ok(port) = port_str.parse() {
-            config.port = port;
-        } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse PORT env var: '{}'. Using default: {}",
-                port_str, config.port
-            );
-        }
-    }
-
-    // Drivers
-    if let Ok(driver_str) = std::env::var("ADAPTER_DRIVER") {
-        config.adapter.driver = parse_driver_enum(driver_str, config.adapter.driver, "Adapter");
-    }
-    if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
-        config.cache.driver = parse_driver_enum(driver_str, config.cache.driver, "Cache");
-    }
-    // Add after the existing queue driver env var parsing:
-    if let Ok(driver_str) = std::env::var("QUEUE_DRIVER") {
-        config.queue.driver = parse_driver_enum(driver_str, config.queue.driver, "Queue");
-    }
-
-    // Add Redis Cluster specific environment variables
-    if let Ok(nodes_str) = std::env::var("REDIS_CLUSTER_NODES") {
-        config.queue.redis_cluster.nodes =
-            nodes_str.split(',').map(|s| s.trim().to_string()).collect();
-    }
-    if let Ok(concurrency_str) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
-        if let Ok(concurrency) = concurrency_str.parse() {
-            config.queue.redis_cluster.concurrency = concurrency;
-        } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{concurrency_str}'"
-            );
-        }
-    }
-    if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
-        config.queue.redis_cluster.prefix = Some(prefix);
-    }
-    if let Ok(driver_str) = std::env::var("METRICS_DRIVER") {
-        config.metrics.driver = parse_driver_enum(driver_str, config.metrics.driver, "Metrics");
-    }
-    if let Ok(driver_str) = std::env::var("APP_MANAGER_DRIVER") {
-        config.app_manager.driver =
-            parse_driver_enum(driver_str, config.app_manager.driver, "AppManager");
-    }
-    if let Ok(driver_str) = std::env::var("RATE_LIMITER_DRIVER") {
-        config.rate_limiter.driver = parse_driver_enum(
-            driver_str,
-            config.rate_limiter.driver,
-            "RateLimiter Backend",
-        );
-    }
-
-    // SSL
-    if let Ok(val) = std::env::var("SSL_ENABLED") {
-        config.ssl.enabled = val == "1" || val.to_lowercase() == "true";
-    }
-    if let Ok(val) = std::env::var("SSL_CERT_PATH") {
-        config.ssl.cert_path = val;
-    }
-    if let Ok(val) = std::env::var("SSL_KEY_PATH") {
-        config.ssl.key_path = val;
-    }
-    if let Ok(val_str) = std::env::var("SSL_HTTP_PORT") {
-        if let Ok(port) = val_str.parse() {
-            config.ssl.http_port = Some(port);
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{val_str}'");
-        }
-    }
-
-    // Database - Redis specific (more granular than just REDIS_URL)
-    if let Ok(val) = std::env::var("DATABASE_REDIS_HOST") {
-        config.database.redis.host = val;
-    }
-    if let Ok(val_str) = std::env::var("DATABASE_REDIS_PORT") {
-        if let Ok(port) = val_str.parse() {
-            config.database.redis.port = port;
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{val_str}'");
-        }
-    }
-    if let Ok(val) = std::env::var("DATABASE_REDIS_PASSWORD") {
-        config.database.redis.password = Some(val);
-    }
-    if let Ok(val_str) = std::env::var("DATABASE_REDIS_DB") {
-        if let Ok(db) = val_str.parse() {
-            config.database.redis.db = db;
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{val_str}'");
-        }
-    }
-    if let Ok(val) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
-        config.database.redis.key_prefix = val;
-    }
-
-    // Metrics specific
-    if let Ok(val) = std::env::var("METRICS_ENABLED") {
-        config.metrics.enabled = val == "1" || val.to_lowercase() == "true";
-    }
-    if let Ok(val) = std::env::var("METRICS_HOST") {
-        config.metrics.host = val;
-    }
-    if let Ok(val_str) = std::env::var("METRICS_PORT") {
-        if let Ok(port) = val_str.parse() {
-            config.metrics.port = port;
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse METRICS_PORT env var: '{val_str}'");
-        }
-    }
-    if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
-        config.metrics.prometheus.prefix = val;
-    }
-
-    // Instance specific
-    if let Ok(val) = std::env::var("INSTANCE_PROCESS_ID") {
-        config.instance.process_id = val;
-    }
-    if let Ok(val_str) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
-        if let Ok(period) = val_str.parse() {
-            config.shutdown_grace_period = period;
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{val_str}'",);
         }
     }
 
@@ -1341,12 +1189,12 @@ async fn main() -> Result<()> {
     let config_path = config_arg.unwrap_or_else(|| {
         // Default to current directory if no config file is specified
         let default_path = "config/config.json";
-        println!("[PRE-LOG] No config file specified, using default: {default_path}");
+        info!("No config file specified, using default: {}", default_path);
         default_path.to_string()
     });
 
     if Path::new(&config_path).exists() {
-        println!("[PRE-LOG] Loading configuration from file: {config_path}"); // Basic print before logging init
+        info!("Loading configuration from file: {}", config_path);
         let mut file = File::open(&config_path)
             .map_err(|e| Error::ConfigFile(format!("Failed to open {config_path}: {e}")))?;
         let mut contents = String::new();
@@ -1356,25 +1204,25 @@ async fn main() -> Result<()> {
         match from_str::<ServerOptions>(&contents) {
             Ok(file_config) => {
                 config = file_config; // File config overrides previous defaults and ENV vars
-                println!(
-                    "[PRE-LOG] Successfully loaded and applied configuration from {config_path}"
+                info!(
+                    "Successfully loaded and applied configuration from {}", config_path
                 );
             }
             Err(e) => {
-                eprintln!(
-                    "[PRE-LOG-ERROR] Failed to parse configuration file {config_path}: {e}. Using defaults and environment variables already set."
+                error!(
+                    "Failed to parse configuration file {config_path}: {e}. Using defaults and environment variables already set."
                 );
             }
         }
     } else {
-        println!(
-            "[PRE-LOG] No configuration file found at {config_path}, using defaults and environment variables."
+        info!(
+            "No configuration file found at {}, using defaults and environment variables.", config_path
         );
     }
 
     // --- Re-apply specific high-priority ENV vars (to override file) ---
     if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        println!("[PRE-LOG] Applying REDIS_URL environment variable override");
+        info!("Applying REDIS_URL environment variable override");
         debug!("REDIS_URL override value: {}", redis_url_env);
 
         // This will override any host/port/db/password from file or previous ENVs for these components
@@ -1397,8 +1245,8 @@ async fn main() -> Result<()> {
     if initial_debug_from_env {
         // If DEBUG env was set to true, make sure config.debug is true, regardless of file.
         if !config.debug {
-            println!(
-                "[PRE-LOG] Overriding file config: DEBUG environment variable forces debug mode ON."
+            info!(
+                "Overriding file config: DEBUG environment variable forces debug mode ON."
             );
             config.debug = true;
         }
