@@ -117,47 +117,12 @@ struct Args {
 }
 
 impl SockudoServer {
-    fn get_http_addr(&self) -> SocketAddr {
-        format!("{}:{}", self.config.host, self.config.port)
-            .parse()
-            .unwrap_or_else(|_| "127.0.0.1:6001".parse().unwrap())
+    async fn get_http_addr(&self) -> SocketAddr {
+        utils::resolve_socket_addr(&self.config.host, self.config.port, "HTTP server").await
     }
 
     async fn get_metrics_addr(&self) -> SocketAddr {
-        // Use tokio::net::lookup_host for proper hostname resolution
-        let host_port = format!("{}:{}", self.config.metrics.host, self.config.metrics.port);
-        
-        match tokio::net::lookup_host(&host_port).await {
-            Ok(addrs) => {
-                // Prefer IPv4 addresses to avoid potential IPv6 issues
-                let mut ipv4_addr = None;
-                let mut ipv6_addr = None;
-                
-                for addr in addrs {
-                    if addr.is_ipv4() && ipv4_addr.is_none() {
-                        ipv4_addr = Some(addr);
-                    } else if addr.is_ipv6() && ipv6_addr.is_none() {
-                        ipv6_addr = Some(addr);
-                    }
-                }
-                
-                if let Some(addr) = ipv4_addr {
-                    addr
-                } else if let Some(addr) = ipv6_addr {
-                    warn!("Only IPv6 address found for {}, using: {}", host_port, addr);
-                    addr
-                } else {
-                    let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), self.config.metrics.port);
-                    warn!("No addresses found for {}. Using fallback {}", host_port, fallback);
-                    fallback
-                }
-            }
-            Err(e) => {
-                let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), self.config.metrics.port);
-                warn!("Failed to resolve {}: {}. Using fallback {}", host_port, e, fallback);
-                fallback
-            }
-        }
+        utils::resolve_socket_addr(&self.config.metrics.host, self.config.metrics.port, "Metrics server").await
     }
 
     async fn new(config: ServerOptions) -> Result<Self> {
@@ -837,7 +802,7 @@ impl SockudoServer {
         let http_router = self.configure_http_routes();
         let metrics_router = self.configure_metrics_routes();
 
-        let http_addr = self.get_http_addr();
+        let http_addr = self.get_http_addr().await;
         let metrics_addr = self.get_metrics_addr().await;
 
         if self.config.ssl.enabled

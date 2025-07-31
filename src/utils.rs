@@ -166,3 +166,54 @@ pub fn parse_bool_env(var_name: &str, default: bool) -> bool {
         Err(_) => default, // Variable not set, use default
     }
 }
+
+/// Resolve a hostname and port to a SocketAddr with proper DNS resolution.
+/// 
+/// Features:
+/// - Prefers IPv4 addresses over IPv6 for better compatibility
+/// - Handles hostname resolution (localhost, domain names, etc.)
+/// - Falls back to 127.0.0.1 with the specified port on resolution failure
+/// - Logs warnings for IPv6-only resolution or failures with context
+/// 
+/// # Parameters
+/// - `host`: The hostname or IP address to resolve
+/// - `port`: The port number
+/// - `context`: A description of what this address is for (e.g., "HTTP server", "metrics server")
+pub async fn resolve_socket_addr(host: &str, port: u16, context: &str) -> std::net::SocketAddr {
+    use std::net::SocketAddr;
+    use tokio::net::lookup_host;
+    
+    let host_port = format!("{}:{}", host, port);
+    
+    match lookup_host(&host_port).await {
+        Ok(addrs) => {
+            // Prefer IPv4 addresses to avoid potential IPv6 issues
+            let mut ipv4_addr = None;
+            let mut ipv6_addr = None;
+            
+            for addr in addrs {
+                if addr.is_ipv4() && ipv4_addr.is_none() {
+                    ipv4_addr = Some(addr);
+                } else if addr.is_ipv6() && ipv6_addr.is_none() {
+                    ipv6_addr = Some(addr);
+                }
+            }
+            
+            if let Some(addr) = ipv4_addr {
+                addr
+            } else if let Some(addr) = ipv6_addr {
+                warn!("[{}] Only IPv6 address found for {}, using: {}", context, host_port, addr);
+                addr
+            } else {
+                let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), port);
+                warn!("[{}] No addresses found for {}. Using fallback {}", context, host_port, fallback);
+                fallback
+            }
+        }
+        Err(e) => {
+            let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), port);
+            warn!("[{}] Failed to resolve {}: {}. Using fallback {}", context, host_port, e, fallback);
+            fallback
+        }
+    }
+}
