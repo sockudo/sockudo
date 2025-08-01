@@ -2,9 +2,31 @@ use crate::app::config::App;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
+use tracing::{info, warn};
 // Assuming DEFAULT_PREFIX is pub const in nats_adapter or imported appropriately
 use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
 use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
+
+// Helper function to parse driver enums with fallback behavior (matches main.rs)
+fn parse_driver_enum<T: FromStr + Clone + std::fmt::Debug>(
+    driver_str: String,
+    default_driver: T,
+    driver_name: &str,
+) -> T
+where
+    <T as FromStr>::Err: std::fmt::Debug,
+{
+    match T::from_str(&driver_str.to_lowercase()) {
+        Ok(driver_enum) => driver_enum,
+        Err(e) => {
+            warn!(
+                "Failed to parse {} driver from string '{}': {:?}. Using default: {:?}.",
+                driver_name, driver_str, e, default_driver
+            );
+            default_driver
+        }
+    }
+}
 
 // --- Enums for Driver Types ---
 
@@ -865,57 +887,84 @@ impl ServerOptions {
         if let Ok(mode) = std::env::var("ENVIRONMENT") {
             self.mode = mode;
         }
-        if let Ok(debug) = std::env::var("DEBUG_MODE") {
-            self.debug = debug.parse()?;
+        // Handle DEBUG_MODE first
+        if std::env::var("DEBUG_MODE").is_ok() {
+            self.debug = crate::utils::parse_bool_env("DEBUG_MODE", self.debug);
+        }
+        // Special handling for DEBUG env var (takes precedence over DEBUG_MODE)
+        if std::env::var("DEBUG").is_ok() {
+            let debug_value = crate::utils::parse_bool_env("DEBUG", self.debug);
+            if debug_value {
+                self.debug = true;
+                info!("DEBUG environment variable forces debug mode ON");
+            }
         }
         if let Ok(host) = std::env::var("HOST") {
             self.host = host;
         }
-        if let Ok(port) = std::env::var("PORT") {
-            self.port = port.parse()?;
+        if let Ok(port_str) = std::env::var("PORT") {
+            match port_str.parse() {
+                Ok(port) => self.port = port,
+                Err(_) => warn!("Failed to parse PORT env var: '{}'. Using default: {}", port_str, self.port),
+            }
         }
-        if let Ok(grace_period) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
-            self.shutdown_grace_period = grace_period.parse()?;
+        if let Ok(grace_period_str) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
+            match grace_period_str.parse() {
+                Ok(period) => self.shutdown_grace_period = period,
+                Err(_) => warn!("Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{}'", grace_period_str),
+            }
         }
-        if let Ok(timeout) = std::env::var("USER_AUTHENTICATION_TIMEOUT") {
-            self.user_authentication_timeout = timeout.parse()?;
+        if let Ok(timeout_str) = std::env::var("USER_AUTHENTICATION_TIMEOUT") {
+            match timeout_str.parse() {
+                Ok(timeout) => self.user_authentication_timeout = timeout,
+                Err(_) => warn!("Failed to parse USER_AUTHENTICATION_TIMEOUT env var: '{}'", timeout_str),
+            }
         }
-        if let Ok(payload_kb) = std::env::var("WEBSOCKET_MAX_PAYLOAD_KB") {
-            self.websocket_max_payload_kb = payload_kb.parse()?;
+        if let Ok(payload_kb_str) = std::env::var("WEBSOCKET_MAX_PAYLOAD_KB") {
+            match payload_kb_str.parse() {
+                Ok(payload_kb) => self.websocket_max_payload_kb = payload_kb,
+                Err(_) => warn!("Failed to parse WEBSOCKET_MAX_PAYLOAD_KB env var: '{}'", payload_kb_str),
+            }
         }
         if let Ok(id) = std::env::var("INSTANCE_PROCESS_ID") {
             self.instance.process_id = id;
         }
 
         // --- Driver Configuration ---
-        if let Ok(driver) = std::env::var("ADAPTER_DRIVER") {
-            self.adapter.driver = AdapterDriver::from_str(&driver)?;
+        if let Ok(driver_str) = std::env::var("ADAPTER_DRIVER") {
+            self.adapter.driver = parse_driver_enum(driver_str, self.adapter.driver.clone(), "Adapter");
         }
-        if let Ok(driver) = std::env::var("CACHE_DRIVER") {
-            self.cache.driver = CacheDriver::from_str(&driver)?;
+        if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
+            self.cache.driver = parse_driver_enum(driver_str, self.cache.driver.clone(), "Cache");
         }
-        if let Ok(driver) = std::env::var("QUEUE_DRIVER") {
-            self.queue.driver = QueueDriver::from_str(&driver)?;
+        if let Ok(driver_str) = std::env::var("QUEUE_DRIVER") {
+            self.queue.driver = parse_driver_enum(driver_str, self.queue.driver.clone(), "Queue");
         }
-        if let Ok(driver) = std::env::var("APP_MANAGER_DRIVER") {
-            self.app_manager.driver = AppManagerDriver::from_str(&driver)?;
+        if let Ok(driver_str) = std::env::var("APP_MANAGER_DRIVER") {
+            self.app_manager.driver = parse_driver_enum(driver_str, self.app_manager.driver.clone(), "AppManager");
         }
-        if let Ok(driver) = std::env::var("RATE_LIMITER_DRIVER") {
-            self.rate_limiter.driver = CacheDriver::from_str(&driver)?;
+        if let Ok(driver_str) = std::env::var("RATE_LIMITER_DRIVER") {
+            self.rate_limiter.driver = parse_driver_enum(driver_str, self.rate_limiter.driver.clone(), "RateLimiter Backend");
         }
 
         // --- Database: Redis ---
         if let Ok(host) = std::env::var("DATABASE_REDIS_HOST") {
             self.database.redis.host = host;
         }
-        if let Ok(port) = std::env::var("DATABASE_REDIS_PORT") {
-            self.database.redis.port = port.parse()?;
+        if let Ok(port_str) = std::env::var("DATABASE_REDIS_PORT") {
+            match port_str.parse() {
+                Ok(port) => self.database.redis.port = port,
+                Err(_) => warn!("Failed to parse DATABASE_REDIS_PORT env var: '{}'", port_str),
+            }
         }
         if let Ok(password) = std::env::var("DATABASE_REDIS_PASSWORD") {
             self.database.redis.password = Some(password);
         }
-        if let Ok(db) = std::env::var("DATABASE_REDIS_DB") {
-            self.database.redis.db = db.parse()?;
+        if let Ok(db_str) = std::env::var("DATABASE_REDIS_DB") {
+            match db_str.parse() {
+                Ok(db) => self.database.redis.db = db,
+                Err(_) => warn!("Failed to parse DATABASE_REDIS_DB env var: '{}'", db_str),
+            }
         }
         if let Ok(prefix) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
             self.database.redis.key_prefix = prefix;
@@ -925,8 +974,11 @@ impl ServerOptions {
         if let Ok(host) = std::env::var("DATABASE_MYSQL_HOST") {
             self.database.mysql.host = host;
         }
-        if let Ok(port) = std::env::var("DATABASE_MYSQL_PORT") {
-            self.database.mysql.port = port.parse()?;
+        if let Ok(port_str) = std::env::var("DATABASE_MYSQL_PORT") {
+            match port_str.parse() {
+                Ok(port) => self.database.mysql.port = port,
+                Err(_) => warn!("Failed to parse DATABASE_MYSQL_PORT env var: '{}'", port_str),
+            }
         }
         if let Ok(user) = std::env::var("DATABASE_MYSQL_USERNAME") {
             self.database.mysql.username = user;
@@ -945,8 +997,11 @@ impl ServerOptions {
         if let Ok(host) = std::env::var("DATABASE_POSTGRES_HOST") {
             self.database.postgres.host = host;
         }
-        if let Ok(port) = std::env::var("DATABASE_POSTGRES_PORT") {
-            self.database.postgres.port = port.parse()?;
+        if let Ok(port_str) = std::env::var("DATABASE_POSTGRES_PORT") {
+            match port_str.parse() {
+                Ok(port) => self.database.postgres.port = port,
+                Err(_) => warn!("Failed to parse DATABASE_POSTGRES_PORT env var: '{}'", port_str),
+            }
         }
         if let Ok(user) = std::env::var("DATABASE_POSTGRES_USERNAME") {
             self.database.postgres.username = user;
@@ -981,47 +1036,59 @@ impl ServerOptions {
             self.adapter.cluster.nodes = node_list.clone();
             self.queue.redis_cluster.nodes = node_list;
         }
-        if let Ok(concurrency) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
-            self.queue.redis_cluster.concurrency = concurrency.parse()?;
+        if let Ok(concurrency_str) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
+            match concurrency_str.parse() {
+                Ok(concurrency) => self.queue.redis_cluster.concurrency = concurrency,
+                Err(_) => warn!("Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{}'", concurrency_str),
+            }
         }
         if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
             self.queue.redis_cluster.prefix = Some(prefix);
         }
 
         // --- SSL Configuration ---
-        if let Ok(enabled) = std::env::var("SSL_ENABLED") {
-            self.ssl.enabled = enabled.parse()?;
+        if std::env::var("SSL_ENABLED").is_ok() {
+            self.ssl.enabled = crate::utils::parse_bool_env("SSL_ENABLED", self.ssl.enabled);
         }
-        if let Ok(path) = std::env::var("SSL_CERT_PATH") {
-            self.ssl.cert_path = path;
+        if let Ok(val) = std::env::var("SSL_CERT_PATH") {
+            self.ssl.cert_path = val;
         }
-        if let Ok(path) = std::env::var("SSL_KEY_PATH") {
-            self.ssl.key_path = path;
+        if let Ok(val) = std::env::var("SSL_KEY_PATH") {
+            self.ssl.key_path = val;
         }
-        if let Ok(redirect) = std::env::var("SSL_REDIRECT_HTTP") {
-            self.ssl.redirect_http = redirect.parse()?;
+        if std::env::var("SSL_REDIRECT_HTTP").is_ok() {
+            self.ssl.redirect_http = crate::utils::parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
         }
-        if let Ok(port) = std::env::var("SSL_HTTP_PORT") {
-            self.ssl.http_port = Some(port.parse()?);
+        if let Ok(port_str) = std::env::var("SSL_HTTP_PORT") {
+            match port_str.parse() {
+                Ok(port) => self.ssl.http_port = Some(port),
+                Err(_) => warn!("Failed to parse SSL_HTTP_PORT env var: '{}'", port_str),
+            }
         }
 
         // --- Metrics ---
-        if let Ok(enabled) = std::env::var("METRICS_ENABLED") {
-            self.metrics.enabled = enabled.parse()?;
+        if let Ok(driver_str) = std::env::var("METRICS_DRIVER") {
+            self.metrics.driver = parse_driver_enum(driver_str, self.metrics.driver.clone(), "Metrics");
         }
-        if let Ok(host) = std::env::var("METRICS_HOST") {
-            self.metrics.host = host;
+        if std::env::var("METRICS_ENABLED").is_ok() {
+            self.metrics.enabled = crate::utils::parse_bool_env("METRICS_ENABLED", self.metrics.enabled);
         }
-        if let Ok(port) = std::env::var("METRICS_PORT") {
-            self.metrics.port = port.parse()?;
+        if let Ok(val) = std::env::var("METRICS_HOST") {
+            self.metrics.host = val;
         }
-        if let Ok(prefix) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
-            self.metrics.prometheus.prefix = prefix;
+        if let Ok(port_str) = std::env::var("METRICS_PORT") {
+            match port_str.parse() {
+                Ok(port) => self.metrics.port = port,
+                Err(_) => warn!("Failed to parse METRICS_PORT env var: '{}'", port_str),
+            }
+        }
+        if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
+            self.metrics.prometheus.prefix = val;
         }
 
         // --- Rate Limiter ---
-        if let Ok(enabled) = std::env::var("RATE_LIMITER_ENABLED") {
-            self.rate_limiter.enabled = enabled.parse()?;
+        if std::env::var("RATE_LIMITER_ENABLED").is_ok() {
+            self.rate_limiter.enabled = crate::utils::parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
         }
         if let Ok(max) = std::env::var("RATE_LIMITER_API_MAX_REQUESTS") {
             self.rate_limiter.api_rate_limit.max_requests = max.parse()?;
@@ -1063,16 +1130,16 @@ impl ServerOptions {
         if let Ok(concurrency) = std::env::var("QUEUE_SQS_CONCURRENCY") {
             self.queue.sqs.concurrency = concurrency.parse()?;
         }
-        if let Ok(fifo) = std::env::var("QUEUE_SQS_FIFO") {
-            self.queue.sqs.fifo = fifo.parse()?;
+        if std::env::var("QUEUE_SQS_FIFO").is_ok() {
+            self.queue.sqs.fifo = crate::utils::parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
         }
         if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
             self.queue.sqs.endpoint_url = Some(endpoint);
         }
 
         // --- Webhooks ---
-        if let Ok(enabled) = std::env::var("WEBHOOK_BATCHING_ENABLED") {
-            self.webhooks.batching.enabled = enabled.parse()?;
+        if std::env::var("WEBHOOK_BATCHING_ENABLED").is_ok() {
+            self.webhooks.batching.enabled = crate::utils::parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
         }
         if let Ok(duration) = std::env::var("WEBHOOK_BATCHING_DURATION") {
             self.webhooks.batching.duration = duration.parse()?;
@@ -1108,8 +1175,8 @@ impl ServerOptions {
         if let Ok(headers) = std::env::var("CORS_HEADERS") {
             self.cors.allowed_headers = headers.split(',').map(|s| s.trim().to_string()).collect();
         }
-        if let Ok(credentials) = std::env::var("CORS_CREDENTIALS") {
-            self.cors.credentials = credentials.parse()?;
+        if std::env::var("CORS_CREDENTIALS").is_ok() {
+            self.cors.credentials = crate::utils::parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
         }
 
         // --- Performance Tuning ---
@@ -1142,6 +1209,24 @@ impl ServerOptions {
         // Note: SOCKUDO_DEFAULT_APP_* variables would require instantiating
         // the `App` struct and adding it to `self.app_manager.array.apps`.
         // This is omitted as the `App` struct definition is not provided.
+
+        // Special handling for REDIS_URL - overrides all Redis-related configs
+        if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
+            info!("Applying REDIS_URL environment variable override");
+
+            let redis_url_json = serde_json::json!(redis_url_env);
+            
+            // Adapter uses HashMap approach (for flexible configuration)
+            self.adapter.redis.redis_pub_options
+                .insert("url".to_string(), redis_url_json.clone());
+            self.adapter.redis.redis_sub_options
+                .insert("url".to_string(), redis_url_json);
+                
+            // Other components use direct url_override approach (simpler, more direct)
+            self.cache.redis.url_override = Some(redis_url_env.clone());
+            self.queue.redis.url_override = Some(redis_url_env.clone());
+            self.rate_limiter.redis.url_override = Some(redis_url_env);
+        }
 
         Ok(())
     }
