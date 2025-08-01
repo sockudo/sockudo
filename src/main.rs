@@ -29,10 +29,7 @@ use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::{BoxError, Router, middleware as axum_middleware};
-use std::fs::File;
-use std::io::Read;
 use std::net::SocketAddr;
-use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,8 +40,6 @@ use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use error::Error;
 use futures_util::future::join_all;
-use serde_json::{from_str, json}; // Added json import
-use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
@@ -70,8 +65,8 @@ use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegrat
 use crate::ws_handler::handle_ws_upgrade;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 // Import tracing and tracing_subscriber parts
-use tracing::{debug, error, info, warn}; // Added LevelFilter
-use tracing_subscriber::{EnvFilter, fmt, util::SubscriberInitExt};
+use tracing::{error, info, warn, debug}; // Added LevelFilter
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, fmt, reload, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
 use crate::adapter::ConnectionHandler;
@@ -122,16 +117,12 @@ struct Args {
 }
 
 impl SockudoServer {
-    fn get_http_addr(&self) -> SocketAddr {
-        format!("{}:{}", self.config.host, self.config.port)
-            .parse()
-            .unwrap_or_else(|_| "127.0.0.1:6001".parse().unwrap())
+    async fn get_http_addr(&self) -> SocketAddr {
+        utils::resolve_socket_addr(&self.config.host, self.config.port, "HTTP server").await
     }
 
-    fn get_metrics_addr(&self) -> SocketAddr {
-        format!("{}:{}", self.config.metrics.host, self.config.metrics.port)
-            .parse()
-            .unwrap_or_else(|_| "127.0.0.1:9601".parse().unwrap())
+    async fn get_metrics_addr(&self) -> SocketAddr {
+        utils::resolve_socket_addr(&self.config.metrics.host, self.config.metrics.port, "Metrics server").await
     }
 
     async fn new(config: ServerOptions) -> Result<Self> {
@@ -811,8 +802,8 @@ impl SockudoServer {
         let http_router = self.configure_http_routes();
         let metrics_router = self.configure_metrics_routes();
 
-        let http_addr = self.get_http_addr();
-        let metrics_addr = self.get_metrics_addr();
+        let http_addr = self.get_http_addr().await;
+        let metrics_addr = self.get_metrics_addr().await;
 
         if self.config.ssl.enabled
             && !self.config.ssl.cert_path.is_empty()
@@ -884,9 +875,8 @@ impl SockudoServer {
                     });
                 } else {
                     warn!(
-                        "Failed to start metrics server on {}: {}. Metrics will not be available.",
-                        metrics_addr,
-                        metrics_addr // Corrected variable
+                        "Failed to start metrics server on {}. Metrics will not be available.",
+                        metrics_addr
                     );
                 }
             }
@@ -1105,61 +1095,14 @@ impl SockudoServer {
         info!("Server stopped");
         Ok(())
     }
-
-    #[allow(dead_code)]
-    pub async fn load_options_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let mut file = tokio::fs::File::open(path).await?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).await?;
-        let options: ServerOptions = from_str(&contents)?;
-        self.config = options; // Replace current config
-        info!(
-            "Successfully loaded and applied options from file, app_manager config: {:?}",
-            self.config.app_manager // Example to show new config is active
-        );
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    async fn register_apps(&self, apps: Vec<App>) -> Result<()> {
-        for app in apps {
-            let existing_app = self.state.app_manager.find_by_id(&app.id).await?;
-            if existing_app.is_some() {
-                info!("Updating app during dynamic registration: {}", app.id);
-                self.state.app_manager.update_app(app).await?;
-            } else {
-                info!("Registering new app dynamically: {}", app.id);
-                self.state.app_manager.create_app(app).await?;
-            }
-        }
-        Ok(())
-    }
 }
 
-// Helper function to parse string to enum, with improved error message
-fn parse_driver_enum<T: FromStr + Default + std::fmt::Debug>(
-    driver_str: String,
-    default_driver: T, // Pass the default value for logging
-    driver_name: &str,
-) -> T
-where
-    <T as FromStr>::Err: std::fmt::Debug, // Ensure the error type is Debug
-{
-    match T::from_str(&driver_str.to_lowercase()) {
-        Ok(driver_enum) => driver_enum,
-        Err(e) => {
-            // Using eprintln! as logging might not be fully initialized when this is called
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse {} driver from string '{}': {:?}. Using default: {:?}.",
-                driver_name, driver_str, e, default_driver
-            );
-            default_driver
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse command line arguments first - this handles --help and --version without any other output
+    let args = Args::parse();
+
     // Initialize crypto provider at the very beginning for any TLS usage (HTTPS or Redis TLS)
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -1170,271 +1113,147 @@ async fn main() -> Result<()> {
             ))
         })?;
 
-    // --- Part 1: Determine final config.debug ---
-    let initial_debug_from_env = std::env::var("DEBUG")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false); // Default to false if DEBUG env var is not set
+    // --- Early Logging Initialization with Reload Support ---
+    // We initialize logging early based on the DEBUG env var so we can use logging macros
+    // throughout the configuration loading process. We use the reload functionality to
+    // allow updating both the filter and fmt layer configuration after loading the full config.
+    // Helper function to get log directive based on debug mode
+    fn get_log_directive(is_debug: bool) -> String {
+        if is_debug {
+            std::env::var("SOCKUDO_LOG_DEBUG")
+                .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string())
+        } else {
+            std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string())
+        }
+    }
 
-    let mut config = ServerOptions::load_from_file("config/config.json")
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("[CONFIG-ERROR] Failed to load config file: {e}. Using defaults.");
-            ServerOptions::default() // Use default if file loading fails
-        });
-    match config.override_from_env().await {
-        Ok(_) => {
-            if initial_debug_from_env {
-                config.debug = true; // Force debug mode if DEBUG env var is set
-            }
+    // Check both DEBUG_MODE and DEBUG env vars, with DEBUG taking precedence (same as options.rs)
+    let initial_debug_from_env = if std::env::var("DEBUG").is_ok() {
+        // DEBUG env var takes precedence
+        utils::parse_bool_env("DEBUG", false)
+    } else {
+        // Fallback to DEBUG_MODE
+        utils::parse_bool_env("DEBUG_MODE", false)
+    };
+
+    let initial_log_directive = get_log_directive(initial_debug_from_env);
+
+    let initial_env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(initial_log_directive));
+
+    // Create both filter and fmt layers with reload support
+    let (filter_layer, filter_reload_handle) = reload::Layer::new(initial_env_filter);
+    
+    // Create initial fmt layer based on debug setting
+    let initial_fmt_layer = fmt::layer()
+        .with_target(true)
+        .with_file(initial_debug_from_env)
+        .with_line_number(initial_debug_from_env);
+    
+    let (fmt_layer, fmt_reload_handle) = reload::Layer::new(initial_fmt_layer);
+
+    // Build the subscriber with reloadable layers
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
+
+    info!("Initial logging initialized with DEBUG={}", initial_debug_from_env);
+
+    // --- Configuration Loading Order ---
+    // 1. Start with defaults
+    let mut config = ServerOptions::default();
+    info!("Starting with default configuration");
+
+    // 2. Load default config file if it exists (overrides defaults)
+    match ServerOptions::load_from_file("config/config.json").await {
+        Ok(file_config) => {
+            config = file_config;
+            info!("Loaded configuration from config/config.json");
         }
         Err(e) => {
-            error!("[CONFIG-ERROR] Failed to override config from environment: {e}");
-            // Continue with the loaded config, but log the error
+            info!("No config/config.json found or failed to load: {e}. Using defaults.");
         }
     }
 
-    // --- Apply environment variables to default config (before loading from file) ---
-    // This allows ENV to provide defaults if not in file, or be overridden by file.
-    if let Ok(host) = std::env::var("HOST") {
-        config.host = host;
-    }
-    if let Ok(port_str) = std::env::var("PORT") {
-        if let Ok(port) = port_str.parse() {
-            config.port = port;
-        } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse PORT env var: '{}'. Using default: {}",
-                port_str, config.port
-            );
-        }
-    }
-
-    // Drivers
-    if let Ok(driver_str) = std::env::var("ADAPTER_DRIVER") {
-        config.adapter.driver = parse_driver_enum(driver_str, config.adapter.driver, "Adapter");
-    }
-    if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
-        config.cache.driver = parse_driver_enum(driver_str, config.cache.driver, "Cache");
-    }
-    // Add after the existing queue driver env var parsing:
-    if let Ok(driver_str) = std::env::var("QUEUE_DRIVER") {
-        config.queue.driver = parse_driver_enum(driver_str, config.queue.driver, "Queue");
-    }
-
-    // Add Redis Cluster specific environment variables
-    if let Ok(nodes_str) = std::env::var("REDIS_CLUSTER_NODES") {
-        config.queue.redis_cluster.nodes =
-            nodes_str.split(',').map(|s| s.trim().to_string()).collect();
-    }
-    if let Ok(concurrency_str) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
-        if let Ok(concurrency) = concurrency_str.parse() {
-            config.queue.redis_cluster.concurrency = concurrency;
-        } else {
-            eprintln!(
-                "[CONFIG-WARN] Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{concurrency_str}'"
-            );
-        }
-    }
-    if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
-        config.queue.redis_cluster.prefix = Some(prefix);
-    }
-    if let Ok(driver_str) = std::env::var("METRICS_DRIVER") {
-        config.metrics.driver = parse_driver_enum(driver_str, config.metrics.driver, "Metrics");
-    }
-    if let Ok(driver_str) = std::env::var("APP_MANAGER_DRIVER") {
-        config.app_manager.driver =
-            parse_driver_enum(driver_str, config.app_manager.driver, "AppManager");
-    }
-    if let Ok(driver_str) = std::env::var("RATE_LIMITER_DRIVER") {
-        config.rate_limiter.driver = parse_driver_enum(
-            driver_str,
-            config.rate_limiter.driver,
-            "RateLimiter Backend",
-        );
-    }
-
-    // SSL
-    if let Ok(val) = std::env::var("SSL_ENABLED") {
-        config.ssl.enabled = val == "1" || val.to_lowercase() == "true";
-    }
-    if let Ok(val) = std::env::var("SSL_CERT_PATH") {
-        config.ssl.cert_path = val;
-    }
-    if let Ok(val) = std::env::var("SSL_KEY_PATH") {
-        config.ssl.key_path = val;
-    }
-    if let Ok(val_str) = std::env::var("SSL_HTTP_PORT") {
-        if let Ok(port) = val_str.parse() {
-            config.ssl.http_port = Some(port);
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse SSL_HTTP_PORT env var: '{val_str}'");
-        }
-    }
-
-    // Database - Redis specific (more granular than just REDIS_URL)
-    if let Ok(val) = std::env::var("DATABASE_REDIS_HOST") {
-        config.database.redis.host = val;
-    }
-    if let Ok(val_str) = std::env::var("DATABASE_REDIS_PORT") {
-        if let Ok(port) = val_str.parse() {
-            config.database.redis.port = port;
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_PORT env var: '{val_str}'");
-        }
-    }
-    if let Ok(val) = std::env::var("DATABASE_REDIS_PASSWORD") {
-        config.database.redis.password = Some(val);
-    }
-    if let Ok(val_str) = std::env::var("DATABASE_REDIS_DB") {
-        if let Ok(db) = val_str.parse() {
-            config.database.redis.db = db;
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse DATABASE_REDIS_DB env var: '{val_str}'");
-        }
-    }
-    if let Ok(val) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
-        config.database.redis.key_prefix = val;
-    }
-
-    // Metrics specific
-    if let Ok(val) = std::env::var("METRICS_ENABLED") {
-        config.metrics.enabled = val == "1" || val.to_lowercase() == "true";
-    }
-    if let Ok(val) = std::env::var("METRICS_HOST") {
-        config.metrics.host = val;
-    }
-    if let Ok(val_str) = std::env::var("METRICS_PORT") {
-        if let Ok(port) = val_str.parse() {
-            config.metrics.port = port;
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse METRICS_PORT env var: '{val_str}'");
-        }
-    }
-    if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
-        config.metrics.prometheus.prefix = val;
-    }
-
-    // Instance specific
-    if let Ok(val) = std::env::var("INSTANCE_PROCESS_ID") {
-        config.instance.process_id = val;
-    }
-    if let Ok(val_str) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
-        if let Ok(period) = val_str.parse() {
-            config.shutdown_grace_period = period;
-        } else {
-            eprintln!("[CONFIG-WARN] Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{val_str}'",);
-        }
-    }
-
-    // --- Load configuration from file ---
-    // File settings will override ENV vars set above, except for `config.debug` if ENV DEBUG was explicitly set.
-    // And high-priority ENV vars like REDIS_URL which are applied *after* file loading.
-    let args = Args::parse();
-    let config_arg = args.config;
-    let config_path = config_arg.unwrap_or_else(|| {
-        // Default to current directory if no config file is specified
-        let default_path = "config/config.json";
-        println!("[PRE-LOG] No config file specified, using default: {default_path}");
-        default_path.to_string()
-    });
-
-    if Path::new(&config_path).exists() {
-        println!("[PRE-LOG] Loading configuration from file: {config_path}"); // Basic print before logging init
-        let mut file = File::open(&config_path)
-            .map_err(|e| Error::ConfigFile(format!("Failed to open {config_path}: {e}")))?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)
-            .map_err(|e| Error::ConfigFile(format!("Failed to read {config_path}: {e}")))?;
-
-        match from_str::<ServerOptions>(&contents) {
+    // 3. Load --config file if provided (overrides previous config)
+    if let Some(config_path) = args.config {
+        match ServerOptions::load_from_file(&config_path).await {
             Ok(file_config) => {
-                config = file_config; // File config overrides previous defaults and ENV vars
-                println!(
-                    "[PRE-LOG] Successfully loaded and applied configuration from {config_path}"
+                config = file_config;
+                info!(
+                    "Successfully loaded and applied configuration from {}", config_path
                 );
             }
             Err(e) => {
-                eprintln!(
-                    "[PRE-LOG-ERROR] Failed to parse configuration file {config_path}: {e}. Using defaults and environment variables already set."
+                error!(
+                    "Failed to load configuration file {}: {}. Continuing with previously loaded config.", 
+                    config_path, e
                 );
             }
         }
-    } else {
-        println!(
-            "[PRE-LOG] No configuration file found at {config_path}, using defaults and environment variables."
-        );
     }
 
-    // --- Re-apply specific high-priority ENV vars (to override file) ---
-    if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
-        println!("[PRE-LOG] Applying REDIS_URL environment variable override");
-        debug!("REDIS_URL override value: {}", redis_url_env);
-
-        // This will override any host/port/db/password from file or previous ENVs for these components
-        config
-            .adapter
-            .redis
-            .redis_pub_options
-            .insert("url".to_string(), json!(redis_url_env.clone()));
-        config
-            .adapter
-            .redis
-            .redis_sub_options
-            .insert("url".to_string(), json!(redis_url_env.clone()));
-        config.cache.redis.url_override = Some(redis_url_env.clone());
-        config.queue.redis.url_override = Some(redis_url_env.clone());
-        config.rate_limiter.redis.url_override = Some(redis_url_env);
-        // Note: This doesn't clear individual host/port fields in config.database.redis, but components using url_override will prefer it.
-    }
-    // Re-assert DEBUG from ENV if it should always override file
-    if initial_debug_from_env {
-        // If DEBUG env was set to true, make sure config.debug is true, regardless of file.
-        if !config.debug {
-            println!(
-                "[PRE-LOG] Overriding file config: DEBUG environment variable forces debug mode ON."
-            );
-            config.debug = true;
+    // 4. Apply ALL environment variables (highest priority - overrides everything)
+    match config.override_from_env().await {
+        Ok(_) => {
+            info!("Applied environment variable overrides");
+        }
+        Err(e) => {
+            error!("Failed to override config from environment: {e}");
         }
     }
 
-    // --- Part 2: Initialize logging using final config.debug ---
-    let final_debug_is_enabled = config.debug;
+    // --- Update logging configuration if needed ---
+    // Now that we have the final configuration, update both the logging filter and fmt layer
+    // if config.debug differs from the initial setting. This ensures config.debug from files
+    // is fully respected, including file/line number display.
+    if config.debug != initial_debug_from_env {
+        info!(
+            "Debug mode changed from {} to {} after loading configuration, updating logger",
+            initial_debug_from_env, config.debug
+        );
 
-    let default_log_directive_str = if final_debug_is_enabled {
-        std::env::var("SOCKUDO_LOG_DEBUG")
-            .unwrap_or_else(|_| "info,sockudo=debug,tower_http=debug".to_string()) // Added tower_http
-    } else {
-        std::env::var("SOCKUDO_LOG_PROD").unwrap_or_else(|_| "info".to_string()) // Changed from "off" to "info" for minimal prod logging
-    };
+        let new_log_directive = get_log_directive(config.debug);
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_log_directive_str));
+        let new_env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(new_log_directive));
 
-    let subscriber_builder = fmt::Subscriber::builder().with_env_filter(env_filter);
-
-    if final_debug_is_enabled {
-        subscriber_builder
-            .with_file(true)
-            .with_line_number(true)
-            .with_target(true) // Show module paths
-            .finish()
-            .init();
-    } else {
-        subscriber_builder
-            .with_target(true) // Keep target for prod for some context
-            .finish()
-            .init();
+        // Reload the filter with the new configuration
+        match filter_reload_handle.reload(new_env_filter) {
+            Ok(()) => {
+                debug!("Successfully updated logging filter for debug={}", config.debug);
+            }
+            Err(e) => {
+                error!("Failed to reload logging filter: {}", e);
+            }
+        }
+        
+        // Update the fmt layer to enable/disable file and line numbers based on debug mode
+        let new_fmt_layer = fmt::layer()
+            .with_target(true)
+            .with_file(config.debug)
+            .with_line_number(config.debug);
+            
+        match fmt_reload_handle.reload(new_fmt_layer) {
+            Ok(()) => {
+                debug!("Successfully updated fmt layer for debug={}", config.debug);
+            }
+            Err(e) => {
+                error!("Failed to reload fmt layer: {}", e);
+            }
+        }
     }
 
     info!(
-        "Logging initialized. Debug mode: {}. Effective RUST_LOG/default filter: '{}'",
-        final_debug_is_enabled,
+        "Configuration loading complete. Debug mode: {}. Effective RUST_LOG/default filter: '{}'",
+        config.debug,
         EnvFilter::try_from_default_env()
             .map(|f| f.to_string())
-            .unwrap_or("None".to_string()) // Show the effective filter
+            .unwrap_or("None".to_string())
     );
 
-    // --- Part 3: Rest of the application logic ---
+    // --- Rest of the application logic ---
     info!("Starting Sockudo server initialization process with resolved configuration...");
 
     let server = match SockudoServer::new(config).await {
