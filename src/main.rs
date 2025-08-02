@@ -65,8 +65,8 @@ use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegrat
 use crate::ws_handler::handle_ws_upgrade;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 // Import tracing and tracing_subscriber parts
-use tracing::{error, info, warn, debug}; // Added LevelFilter
-use tracing_subscriber::{layer::SubscriberExt, EnvFilter, fmt, reload, util::SubscriberInitExt};
+use tracing::{debug, error, info, warn}; // Added LevelFilter
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, reload, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
 use crate::adapter::ConnectionHandler;
@@ -122,7 +122,12 @@ impl SockudoServer {
     }
 
     async fn get_metrics_addr(&self) -> SocketAddr {
-        utils::resolve_socket_addr(&self.config.metrics.host, self.config.metrics.port, "Metrics server").await
+        utils::resolve_socket_addr(
+            &self.config.metrics.host,
+            self.config.metrics.port,
+            "Metrics server",
+        )
+        .await
     }
 
     async fn new(config: ServerOptions) -> Result<Self> {
@@ -496,103 +501,6 @@ impl SockudoServer {
                         );
                     }
                 }
-            }
-        } else {
-            info!("No apps found in configuration, registering demo app");
-            let default_app = App {
-                id: std::env::var("SOCKUDO_DEFAULT_APP_ID").unwrap_or("demo-app".to_string()),
-                key: std::env::var("SOCKUDO_DEFAULT_APP_KEY").unwrap_or("demo-key".to_string()),
-                secret: std::env::var("SOCKUDO_DEFAULT_APP_SECRET")
-                    .unwrap_or("demo-secret".to_string()),
-                enable_client_messages: std::env::var("SOCKUDO_ENABLE_CLIENT_MESSAGES")
-                    .unwrap_or("false".to_string())
-                    .parse()
-                    .unwrap_or(false),
-                enabled: std::env::var("SOCKUDO_DEFAULT_APP_ENABLED")
-                    .unwrap_or("true".to_string())
-                    .parse()
-                    .unwrap_or(true),
-                max_connections: std::env::var("SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS")
-                    .unwrap_or("100".to_string())
-                    .parse()
-                    .unwrap_or(100),
-                max_client_events_per_second: std::env::var(
-                    "SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND",
-                )
-                .unwrap_or("100".to_string())
-                .parse()
-                .unwrap_or(100),
-                max_read_requests_per_second: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_presence_members_per_channel: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_presence_member_size_in_kb: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_channel_name_length: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_event_channels_at_once: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_event_name_length: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_event_payload_in_kb: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_event_batch_size: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                enable_user_authentication: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION")
-                        .unwrap_or("false".to_string())
-                        .parse()
-                        .unwrap_or(false),
-                ),
-                webhooks: None,
-                max_backend_events_per_second: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                enable_watchlist_events: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS")
-                        .unwrap_or("false".to_string())
-                        .parse()
-                        .unwrap_or(false),
-                ),
-            };
-            match self.state.app_manager.create_app(default_app).await {
-                Ok(_) => info!("Successfully registered demo app"),
-                Err(e) => warn!("Failed to register demo app: {}", e), // It might already exist from a previous run
             }
         }
 
@@ -1097,7 +1005,6 @@ impl SockudoServer {
     }
 }
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command line arguments first - this handles --help and --version without any other output
@@ -1138,18 +1045,18 @@ async fn main() -> Result<()> {
 
     let initial_log_directive = get_log_directive(initial_debug_from_env);
 
-    let initial_env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(initial_log_directive));
+    let initial_env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(initial_log_directive));
 
     // Create both filter and fmt layers with reload support
     let (filter_layer, filter_reload_handle) = reload::Layer::new(initial_env_filter);
-    
+
     // Create initial fmt layer based on debug setting
     let initial_fmt_layer = fmt::layer()
         .with_target(true)
         .with_file(initial_debug_from_env)
         .with_line_number(initial_debug_from_env);
-    
+
     let (fmt_layer, fmt_reload_handle) = reload::Layer::new(initial_fmt_layer);
 
     // Build the subscriber with reloadable layers
@@ -1158,7 +1065,10 @@ async fn main() -> Result<()> {
         .with(fmt_layer)
         .init();
 
-    info!("Initial logging initialized with DEBUG={}", initial_debug_from_env);
+    info!(
+        "Initial logging initialized with DEBUG={}",
+        initial_debug_from_env
+    );
 
     // --- Configuration Loading Order ---
     // 1. Start with defaults
@@ -1182,12 +1092,13 @@ async fn main() -> Result<()> {
             Ok(file_config) => {
                 config = file_config;
                 info!(
-                    "Successfully loaded and applied configuration from {}", config_path
+                    "Successfully loaded and applied configuration from {}",
+                    config_path
                 );
             }
             Err(e) => {
                 error!(
-                    "Failed to load configuration file {}: {}. Continuing with previously loaded config.", 
+                    "Failed to load configuration file {}: {}. Continuing with previously loaded config.",
                     config_path, e
                 );
             }
@@ -1216,25 +1127,28 @@ async fn main() -> Result<()> {
 
         let new_log_directive = get_log_directive(config.debug);
 
-        let new_env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(new_log_directive));
+        let new_env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(new_log_directive));
 
         // Reload the filter with the new configuration
         match filter_reload_handle.reload(new_env_filter) {
             Ok(()) => {
-                debug!("Successfully updated logging filter for debug={}", config.debug);
+                debug!(
+                    "Successfully updated logging filter for debug={}",
+                    config.debug
+                );
             }
             Err(e) => {
                 error!("Failed to reload logging filter: {}", e);
             }
         }
-        
+
         // Update the fmt layer to enable/disable file and line numbers based on debug mode
         let new_fmt_layer = fmt::layer()
             .with_target(true)
             .with_file(config.debug)
             .with_line_number(config.debug);
-            
+
         match fmt_reload_handle.reload(new_fmt_layer) {
             Ok(()) => {
                 debug!("Successfully updated fmt layer for debug={}", config.debug);

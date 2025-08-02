@@ -905,25 +905,37 @@ impl ServerOptions {
         if let Ok(port_str) = std::env::var("PORT") {
             match port_str.parse() {
                 Ok(port) => self.port = port,
-                Err(_) => warn!("Failed to parse PORT env var: '{}'. Using default: {}", port_str, self.port),
+                Err(_) => warn!(
+                    "Failed to parse PORT env var: '{}'. Using default: {}",
+                    port_str, self.port
+                ),
             }
         }
         if let Ok(grace_period_str) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
             match grace_period_str.parse() {
                 Ok(period) => self.shutdown_grace_period = period,
-                Err(_) => warn!("Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{}'", grace_period_str),
+                Err(_) => warn!(
+                    "Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{}'",
+                    grace_period_str
+                ),
             }
         }
         if let Ok(timeout_str) = std::env::var("USER_AUTHENTICATION_TIMEOUT") {
             match timeout_str.parse() {
                 Ok(timeout) => self.user_authentication_timeout = timeout,
-                Err(_) => warn!("Failed to parse USER_AUTHENTICATION_TIMEOUT env var: '{}'", timeout_str),
+                Err(_) => warn!(
+                    "Failed to parse USER_AUTHENTICATION_TIMEOUT env var: '{}'",
+                    timeout_str
+                ),
             }
         }
         if let Ok(payload_kb_str) = std::env::var("WEBSOCKET_MAX_PAYLOAD_KB") {
             match payload_kb_str.parse() {
                 Ok(payload_kb) => self.websocket_max_payload_kb = payload_kb,
-                Err(_) => warn!("Failed to parse WEBSOCKET_MAX_PAYLOAD_KB env var: '{}'", payload_kb_str),
+                Err(_) => warn!(
+                    "Failed to parse WEBSOCKET_MAX_PAYLOAD_KB env var: '{}'",
+                    payload_kb_str
+                ),
             }
         }
         if let Ok(id) = std::env::var("INSTANCE_PROCESS_ID") {
@@ -932,7 +944,8 @@ impl ServerOptions {
 
         // --- Driver Configuration ---
         if let Ok(driver_str) = std::env::var("ADAPTER_DRIVER") {
-            self.adapter.driver = parse_driver_enum(driver_str, self.adapter.driver.clone(), "Adapter");
+            self.adapter.driver =
+                parse_driver_enum(driver_str, self.adapter.driver.clone(), "Adapter");
         }
         if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
             self.cache.driver = parse_driver_enum(driver_str, self.cache.driver.clone(), "Cache");
@@ -941,10 +954,15 @@ impl ServerOptions {
             self.queue.driver = parse_driver_enum(driver_str, self.queue.driver.clone(), "Queue");
         }
         if let Ok(driver_str) = std::env::var("APP_MANAGER_DRIVER") {
-            self.app_manager.driver = parse_driver_enum(driver_str, self.app_manager.driver.clone(), "AppManager");
+            self.app_manager.driver =
+                parse_driver_enum(driver_str, self.app_manager.driver.clone(), "AppManager");
         }
         if let Ok(driver_str) = std::env::var("RATE_LIMITER_DRIVER") {
-            self.rate_limiter.driver = parse_driver_enum(driver_str, self.rate_limiter.driver.clone(), "RateLimiter Backend");
+            self.rate_limiter.driver = parse_driver_enum(
+                driver_str,
+                self.rate_limiter.driver.clone(),
+                "RateLimiter Backend",
+            );
         }
 
         // --- Database: Redis ---
@@ -954,7 +972,10 @@ impl ServerOptions {
         if let Ok(port_str) = std::env::var("DATABASE_REDIS_PORT") {
             match port_str.parse() {
                 Ok(port) => self.database.redis.port = port,
-                Err(_) => warn!("Failed to parse DATABASE_REDIS_PORT env var: '{}'", port_str),
+                Err(_) => warn!(
+                    "Failed to parse DATABASE_REDIS_PORT env var: '{}'",
+                    port_str
+                ),
             }
         }
         if let Ok(password) = std::env::var("DATABASE_REDIS_PASSWORD") {
@@ -977,7 +998,10 @@ impl ServerOptions {
         if let Ok(port_str) = std::env::var("DATABASE_MYSQL_PORT") {
             match port_str.parse() {
                 Ok(port) => self.database.mysql.port = port,
-                Err(_) => warn!("Failed to parse DATABASE_MYSQL_PORT env var: '{}'", port_str),
+                Err(_) => warn!(
+                    "Failed to parse DATABASE_MYSQL_PORT env var: '{}'",
+                    port_str
+                ),
             }
         }
         if let Ok(user) = std::env::var("DATABASE_MYSQL_USERNAME") {
@@ -1000,7 +1024,10 @@ impl ServerOptions {
         if let Ok(port_str) = std::env::var("DATABASE_POSTGRES_PORT") {
             match port_str.parse() {
                 Ok(port) => self.database.postgres.port = port,
-                Err(_) => warn!("Failed to parse DATABASE_POSTGRES_PORT env var: '{}'", port_str),
+                Err(_) => warn!(
+                    "Failed to parse DATABASE_POSTGRES_PORT env var: '{}'",
+                    port_str
+                ),
             }
         }
         if let Ok(user) = std::env::var("DATABASE_POSTGRES_USERNAME") {
@@ -1039,7 +1066,10 @@ impl ServerOptions {
         if let Ok(concurrency_str) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
             match concurrency_str.parse() {
                 Ok(concurrency) => self.queue.redis_cluster.concurrency = concurrency,
-                Err(_) => warn!("Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{}'", concurrency_str),
+                Err(_) => warn!(
+                    "Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{}'",
+                    concurrency_str
+                ),
             }
         }
         if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
@@ -1057,7 +1087,8 @@ impl ServerOptions {
             self.ssl.key_path = val;
         }
         if std::env::var("SSL_REDIRECT_HTTP").is_ok() {
-            self.ssl.redirect_http = crate::utils::parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
+            self.ssl.redirect_http =
+                crate::utils::parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
         }
         if let Ok(port_str) = std::env::var("SSL_HTTP_PORT") {
             match port_str.parse() {
@@ -1068,10 +1099,12 @@ impl ServerOptions {
 
         // --- Metrics ---
         if let Ok(driver_str) = std::env::var("METRICS_DRIVER") {
-            self.metrics.driver = parse_driver_enum(driver_str, self.metrics.driver.clone(), "Metrics");
+            self.metrics.driver =
+                parse_driver_enum(driver_str, self.metrics.driver.clone(), "Metrics");
         }
         if std::env::var("METRICS_ENABLED").is_ok() {
-            self.metrics.enabled = crate::utils::parse_bool_env("METRICS_ENABLED", self.metrics.enabled);
+            self.metrics.enabled =
+                crate::utils::parse_bool_env("METRICS_ENABLED", self.metrics.enabled);
         }
         if let Ok(val) = std::env::var("METRICS_HOST") {
             self.metrics.host = val;
@@ -1088,7 +1121,8 @@ impl ServerOptions {
 
         // --- Rate Limiter ---
         if std::env::var("RATE_LIMITER_ENABLED").is_ok() {
-            self.rate_limiter.enabled = crate::utils::parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
+            self.rate_limiter.enabled =
+                crate::utils::parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
         }
         if let Ok(max) = std::env::var("RATE_LIMITER_API_MAX_REQUESTS") {
             self.rate_limiter.api_rate_limit.max_requests = max.parse()?;
@@ -1131,7 +1165,8 @@ impl ServerOptions {
             self.queue.sqs.concurrency = concurrency.parse()?;
         }
         if std::env::var("QUEUE_SQS_FIFO").is_ok() {
-            self.queue.sqs.fifo = crate::utils::parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
+            self.queue.sqs.fifo =
+                crate::utils::parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
         }
         if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
             self.queue.sqs.endpoint_url = Some(endpoint);
@@ -1139,7 +1174,10 @@ impl ServerOptions {
 
         // --- Webhooks ---
         if std::env::var("WEBHOOK_BATCHING_ENABLED").is_ok() {
-            self.webhooks.batching.enabled = crate::utils::parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
+            self.webhooks.batching.enabled = crate::utils::parse_bool_env(
+                "WEBHOOK_BATCHING_ENABLED",
+                self.webhooks.batching.enabled,
+            );
         }
         if let Ok(duration) = std::env::var("WEBHOOK_BATCHING_DURATION") {
             self.webhooks.batching.duration = duration.parse()?;
@@ -1176,7 +1214,8 @@ impl ServerOptions {
             self.cors.allowed_headers = headers.split(',').map(|s| s.trim().to_string()).collect();
         }
         if std::env::var("CORS_CREDENTIALS").is_ok() {
-            self.cors.credentials = crate::utils::parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
+            self.cors.credentials =
+                crate::utils::parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
         }
 
         // --- Performance Tuning ---
@@ -1210,18 +1249,131 @@ impl ServerOptions {
         // the `App` struct and adding it to `self.app_manager.array.apps`.
         // This is omitted as the `App` struct definition is not provided.
 
+        let default_app_id = std::env::var("SOCKUDO_DEFAULT_APP_ID");
+        let default_app_key = std::env::var("SOCKUDO_DEFAULT_APP_KEY");
+        let default_app_secret = std::env::var("SOCKUDO_DEFAULT_APP_SECRET");
+        let default_app_enabled = std::env::var("SOCKUDO_DEFAULT_APP_ENABLED")
+            .unwrap_or("true".to_string())
+            .parse()
+            .unwrap_or(true);
+
+        if default_app_id.is_ok()
+            && default_app_key.is_ok()
+            && default_app_secret.is_ok()
+            && default_app_enabled
+        {
+            let default_app = App {
+                id: std::env::var("SOCKUDO_DEFAULT_APP_ID").unwrap_or("demo-app".to_string()),
+                key: std::env::var("SOCKUDO_DEFAULT_APP_KEY").unwrap_or("demo-key".to_string()),
+                secret: std::env::var("SOCKUDO_DEFAULT_APP_SECRET")
+                    .unwrap_or("demo-secret".to_string()),
+                enable_client_messages: std::env::var("SOCKUDO_ENABLE_CLIENT_MESSAGES")
+                    .unwrap_or("false".to_string())
+                    .parse()
+                    .unwrap_or(false),
+                enabled: std::env::var("SOCKUDO_DEFAULT_APP_ENABLED")
+                    .unwrap_or("true".to_string())
+                    .parse()
+                    .unwrap_or(true),
+                max_connections: std::env::var("SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS")
+                    .unwrap_or("100".to_string())
+                    .parse()
+                    .unwrap_or(100),
+                max_client_events_per_second: std::env::var(
+                    "SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND",
+                )
+                .unwrap_or("100".to_string())
+                .parse()
+                .unwrap_or(100),
+                max_read_requests_per_second: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_presence_members_per_channel: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_presence_member_size_in_kb: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_channel_name_length: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_event_channels_at_once: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_event_name_length: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_event_payload_in_kb: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                max_event_batch_size: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                enable_user_authentication: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION")
+                        .unwrap_or("false".to_string())
+                        .parse()
+                        .unwrap_or(false),
+                ),
+                webhooks: None,
+                max_backend_events_per_second: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND")
+                        .unwrap_or(100.to_string())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+                enable_watchlist_events: Some(
+                    std::env::var("SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS")
+                        .unwrap_or("false".to_string())
+                        .parse()
+                        .unwrap_or(false),
+                ),
+            };
+
+            self.app_manager.array.apps.push(default_app);
+            info!("Successfully registered default app from env");
+        }
+
         // Special handling for REDIS_URL - overrides all Redis-related configs
         if let Ok(redis_url_env) = std::env::var("REDIS_URL") {
             info!("Applying REDIS_URL environment variable override");
 
             let redis_url_json = serde_json::json!(redis_url_env);
-            
+
             // Adapter uses HashMap approach (for flexible configuration)
-            self.adapter.redis.redis_pub_options
+            self.adapter
+                .redis
+                .redis_pub_options
                 .insert("url".to_string(), redis_url_json.clone());
-            self.adapter.redis.redis_sub_options
+            self.adapter
+                .redis
+                .redis_sub_options
                 .insert("url".to_string(), redis_url_json);
-                
+
             // Other components use direct url_override approach (simpler, more direct)
             self.cache.redis.url_override = Some(redis_url_env.clone());
             self.queue.redis.url_override = Some(redis_url_env.clone());
