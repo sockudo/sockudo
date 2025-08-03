@@ -1,4 +1,5 @@
 use crate::app::config::App;
+use crate::utils::{parse_bool_env, parse_u32_env};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -66,7 +67,7 @@ impl Default for DynamoDbSettings {
     }
 }
 
-impl std::str::FromStr for AdapterDriver {
+impl FromStr for AdapterDriver {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
@@ -86,9 +87,9 @@ pub enum AppManagerDriver {
     Memory,
     Mysql,
     Dynamodb,
-    PgSql, // Added PostgreSQL as a potential driver
+    PgSql, // Added PostgresSQL as a potential driver
 }
-impl std::str::FromStr for AppManagerDriver {
+impl FromStr for AppManagerDriver {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
@@ -111,9 +112,9 @@ pub enum CacheDriver {
     None,
 }
 
-impl std::str::FromStr for CacheDriver {
+impl FromStr for CacheDriver {
     type Err = String;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "memory" => Ok(CacheDriver::Memory),
             "redis" => Ok(CacheDriver::Redis),
@@ -136,9 +137,9 @@ pub enum QueueDriver {
     None,
 }
 
-impl std::str::FromStr for QueueDriver {
+impl FromStr for QueueDriver {
     type Err = String;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "memory" => Ok(QueueDriver::Memory),
             "redis" => Ok(QueueDriver::Redis),
@@ -190,9 +191,9 @@ pub enum MetricsDriver {
     Prometheus,
 }
 
-impl std::str::FromStr for MetricsDriver {
+impl FromStr for MetricsDriver {
     type Err = String;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "prometheus" => Ok(MetricsDriver::Prometheus),
             _ => Err(format!("Unknown metrics driver: {}", s)),
@@ -889,11 +890,11 @@ impl ServerOptions {
         }
         // Handle DEBUG_MODE first
         if std::env::var("DEBUG_MODE").is_ok() {
-            self.debug = crate::utils::parse_bool_env("DEBUG_MODE", self.debug);
+            self.debug = parse_bool_env("DEBUG_MODE", self.debug);
         }
         // Special handling for DEBUG env var (takes precedence over DEBUG_MODE)
         if std::env::var("DEBUG").is_ok() {
-            let debug_value = crate::utils::parse_bool_env("DEBUG", self.debug);
+            let debug_value = parse_bool_env("DEBUG", self.debug);
             if debug_value {
                 self.debug = true;
                 info!("DEBUG environment variable forces debug mode ON");
@@ -1017,7 +1018,7 @@ impl ServerOptions {
             self.database.mysql.table_name = table;
         }
 
-        // --- Database: PostgreSQL ---
+        // --- Database: PostgresSQL ---
         if let Ok(host) = std::env::var("DATABASE_POSTGRES_HOST") {
             self.database.postgres.host = host;
         }
@@ -1078,7 +1079,7 @@ impl ServerOptions {
 
         // --- SSL Configuration ---
         if std::env::var("SSL_ENABLED").is_ok() {
-            self.ssl.enabled = crate::utils::parse_bool_env("SSL_ENABLED", self.ssl.enabled);
+            self.ssl.enabled = parse_bool_env("SSL_ENABLED", self.ssl.enabled);
         }
         if let Ok(val) = std::env::var("SSL_CERT_PATH") {
             self.ssl.cert_path = val;
@@ -1087,8 +1088,7 @@ impl ServerOptions {
             self.ssl.key_path = val;
         }
         if std::env::var("SSL_REDIRECT_HTTP").is_ok() {
-            self.ssl.redirect_http =
-                crate::utils::parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
+            self.ssl.redirect_http = parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
         }
         if let Ok(port_str) = std::env::var("SSL_HTTP_PORT") {
             match port_str.parse() {
@@ -1103,8 +1103,7 @@ impl ServerOptions {
                 parse_driver_enum(driver_str, self.metrics.driver.clone(), "Metrics");
         }
         if std::env::var("METRICS_ENABLED").is_ok() {
-            self.metrics.enabled =
-                crate::utils::parse_bool_env("METRICS_ENABLED", self.metrics.enabled);
+            self.metrics.enabled = parse_bool_env("METRICS_ENABLED", self.metrics.enabled);
         }
         if let Ok(val) = std::env::var("METRICS_HOST") {
             self.metrics.host = val;
@@ -1122,7 +1121,7 @@ impl ServerOptions {
         // --- Rate Limiter ---
         if std::env::var("RATE_LIMITER_ENABLED").is_ok() {
             self.rate_limiter.enabled =
-                crate::utils::parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
+                parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
         }
         if let Ok(max) = std::env::var("RATE_LIMITER_API_MAX_REQUESTS") {
             self.rate_limiter.api_rate_limit.max_requests = max.parse()?;
@@ -1165,8 +1164,7 @@ impl ServerOptions {
             self.queue.sqs.concurrency = concurrency.parse()?;
         }
         if std::env::var("QUEUE_SQS_FIFO").is_ok() {
-            self.queue.sqs.fifo =
-                crate::utils::parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
+            self.queue.sqs.fifo = parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
         }
         if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
             self.queue.sqs.endpoint_url = Some(endpoint);
@@ -1174,10 +1172,8 @@ impl ServerOptions {
 
         // --- Webhooks ---
         if std::env::var("WEBHOOK_BATCHING_ENABLED").is_ok() {
-            self.webhooks.batching.enabled = crate::utils::parse_bool_env(
-                "WEBHOOK_BATCHING_ENABLED",
-                self.webhooks.batching.enabled,
-            );
+            self.webhooks.batching.enabled =
+                parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
         }
         if let Ok(duration) = std::env::var("WEBHOOK_BATCHING_DURATION") {
             self.webhooks.batching.duration = duration.parse()?;
@@ -1214,8 +1210,7 @@ impl ServerOptions {
             self.cors.allowed_headers = headers.split(',').map(|s| s.trim().to_string()).collect();
         }
         if std::env::var("CORS_CREDENTIALS").is_ok() {
-            self.cors.credentials =
-                crate::utils::parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
+            self.cors.credentials = parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
         }
 
         // --- Performance Tuning ---
@@ -1245,17 +1240,10 @@ impl ServerOptions {
             self.cache.memory.max_capacity = max_capacity;
         }
 
-        // Note: SOCKUDO_DEFAULT_APP_* variables would require instantiating
-        // the `App` struct and adding it to `self.app_manager.array.apps`.
-        // This is omitted as the `App` struct definition is not provided.
-
         let default_app_id = std::env::var("SOCKUDO_DEFAULT_APP_ID");
         let default_app_key = std::env::var("SOCKUDO_DEFAULT_APP_KEY");
         let default_app_secret = std::env::var("SOCKUDO_DEFAULT_APP_SECRET");
-        let default_app_enabled = std::env::var("SOCKUDO_DEFAULT_APP_ENABLED")
-            .unwrap_or("true".to_string())
-            .parse()
-            .unwrap_or(true);
+        let default_app_enabled = parse_bool_env("SOCKUDO_DEFAULT_APP_ENABLED", true);
 
         if default_app_id.is_ok()
             && default_app_key.is_ok()
@@ -1263,95 +1251,61 @@ impl ServerOptions {
             && default_app_enabled
         {
             let default_app = App {
-                id: std::env::var("SOCKUDO_DEFAULT_APP_ID").unwrap_or("demo-app".to_string()),
-                key: std::env::var("SOCKUDO_DEFAULT_APP_KEY").unwrap_or("demo-key".to_string()),
-                secret: std::env::var("SOCKUDO_DEFAULT_APP_SECRET")
-                    .unwrap_or("demo-secret".to_string()),
-                enable_client_messages: std::env::var("SOCKUDO_ENABLE_CLIENT_MESSAGES")
-                    .unwrap_or("false".to_string())
-                    .parse()
-                    .unwrap_or(false),
-                enabled: std::env::var("SOCKUDO_DEFAULT_APP_ENABLED")
-                    .unwrap_or("true".to_string())
-                    .parse()
-                    .unwrap_or(true),
-                max_connections: std::env::var("SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS")
-                    .unwrap_or("100".to_string())
-                    .parse()
-                    .unwrap_or(100),
-                max_client_events_per_second: std::env::var(
+                id: default_app_id.unwrap(),
+                key: default_app_key.unwrap(),
+                secret: default_app_secret.unwrap(),
+                enable_client_messages: parse_bool_env("SOCKUDO_ENABLE_CLIENT_MESSAGES", false),
+                enabled: default_app_enabled,
+                max_connections: parse_u32_env("SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS", 100),
+                max_client_events_per_second: parse_u32_env(
                     "SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND",
-                )
-                .unwrap_or("100".to_string())
-                .parse()
-                .unwrap_or(100),
-                max_read_requests_per_second: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
+                    100,
                 ),
-                max_presence_members_per_channel: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_presence_member_size_in_kb: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_channel_name_length: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_event_channels_at_once: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_event_name_length: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_event_payload_in_kb: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                max_event_batch_size: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                enable_user_authentication: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION")
-                        .unwrap_or("false".to_string())
-                        .parse()
-                        .unwrap_or(false),
-                ),
+                max_read_requests_per_second: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND",
+                    100,
+                )),
+                max_presence_members_per_channel: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL",
+                    100,
+                )),
+                max_presence_member_size_in_kb: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB",
+                    100,
+                )),
+                max_channel_name_length: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH",
+                    100,
+                )),
+                max_event_channels_at_once: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE",
+                    100,
+                )),
+                max_event_name_length: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH",
+                    100,
+                )),
+                max_event_payload_in_kb: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB",
+                    100,
+                )),
+                max_event_batch_size: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE",
+                    100,
+                )),
+                enable_user_authentication: Some(parse_bool_env(
+                    "SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION",
+                    false,
+                )),
                 webhooks: None,
-                max_backend_events_per_second: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND")
-                        .unwrap_or(100.to_string())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-                enable_watchlist_events: Some(
-                    std::env::var("SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS")
-                        .unwrap_or("false".to_string())
-                        .parse()
-                        .unwrap_or(false),
-                ),
+                max_backend_events_per_second: Some(parse_u32_env(
+                    "SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND",
+                    100,
+                )),
+                enable_watchlist_events: Some(parse_bool_env(
+                    "SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS",
+                    false,
+                )),
             };
 
             self.app_manager.array.apps.push(default_app);
