@@ -1,5 +1,5 @@
 use crate::app::config::App;
-use crate::utils::{parse_bool_env, parse_u32_env};
+use crate::utils::{parse_bool_env, parse_env, parse_env_optional};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -889,56 +889,20 @@ impl ServerOptions {
             self.mode = mode;
         }
         // Handle DEBUG_MODE first
-        if std::env::var("DEBUG_MODE").is_ok() {
-            self.debug = parse_bool_env("DEBUG_MODE", self.debug);
-        }
+        self.debug = parse_bool_env("DEBUG_MODE", self.debug);
         // Special handling for DEBUG env var (takes precedence over DEBUG_MODE)
-        if std::env::var("DEBUG").is_ok() {
-            let debug_value = parse_bool_env("DEBUG", self.debug);
-            if debug_value {
-                self.debug = true;
-                info!("DEBUG environment variable forces debug mode ON");
-            }
+        if parse_bool_env("DEBUG", false) {
+            self.debug = true;
+            info!("DEBUG environment variable forces debug mode ON");
         }
+
         if let Ok(host) = std::env::var("HOST") {
             self.host = host;
         }
-        if let Ok(port_str) = std::env::var("PORT") {
-            match port_str.parse() {
-                Ok(port) => self.port = port,
-                Err(_) => warn!(
-                    "Failed to parse PORT env var: '{}'. Using default: {}",
-                    port_str, self.port
-                ),
-            }
-        }
-        if let Ok(grace_period_str) = std::env::var("SHUTDOWN_GRACE_PERIOD") {
-            match grace_period_str.parse() {
-                Ok(period) => self.shutdown_grace_period = period,
-                Err(_) => warn!(
-                    "Failed to parse SHUTDOWN_GRACE_PERIOD env var: '{}'",
-                    grace_period_str
-                ),
-            }
-        }
-        if let Ok(timeout_str) = std::env::var("USER_AUTHENTICATION_TIMEOUT") {
-            match timeout_str.parse() {
-                Ok(timeout) => self.user_authentication_timeout = timeout,
-                Err(_) => warn!(
-                    "Failed to parse USER_AUTHENTICATION_TIMEOUT env var: '{}'",
-                    timeout_str
-                ),
-            }
-        }
-        if let Ok(payload_kb_str) = std::env::var("WEBSOCKET_MAX_PAYLOAD_KB") {
-            match payload_kb_str.parse() {
-                Ok(payload_kb) => self.websocket_max_payload_kb = payload_kb,
-                Err(_) => warn!(
-                    "Failed to parse WEBSOCKET_MAX_PAYLOAD_KB env var: '{}'",
-                    payload_kb_str
-                ),
-            }
-        }
+        self.port = parse_env::<u16>("PORT", self.port);
+        self.shutdown_grace_period = parse_env::<u64>("SHUTDOWN_GRACE_PERIOD", self.shutdown_grace_period);
+        self.user_authentication_timeout = parse_env::<u64>("USER_AUTHENTICATION_TIMEOUT", self.user_authentication_timeout);
+        self.websocket_max_payload_kb = parse_env::<u32>("WEBSOCKET_MAX_PAYLOAD_KB", self.websocket_max_payload_kb);
         if let Ok(id) = std::env::var("INSTANCE_PROCESS_ID") {
             self.instance.process_id = id;
         }
@@ -970,24 +934,11 @@ impl ServerOptions {
         if let Ok(host) = std::env::var("DATABASE_REDIS_HOST") {
             self.database.redis.host = host;
         }
-        if let Ok(port_str) = std::env::var("DATABASE_REDIS_PORT") {
-            match port_str.parse() {
-                Ok(port) => self.database.redis.port = port,
-                Err(_) => warn!(
-                    "Failed to parse DATABASE_REDIS_PORT env var: '{}'",
-                    port_str
-                ),
-            }
-        }
+        self.database.redis.port = parse_env::<u16>("DATABASE_REDIS_PORT", self.database.redis.port);
         if let Ok(password) = std::env::var("DATABASE_REDIS_PASSWORD") {
             self.database.redis.password = Some(password);
         }
-        if let Ok(db_str) = std::env::var("DATABASE_REDIS_DB") {
-            match db_str.parse() {
-                Ok(db) => self.database.redis.db = db,
-                Err(_) => warn!("Failed to parse DATABASE_REDIS_DB env var: '{}'", db_str),
-            }
-        }
+        self.database.redis.db = parse_env::<u32>("DATABASE_REDIS_DB", self.database.redis.db);
         if let Ok(prefix) = std::env::var("DATABASE_REDIS_KEY_PREFIX") {
             self.database.redis.key_prefix = prefix;
         }
@@ -996,15 +947,7 @@ impl ServerOptions {
         if let Ok(host) = std::env::var("DATABASE_MYSQL_HOST") {
             self.database.mysql.host = host;
         }
-        if let Ok(port_str) = std::env::var("DATABASE_MYSQL_PORT") {
-            match port_str.parse() {
-                Ok(port) => self.database.mysql.port = port,
-                Err(_) => warn!(
-                    "Failed to parse DATABASE_MYSQL_PORT env var: '{}'",
-                    port_str
-                ),
-            }
-        }
+        self.database.mysql.port = parse_env::<u16>("DATABASE_MYSQL_PORT", self.database.mysql.port);
         if let Ok(user) = std::env::var("DATABASE_MYSQL_USERNAME") {
             self.database.mysql.username = user;
         }
@@ -1022,15 +965,7 @@ impl ServerOptions {
         if let Ok(host) = std::env::var("DATABASE_POSTGRES_HOST") {
             self.database.postgres.host = host;
         }
-        if let Ok(port_str) = std::env::var("DATABASE_POSTGRES_PORT") {
-            match port_str.parse() {
-                Ok(port) => self.database.postgres.port = port,
-                Err(_) => warn!(
-                    "Failed to parse DATABASE_POSTGRES_PORT env var: '{}'",
-                    port_str
-                ),
-            }
-        }
+        self.database.postgres.port = parse_env::<u16>("DATABASE_POSTGRES_PORT", self.database.postgres.port);
         if let Ok(user) = std::env::var("DATABASE_POSTGRES_USERNAME") {
             self.database.postgres.username = user;
         }
@@ -1064,85 +999,46 @@ impl ServerOptions {
             self.adapter.cluster.nodes = node_list.clone();
             self.queue.redis_cluster.nodes = node_list;
         }
-        if let Ok(concurrency_str) = std::env::var("REDIS_CLUSTER_QUEUE_CONCURRENCY") {
-            match concurrency_str.parse() {
-                Ok(concurrency) => self.queue.redis_cluster.concurrency = concurrency,
-                Err(_) => warn!(
-                    "Failed to parse REDIS_CLUSTER_QUEUE_CONCURRENCY env var: '{}'",
-                    concurrency_str
-                ),
-            }
-        }
+        self.queue.redis_cluster.concurrency = parse_env::<u32>("REDIS_CLUSTER_QUEUE_CONCURRENCY", self.queue.redis_cluster.concurrency);
         if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
             self.queue.redis_cluster.prefix = Some(prefix);
         }
 
         // --- SSL Configuration ---
-        if std::env::var("SSL_ENABLED").is_ok() {
-            self.ssl.enabled = parse_bool_env("SSL_ENABLED", self.ssl.enabled);
-        }
+        self.ssl.enabled = parse_bool_env("SSL_ENABLED", self.ssl.enabled);
         if let Ok(val) = std::env::var("SSL_CERT_PATH") {
             self.ssl.cert_path = val;
         }
         if let Ok(val) = std::env::var("SSL_KEY_PATH") {
             self.ssl.key_path = val;
         }
-        if std::env::var("SSL_REDIRECT_HTTP").is_ok() {
-            self.ssl.redirect_http = parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
-        }
-        if let Ok(port_str) = std::env::var("SSL_HTTP_PORT") {
-            match port_str.parse() {
-                Ok(port) => self.ssl.http_port = Some(port),
-                Err(_) => warn!("Failed to parse SSL_HTTP_PORT env var: '{}'", port_str),
-            }
-        }
+        self.ssl.redirect_http = parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
+        self.ssl.http_port = Some(parse_env::<u16>("SSL_HTTP_PORT", self.ssl.http_port.unwrap_or(80)));
 
         // --- Metrics ---
         if let Ok(driver_str) = std::env::var("METRICS_DRIVER") {
             self.metrics.driver =
                 parse_driver_enum(driver_str, self.metrics.driver.clone(), "Metrics");
         }
-        if std::env::var("METRICS_ENABLED").is_ok() {
-            self.metrics.enabled = parse_bool_env("METRICS_ENABLED", self.metrics.enabled);
-        }
+        self.metrics.enabled = parse_bool_env("METRICS_ENABLED", self.metrics.enabled);
         if let Ok(val) = std::env::var("METRICS_HOST") {
             self.metrics.host = val;
         }
-        if let Ok(port_str) = std::env::var("METRICS_PORT") {
-            match port_str.parse() {
-                Ok(port) => self.metrics.port = port,
-                Err(_) => warn!("Failed to parse METRICS_PORT env var: '{}'", port_str),
-            }
-        }
+        self.metrics.port = parse_env::<u16>("METRICS_PORT", self.metrics.port);
         if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
             self.metrics.prometheus.prefix = val;
         }
 
         // --- Rate Limiter ---
-        if std::env::var("RATE_LIMITER_ENABLED").is_ok() {
-            self.rate_limiter.enabled =
-                parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
-        }
-        if let Ok(max) = std::env::var("RATE_LIMITER_API_MAX_REQUESTS") {
-            self.rate_limiter.api_rate_limit.max_requests = max.parse()?;
-        }
-        if let Ok(window) = std::env::var("RATE_LIMITER_API_WINDOW_SECONDS") {
-            self.rate_limiter.api_rate_limit.window_seconds = window.parse()?;
-        }
-        if let Ok(hops) = std::env::var("RATE_LIMITER_API_TRUST_HOPS") {
-            self.rate_limiter.api_rate_limit.trust_hops = Some(hops.parse()?);
-        }
-        if let Ok(max) = std::env::var("RATE_LIMITER_WS_MAX_REQUESTS") {
-            self.rate_limiter.websocket_rate_limit.max_requests = max.parse()?;
-        }
-        if let Ok(window) = std::env::var("RATE_LIMITER_WS_WINDOW_SECONDS") {
-            self.rate_limiter.websocket_rate_limit.window_seconds = window.parse()?;
-        }
+        self.rate_limiter.enabled = parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
+        self.rate_limiter.api_rate_limit.max_requests = parse_env::<u32>("RATE_LIMITER_API_MAX_REQUESTS", self.rate_limiter.api_rate_limit.max_requests);
+        self.rate_limiter.api_rate_limit.window_seconds = parse_env::<u64>("RATE_LIMITER_API_WINDOW_SECONDS", self.rate_limiter.api_rate_limit.window_seconds);
+        self.rate_limiter.api_rate_limit.trust_hops = Some(parse_env::<u32>("RATE_LIMITER_API_TRUST_HOPS", self.rate_limiter.api_rate_limit.trust_hops.unwrap_or(0)));
+        self.rate_limiter.websocket_rate_limit.max_requests = parse_env::<u32>("RATE_LIMITER_WS_MAX_REQUESTS", self.rate_limiter.websocket_rate_limit.max_requests);
+        self.rate_limiter.websocket_rate_limit.window_seconds = parse_env::<u64>("RATE_LIMITER_WS_WINDOW_SECONDS", self.rate_limiter.websocket_rate_limit.window_seconds);
 
         // --- Queue: Redis ---
-        if let Ok(concurrency) = std::env::var("QUEUE_REDIS_CONCURRENCY") {
-            self.queue.redis.concurrency = concurrency.parse()?;
-        }
+        self.queue.redis.concurrency = parse_env::<u32>("QUEUE_REDIS_CONCURRENCY", self.queue.redis.concurrency);
         if let Ok(prefix) = std::env::var("QUEUE_REDIS_PREFIX") {
             self.queue.redis.prefix = Some(prefix);
         }
@@ -1151,33 +1047,18 @@ impl ServerOptions {
         if let Ok(region) = std::env::var("QUEUE_SQS_REGION") {
             self.queue.sqs.region = region;
         }
-        if let Ok(timeout) = std::env::var("QUEUE_SQS_VISIBILITY_TIMEOUT") {
-            self.queue.sqs.visibility_timeout = timeout.parse()?;
-        }
-        if let Ok(max) = std::env::var("QUEUE_SQS_MAX_MESSAGES") {
-            self.queue.sqs.max_messages = max.parse()?;
-        }
-        if let Ok(wait) = std::env::var("QUEUE_SQS_WAIT_TIME_SECONDS") {
-            self.queue.sqs.wait_time_seconds = wait.parse()?;
-        }
-        if let Ok(concurrency) = std::env::var("QUEUE_SQS_CONCURRENCY") {
-            self.queue.sqs.concurrency = concurrency.parse()?;
-        }
-        if std::env::var("QUEUE_SQS_FIFO").is_ok() {
-            self.queue.sqs.fifo = parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
-        }
+        self.queue.sqs.visibility_timeout = parse_env::<i32>("QUEUE_SQS_VISIBILITY_TIMEOUT", self.queue.sqs.visibility_timeout);
+        self.queue.sqs.max_messages = parse_env::<i32>("QUEUE_SQS_MAX_MESSAGES", self.queue.sqs.max_messages);
+        self.queue.sqs.wait_time_seconds = parse_env::<i32>("QUEUE_SQS_WAIT_TIME_SECONDS", self.queue.sqs.wait_time_seconds);
+        self.queue.sqs.concurrency = parse_env::<u32>("QUEUE_SQS_CONCURRENCY", self.queue.sqs.concurrency);
+        self.queue.sqs.fifo = parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
         if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
             self.queue.sqs.endpoint_url = Some(endpoint);
         }
 
         // --- Webhooks ---
-        if std::env::var("WEBHOOK_BATCHING_ENABLED").is_ok() {
-            self.webhooks.batching.enabled =
-                parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
-        }
-        if let Ok(duration) = std::env::var("WEBHOOK_BATCHING_DURATION") {
-            self.webhooks.batching.duration = duration.parse()?;
-        }
+        self.webhooks.batching.enabled = parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
+        self.webhooks.batching.duration = parse_env::<u64>("WEBHOOK_BATCHING_DURATION", self.webhooks.batching.duration);
 
         // --- NATS Adapter ---
         if let Ok(servers) = std::env::var("NATS_SERVERS") {
@@ -1192,12 +1073,8 @@ impl ServerOptions {
         if let Ok(token) = std::env::var("NATS_TOKEN") {
             self.adapter.nats.token = Some(token);
         }
-        if let Ok(timeout) = std::env::var("NATS_CONNECTION_TIMEOUT_MS") {
-            self.adapter.nats.connection_timeout_ms = timeout.parse()?;
-        }
-        if let Ok(timeout) = std::env::var("NATS_REQUEST_TIMEOUT_MS") {
-            self.adapter.nats.request_timeout_ms = timeout.parse()?;
-        }
+        self.adapter.nats.connection_timeout_ms = parse_env::<u64>("NATS_CONNECTION_TIMEOUT_MS", self.adapter.nats.connection_timeout_ms);
+        self.adapter.nats.request_timeout_ms = parse_env::<u64>("NATS_REQUEST_TIMEOUT_MS", self.adapter.nats.request_timeout_ms);
 
         // --- CORS ---
         if let Ok(origins) = std::env::var("CORS_ORIGINS") {
@@ -1209,32 +1086,26 @@ impl ServerOptions {
         if let Ok(headers) = std::env::var("CORS_HEADERS") {
             self.cors.allowed_headers = headers.split(',').map(|s| s.trim().to_string()).collect();
         }
-        if std::env::var("CORS_CREDENTIALS").is_ok() {
-            self.cors.credentials = parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
-        }
+        self.cors.credentials = parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
 
         // --- Performance Tuning ---
-        if let Ok(size) = std::env::var("DATABASE_CONNECTION_POOL_SIZE") {
-            let pool_size = size.parse()?;
+        if let Some(pool_size) = parse_env_optional::<u32>("DATABASE_CONNECTION_POOL_SIZE") {
             self.database.mysql.connection_pool_size = pool_size;
             self.database.postgres.connection_pool_size = pool_size;
         }
-        if let Ok(ttl) = std::env::var("CACHE_TTL_SECONDS") {
-            let cache_ttl = ttl.parse()?;
+        if let Some(cache_ttl) = parse_env_optional::<u64>("CACHE_TTL_SECONDS") {
             self.app_manager.cache.ttl = cache_ttl;
             self.channel_limits.cache_ttl = cache_ttl;
             self.database.mysql.cache_ttl = cache_ttl;
             self.database.postgres.cache_ttl = cache_ttl;
             self.cache.memory.ttl = cache_ttl;
         }
-        if let Ok(interval) = std::env::var("CACHE_CLEANUP_INTERVAL") {
-            let cleanup_interval = interval.parse()?;
+        if let Some(cleanup_interval) = parse_env_optional::<u64>("CACHE_CLEANUP_INTERVAL") {
             self.database.mysql.cache_cleanup_interval = cleanup_interval;
             self.database.postgres.cache_cleanup_interval = cleanup_interval;
             self.cache.memory.cleanup_interval = cleanup_interval;
         }
-        if let Ok(capacity) = std::env::var("CACHE_MAX_CAPACITY") {
-            let max_capacity = capacity.parse()?;
+        if let Some(max_capacity) = parse_env_optional::<u64>("CACHE_MAX_CAPACITY") {
             self.database.mysql.cache_max_capacity = max_capacity;
             self.database.postgres.cache_max_capacity = max_capacity;
             self.cache.memory.max_capacity = max_capacity;
@@ -1256,40 +1127,40 @@ impl ServerOptions {
                 secret: default_app_secret.unwrap(),
                 enable_client_messages: parse_bool_env("SOCKUDO_ENABLE_CLIENT_MESSAGES", false),
                 enabled: default_app_enabled,
-                max_connections: parse_u32_env("SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS", 100),
-                max_client_events_per_second: parse_u32_env(
+                max_connections: parse_env::<u32>("SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS", 100),
+                max_client_events_per_second: parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND",
                     100,
                 ),
-                max_read_requests_per_second: Some(parse_u32_env(
+                max_read_requests_per_second: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND",
                     100,
                 )),
-                max_presence_members_per_channel: Some(parse_u32_env(
+                max_presence_members_per_channel: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL",
                     100,
                 )),
-                max_presence_member_size_in_kb: Some(parse_u32_env(
+                max_presence_member_size_in_kb: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB",
                     100,
                 )),
-                max_channel_name_length: Some(parse_u32_env(
+                max_channel_name_length: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH",
                     100,
                 )),
-                max_event_channels_at_once: Some(parse_u32_env(
+                max_event_channels_at_once: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE",
                     100,
                 )),
-                max_event_name_length: Some(parse_u32_env(
+                max_event_name_length: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH",
                     100,
                 )),
-                max_event_payload_in_kb: Some(parse_u32_env(
+                max_event_payload_in_kb: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB",
                     100,
                 )),
-                max_event_batch_size: Some(parse_u32_env(
+                max_event_batch_size: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE",
                     100,
                 )),
@@ -1298,7 +1169,7 @@ impl ServerOptions {
                     false,
                 )),
                 webhooks: None,
-                max_backend_events_per_second: Some(parse_u32_env(
+                max_backend_events_per_second: Some(parse_env::<u32>(
                     "SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND",
                     100,
                 )),

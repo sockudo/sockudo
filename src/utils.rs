@@ -165,18 +165,22 @@ pub fn parse_bool_env(var_name: &str, default: bool) -> bool {
     }
 }
 
-/// Parse an environment variable as a usize value.
+/// Parse an environment variable as any numeric type that implements FromStr + Display.
 ///
 /// Returns the default value if the environment variable is not set.
 /// Logs a warning and returns the default value if parsing fails.
-pub fn parse_usize_env(var_name: &str, default: usize) -> usize {
+pub fn parse_env<T>(var_name: &str, default: T) -> T
+where
+    T: std::str::FromStr + std::fmt::Display + Copy,
+    T::Err: std::fmt::Display,
+{
     match env::var(var_name) {
-        Ok(s) => match s.parse::<usize>() {
+        Ok(s) => match s.parse::<T>() {
             Ok(value) => value,
             Err(e) => {
                 warn!(
-                    "Failed to parse {} as usize: '{}'. Error: {}. Defaulting to {}.",
-                    var_name, s, e, default
+                    "Failed to parse {} as {}: '{}'. Error: {}. Defaulting to {}.",
+                    var_name, std::any::type_name::<T>(), s, e, default
                 );
                 default
             }
@@ -185,43 +189,28 @@ pub fn parse_usize_env(var_name: &str, default: usize) -> usize {
     }
 }
 
-/// Parse an environment variable as a u32 value.
+/// Parse an environment variable as any numeric type, returning None if not set.
 ///
-/// Returns the default value if the environment variable is not set.
-/// Logs a warning and returns the default value if parsing fails.
-pub fn parse_u32_env(var_name: &str, default: u32) -> u32 {
+/// Returns Some(value) if the environment variable is set and parsing succeeds.
+/// Returns None if the environment variable is not set.
+/// Logs a warning and returns None if parsing fails.
+pub fn parse_env_optional<T>(var_name: &str) -> Option<T>
+where
+    T: std::str::FromStr + std::fmt::Display + Copy,
+    T::Err: std::fmt::Display,
+{
     match env::var(var_name) {
-        Ok(s) => match s.parse::<u32>() {
-            Ok(value) => value,
+        Ok(s) => match s.parse::<T>() {
+            Ok(value) => Some(value),
             Err(e) => {
                 warn!(
-                    "Failed to parse {} as u32: '{}'. Error: {}. Defaulting to {}.",
-                    var_name, s, e, default
+                    "Failed to parse {} as {}: '{}'. Error: {}.",
+                    var_name, std::any::type_name::<T>(), s, e
                 );
-                default
+                None
             }
         },
-        Err(_) => default, // Variable not set, use default
-    }
-}
-
-/// Parse an environment variable as a u64 value.
-///
-/// Returns the default value if the environment variable is not set.
-/// Logs a warning and returns the default value if parsing fails.
-pub fn parse_u64_env(var_name: &str, default: u64) -> u64 {
-    match env::var(var_name) {
-        Ok(s) => match s.parse::<u64>() {
-            Ok(value) => value,
-            Err(e) => {
-                warn!(
-                    "Failed to parse {} as u64: '{}'. Error: {}. Defaulting to {}.",
-                    var_name, s, e, default
-                );
-                default
-            }
-        },
-        Err(_) => default, // Variable not set, use default
+        Err(_) => None, // Variable not set
     }
 }
 
