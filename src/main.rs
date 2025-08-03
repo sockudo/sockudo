@@ -76,7 +76,6 @@ use crate::adapter::nats_adapter::NatsAdapter;
 use crate::adapter::redis_adapter::RedisAdapter;
 use crate::adapter::redis_cluster_adapter::RedisClusterAdapter;
 use crate::app::auth::AuthValidator;
-use crate::app::config::App;
 // AppManager trait and concrete types
 use crate::app::manager::AppManager;
 // CacheManager trait and concrete types
