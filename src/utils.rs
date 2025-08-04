@@ -171,7 +171,7 @@ pub fn parse_bool_env(var_name: &str, default: bool) -> bool {
 /// Logs a warning and returns the default value if parsing fails.
 pub fn parse_env<T>(var_name: &str, default: T) -> T
 where
-    T: std::str::FromStr + std::fmt::Display + Copy,
+    T: std::str::FromStr + std::fmt::Display + Clone,
     T::Err: std::fmt::Display,
 {
     match env::var(var_name) {
@@ -196,7 +196,7 @@ where
 /// Logs a warning and returns None if parsing fails.
 pub fn parse_env_optional<T>(var_name: &str) -> Option<T>
 where
-    T: std::str::FromStr + std::fmt::Display + Copy,
+    T: std::str::FromStr + std::fmt::Display + Clone,
     T::Err: std::fmt::Display,
 {
     match env::var(var_name) {
