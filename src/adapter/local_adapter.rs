@@ -332,10 +332,13 @@ impl ConnectionManager for LocalAdapter {
         namespace.get_channels_with_socket_count().await
     }
 
-    async fn get_sockets_count(&mut self, app_id: &str) -> Result<usize> {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        let count = namespace.sockets.len();
-        Ok(count)
+    async fn get_sockets_count(&self, app_id: &str) -> Result<usize> {
+        if let Some(namespace) = self.namespaces.get(app_id) {
+            let count = namespace.sockets.len();
+            Ok(count)
+        } else {
+            Ok(0) // No namespace means no sockets
+        }
     }
 
     async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {

@@ -18,7 +18,7 @@ use hyper_util::rt::TokioIo;
 use redis::AsyncCommands;
 use std::any::Any;
 use tokio::io::WriteHalf;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
@@ -129,12 +129,18 @@ impl RedisAdapter {
         socket_id: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<ResponseBody> {
+        // Clone Arc references to avoid borrowing self during async operations
+        let horizontal_arc = self.horizontal.clone();
+        let connection = self.connection.clone();
+        let request_channel = self.request_channel.clone();
+        let config_timeout = self.config.request_timeout_ms;
+        
         let node_count = self.get_node_count().await?;
 
         // Create the request
         let request_id = Uuid::new_v4().to_string();
         let node_id = {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = horizontal_arc.lock().await;
             horizontal.node_id.clone()
         };
 
@@ -148,15 +154,17 @@ impl RedisAdapter {
             user_id: user_id.map(String::from),
         };
 
-        // Add to pending requests
+        // Create notification handle and add to pending requests
+        let notify = Arc::new(Notify::new());
         {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = horizontal_arc.lock().await;
             horizontal.pending_requests.insert(
                 request_id.clone(),
                 PendingRequest {
                     start_time: Instant::now(),
                     app_id: app_id.to_string(),
                     responses: Vec::with_capacity(node_count.saturating_sub(1)),
+                    notify: notify.clone(),
                 },
             );
 
@@ -166,15 +174,26 @@ impl RedisAdapter {
             }
         }
 
-        // Broadcast the request via Redis
-        self.broadcast_request(&request).await?;
+        // Broadcast the request via Redis  
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::Other(format!("Failed to serialize request: {}", e)))?;
+        let mut conn = connection.clone();
+        let subscriber_count: i32 = conn
+            .publish(&request_channel, &request_json)
+            .await
+            .map_err(|e| Error::Redis(format!("Failed to publish request: {}", e)))?;
+        debug!(
+            "Broadcasted request {} to {} subscribers",
+            request.request_id, subscriber_count
+        );
 
-        // Wait for responses using the horizontal adapter's waiting logic
-        let timeout_duration = Duration::from_millis(self.config.request_timeout_ms);
+        // Wait for responses using event-driven notification
+        let timeout_duration = Duration::from_millis(config_timeout);
         let max_expected_responses = node_count.saturating_sub(1);
+        let start = Instant::now();
 
         if max_expected_responses == 0 {
-            self.horizontal
+            horizontal_arc
                 .lock()
                 .await
                 .pending_requests
@@ -193,110 +212,97 @@ impl RedisAdapter {
             });
         }
 
-        // Wait for responses
-        let check_interval = Duration::from_millis(50);
-        let mut checks = 0;
-        let max_checks = (timeout_duration.as_millis() / check_interval.as_millis()) as usize;
-        let start = Instant::now();
-
+        // Wait for responses using event-driven approach
         let responses = loop {
-            if checks >= max_checks {
-                warn!(
-                    "Request {} timed out after {}ms",
-                    request_id,
-                    start.elapsed().as_millis()
-                );
-                break self
-                    .horizontal
-                    .lock()
-                    .await
-                    .pending_requests
-                    .remove(&request_id)
-                    .map(|(_, req)| req.responses)
-                    .unwrap_or_default();
-            }
-
-            if let Some(pending_request) = self
-                .horizontal
-                .lock()
-                .await
-                .pending_requests
-                .get(&request_id)
-            {
-                if pending_request.responses.len() >= max_expected_responses {
-                    debug!(
-                        "Request {} completed with {}/{} responses in {}ms",
+            // Wait for notification or timeout
+            let result = tokio::select! {
+                _ = notify.notified() => {
+                    // Check if we have enough responses
+                    let horizontal = horizontal_arc.lock().await;
+                    if let Some(pending_request) = horizontal.pending_requests.get(&request_id) {
+                        if pending_request.responses.len() >= max_expected_responses {
+                            debug!(
+                                "Request {} completed with {}/{} responses in {}ms",
+                                request_id,
+                                pending_request.responses.len(),
+                                max_expected_responses,
+                                start.elapsed().as_millis()
+                            );
+                            // Extract responses without removing the entry yet
+                            let responses = pending_request.responses.clone();
+                            Some(responses)
+                        } else {
+                            None // Continue waiting
+                        }
+                    } else {
+                        return Err(Error::Other(format!(
+                            "Request {} was removed unexpectedly",
+                            request_id
+                        )));
+                    }
+                }
+                _ = tokio::time::sleep(timeout_duration) => {
+                    // Timeout occurred
+                    warn!(
+                        "Request {} timed out after {}ms",
                         request_id,
-                        pending_request.responses.len(),
-                        max_expected_responses,
                         start.elapsed().as_millis()
                     );
-                    break self
-                        .horizontal
-                        .lock()
-                        .await
-                        .pending_requests
-                        .remove(&request_id)
-                        .map(|(_, req)| req.responses)
-                        .unwrap_or_default();
+                    let horizontal = horizontal_arc.lock().await;
+                    let responses = if let Some(pending_request) = horizontal.pending_requests.get(&request_id) {
+                        pending_request.responses.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    Some(responses)
                 }
-            } else {
-                return Err(Error::Other(format!(
-                    "Request {} was removed unexpectedly",
-                    request_id
-                )));
-            }
+            };
 
-            tokio::time::sleep(check_interval).await;
-            checks += 1;
+            if let Some(responses) = result {
+                break responses;
+            }
+            // If result is None, continue waiting (notification came but not enough responses yet)
         };
 
+        // Clean up the pending request now that we're done
+        {
+            let horizontal = horizontal_arc.lock().await;
+            horizontal.pending_requests.remove(&request_id);
+        }
         // Aggregate responses
-        let horizontal = self.horizontal.lock().await;
-        let combined_response = horizontal.aggregate_responses(
-            request_id,
-            request.node_id,
-            app_id.to_string(),
-            &request_type,
-            responses,
-        );
+        let combined_response = {
+            let horizontal = horizontal_arc.lock().await;
+            horizontal.aggregate_responses(
+                request_id,
+                request.node_id,
+                app_id.to_string(),
+                &request_type,
+                responses,
+            )
+        }; // horizontal lock released here
 
         // Track metrics
-        if let Some(metrics_ref) = &horizontal.metrics {
-            let metrics = metrics_ref.lock().await;
-            let duration_ms = start.elapsed().as_millis() as f64;
-            metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
+        {
+            let horizontal = horizontal_arc.lock().await;
+            if let Some(metrics_ref) = &horizontal.metrics {
+                let metrics = metrics_ref.lock().await;
+                let duration_ms = start.elapsed().as_millis() as f64;
+                metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
-            let resolved = combined_response.sockets_count > 0
-                || !combined_response.members.is_empty()
-                || combined_response.exists
-                || !combined_response.channels.is_empty()
-                || combined_response.members_count > 0
-                || !combined_response.channels_with_sockets_count.is_empty();
+                let resolved = combined_response.sockets_count > 0
+                    || !combined_response.members.is_empty()
+                    || combined_response.exists
+                    || !combined_response.channels.is_empty()
+                    || combined_response.members_count > 0
+                    || !combined_response.channels_with_sockets_count.is_empty();
 
-            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
-        }
+                metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
+            }
+        } // horizontal and metrics locks released here
 
         Ok(combined_response)
     }
 
-    async fn broadcast_request(&self, request: &RequestBody) -> Result<()> {
-        let request_json = serde_json::to_string(request)
-            .map_err(|e| Error::Other(format!("Failed to serialize request: {}", e)))?;
-
-        let mut conn = self.connection.clone();
-        let subscriber_count: i32 = conn
-            .publish(&self.request_channel, &request_json)
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to publish request: {}", e)))?;
-
-        debug!(
-            "Broadcasted request {} to {} subscribers",
-            request.request_id, subscriber_count
-        );
-
-        Ok(())
-    }
 
     pub async fn start_listeners(&self) -> Result<()> {
         {
@@ -376,7 +382,7 @@ impl RedisAdapter {
                                         .map(|id| SocketId(id.clone()));
 
                                     let mut horizontal_lock = horizontal_clone.lock().await;
-                                    let _ = horizontal_lock
+                                    let _result = horizontal_lock
                                         .local_adapter
                                         .send(
                                             &broadcast.channel,
@@ -391,13 +397,15 @@ impl RedisAdapter {
                             // Handle request message
                             if let Ok(request) = serde_json::from_str::<RequestBody>(&payload) {
                                 if request.node_id == node_id_clone {
-                                    return;
+                                    return; // Skip processing our own requests
                                 }
 
                                 let response = {
+                                    // Release lock quickly to avoid deadlocks
                                     let mut horizontal_lock = horizontal_clone.lock().await;
                                     horizontal_lock.process_request(request).await
                                 };
+                                // Lock released here before publishing response
 
                                 if let Ok(response) = response {
                                     if let Ok(response_json) = serde_json::to_string(&response) {
@@ -415,11 +423,13 @@ impl RedisAdapter {
                             // Handle response message
                             if let Ok(response) = serde_json::from_str::<ResponseBody>(&payload) {
                                 if response.node_id == node_id_clone {
-                                    return;
+                                    return; // Skip processing our own responses
                                 }
 
                                 let horizontal_lock = horizontal_clone.lock().await;
                                 let _ = horizontal_lock.process_response(response).await;
+                            } else {
+                                warn!("Failed to parse response message: {}", payload);
                             }
                         }
                     });
@@ -446,11 +456,14 @@ impl RedisAdapter {
                 Ok(values) => {
                     if values.len() >= 2 {
                         if let redis::Value::Int(count) = values[1] {
-                            Ok((count as usize).max(1))
+                            let node_count = (count as usize).max(1);
+                            Ok(node_count)
                         } else {
+                            warn!("PUBSUB NUMSUB returned non-integer count: {:?}", values[1]);
                             Ok(1)
                         }
                     } else {
+                        warn!("PUBSUB NUMSUB returned unexpected format: {:?}", values);
                         Ok(1)
                     }
                 }
@@ -557,7 +570,7 @@ impl ConnectionManager for RedisAdapter {
 
         let broadcast_json = serde_json::to_string(&broadcast)?;
         let mut conn = self.connection.clone();
-        conn.publish::<_, _, ()>(&self.broadcast_channel, broadcast_json)
+        let _subscriber_count: i32 = conn.publish(&self.broadcast_channel, &broadcast_json)
             .await
             .map_err(|e| Error::Redis(format!("Failed to publish broadcast: {}", e)))?;
 
@@ -843,14 +856,14 @@ impl ConnectionManager for RedisAdapter {
         Ok(channels)
     }
 
-    async fn get_sockets_count(&mut self, app_id: &str) -> Result<usize> {
-        // Get local count
+    async fn get_sockets_count(&self, app_id: &str) -> Result<usize> {
+        // Get local count - lock is automatically released after this block
         let local_count = {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             horizontal.local_adapter.get_sockets_count(app_id).await?
         };
-
-        // Get distributed count
+        
+        // Get distributed count - send_request will acquire its own lock
         match self
             .send_request(app_id, RequestType::SocketsCount, None, None, None)
             .await
