@@ -82,7 +82,6 @@ pub async fn validate_channel_name(app: &App, channel: &str) -> crate::error::Re
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,15 +135,14 @@ mod tests {
         );
         assert!(validate_channel_name(&app, "space in name").await.is_err());
     }
-
 }
 
 /// Parse a boolean value from an environment variable with flexible format support.
-/// 
+///
 /// Supports the following formats (case-insensitive):
-/// - true: "true", "1", "yes", "on" 
+/// - true: "true", "1", "yes", "on"
 /// - false: "false", "0", "no", "off"
-/// 
+///
 /// Returns the default value if the environment variable is not set.
 /// Logs a warning and returns the default value for unrecognized formats.
 pub fn parse_bool_env(var_name: &str, default: bool) -> bool {
@@ -167,14 +165,63 @@ pub fn parse_bool_env(var_name: &str, default: bool) -> bool {
     }
 }
 
+/// Parse an environment variable as any numeric type that implements FromStr + Display.
+///
+/// Returns the default value if the environment variable is not set.
+/// Logs a warning and returns the default value if parsing fails.
+pub fn parse_env<T>(var_name: &str, default: T) -> T
+where
+    T: std::str::FromStr + std::fmt::Display + Clone,
+    T::Err: std::fmt::Display,
+{
+    match env::var(var_name) {
+        Ok(s) => match s.parse::<T>() {
+            Ok(value) => value,
+            Err(e) => {
+                warn!(
+                    "Failed to parse {} as {}: '{}'. Error: {}. Defaulting to {}.",
+                    var_name, std::any::type_name::<T>(), s, e, default
+                );
+                default
+            }
+        },
+        Err(_) => default, // Variable not set, use default
+    }
+}
+
+/// Parse an environment variable as any numeric type, returning None if not set.
+///
+/// Returns Some(value) if the environment variable is set and parsing succeeds.
+/// Returns None if the environment variable is not set.
+/// Logs a warning and returns None if parsing fails.
+pub fn parse_env_optional<T>(var_name: &str) -> Option<T>
+where
+    T: std::str::FromStr + std::fmt::Display + Clone,
+    T::Err: std::fmt::Display,
+{
+    match env::var(var_name) {
+        Ok(s) => match s.parse::<T>() {
+            Ok(value) => Some(value),
+            Err(e) => {
+                warn!(
+                    "Failed to parse {} as {}: '{}'. Error: {}.",
+                    var_name, std::any::type_name::<T>(), s, e
+                );
+                None
+            }
+        },
+        Err(_) => None, // Variable not set
+    }
+}
+
 /// Resolve a hostname and port to a SocketAddr with proper DNS resolution.
-/// 
+///
 /// Features:
 /// - Prefers IPv4 addresses over IPv6 for better compatibility
 /// - Handles hostname resolution (localhost, domain names, etc.)
 /// - Falls back to 127.0.0.1 with the specified port on resolution failure
 /// - Logs warnings for IPv6-only resolution or failures with context
-/// 
+///
 /// # Parameters
 /// - `host`: The hostname or IP address to resolve
 /// - `port`: The port number
@@ -182,15 +229,15 @@ pub fn parse_bool_env(var_name: &str, default: bool) -> bool {
 pub async fn resolve_socket_addr(host: &str, port: u16, context: &str) -> std::net::SocketAddr {
     use std::net::SocketAddr;
     use tokio::net::lookup_host;
-    
+
     let host_port = format!("{}:{}", host, port);
-    
+
     match lookup_host(&host_port).await {
         Ok(addrs) => {
             // Prefer IPv4 addresses to avoid potential IPv6 issues
             let mut ipv4_addr = None;
             let mut ipv6_addr = None;
-            
+
             for addr in addrs {
                 if addr.is_ipv4() && ipv4_addr.is_none() {
                     ipv4_addr = Some(addr);
@@ -198,21 +245,30 @@ pub async fn resolve_socket_addr(host: &str, port: u16, context: &str) -> std::n
                     ipv6_addr = Some(addr);
                 }
             }
-            
+
             if let Some(addr) = ipv4_addr {
                 addr
             } else if let Some(addr) = ipv6_addr {
-                warn!("[{}] Only IPv6 address found for {}, using: {}", context, host_port, addr);
+                warn!(
+                    "[{}] Only IPv6 address found for {}, using: {}",
+                    context, host_port, addr
+                );
                 addr
             } else {
                 let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), port);
-                warn!("[{}] No addresses found for {}. Using fallback {}", context, host_port, fallback);
+                warn!(
+                    "[{}] No addresses found for {}. Using fallback {}",
+                    context, host_port, fallback
+                );
                 fallback
             }
         }
         Err(e) => {
             let fallback = SocketAddr::new("127.0.0.1".parse().unwrap(), port);
-            warn!("[{}] Failed to resolve {}: {}. Using fallback {}", context, host_port, e, fallback);
+            warn!(
+                "[{}] Failed to resolve {}: {}. Using fallback {}",
+                context, host_port, e, fallback
+            );
             fallback
         }
     }
