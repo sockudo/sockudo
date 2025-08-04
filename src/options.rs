@@ -87,7 +87,7 @@ pub enum AppManagerDriver {
     Memory,
     Mysql,
     Dynamodb,
-    PgSql, // Added PostgresSQL as a potential driver
+    PgSql, // Added PostgreSQL as a potential driver
 }
 impl FromStr for AppManagerDriver {
     type Err = String;
@@ -961,7 +961,7 @@ impl ServerOptions {
             self.database.mysql.table_name = table;
         }
 
-        // --- Database: PostgresSQL ---
+        // --- Database: PostgreSQL ---
         if let Ok(host) = std::env::var("DATABASE_POSTGRES_HOST") {
             self.database.postgres.host = host;
         }
@@ -1013,7 +1013,9 @@ impl ServerOptions {
             self.ssl.key_path = val;
         }
         self.ssl.redirect_http = parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
-        self.ssl.http_port = Some(parse_env::<u16>("SSL_HTTP_PORT", self.ssl.http_port.unwrap_or(80)));
+        if let Some(port) = parse_env_optional::<u16>("SSL_HTTP_PORT") {
+            self.ssl.http_port = Some(port);
+        }
 
         // --- Metrics ---
         if let Ok(driver_str) = std::env::var("METRICS_DRIVER") {
@@ -1033,7 +1035,9 @@ impl ServerOptions {
         self.rate_limiter.enabled = parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
         self.rate_limiter.api_rate_limit.max_requests = parse_env::<u32>("RATE_LIMITER_API_MAX_REQUESTS", self.rate_limiter.api_rate_limit.max_requests);
         self.rate_limiter.api_rate_limit.window_seconds = parse_env::<u64>("RATE_LIMITER_API_WINDOW_SECONDS", self.rate_limiter.api_rate_limit.window_seconds);
-        self.rate_limiter.api_rate_limit.trust_hops = Some(parse_env::<u32>("RATE_LIMITER_API_TRUST_HOPS", self.rate_limiter.api_rate_limit.trust_hops.unwrap_or(0)));
+        if let Some(hops) = parse_env_optional::<u32>("RATE_LIMITER_API_TRUST_HOPS") {
+            self.rate_limiter.api_rate_limit.trust_hops = Some(hops);
+        }
         self.rate_limiter.websocket_rate_limit.max_requests = parse_env::<u32>("RATE_LIMITER_WS_MAX_REQUESTS", self.rate_limiter.websocket_rate_limit.max_requests);
         self.rate_limiter.websocket_rate_limit.window_seconds = parse_env::<u64>("RATE_LIMITER_WS_WINDOW_SECONDS", self.rate_limiter.websocket_rate_limit.window_seconds);
 
