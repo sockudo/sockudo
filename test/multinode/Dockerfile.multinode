@@ -1,0 +1,14 @@
+# Simple image that adds OpenSSL 1.1 to Ubuntu
+FROM ubuntu:20.04
+
+# Install OpenSSL 1.1
+RUN apt-get update && \
+    apt-get install -y \
+    libssl1.1 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# The actual sockudo binary will be mounted as a volume
+WORKDIR /app
+
+CMD ["/app/target/debug/sockudo"]

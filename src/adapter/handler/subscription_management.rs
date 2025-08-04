@@ -72,7 +72,12 @@ impl ConnectionHandler {
                 if subscription_result.channel_connections == Some(1) {
                     // Channel became active - increment the count for this channel type
                     // Pass the Arc directly to avoid holding any locks
-                    self.increment_active_channel_count(&app_config.id, channel_type_str, metrics.clone()).await;
+                    self.increment_active_channel_count(
+                        &app_config.id,
+                        channel_type_str,
+                        metrics.clone(),
+                    )
+                    .await;
                 }
             }
         }
@@ -268,5 +273,4 @@ impl ConnectionHandler {
             .send_message(&app_config.id, socket_id, response_msg)
             .await
     }
-
 }

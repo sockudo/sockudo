@@ -78,18 +78,23 @@ impl ConnectionHandler {
         if let Some(ref metrics) = self.metrics {
             let channel_type = crate::channel::ChannelType::from_name(&channel_name);
             let channel_type_str = channel_type.as_str();
-            
+
             // Mark unsubscription metric
             {
                 let metrics_locked = metrics.lock().await;
                 metrics_locked.mark_channel_unsubscription(&app_config.id, channel_type_str);
             }
-            
-            // Update active channel count if this was the last connection to the channel  
+
+            // Update active channel count if this was the last connection to the channel
             if current_sub_count == 0 {
                 // Channel became inactive - decrement the count for this channel type
                 // Pass the Arc directly to avoid holding any locks
-                self.decrement_active_channel_count(&app_config.id, channel_type_str, metrics.clone()).await;
+                self.decrement_active_channel_count(
+                    &app_config.id,
+                    channel_type_str,
+                    metrics.clone(),
+                )
+                .await;
             }
         }
 
@@ -669,5 +674,4 @@ impl ConnectionHandler {
             }
         }
     }
-
 }

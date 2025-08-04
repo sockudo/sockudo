@@ -205,10 +205,8 @@ impl ConnectionHandler {
             return Ok(());
         }
 
-        let current_count = self
-            .connection_manager
-            .lock()
-            .await
+        let connection_manager = self.connection_manager.lock().await;
+        let current_count = connection_manager
             .get_sockets_count(&app_config.id)
             .await
             .map_err(|e| {
@@ -218,6 +216,8 @@ impl ConnectionHandler {
                 );
                 Error::Internal("Failed to check connection quota".to_string())
             })?;
+        drop(connection_manager);
+        
 
         if current_count >= app_config.max_connections as usize {
             return Err(Error::OverConnectionQuota);
@@ -444,15 +444,19 @@ impl ConnectionHandler {
     ) {
         // Get current count for this channel type
         // IMPORTANT: We must get the count BEFORE acquiring the metrics lock to avoid deadlock
-        let current_count = self.get_active_channel_count_for_type(app_id, channel_type).await;
-        
+        let current_count = self
+            .get_active_channel_count_for_type(app_id, channel_type)
+            .await;
+
         // Now acquire the metrics lock and update
         let metrics_locked = metrics.lock().await;
         metrics_locked.update_active_channels(app_id, channel_type, current_count + 1);
 
         debug!(
             "Incremented active {} channels for app {} to {}",
-            channel_type, app_id, current_count + 1
+            channel_type,
+            app_id,
+            current_count + 1
         );
     }
 
@@ -465,15 +469,17 @@ impl ConnectionHandler {
     ) {
         // Get current count for this channel type
         // IMPORTANT: We must get the count BEFORE acquiring the metrics lock to avoid deadlock
-        let current_count = self.get_active_channel_count_for_type(app_id, channel_type).await;
-        
+        let current_count = self
+            .get_active_channel_count_for_type(app_id, channel_type)
+            .await;
+
         // Decrement by 1, but never go below 0
         let new_count = std::cmp::max(0, current_count - 1);
-        
+
         // Now acquire the metrics lock and update
         let metrics_locked = metrics.lock().await;
         metrics_locked.update_active_channels(app_id, channel_type, new_count);
-        
+
         debug!(
             "Decremented active {} channels for app {} to {}",
             channel_type, app_id, new_count
@@ -501,18 +507,18 @@ impl ConnectionHandler {
         for channel_entry in channels_map.iter() {
             let channel_name = channel_entry.key();
             let socket_count = *channel_entry.value();
-            
+
             // Only count channels that have active connections
             if socket_count > 0 {
                 let ch_type = crate::channel::ChannelType::from_name(channel_name);
                 let ch_type_str = ch_type.as_str();
-                
+
                 if ch_type_str == channel_type {
                     count += 1;
                 }
             }
         }
-        
+
         count
     }
 }

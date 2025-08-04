@@ -78,7 +78,8 @@ impl ConnectionHandler {
                 let ping_result = {
                     let mut ws = conn.0.lock().await;
                     // Update connection status to indicate ping sent
-                    ws.state.status = crate::websocket::ConnectionStatus::PingSent(std::time::Instant::now());
+                    ws.state.status =
+                        crate::websocket::ConnectionStatus::PingSent(std::time::Instant::now());
                     let ping_message = PusherMessage::ping();
                     ws.send_message(&ping_message)
                 };
@@ -89,10 +90,10 @@ impl ConnectionHandler {
                             "Sent ping to socket {} due to activity timeout",
                             socket_id_clone
                         );
-                        
+
                         // Release locks before waiting for pong
                         drop(conn_manager);
-                        
+
                         // Wait for pong response
                         sleep(Duration::from_secs(PONG_TIMEOUT)).await;
 
@@ -104,7 +105,9 @@ impl ConnectionHandler {
                         {
                             let mut ws = conn.0.lock().await;
                             // Check if we're still in PingSent state (no pong received)
-                            if let crate::websocket::ConnectionStatus::PingSent(ping_time) = ws.state.status {
+                            if let crate::websocket::ConnectionStatus::PingSent(ping_time) =
+                                ws.state.status
+                            {
                                 if ping_time.elapsed() > Duration::from_secs(PONG_TIMEOUT) {
                                     // No pong received, close connection gracefully
                                     warn!(
@@ -128,7 +131,7 @@ impl ConnectionHandler {
                             "Failed to send ping to socket {} (connection likely closed by client): {}",
                             socket_id_clone, e
                         );
-                        
+
                         // Clean up the connection since it's broken
                         // Note: cleanup_connection expects the connection to still exist
                         conn_manager.cleanup_connection(&app_id_clone, conn).await;
