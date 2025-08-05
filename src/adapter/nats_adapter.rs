@@ -18,7 +18,7 @@ use futures::StreamExt;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use tokio::io::WriteHalf;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -49,13 +49,12 @@ impl NatsAdapter {
     pub async fn new(config: NatsAdapterConfig) -> Result<Self> {
         let mut horizontal = HorizontalAdapter::new();
         info!(
-            "NATS adapter config: servers={:?}, prefix={}, request_timeout={}ms, connection_timeout={}ms", 
+            "NATS adapter config: servers={:?}, prefix={}, request_timeout={}ms, connection_timeout={}ms",
             config.servers, config.prefix, config.request_timeout_ms, config.connection_timeout_ms
         );
-        debug!("NATS adapter credentials: username={:?}, password={:?}, token={:?}", 
-            config.username,
-            config.password,
-            config.token
+        debug!(
+            "NATS adapter credentials: username={:?}, password={:?}, token={:?}",
+            config.username, config.password, config.token
         );
 
         horizontal.requests_timeout = config.request_timeout_ms;
@@ -153,6 +152,7 @@ impl NatsAdapter {
                     start_time: Instant::now(),
                     app_id: app_id.to_string(),
                     responses: Vec::with_capacity(node_count.saturating_sub(1)),
+                    notify: Arc::new(Notify::new()),
                 },
             );
 
@@ -189,89 +189,103 @@ impl NatsAdapter {
             });
         }
 
-        // Wait for responses
-        let check_interval = Duration::from_millis(50);
-        let mut checks = 0;
-        let max_checks = (timeout_duration.as_millis() / check_interval.as_millis()) as usize;
+        // Wait for responses using event-driven approach
         let start = Instant::now();
-
-        let responses = loop {
-            if checks >= max_checks {
-                warn!(
-                    "Request {} timed out after {}ms",
-                    request_id,
-                    start.elapsed().as_millis()
-                );
-                break self
-                    .horizontal
-                    .lock()
-                    .await
-                    .pending_requests
-                    .remove(&request_id)
-                    .map(|(_, req)| req.responses)
-                    .unwrap_or_default();
-            }
-
-            if let Some(pending_request) = self
-                .horizontal
-                .lock()
-                .await
-                .pending_requests
+        let notify = {
+            let horizontal = self.horizontal.lock().await;
+            horizontal.pending_requests
                 .get(&request_id)
-            {
-                if pending_request.responses.len() >= max_expected_responses {
-                    info!(
-                        "Request {} completed with {}/{} responses in {}ms",
-                        request_id,
-                        pending_request.responses.len(),
-                        max_expected_responses,
-                        start.elapsed().as_millis()
-                    );
-                    break self
-                        .horizontal
-                        .lock()
-                        .await
-                        .pending_requests
-                        .remove(&request_id)
-                        .map(|(_, req)| req.responses)
-                        .unwrap_or_default();
-                }
-            } else {
-                return Err(Error::Other(format!(
-                    "Request {} was removed unexpectedly",
-                    request_id
-                )));
-            }
-
-            tokio::time::sleep(check_interval).await;
-            checks += 1;
+                .map(|req| req.notify.clone())
+                .ok_or_else(|| Error::Other(format!("Request {} not found in pending requests", request_id)))?
         };
 
+        let responses = loop {
+            // Wait for notification or timeout
+            let result = tokio::select! {
+                _ = notify.notified() => {
+                    // Check if we have enough responses
+                    let horizontal = self.horizontal.lock().await;
+                    if let Some(pending_request) = horizontal.pending_requests.get(&request_id) {
+                        if pending_request.responses.len() >= max_expected_responses {
+                            info!(
+                                "Request {} completed with {}/{} responses in {}ms",
+                                request_id,
+                                pending_request.responses.len(),
+                                max_expected_responses,
+                                start.elapsed().as_millis()
+                            );
+                            // Extract responses without removing the entry yet to avoid race condition
+                            let responses = pending_request.responses.clone();
+                            Some(responses)
+                        } else {
+                            None // Continue waiting
+                        }
+                    } else {
+                        return Err(Error::Other(format!(
+                            "Request {} was removed unexpectedly",
+                            request_id
+                        )));
+                    }
+                }
+                _ = tokio::time::sleep(timeout_duration) => {
+                    // Timeout occurred
+                    warn!(
+                        "Request {} timed out after {}ms",
+                        request_id,
+                        start.elapsed().as_millis()
+                    );
+                    let horizontal = self.horizontal.lock().await;
+                    let responses = if let Some(pending_request) = horizontal.pending_requests.get(&request_id) {
+                        pending_request.responses.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    Some(responses)
+                }
+            };
+
+            if let Some(responses) = result {
+                break responses;
+            }
+            // If result is None, continue waiting (notification came but not enough responses yet)
+        };
+
+        // Clean up the pending request now that we're done
+        {
+            let horizontal = self.horizontal.lock().await;
+            horizontal.pending_requests.remove(&request_id);
+        }
+
         // Aggregate responses
-        let horizontal = self.horizontal.lock().await;
-        let combined_response = horizontal.aggregate_responses(
-            request_id,
-            request.node_id,
-            app_id.to_string(),
-            &request_type,
-            responses,
-        );
+        let combined_response = {
+            let horizontal = self.horizontal.lock().await;
+            horizontal.aggregate_responses(
+                request_id,
+                request.node_id,
+                app_id.to_string(),
+                &request_type,
+                responses,
+            )
+        }; // horizontal lock released here
 
         // Track metrics
-        if let Some(metrics_ref) = &horizontal.metrics {
-            let metrics = metrics_ref.lock().await;
-            let duration_ms = start.elapsed().as_millis() as f64;
-            metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
+        {
+            let horizontal = self.horizontal.lock().await;
+            if let Some(metrics_ref) = &horizontal.metrics {
+                let metrics = metrics_ref.lock().await;
+                let duration_ms = start.elapsed().as_millis() as f64;
+                metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
-            let resolved = combined_response.sockets_count > 0
-                || !combined_response.members.is_empty()
-                || combined_response.exists
-                || !combined_response.channels.is_empty()
-                || combined_response.members_count > 0
-                || !combined_response.channels_with_sockets_count.is_empty();
+                let resolved = combined_response.sockets_count > 0
+                    || !combined_response.members.is_empty()
+                    || combined_response.exists
+                    || !combined_response.channels.is_empty()
+                    || combined_response.members_count > 0
+                    || !combined_response.channels_with_sockets_count.is_empty();
 
-            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
-        }
+                metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
+            }
+        } // horizontal and metrics locks released here
 
         Ok(combined_response)
     }
@@ -425,6 +439,7 @@ impl NatsAdapter {
     }
 
     pub async fn get_node_count(&self) -> Result<usize> {
+
         // If nodes_number is explicitly set, use that value
         if let Some(nodes) = self.config.nodes_number {
             return Ok(nodes as usize);
@@ -819,10 +834,10 @@ impl ConnectionManager for NatsAdapter {
         Ok(channels)
     }
 
-    async fn get_sockets_count(&mut self, app_id: &str) -> Result<usize> {
+    async fn get_sockets_count(&self, app_id: &str) -> Result<usize> {
         // Get local count
         let local_count = {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             horizontal.local_adapter.get_sockets_count(app_id).await?
         };
 

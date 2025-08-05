@@ -1042,32 +1042,37 @@ async fn main() -> Result<()> {
         utils::parse_bool_env("DEBUG_MODE", false)
     };
 
-    let initial_log_directive = get_log_directive(initial_debug_from_env);
+    // Initialize tracing
+    let (filter_reload_handle, fmt_reload_handle) = {
+        let initial_log_directive = get_log_directive(initial_debug_from_env);
 
-    let initial_env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(initial_log_directive));
+        let initial_env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(initial_log_directive));
 
-    // Create both filter and fmt layers with reload support
-    let (filter_layer, filter_reload_handle) = reload::Layer::new(initial_env_filter);
+        // Create both filter and fmt layers with reload support
+        let (filter_layer, filter_reload_handle) = reload::Layer::new(initial_env_filter);
 
-    // Create initial fmt layer based on debug setting
-    let initial_fmt_layer = fmt::layer()
-        .with_target(true)
-        .with_file(initial_debug_from_env)
-        .with_line_number(initial_debug_from_env);
+        // Create initial fmt layer based on debug setting
+        let initial_fmt_layer = fmt::layer()
+            .with_target(true)
+            .with_file(initial_debug_from_env)
+            .with_line_number(initial_debug_from_env);
 
-    let (fmt_layer, fmt_reload_handle) = reload::Layer::new(initial_fmt_layer);
+        let (fmt_layer, fmt_reload_handle) = reload::Layer::new(initial_fmt_layer);
 
-    // Build the subscriber with reloadable layers
-    tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .init();
+        // Build the subscriber with reloadable layers
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(fmt_layer)
+            .init();
 
-    info!(
-        "Initial logging initialized with DEBUG={}",
-        initial_debug_from_env
-    );
+        info!(
+            "Initial logging initialized with DEBUG={}",
+            initial_debug_from_env
+        );
+
+        (filter_reload_handle, fmt_reload_handle)
+    };
 
     // --- Configuration Loading Order ---
     // 1. Start with defaults

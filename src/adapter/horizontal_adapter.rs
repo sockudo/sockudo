@@ -13,7 +13,7 @@ use crate::metrics::MetricsInterface;
 use crate::websocket::SocketId;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -79,6 +79,7 @@ pub struct PendingRequest {
     pub(crate) start_time: Instant,
     pub(crate) app_id: String,
     pub(crate) responses: Vec<ResponseBody>,
+    pub(crate) notify: Arc<Notify>,
 }
 
 /// Base horizontal adapter
@@ -296,10 +297,13 @@ impl HorizontalAdapter {
             metrics.mark_horizontal_adapter_response_received(&response.app_id);
         }
 
-        // Get the pending request
+        // Get the pending request and notify waiters
         if let Some(mut request) = self.pending_requests.get_mut(&response.request_id) {
             // Add response to the list
             request.responses.push(response);
+            
+            // Notify any waiting send_request calls that a new response has arrived
+            request.notify.notify_one();
         }
 
         Ok(())
@@ -336,6 +340,7 @@ impl HorizontalAdapter {
                 start_time: start,
                 app_id: app_id.to_string(),
                 responses: Vec::with_capacity(expected_node_count.saturating_sub(1)),
+                notify: Arc::new(Notify::new()),
             },
         );
 

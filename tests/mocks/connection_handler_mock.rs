@@ -176,7 +176,7 @@ impl ConnectionManager for MockAdapter {
     ) -> Result<DashMap<String, usize>> {
         Ok(DashMap::new())
     }
-    async fn get_sockets_count(&mut self, _app_id: &str) -> Result<usize> {
+    async fn get_sockets_count(&self, _app_id: &str) -> Result<usize> {
         Ok(0)
     }
     async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {
@@ -361,10 +361,15 @@ impl MetricsInterface for MockMetricsInterface {
         _app_id: &str,
         _limiter_type: &str,
         _request_context: &str,
-    ) {}
-    fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str) {
+    ) {
     }
-    fn mark_rate_limit_triggered_with_context(&self, app_id: &str, limiter_type: &str, request_context: &str) {
+    fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str) {}
+    fn mark_rate_limit_triggered_with_context(
+        &self,
+        app_id: &str,
+        limiter_type: &str,
+        request_context: &str,
+    ) {
     }
     fn mark_channel_subscription(&self, _app_id: &str, _channel_type: &str) {}
     fn mark_channel_unsubscription(&self, _app_id: &str, _channel_type: &str) {}
@@ -433,11 +438,9 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager, M
     let handler = ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(RwLock::new(ChannelManager::new(Arc::new(Mutex::new(
-            MockAdapter::new())
-        )))),
-        Arc::new(Mutex::new(
-            MockAdapter::new()
-        )),
+            MockAdapter::new(),
+        ))))),
+        Arc::new(Mutex::new(MockAdapter::new())),
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
         None,
@@ -453,11 +456,9 @@ pub fn create_test_connection_handler_with_app_manager(
     ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(RwLock::new(ChannelManager::new(Arc::new(Mutex::new(
-            MockAdapter::new())
-        )))),
-        Arc::new(Mutex::new(
-            MockAdapter::new()
-        )),
+            MockAdapter::new(),
+        ))))),
+        Arc::new(Mutex::new(MockAdapter::new())),
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
         None,

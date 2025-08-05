@@ -256,15 +256,26 @@ impl MessageSender {
         }
     }
 
-    fn log_connection_error(error: &fastwebsockets::WebSocketError, operation: SocketOperation, frame_count: usize, is_shutting_down: bool) {
+    fn log_connection_error(
+        error: &fastwebsockets::WebSocketError,
+        operation: SocketOperation,
+        frame_count: usize,
+        is_shutting_down: bool,
+    ) {
         let is_conn_err = Self::is_connection_error(error);
-        
+
         if is_conn_err && is_shutting_down {
             debug!("{} failed during shutdown (expected): {}", operation, error);
         } else if is_conn_err && frame_count <= 2 {
-            warn!("Early connection {} failed (after {} frames): {}", operation, frame_count, error);
+            warn!(
+                "Early connection {} failed (after {} frames): {}",
+                operation, frame_count, error
+            );
         } else if is_conn_err {
-            warn!("Connection {} failed during operation (after {} frames): {}", operation, frame_count, error);
+            warn!(
+                "Connection {} failed during operation (after {} frames): {}",
+                operation, frame_count, error
+            );
         } else {
             if operation.is_close_operation() {
                 warn!("Failed to {}: {}", operation, error);
@@ -280,17 +291,22 @@ impl MessageSender {
         let receiver_handle = tokio::spawn(async move {
             let mut frame_count = 0;
             let mut is_shutting_down = false;
-            
+
             while let Some(frame) = receiver.recv().await {
                 frame_count += 1;
-                
+
                 // Detect if this is a close frame (indicates shutdown)
                 if matches!(frame.opcode, fastwebsockets::OpCode::Close) {
                     is_shutting_down = true;
                 }
-                
+
                 if let Err(e) = socket.write_frame(frame).await {
-                    Self::log_connection_error(&e, SocketOperation::WriteFrame, frame_count, is_shutting_down);
+                    Self::log_connection_error(
+                        &e,
+                        SocketOperation::WriteFrame,
+                        frame_count,
+                        is_shutting_down,
+                    );
                     break;
                 }
             }
@@ -361,10 +377,10 @@ impl WebSocket {
             }
             _ => {}
         }
-        
+
         // Update connection status
         self.state.status = ConnectionStatus::Closing;
-        
+
         // Send error message first if it's an error closure
         if code >= 4000 {
             let error_message = PusherMessage::error(code, reason.clone(), None);
@@ -378,7 +394,7 @@ impl WebSocket {
 
         // Clear any active timeouts
         self.state.clear_timeouts();
-        
+
         // Mark as closed
         self.state.status = ConnectionStatus::Closed;
 
@@ -391,9 +407,9 @@ impl WebSocket {
             ConnectionStatus::Active | ConnectionStatus::PingSent(_) => {
                 self.message_sender.send_json(message)
             }
-            ConnectionStatus::Closing | ConnectionStatus::Closed => {
-                Err(Error::ConnectionClosed("Cannot send message on closed connection".to_string()))
-            }
+            ConnectionStatus::Closing | ConnectionStatus::Closed => Err(Error::ConnectionClosed(
+                "Cannot send message on closed connection".to_string(),
+            )),
         }
     }
 
@@ -406,7 +422,10 @@ impl WebSocket {
     }
 
     pub fn is_connected(&self) -> bool {
-        matches!(self.state.status, ConnectionStatus::Active | ConnectionStatus::PingSent(_))
+        matches!(
+            self.state.status,
+            ConnectionStatus::Active | ConnectionStatus::PingSent(_)
+        )
     }
 
     pub fn update_activity(&mut self) {

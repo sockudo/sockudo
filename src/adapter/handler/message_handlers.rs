@@ -18,7 +18,7 @@ impl ConnectionHandler {
                 tracing::warn!("Ping received for unknown socket: {}", socket_id);
             }
         }
-        
+
         let pong_message = PusherMessage::pong();
         self.send_message_to_socket(app_id, socket_id, pong_message)
             .await

@@ -180,7 +180,11 @@ where
             Err(e) => {
                 warn!(
                     "Failed to parse {} as {}: '{}'. Error: {}. Defaulting to {}.",
-                    var_name, std::any::type_name::<T>(), s, e, default
+                    var_name,
+                    std::any::type_name::<T>(),
+                    s,
+                    e,
+                    default
                 );
                 default
             }
@@ -205,7 +209,10 @@ where
             Err(e) => {
                 warn!(
                     "Failed to parse {} as {}: '{}'. Error: {}.",
-                    var_name, std::any::type_name::<T>(), s, e
+                    var_name,
+                    std::any::type_name::<T>(),
+                    s,
+                    e
                 );
                 None
             }
