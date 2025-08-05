@@ -1014,18 +1014,19 @@ pub async fn up(
         }
     }
     
-    // Record metrics if available (non-blocking)
-    if handler.metrics.is_some() {
-        record_api_metrics(&handler, &app_id, 0, 50).await;
-    }
-    
     // Return response maintaining backward compatibility
     let (status_code, status_text, header_value) = match health_status {
         HealthStatus::Ok => (StatusCode::OK, "OK", "OK"),
-        HealthStatus::Degraded(_) => (StatusCode::SERVICE_UNAVAILABLE, "DEGRADED", "DEGRADED"),
+        HealthStatus::Degraded(_) => (StatusCode::OK, "DEGRADED", "DEGRADED"),
         HealthStatus::Error(_) => (StatusCode::SERVICE_UNAVAILABLE, "ERROR", "ERROR"), 
         HealthStatus::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "NOT_FOUND"),
     };
+    
+    // Record metrics if available (non-blocking)
+    if handler.metrics.is_some() {
+        let response_size = status_text.len();
+        record_api_metrics(&handler, &app_id, 0, response_size).await;
+    }
     
     // Build response using the original format
     let response_val = axum::http::Response::builder()
