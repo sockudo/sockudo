@@ -1,6 +1,6 @@
 use crate::adapter::ConnectionHandler;
 use crate::app::config::App; // To access app limits
-use crate::error::HealthStatus;
+use crate::error::{HealthStatus, HEALTH_CHECK_TIMEOUT_MS};
 use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
 use crate::protocol::messages::{
     ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MessageData, PusherApiMessage,
@@ -877,14 +877,17 @@ async fn check_app_health(
     let mut issues = Vec::new();
     let mut is_degraded = false;
     
-    // Check 1: App exists and is enabled (with timeout to prevent hanging)
-    let app_check = timeout(Duration::from_millis(500), 
-        handler.app_manager.find_by_id(app_id)
-    ).await;
+    // Check 1: App exists, is enabled, and app manager database is healthy
+    let app_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
+        // First check app manager health (validates database connectivity)
+        handler.app_manager.check_health().await?;
+        // Then check if specific app exists and is enabled
+        handler.app_manager.find_by_id(app_id).await
+    }).await;
     
     match app_check {
         Ok(Ok(Some(app))) if app.enabled => {
-            // App exists and is enabled
+            // App exists, is enabled, and app manager is healthy
         },
         Ok(Ok(Some(_))) => {
             issues.push("App is disabled".to_string());
@@ -894,46 +897,41 @@ async fn check_app_health(
             return HealthStatus::NotFound;
         }
         Ok(Err(e)) => {
-            issues.push(format!("App manager error: {}", e));
-            is_degraded = true;
+            issues.push(format!("App manager: {}", e));
+            return HealthStatus::Error(issues);
         }
         Err(_) => {
-            issues.push("App manager timeout (>500ms)".to_string());
+            issues.push(format!("App manager timeout (>{}ms)", HEALTH_CHECK_TIMEOUT_MS));
             return HealthStatus::Error(issues);
         }
     }
     
-    // Check 2: Cache manager (optional check with very short timeout)
-    // Only check if cache is not configured as "none"
+    // Check 2: Cache manager health
     if handler.server_options().cache.driver != crate::options::CacheDriver::None {
-        let cache_check = timeout(Duration::from_millis(50), async {
-            match tokio::time::timeout(Duration::from_millis(25), 
-                handler.cache_manager.lock()
-            ).await {
-                Ok(_cache_mgr) => Ok(()), // Just checking we can acquire the lock
-                Err(_) => Err(())
-            }
+        let cache_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
+            let cache_manager = handler.cache_manager.lock().await;
+            cache_manager.check_health().await
         }).await;
         
-        if cache_check.is_err() || cache_check.unwrap().is_err() {
-            issues.push("Cache manager unresponsive".to_string());
-            is_degraded = true;
+        match cache_check {
+            Ok(Ok(())) => {
+                // Cache manager is healthy
+            },
+            Ok(Err(e)) => {
+                issues.push(e.to_string());
+                is_degraded = true;
+            }
+            Err(_) => {
+                issues.push("Cache manager health check timeout".to_string());
+                is_degraded = true;
+            }
         }
     }
     
-    // Check 3: Check adapter health using the trait method
-    let adapter_check = timeout(Duration::from_millis(200), async {
-        match tokio::time::timeout(Duration::from_millis(50), 
-            handler.connection_manager.lock()
-        ).await {
-            Ok(conn_mgr) => {
-                // Use the trait method - each adapter implements its own health check
-                conn_mgr.check_health().await
-            }
-            Err(_) => {
-                Err(crate::error::Error::Internal("Lock timeout".to_string()))
-            }
-        }
+    // Check 3: Adapter health using the trait method
+    let adapter_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
+        let conn_mgr = handler.connection_manager.lock().await;
+        conn_mgr.check_health().await
     }).await;
     
     match adapter_check {
@@ -952,7 +950,7 @@ async fn check_app_health(
     
     // Check 4: Queue system health (for webhooks)
     if let Some(webhook_integration) = handler.webhook_integration() {
-        let queue_check = timeout(Duration::from_millis(500), 
+        let queue_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), 
             webhook_integration.check_queue_health()
         ).await;
         
@@ -968,25 +966,6 @@ async fn check_app_health(
                 issues.push("Queue health check timeout".to_string());
                 is_degraded = true;
             }
-        }
-    }
-    
-    // Check 5: App Manager database backend health
-    let app_manager_check = timeout(Duration::from_millis(500), 
-        handler.app_manager.check_health()
-    ).await;
-    
-    match app_manager_check {
-        Ok(Ok(())) => {
-            // App manager is healthy
-        },
-        Ok(Err(e)) => {
-            issues.push(e.to_string());
-            is_degraded = true;
-        }
-        Err(_) => {
-            issues.push("App manager health check timeout".to_string());
-            is_degraded = true;
         }
     }
     

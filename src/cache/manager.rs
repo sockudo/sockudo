@@ -21,8 +21,11 @@ pub trait CacheManager: Send + Sync {
     /// Disconnect the manager's made connections
     async fn disconnect(&mut self) -> Result<()>;
 
-    async fn is_healthy(&self) -> Result<bool> {
-        Ok(true)
+    /// Health check for the cache manager
+    async fn check_health(&self) -> Result<()> {
+        // Default implementation - always healthy for memory/no-op caches
+        Ok(())
     }
+
     async fn ttl(&mut self, key: &str) -> Result<Option<Duration>>;
 }
