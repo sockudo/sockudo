@@ -870,14 +870,22 @@ pub async fn terminate_user_connections(
 
 /// Internal health check function - performs comprehensive checks
 /// Uses timeouts to prevent hanging and avoid deadlocks
+/// 
+/// Critical components (WebSocket functionality fails without these):
+/// - App Manager: Must validate app exists and is enabled
+/// - Adapter: Core WebSocket connection handling 
+/// - Cache Manager: Required for cache channels, subscription failures propagate errors
+///
+/// Non-critical components (WebSocket works, but optional features don't):
+/// - Queue System: Only affects webhook delivery
 async fn check_app_health(
     handler: &Arc<ConnectionHandler>,
     app_id: &str
 ) -> HealthStatus {
-    let mut issues = Vec::new();
-    let mut is_degraded = false;
+    let mut critical_issues = Vec::new();
+    let mut non_critical_issues = Vec::new();
     
-    // Check 1: App exists, is enabled, and app manager database is healthy
+    // CRITICAL CHECK 1: App exists, is enabled, and app manager database is healthy
     let app_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
         // First check app manager health (validates database connectivity)
         handler.app_manager.check_health().await?;
@@ -890,23 +898,41 @@ async fn check_app_health(
             // App exists, is enabled, and app manager is healthy
         },
         Ok(Ok(Some(_))) => {
-            issues.push("App is disabled".to_string());
-            return HealthStatus::Error(issues);
+            critical_issues.push("App is disabled".to_string());
+            return HealthStatus::Error(critical_issues);
         }
         Ok(Ok(None)) => {
             return HealthStatus::NotFound;
         }
         Ok(Err(e)) => {
-            issues.push(format!("App manager: {}", e));
-            return HealthStatus::Error(issues);
+            critical_issues.push(format!("App manager: {}", e));
+            return HealthStatus::Error(critical_issues);
         }
         Err(_) => {
-            issues.push(format!("App manager timeout (>{}ms)", HEALTH_CHECK_TIMEOUT_MS));
-            return HealthStatus::Error(issues);
+            critical_issues.push(format!("App manager timeout (>{}ms)", HEALTH_CHECK_TIMEOUT_MS));
+            return HealthStatus::Error(critical_issues);
         }
     }
     
-    // Check 2: Cache manager health
+    // CRITICAL CHECK 2: Adapter health - core WebSocket functionality
+    let adapter_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
+        let conn_mgr = handler.connection_manager.lock().await;
+        conn_mgr.check_health().await
+    }).await;
+    
+    match adapter_check {
+        Ok(Ok(())) => {
+            // Adapter is healthy
+        },
+        Ok(Err(e)) => {
+            critical_issues.push(format!("Adapter: {}", e));
+        }
+        Err(_) => {
+            critical_issues.push("Adapter health check timeout".to_string());
+        }
+    }
+    
+    // CRITICAL CHECK 3: Cache manager health - required for cache channels
     if handler.server_options().cache.driver != crate::options::CacheDriver::None {
         let cache_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
             let cache_manager = handler.cache_manager.lock().await;
@@ -918,37 +944,15 @@ async fn check_app_health(
                 // Cache manager is healthy
             },
             Ok(Err(e)) => {
-                issues.push(e.to_string());
-                is_degraded = true;
+                critical_issues.push(format!("Cache: {}", e));
             }
             Err(_) => {
-                issues.push("Cache manager health check timeout".to_string());
-                is_degraded = true;
+                critical_issues.push("Cache health check timeout".to_string());
             }
         }
     }
     
-    // Check 3: Adapter health using the trait method
-    let adapter_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
-        let conn_mgr = handler.connection_manager.lock().await;
-        conn_mgr.check_health().await
-    }).await;
-    
-    match adapter_check {
-        Ok(Ok(())) => {
-            // Adapter is healthy
-        },
-        Ok(Err(e)) => {
-            issues.push(format!("Adapter: {}", e));
-            is_degraded = true;
-        }
-        Err(_) => {
-            issues.push("Adapter health check timeout".to_string());
-            is_degraded = true;
-        }
-    }
-    
-    // Check 4: Queue system health (for webhooks)
+    // NON-CRITICAL CHECK 1: Queue system health - only affects webhooks
     if let Some(webhook_integration) = handler.webhook_integration() {
         let queue_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), 
             webhook_integration.check_queue_health()
@@ -959,23 +963,24 @@ async fn check_app_health(
                 // Queue is healthy
             },
             Ok(Err(e)) => {
-                issues.push(e.to_string());
-                is_degraded = true;
+                non_critical_issues.push(format!("Webhooks: {}", e));
             }
             Err(_) => {
-                issues.push("Queue health check timeout".to_string());
-                is_degraded = true;
+                non_critical_issues.push("Webhook queue health check timeout".to_string());
             }
         }
     }
     
-    // Return appropriate status
-    if issues.is_empty() {
-        HealthStatus::Ok
-    } else if is_degraded {
-        HealthStatus::Degraded(issues)
+    // Return appropriate status based on critical vs non-critical failures
+    if !critical_issues.is_empty() {
+        // Critical component failure = Error (service unavailable)
+        HealthStatus::Error(critical_issues)
+    } else if !non_critical_issues.is_empty() {
+        // Only non-critical failures = Degraded (service works but some features don't)
+        HealthStatus::Degraded(non_critical_issues)
     } else {
-        HealthStatus::Error(issues)
+        // All components healthy
+        HealthStatus::Ok
     }
 }
 
@@ -1015,10 +1020,11 @@ pub async fn up(
     }
     
     // Return response maintaining backward compatibility
+    // Critical component failures return 503, non-critical failures return 200 
     let (status_code, status_text, header_value) = match health_status {
         HealthStatus::Ok => (StatusCode::OK, "OK", "OK"),
-        HealthStatus::Degraded(_) => (StatusCode::OK, "DEGRADED", "DEGRADED"),
-        HealthStatus::Error(_) => (StatusCode::SERVICE_UNAVAILABLE, "ERROR", "ERROR"), 
+        HealthStatus::Degraded(_) => (StatusCode::OK, "DEGRADED", "DEGRADED"), // Non-critical issues - WebSocket still works
+        HealthStatus::Error(_) => (StatusCode::SERVICE_UNAVAILABLE, "ERROR", "ERROR"), // Critical issues - WebSocket won't work
         HealthStatus::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "NOT_FOUND"),
     };
     
