@@ -199,4 +199,28 @@ impl QueueInterface for RedisQueueManager {
         }
         Ok(())
     }
+
+    async fn check_health(&self) -> crate::error::Result<()> {
+        let mut conn = self.redis_connection.lock().await;
+        
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            redis::cmd("PING").query_async::<String>(&mut *conn)
+        ).await {
+            Ok(Ok(response)) if response == "PONG" => Ok(()),
+            Ok(Ok(response)) => {
+                Err(crate::error::Error::Redis(format!(
+                    "Queue Redis PING returned unexpected response: {}", response
+                )))
+            }
+            Ok(Err(e)) => {
+                Err(crate::error::Error::Redis(format!(
+                    "Queue Redis connection failed: {}", e
+                )))
+            }
+            Err(_) => {
+                Err(crate::error::Error::RequestTimeout)
+            }
+        }
+    }
 }

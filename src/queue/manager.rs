@@ -103,4 +103,9 @@ impl QueueManager {
     pub async fn disconnect(&self) -> Result<()> {
         self.driver.disconnect().await
     }
+
+    /// Checks the health of the underlying queue driver.
+    pub async fn check_health(&self) -> Result<()> {
+        self.driver.check_health().await
+    }
 }

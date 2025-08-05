@@ -76,6 +76,14 @@ impl ConnectionHandler {
         &self.app_manager
     }
 
+    pub fn server_options(&self) -> &ServerOptions {
+        &self.server_options
+    }
+
+    pub fn webhook_integration(&self) -> &Option<Arc<WebhookIntegration>> {
+        &self.webhook_integration
+    }
+
     pub async fn handle_socket(&self, fut: upgrade::UpgradeFut, app_key: String) -> Result<()> {
         // Early validation and setup
         let app_config = match self.validate_and_get_app(&app_key).await {

@@ -1,5 +1,6 @@
 use crate::adapter::ConnectionHandler;
 use crate::app::config::App; // To access app limits
+use crate::error::HealthStatus;
 use crate::protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
 use crate::protocol::messages::{
     ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MessageData, PusherApiMessage,
@@ -10,7 +11,7 @@ use crate::websocket::SocketId;
 use axum::{
     Json,
     extract::{Path, Query, RawQuery, State}, // Added RawQuery
-    http::{HeaderMap, HeaderValue, Response, StatusCode, Uri, header}, // Added Uri
+    http::{HeaderMap, HeaderValue, StatusCode, Uri, header}, // Added Uri
     response::{IntoResponse, Response as AxumResponse},
 };
 use futures_util::future::join_all;
@@ -19,9 +20,11 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap, // Added BTreeMap
     sync::Arc,
+    time::Duration,
 };
 use sysinfo::System;
 use thiserror::Error;
+use tokio::time::timeout;
 use tracing::{debug, error, field, info, instrument, warn};
 
 // --- Custom Error Type ---
@@ -865,6 +868,138 @@ pub async fn terminate_user_connections(
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
+/// Internal health check function - performs comprehensive checks
+/// Uses timeouts to prevent hanging and avoid deadlocks
+async fn check_app_health(
+    handler: &Arc<ConnectionHandler>,
+    app_id: &str
+) -> HealthStatus {
+    let mut issues = Vec::new();
+    let mut is_degraded = false;
+    
+    // Check 1: App exists and is enabled (with timeout to prevent hanging)
+    let app_check = timeout(Duration::from_millis(500), 
+        handler.app_manager.find_by_id(app_id)
+    ).await;
+    
+    match app_check {
+        Ok(Ok(Some(app))) if app.enabled => {
+            // App exists and is enabled
+        },
+        Ok(Ok(Some(_))) => {
+            issues.push("App is disabled".to_string());
+            return HealthStatus::Error(issues);
+        }
+        Ok(Ok(None)) => {
+            return HealthStatus::NotFound;
+        }
+        Ok(Err(e)) => {
+            issues.push(format!("App manager error: {}", e));
+            is_degraded = true;
+        }
+        Err(_) => {
+            issues.push("App manager timeout (>500ms)".to_string());
+            return HealthStatus::Error(issues);
+        }
+    }
+    
+    // Check 2: Cache manager (optional check with very short timeout)
+    // Only check if cache is not configured as "none"
+    if handler.server_options().cache.driver != crate::options::CacheDriver::None {
+        let cache_check = timeout(Duration::from_millis(50), async {
+            match tokio::time::timeout(Duration::from_millis(25), 
+                handler.cache_manager.lock()
+            ).await {
+                Ok(_cache_mgr) => Ok(()), // Just checking we can acquire the lock
+                Err(_) => Err(())
+            }
+        }).await;
+        
+        if cache_check.is_err() || cache_check.unwrap().is_err() {
+            issues.push("Cache manager unresponsive".to_string());
+            is_degraded = true;
+        }
+    }
+    
+    // Check 3: Check adapter health using the trait method
+    let adapter_check = timeout(Duration::from_millis(200), async {
+        match tokio::time::timeout(Duration::from_millis(50), 
+            handler.connection_manager.lock()
+        ).await {
+            Ok(conn_mgr) => {
+                // Use the trait method - each adapter implements its own health check
+                conn_mgr.check_health().await
+            }
+            Err(_) => {
+                Err(crate::error::Error::Internal("Lock timeout".to_string()))
+            }
+        }
+    }).await;
+    
+    match adapter_check {
+        Ok(Ok(())) => {
+            // Adapter is healthy
+        },
+        Ok(Err(e)) => {
+            issues.push(format!("Adapter: {}", e));
+            is_degraded = true;
+        }
+        Err(_) => {
+            issues.push("Adapter health check timeout".to_string());
+            is_degraded = true;
+        }
+    }
+    
+    // Check 4: Queue system health (for webhooks)
+    if let Some(webhook_integration) = handler.webhook_integration() {
+        let queue_check = timeout(Duration::from_millis(500), 
+            webhook_integration.check_queue_health()
+        ).await;
+        
+        match queue_check {
+            Ok(Ok(())) => {
+                // Queue is healthy
+            },
+            Ok(Err(e)) => {
+                issues.push(e.to_string());
+                is_degraded = true;
+            }
+            Err(_) => {
+                issues.push("Queue health check timeout".to_string());
+                is_degraded = true;
+            }
+        }
+    }
+    
+    // Check 5: App Manager database backend health
+    let app_manager_check = timeout(Duration::from_millis(500), 
+        handler.app_manager.check_health()
+    ).await;
+    
+    match app_manager_check {
+        Ok(Ok(())) => {
+            // App manager is healthy
+        },
+        Ok(Err(e)) => {
+            issues.push(e.to_string());
+            is_degraded = true;
+        }
+        Err(_) => {
+            issues.push("App manager health check timeout".to_string());
+            is_degraded = true;
+        }
+    }
+    
+    // Return appropriate status
+    if issues.is_empty() {
+        HealthStatus::Ok
+    } else if is_degraded {
+        HealthStatus::Degraded(issues)
+    } else {
+        HealthStatus::Error(issues)
+    }
+}
+
 /// GET /up/{app_id}
 #[instrument(skip(handler), fields(app_id = %app_id))]
 pub async fn up(
@@ -872,21 +1007,53 @@ pub async fn up(
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
     debug!("Health check received for app_id: {}", app_id);
-    if handler.app_manager.find_by_id(&app_id).await?.is_none() {
-        warn!("Health check for non-existent app_id: {}", app_id);
+    
+    // Perform comprehensive health checks
+    let health_status = check_app_health(&handler, &app_id).await;
+    
+    // Log detailed issues if unhealthy
+    match &health_status {
+        HealthStatus::Ok => {
+            debug!("Health check passed for app {}", app_id);
+        }
+        HealthStatus::Degraded(reasons) => {
+            warn!(
+                "Health check degraded for app {}: {}",
+                app_id,
+                reasons.join(", ")
+            );
+        }
+        HealthStatus::Error(reasons) => {
+            error!(
+                "Health check failed for app {}: {}",
+                app_id,
+                reasons.join(", ")
+            );
+        }
+        HealthStatus::NotFound => {
+            warn!("Health check for non-existent app_id: {}", app_id);
+        }
     }
+    
+    // Record metrics if available (non-blocking)
     if handler.metrics.is_some() {
-        record_api_metrics(&handler, &app_id, 0, 2).await;
-    } else {
-        info!(
-            "Metrics system not available for health check for app_id: {}.",
-            app_id
-        );
+        record_api_metrics(&handler, &app_id, 0, 50).await;
     }
-    let response_val = Response::builder()
-        .status(StatusCode::OK)
-        .header("X-Health-Check", "OK")
-        .body("OK".to_string())?;
+    
+    // Return response maintaining backward compatibility
+    let (status_code, status_text, header_value) = match health_status {
+        HealthStatus::Ok => (StatusCode::OK, "OK", "OK"),
+        HealthStatus::Degraded(_) => (StatusCode::SERVICE_UNAVAILABLE, "DEGRADED", "DEGRADED"),
+        HealthStatus::Error(_) => (StatusCode::SERVICE_UNAVAILABLE, "ERROR", "ERROR"), 
+        HealthStatus::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "NOT_FOUND"),
+    };
+    
+    // Build response using the original format
+    let response_val = axum::http::Response::builder()
+        .status(status_code)
+        .header("X-Health-Check", header_value)
+        .body(status_text.to_string())?;
+    
     Ok(response_val)
 }
 
