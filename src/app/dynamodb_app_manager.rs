@@ -499,7 +499,7 @@ impl AppManager for DynamoDbAppManager {
 
     async fn check_health(&self) -> Result<()> {
         match tokio::time::timeout(
-            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
             self.client.list_tables().send()
         ).await {
             Ok(Ok(_)) => Ok(()),

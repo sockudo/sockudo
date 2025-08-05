@@ -607,7 +607,7 @@ impl AppManager for MySQLAppManager {
 
     async fn check_health(&self) -> Result<()> {
         match tokio::time::timeout(
-            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
             sqlx::query("SELECT 1").fetch_one(&self.pool)
         ).await {
             Ok(Ok(_)) => Ok(()),
