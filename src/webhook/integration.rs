@@ -368,8 +368,19 @@ impl WebhookIntegration {
     /// Check the health of the queue manager used by webhook integration
     pub async fn check_queue_health(&self) -> Result<()> {
         if let Some(queue_manager_arc) = &self.queue_manager {
-            let queue_manager = queue_manager_arc.lock().await;
-            queue_manager.check_health().await
+            // Perform the health check within a timeout to avoid holding the lock too long
+            let health_check_result = tokio::time::timeout(
+                std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
+                async {
+                    let queue_manager = queue_manager_arc.lock().await;
+                    queue_manager.check_health().await
+                }
+            ).await;
+            
+            match health_check_result {
+                Ok(result) => result,
+                Err(_) => Err(crate::error::Error::RequestTimeout)
+            }
         } else {
             // If no queue manager is configured, consider it healthy
             Ok(())

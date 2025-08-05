@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error};
 
 pub struct RedisQueueManager {
+    redis_client: redis::Client,
     redis_connection: Arc<Mutex<MultiplexedConnection>>,
     // Store Arc'd callbacks to allow cloning them into worker tasks safely
     job_processors: dashmap::DashMap<String, ArcJobProcessorFn, ahash::RandomState>,
@@ -39,6 +40,7 @@ impl RedisQueueManager {
             })?; // Use custom error type
 
         Ok(Self {
+            redis_client: client,
             redis_connection: Arc::new(Mutex::new(connection)),
             job_processors: dashmap::DashMap::with_hasher(ahash::RandomState::new()),
             prefix: prefix.to_string(),
@@ -201,11 +203,13 @@ impl QueueInterface for RedisQueueManager {
     }
 
     async fn check_health(&self) -> crate::error::Result<()> {
-        let mut conn = self.redis_connection.lock().await;
-        
+        // Create a separate connection for health check to avoid lock contention
         match tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            redis::cmd("PING").query_async::<String>(&mut *conn)
+            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
+            async {
+                let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+                redis::cmd("PING").query_async::<String>(&mut conn).await
+            }
         ).await {
             Ok(Ok(response)) if response == "PONG" => Ok(()),
             Ok(Ok(response)) => {

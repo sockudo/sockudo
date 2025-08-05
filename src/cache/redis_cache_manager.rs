@@ -163,16 +163,25 @@ impl CacheManager for RedisCacheManager {
         Ok(())
     }
 
-    /// Check if the Redis connection is healthy
-    async fn is_healthy(&self) -> Result<bool> {
-        // Try a PING command to verify Redis is responsive
-        let result: redis::RedisResult<String> = redis::cmd("PING")
-            .query_async(&mut self.connection.clone())
-            .await;
-
-        match result {
-            Ok(response) => Ok(response == "PONG"),
-            Err(_) => Ok(false),
+    async fn check_health(&self) -> Result<()> {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
+            redis::cmd("PING").query_async::<String>(&mut self.connection.clone())
+        ).await {
+            Ok(Ok(response)) if response == "PONG" => Ok(()),
+            Ok(Ok(response)) => {
+                Err(crate::error::Error::Redis(format!(
+                    "Cache Redis PING returned unexpected response: {}", response
+                )))
+            }
+            Ok(Err(e)) => {
+                Err(crate::error::Error::Redis(format!(
+                    "Cache Redis connection failed: {}", e
+                )))
+            }
+            Err(_) => {
+                Err(crate::error::Error::RequestTimeout)
+            }
         }
     }
     async fn ttl(&mut self, key: &str) -> Result<Option<Duration>> {

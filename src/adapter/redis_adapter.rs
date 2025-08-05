@@ -891,7 +891,7 @@ impl ConnectionManager for RedisAdapter {
         
         // Use PING command with short timeout
         match tokio::time::timeout(
-            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
             redis::cmd("PING").query_async::<String>(&mut conn)
         ).await {
             Ok(Ok(response)) if response == "PONG" => Ok(()),
