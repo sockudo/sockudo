@@ -164,12 +164,12 @@ impl CacheManager for RedisClusterCacheManager {
         ).await {
             Ok(Ok(response)) if response == "PONG" => Ok(()),
             Ok(Ok(response)) => {
-                Err(crate::error::Error::Redis(format!(
+                Err(crate::error::Error::Cache(format!(
                     "Cache Redis Cluster PING returned unexpected response: {}", response
                 )))
             }
             Ok(Err(e)) => {
-                Err(crate::error::Error::Redis(format!(
+                Err(crate::error::Error::Cache(format!(
                     "Cache Redis Cluster connection failed: {}", e
                 )))
             }
