@@ -109,6 +109,10 @@ impl QueueInterface for MemoryQueueManager {
         self.queues.clear();
         Ok(())
     }
+
+    async fn check_health(&self) -> crate::error::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
