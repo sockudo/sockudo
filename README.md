@@ -966,7 +966,7 @@ For more in-depth information:
 
 ## 📄 License
 
-This project is licensed under the **AGPL-3.0 License** - see the [LICENSE](https://www.google.com/search?q=LICENSE) file for details. (Updated based on the badge at the top of your README).
+This project is licensed under the **MIT License** - see the [LICENSE](https://www.google.com/search?q=LICENSE) file for details. (Updated based on the badge at the top of your README).
 
 -----
 
