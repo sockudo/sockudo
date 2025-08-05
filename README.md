@@ -1,8 +1,7 @@
 # Sockudo 🚀
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/RustNSparks/sockudo/release.yml?branch=main)](https://github.com/RustNSparks/sockudo/actions)
 [![Crates.io](https://img.shields.io/crates/v/sockudo)](https://crates.io/crates/sockudo)
-[![License](https://img.shields.io/badge/License-AGPL-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust Version](https://img.shields.io/badge/rust-1.85+-blue.svg)](https://www.rust-lang.org)
 [![WebSocket](https://img.shields.io/badge/websocket-RFC%206455-green.svg)](https://tools.ietf.org/html/rfc6455)
 
