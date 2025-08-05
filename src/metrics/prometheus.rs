@@ -246,6 +246,10 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        // Reset gauge metrics to 0 on startup - they represent current state, not historical
+        connected_sockets.reset();
+        active_channels.reset();
+
         Self {
             prefix,
             port,
