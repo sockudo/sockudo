@@ -966,7 +966,7 @@ For more in-depth information:
 
 ## 📄 License
 
-This project is licensed under the **MIT License** - see the [LICENSE](https://github.com/RustNSparks/sockudo/LICENSE) file for details.
+This project is licensed under the **MIT License** - see the [LICENSE](https://github.com/RustNSparks/sockudo/blob/master/LICENSE) file for details.
 
 -----
 
