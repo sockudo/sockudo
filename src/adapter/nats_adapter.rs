@@ -438,6 +438,7 @@ impl NatsAdapter {
         Ok(())
     }
 
+
     pub async fn get_node_count(&self) -> Result<usize> {
 
         // If nodes_number is explicitly set, use that value
@@ -861,5 +862,24 @@ impl ConnectionManager for NatsAdapter {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    async fn check_health(&self) -> Result<()> {
+        // Check if the NATS client connection is still active
+        // NATS client maintains internal health state
+        let state = self.client.connection_state();
+        match state {
+            async_nats::connection::State::Connected => Ok(()),
+            async_nats::connection::State::Disconnected => {
+                Err(crate::error::Error::Connection(
+                    "NATS client is disconnected".to_string()
+                ))
+            }
+            other_state => {
+                Err(crate::error::Error::Connection(format!(
+                    "NATS client in transitional state: {:?}", other_state
+                )))
+            }
+        }
     }
 }

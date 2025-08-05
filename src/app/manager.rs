@@ -26,4 +26,7 @@ pub trait AppManager: Send + Sync + 'static {
 
     /// Get an app by its ID
     async fn find_by_id(&self, app_id: &str) -> Result<Option<App>>;
+
+    /// Health check for the app manager
+    async fn check_health(&self) -> Result<()>;
 }

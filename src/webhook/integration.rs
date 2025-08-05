@@ -364,6 +364,17 @@ impl WebhookIntegration {
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
         self.add_webhook("webhooks", job_data).await
     }
+
+    /// Check the health of the queue manager used by webhook integration
+    pub async fn check_queue_health(&self) -> Result<()> {
+        if let Some(queue_manager_arc) = &self.queue_manager {
+            let queue_manager = queue_manager_arc.lock().await;
+            queue_manager.check_health().await
+        } else {
+            // If no queue manager is configured, consider it healthy
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
