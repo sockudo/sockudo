@@ -99,10 +99,6 @@ impl CacheManager for MemoryCacheManager {
         Ok(())
     }
 
-    async fn is_healthy(&self) -> Result<bool> {
-        // In-memory Moka cache is generally always "healthy" as long as the application is running.
-        Ok(true)
-    }
 
     /// Returns the configured default TTL of the cache if a key exists,
     /// or None if the key doesn't exist or no default TTL is configured.
