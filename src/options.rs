@@ -900,9 +900,14 @@ impl ServerOptions {
             self.host = host;
         }
         self.port = parse_env::<u16>("PORT", self.port);
-        self.shutdown_grace_period = parse_env::<u64>("SHUTDOWN_GRACE_PERIOD", self.shutdown_grace_period);
-        self.user_authentication_timeout = parse_env::<u64>("USER_AUTHENTICATION_TIMEOUT", self.user_authentication_timeout);
-        self.websocket_max_payload_kb = parse_env::<u32>("WEBSOCKET_MAX_PAYLOAD_KB", self.websocket_max_payload_kb);
+        self.shutdown_grace_period =
+            parse_env::<u64>("SHUTDOWN_GRACE_PERIOD", self.shutdown_grace_period);
+        self.user_authentication_timeout = parse_env::<u64>(
+            "USER_AUTHENTICATION_TIMEOUT",
+            self.user_authentication_timeout,
+        );
+        self.websocket_max_payload_kb =
+            parse_env::<u32>("WEBSOCKET_MAX_PAYLOAD_KB", self.websocket_max_payload_kb);
         if let Ok(id) = std::env::var("INSTANCE_PROCESS_ID") {
             self.instance.process_id = id;
         }
@@ -934,7 +939,8 @@ impl ServerOptions {
         if let Ok(host) = std::env::var("DATABASE_REDIS_HOST") {
             self.database.redis.host = host;
         }
-        self.database.redis.port = parse_env::<u16>("DATABASE_REDIS_PORT", self.database.redis.port);
+        self.database.redis.port =
+            parse_env::<u16>("DATABASE_REDIS_PORT", self.database.redis.port);
         if let Ok(password) = std::env::var("DATABASE_REDIS_PASSWORD") {
             self.database.redis.password = Some(password);
         }
@@ -947,7 +953,8 @@ impl ServerOptions {
         if let Ok(host) = std::env::var("DATABASE_MYSQL_HOST") {
             self.database.mysql.host = host;
         }
-        self.database.mysql.port = parse_env::<u16>("DATABASE_MYSQL_PORT", self.database.mysql.port);
+        self.database.mysql.port =
+            parse_env::<u16>("DATABASE_MYSQL_PORT", self.database.mysql.port);
         if let Ok(user) = std::env::var("DATABASE_MYSQL_USERNAME") {
             self.database.mysql.username = user;
         }
@@ -965,7 +972,8 @@ impl ServerOptions {
         if let Ok(host) = std::env::var("DATABASE_POSTGRES_HOST") {
             self.database.postgres.host = host;
         }
-        self.database.postgres.port = parse_env::<u16>("DATABASE_POSTGRES_PORT", self.database.postgres.port);
+        self.database.postgres.port =
+            parse_env::<u16>("DATABASE_POSTGRES_PORT", self.database.postgres.port);
         if let Ok(user) = std::env::var("DATABASE_POSTGRES_USERNAME") {
             self.database.postgres.username = user;
         }
@@ -999,7 +1007,10 @@ impl ServerOptions {
             self.adapter.cluster.nodes = node_list.clone();
             self.queue.redis_cluster.nodes = node_list;
         }
-        self.queue.redis_cluster.concurrency = parse_env::<u32>("REDIS_CLUSTER_QUEUE_CONCURRENCY", self.queue.redis_cluster.concurrency);
+        self.queue.redis_cluster.concurrency = parse_env::<u32>(
+            "REDIS_CLUSTER_QUEUE_CONCURRENCY",
+            self.queue.redis_cluster.concurrency,
+        );
         if let Ok(prefix) = std::env::var("REDIS_CLUSTER_QUEUE_PREFIX") {
             self.queue.redis_cluster.prefix = Some(prefix);
         }
@@ -1032,17 +1043,31 @@ impl ServerOptions {
         }
 
         // --- Rate Limiter ---
-        self.rate_limiter.enabled = parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
-        self.rate_limiter.api_rate_limit.max_requests = parse_env::<u32>("RATE_LIMITER_API_MAX_REQUESTS", self.rate_limiter.api_rate_limit.max_requests);
-        self.rate_limiter.api_rate_limit.window_seconds = parse_env::<u64>("RATE_LIMITER_API_WINDOW_SECONDS", self.rate_limiter.api_rate_limit.window_seconds);
+        self.rate_limiter.enabled =
+            parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
+        self.rate_limiter.api_rate_limit.max_requests = parse_env::<u32>(
+            "RATE_LIMITER_API_MAX_REQUESTS",
+            self.rate_limiter.api_rate_limit.max_requests,
+        );
+        self.rate_limiter.api_rate_limit.window_seconds = parse_env::<u64>(
+            "RATE_LIMITER_API_WINDOW_SECONDS",
+            self.rate_limiter.api_rate_limit.window_seconds,
+        );
         if let Some(hops) = parse_env_optional::<u32>("RATE_LIMITER_API_TRUST_HOPS") {
             self.rate_limiter.api_rate_limit.trust_hops = Some(hops);
         }
-        self.rate_limiter.websocket_rate_limit.max_requests = parse_env::<u32>("RATE_LIMITER_WS_MAX_REQUESTS", self.rate_limiter.websocket_rate_limit.max_requests);
-        self.rate_limiter.websocket_rate_limit.window_seconds = parse_env::<u64>("RATE_LIMITER_WS_WINDOW_SECONDS", self.rate_limiter.websocket_rate_limit.window_seconds);
+        self.rate_limiter.websocket_rate_limit.max_requests = parse_env::<u32>(
+            "RATE_LIMITER_WS_MAX_REQUESTS",
+            self.rate_limiter.websocket_rate_limit.max_requests,
+        );
+        self.rate_limiter.websocket_rate_limit.window_seconds = parse_env::<u64>(
+            "RATE_LIMITER_WS_WINDOW_SECONDS",
+            self.rate_limiter.websocket_rate_limit.window_seconds,
+        );
 
         // --- Queue: Redis ---
-        self.queue.redis.concurrency = parse_env::<u32>("QUEUE_REDIS_CONCURRENCY", self.queue.redis.concurrency);
+        self.queue.redis.concurrency =
+            parse_env::<u32>("QUEUE_REDIS_CONCURRENCY", self.queue.redis.concurrency);
         if let Ok(prefix) = std::env::var("QUEUE_REDIS_PREFIX") {
             self.queue.redis.prefix = Some(prefix);
         }
@@ -1051,18 +1076,28 @@ impl ServerOptions {
         if let Ok(region) = std::env::var("QUEUE_SQS_REGION") {
             self.queue.sqs.region = region;
         }
-        self.queue.sqs.visibility_timeout = parse_env::<i32>("QUEUE_SQS_VISIBILITY_TIMEOUT", self.queue.sqs.visibility_timeout);
-        self.queue.sqs.max_messages = parse_env::<i32>("QUEUE_SQS_MAX_MESSAGES", self.queue.sqs.max_messages);
-        self.queue.sqs.wait_time_seconds = parse_env::<i32>("QUEUE_SQS_WAIT_TIME_SECONDS", self.queue.sqs.wait_time_seconds);
-        self.queue.sqs.concurrency = parse_env::<u32>("QUEUE_SQS_CONCURRENCY", self.queue.sqs.concurrency);
+        self.queue.sqs.visibility_timeout = parse_env::<i32>(
+            "QUEUE_SQS_VISIBILITY_TIMEOUT",
+            self.queue.sqs.visibility_timeout,
+        );
+        self.queue.sqs.max_messages =
+            parse_env::<i32>("QUEUE_SQS_MAX_MESSAGES", self.queue.sqs.max_messages);
+        self.queue.sqs.wait_time_seconds = parse_env::<i32>(
+            "QUEUE_SQS_WAIT_TIME_SECONDS",
+            self.queue.sqs.wait_time_seconds,
+        );
+        self.queue.sqs.concurrency =
+            parse_env::<u32>("QUEUE_SQS_CONCURRENCY", self.queue.sqs.concurrency);
         self.queue.sqs.fifo = parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
         if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
             self.queue.sqs.endpoint_url = Some(endpoint);
         }
 
         // --- Webhooks ---
-        self.webhooks.batching.enabled = parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
-        self.webhooks.batching.duration = parse_env::<u64>("WEBHOOK_BATCHING_DURATION", self.webhooks.batching.duration);
+        self.webhooks.batching.enabled =
+            parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
+        self.webhooks.batching.duration =
+            parse_env::<u64>("WEBHOOK_BATCHING_DURATION", self.webhooks.batching.duration);
 
         // --- NATS Adapter ---
         if let Ok(servers) = std::env::var("NATS_SERVERS") {
@@ -1077,8 +1112,14 @@ impl ServerOptions {
         if let Ok(token) = std::env::var("NATS_TOKEN") {
             self.adapter.nats.token = Some(token);
         }
-        self.adapter.nats.connection_timeout_ms = parse_env::<u64>("NATS_CONNECTION_TIMEOUT_MS", self.adapter.nats.connection_timeout_ms);
-        self.adapter.nats.request_timeout_ms = parse_env::<u64>("NATS_REQUEST_TIMEOUT_MS", self.adapter.nats.request_timeout_ms);
+        self.adapter.nats.connection_timeout_ms = parse_env::<u64>(
+            "NATS_CONNECTION_TIMEOUT_MS",
+            self.adapter.nats.connection_timeout_ms,
+        );
+        self.adapter.nats.request_timeout_ms = parse_env::<u64>(
+            "NATS_REQUEST_TIMEOUT_MS",
+            self.adapter.nats.request_timeout_ms,
+        );
 
         // --- CORS ---
         if let Ok(origins) = std::env::var("CORS_ORIGINS") {

@@ -1,0 +1,101 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6380"
+    networks:
+      - sockudo-test
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  sockudo-node1:
+    build:
+      context: ./
+      dockerfile: ./test/multinode/Dockerfile.multinode
+    volumes:
+      - ./target:/app/target:ro
+      - ./config:/app/config:ro
+    environment:
+      - DEBUG=true
+      - ADAPTER_DRIVER=redis
+      - ADAPTER_REDIS_URL=redis://redis:6380/0
+      - ADAPTER_REDIS_PREFIX="test:"
+      - ADAPTER_REQUEST_TIMEOUT=3000
+      - PORT=6002
+      - HOST=0.0.0.0
+      - METRICS_ENABLED=true
+      - METRICS_PORT=9602
+      - APP_MANAGER_DRIVER=memory
+      - CACHE_DRIVER=memory
+      - QUEUE_DRIVER=memory
+      - RATE_LIMITER_DRIVER=memory
+      - SHUTDOWN_GRACE_PERIOD=1
+    ports:
+      - "6002:6002"
+      - "9602:9602"
+    networks:
+      - sockudo-test
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: /app/target/debug/sockudo
+    stdin_open: true
+    tty: true
+
+  sockudo-node2:
+    build:
+      context: ./
+      dockerfile: ./test/multinode/Dockerfile.multinode
+    volumes:
+      - ./target:/app/target:ro
+      - ./config:/app/config:ro
+    environment:
+      - DEBUG=true
+      - ADAPTER_DRIVER=redis
+      - ADAPTER_REDIS_URL=redis://redis:6380/0
+      - ADAPTER_REDIS_PREFIX="test:"
+      - ADAPTER_REQUEST_TIMEOUT=3000
+      - PORT=6003
+      - HOST=0.0.0.0
+      - METRICS_ENABLED=true
+      - METRICS_PORT=9603
+      - APP_MANAGER_DRIVER=memory
+      - CACHE_DRIVER=memory
+      - QUEUE_DRIVER=memory
+      - RATE_LIMITER_DRIVER=memory
+      - SHUTDOWN_GRACE_PERIOD=1
+    ports:
+      - "6003:6003"
+      - "9603:9603"
+    networks:
+      - sockudo-test
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: /app/target/debug/sockudo
+    stdin_open: true
+    tty: true
+
+  nginx:
+    build:
+      context: ./
+      dockerfile: ./test/multinode/Dockerfile.nginx
+    ports:
+      - "82:82"
+      - "444:444"
+    networks:
+      - sockudo-test
+    depends_on:
+      - sockudo-node1
+      - sockudo-node2
+    volumes:
+      - ./test/multinode/nginx-multinode.conf:/etc/nginx/nginx.conf:ro
+      - ./test/multinode/certs/nginx.crt:/etc/nginx/certs/nginx.crt
+      - ./test/multinode/certs/nginx.key:/etc/nginx/certs/nginx.key
+
+networks:
+  sockudo-test:
+    driver: bridge

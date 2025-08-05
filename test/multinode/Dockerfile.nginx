@@ -1,0 +1,16 @@
+FROM nginx:alpine
+
+# Install openssl to generate certificates
+RUN apk add --no-cache openssl
+
+# Generate self-signed certificate for nginx
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/ssl/private/nginx.key \
+    -out /etc/ssl/certs/nginx.crt \
+    -subj "/C=US/ST=State/L=City/O=Sockudo/CN=localhost"
+
+# Set proper permissions
+RUN chmod 644 /etc/ssl/certs/nginx.crt && \
+    chmod 600 /etc/ssl/private/nginx.key
+
+CMD ["nginx", "-g", "daemon off;"]

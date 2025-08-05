@@ -23,12 +23,13 @@ impl ConnectionHandler {
         let message_size = serde_json::to_string(&message).unwrap_or_default().len();
 
         // Send the message
-        let result = self
-            .connection_manager
-            .lock()
-            .await
+        let mut conn_manager = self.connection_manager.lock().await;
+        let result = conn_manager
             .send_message(app_id, socket_id, message)
             .await;
+        
+        // Release the lock before metrics
+        drop(conn_manager);
 
         // Track metrics if message was sent successfully
         if result.is_ok() {
