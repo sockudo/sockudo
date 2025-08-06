@@ -613,12 +613,34 @@ impl ConnectionManager for RedisAdapter {
         };
 
         let broadcast_json = serde_json::to_string(&broadcast)?;
-        let mut conn = self.events_connection.clone();
-        let _subscriber_count: i32 = conn.publish(&self.broadcast_channel, &broadcast_json)
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to publish broadcast: {}", e)))?;
-
-        Ok(())
+        
+        // Retry broadcast with exponential backoff to handle connection recovery
+        let mut retry_delay = 100u64; // Start with 100ms
+        const MAX_RETRIES: u32 = 3;
+        const MAX_RETRY_DELAY: u64 = 1000; // Max 1 second
+        
+        for attempt in 0..=MAX_RETRIES {
+            let mut conn = self.events_connection.clone();
+            match conn.publish::<_, _, i32>(&self.broadcast_channel, &broadcast_json).await {
+                Ok(_subscriber_count) => {
+                    if attempt > 0 {
+                        debug!("Broadcast succeeded on retry attempt {}", attempt);
+                    }
+                    return Ok(());
+                },
+                Err(e) => {
+                    if attempt == MAX_RETRIES {
+                        return Err(Error::Redis(format!("Failed to publish broadcast after {} attempts: {}", MAX_RETRIES + 1, e)));
+                    }
+                    
+                    warn!("Broadcast attempt {} failed: {}, retrying in {}ms", attempt + 1, e, retry_delay);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                    retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+                }
+            }
+        }
+        
+        unreachable!() // Should never reach here due to early return or final attempt error
     }
 
     async fn get_channel_members(
