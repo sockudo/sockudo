@@ -95,6 +95,7 @@ services:
       - ./test/multinode/nginx-multinode.conf:/etc/nginx/nginx.conf:ro
       - ./test/multinode/certs/nginx.crt:/etc/nginx/certs/nginx.crt
       - ./test/multinode/certs/nginx.key:/etc/nginx/certs/nginx.key
+      - ./test/multinode/client/index.html:/usr/share/nginx/html/client/index.html:ro
 
 networks:
   sockudo-test:
