@@ -65,6 +65,7 @@ pub struct RedisAdapter {
     pub horizontal: Arc<Mutex<HorizontalAdapter>>,
     pub client: redis::Client,
     pub connection: redis::aio::MultiplexedConnection,
+    pub events_connection: redis::aio::ConnectionManager, // For events API broadcasts with auto-reconnect
     pub prefix: String,
     pub broadcast_channel: String,
     pub request_channel: String,
@@ -87,6 +88,16 @@ impl RedisAdapter {
         }
         .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
 
+        // Create ConnectionManager specifically for events API broadcasts (auto-reconnect)
+        let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
+            .set_number_of_retries(5)
+            .set_exponent_base(2)
+            .set_factor(500)
+            .set_max_delay(5000);
+        
+        let events_connection = client.get_connection_manager_with_config(connection_manager_config).await
+            .map_err(|e| Error::Redis(format!("Failed to create Redis connection manager for events: {}", e)))?;
+
         let broadcast_channel = format!("{}:{}", config.prefix, BROADCAST_SUFFIX);
         let request_channel = format!("{}:{}", config.prefix, REQUESTS_SUFFIX);
         let response_channel = format!("{}:{}", config.prefix, RESPONSES_SUFFIX);
@@ -95,6 +106,7 @@ impl RedisAdapter {
             horizontal: Arc::new(Mutex::new(horizontal)),
             client,
             connection,
+            events_connection,
             prefix: config.prefix.clone(),
             broadcast_channel,
             request_channel,
@@ -328,32 +340,47 @@ impl RedisAdapter {
         };
 
         tokio::spawn(async move {
-            let mut pubsub = match sub_client.get_async_pubsub().await {
-                Ok(pubsub) => pubsub,
-                Err(e) => {
-                    error!("Failed to get pubsub connection: {}", e);
-                    return;
+            let mut retry_delay = 500u64; // Start with 500ms delay
+            const MAX_RETRY_DELAY: u64 = 10_000; // Max 10 seconds
+            
+            loop {
+                debug!("Attempting to establish pub/sub connection...");
+                
+                let mut pubsub = match sub_client.get_async_pubsub().await {
+                    Ok(pubsub) => {
+                        retry_delay = 500; // Reset retry delay on success
+                        debug!("Pub/sub connection established successfully");
+                        pubsub
+                    },
+                    Err(e) => {
+                        error!("Failed to get pubsub connection: {}, retrying in {}ms", e, retry_delay);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                        retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+                        continue;
+                    }
+                };
+
+                if let Err(e) = pubsub
+                    .subscribe(&[&broadcast_channel, &request_channel, &response_channel])
+                    .await
+                {
+                    error!("Failed to subscribe to channels: {}, retrying in {}ms", e, retry_delay);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                    retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+                    continue;
                 }
-            };
 
-            if let Err(e) = pubsub
-                .subscribe(&[&broadcast_channel, &request_channel, &response_channel])
-                .await
-            {
-                error!("Failed to subscribe to channels: {}", e);
-                return;
-            }
+                debug!(
+                    "Redis adapter listening on channels: {}, {}, {}",
+                    broadcast_channel,
+                    request_channel,
+                    response_channel.clone()
+                );
 
-            debug!(
-                "Redis adapter listening on channels: {}, {}, {}",
-                broadcast_channel,
-                request_channel,
-                response_channel.clone()
-            );
+                let mut message_stream = pubsub.on_message();
+                let mut connection_broken = false;
 
-            let mut message_stream = pubsub.on_message();
-
-            while let Some(msg) = message_stream.next().await {
+                while let Some(msg) = message_stream.next().await {
                 let channel: String = msg.get_channel_name().to_string();
                 let payload_result: redis::RedisResult<String> = msg.get_payload();
 
@@ -433,8 +460,24 @@ impl RedisAdapter {
                             }
                         }
                     });
+                } else {
+                    // Error getting payload - connection might be broken
+                    warn!("Error getting message payload: {:?}", payload_result);
+                    connection_broken = true;
+                    break;
                 }
             }
+            
+            if connection_broken {
+                warn!("Pub/sub connection broken, reconnecting in {}ms...", retry_delay);
+                tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+            } else {
+                warn!("Pub/sub message stream ended unexpectedly, reconnecting...");
+            }
+            
+            // Connection ended, will retry in outer loop
+        }
         });
 
         Ok(())
@@ -570,7 +613,7 @@ impl ConnectionManager for RedisAdapter {
         };
 
         let broadcast_json = serde_json::to_string(&broadcast)?;
-        let mut conn = self.connection.clone();
+        let mut conn = self.events_connection.clone();
         let _subscriber_count: i32 = conn.publish(&self.broadcast_channel, &broadcast_json)
             .await
             .map_err(|e| Error::Redis(format!("Failed to publish broadcast: {}", e)))?;
