@@ -889,25 +889,17 @@ impl ConnectionManager for RedisAdapter {
     async fn check_health(&self) -> Result<()> {
         let mut conn = self.connection.clone();
         
-        // Use PING command with short timeout
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
-            redis::cmd("PING").query_async::<String>(&mut conn)
-        ).await {
-            Ok(Ok(response)) if response == "PONG" => Ok(()),
-            Ok(Ok(response)) => {
-                Err(crate::error::Error::Redis(format!(
-                    "PING returned unexpected response: {}", response
-                )))
-            }
-            Ok(Err(e)) => {
-                Err(crate::error::Error::Redis(format!(
-                    "Connection failed: {}", e
-                )))
-            }
-            Err(_) => {
-                Err(crate::error::Error::RequestTimeout)
-            }
+        let response = redis::cmd("PING").query_async::<String>(&mut conn).await
+            .map_err(|e| crate::error::Error::Redis(format!(
+                "Connection failed: {}", e
+            )))?;
+        
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(crate::error::Error::Redis(format!(
+                "PING returned unexpected response: {}", response
+            )))
         }
     }
 }

@@ -462,20 +462,11 @@ impl QueueInterface for SqsQueueManager {
     }
 
     async fn check_health(&self) -> crate::error::Result<()> {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
-            self.client.list_queues().send()
-        ).await {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => {
-                Err(crate::error::Error::Queue(format!(
-                    "Queue SQS connection failed: {}", e
-                )))
-            }
-            Err(_) => {
-                Err(crate::error::Error::RequestTimeout)
-            }
-        }
+        self.client.list_queues().send().await
+            .map_err(|e| crate::error::Error::Queue(format!(
+                "Queue SQS connection failed: {}", e
+            )))?;
+        Ok(())
     }
 }
 

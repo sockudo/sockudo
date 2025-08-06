@@ -498,19 +498,10 @@ impl AppManager for DynamoDbAppManager {
     }
 
     async fn check_health(&self) -> Result<()> {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
-            self.client.list_tables().send()
-        ).await {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => {
-                Err(crate::error::Error::Internal(format!(
-                    "App manager DynamoDB connection failed: {}", e
-                )))
-            }
-            Err(_) => {
-                Err(crate::error::Error::RequestTimeout)
-            }
-        }
+        self.client.list_tables().send().await
+            .map_err(|e| crate::error::Error::Internal(format!(
+                "App manager DynamoDB connection failed: {}", e
+            )))?;
+        Ok(())
     }
 }
