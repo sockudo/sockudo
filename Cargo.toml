@@ -35,7 +35,7 @@ chrono = "^0.4.41"
 sysinfo = "^0.36.1"
 async-trait = "0.1.83"
 redis = { version = "^0.32.4", features = ["tokio-comp", "json", "cluster", "cluster-async", "tls-rustls", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
-sqlx = { version = "0.8.3", features = ["runtime-tokio", "mysql", "postgres"] }
+sqlx = { version = "0.8.3", features = ["runtime-tokio-rustls", "mysql", "postgres", "tls-rustls"] }
 aws-config = { version = "^1.6", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1.71.1"
 urlencoding = "2.1.3"
@@ -44,7 +44,7 @@ tower-layer = "0.3.3"
 tower-service = "0.3.3"
 prometheus = "0.14.0"
 moka = { version = "0.12.10", features = ["future"] }
-reqwest = { version = "0.12.15", features = ["json"] }
+reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls", "rustls-tls-webpki-roots"] }
 aws-sdk-sqs = "1.65.0"
 async-nats = "0.42.0"
 aws-sdk-lambda = "1.76.0"
