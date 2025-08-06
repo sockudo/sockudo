@@ -606,20 +606,11 @@ impl AppManager for MySQLAppManager {
     }
 
     async fn check_health(&self) -> Result<()> {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
-            sqlx::query("SELECT 1").fetch_one(&self.pool)
-        ).await {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => {
-                Err(crate::error::Error::Internal(format!(
-                    "App manager MySQL connection failed: {}", e
-                )))
-            }
-            Err(_) => {
-                Err(crate::error::Error::RequestTimeout)
-            }
-        }
+        sqlx::query("SELECT 1").fetch_one(&self.pool).await
+            .map_err(|e| crate::error::Error::Internal(format!(
+                "App manager MySQL connection failed: {}", e
+            )))?;
+        Ok(())
     }
 }
 
