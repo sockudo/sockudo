@@ -11,6 +11,7 @@
     <style>
         .message-log {
             overflow-y: auto;
+            min-height: 0; /* Allow flexbox to shrink */
         }
         .message-log::-webkit-scrollbar {
             width: 8px;
@@ -95,9 +96,9 @@
         </div>
 
         <!-- Main Content -->
-        <div class="flex-1 p-4 flex flex-col">
+        <div class="flex-1 p-4 flex flex-col h-screen">
             <!-- Broadcast Section -->
-            <div class="bg-white rounded-lg shadow-md p-4 mb-4">
+            <div class="bg-white rounded-lg shadow-md p-4 mb-4 flex-shrink-0">
                 <div class="flex gap-2">
                     <select id="broadcast-node" class="px-3 py-2 border rounded-md text-sm">
                         <option value="1">Node 1</option>
@@ -113,10 +114,10 @@
             </div>
 
             <!-- Connection Controls -->
-            <div class="grid grid-cols-2 gap-4 flex-1">
+            <div class="grid grid-cols-2 gap-4 flex-1 min-h-0">
                 <!-- Node 1 Panel -->
-                <div class="bg-white rounded-lg shadow-md p-4 flex flex-col">
-                    <div class="flex justify-between items-center mb-3">
+                <div class="bg-white rounded-lg shadow-md p-4 flex flex-col min-h-0">
+                    <div class="flex justify-between items-center mb-3 flex-shrink-0">
                         <h2 class="text-base font-semibold text-gray-700">Node 1</h2>
                         <div class="flex items-center gap-2">
                             <span id="node1-status" class="w-2 h-2 bg-red-500 rounded-full"></span>
@@ -124,8 +125,8 @@
                         </div>
                     </div>
                     
-                    <div class="flex flex-col flex-1">
-                        <div class="flex gap-1 mb-2">
+                    <div class="flex flex-col flex-1 min-h-0">
+                        <div class="flex gap-1 mb-2 flex-shrink-0">
                             <button id="node1-connect" onclick="toggleConnection(1)" 
                                     class="flex-1 bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600 transition">
                                 Connect
@@ -137,11 +138,11 @@
                             </button>
                         </div>
                         
-                        <div class="message-log bg-gray-50 rounded p-2 text-xs flex-1 mb-2" id="node1-messages">
+                        <div class="message-log bg-gray-50 rounded p-2 text-xs flex-1 mb-2 min-h-0" id="node1-messages">
                             <div class="text-gray-400">Not connected</div>
                         </div>
                         
-                        <div class="flex gap-1">
+                        <div class="flex gap-1 flex-shrink-0">
                             <input type="text" id="node1-message" placeholder="Type a message..." 
                                    class="flex-1 px-2 py-1 border rounded text-xs">
                             <button onclick="sendMessage(1)" 
@@ -154,8 +155,8 @@
                 </div>
 
                 <!-- Node 2 Panel -->
-                <div class="bg-white rounded-lg shadow-md p-4 flex flex-col">
-                    <div class="flex justify-between items-center mb-3">
+                <div class="bg-white rounded-lg shadow-md p-4 flex flex-col min-h-0">
+                    <div class="flex justify-between items-center mb-3 flex-shrink-0">
                         <h2 class="text-base font-semibold text-gray-700">Node 2</h2>
                         <div class="flex items-center gap-2">
                             <span id="node2-status" class="w-2 h-2 bg-red-500 rounded-full"></span>
@@ -163,8 +164,8 @@
                         </div>
                     </div>
                     
-                    <div class="flex flex-col flex-1">
-                        <div class="flex gap-1 mb-2">
+                    <div class="flex flex-col flex-1 min-h-0">
+                        <div class="flex gap-1 mb-2 flex-shrink-0">
                             <button id="node2-connect" onclick="toggleConnection(2)" 
                                     class="flex-1 bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600 transition">
                                 Connect
@@ -176,11 +177,11 @@
                             </button>
                         </div>
                         
-                        <div class="message-log bg-gray-50 rounded p-2 text-xs flex-1 mb-2" id="node2-messages">
+                        <div class="message-log bg-gray-50 rounded p-2 text-xs flex-1 mb-2 min-h-0" id="node2-messages">
                             <div class="text-gray-400">Not connected</div>
                         </div>
                         
-                        <div class="flex gap-1">
+                        <div class="flex gap-1 flex-shrink-0">
                             <input type="text" id="node2-message" placeholder="Type a message..." 
                                    class="flex-1 px-2 py-1 border rounded text-xs">
                             <button onclick="sendMessage(2)" 
@@ -313,7 +314,11 @@
             
             messagesDiv.innerHTML = messagesDiv.innerHTML.replace('<div class="text-gray-400">Not connected</div>', '');
             messagesDiv.innerHTML += messageHtml;
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            // Force scroll to bottom with a slight delay to ensure content is rendered
+            setTimeout(() => {
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }, 10);
         }
 
         function toggleConnection(nodeNum) {
@@ -699,6 +704,19 @@
         }
 
         // Enter key support for message inputs
+        // Auto-scroll function to keep message logs at bottom
+        function autoScrollMessageLogs() {
+            const node1Messages = document.getElementById('node1-messages');
+            const node2Messages = document.getElementById('node2-messages');
+            
+            if (node1Messages) {
+                node1Messages.scrollTop = node1Messages.scrollHeight;
+            }
+            if (node2Messages) {
+                node2Messages.scrollTop = node2Messages.scrollHeight;
+            }
+        }
+
         function setupKeyListeners() {
             document.getElementById('node1-message').addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') sendMessage(1);
