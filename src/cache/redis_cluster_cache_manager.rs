@@ -155,27 +155,22 @@ impl CacheManager for RedisClusterCacheManager {
     }
 
     async fn check_health(&self) -> Result<()> {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
-            async {
-                let mut connection = self.client.get_async_connection().await?;
-                redis::cmd("PING").query_async::<String>(&mut connection).await
-            }
-        ).await {
-            Ok(Ok(response)) if response == "PONG" => Ok(()),
-            Ok(Ok(response)) => {
-                Err(crate::error::Error::Cache(format!(
-                    "Cache Redis Cluster PING returned unexpected response: {}", response
-                )))
-            }
-            Ok(Err(e)) => {
-                Err(crate::error::Error::Cache(format!(
-                    "Cache Redis Cluster connection failed: {}", e
-                )))
-            }
-            Err(_) => {
-                Err(crate::error::Error::RequestTimeout)
-            }
+        let mut connection = self.client.get_async_connection().await
+            .map_err(|e| crate::error::Error::Cache(format!(
+                "Cache Redis Cluster connection failed: {}", e
+            )))?;
+        
+        let response = redis::cmd("PING").query_async::<String>(&mut connection).await
+            .map_err(|e| crate::error::Error::Cache(format!(
+                "Cache Redis Cluster PING failed: {}", e
+            )))?;
+        
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(crate::error::Error::Cache(format!(
+                "Cache Redis Cluster PING returned unexpected response: {}", response
+            )))
         }
     }
 

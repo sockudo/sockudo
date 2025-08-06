@@ -204,27 +204,22 @@ impl QueueInterface for RedisQueueManager {
 
     async fn check_health(&self) -> crate::error::Result<()> {
         // Create a separate connection for health check to avoid lock contention
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(crate::error::HEALTH_CHECK_TIMEOUT_MS),
-            async {
-                let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-                redis::cmd("PING").query_async::<String>(&mut conn).await
-            }
-        ).await {
-            Ok(Ok(response)) if response == "PONG" => Ok(()),
-            Ok(Ok(response)) => {
-                Err(crate::error::Error::Redis(format!(
-                    "Queue Redis PING returned unexpected response: {}", response
-                )))
-            }
-            Ok(Err(e)) => {
-                Err(crate::error::Error::Redis(format!(
-                    "Queue Redis connection failed: {}", e
-                )))
-            }
-            Err(_) => {
-                Err(crate::error::Error::RequestTimeout)
-            }
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await
+            .map_err(|e| crate::error::Error::Redis(format!(
+                "Queue Redis connection failed: {}", e
+            )))?;
+        
+        let response = redis::cmd("PING").query_async::<String>(&mut conn).await
+            .map_err(|e| crate::error::Error::Redis(format!(
+                "Queue Redis PING failed: {}", e
+            )))?;
+        
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(crate::error::Error::Redis(format!(
+                "Queue Redis PING returned unexpected response: {}", response
+            )))
         }
     }
 }

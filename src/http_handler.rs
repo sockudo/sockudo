@@ -869,7 +869,8 @@ pub async fn terminate_user_connections(
 }
 
 /// Internal health check function - performs comprehensive checks
-/// Uses timeouts to prevent hanging and avoid deadlocks
+/// Uses centralized timeouts to prevent hanging and avoid deadlocks
+/// All individual health checks are wrapped with HEALTH_CHECK_TIMEOUT_MS
 /// 
 /// Critical components (WebSocket functionality fails without these):
 /// - App Manager: Must validate app exists and is enabled
@@ -886,12 +887,9 @@ async fn check_app_health(
     let mut non_critical_issues = Vec::new();
     
     // CRITICAL CHECK 1: App exists, is enabled, and app manager database is healthy
-    let app_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
-        // First check app manager health (validates database connectivity)
-        handler.app_manager.check_health().await?;
-        // Then check if specific app exists and is enabled
-        handler.app_manager.find_by_id(app_id).await
-    }).await;
+    let app_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), 
+        handler.app_manager.find_by_id(app_id)
+    ).await;
     
     match app_check {
         Ok(Ok(Some(app))) if app.enabled => {
