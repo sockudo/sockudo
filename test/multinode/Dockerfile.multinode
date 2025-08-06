@@ -1,11 +1,5 @@
 # Simple minimal runtime image for sockudo with rustls
-FROM ubuntu:20.04
-
-# Install only essential runtime dependencies (no OpenSSL needed with rustls)
-RUN apt-get update && \
-    apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM ubuntu:22.04
 
 # The actual sockudo binary will be mounted as a volume
 WORKDIR /app
