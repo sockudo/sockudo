@@ -1,10 +1,9 @@
-# Simple image that adds OpenSSL 1.1 to Ubuntu
+# Simple minimal runtime image for sockudo with rustls
 FROM ubuntu:20.04
 
-# Install OpenSSL 1.1
+# Install only essential runtime dependencies (no OpenSSL needed with rustls)
 RUN apt-get update && \
     apt-get install -y \
-    libssl1.1 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
