@@ -248,6 +248,9 @@ impl AppManager for MockAppManager {
         }
         Ok(self.app_to_return.clone())
     }
+    async fn check_health(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub struct MockChannelManager {
@@ -337,11 +340,11 @@ impl CacheManager for MockCacheManager {
     async fn disconnect(&mut self) -> Result<()> {
         Ok(())
     }
-    async fn is_healthy(&self) -> Result<bool> {
-        Ok(true)
-    }
     async fn ttl(&mut self, _key: &str) -> Result<Option<Duration>> {
         Ok(None)
+    }
+    async fn check_health(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -368,12 +371,12 @@ impl MetricsInterface for MockMetricsInterface {
         _request_context: &str,
     ) {
     }
-    fn mark_rate_limit_triggered(&self, app_id: &str, limiter_type: &str) {}
+    fn mark_rate_limit_triggered(&self, _app_id: &str, _limiter_type: &str) {}
     fn mark_rate_limit_triggered_with_context(
         &self,
-        app_id: &str,
-        limiter_type: &str,
-        request_context: &str,
+        _app_id: &str,
+        _limiter_type: &str,
+        _request_context: &str,
     ) {
     }
     fn mark_channel_subscription(&self, _app_id: &str, _channel_type: &str) {}
