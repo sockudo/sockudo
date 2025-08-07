@@ -46,7 +46,7 @@ impl MySQLAppManager {
             .idle_timeout(Duration::from_secs(180))
             .connect(&connection_string)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to connect to MySQL: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to connect to MySQL: {e}")))?;
 
         // Initialize cache
         let app_cache = Cache::builder()
@@ -103,7 +103,7 @@ impl MySQLAppManager {
         sqlx::query(&query)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to create MySQL table: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to create MySQL table: {e}")))?;
 
         info!(
             "{}",
@@ -152,7 +152,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error fetching app {}: {}", app_id, e)
                 );
-                Error::Internal(format!("Failed to fetch app from MySQL: {}", e))
+                Error::Internal(format!("Failed to fetch app from MySQL: {e}"))
             })?;
 
         if let Some(app_row) = app_result {
@@ -206,7 +206,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error fetching app by key {}: {}", key, e)
                 );
-                Error::Internal(format!("Failed to fetch app from MySQL: {}", e))
+                Error::Internal(format!("Failed to fetch app from MySQL: {e}"))
             })?;
 
         if let Some(app_row) = app_result {
@@ -264,7 +264,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error registering app {}: {}", app.id, e)
                 );
-                Error::Internal(format!("Failed to insert app into MySQL: {}", e))
+                Error::Internal(format!("Failed to insert app into MySQL: {e}"))
             })?;
 
         // Update cach
@@ -315,7 +315,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error updating app {}: {}", app.id, e)
                 );
-                Error::Internal(format!("Failed to update app in MySQL: {}", e))
+                Error::Internal(format!("Failed to update app in MySQL: {e}"))
             })?;
 
         if result.rows_affected() == 0 {
@@ -344,7 +344,7 @@ impl MySQLAppManager {
                     "{}",
                     format!("Database error removing app {}: {}", app_id, e)
                 );
-                Error::Internal(format!("Failed to delete app from MySQL: {}", e))
+                Error::Internal(format!("Failed to delete app from MySQL: {e}"))
             })?;
 
         if result.rows_affected() == 0 {
@@ -388,7 +388,7 @@ impl MySQLAppManager {
             .map_err(|e| {
                 error!("{}", format!("Database error fetching all apps: {}", e));
                 // Consider a more specific error type if possible
-                Error::Internal(format!("Failed to fetch apps from MySQL: {}", e))
+                Error::Internal(format!("Failed to fetch apps from MySQL: {e}"))
             })?;
 
         warn!(
@@ -460,8 +460,7 @@ impl MySQLAppManager {
         let max_length = app.max_channel_name_length.unwrap_or(200);
         if channel.len() > max_length as usize {
             return Err(Error::InvalidChannelName(format!(
-                "Channel name too long. Max length is {}",
-                max_length
+                "Channel name too long. Max length is {max_length}"
             )));
         }
 
@@ -504,7 +503,7 @@ impl MySQLAppManager {
             .ok_or_else(|| Error::InvalidAppKey)?;
 
         // Create string to sign: socket_id
-        let string_to_sign = format!("{}::user::{}", socket_id, signature);
+        let string_to_sign = format!("{socket_id}::user::{signature}");
 
         // Generate token
         let token = Token::new(app.key.clone(), app.secret.clone());
@@ -606,10 +605,12 @@ impl AppManager for MySQLAppManager {
     }
 
     async fn check_health(&self) -> Result<()> {
-        sqlx::query("SELECT 1").fetch_one(&self.pool).await
-            .map_err(|e| crate::error::Error::Internal(format!(
-                "App manager MySQL connection failed: {}", e
-            )))?;
+        sqlx::query("SELECT 1")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                crate::error::Error::Internal(format!("App manager MySQL connection failed: {e}"))
+            })?;
         Ok(())
     }
 }
@@ -635,8 +636,8 @@ mod tests {
     fn create_test_app(id: &str) -> App {
         App {
             id: id.to_string(),
-            key: format!("{}_key", id),
-            secret: format!("{}_secret", id),
+            key: format!("{id}_key"),
+            secret: format!("{id}_secret"),
             max_connections: 100,
             enable_client_messages: true,
             enabled: true,
@@ -663,10 +664,12 @@ mod tests {
 
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
-            // Setup test database
+            // Setup test database with proper credentials for Docker MySQL dev environment
             let config = DatabaseConnection {
-                database: "sockudo_test".to_string(),
-                table_name: "apps_test".to_string(),
+                username: "sockudo".to_string(),
+                password: "sockudo123".to_string(),
+                database: "sockudo".to_string(),
+                table_name: "applications".to_string(),
                 cache_ttl: 5, // Short TTL for testing
                 ..Default::default()
             };
