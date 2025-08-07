@@ -29,9 +29,9 @@ services:
       - METRICS_ENABLED=true
       - METRICS_PORT=9602
       - APP_MANAGER_DRIVER=memory
-      - CACHE_DRIVER=memory
-      - QUEUE_DRIVER=memory
-      - RATE_LIMITER_DRIVER=memory
+      - CACHE_DRIVER=redis
+      - QUEUE_DRIVER=redis
+      - RATE_LIMITER_DRIVER=redis
       - SHUTDOWN_GRACE_PERIOD=1
     ports:
       - "6002:6002"
@@ -63,9 +63,9 @@ services:
       - METRICS_ENABLED=true
       - METRICS_PORT=9603
       - APP_MANAGER_DRIVER=memory
-      - CACHE_DRIVER=memory
-      - QUEUE_DRIVER=memory
-      - RATE_LIMITER_DRIVER=memory
+      - CACHE_DRIVER=redis
+      - QUEUE_DRIVER=redis
+      - RATE_LIMITER_DRIVER=redis
       - SHUTDOWN_GRACE_PERIOD=1
     ports:
       - "6003:6003"
