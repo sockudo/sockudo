@@ -2745,7 +2745,7 @@ dependencies = [
  "once_cell",
  "socket2 0.5.10",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3446,7 +3446,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo"
-version = "2.4.0"
+version = "2.5.0"
 dependencies = [
  "ahash",
  "async-nats",
