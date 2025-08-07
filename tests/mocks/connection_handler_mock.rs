@@ -185,6 +185,11 @@ impl ConnectionManager for MockAdapter {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+    
+    async fn check_health(&self) -> Result<()> {
+        // Mock adapter is always healthy for testing
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

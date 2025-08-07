@@ -352,4 +352,9 @@ impl ConnectionManager for LocalAdapter {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+
+    async fn check_health(&self) -> Result<()> {
+        // Local adapter is always healthy since it's in-memory
+        Ok(())
+    }
 }

@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
 pub struct RedisClusterQueueManager {
+    redis_client: ClusterClient,
     redis_connection: Arc<Mutex<ClusterConnection>>,
     // Store Arc'd callbacks to allow cloning them into worker tasks safely
     job_processors: dashmap::DashMap<String, ArcJobProcessorFn, ahash::RandomState>,
@@ -47,6 +48,7 @@ impl RedisClusterQueueManager {
         );
 
         Ok(Self {
+            redis_client: client,
             redis_connection: Arc::new(Mutex::new(connection)),
             job_processors: dashmap::DashMap::with_hasher(ahash::RandomState::new()),
             prefix: prefix.to_string(),
@@ -214,5 +216,26 @@ impl QueueInterface for RedisClusterQueueManager {
             }
         }
         Ok(())
+    }
+
+    async fn check_health(&self) -> crate::error::Result<()> {
+        // Create a separate connection for health check to avoid lock contention
+        let mut conn = self.redis_client.get_async_connection().await
+            .map_err(|e| crate::error::Error::Redis(format!(
+                "Queue Redis Cluster connection failed: {}", e
+            )))?;
+        
+        let response = redis::cmd("PING").query_async::<String>(&mut conn).await
+            .map_err(|e| crate::error::Error::Redis(format!(
+                "Queue Redis Cluster PING failed: {}", e
+            )))?;
+        
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(crate::error::Error::Redis(format!(
+                "Queue Redis Cluster PING returned unexpected response: {}", response
+            )))
+        }
     }
 }
