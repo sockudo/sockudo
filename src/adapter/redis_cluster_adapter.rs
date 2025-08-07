@@ -902,17 +902,21 @@ impl ConnectionManager for RedisClusterAdapter {
     }
 
     async fn check_health(&self) -> Result<()> {
-        let mut conn = self.connection.clone();
+        // Use a dedicated connection for health check to avoid impacting main operations
+        let mut conn = self.client.get_async_connection().await
+            .map_err(|e| Error::Redis(format!(
+                "Failed to acquire health check connection: {}", e
+            )))?;
         
         let response = redis::cmd("PING").query_async::<String>(&mut conn).await
-            .map_err(|e| crate::error::Error::Redis(format!(
-                "Cluster connection failed: {}", e
+            .map_err(|e| Error::Redis(format!(
+                "Cluster health check PING failed: {}", e
             )))?;
         
         if response == "PONG" {
             Ok(())
         } else {
-            Err(crate::error::Error::Redis(format!(
+            Err(Error::Redis(format!(
                 "Cluster PING returned unexpected response: {}", response
             )))
         }
