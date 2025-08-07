@@ -3,7 +3,7 @@
 use crate::cache::manager::CacheManager;
 use crate::error::{Error, Result};
 use async_trait::async_trait;
-use redis::{AsyncCommands, Client, aio::MultiplexedConnection};
+use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use std::time::Duration;
 
 /// Configuration for the Redis cache manager
@@ -34,8 +34,8 @@ impl Default for RedisCacheConfig {
 pub struct RedisCacheManager {
     /// Redis client
     client: Client,
-    /// Multiplexed connection for better performance
-    connection: MultiplexedConnection,
+    /// Connection manager with automatic reconnection
+    connection: redis::aio::ConnectionManager,
     /// Key prefix
     prefix: String,
 }
@@ -58,16 +58,17 @@ impl RedisCacheManager {
         let client = Client::open(redis_url)
             .map_err(|e| Error::Cache(format!("Failed to create Redis client: {}", e)))?;
 
-        // Get multiplexed connection for better performance
-        let mut connection = client
-            .get_multiplexed_tokio_connection()
+        // Create ConnectionManager with same config as RedisAdapter for consistency
+        let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
+            .set_number_of_retries(5)
+            .set_exponent_base(2)
+            .set_factor(500)
+            .set_max_delay(5000);
+            
+        let connection = client
+            .get_connection_manager_with_config(connection_manager_config)
             .await
             .map_err(|e| Error::Cache(format!("Failed to connect to Redis: {}", e)))?;
-
-        // Set response timeout if configured
-        if let Some(timeout) = config.response_timeout {
-            connection.set_response_timeout(timeout);
-        }
 
         Ok(Self {
             client,
@@ -310,8 +311,8 @@ impl RedisCacheManager {
         Ok(())
     }
 
-    /// Return the raw multiplexed connection for advanced operations
-    pub fn get_connection(&self) -> MultiplexedConnection {
+    /// Return the raw connection manager for advanced operations
+    pub fn get_connection(&self) -> ConnectionManager {
         self.connection.clone()
     }
 }

@@ -13,8 +13,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct RedisRateLimiter {
     /// Redis client
     client: Client,
-    /// Redis connection
-    connection: redis::aio::MultiplexedConnection,
+    /// Redis connection with automatic reconnection
+    connection: redis::aio::ConnectionManager,
     /// Prefix for Redis keys
     prefix: String,
     /// Configuration for rate limiting
@@ -29,8 +29,15 @@ impl RedisRateLimiter {
         max_requests: u32,
         window_secs: u64,
     ) -> Result<Self> {
+        // Create ConnectionManager with same config as RedisAdapter for consistency
+        let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
+            .set_number_of_retries(5)
+            .set_exponent_base(2)
+            .set_factor(500)
+            .set_max_delay(5000);
+            
         let connection = client
-            .get_multiplexed_tokio_connection()
+            .get_connection_manager_with_config(connection_manager_config)
             .await
             .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
 
@@ -54,8 +61,15 @@ impl RedisRateLimiter {
         prefix: String,
         config: RateLimitConfig,
     ) -> Result<Self> {
+        // Create ConnectionManager with same config as RedisAdapter for consistency
+        let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
+            .set_number_of_retries(5)
+            .set_exponent_base(2)
+            .set_factor(500)
+            .set_max_delay(5000);
+            
         let connection = client
-            .get_multiplexed_tokio_connection()
+            .get_connection_manager_with_config(connection_manager_config)
             .await
             .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
 

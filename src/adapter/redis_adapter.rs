@@ -39,7 +39,6 @@ pub struct RedisAdapterConfig {
     pub url: String,
     pub prefix: String,
     pub request_timeout_ms: u64,
-    pub use_connection_manager: bool,
     pub cluster_mode: bool,
 }
 
@@ -49,7 +48,6 @@ impl Default for RedisAdapterConfig {
             url: "redis://127.0.0.1:6379/".to_string(),
             prefix: DEFAULT_PREFIX.to_string(),
             request_timeout_ms: 5000,
-            use_connection_manager: true,
             cluster_mode: false,
         }
     }
@@ -64,7 +62,7 @@ pub trait RequestBroadcaster {
 pub struct RedisAdapter {
     pub horizontal: Arc<Mutex<HorizontalAdapter>>,
     pub client: redis::Client,
-    pub connection: redis::aio::MultiplexedConnection,
+    pub connection: redis::aio::ConnectionManager, // For requests/pub-sub with auto-reconnect
     pub events_connection: redis::aio::ConnectionManager, // For events API broadcasts with auto-reconnect
     pub prefix: String,
     pub broadcast_channel: String,
@@ -81,20 +79,19 @@ impl RedisAdapter {
         let client = redis::Client::open(&*config.url)
             .map_err(|e| Error::Redis(format!("Failed to create Redis client: {}", e)))?;
 
-        let connection = if config.use_connection_manager {
-            client.get_multiplexed_async_connection().await
-        } else {
-            client.get_multiplexed_tokio_connection().await
-        }
-        .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
-
-        // Create ConnectionManager specifically for events API broadcasts (auto-reconnect)
+        // Use ConnectionManager consistently for auto-reconnection
         let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
             .set_number_of_retries(5)
             .set_exponent_base(2)
             .set_factor(500)
             .set_max_delay(5000);
-        
+            
+        let connection = client
+            .get_connection_manager_with_config(connection_manager_config.clone())
+            .await
+            .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
+
+        // Create ConnectionManager for events API broadcasts (reuse same config)
         let events_connection = client.get_connection_manager_with_config(connection_manager_config).await
             .map_err(|e| Error::Redis(format!("Failed to create Redis connection manager for events: {}", e)))?;
 
