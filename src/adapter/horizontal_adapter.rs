@@ -99,6 +99,12 @@ pub struct HorizontalAdapter {
     pub metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
 }
 
+impl Default for HorizontalAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HorizontalAdapter {
     /// Create a new horizontal adapter
     pub fn new() -> Self {
@@ -301,7 +307,7 @@ impl HorizontalAdapter {
         if let Some(mut request) = self.pending_requests.get_mut(&response.request_id) {
             // Add response to the list
             request.responses.push(response);
-            
+
             // Notify any waiting send_request calls that a new response has arrived
             request.notify.notify_one();
         }
@@ -428,8 +434,7 @@ impl HorizontalAdapter {
                 }
             } else {
                 return Err(Error::Other(format!(
-                    "Request {} was removed unexpectedly (possibly by cleanup task)",
-                    request_id
+                    "Request {request_id} was removed unexpectedly (possibly by cleanup task)"
                 )));
             }
 
