@@ -78,4 +78,8 @@ impl AppManager for MemoryAppManager {
     async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
         Ok(self.apps.get(app_id).map(|app| app.clone()))
     }
+
+    async fn check_health(&self) -> Result<()> {
+        Ok(())
+    }
 }

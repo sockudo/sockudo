@@ -163,16 +163,24 @@ impl CacheManager for RedisCacheManager {
         Ok(())
     }
 
-    /// Check if the Redis connection is healthy
-    async fn is_healthy(&self) -> Result<bool> {
-        // Try a PING command to verify Redis is responsive
-        let result: redis::RedisResult<String> = redis::cmd("PING")
-            .query_async(&mut self.connection.clone())
-            .await;
-
-        match result {
-            Ok(response) => Ok(response == "PONG"),
-            Err(_) => Ok(false),
+    async fn check_health(&self) -> Result<()> {
+        // Use a dedicated connection for health check to avoid impacting main operations
+        let mut conn = self.client.get_multiplexed_async_connection().await
+            .map_err(|e| Error::Cache(format!(
+                "Failed to acquire health check connection: {}", e
+            )))?;
+        
+        let response = redis::cmd("PING").query_async::<String>(&mut conn).await
+            .map_err(|e| Error::Cache(format!(
+                "Cache health check PING failed: {}", e
+            )))?;
+        
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(Error::Cache(format!(
+                "Cache Redis PING returned unexpected response: {}", response
+            )))
         }
     }
     async fn ttl(&mut self, key: &str) -> Result<Option<Duration>> {

@@ -198,3 +198,18 @@ echo -n "socket_id:channel_name" | openssl dgst -sha256 -hmac "app_secret" -hex
 2. Configure all instances with same adapter settings
 3. Load balance WebSocket connections (use sticky sessions)
 4. Share app configuration via database backend
+```
+
+## Code Review Guidelines
+
+- **Comments**: 
+  * Never add comment to note that you have removed a code block
+  * Don't add comment with no value or that over explain what you are doing or what you changed
+  * Add comments when it will help the developer understand your intent or complex code
+
+## Development Principles
+
+- **Implementation Guidelines**:
+  * Do not add placeholder implementations
+  * A comment that an implementation is not done yet or will be done later is fine
+  * Do not add config / env values for features that do not exist yet, unless asked directly

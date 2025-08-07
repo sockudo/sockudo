@@ -604,6 +604,14 @@ impl AppManager for MySQLAppManager {
     async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
         self.find_by_key(key).await
     }
+
+    async fn check_health(&self) -> Result<()> {
+        sqlx::query("SELECT 1").fetch_one(&self.pool).await
+            .map_err(|e| crate::error::Error::Internal(format!(
+                "App manager MySQL connection failed: {}", e
+            )))?;
+        Ok(())
+    }
 }
 
 // Make the MySQLAppManager clonable for use in async contexts

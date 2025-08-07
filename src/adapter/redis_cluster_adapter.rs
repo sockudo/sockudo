@@ -462,6 +462,7 @@ impl RedisClusterAdapter {
         Ok(())
     }
 
+
     pub async fn get_node_count(&self) -> Result<usize> {
 
         let mut conn = self.connection.clone();
@@ -898,5 +899,26 @@ impl ConnectionManager for RedisClusterAdapter {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    async fn check_health(&self) -> Result<()> {
+        // Use a dedicated connection for health check to avoid impacting main operations
+        let mut conn = self.client.get_async_connection().await
+            .map_err(|e| Error::Redis(format!(
+                "Failed to acquire health check connection: {}", e
+            )))?;
+        
+        let response = redis::cmd("PING").query_async::<String>(&mut conn).await
+            .map_err(|e| Error::Redis(format!(
+                "Cluster health check PING failed: {}", e
+            )))?;
+        
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(Error::Redis(format!(
+                "Cluster PING returned unexpected response: {}", response
+            )))
+        }
     }
 }

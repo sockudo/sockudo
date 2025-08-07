@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error};
 
 pub struct RedisQueueManager {
+    redis_client: redis::Client,
     redis_connection: Arc<Mutex<MultiplexedConnection>>,
     // Store Arc'd callbacks to allow cloning them into worker tasks safely
     job_processors: dashmap::DashMap<String, ArcJobProcessorFn, ahash::RandomState>,
@@ -39,6 +40,7 @@ impl RedisQueueManager {
             })?; // Use custom error type
 
         Ok(Self {
+            redis_client: client,
             redis_connection: Arc::new(Mutex::new(connection)),
             job_processors: dashmap::DashMap::with_hasher(ahash::RandomState::new()),
             prefix: prefix.to_string(),
@@ -198,5 +200,26 @@ impl QueueInterface for RedisQueueManager {
             conn.del::<_, ()>(&key).await.expect("Error deleting key");
         }
         Ok(())
+    }
+
+    async fn check_health(&self) -> crate::error::Result<()> {
+        // Create a separate connection for health check to avoid lock contention
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await
+            .map_err(|e| crate::error::Error::Redis(format!(
+                "Queue Redis connection failed: {}", e
+            )))?;
+        
+        let response = redis::cmd("PING").query_async::<String>(&mut conn).await
+            .map_err(|e| crate::error::Error::Redis(format!(
+                "Queue Redis PING failed: {}", e
+            )))?;
+        
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(crate::error::Error::Redis(format!(
+                "Queue Redis PING returned unexpected response: {}", response
+            )))
+        }
     }
 }

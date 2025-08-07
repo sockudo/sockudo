@@ -460,6 +460,14 @@ impl QueueInterface for SqsQueueManager {
 
         Ok(())
     }
+
+    async fn check_health(&self) -> crate::error::Result<()> {
+        self.client.list_queues().send().await
+            .map_err(|e| crate::error::Error::Queue(format!(
+                "Queue SQS connection failed: {}", e
+            )))?;
+        Ok(())
+    }
 }
 
 impl Drop for SqsQueueManager {

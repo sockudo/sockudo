@@ -241,6 +241,18 @@ impl From<Error> for crate::protocol::messages::ErrorData {
 // Helper functions for error handling
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Health check timeout in milliseconds - centralized constant for all health checks
+pub const HEALTH_CHECK_TIMEOUT_MS: u64 = 400;
+
+// Health check status
+#[derive(Debug, Clone)]
+pub enum HealthStatus {
+    Ok,
+    Degraded(Vec<String>),  // Some issues but still functional
+    Error(Vec<String>),     // Critical issues, not functional  
+    NotFound,               // App doesn't exist
+}
+
 // src/error/macros.rs
 #[macro_export]
 macro_rules! ensure {
