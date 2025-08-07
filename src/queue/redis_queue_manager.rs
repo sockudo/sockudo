@@ -2,7 +2,7 @@ use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
 use async_trait::async_trait;
-use redis::aio::MultiplexedConnection;
+use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, RedisResult};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -13,7 +13,7 @@ use tracing::{debug, error};
 
 pub struct RedisQueueManager {
     redis_client: redis::Client,
-    redis_connection: Arc<Mutex<MultiplexedConnection>>,
+    redis_connection: Arc<Mutex<ConnectionManager>>,
     // Store Arc'd callbacks to allow cloning them into worker tasks safely
     job_processors: dashmap::DashMap<String, ArcJobProcessorFn, ahash::RandomState>,
     prefix: String,
@@ -32,8 +32,15 @@ impl RedisQueueManager {
             crate::error::Error::Config(format!("Failed to open Redis client: {}", e))
         })?; // Use custom error type
 
+        // Create ConnectionManager with same config as RedisAdapter for consistency
+        let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
+            .set_number_of_retries(5)
+            .set_exponent_base(2)
+            .set_factor(500)
+            .set_max_delay(5000);
+            
         let connection = client
-            .get_multiplexed_async_connection()
+            .get_connection_manager_with_config(connection_manager_config)
             .await
             .map_err(|e| {
                 crate::error::Error::Connection(format!("Failed to get Redis connection: {}", e))

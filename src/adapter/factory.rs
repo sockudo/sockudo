@@ -42,7 +42,6 @@ impl AdapterFactory {
                     url: redis_url,
                     prefix: config.redis.prefix.clone(),
                     request_timeout_ms: config.redis.requests_timeout,
-                    use_connection_manager: true,
                     cluster_mode: config.redis.cluster_mode,
                 };
                 match RedisAdapter::new(adapter_options).await {
