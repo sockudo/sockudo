@@ -260,22 +260,20 @@ impl SqsQueueManager {
                                                     // Processing succeeded, delete the message
                                                     if let Some(receipt_handle) =
                                                         message.receipt_handle()
-                                                    {
-                                                        if let Err(e) = client
+                                                        && let Err(e) = client
                                                             .delete_message()
                                                             .queue_url(&queue_url)
                                                             .receipt_handle(receipt_handle)
                                                             .send()
                                                             .await
-                                                        {
-                                                            error!(
-                                                                "{}",
-                                                                format!(
-                                                                    "Failed to delete message from SQS queue {}: {}",
-                                                                    queue_name, e
-                                                                )
-                                                            );
-                                                        }
+                                                    {
+                                                        error!(
+                                                            "{}",
+                                                            format!(
+                                                                "Failed to delete message from SQS queue {}: {}",
+                                                                queue_name, e
+                                                            )
+                                                        );
                                                     }
                                                 }
                                                 Err(e) => {
@@ -300,22 +298,21 @@ impl SqsQueueManager {
                                             );
 
                                             // Delete malformed messages
-                                            if let Some(receipt_handle) = message.receipt_handle() {
-                                                if let Err(e) = client
+                                            if let Some(receipt_handle) = message.receipt_handle()
+                                                && let Err(e) = client
                                                     .delete_message()
                                                     .queue_url(&queue_url)
                                                     .receipt_handle(receipt_handle)
                                                     .send()
                                                     .await
-                                                {
-                                                    error!(
-                                                        "{}",
-                                                        format!(
-                                                            "Failed to delete malformed message from SQS queue {}: {}",
-                                                            queue_name, e
-                                                        )
-                                                    );
-                                                }
+                                            {
+                                                error!(
+                                                    "{}",
+                                                    format!(
+                                                        "Failed to delete malformed message from SQS queue {}: {}",
+                                                        queue_name, e
+                                                    )
+                                                );
                                             }
                                         }
                                     }

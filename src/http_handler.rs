@@ -285,14 +285,14 @@ async fn process_single_event_parallel(
     // Determine the list of target channels for this event
     let target_channels: Vec<String> = match channels {
         Some(ch_list) if !ch_list.is_empty() => {
-            if let Some(max_ch_at_once) = app.max_event_channels_at_once {
-                if ch_list.len() > max_ch_at_once as usize {
-                    return Err(AppError::LimitExceeded(format!(
-                        "Number of channels ({}) exceeds limit ({})",
-                        ch_list.len(),
-                        max_ch_at_once
-                    )));
-                }
+            if let Some(max_ch_at_once) = app.max_event_channels_at_once
+                && ch_list.len() > max_ch_at_once as usize
+            {
+                return Err(AppError::LimitExceeded(format!(
+                    "Number of channels ({}) exceeds limit ({})",
+                    ch_list.len(),
+                    max_ch_at_once
+                )));
             }
             ch_list
         }
@@ -535,12 +535,12 @@ pub async fn batch_events(
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
     // Validate batch size against app limits.
-    if let Some(max_batch) = app_config.max_event_batch_size {
-        if batch_len > max_batch as usize {
-            return Err(AppError::LimitExceeded(format!(
-                "Batch size ({batch_len}) exceeds limit ({max_batch})"
-            )));
-        }
+    if let Some(max_batch) = app_config.max_event_batch_size
+        && batch_len > max_batch as usize
+    {
+        return Err(AppError::LimitExceeded(format!(
+            "Batch size ({batch_len}) exceeds limit ({max_batch})"
+        )));
     }
 
     let incoming_request_size_bytes = body_bytes.len(); // Use length of already serialized body_bytes
@@ -865,52 +865,21 @@ pub async fn terminate_user_connections(
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
-/// Internal health check function - performs comprehensive checks
+/// System health check function - performs comprehensive checks
 /// Uses centralized timeouts to prevent hanging and avoid deadlocks
 /// All individual health checks are wrapped with HEALTH_CHECK_TIMEOUT_MS
 ///
 /// Critical components (WebSocket functionality fails without these):
-/// - App Manager: Must validate app exists and is enabled
 /// - Adapter: Core WebSocket connection handling
 /// - Cache Manager: Required for cache channels, subscription failures propagate errors
 ///
 /// Non-critical components (WebSocket works, but optional features don't):
 /// - Queue System: Only affects webhook delivery
-async fn check_app_health(handler: &Arc<ConnectionHandler>, app_id: &str) -> HealthStatus {
+async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
     let mut critical_issues = Vec::new();
     let mut non_critical_issues = Vec::new();
 
-    // CRITICAL CHECK 1: App exists, is enabled, and app manager database is healthy
-    let app_check = timeout(
-        Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
-        handler.app_manager.find_by_id(app_id),
-    )
-    .await;
-
-    match app_check {
-        Ok(Ok(Some(app))) if app.enabled => {
-            // App exists, is enabled, and app manager is healthy
-        }
-        Ok(Ok(Some(_))) => {
-            critical_issues.push("App is disabled".to_string());
-            return HealthStatus::Error(critical_issues);
-        }
-        Ok(Ok(None)) => {
-            return HealthStatus::NotFound;
-        }
-        Ok(Err(e)) => {
-            critical_issues.push(format!("App manager: {e}"));
-            return HealthStatus::Error(critical_issues);
-        }
-        Err(_) => {
-            critical_issues.push(format!(
-                "App manager timeout (>{HEALTH_CHECK_TIMEOUT_MS}ms)"
-            ));
-            return HealthStatus::Error(critical_issues);
-        }
-    }
-
-    // CRITICAL CHECK 2: Adapter health - core WebSocket functionality
+    // CRITICAL CHECK 1: Adapter health - core WebSocket functionality
     let adapter_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
         let conn_mgr = handler.connection_manager.lock().await;
         conn_mgr.check_health().await
@@ -929,7 +898,7 @@ async fn check_app_health(handler: &Arc<ConnectionHandler>, app_id: &str) -> Hea
         }
     }
 
-    // CRITICAL CHECK 3: Cache manager health - required for cache channels
+    // CRITICAL CHECK 2: Cache manager health - required for cache channels
     if handler.server_options().cache.driver != crate::options::CacheDriver::None {
         let cache_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
             let cache_manager = handler.cache_manager.lock().await;
@@ -950,7 +919,7 @@ async fn check_app_health(handler: &Arc<ConnectionHandler>, app_id: &str) -> Hea
         }
     }
 
-    // NON-CRITICAL CHECK 1: Queue system health - only affects webhooks
+    // NON-CRITICAL CHECK: Queue system health - only affects webhooks
     if let Some(webhook_integration) = handler.webhook_integration() {
         let queue_check = timeout(
             Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
@@ -984,38 +953,110 @@ async fn check_app_health(handler: &Arc<ConnectionHandler>, app_id: &str) -> Hea
     }
 }
 
-/// GET /up/{app_id}
-#[instrument(skip(handler), fields(app_id = %app_id))]
+/// GET /up or /up/{app_id}
+/// When app_id is provided, checks specific app id health and general system health
+/// When no app_id, checks general system health and ensures at least 1 app exists
+#[instrument(skip(handler), fields(app_id = field::Empty))]
 pub async fn up(
-    Path(app_id): Path<String>,
+    app_id: Option<Path<String>>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    debug!("Health check received for app_id: {}", app_id);
+    // First check app configuration based on whether app_id is provided
+    let (health_status, app_id_str) = if let Some(Path(app_id)) = app_id {
+        // Specific app health check
+        tracing::Span::current().record("app_id", &app_id);
+        debug!("Health check received for app_id: {}", app_id);
 
-    // Perform comprehensive health checks
-    let health_status = check_app_health(&handler, &app_id).await;
+        // Check if specific app exists and is enabled
+        let app_check = timeout(
+            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
+            handler.app_manager.find_by_id(&app_id),
+        )
+        .await;
+
+        let app_status = match app_check {
+            Ok(Ok(Some(app))) if app.enabled => {
+                // App exists and is enabled, proceed with system checks
+                check_system_health(&handler).await
+            }
+            Ok(Ok(Some(_))) => {
+                // App exists but is disabled
+                HealthStatus::Error(vec!["App is disabled".to_string()])
+            }
+            Ok(Ok(None)) => {
+                // App doesn't exist
+                HealthStatus::NotFound
+            }
+            Ok(Err(e)) => {
+                // App manager error
+                HealthStatus::Error(vec![format!("App manager: {e}")])
+            }
+            Err(_) => {
+                // Timeout
+                HealthStatus::Error(vec![format!(
+                    "App manager timeout (>{HEALTH_CHECK_TIMEOUT_MS}ms)"
+                )])
+            }
+        };
+
+        (app_status, app_id)
+    } else {
+        // General system health check
+        debug!("General health check received (no app_id)");
+
+        // Check if at least one app is configured
+        let apps_check = timeout(
+            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
+            handler.app_manager.get_apps(),
+        )
+        .await;
+
+        let app_status = match apps_check {
+            Ok(Ok(apps)) if !apps.is_empty() => {
+                debug!("Found {} configured apps", apps.len());
+                // At least one app exists, proceed with system checks
+                check_system_health(&handler).await
+            }
+            Ok(Ok(_)) => {
+                // No apps configured
+                HealthStatus::Error(vec!["No apps configured".to_string()])
+            }
+            Ok(Err(e)) => {
+                // App manager error
+                HealthStatus::Error(vec![format!("App manager: {e}")])
+            }
+            Err(_) => {
+                // Timeout
+                HealthStatus::Error(vec![format!(
+                    "App manager timeout (>{HEALTH_CHECK_TIMEOUT_MS}ms)"
+                )])
+            }
+        };
+
+        (app_status, "system".to_string())
+    };
 
     // Log detailed issues if unhealthy
     match &health_status {
         HealthStatus::Ok => {
-            debug!("Health check passed for app {}", app_id);
+            debug!("Health check passed for {}", app_id_str);
         }
         HealthStatus::Degraded(reasons) => {
             warn!(
-                "Health check degraded for app {}: {}",
-                app_id,
+                "Health check degraded for {}: {}",
+                app_id_str,
                 reasons.join(", ")
             );
         }
         HealthStatus::Error(reasons) => {
             error!(
-                "Health check failed for app {}: {}",
-                app_id,
+                "Health check failed for {}: {}",
+                app_id_str,
                 reasons.join(", ")
             );
         }
         HealthStatus::NotFound => {
-            warn!("Health check for non-existent app_id: {}", app_id);
+            warn!("Health check for non-existent app_id: {}", app_id_str);
         }
     }
 
@@ -1031,7 +1072,7 @@ pub async fn up(
     // Record metrics if available (non-blocking)
     if handler.metrics.is_some() {
         let response_size = status_text.len();
-        record_api_metrics(&handler, &app_id, 0, response_size).await;
+        record_api_metrics(&handler, &app_id_str, 0, response_size).await;
     }
 
     // Build response using the original format

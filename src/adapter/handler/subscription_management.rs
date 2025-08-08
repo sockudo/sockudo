@@ -57,28 +57,28 @@ impl ConnectionHandler {
         };
 
         // Track subscription metrics if successful
-        if subscription_result.success {
-            if let Some(ref metrics) = self.metrics {
-                let channel_type = ChannelType::from_name(&request.channel);
-                let channel_type_str = channel_type.as_str();
+        if subscription_result.success
+            && let Some(ref metrics) = self.metrics
+        {
+            let channel_type = ChannelType::from_name(&request.channel);
+            let channel_type_str = channel_type.as_str();
 
-                // Mark subscription metric
-                {
-                    let metrics_locked = metrics.lock().await;
-                    metrics_locked.mark_channel_subscription(&app_config.id, channel_type_str);
-                }
+            // Mark subscription metric
+            {
+                let metrics_locked = metrics.lock().await;
+                metrics_locked.mark_channel_subscription(&app_config.id, channel_type_str);
+            }
 
-                // Update active channel count if this is the first connection to the channel
-                if subscription_result.channel_connections == Some(1) {
-                    // Channel became active - increment the count for this channel type
-                    // Pass the Arc directly to avoid holding any locks
-                    self.increment_active_channel_count(
-                        &app_config.id,
-                        channel_type_str,
-                        metrics.clone(),
-                    )
-                    .await;
-                }
+            // Update active channel count if this is the first connection to the channel
+            if subscription_result.channel_connections == Some(1) {
+                // Channel became active - increment the count for this channel type
+                // Pass the Arc directly to avoid holding any locks
+                self.increment_active_channel_count(
+                    &app_config.id,
+                    channel_type_str,
+                    metrics.clone(),
+                )
+                .await;
             }
         }
 
@@ -102,13 +102,13 @@ impl ConnectionHandler {
         subscription_result: &SubscriptionResult,
     ) -> Result<()> {
         // Send webhooks if this is the first connection to the channel
-        if subscription_result.channel_connections == Some(1) {
-            if let Some(webhook_integration) = &self.webhook_integration {
-                webhook_integration
-                    .send_channel_occupied(app_config, &request.channel)
-                    .await
-                    .ok();
-            }
+        if subscription_result.channel_connections == Some(1)
+            && let Some(webhook_integration) = &self.webhook_integration
+        {
+            webhook_integration
+                .send_channel_occupied(app_config, &request.channel)
+                .await
+                .ok();
         }
 
         // Update connection state
@@ -139,20 +139,20 @@ impl ConnectionHandler {
         }
 
         // Send subscription count webhook for non-presence channels
-        if !request.channel.starts_with("presence-") {
-            if let Some(webhook_integration) = &self.webhook_integration {
-                let current_count = self
-                    .connection_manager
-                    .lock()
-                    .await
-                    .get_channel_socket_count(&app_config.id, &request.channel)
-                    .await;
+        if !request.channel.starts_with("presence-")
+            && let Some(webhook_integration) = &self.webhook_integration
+        {
+            let current_count = self
+                .connection_manager
+                .lock()
+                .await
+                .get_channel_socket_count(&app_config.id, &request.channel)
+                .await;
 
-                webhook_integration
-                    .send_subscription_count_changed(app_config, &request.channel, current_count)
-                    .await
-                    .ok();
-            }
+            webhook_integration
+                .send_subscription_count_changed(app_config, &request.channel, current_count)
+                .await
+                .ok();
         }
 
         // Handle cache channels
