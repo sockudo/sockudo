@@ -1,0 +1,674 @@
+{
+  "groups": [
+    {
+      "name": "Sockudo Critical System Health",
+      "folder": "sockudo-alerts",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "sockudo_high_connection_error_rate",
+          "title": "Sockudo: High Connection Error Rate",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "sum(rate(${metrics_prefix}connection_errors_total{app_id=~\"$app_id\"}[5m])) / sum(rate(${metrics_prefix}new_connections_total{app_id=~\"$app_id\"}[5m]))",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [0.05],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": ["A"]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A > 0.05",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "2m",
+          "annotations": {
+            "description": "Connection error rate is {{ $values.A.Value | humanizePercentage }} which is above the 5% threshold. This indicates connectivity issues that need immediate attention.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/connection-errors.md",
+            "summary": "Sockudo connection error rate is critically high"
+          },
+          "labels": {
+            "severity": "critical",
+            "service": "sockudo",
+            "alert_type": "connection_health"
+          }
+        },
+        {
+          "uid": "sockudo_service_down",
+          "title": "Sockudo: Service Completely Down",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "sum(${metrics_prefix}connected{app_id=~\"$app_id\"})",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A == 0",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "Alerting",
+          "execErrState": "Alerting",
+          "for": "5m",
+          "annotations": {
+            "description": "No active connections detected for app {{ $labels.app_id }}. Service appears to be completely down.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/service-down.md",
+            "summary": "Sockudo WebSocket service is down"
+          },
+          "labels": {
+            "severity": "critical",
+            "service": "sockudo",
+            "alert_type": "availability"
+          }
+        },
+        {
+          "uid": "sockudo_internode_communication_failure",
+          "title": "Sockudo: Inter-node Communication Failure",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "sum(rate(${metrics_prefix}horizontal_adapter_resolved_promises{app_id=~\"$app_id\"}[5m])) / (sum(rate(${metrics_prefix}horizontal_adapter_resolved_promises{app_id=~\"$app_id\"}[5m])) + sum(rate(${metrics_prefix}horizontal_adapter_uncomplete_promises{app_id=~\"$app_id\"}[5m])))",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A < 0.95",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "3m",
+          "annotations": {
+            "description": "Inter-node communication success rate is {{ $values.A.Value | humanizePercentage }}, below the 95% threshold. This can cause message loss in multi-node deployments.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/internode-failure.md",
+            "summary": "Sockudo inter-node communication is failing"
+          },
+          "labels": {
+            "severity": "critical",
+            "service": "sockudo",
+            "alert_type": "horizontal_scaling"
+          }
+        },
+        {
+          "uid": "sockudo_rate_limiter_failure",
+          "title": "Sockudo: Rate Limiter Not Functioning",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 60,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "increase(${metrics_prefix}rate_limit_checks_total{app_id=~\"$app_id\"}[1m])",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 60,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "sum(${metrics_prefix}connected{app_id=~\"$app_id\"})",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A == 0 AND B > 0",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "5m",
+          "annotations": {
+            "description": "Rate limiter checks are not being performed for app {{ $labels.app_id }} despite having {{ $values.B.Value }} active connections. This indicates a security risk.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/rate-limiter-failure.md",
+            "summary": "Sockudo rate limiter is not functioning"
+          },
+          "labels": {
+            "severity": "critical",
+            "service": "sockudo",
+            "alert_type": "security"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sockudo Performance Warnings",
+      "folder": "sockudo-alerts",
+      "interval": "5m",
+      "rules": [
+        {
+          "uid": "sockudo_high_connection_capacity",
+          "title": "Sockudo: High Connection Capacity",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "sum(${metrics_prefix}connected{app_id=~\"$app_id\"})",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A > 1000",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "NoData",
+          "for": "10m",
+          "annotations": {
+            "description": "Current connections ({{ $values.A.Value }}) are approaching capacity limits. Consider scaling up or load balancing.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/capacity-planning.md",
+            "summary": "Sockudo connection capacity is high"
+          },
+          "labels": {
+            "severity": "warning",
+            "service": "sockudo",
+            "alert_type": "capacity"
+          }
+        },
+        {
+          "uid": "sockudo_high_internode_latency",
+          "title": "Sockudo: High Inter-node Latency",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "histogram_quantile(0.95, sum(rate(${metrics_prefix}horizontal_adapter_resolve_time_bucket{app_id=~\"$app_id\"}[5m])) by (le))",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A > 500",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "NoData",
+          "for": "10m",
+          "annotations": {
+            "description": "95th percentile inter-node latency is {{ $values.A.Value }}ms, above the 500ms threshold. This may impact message delivery performance.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/high-latency.md",
+            "summary": "Sockudo inter-node latency is high"
+          },
+          "labels": {
+            "severity": "warning",
+            "service": "sockudo",
+            "alert_type": "performance"
+          }
+        },
+        {
+          "uid": "sockudo_excessive_rate_limiting",
+          "title": "Sockudo: Excessive Rate Limiting",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "sum(rate(${metrics_prefix}rate_limit_triggered_total{app_id=~\"$app_id\"}[5m])) / sum(rate(${metrics_prefix}rate_limit_checks_total{app_id=~\"$app_id\"}[5m]))",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A > 0.1",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "NoData",
+          "for": "15m",
+          "annotations": {
+            "description": "Rate limiting is being triggered {{ $values.A.Value | humanizePercentage }} of the time, above the 10% threshold. This may indicate an attack or need for capacity scaling.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/excessive-rate-limiting.md",
+            "summary": "Sockudo rate limiting is excessive"
+          },
+          "labels": {
+            "severity": "warning",
+            "service": "sockudo",
+            "alert_type": "rate_limiting"
+          }
+        },
+        {
+          "uid": "sockudo_message_processing_backlog",
+          "title": "Sockudo: Message Processing Backlog",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 120,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "rate(${metrics_prefix}ws_messages_received_total{app_id=~\"$app_id\"}[1m]) - rate(${metrics_prefix}ws_messages_sent_total{app_id=~\"$app_id\"}[1m])",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A > 1000",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "NoData",
+          "for": "5m",
+          "annotations": {
+            "description": "Message processing backlog detected. Receiving {{ $values.A.Value }} more messages per second than sending. This indicates processing bottlenecks.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/message-backlog.md",
+            "summary": "Sockudo message processing has a backlog"
+          },
+          "labels": {
+            "severity": "warning",
+            "service": "sockudo",
+            "alert_type": "message_processing"
+          }
+        },
+        {
+          "uid": "sockudo_zero_message_throughput",
+          "title": "Sockudo: Zero Message Throughput with Active Connections",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "rate(${metrics_prefix}ws_messages_received_total{app_id=~\"$app_id\"}[5m]) + rate(${metrics_prefix}ws_messages_sent_total{app_id=~\"$app_id\"}[5m])",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "sum(${metrics_prefix}connected{app_id=~\"$app_id\"})",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A == 0 AND B > 10",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "NoData",
+          "for": "10m",
+          "annotations": {
+            "description": "No message activity detected despite having {{ $values.B.Value }} active connections. This may indicate message processing failure.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/zero-throughput.md",
+            "summary": "Sockudo has zero message throughput with active connections"
+          },
+          "labels": {
+            "severity": "warning",
+            "service": "sockudo",
+            "alert_type": "message_processing"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sockudo Operational Monitoring",
+      "folder": "sockudo-alerts",
+      "interval": "15m",
+      "rules": [
+        {
+          "uid": "sockudo_high_channel_count",
+          "title": "Sockudo: High Channel Count",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "sum(${metrics_prefix}active_channels{app_id=~\"$app_id\"})",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A > 10000",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "NoData",
+          "for": "30m",
+          "annotations": {
+            "description": "Active channel count is {{ $values.A.Value }}, which is high and may impact memory usage. Consider monitoring memory consumption.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/high-channel-count.md",
+            "summary": "Sockudo has a high number of active channels"
+          },
+          "labels": {
+            "severity": "info",
+            "service": "sockudo",
+            "alert_type": "resource_usage"
+          }
+        },
+        {
+          "uid": "sockudo_bandwidth_saturation",
+          "title": "Sockudo: High Bandwidth Usage",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "model": {
+                "expr": "rate(${metrics_prefix}socket_transmitted_bytes{app_id=~\"$app_id\"}[1m]) + rate(${metrics_prefix}socket_received_bytes{app_id=~\"$app_id\"}[1m])",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "model": {
+                "expression": "A > 100000000",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B"
+              }
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "NoData",
+          "for": "20m",
+          "annotations": {
+            "description": "Bandwidth usage is {{ $values.A.Value | humanize1024 }}B/s, which may be approaching network limits. Monitor for potential congestion.",
+            "runbook_url": "https://github.com/your-org/sockudo/blob/main/docs/runbooks/bandwidth-saturation.md",
+            "summary": "Sockudo bandwidth usage is high"
+          },
+          "labels": {
+            "severity": "info",
+            "service": "sockudo",
+            "alert_type": "resource_usage"
+          }
+        }
+      ]
+    }
+  ]
+}
