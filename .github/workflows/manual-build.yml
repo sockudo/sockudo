@@ -70,7 +70,11 @@ jobs:
             matrix_items=$(echo "$matrix_items" | jq '. += [{"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "name": "windows-x64", "binary_name": "sockudo.exe"}]')
           fi
           
-          echo "matrix={\"include\":$matrix_items}" >> "$GITHUB_OUTPUT"
+          {
+            echo "matrix<<EOF"
+            echo "{\"include\":$matrix_items}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
           
           if [[ "$matrix_items" != "[]" ]]; then
             echo "has_builds=true" >> "$GITHUB_OUTPUT"
@@ -97,6 +101,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install system dependencies (Linux)
