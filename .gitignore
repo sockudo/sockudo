@@ -4,3 +4,4 @@
 .env
 .DS_Store
 benchmark/vendor
+.idea/
