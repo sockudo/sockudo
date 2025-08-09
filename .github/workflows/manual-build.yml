@@ -199,7 +199,12 @@ jobs:
 
       - name: Test Docker image
         run: |
-          docker run --rm -d --name sockudo-test -p 6001:6001 -e RUST_LOG=info ${{ steps.meta.outputs.tags }}
+          docker run --rm -d --name sockudo-test -p 6001:6001 \
+            -e RUST_LOG=info \
+            -e SOCKUDO_DEFAULT_APP_ID=demo-app \
+            -e SOCKUDO_DEFAULT_APP_KEY=app-key \
+            -e SOCKUDO_DEFAULT_APP_SECRET=app-secret \
+            ${{ steps.meta.outputs.tags }}
           sleep 10
           curl -f http://localhost:6001/up/demo-app || exit 1
           docker stop sockudo-test
