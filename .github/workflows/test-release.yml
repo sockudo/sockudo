@@ -1,0 +1,342 @@
+name: Release - Build and Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+
+jobs:
+  # =============================================================================
+  # Prepare Release Information
+  # =============================================================================
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      lowercase_image_name: ${{ steps.lowercase_repo.outputs.name }} # New output for lowercased repo name
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version information
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          
+          VERSION="${TAG#v}"
+          PRERELEASE="false"
+          if [[ "$TAG" =~ (alpha|beta|rc) ]]; then
+            PRERELEASE="true"
+          fi
+          
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Get repository name in lowercase
+        id: lowercase_repo # Step to convert repo name to lowercase
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+  # =============================================================================
+  # Build Cross-Platform Binaries
+  # =============================================================================
+  build-binaries:
+    name: Build ${{ matrix.target.name }}
+    runs-on: ${{ matrix.target.os }}
+    needs: prepare
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: Linux x86_64 (GNU)
+            triple: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive_ext: tar.gz
+            binary_name: sockudo
+          - name: macOS x86_64
+            triple: x86_64-apple-darwin
+            os: macos-13
+            archive_ext: tar.gz
+            binary_name: sockudo
+          - name: macOS ARM64
+            triple: aarch64-apple-darwin
+            os: macos-latest
+            archive_ext: tar.gz
+            binary_name: sockudo
+          - name: Windows x86_64
+            triple: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive_ext: zip
+            binary_name: sockudo.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.triple }}
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake
+          sudo apt-get install -y libssl-dev curl # Install for GNU targets
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ matrix.target.triple }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target.triple }}
+
+      - name: Prepare binary and create archive
+        id: prepare_artifact
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TARGET_TRIPLE="${{ matrix.target.triple }}"
+          ARCHIVE_EXT="${{ matrix.target.archive_ext }}"
+          BINARY_NAME="${{ matrix.target.binary_name }}"
+          
+          SOURCE_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
+          ARCHIVE_NAME="sockudo-v${VERSION}-${TARGET_TRIPLE}.${ARCHIVE_EXT}"
+          
+          # Strip binary on Unix systems
+          if [[ "$RUNNER_OS" == "Linux" || "$RUNNER_OS" == "macOS" ]]; then
+            strip "${SOURCE_PATH}" || echo "Strip failed, continuing..."
+          fi
+          
+          # Create archive
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            powershell Compress-Archive -Path "${SOURCE_PATH}" -DestinationPath "${ARCHIVE_NAME}"
+          else
+            cd $(dirname "${SOURCE_PATH}")
+            tar -czf "${GITHUB_WORKSPACE}/${ARCHIVE_NAME}" "${BINARY_NAME}"
+          fi
+          
+          echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          files: ${{ steps.prepare_artifact.outputs.archive_name }}
+
+  # =============================================================================
+  # Build and Push Docker Images
+  # =============================================================================
+  build-docker:
+    name: Build Docker ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.runner }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: amd64
+            arch: linux/amd64
+            runner: ubuntu-latest
+          - name: arm64
+            arch: linux/arm64
+            runner: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        continue-on-error: true
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push images
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform.arch }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest-${{ matrix.platform.name }}
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
+            sockudo/sockudo:latest-${{ matrix.platform.name }}
+          cache-from: type=gha,scope=docker-${{ matrix.platform.name }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.platform.name }}
+
+  # =============================================================================
+  # Create Multi-Platform Manifests
+  # =============================================================================
+  docker-manifest:
+    name: Create Multi-Platform Manifests
+    runs-on: ubuntu-latest
+    needs: [build-docker]
+    
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        continue-on-error: true
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and push GHCR manifest
+        run: |
+          # Create version manifest
+          docker manifest create \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }} \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-amd64 \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-arm64
+          docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
+          
+          # Create latest manifest
+          docker manifest create \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest-amd64 \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest-arm64
+          docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest
+
+      - name: Create and push Docker Hub manifest
+        continue-on-error: true
+        run: |
+          # Create version manifest
+          docker manifest create \
+            sockudo/sockudo:${{ needs.prepare.outputs.version }} \
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-amd64 \
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-arm64
+          docker manifest push sockudo/sockudo:${{ needs.prepare.outputs.version }}
+          
+          # Create latest manifest
+          docker manifest create \
+            sockudo/sockudo:latest \
+            sockudo/sockudo:latest-amd64 \
+            sockudo/sockudo:latest-arm64
+          docker manifest push sockudo/sockudo:latest
+
+  # =============================================================================
+  # Publish to Crates.io
+  # =============================================================================
+  publish-crates:
+    name: Publish to Crates.io
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    if: needs.prepare.outputs.prerelease != 'true'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake
+
+      - name: Publish to crates.io
+        env:
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        if: env.CRATES_IO_TOKEN != ''
+        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+
+  # =============================================================================
+  # Create GitHub Release (Final Step)
+  # =============================================================================
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [docker-manifest, publish-crates]
+    if: always() && !cancelled() && needs.docker-manifest.result == 'success' && (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
+    
+    steps:
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: "Sockudo ${{ needs.prepare.outputs.tag }}"
+          body: |
+            # Sockudo WebSocket Server ${{ needs.prepare.outputs.version }}
+            
+            ## Installation
+            
+            ### Using cargo-binstall (Recommended)
+            ```bash
+            cargo binstall sockudo --version ${{ needs.prepare.outputs.version }}
+            ```
+            
+            ### Using cargo
+            ```bash
+            cargo install sockudo --version ${{ needs.prepare.outputs.version }}
+            ```
+            
+            ### Using Docker
+            ```bash
+            docker pull ghcr.io/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
+            docker pull sockudo/sockudo:${{ needs.prepare.outputs.version }}
+            ```
+            
+            ## Platform Support
+            - ✅ Linux x86_64 (GNU)
+            - ✅ macOS x86_64 (Intel)
+            - ✅ macOS ARM64 (Apple Silicon)
+            - ✅ Windows x86_64
+            - ✅ Docker linux/amd64
+            - ✅ Docker linux/arm64
+          draft: false
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
