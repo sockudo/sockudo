@@ -268,6 +268,9 @@ jobs:
 
       - name: Create and push Docker Hub manifest
         continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           # Create version manifest
           docker manifest create \
@@ -285,18 +288,24 @@ jobs:
           
           # Clean up temporary platform-specific tags
           echo "Cleaning up temporary tags..."
-          curl -s -X DELETE \
-            -H "Authorization: Bearer $(curl -s -X POST \
-              -H "Content-Type: application/json" \
-              -d '{"username": "'${DOCKERHUB_USERNAME}'", "password": "'${DOCKERHUB_TOKEN}'"}' \
-              https://hub.docker.com/v2/users/login/ | jq -r .token)" \
-            "https://hub.docker.com/v2/repositories/sockudo/sockudo/tags/${{ needs.prepare.outputs.version }}-amd64-temp/" || true
-          curl -s -X DELETE \
-            -H "Authorization: Bearer $(curl -s -X POST \
-              -H "Content-Type: application/json" \
-              -d '{"username": "'${DOCKERHUB_USERNAME}'", "password": "'${DOCKERHUB_TOKEN}'"}' \
-              https://hub.docker.com/v2/users/login/ | jq -r .token)" \
-            "https://hub.docker.com/v2/repositories/sockudo/sockudo/tags/${{ needs.prepare.outputs.version }}-arm64-temp/" || true
+          TOKEN=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"username": "'${DOCKERHUB_USERNAME}'", "password": "'${DOCKERHUB_TOKEN}'"}' \
+            https://hub.docker.com/v2/users/login/ | jq -r .token)
+          
+          if [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ]; then
+            echo "Deleting temp tag: ${{ needs.prepare.outputs.version }}-amd64-temp"
+            curl -s -o /dev/null -X DELETE \
+              -H "Authorization: Bearer ${TOKEN}" \
+              "https://hub.docker.com/v2/repositories/sockudo/sockudo/tags/${{ needs.prepare.outputs.version }}-amd64-temp/" || true
+            
+            echo "Deleting temp tag: ${{ needs.prepare.outputs.version }}-arm64-temp"  
+            curl -s -o /dev/null -X DELETE \
+              -H "Authorization: Bearer ${TOKEN}" \
+              "https://hub.docker.com/v2/repositories/sockudo/sockudo/tags/${{ needs.prepare.outputs.version }}-arm64-temp/" || true
+          else
+            echo "Failed to authenticate for cleanup, temp tags will remain"
+          fi
 
   # =============================================================================
   # Publish to Crates.io
