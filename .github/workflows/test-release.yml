@@ -222,10 +222,8 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}-${{ matrix.platform.name }}
-            sockudo/sockudo:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
-            sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }}-${{ matrix.platform.name }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}-temp
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}-temp
           cache-from: type=gha,scope=docker-${{ matrix.platform.name }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.platform.name }}
 
@@ -257,15 +255,15 @@ jobs:
           # Create version manifest
           docker manifest create \
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }} \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-amd64 \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-arm64
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-amd64-temp \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-arm64-temp
           docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
           
           # Create suffix manifest
           docker manifest create \
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }} \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}-amd64 \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}-arm64
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-amd64-temp \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-arm64-temp
           docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}
 
       - name: Create and push Docker Hub manifest
@@ -274,16 +272,31 @@ jobs:
           # Create version manifest
           docker manifest create \
             sockudo/sockudo:${{ needs.prepare.outputs.version }} \
-            sockudo/sockudo:${{ needs.prepare.outputs.version }}-amd64 \
-            sockudo/sockudo:${{ needs.prepare.outputs.version }}-arm64
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-amd64-temp \
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-arm64-temp
           docker manifest push sockudo/sockudo:${{ needs.prepare.outputs.version }}
           
           # Create suffix manifest
           docker manifest create \
             sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }} \
-            sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }}-amd64 \
-            sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }}-arm64
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-amd64-temp \
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-arm64-temp
           docker manifest push sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }}
+          
+          # Clean up temporary platform-specific tags
+          echo "Cleaning up temporary tags..."
+          curl -s -X DELETE \
+            -H "Authorization: Bearer $(curl -s -X POST \
+              -H "Content-Type: application/json" \
+              -d '{"username": "'${DOCKERHUB_USERNAME}'", "password": "'${DOCKERHUB_TOKEN}'"}' \
+              https://hub.docker.com/v2/users/login/ | jq -r .token)" \
+            "https://hub.docker.com/v2/repositories/sockudo/sockudo/tags/${{ needs.prepare.outputs.version }}-amd64-temp/" || true
+          curl -s -X DELETE \
+            -H "Authorization: Bearer $(curl -s -X POST \
+              -H "Content-Type: application/json" \
+              -d '{"username": "'${DOCKERHUB_USERNAME}'", "password": "'${DOCKERHUB_TOKEN}'"}' \
+              https://hub.docker.com/v2/users/login/ | jq -r .token)" \
+            "https://hub.docker.com/v2/repositories/sockudo/sockudo/tags/${{ needs.prepare.outputs.version }}-arm64-temp/" || true
 
   # =============================================================================
   # Publish to Crates.io
