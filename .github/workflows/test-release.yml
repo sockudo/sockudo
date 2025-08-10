@@ -206,9 +206,9 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest-${{ matrix.platform.name }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test-${{ matrix.platform.name }}
             sockudo/sockudo:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
-            sockudo/sockudo:latest-${{ matrix.platform.name }}
+            sockudo/sockudo:test-${{ matrix.platform.name }}
           cache-from: type=gha,scope=docker-${{ matrix.platform.name }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.platform.name }}
 
@@ -244,12 +244,12 @@ jobs:
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-arm64
           docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
           
-          # Create latest manifest
+          # Create test manifest (instead of latest)
           docker manifest create \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest-amd64 \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest-arm64
-          docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test-amd64 \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test-arm64
+          docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test
 
       - name: Create and push Docker Hub manifest
         continue-on-error: true
@@ -261,12 +261,12 @@ jobs:
             sockudo/sockudo:${{ needs.prepare.outputs.version }}-arm64
           docker manifest push sockudo/sockudo:${{ needs.prepare.outputs.version }}
           
-          # Create latest manifest
+          # Create test manifest (instead of latest)
           docker manifest create \
-            sockudo/sockudo:latest \
-            sockudo/sockudo:latest-amd64 \
-            sockudo/sockudo:latest-arm64
-          docker manifest push sockudo/sockudo:latest
+            sockudo/sockudo:test \
+            sockudo/sockudo:test-amd64 \
+            sockudo/sockudo:test-arm64
+          docker manifest push sockudo/sockudo:test
 
   # =============================================================================
   # Publish to Crates.io
