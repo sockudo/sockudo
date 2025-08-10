@@ -172,6 +172,22 @@ test: ## Run basic connectivity tests
 	@echo "$(YELLOW)Testing Redis connection...$(RESET)"
 	@docker-compose exec -T redis redis-cli ping || echo "$(RED)Redis test failed$(RESET)"
 
+.PHONY: test-integration
+test-integration: ## Run integration tests with Docker
+	@echo "$(BLUE)Running integration tests...$(RESET)"
+	@cd test/integration && ./scripts/run-tests.sh docker
+
+.PHONY: test-integration-local
+test-integration-local: ## Run integration tests against local server
+	@echo "$(BLUE)Running integration tests (local)...$(RESET)"
+	@cd test/integration && ./scripts/run-tests.sh local
+
+.PHONY: test-ci
+test-ci: ## Run all tests for CI
+	@echo "$(BLUE)Running CI test suite...$(RESET)"
+	@make test-integration
+	@echo "$(GREEN)CI tests complete!$(RESET)"
+
 .PHONY: shell-sockudo
 shell-sockudo: ## Access Sockudo container shell
 	@docker-compose exec sockudo sh

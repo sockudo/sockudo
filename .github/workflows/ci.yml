@@ -141,12 +141,29 @@ jobs:
         run: cargo audit
 
   # =============================================================================
+  # Integration Tests
+  # =============================================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Integration Tests
+        run: make test-integration
+        env:
+          DOCKER_BUILDKIT: 1
+
+  # =============================================================================
   # Manual Build Instructions (PR only)
   # =============================================================================
   manual-build-info:
     name: 🔨 Manual Build Instructions
     runs-on: ubuntu-latest
-    needs: [lint, test, security]
+    needs: [lint, test, security, integration-tests]
     steps:
       - name: Post build instructions
         uses: actions/github-script@v7

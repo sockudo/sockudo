@@ -1,0 +1,30 @@
+
+> sockudo-integration-tests@1.0.0 test
+> mocha tests/**/*.test.js --timeout 15000 --exit --reporter json
+
+Auth server running on http://localhost:3011
+Auth server running on http://localhost:3006
+Auth server stopped
+Auth server running on http://localhost:3007
+Auth server stopped
+Auth server running on http://localhost:3008
+Auth server stopped
+Auth server running on http://localhost:3009
+Auth server stopped
+Auth server running on http://localhost:3010
+Auth server stopped
+Auth server stopped
+Successfully subscribed to 110 channels
+Connecting up to 10 clients...
+Sending 5 events within rate limit...
+Unexpected error within limit: Event 'rate-test-event' does not start with 'client-'
+Unexpected error within limit: Event 'rate-test-event' does not start with 'client-'
+Unexpected error within limit: Event 'rate-test-event' does not start with 'client-'
+Unexpected error within limit: Event 'rate-test-event' does not start with 'client-'
+Unexpected error within limit: Event 'rate-test-event' does not start with 'client-'
+Subscribing to 15 channels...
+Unsubscribing from all channels...
+Testing subscription to 25 channels...
+Successfully subscribed to 25 channels
+Adding 5 members to presence channel...
+Presence channel has 5 members

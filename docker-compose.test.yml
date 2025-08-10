@@ -1,0 +1,114 @@
+# =============================================================================
+# Sockudo Integration Test Environment
+# =============================================================================
+
+name: sockudo-test
+
+services:
+  # ---------------------------------------------------------------------------
+  # Sockudo WebSocket Server for Testing
+  # ---------------------------------------------------------------------------
+  sockudo-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: sockudo-test-server
+    
+    environment:
+      RUST_LOG: "info,sockudo=debug"
+      DEBUG: "true"
+      HOST: "0.0.0.0"
+      PORT: "6005"
+      METRICS_PORT: "9605"
+      SHUTDOWN_GRACE_PERIOD: "0"
+      
+      # Redis Configuration
+      DATABASE_REDIS_HOST: "redis-test"
+      DATABASE_REDIS_PORT: "6385"
+      DATABASE_REDIS_DB: "0"
+      DATABASE_REDIS_KEY_PREFIX: "sockudo_test:"
+      
+      # Driver Configuration
+      ADAPTER_DRIVER: "redis"
+      CACHE_DRIVER: "redis"
+      QUEUE_DRIVER: "redis"
+      APP_MANAGER_DRIVER: "memory"
+      RATE_LIMITER_DRIVER: "redis"
+      
+      # Test App Configuration
+      SOCKUDO_DEFAULT_APP_ID: "test-app"
+      SOCKUDO_DEFAULT_APP_KEY: "test-key"
+      SOCKUDO_DEFAULT_APP_SECRET: "test-secret"
+      SOCKUDO_ENABLE_CLIENT_MESSAGES: "true"
+      SOCKUDO_DEFAULT_APP_ENABLED: "true"
+      
+      # Quotas for testing (low limits for fast test execution)
+      SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS: "10"
+      SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND: "5"
+      SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND: "20"
+      
+      # Features
+      SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION: "true"
+      SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS: "true"
+      
+      # Rate limiting for tests
+      RATE_LIMITER_ENABLED: "true"
+    
+    ports:
+      - "6005:6005"
+      - "9605:9605"
+
+    depends_on:
+      redis-test:
+        condition: service_healthy
+    
+    networks:
+      - test-network
+
+  # ---------------------------------------------------------------------------
+  # Redis for Testing
+  # ---------------------------------------------------------------------------
+  redis-test:
+    image: redis:7-alpine
+    container_name: sockudo-redis-test
+    
+    command: redis-server --port 6385 --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    
+    ports:
+      - "6385:6385"
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6385", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    
+    networks:
+      - test-network
+
+  # ---------------------------------------------------------------------------
+  # Auth Server for Testing Private/Presence Channels
+  # ---------------------------------------------------------------------------
+  auth-server:
+    build:
+      context: ./test/integration
+      dockerfile: Dockerfile.auth
+    container_name: sockudo-auth-test
+    
+    environment:
+      AUTH_SERVER_PORT: "3005"
+      AUTH_SERVER_HOST: "0.0.0.0"
+      TEST_APP_KEY: "test-key"
+      TEST_APP_SECRET: "test-secret"
+    
+    ports:
+      - "3005:3005"
+
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge
