@@ -7,9 +7,7 @@
 # -----------------------------------------------------------------------------
 FROM rust:latest AS builder
 
-# Install nightly toolchain
-RUN rustup toolchain install nightly
-RUN rustup default nightly
+# Use stable toolchain (already default)
 
 # Install system dependencies required for building
 RUN apt-get update && apt-get install -y \
