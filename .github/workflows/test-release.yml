@@ -220,6 +220,7 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform.arch }}
           push: true
+          provenance: false
           tags: |
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}-${{ matrix.platform.name }}
