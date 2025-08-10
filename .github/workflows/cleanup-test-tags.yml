@@ -33,9 +33,6 @@ jobs:
         run: |
           IFS=',' read -ra TAGS <<< "${{ github.event.inputs.tags_to_delete }}"
           echo "Tags to delete: ${TAGS[@]}"
-          
-          # Convert to JSON array for matrix
-          echo "tags=$(printf '%s\n' "${TAGS[@]}" | jq -R . | jq -s .)" >> $GITHUB_OUTPUT
 
       - name: Delete from Docker Hub
         if: github.event.inputs.delete_from_dockerhub == 'true'
