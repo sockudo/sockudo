@@ -223,8 +223,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v3
+        continue-on-error: true
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -239,8 +239,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest-${{ matrix.platform.name }}
-            ${{ secrets.DOCKERHUB_USERNAME != '' && format('sockudo/sockudo:{0}-{1}', needs.prepare.outputs.version, matrix.platform.name) || '' }}
-            ${{ secrets.DOCKERHUB_USERNAME != '' && format('sockudo/sockudo:latest-{0}', matrix.platform.name) || '' }}
+            sockudo/sockudo:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
+            sockudo/sockudo:latest-${{ matrix.platform.name }}
           cache-from: type=gha,scope=docker-${{ matrix.platform.name }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.platform.name }}
 
@@ -261,8 +261,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v3
+        continue-on-error: true
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -284,7 +284,7 @@ jobs:
           docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:latest
 
       - name: Create and push Docker Hub manifest
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        continue-on-error: true
         run: |
           # Create version manifest
           docker manifest create \
