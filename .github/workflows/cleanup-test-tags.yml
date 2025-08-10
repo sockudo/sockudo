@@ -7,7 +7,7 @@ on:
         description: 'Comma-separated list of tags to delete (e.g., test,0.0.0-test,test-amd64)'
         required: false
         type: string
-        default: 'test,0.0.0-test,test-arm64,0.0.0-test-arm64,test-amd64,0.0.0-test-amd64,0.0.1-test-arm64,0.0.1-test-amd64,latest-arm64,2.5.2-amd64,latest-amd64,2.5.2-arm64'
+        default: ''
       delete_from_dockerhub:
         description: 'Delete from Docker Hub'
         required: false
