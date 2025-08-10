@@ -11,6 +11,11 @@ on:
         description: 'Tag to release (e.g., v1.0.0)'
         required: true
         type: string
+      docker_tag_suffix:
+        description: 'Docker tag suffix (e.g., latest, test, dev)'
+        required: false
+        type: string
+        default: 'latest'
 
 permissions:
   contents: write
@@ -32,6 +37,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
       lowercase_image_name: ${{ steps.lowercase_repo.outputs.name }} # New output for lowercased repo name
+      docker_tag_suffix: ${{ steps.docker_suffix.outputs.suffix }}
     
     steps:
       - name: Checkout repository
@@ -61,6 +67,16 @@ jobs:
       - name: Get repository name in lowercase
         id: lowercase_repo # Step to convert repo name to lowercase
         run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Get Docker tag suffix
+        id: docker_suffix
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.docker_tag_suffix }}" ]; then
+            SUFFIX="${{ github.event.inputs.docker_tag_suffix }}"
+          else
+            SUFFIX="latest"
+          fi
+          echo "suffix=${SUFFIX}" >> $GITHUB_OUTPUT
 
   # =============================================================================
   # Build Cross-Platform Binaries
@@ -206,9 +222,9 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test-${{ matrix.platform.name }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}-${{ matrix.platform.name }}
             sockudo/sockudo:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
-            sockudo/sockudo:test-${{ matrix.platform.name }}
+            sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }}-${{ matrix.platform.name }}
           cache-from: type=gha,scope=docker-${{ matrix.platform.name }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.platform.name }}
 
@@ -244,12 +260,12 @@ jobs:
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-arm64
           docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}
           
-          # Create test manifest (instead of latest)
+          # Create suffix manifest
           docker manifest create \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test-amd64 \
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test-arm64
-          docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:test
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }} \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}-amd64 \
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}-arm64
+          docker manifest push ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.docker_tag_suffix }}
 
       - name: Create and push Docker Hub manifest
         continue-on-error: true
@@ -261,12 +277,12 @@ jobs:
             sockudo/sockudo:${{ needs.prepare.outputs.version }}-arm64
           docker manifest push sockudo/sockudo:${{ needs.prepare.outputs.version }}
           
-          # Create test manifest (instead of latest)
+          # Create suffix manifest
           docker manifest create \
-            sockudo/sockudo:test \
-            sockudo/sockudo:test-amd64 \
-            sockudo/sockudo:test-arm64
-          docker manifest push sockudo/sockudo:test
+            sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }} \
+            sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }}-amd64 \
+            sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }}-arm64
+          docker manifest push sockudo/sockudo:${{ needs.prepare.outputs.docker_tag_suffix }}
 
   # =============================================================================
   # Publish to Crates.io
