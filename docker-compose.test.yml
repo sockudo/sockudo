@@ -15,6 +15,10 @@ services:
       target: runtime
     container_name: sockudo-test-server
     
+    volumes:
+      # Mount the locally built binary to overwrite the container binary
+      - "./target/release/sockudo:/usr/local/bin/sockudo:ro"
+    
     environment:
       RUST_LOG: "info,sockudo=debug"
       DEBUG: "true"
