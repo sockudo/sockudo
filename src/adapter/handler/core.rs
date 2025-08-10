@@ -156,6 +156,40 @@ impl ConnectionHandler {
     pub async fn handle_disconnect(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         debug!("Handling disconnect for socket: {}", socket_id);
 
+        // Check if already disconnecting and set flag atomically
+        // Release connection_manager lock quickly to reduce contention
+        let conn = {
+            let mut connection_manager = self.connection_manager.lock().await;
+            connection_manager.get_connection(socket_id, app_id).await
+        };
+
+        let already_disconnecting = if let Some(conn) = conn {
+            // Use try_lock to avoid blocking on nested locks (prevents deadlock)
+            if let Ok(mut conn_locked) = conn.0.try_lock() {
+                let was_disconnecting = conn_locked.state.disconnecting;
+                conn_locked.state.disconnecting = true;
+                was_disconnecting
+            } else {
+                // Connection is busy being accessed by another thread - assume it's being handled
+                debug!(
+                    "Connection {} is busy, assuming disconnect already in progress",
+                    socket_id
+                );
+                true // Skip processing
+            }
+        } else {
+            // Connection doesn't exist - it may have been cleaned up already
+            true
+        };
+
+        if already_disconnecting {
+            debug!(
+                "Connection {} already disconnecting or doesn't exist, skipping",
+                socket_id
+            );
+            return Ok(());
+        }
+
         // Clear timeouts
         self.clear_activity_timeout(app_id, socket_id).await?;
         self.clear_user_authentication_timeout(app_id, socket_id)
