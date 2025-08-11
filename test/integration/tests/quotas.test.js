@@ -21,7 +21,7 @@ describe('Quota and Limits Tests', function() {
 
     describe('Connection Limits', function() {
         it('should enforce max connections per app', async function() {
-            const maxConnections = 10; // Based on test configuration
+            const maxConnections = 10; // Based on test configuration (SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS)
             
             // Step 1: Connect up to max_connections
             console.log(`Connecting up to ${maxConnections} clients...`);

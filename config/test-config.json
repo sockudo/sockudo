@@ -1,0 +1,143 @@
+{
+  "debug": true,
+  "host": "0.0.0.0",
+  "port": 6005,
+  "mode": "development",
+  "path_prefix": "/",
+  "shutdown_grace_period": 0,
+  "websocket_max_payload_kb": 64,
+  "user_authentication_timeout": 3600,
+
+  "adapter": {
+    "driver": "redis",
+    "redis": {
+      "requests_timeout": 5000,
+      "prefix": "sockudo_test:",
+      "cluster_mode": false,
+      "redis_pub_options": {},
+      "redis_sub_options": {}
+    }
+  },
+
+  "app_manager": {
+    "driver": "memory",
+    "array": {
+      "apps": []
+    },
+    "cache": {
+      "enabled": false,
+      "ttl": 300
+    }
+  },
+
+  "cache": {
+    "driver": "redis",
+    "redis": {
+      "prefix": "sockudo_test_cache:",
+      "cluster_mode": false
+    }
+  },
+
+  "database": {
+    "redis": {
+      "host": "redis-test",
+      "port": 6385,
+      "db": 0,
+      "key_prefix": "sockudo_test:"
+    }
+  },
+
+  "queue": {
+    "driver": "redis",
+    "redis": {
+      "concurrency": 5,
+      "prefix": "sockudo_test_queue:",
+      "cluster_mode": false
+    }
+  },
+
+  "rate_limiter": {
+    "enabled": true,
+    "driver": "redis",
+    "api_rate_limit": {
+      "max_requests": 10,
+      "window_seconds": 60,
+      "identifier": "api",
+      "trust_hops": 0
+    },
+    "websocket_rate_limit": {
+      "max_requests": 20,
+      "window_seconds": 60,
+      "identifier": "websocket_connect",
+      "trust_hops": 0
+    },
+    "redis": {
+      "prefix": "sockudo_test_rl:",
+      "cluster_mode": false
+    }
+  },
+
+  "metrics": {
+    "enabled": false,
+    "driver": "prometheus",
+    "host": "0.0.0.0",
+    "port": 9605
+  },
+
+  "ssl": {
+    "enabled": false
+  },
+
+  "cors": {
+    "credentials": true,
+    "origin": ["*"],
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allowed_headers": [
+      "Authorization",
+      "Content-Type",
+      "X-Requested-With",
+      "Accept"
+    ]
+  },
+
+  "channel_limits": {
+    "max_name_length": 200,
+    "cache_ttl": 3600
+  },
+
+  "event_limits": {
+    "max_channels_at_once": 1000,
+    "max_name_length": 2000,
+    "max_payload_in_kb": 1000,
+    "max_batch_size": 100
+  },
+
+  "presence": {
+    "max_members_per_channel": 100,
+    "max_member_size_in_kb": 2
+  },
+
+  "http_api": {
+    "request_limit_in_mb": 10,
+    "accept_traffic": {
+      "memory_threshold": 0.90
+    }
+  },
+
+  "webhooks": {
+    "batching": {
+      "enabled": false,
+      "duration": 50
+    }
+  },
+
+  "instance": {
+    "process_id": "sockudo-test-1"
+  },
+
+  "database_pooling": {
+    "enabled": true,
+    "min": 2,
+    "max": 10
+  }
+}
