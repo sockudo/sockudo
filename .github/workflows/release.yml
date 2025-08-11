@@ -168,11 +168,12 @@ jobs:
           
           echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
 
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v1
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          files: ${{ steps.prepare_artifact.outputs.archive_name }}
+          name: sockudo-${{ matrix.target.triple }}
+          path: ${{ steps.prepare_artifact.outputs.archive_name }}
+          retention-days: 1
 
   # =============================================================================
   # Build and Push Docker Images
@@ -340,18 +341,24 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [prepare, docker-manifest, publish-crates]
-    if: always() && !cancelled() && needs.docker-manifest.result == 'success' && (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
+    needs: [prepare, build-binaries, docker-manifest, publish-crates]
+    if: always() && !cancelled() && needs.build-binaries.result == 'success' && needs.docker-manifest.result == 'success' && (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
     
     steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./release-artifacts
+          pattern: sockudo-*
+          merge-multiple: true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: "Sockudo ${{ needs.prepare.outputs.tag }}"
+          generate_release_notes: true
           body: |
-            # Sockudo WebSocket Server ${{ needs.prepare.outputs.version }}
-            
             ## Installation
             
             ### Using cargo-binstall (Recommended)
@@ -370,6 +377,9 @@ jobs:
             docker pull sockudo/sockudo:${{ needs.prepare.outputs.version }}
             ```
             
+            ### Direct Download
+            Download the appropriate binary for your platform from the assets below.
+            
             ## Platform Support
             - ✅ Linux x86_64 (GNU)
             - ✅ macOS x86_64 (Intel)
@@ -377,5 +387,6 @@ jobs:
             - ✅ Windows x86_64
             - ✅ Docker linux/amd64
             - ✅ Docker linux/arm64
+          files: ./release-artifacts/*
           draft: false
           prerelease: ${{ needs.prepare.outputs.prerelease }}
