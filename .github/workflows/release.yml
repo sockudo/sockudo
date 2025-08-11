@@ -64,6 +64,30 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
 
+      - name: Verify version matches Cargo.toml
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          
+          # Only verify version for tags in vX.X.X or vX.X.X-suffix format
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.*)?$ ]]; then
+            TAG_VERSION="${{ steps.version.outputs.version }}"
+            CARGO_VERSION=$(grep "^version" Cargo.toml | head -1 | cut -d'"' -f2)
+            
+            echo "Git tag version: ${TAG_VERSION}"
+            echo "Cargo.toml version: ${CARGO_VERSION}"
+            
+            if [ "${TAG_VERSION}" != "${CARGO_VERSION}" ]; then
+              echo "::error::Version mismatch! Git tag is v${TAG_VERSION} but Cargo.toml has version ${CARGO_VERSION}"
+              echo "Please ensure the Git tag matches the version in Cargo.toml"
+              exit 1
+            fi
+            
+            echo "✅ Version verification passed: ${TAG_VERSION}"
+          else
+            echo "Skipping version verification for tag: ${TAG} (not in vX.X.X format)"
+          fi
+
       - name: Get repository name in lowercase
         id: lowercase_repo # Step to convert repo name to lowercase
         run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
