@@ -18,6 +18,8 @@ services:
     volumes:
       # Mount the locally built binary to overwrite the container binary
       - "./target/release/sockudo:/usr/local/bin/sockudo:ro"
+      # Mount the local config to overwrite the container config
+      - "./config:/app/config:ro"
     
     environment:
       RUST_LOG: "info,sockudo=debug"

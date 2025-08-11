@@ -125,12 +125,33 @@ class TestClient extends EventEmitter {
 
     async disconnect() {
         if (this.pusher) {
-            this.pusher.disconnect();
-            this.pusher = null;
-            this.channels.clear();
-            this.connectionState = 'disconnected';
-            this.socketId = null;
-            this.emit('disconnected');
+            return new Promise((resolve) => {
+                // Wait for the actual disconnection event
+                const onDisconnect = () => {
+                    this.pusher = null;
+                    this.channels.clear();
+                    this.connectionState = 'disconnected';
+                    this.socketId = null;
+                    this.emit('disconnected');
+                    resolve();
+                };
+                
+                // Listen for disconnection
+                this.pusher.connection.bind('disconnected', onDisconnect);
+                
+                // Trigger disconnect
+                this.pusher.disconnect();
+                
+                // Fallback timeout in case disconnected event doesn't fire
+                setTimeout(() => {
+                    this.pusher = null;
+                    this.channels.clear();
+                    this.connectionState = 'disconnected';
+                    this.socketId = null;
+                    this.emit('disconnected');
+                    resolve();
+                }, 1000);
+            });
         }
     }
 
