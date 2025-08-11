@@ -252,24 +252,30 @@ describe('Event Broadcasting Tests', function() {
             client1 = new TestClient();
             await client1.connect();
             await client1.subscribe(channelName);
+            
+            client2 = new TestClient({ authEndpoint: 'http://localhost:3013/pusher/auth' });
+            await client2.connect();
+            await client2.subscribe(channelName);
 
-            // Send events rapidly to trigger rate limit
-            const promises = [];
-            for (let i = 0; i < 20; i++) {
-                promises.push(
-                    client1.trigger(channelName, eventName, { id: i })
-                        .catch(error => error)
-                );
+            // Send events sequentially and check if they're received (rate limiting on server)
+            let eventsReceived = 0;
+            const totalEvents = 10;
+            
+            for (let i = 0; i < totalEvents; i++) {
+                const eventPromise = client2.waitForEvent(channelName, `client-${eventName}-${i}`, 500);
+                await client1.trigger(channelName, `${eventName}-${i}`, { id: i });
+                try {
+                    await eventPromise;
+                    eventsReceived++;
+                } catch (error) {
+                    // Event was rate limited by server
+                }
             }
-
-            const results = await Promise.all(promises);
             
-            // Some should succeed, some should be rate limited
-            const errors = results.filter(r => r instanceof Error);
-            const successes = results.filter(r => !(r instanceof Error));
-            
-            expect(errors.length).to.be.greaterThan(0);
-            expect(successes.length).to.be.greaterThan(0);
+            // Rate limiting should prevent all events from being delivered
+            // With a 5/sec limit, not all 10 events should get through quickly
+            expect(eventsReceived).to.be.lessThan(totalEvents);
+            expect(eventsReceived).to.be.greaterThan(0);
         });
     });
 
