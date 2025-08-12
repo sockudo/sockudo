@@ -154,7 +154,7 @@ impl HorizontalAdapter {
     /// Process a received request from another node
     pub async fn process_request(&mut self, request: RequestBody) -> Result<ResponseBody> {
         debug!(
-            "Processing request from node {}: {:?}",
+            "{}",
             format!(
                 "Processing request from node {}: {:?}",
                 request.node_id, request.request_type
