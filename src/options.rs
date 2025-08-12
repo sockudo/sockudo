@@ -191,6 +191,25 @@ pub enum MetricsDriver {
     Prometheus,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogOutputFormat {
+    #[default]
+    Human,
+    Json,
+}
+
+impl FromStr for LogOutputFormat {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "human" => Ok(LogOutputFormat::Human),
+            "json" => Ok(LogOutputFormat::Json),
+            _ => Err(format!("Unknown log output format: {s}")),
+        }
+    }
+}
+
 impl FromStr for MetricsDriver {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -226,6 +245,7 @@ pub struct ServerOptions {
     pub host: String,
     pub http_api: HttpApiConfig,
     pub instance: InstanceConfig,
+    pub logging: Option<LoggingConfig>,
     pub metrics: MetricsConfig,
     pub mode: String,
     pub port: u16,
@@ -465,6 +485,13 @@ pub struct PrometheusConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct LoggingConfig {
+    pub colors_enabled: bool,
+    pub include_target: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PresenceConfig {
     pub max_members_per_channel: u32,
     pub max_member_size_in_kb: u32,
@@ -550,6 +577,7 @@ impl Default for ServerOptions {
             host: "0.0.0.0".to_string(),
             http_api: HttpApiConfig::default(),
             instance: InstanceConfig::default(),
+            logging: None, // Optional - maintains backward compatibility
             metrics: MetricsConfig::default(),
             mode: "production".to_string(),
             port: 6001,
@@ -771,6 +799,15 @@ impl Default for InstanceConfig {
     fn default() -> Self {
         Self {
             process_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            colors_enabled: true, // Current default behavior
+            include_target: true, // Current default behavior
         }
     }
 }
@@ -1247,6 +1284,22 @@ impl ServerOptions {
             self.cache.redis.url_override = Some(redis_url_env.clone());
             self.queue.redis.url_override = Some(redis_url_env.clone());
             self.rate_limiter.redis.url_override = Some(redis_url_env);
+        }
+
+        // --- Logging Configuration ---
+        // Override existing config values or create new ones if env vars are set
+        let has_colors_env = std::env::var("LOG_COLORS_ENABLED").is_ok();
+        let has_target_env = std::env::var("LOG_INCLUDE_TARGET").is_ok();
+        if has_colors_env || has_target_env {
+            let logging_config = self.logging.get_or_insert_with(Default::default);
+            if has_colors_env {
+                logging_config.colors_enabled =
+                    parse_bool_env("LOG_COLORS_ENABLED", logging_config.colors_enabled);
+            }
+            if has_target_env {
+                logging_config.include_target =
+                    parse_bool_env("LOG_INCLUDE_TARGET", logging_config.include_target);
+            }
         }
 
         Ok(())

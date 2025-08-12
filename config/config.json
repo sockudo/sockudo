@@ -211,6 +211,12 @@
   "instance": {
     "process_id": "sockudo-docker-1"
   },
+
+  "logging": {
+    "colors_enabled": true,
+    "include_target": true
+  },
+
   "database_pooling": {
     "enabled": true,
     "min": 2,
