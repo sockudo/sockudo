@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Request types for horizontal communication
@@ -153,8 +153,8 @@ impl HorizontalAdapter {
 
     /// Process a received request from another node
     pub async fn process_request(&mut self, request: RequestBody) -> Result<ResponseBody> {
-        info!(
-            "{}",
+        debug!(
+            "Processing request from node {}: {:?}",
             format!(
                 "Processing request from node {}: {:?}",
                 request.node_id, request.request_type
@@ -360,7 +360,7 @@ impl HorizontalAdapter {
         // For Redis: RedisAdapter publishes to request_channel in its listeners
         // For NATS: NatsAdapter would publish to NATS subjects
         // For HTTP: HttpAdapter would POST to other nodes
-        info!(
+        debug!(
             "Request {} created for type {:?} on app {} - broadcasting handled by adapter",
             request_id, request_type, app_id
         );
@@ -371,7 +371,7 @@ impl HorizontalAdapter {
 
         // If we don't expect any responses (single node), return immediately
         if max_expected_responses == 0 {
-            info!(
+            debug!(
                 "Single node deployment, no responses expected for request {}",
                 request_id
             );
@@ -419,7 +419,7 @@ impl HorizontalAdapter {
 
             if let Some(pending_request) = self.pending_requests.get(&request_id) {
                 if pending_request.responses.len() >= max_expected_responses {
-                    info!(
+                    debug!(
                         "Request {} completed successfully with {}/{} responses in {}ms",
                         request_id,
                         pending_request.responses.len(),
