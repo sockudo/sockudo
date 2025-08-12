@@ -134,6 +134,18 @@ Key variables (see `.env.example` for complete list):
 - `ENVIRONMENT` - Mode (production/development)
 - `REDIS_URL` - Override all Redis configurations with single URL
 
+#### Logging Configuration
+**Environment Variables:**
+- `LOG_OUTPUT_FORMAT` - Log format (human|json, default: human) **[Must be set at startup]**
+- `LOG_COLORS_ENABLED` - Enable/disable colors in human format (true|false, default: true)
+- `LOG_INCLUDE_TARGET` - Include module target in logs (true|false, default: true)
+
+**Config File Options** (in `logging` section):
+- `colors_enabled` - Enable/disable colors in human format (true|false, default: true)
+- `include_target` - Include module target in logs (true|false, default: true)
+
+**Important**: JSON format (`LOG_OUTPUT_FORMAT=json`) can only be configured via environment variable at startup due to tracing subscriber limitations. It cannot be set in config files.
+
 ### Redis/NATS Configuration
 - Redis: Set `DATABASE_REDIS_HOST`, `DATABASE_REDIS_PORT`, `DATABASE_REDIS_PASSWORD`
 - Redis Cluster: Set `REDIS_CLUSTER_NODES` as comma-separated list
@@ -170,6 +182,36 @@ Key variables (see `.env.example` for complete list):
 3. Enable rate limiting (`RATE_LIMITER_ENABLED=true`, `RATE_LIMITER_DRIVER`)
 4. Configure webhooks if needed (`WEBHOOK_BATCHING_ENABLED`, `WEBHOOK_BATCHING_DURATION`)
 5. Set appropriate limits via app configuration
+6. Configure structured logging for external systems (see [Production Logging](#production-logging))
+
+### Production Logging
+For production environments with external log aggregation systems (Fluentd, Logstash, etc.):
+
+```bash
+# JSON output for parsing-friendly logs (must be set via environment variable)
+LOG_OUTPUT_FORMAT=json ./target/release/sockudo
+
+# Human format with no colors (can be set via config file)
+LOG_COLORS_ENABLED=false ./target/release/sockudo
+```
+
+**Configuration file example:**
+```json
+{
+  "logging": {
+    "colors_enabled": false,
+    "include_target": true
+  }
+}
+```
+
+**Note**: To use JSON format, you must set `LOG_OUTPUT_FORMAT=json` as an environment variable at startup. JSON format cannot be configured via config files due to technical limitations in the tracing library.
+
+**Benefits of JSON logging:**
+- Single-line JSON objects per log entry
+- No color codes that interfere with log parsing
+- Structured data for better filtering and analysis
+- Compatible with log aggregation tools
 
 ### Monitoring
 - Health endpoint: `GET /up/{app_id}` (WebSocket health check)
