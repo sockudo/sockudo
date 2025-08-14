@@ -498,6 +498,7 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager, M
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
         None,
         ServerOptions::default(),
+        None,
     );
 
     (handler, app_manager, channel_manager)
@@ -516,5 +517,6 @@ pub fn create_test_connection_handler_with_app_manager(
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
         None,
         ServerOptions::default(),
+        None,
     )
 }
