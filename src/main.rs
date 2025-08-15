@@ -685,7 +685,7 @@ impl SockudoServer {
             None
         };
 
-        let body_limit_bytes = self.config.http_api.request_limit_in_mb as usize * 1024 * 1024;
+        let body_limit_bytes = (self.config.http_api.request_limit_in_mb as usize).saturating_mul(1024 * 1024);
         debug!(
             "Configuring Axum DefaultBodyLimit to {} MB ({} bytes)",
             self.config.http_api.request_limit_in_mb, body_limit_bytes
