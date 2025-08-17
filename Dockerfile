@@ -82,7 +82,6 @@ RUN if [ ! -f ./config/config.json ]; then \
 USER sockudo
 
 # Set environment variables with defaults
-ENV RUST_LOG=info
 ENV CONFIG_FILE=/app/config/config.json
 ENV HOST=0.0.0.0
 ENV PORT=6001
