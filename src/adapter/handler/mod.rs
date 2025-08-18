@@ -52,6 +52,7 @@ pub struct ConnectionHandler {
 }
 
 impl ConnectionHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         app_manager: Arc<dyn AppManager + Send + Sync>,
         channel_manager: Arc<RwLock<ChannelManager>>,
