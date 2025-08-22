@@ -10,6 +10,7 @@
 
   "adapter": {
     "driver": "local",
+    "broadcast_streaming_threshold": 1500,
     "redis": {
       "requests_timeout": 5000,
       "prefix": "sockudo_adapter:",
