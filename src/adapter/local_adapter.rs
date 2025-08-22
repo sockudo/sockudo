@@ -113,6 +113,7 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
         _start_time_ms: Option<f64>,
     ) -> Result<()> {
+        let start_time = std::time::Instant::now();
         debug!("Sending message to channel: {}", channel);
         debug!("Message: {:?}", message);
 
@@ -130,6 +131,12 @@ impl ConnectionManager for LocalAdapter {
                 }
             }
 
+            let subscriber_count = target_socket_refs.len();
+            info!(
+                "Broadcasting to user channel '{}': {} user sockets",
+                channel, subscriber_count
+            );
+
             // Send messages in parallel using WebSocketRef
             let send_tasks: Vec<JoinHandle<Result<()>>> = target_socket_refs
                 .into_iter()
@@ -141,6 +148,15 @@ impl ConnectionManager for LocalAdapter {
 
             // Wait for all sends to complete and collect results
             let results = join_all(send_tasks).await;
+
+            let elapsed = start_time.elapsed();
+            info!(
+                "User broadcast completed for channel '{}': {} sockets in {:?} ({:.2}ms)",
+                channel,
+                subscriber_count,
+                elapsed,
+                elapsed.as_secs_f64() * 1000.0
+            );
 
             // Handle any errors from the spawned tasks
             for result in results {
@@ -170,6 +186,12 @@ impl ConnectionManager for LocalAdapter {
                 }
             }
 
+            let subscriber_count = target_socket_refs.len();
+            info!(
+                "Broadcasting to channel '{}': {} subscribers",
+                channel, subscriber_count
+            );
+
             // Send messages in parallel using WebSocketRef
             let send_tasks: Vec<JoinHandle<Result<()>>> = target_socket_refs
                 .into_iter()
@@ -181,6 +203,15 @@ impl ConnectionManager for LocalAdapter {
 
             // Wait for all sends to complete and collect results
             let results = join_all(send_tasks).await;
+
+            let elapsed = start_time.elapsed();
+            info!(
+                "Broadcast completed for channel '{}': {} subscribers in {:?} ({:.2}ms)",
+                channel,
+                subscriber_count,
+                elapsed,
+                elapsed.as_secs_f64() * 1000.0
+            );
 
             // Handle any errors from the spawned tasks
             for result in results {
