@@ -9,6 +9,8 @@
 
 Sockudo is a production-ready WebSocket server that provides real-time communication capabilities with built-in support for channels, presence, authentication, rate limiting, and horizontal scaling. Designed for modern applications that need reliable, fast, and scalable real-time features. It aims for Pusher protocol compatibility, making it a potential backend for clients like Laravel Echo.
 
+📚 **[Full Documentation](https://sockudo.app/)** - Visit our comprehensive documentation site for detailed guides, API references, and examples.
+
 ---
 
 ## ✨ Features
