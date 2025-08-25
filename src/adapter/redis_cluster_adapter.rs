@@ -415,7 +415,7 @@ impl RedisClusterAdapter {
                                     .as_ref()
                                     .map(|id| SocketId(id.clone()));
 
-                                // Calculate distribution latency if timestamp is available
+                                // Track broadcast latency metrics if timestamp is available
                                 if let Some(timestamp_ms) = broadcast.timestamp_ms {
                                     let now_ms = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
@@ -424,12 +424,21 @@ impl RedisClusterAdapter {
                                         as u64;
                                     let latency_ms = (now_ms - timestamp_ms) as f64;
 
-                                    // Log the distribution latency (we don't have direct metrics access here)
-                                    tracing::debug!(
-                                        "Redis Cluster broadcast distribution latency: {} ms for channel: {}",
-                                        latency_ms,
-                                        broadcast.channel
-                                    );
+                                    // Get recipient count (from broadcast message or estimate)
+                                    let recipient_count = broadcast.recipient_count.unwrap_or(1);
+
+                                    // Track metrics if available
+                                    let horizontal_lock_temp = horizontal_clone.lock().await;
+                                    if let Some(ref metrics) = horizontal_lock_temp.metrics {
+                                        let metrics_locked = metrics.lock().await;
+                                        metrics_locked.track_broadcast_latency(
+                                            &broadcast.app_id,
+                                            &broadcast.channel,
+                                            recipient_count,
+                                            latency_ms,
+                                        );
+                                    }
+                                    drop(horizontal_lock_temp);
                                 }
 
                                 let mut horizontal_lock = horizontal_clone.lock().await;
@@ -579,14 +588,28 @@ impl ConnectionManager for RedisClusterAdapter {
         except: Option<&SocketId>,
         app_id: &str,
     ) -> Result<()> {
-        // Send locally first
-        let (node_id, local_result) = {
+        // Get recipient count and send locally first
+        let (node_id, local_result, local_recipient_count) = {
             let mut horizontal_lock = self.horizontal.lock().await;
+
+            // Get recipient count before sending
+            let recipient_count = horizontal_lock
+                .local_adapter
+                .get_channel_socket_count(app_id, channel)
+                .await;
+
+            // Adjust for excluded socket
+            let adjusted_count = if except.is_some() && recipient_count > 0 {
+                recipient_count - 1
+            } else {
+                recipient_count
+            };
+
             let result = horizontal_lock
                 .local_adapter
                 .send(channel, message.clone(), except, app_id)
                 .await;
-            (horizontal_lock.node_id.clone(), result)
+            (horizontal_lock.node_id.clone(), result, adjusted_count)
         };
 
         if let Err(e) = local_result {
@@ -607,6 +630,7 @@ impl ConnectionManager for RedisClusterAdapter {
                     .unwrap_or_default()
                     .as_millis() as u64,
             ),
+            recipient_count: Some(local_recipient_count),
         };
 
         let broadcast_json = serde_json::to_string(&broadcast)?;

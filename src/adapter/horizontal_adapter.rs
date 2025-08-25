@@ -73,6 +73,8 @@ pub struct BroadcastMessage {
     pub except_socket_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp_ms: Option<u64>, // Timestamp when broadcast was initiated (milliseconds since epoch)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient_count: Option<usize>, // Number of recipients on the sending node
 }
 
 /// Request tracking struct

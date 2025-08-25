@@ -14,7 +14,7 @@ use tracing::warn;
 
 impl ConnectionHandler {
     /// Broadcast to channel with optional timing for latency tracking
-    pub async fn broadcast_to_channel_timed(
+    pub async fn broadcast_to_channel(
         &self,
         app_config: &App,
         channel: &str,
@@ -24,19 +24,6 @@ impl ConnectionHandler {
     ) -> Result<()> {
         // Calculate message size for metrics
         let message_size = serde_json::to_string(&message).unwrap_or_default().len();
-
-        // Determine channel type for metrics
-        let channel_type = if channel.starts_with("presence-") {
-            "presence"
-        } else if channel.starts_with("private-encrypted-") {
-            "private-encrypted"
-        } else if channel.starts_with("private-") {
-            "private"
-        } else if channel.starts_with("cache-") {
-            "cache"
-        } else {
-            "public"
-        };
 
         // Get the number of sockets in the channel before sending and send the message
         let (result, target_socket_count) = {
@@ -83,7 +70,7 @@ impl ConnectionHandler {
 
                 metrics_locked.track_broadcast_latency(
                     &app_config.id,
-                    channel_type,
+                    channel,
                     target_socket_count,
                     latency_ms,
                 );
@@ -118,18 +105,6 @@ impl ConnectionHandler {
         }
 
         result
-    }
-
-    pub async fn broadcast_to_channel(
-        &self,
-        app_config: &App,
-        channel: &str,
-        message: PusherMessage,
-        exclude_socket: Option<&SocketId>,
-    ) -> Result<()> {
-        // Delegate to timed version without timing
-        self.broadcast_to_channel_timed(app_config, channel, message, exclude_socket, None)
-            .await
     }
 
     pub async fn close_connection(

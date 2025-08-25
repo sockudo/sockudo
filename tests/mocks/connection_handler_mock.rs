@@ -426,6 +426,14 @@ impl MetricsInterface for MockMetricsInterface {
     fn mark_horizontal_adapter_request_sent(&self, _app_id: &str) {}
     fn mark_horizontal_adapter_request_received(&self, _app_id: &str) {}
     fn mark_horizontal_adapter_response_received(&self, _app_id: &str) {}
+    fn track_broadcast_latency(
+        &self,
+        _app_id: &str,
+        _channel_name: &str,
+        _recipient_count: usize,
+        _latency_ms: f64,
+    ) {
+    }
     async fn get_metrics_as_plaintext(&self) -> String {
         String::new()
     }

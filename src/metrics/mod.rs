@@ -89,7 +89,7 @@ pub trait MetricsInterface: Send + Sync {
     fn track_broadcast_latency(
         &self,
         app_id: &str,
-        channel_type: &str,
+        channel_name: &str,
         recipient_count: usize,
         latency_ms: f64,
     );
