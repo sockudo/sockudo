@@ -13,6 +13,86 @@ use tokio::io::WriteHalf;
 use tracing::warn;
 
 impl ConnectionHandler {
+    /// Broadcast to channel with optional timing for latency tracking
+    pub async fn broadcast_to_channel_timed(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        exclude_socket: Option<&SocketId>,
+        start_time_ms: Option<u64>,
+    ) -> Result<()> {
+        // Calculate message size for metrics
+        let message_size = serde_json::to_string(&message).unwrap_or_default().len();
+
+        // Determine channel type for metrics
+        let channel_type = if channel.starts_with("presence-") {
+            "presence"
+        } else if channel.starts_with("private-encrypted-") {
+            "private-encrypted"
+        } else if channel.starts_with("private-") {
+            "private"
+        } else if channel.starts_with("cache-") {
+            "cache"
+        } else {
+            "public"
+        };
+
+        // Get the number of sockets in the channel before sending and send the message
+        let (result, target_socket_count) = {
+            let mut conn_manager = self.connection_manager.lock().await;
+
+            let socket_count = conn_manager
+                .get_channel_socket_count(&app_config.id, channel)
+                .await;
+
+            // Adjust for excluded socket
+            let target_socket_count = if exclude_socket.is_some() && socket_count > 0 {
+                socket_count - 1
+            } else {
+                socket_count
+            };
+
+            let result = conn_manager
+                .send(channel, message, exclude_socket, &app_config.id)
+                .await;
+
+            (result, target_socket_count)
+        };
+
+        // Track metrics if message was sent successfully
+        if result.is_ok()
+            && let Some(ref metrics) = self.metrics
+        {
+            let metrics_locked = metrics.lock().await;
+
+            // Track message sent metrics
+            if target_socket_count > 0 {
+                for _ in 0..target_socket_count {
+                    metrics_locked.mark_ws_message_sent(&app_config.id, message_size);
+                }
+            }
+
+            // Track broadcast latency if we have a start time
+            if let Some(start_ms) = start_time_ms {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let latency_ms = (now_ms - start_ms) as f64;
+
+                metrics_locked.track_broadcast_latency(
+                    &app_config.id,
+                    channel_type,
+                    target_socket_count,
+                    latency_ms,
+                );
+            }
+        }
+
+        result
+    }
+
     pub async fn send_message_to_socket(
         &self,
         app_id: &str,
@@ -47,43 +127,9 @@ impl ConnectionHandler {
         message: PusherMessage,
         exclude_socket: Option<&SocketId>,
     ) -> Result<()> {
-        // Calculate message size for metrics
-        let message_size = serde_json::to_string(&message).unwrap_or_default().len();
-
-        // Get the number of sockets in the channel before sending and send the message
-        let (result, target_socket_count) = {
-            let mut conn_manager = self.connection_manager.lock().await;
-
-            let socket_count = conn_manager
-                .get_channel_socket_count(&app_config.id, channel)
-                .await;
-
-            // Adjust for excluded socket
-            let target_socket_count = if exclude_socket.is_some() && socket_count > 0 {
-                socket_count - 1
-            } else {
-                socket_count
-            };
-
-            let result = conn_manager
-                .send(channel, message, exclude_socket, &app_config.id)
-                .await;
-
-            (result, target_socket_count)
-        };
-
-        // Track metrics if message was sent successfully
-        if result.is_ok()
-            && target_socket_count > 0
-            && let Some(ref metrics) = self.metrics
-        {
-            let metrics_locked = metrics.lock().await;
-            for _ in 0..target_socket_count {
-                metrics_locked.mark_ws_message_sent(&app_config.id, message_size);
-            }
-        }
-
-        result
+        // Delegate to timed version without timing
+        self.broadcast_to_channel_timed(app_config, channel, message, exclude_socket, None)
+            .await
     }
 
     pub async fn close_connection(

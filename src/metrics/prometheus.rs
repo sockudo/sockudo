@@ -8,7 +8,7 @@ use super::MetricsInterface;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
 use prometheus::{
-    CounterVec, GaugeVec, HistogramVec, Opts, TextEncoder, register_counter_vec,
+    CounterVec, GaugeVec, HistogramVec, Opts, TextEncoder, histogram_opts, register_counter_vec,
     register_gauge_vec, register_histogram_vec,
 };
 use serde_json::{Value, json};
@@ -42,6 +42,7 @@ pub struct PrometheusMetricsDriver {
     channel_subscriptions_total: CounterVec,
     channel_unsubscriptions_total: CounterVec,
     active_channels: GaugeVec,
+    broadcast_latency_ms: HistogramVec,
 }
 
 impl PrometheusMetricsDriver {
@@ -246,6 +247,19 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let broadcast_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}broadcast_latency_ms"),
+                "End-to-end latency for broadcast messages in milliseconds",
+                vec![
+                    0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0,
+                    5000.0
+                ]
+            ),
+            &["app_id", "port", "channel_type", "recipient_count_bucket"]
+        )
+        .unwrap();
+
         // Reset gauge metrics to 0 on startup - they represent current state, not historical
         connected_sockets.reset();
         active_channels.reset();
@@ -275,6 +289,7 @@ impl PrometheusMetricsDriver {
             channel_subscriptions_total,
             channel_unsubscriptions_total,
             active_channels,
+            broadcast_latency_ms,
         }
     }
 
@@ -537,6 +552,39 @@ impl MetricsInterface for PrometheusMetricsDriver {
         debug!(
             "Metrics: Horizontal adapter response received for app {}",
             app_id
+        );
+    }
+
+    fn track_broadcast_latency(
+        &self,
+        app_id: &str,
+        channel_type: &str,
+        recipient_count: usize,
+        latency_ms: f64,
+    ) {
+        // Determine recipient count bucket
+        let bucket = match recipient_count {
+            1..=10 => "xs",
+            11..=100 => "sm",
+            101..=1000 => "md",
+            1001..=10000 => "lg",
+            _ => "xl",
+        };
+
+        let tags = vec![
+            app_id.to_string(),
+            self.port.to_string(),
+            channel_type.to_string(),
+            bucket.to_string(),
+        ];
+
+        self.broadcast_latency_ms
+            .with_label_values(&tags)
+            .observe(latency_ms);
+
+        debug!(
+            "Metrics: Broadcast latency for app {}, channel type: {}, recipients: {} ({}), latency: {} ms",
+            app_id, channel_type, recipient_count, bucket, latency_ms
         );
     }
 

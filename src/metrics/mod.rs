@@ -85,6 +85,15 @@ pub trait MetricsInterface: Send + Sync {
     /// Handle a new horizontal adapter response from other node
     fn mark_horizontal_adapter_response_received(&self, app_id: &str);
 
+    /// Track broadcast message latency
+    fn track_broadcast_latency(
+        &self,
+        app_id: &str,
+        channel_type: &str,
+        recipient_count: usize,
+        latency_ms: f64,
+    );
+
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;
 

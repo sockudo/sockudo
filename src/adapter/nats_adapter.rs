@@ -375,6 +375,22 @@ impl NatsAdapter {
                             .as_ref()
                             .map(|id| SocketId(id.clone()));
 
+                        // Calculate distribution latency if timestamp is available
+                        if let Some(timestamp_ms) = broadcast.timestamp_ms {
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let latency_ms = (now_ms - timestamp_ms) as f64;
+
+                            // Log the distribution latency (we don't have direct metrics access here)
+                            tracing::debug!(
+                                "NATS broadcast distribution latency: {} ms for channel: {}",
+                                latency_ms,
+                                broadcast.channel
+                            );
+                        }
+
                         let mut horizontal_lock = broadcast_horizontal.lock().await;
                         let _ = horizontal_lock
                             .local_adapter
@@ -542,6 +558,12 @@ impl ConnectionManager for NatsAdapter {
             channel: channel.to_string(),
             message: message_json,
             except_socket_id: except.map(|id| id.0.clone()),
+            timestamp_ms: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            ),
         };
 
         let broadcast_data = serde_json::to_vec(&broadcast)?;
