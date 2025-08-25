@@ -558,10 +558,23 @@ impl MetricsInterface for PrometheusMetricsDriver {
     fn track_broadcast_latency(
         &self,
         app_id: &str,
-        channel_type: &str,
+        channel_name: &str,
         recipient_count: usize,
         latency_ms: f64,
     ) {
+        // Determine channel type from channel name
+        let channel_type = if channel_name.starts_with("presence-") {
+            "presence"
+        } else if channel_name.starts_with("private-encrypted-") {
+            "private-encrypted"
+        } else if channel_name.starts_with("private-") {
+            "private"
+        } else if channel_name.starts_with("cache-") {
+            "cache"
+        } else {
+            "public"
+        };
+
         // Determine recipient count bucket
         let bucket = match recipient_count {
             1..=10 => "xs",
@@ -583,8 +596,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .observe(latency_ms);
 
         debug!(
-            "Metrics: Broadcast latency for app {}, channel type: {}, recipients: {} ({}), latency: {} ms",
-            app_id, channel_type, recipient_count, bucket, latency_ms
+            "Metrics: Broadcast latency for app {}, channel: {} ({}), recipients: {} ({}), latency: {} ms",
+            app_id, channel_name, channel_type, recipient_count, bucket, latency_ms
         );
     }
 

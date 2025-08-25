@@ -352,11 +352,10 @@ async fn process_single_event_parallel(
                     .as_millis() as u64
                     - (t.elapsed().as_millis() as u64)
             });
-            
-            handler_clone.broadcast_to_channel_timed(
-                app, 
-                &target_channel_str, 
-                _message_to_send, 
+            handler_clone.broadcast_to_channel(
+                app,
+                &target_channel_str,
+                _message_to_send,
                 socket_id_for_task.as_ref(),
                 start_time_ms
             )

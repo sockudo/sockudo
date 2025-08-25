@@ -146,7 +146,7 @@ impl ConnectionHandler {
             name: None,
         };
 
-        self.broadcast_to_channel(app_config, &request.channel, message, Some(socket_id))
+        self.broadcast_to_channel(app_config, &request.channel, message, Some(socket_id), None)
             .await?;
 
         // Send webhook if configured
