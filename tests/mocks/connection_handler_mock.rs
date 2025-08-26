@@ -96,6 +96,7 @@ impl ConnectionManager for MockAdapter {
         _message: PusherMessage,
         _except: Option<&SocketId>,
         _app_id: &str,
+        _start_time_ms: Option<f64>,
     ) -> Result<()> {
         Ok(())
     }
