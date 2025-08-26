@@ -231,13 +231,13 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
 }
 
 /// Helper to process a single event and return channel info if requested
-#[instrument(skip(handler, event_data, app, start_time), fields(app_id = app.id, event_name = field::Empty))]
+#[instrument(skip(handler, event_data, app, start_time_ms), fields(app_id = app.id, event_name = field::Empty))]
 async fn process_single_event_parallel(
     handler: &Arc<ConnectionHandler>,
     app: &App,
     event_data: PusherApiMessage,
     collect_info: bool,
-    start_time: Option<std::time::Instant>,
+    start_time_ms: Option<f64>,
 ) -> Result<HashMap<String, Value>, AppError> {
     // Destructure the incoming event data
     let PusherApiMessage {
@@ -344,21 +344,14 @@ async fn process_single_event_parallel(
                 event: name_for_task,
                 data: Some(message_data.clone()),
             };
-            // Convert start_time to milliseconds with precision
-            let start_time_ms = start_time.map(|t| {
-                let now_nanos = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as f64;
-                let elapsed_nanos = t.elapsed().as_nanos() as f64;
-                (now_nanos - elapsed_nanos) / 1_000_000.0 // Convert to milliseconds
-            });
+            // Use the provided timestamp directly
+            let timestamp_ms = start_time_ms;
             handler_clone.broadcast_to_channel(
                 app,
                 &target_channel_str,
                 _message_to_send,
                 socket_id_for_task.as_ref(),
-                start_time_ms
+                timestamp_ms
             )
             .await?;
 
@@ -493,7 +486,11 @@ pub async fn events(
     Json(event_payload): Json<PusherApiMessage>, // The JSON body of the request
 ) -> Result<impl IntoResponse, AppError> {
     // Capture the start time for latency tracking
-    let start_time = std::time::Instant::now();
+    let start_time_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as f64
+        / 1_000_000.0;
 
     // Calculate request size for metrics
     let incoming_request_size_bytes = serde_json::to_vec(&event_payload)?.len();
@@ -511,7 +508,7 @@ pub async fn events(
         &app,
         event_payload,
         need_channel_info,
-        Some(start_time),
+        Some(start_time_ms),
     )
     .await?;
 
@@ -547,7 +544,11 @@ pub async fn batch_events(
     Json(batch_message_payload): Json<BatchPusherApiMessage>,
 ) -> Result<impl IntoResponse, AppError> {
     // Capture the start time for latency tracking
-    let start_time = std::time::Instant::now();
+    let start_time_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as f64
+        / 1_000_000.0;
 
     let body_bytes = serde_json::to_vec(&batch_message_payload)?;
     let batch_events_vec = batch_message_payload.batch;
@@ -600,7 +601,7 @@ pub async fn batch_events(
                 app_config_ref,
                 single_event_message.clone(), // Clone for process_single_event_parallel
                 should_collect_info_for_this_event,
-                Some(start_time),
+                Some(start_time_ms),
             )
             .await?;
             // Return the original message (for constructing response) and the processed info map
