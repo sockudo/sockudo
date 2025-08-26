@@ -415,40 +415,9 @@ impl RedisAdapter {
                                             .as_ref()
                                             .map(|id| SocketId(id.clone()));
 
-                                        // Track broadcast latency metrics if timestamp is available
-                                        if let Some(timestamp_ms) = broadcast.timestamp_ms {
-                                            let now_ms = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_nanos()
-                                                as f64
-                                                / 1_000_000.0;
-                                            let latency_ms =
-                                                ((now_ms - (timestamp_ms as f64)) * 1000.0).round()
-                                                    / 1000.0; // Round to 3 decimal places
-
-                                            // Get recipient count (from broadcast message or estimate)
-                                            let recipient_count =
-                                                broadcast.recipient_count.unwrap_or(1);
-
-                                            // Track metrics if available
-                                            let horizontal_lock_temp =
-                                                horizontal_clone.lock().await;
-                                            if let Some(ref metrics) = horizontal_lock_temp.metrics
-                                            {
-                                                let metrics_locked = metrics.lock().await;
-                                                metrics_locked.track_broadcast_latency(
-                                                    &broadcast.app_id,
-                                                    &broadcast.channel,
-                                                    recipient_count,
-                                                    latency_ms,
-                                                );
-                                            }
-                                            drop(horizontal_lock_temp);
-                                        }
-
+                                        // Send the message first
                                         let mut horizontal_lock = horizontal_clone.lock().await;
-                                        let _result = horizontal_lock
+                                        let send_result = horizontal_lock
                                             .local_adapter
                                             .send(
                                                 &broadcast.channel,
@@ -457,6 +426,37 @@ impl RedisAdapter {
                                                 &broadcast.app_id,
                                             )
                                             .await;
+
+                                        // Track broadcast latency metrics AFTER sending if timestamp is available
+                                        if send_result.is_ok()
+                                            && let Some(timestamp_ms) = broadcast.timestamp_ms
+                                        {
+                                            // Only check for metrics if we have a timestamp
+                                            if let Some(metrics) = &horizontal_lock.metrics {
+                                                let now_ms = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_nanos()
+                                                    as f64
+                                                    / 1_000_000.0;
+                                                let latency_ms = ((now_ms - (timestamp_ms as f64))
+                                                    * 1000.0)
+                                                    .round()
+                                                    / 1000.0; // Round to 3 decimal places
+
+                                                // Only get recipient count if we're actually going to use it
+                                                let recipient_count =
+                                                    broadcast.recipient_count.unwrap_or(1);
+
+                                                let metrics_locked = metrics.lock().await;
+                                                metrics_locked.track_broadcast_latency(
+                                                    &broadcast.app_id,
+                                                    &broadcast.channel,
+                                                    recipient_count,
+                                                    latency_ms,
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             } else if channel == request_channel_clone {
