@@ -300,7 +300,7 @@ impl RedisAdapter {
             let horizontal = horizontal_arc.lock().await;
             if let Some(metrics_ref) = &horizontal.metrics {
                 let metrics = metrics_ref.lock().await;
-                let duration_ms = (start.elapsed().as_micros() as f64).round() / 1000.0; // Convert to milliseconds with 3 decimal places
+                let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
                 metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
                 let resolved = combined_response.sockets_count > 0
