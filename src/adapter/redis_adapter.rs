@@ -420,13 +420,22 @@ impl RedisAdapter {
                                             let now_ms = std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap_or_default()
-                                                .as_millis()
-                                                as u64;
-                                            let latency_ms = (now_ms - timestamp_ms) as f64;
+                                                .as_nanos()
+                                                as f64
+                                                / 1_000_000.0;
+                                            let latency_ms = now_ms - (timestamp_ms as f64);
 
                                             // Get recipient count (from broadcast message or estimate)
                                             let recipient_count =
                                                 broadcast.recipient_count.unwrap_or(1);
+
+                                            // Debug logging to understand bucket issue
+                                            tracing::debug!(
+                                                "Redis adapter metrics: channel={}, recipient_count={}, latency_ms={}",
+                                                broadcast.channel,
+                                                recipient_count,
+                                                latency_ms
+                                            );
 
                                             // Track metrics if available
                                             let horizontal_lock_temp =

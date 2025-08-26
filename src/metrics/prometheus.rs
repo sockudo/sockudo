@@ -14,6 +14,18 @@ use prometheus::{
 use serde_json::{Value, json};
 use tracing::{debug, error};
 
+// Histogram buckets for internal operations (in milliseconds)
+// Optimized for sub-millisecond to low-millisecond measurements
+const INTERNAL_LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+// Histogram buckets for end-to-end operations (in milliseconds)
+// Covers typical response times and high-latency scenarios
+const END_TO_END_LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
+    0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
+];
+
 /// A Prometheus implementation of the metrics interface
 pub struct PrometheusMetricsDriver {
     prefix: String,
@@ -151,8 +163,11 @@ impl PrometheusMetricsDriver {
         .unwrap();
 
         let horizontal_adapter_resolve_time = register_histogram_vec!(
-            format!("{}horizontal_adapter_resolve_time", prefix),
-            "The average resolve time for requests to other nodes",
+            histogram_opts!(
+                format!("{}horizontal_adapter_resolve_time", prefix),
+                "The average resolve time for requests to other nodes",
+                INTERNAL_LATENCY_HISTOGRAM_BUCKETS.to_vec()
+            ),
             &["app_id", "port"]
         )
         .unwrap();
@@ -251,10 +266,7 @@ impl PrometheusMetricsDriver {
             histogram_opts!(
                 format!("{prefix}broadcast_latency_ms"),
                 "End-to-end latency for broadcast messages in milliseconds",
-                vec![
-                    0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0,
-                    5000.0
-                ]
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
             ),
             &["app_id", "port", "channel_type", "recipient_count_bucket"]
         )

@@ -20,7 +20,7 @@ impl ConnectionHandler {
         channel: &str,
         message: PusherMessage,
         exclude_socket: Option<&SocketId>,
-        start_time_ms: Option<u64>,
+        start_time_ms: Option<f64>,
     ) -> Result<()> {
         // Calculate message size for metrics
         let message_size = serde_json::to_string(&message).unwrap_or_default().len();
@@ -65,8 +65,9 @@ impl ConnectionHandler {
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_millis() as u64;
-                let latency_ms = (now_ms - start_ms) as f64;
+                    .as_nanos() as f64
+                    / 1_000_000.0; // Convert to milliseconds with decimal precision
+                let latency_ms = now_ms - start_ms;
 
                 metrics_locked.track_broadcast_latency(
                     &app_config.id,
