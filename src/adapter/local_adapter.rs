@@ -111,6 +111,7 @@ impl ConnectionManager for LocalAdapter {
         message: PusherMessage,
         except: Option<&SocketId>,
         app_id: &str,
+        _start_time_ms: Option<f64>,
     ) -> Result<()> {
         debug!("Sending message to channel: {}", channel);
         debug!("Message: {:?}", message);

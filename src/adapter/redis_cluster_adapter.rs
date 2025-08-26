@@ -417,6 +417,9 @@ impl RedisClusterAdapter {
 
                                 // Send the message first
                                 let mut horizontal_lock = horizontal_clone.lock().await;
+                                // Use the timestamp from the broadcast message for end-to-end tracking
+                                let timestamp_ms = broadcast.timestamp_ms.map(|ms| ms as f64);
+
                                 let send_result = horizontal_lock
                                     .local_adapter
                                     .send(
@@ -424,6 +427,7 @@ impl RedisClusterAdapter {
                                         message,
                                         except_id.as_ref(),
                                         &broadcast.app_id,
+                                        timestamp_ms, // Pass through the original timestamp
                                     )
                                     .await;
 
@@ -576,6 +580,7 @@ impl ConnectionManager for RedisClusterAdapter {
         message: PusherMessage,
         except: Option<&SocketId>,
         app_id: &str,
+        start_time_ms: Option<f64>,
     ) -> Result<()> {
         // Get recipient count and send locally first
         let (node_id, local_result, local_recipient_count) = {
@@ -588,7 +593,7 @@ impl ConnectionManager for RedisClusterAdapter {
 
             let result = horizontal_lock
                 .local_adapter
-                .send(channel, message.clone(), except, app_id)
+                .send(channel, message.clone(), except, app_id, start_time_ms)
                 .await;
             (horizontal_lock.node_id.clone(), result, adjusted_count)
         };
@@ -605,12 +610,12 @@ impl ConnectionManager for RedisClusterAdapter {
             channel: channel.to_string(),
             message: message_json,
             except_socket_id: except.map(|id| id.0.clone()),
-            timestamp_ms: Some(
+            timestamp_ms: Some(start_time_ms.map(|ms| ms as u64).unwrap_or_else(|| {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_millis() as u64,
-            ),
+                    .as_millis() as u64
+            })),
             recipient_count: Some(local_recipient_count),
         };
 
