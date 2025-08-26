@@ -300,7 +300,7 @@ impl RedisAdapter {
             let horizontal = horizontal_arc.lock().await;
             if let Some(metrics_ref) = &horizontal.metrics {
                 let metrics = metrics_ref.lock().await;
-                let duration_ms = start.elapsed().as_millis() as f64;
+                let duration_ms = (start.elapsed().as_micros() as f64).round() / 1000.0; // Convert to milliseconds with 3 decimal places
                 metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
                 let resolved = combined_response.sockets_count > 0
@@ -430,14 +430,6 @@ impl RedisAdapter {
                                             // Get recipient count (from broadcast message or estimate)
                                             let recipient_count =
                                                 broadcast.recipient_count.unwrap_or(1);
-
-                                            // Debug logging to understand bucket issue
-                                            tracing::debug!(
-                                                "Redis adapter metrics: channel={}, recipient_count={}, latency_ms={}",
-                                                broadcast.channel,
-                                                recipient_count,
-                                                latency_ms
-                                            );
 
                                             // Track metrics if available
                                             let horizontal_lock_temp =
