@@ -68,7 +68,13 @@ impl ConnectionHandler {
             };
 
             let result = conn_manager
-                .send(channel, message, exclude_socket, &app_config.id)
+                .send(
+                    channel,
+                    message,
+                    exclude_socket,
+                    &app_config.id,
+                    start_time_ms,
+                )
                 .await;
 
             (result, target_socket_count)
