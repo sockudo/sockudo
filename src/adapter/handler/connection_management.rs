@@ -112,7 +112,7 @@ impl ConnectionHandler {
                     .unwrap_or_default()
                     .as_nanos() as f64
                     / 1_000_000.0; // Convert to milliseconds
-                let latency_ms = ((now_ms - start_ms) * 1000.0).round() / 1000.0; // Round to 3 decimal places (microsecond precision)
+                let latency_ms = (now_ms - start_ms).max(0.0); // Already in milliseconds with microsecond precision
 
                 metrics_locked.track_broadcast_latency(
                     &app_config.id,

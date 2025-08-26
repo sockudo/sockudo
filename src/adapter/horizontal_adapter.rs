@@ -72,7 +72,7 @@ pub struct BroadcastMessage {
     pub message: String,
     pub except_socket_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp_ms: Option<u64>, // Timestamp when broadcast was initiated (milliseconds since epoch)
+    pub timestamp_ms: Option<f64>, // Timestamp when broadcast was initiated (milliseconds since epoch with microsecond precision)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient_count: Option<usize>, // Number of recipients on the sending node
 }
@@ -624,7 +624,7 @@ impl HorizontalAdapter {
     /// Helper function to track broadcast latency metrics
     pub async fn track_broadcast_latency_if_successful(
         send_result: &Result<()>,
-        timestamp_ms: Option<u64>,
+        timestamp_ms: Option<f64>,
         recipient_count: Option<usize>,
         app_id: &str,
         channel: &str,
@@ -640,17 +640,18 @@ impl HorizontalAdapter {
                     .unwrap_or_default()
                     .as_nanos() as f64
                     / 1_000_000.0;
-                let latency_ms = ((now_ms - (timestamp_ms as f64)) * 1000.0).round() / 1000.0; // Round to 3 decimal places
+                let latency_ms = (now_ms - timestamp_ms).max(0.0); // Already in milliseconds with microsecond precision
 
-                let recipient_count = recipient_count.unwrap_or(1);
-
-                let metrics_locked = metrics.lock().await;
-                metrics_locked.track_broadcast_latency(
-                    app_id,
-                    channel,
-                    recipient_count,
-                    latency_ms,
-                );
+                // Only track metrics if we have a valid recipient count
+                if let Some(recipient_count) = recipient_count {
+                    let metrics_locked = metrics.lock().await;
+                    metrics_locked.track_broadcast_latency(
+                        app_id,
+                        channel,
+                        recipient_count,
+                        latency_ms,
+                    );
+                }
             }
         }
     }
