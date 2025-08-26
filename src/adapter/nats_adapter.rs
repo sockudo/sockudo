@@ -277,7 +277,7 @@ impl NatsAdapter {
             let horizontal = self.horizontal.lock().await;
             if let Some(metrics_ref) = &horizontal.metrics {
                 let metrics = metrics_ref.lock().await;
-                let duration_ms = start.elapsed().as_millis() as f64;
+                let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
                 metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
                 let resolved = combined_response.sockets_count > 0
@@ -375,16 +375,43 @@ impl NatsAdapter {
                             .as_ref()
                             .map(|id| SocketId(id.clone()));
 
+                        // Send the message first and count local recipients
                         let mut horizontal_lock = broadcast_horizontal.lock().await;
-                        let _ = horizontal_lock
+
+                        // Count local recipients for this node (adjusts for excluded socket)
+                        let local_recipient_count = horizontal_lock
+                            .get_local_recipient_count(
+                                &broadcast.app_id,
+                                &broadcast.channel,
+                                except_id.as_ref(),
+                            )
+                            .await;
+
+                        // Use the timestamp from the broadcast message for end-to-end tracking
+                        let send_result = horizontal_lock
                             .local_adapter
                             .send(
                                 &broadcast.channel,
                                 message,
                                 except_id.as_ref(),
                                 &broadcast.app_id,
+                                broadcast.timestamp_ms, // Pass through the original timestamp
                             )
                             .await;
+
+                        // Track broadcast latency metrics using helper function
+                        let metrics_ref = horizontal_lock.metrics.clone();
+                        drop(horizontal_lock); // Release horizontal lock to avoid deadlock
+
+                        HorizontalAdapter::track_broadcast_latency_if_successful(
+                            &send_result,
+                            broadcast.timestamp_ms,
+                            Some(local_recipient_count), // Use local count, not sender's count
+                            &broadcast.app_id,
+                            &broadcast.channel,
+                            metrics_ref,
+                        )
+                        .await;
                     }
                 }
             }
@@ -519,13 +546,15 @@ impl ConnectionManager for NatsAdapter {
         message: PusherMessage,
         except: Option<&SocketId>,
         app_id: &str,
+        start_time_ms: Option<f64>,
     ) -> Result<()> {
-        // Send locally first
+        // Send locally first (tracked in connection manager for metrics)
         let (node_id, local_result) = {
             let mut horizontal_lock = self.horizontal.lock().await;
+
             let result = horizontal_lock
                 .local_adapter
-                .send(channel, message.clone(), except, app_id)
+                .send(channel, message.clone(), except, app_id, start_time_ms)
                 .await;
             (horizontal_lock.node_id.clone(), result)
         };
@@ -542,6 +571,15 @@ impl ConnectionManager for NatsAdapter {
             channel: channel.to_string(),
             message: message_json,
             except_socket_id: except.map(|id| id.0.clone()),
+            timestamp_ms: start_time_ms.or_else(|| {
+                Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as f64
+                        / 1_000_000.0, // Convert to milliseconds with microsecond precision
+                )
+            }),
         };
 
         let broadcast_data = serde_json::to_vec(&broadcast)?;
