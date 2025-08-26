@@ -8,11 +8,23 @@ use super::MetricsInterface;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
 use prometheus::{
-    CounterVec, GaugeVec, HistogramVec, Opts, TextEncoder, register_counter_vec,
+    CounterVec, GaugeVec, HistogramVec, Opts, TextEncoder, histogram_opts, register_counter_vec,
     register_gauge_vec, register_histogram_vec,
 };
 use serde_json::{Value, json};
 use tracing::{debug, error};
+
+// Histogram buckets for internal operations (in milliseconds)
+// Optimized for sub-millisecond to low-millisecond measurements
+const INTERNAL_LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+// Histogram buckets for end-to-end operations (in milliseconds)
+// Covers typical response times and high-latency scenarios
+const END_TO_END_LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
+    0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
+];
 
 /// A Prometheus implementation of the metrics interface
 pub struct PrometheusMetricsDriver {
@@ -42,6 +54,7 @@ pub struct PrometheusMetricsDriver {
     channel_subscriptions_total: CounterVec,
     channel_unsubscriptions_total: CounterVec,
     active_channels: GaugeVec,
+    broadcast_latency_ms: HistogramVec,
 }
 
 impl PrometheusMetricsDriver {
@@ -150,8 +163,11 @@ impl PrometheusMetricsDriver {
         .unwrap();
 
         let horizontal_adapter_resolve_time = register_histogram_vec!(
-            format!("{}horizontal_adapter_resolve_time", prefix),
-            "The average resolve time for requests to other nodes",
+            histogram_opts!(
+                format!("{}horizontal_adapter_resolve_time", prefix),
+                "The average resolve time for requests to other nodes",
+                INTERNAL_LATENCY_HISTOGRAM_BUCKETS.to_vec()
+            ),
             &["app_id", "port"]
         )
         .unwrap();
@@ -246,6 +262,16 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let broadcast_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}broadcast_latency_ms"),
+                "End-to-end latency for broadcast messages in milliseconds",
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
+            ),
+            &["app_id", "port", "channel_type", "recipient_count_bucket"]
+        )
+        .unwrap();
+
         // Reset gauge metrics to 0 on startup - they represent current state, not historical
         connected_sockets.reset();
         active_channels.reset();
@@ -275,6 +301,7 @@ impl PrometheusMetricsDriver {
             channel_subscriptions_total,
             channel_unsubscriptions_total,
             active_channels,
+            broadcast_latency_ms,
         }
     }
 
@@ -537,6 +564,39 @@ impl MetricsInterface for PrometheusMetricsDriver {
         debug!(
             "Metrics: Horizontal adapter response received for app {}",
             app_id
+        );
+    }
+
+    fn track_broadcast_latency(
+        &self,
+        app_id: &str,
+        channel_name: &str,
+        recipient_count: usize,
+        latency_ms: f64,
+    ) {
+        // Determine channel type from channel name using the ChannelType enum
+        let channel_type = crate::channel::ChannelType::from_name(channel_name).as_str();
+
+        if recipient_count == 0 {
+            return;
+        }
+
+        // Determine recipient count bucket
+        let bucket = match recipient_count {
+            1..=10 => "xs",
+            11..=100 => "sm",
+            101..=1000 => "md",
+            1001..=10000 => "lg",
+            _ => "xl",
+        };
+
+        self.broadcast_latency_ms
+            .with_label_values(&[app_id, &self.port.to_string(), channel_type, bucket])
+            .observe(latency_ms);
+
+        debug!(
+            "Metrics: Broadcast latency for app {}, channel: {} ({}), recipients: {} ({}), latency: {} ms",
+            app_id, channel_name, channel_type, recipient_count, bucket, latency_ms
         );
     }
 

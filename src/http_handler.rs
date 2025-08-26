@@ -231,12 +231,13 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
 }
 
 /// Helper to process a single event and return channel info if requested
-#[instrument(skip(handler, event_data, app), fields(app_id = app.id, event_name = field::Empty))]
+#[instrument(skip(handler, event_data, app, start_time_ms), fields(app_id = app.id, event_name = field::Empty))]
 async fn process_single_event_parallel(
     handler: &Arc<ConnectionHandler>,
     app: &App,
     event_data: PusherApiMessage,
     collect_info: bool,
+    start_time_ms: Option<f64>,
 ) -> Result<HashMap<String, Value>, AppError> {
     // Destructure the incoming event data
     let PusherApiMessage {
@@ -343,8 +344,16 @@ async fn process_single_event_parallel(
                 event: name_for_task,
                 data: Some(message_data.clone()),
             };
-            handler_clone.broadcast_to_channel(app, &target_channel_str, _message_to_send, socket_id_for_task.as_ref())
-                .await?;
+            // Use the provided timestamp directly
+            let timestamp_ms = start_time_ms;
+            handler_clone.broadcast_to_channel_with_timing(
+                app,
+                &target_channel_str,
+                _message_to_send,
+                socket_id_for_task.as_ref(),
+                timestamp_ms
+            )
+            .await?;
 
 
             // If info collection is requested, gather details for this channel.
@@ -476,6 +485,13 @@ pub async fn events(
     RawQuery(raw_query_str_option): RawQuery, // Gets the raw query string (e.g., "auth_key=abc&auth_timestamp=123...")
     Json(event_payload): Json<PusherApiMessage>, // The JSON body of the request
 ) -> Result<impl IntoResponse, AppError> {
+    // Capture the start time for latency tracking
+    let start_time_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as f64
+        / 1_000_000.0;
+
     // Calculate request size for metrics
     let incoming_request_size_bytes = serde_json::to_vec(&event_payload)?.len();
 
@@ -487,8 +503,14 @@ pub async fn events(
 
     let need_channel_info = event_payload.info.is_some();
 
-    let channels_info_map =
-        process_single_event_parallel(&handler, &app, event_payload, need_channel_info).await?;
+    let channels_info_map = process_single_event_parallel(
+        &handler,
+        &app,
+        event_payload,
+        need_channel_info,
+        Some(start_time_ms),
+    )
+    .await?;
 
     let response_payload = if need_channel_info && !channels_info_map.is_empty() {
         json!({
@@ -521,6 +543,13 @@ pub async fn batch_events(
     RawQuery(_raw_query_str_option): RawQuery,
     Json(batch_message_payload): Json<BatchPusherApiMessage>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Capture the start time for latency tracking
+    let start_time_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as f64
+        / 1_000_000.0;
+
     let body_bytes = serde_json::to_vec(&batch_message_payload)?;
     let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
@@ -572,6 +601,7 @@ pub async fn batch_events(
                 app_config_ref,
                 single_event_message.clone(), // Clone for process_single_event_parallel
                 should_collect_info_for_this_event,
+                Some(start_time_ms),
             )
             .await?;
             // Return the original message (for constructing response) and the processed info map

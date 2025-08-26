@@ -218,6 +218,7 @@ impl ConnectionHandler {
                     member_added_msg,
                     Some(socket_id),
                     &app_config.id,
+                    None, // No timing info for presence member added
                 )
                 .await?;
 

@@ -409,6 +409,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         _message: sockudo::protocol::messages::PusherMessage,
         _except: Option<&sockudo::websocket::SocketId>,
         _app_id: &str,
+        _start_time_ms: Option<f64>,
     ) -> sockudo::error::Result<()> {
         Ok(())
     }

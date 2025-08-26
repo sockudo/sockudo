@@ -40,12 +40,26 @@ impl ConnectionHandler {
         result
     }
 
+    /// Broadcast to channel (backward compatible version)
     pub async fn broadcast_to_channel(
         &self,
         app_config: &App,
         channel: &str,
         message: PusherMessage,
         exclude_socket: Option<&SocketId>,
+    ) -> Result<()> {
+        self.broadcast_to_channel_with_timing(app_config, channel, message, exclude_socket, None)
+            .await
+    }
+
+    /// Broadcast to channel with optional timing for latency tracking
+    pub async fn broadcast_to_channel_with_timing(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        exclude_socket: Option<&SocketId>,
+        start_time_ms: Option<f64>,
     ) -> Result<()> {
         // Calculate message size for metrics
         let message_size = serde_json::to_string(&message).unwrap_or_default().len();
@@ -66,7 +80,13 @@ impl ConnectionHandler {
             };
 
             let result = conn_manager
-                .send(channel, message, exclude_socket, &app_config.id)
+                .send(
+                    channel,
+                    message,
+                    exclude_socket,
+                    &app_config.id,
+                    start_time_ms,
+                )
                 .await;
 
             (result, target_socket_count)
@@ -80,6 +100,23 @@ impl ConnectionHandler {
             let metrics_locked = metrics.lock().await;
             for _ in 0..target_socket_count {
                 metrics_locked.mark_ws_message_sent(&app_config.id, message_size);
+            }
+
+            // Track broadcast latency if we have a start time
+            if let Some(start_ms) = start_time_ms {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as f64
+                    / 1_000_000.0; // Convert to milliseconds
+                let latency_ms = (now_ms - start_ms).max(0.0); // Already in milliseconds with microsecond precision
+
+                metrics_locked.track_broadcast_latency(
+                    &app_config.id,
+                    channel,
+                    target_socket_count,
+                    latency_ms,
+                );
             }
         }
 

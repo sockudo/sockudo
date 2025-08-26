@@ -6,10 +6,16 @@ pub enum ChannelType {
     Private,
     Presence,
     PrivateEncrypted,
+    Cache,
 }
 
 impl ChannelType {
     pub fn from_name(channel_name: &str) -> Self {
+        // Check cache channels first using the utility function
+        if crate::utils::is_cache_channel(channel_name) {
+            return Self::Cache;
+        }
+
         match channel_name.split_once('-') {
             Some(("private", "encrypted")) => Self::PrivateEncrypted,
             Some(("private", _)) => Self::Private,
@@ -31,6 +37,7 @@ impl ChannelType {
             ChannelType::Private => "private",
             ChannelType::Presence => "presence",
             ChannelType::PrivateEncrypted => "private_encrypted",
+            ChannelType::Cache => "cache",
         }
     }
 }

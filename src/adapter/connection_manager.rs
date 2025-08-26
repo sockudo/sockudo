@@ -47,6 +47,7 @@ pub trait ConnectionManager: Send + Sync {
         message: PusherMessage,
         except: Option<&SocketId>,
         app_id: &str,
+        start_time_ms: Option<f64>,
     ) -> Result<()>;
     async fn get_channel_members(
         &mut self,

@@ -71,6 +71,8 @@ pub struct BroadcastMessage {
     pub channel: String,
     pub message: String,
     pub except_socket_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_ms: Option<f64>, // Timestamp when broadcast was initiated (milliseconds since epoch with microsecond precision)
 }
 
 /// Request tracking struct
@@ -462,7 +464,7 @@ impl HorizontalAdapter {
         // Track metrics
         if let Some(metrics_ref) = &self.metrics {
             let metrics = metrics_ref.lock().await;
-            let duration_ms = start.elapsed().as_millis() as f64;
+            let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
 
             metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
@@ -615,5 +617,61 @@ impl HorizontalAdapter {
         }
 
         Ok(())
+    }
+
+    /// Helper function to track broadcast latency metrics
+    pub async fn track_broadcast_latency_if_successful(
+        send_result: &Result<()>,
+        timestamp_ms: Option<f64>,
+        recipient_count: Option<usize>,
+        app_id: &str,
+        channel: &str,
+        metrics_ref: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+    ) {
+        if send_result.is_ok()
+            && let Some(timestamp_ms) = timestamp_ms
+        {
+            // Only proceed if we have metrics
+            if let Some(metrics) = metrics_ref {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as f64
+                    / 1_000_000.0;
+                let latency_ms = (now_ms - timestamp_ms).max(0.0); // Already in milliseconds with microsecond precision
+
+                // Only track metrics if we have a valid recipient count
+                if let Some(recipient_count) = recipient_count {
+                    let metrics_locked = metrics.lock().await;
+                    metrics_locked.track_broadcast_latency(
+                        app_id,
+                        channel,
+                        recipient_count,
+                        latency_ms,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Helper function to calculate local recipient count for broadcasting
+    pub async fn get_local_recipient_count(
+        &mut self,
+        app_id: &str,
+        channel: &str,
+        except: Option<&SocketId>,
+    ) -> usize {
+        // Get recipient count before sending
+        let recipient_count = self
+            .local_adapter
+            .get_channel_socket_count(app_id, channel)
+            .await;
+
+        // Adjust for excluded socket
+        if except.is_some() && recipient_count > 0 {
+            recipient_count - 1
+        } else {
+            recipient_count
+        }
     }
 }
