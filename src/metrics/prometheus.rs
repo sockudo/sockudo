@@ -600,15 +600,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
             _ => "xl",
         };
 
-        let tags = vec![
-            app_id.to_string(),
-            self.port.to_string(),
-            channel_type.to_string(),
-            bucket.to_string(),
-        ];
-
         self.broadcast_latency_ms
-            .with_label_values(&tags)
+            .with_label_values(&[app_id, &self.port.to_string(), channel_type, bucket])
             .observe(latency_ms);
 
         debug!(
