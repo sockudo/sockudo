@@ -466,7 +466,7 @@ impl HorizontalAdapter {
         // Track metrics
         if let Some(metrics_ref) = &self.metrics {
             let metrics = metrics_ref.lock().await;
-            let duration_ms = start.elapsed().as_millis() as f64;
+            let duration_ms = (start.elapsed().as_micros() as f64).round() / 1000.0; // Convert to milliseconds with 3 decimal places
 
             metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
