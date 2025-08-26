@@ -574,18 +574,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
         recipient_count: usize,
         latency_ms: f64,
     ) {
-        // Determine channel type from channel name
-        let channel_type = if channel_name.starts_with("presence-") {
-            "presence"
-        } else if channel_name.starts_with("private-encrypted-") {
-            "private-encrypted"
-        } else if channel_name.starts_with("private-") {
-            "private"
-        } else if channel_name.starts_with("cache-") {
-            "cache"
-        } else {
-            "public"
-        };
+        // Determine channel type from channel name using the ChannelType enum
+        let channel_type = crate::channel::ChannelType::from_name(channel_name).as_str();
 
         if recipient_count == 0 {
             return;
