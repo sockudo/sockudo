@@ -375,8 +375,18 @@ impl NatsAdapter {
                             .as_ref()
                             .map(|id| SocketId(id.clone()));
 
-                        // Send the message first
+                        // Send the message first and count local recipients
                         let mut horizontal_lock = broadcast_horizontal.lock().await;
+
+                        // Count local recipients for this node (adjusts for excluded socket)
+                        let local_recipient_count = horizontal_lock
+                            .get_local_recipient_count(
+                                &broadcast.app_id,
+                                &broadcast.channel,
+                                except_id.as_ref(),
+                            )
+                            .await;
+
                         // Use the timestamp from the broadcast message for end-to-end tracking
                         let send_result = horizontal_lock
                             .local_adapter
@@ -396,7 +406,7 @@ impl NatsAdapter {
                         HorizontalAdapter::track_broadcast_latency_if_successful(
                             &send_result,
                             broadcast.timestamp_ms,
-                            broadcast.recipient_count,
+                            Some(local_recipient_count), // Use local count, not sender's count
                             &broadcast.app_id,
                             &broadcast.channel,
                             metrics_ref,
@@ -538,20 +548,15 @@ impl ConnectionManager for NatsAdapter {
         app_id: &str,
         start_time_ms: Option<f64>,
     ) -> Result<()> {
-        // Get recipient count and send locally first
-        let (node_id, local_result, local_recipient_count) = {
+        // Send locally first (tracked in connection manager for metrics)
+        let (node_id, local_result) = {
             let mut horizontal_lock = self.horizontal.lock().await;
-
-            // Use helper function to calculate recipient count
-            let adjusted_count = horizontal_lock
-                .get_local_recipient_count(app_id, channel, except)
-                .await;
 
             let result = horizontal_lock
                 .local_adapter
                 .send(channel, message.clone(), except, app_id, start_time_ms)
                 .await;
-            (horizontal_lock.node_id.clone(), result, adjusted_count)
+            (horizontal_lock.node_id.clone(), result)
         };
 
         if let Err(e) = local_result {
@@ -575,7 +580,6 @@ impl ConnectionManager for NatsAdapter {
                         / 1_000_000.0, // Convert to milliseconds with microsecond precision
                 )
             }),
-            recipient_count: Some(local_recipient_count),
         };
 
         let broadcast_data = serde_json::to_vec(&broadcast)?;
