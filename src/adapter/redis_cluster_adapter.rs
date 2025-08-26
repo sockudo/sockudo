@@ -610,11 +610,12 @@ impl ConnectionManager for RedisClusterAdapter {
             channel: channel.to_string(),
             message: message_json,
             except_socket_id: except.map(|id| id.0.clone()),
-            timestamp_ms: Some(start_time_ms.map(|ms| ms as u64).unwrap_or_else(|| {
+            timestamp_ms: Some(start_time_ms.unwrap_or_else(|| {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_millis() as u64
+                    .as_nanos() as f64
+                    / 1_000_000.0
             })),
             recipient_count: Some(local_recipient_count),
         };
