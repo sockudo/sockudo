@@ -60,6 +60,7 @@ mod tests {
             enable_user_authentication: Some(true),
             webhooks: Some(vec![]),
             enable_watchlist_events: None,
+            allowed_origins: None,
         };
 
         app_manager.create_app(test_app).await.unwrap();
@@ -128,6 +129,7 @@ mod tests {
             enable_user_authentication: Some(true),
             webhooks: Some(vec![webhook_config]),
             enable_watchlist_events: None,
+            allowed_origins: None,
         };
 
         app_manager.create_app(test_app).await.unwrap();
@@ -568,6 +570,7 @@ mod tests {
             enable_user_authentication: Some(true),
             webhooks: Some(vec![]),
             enable_watchlist_events: None,
+            allowed_origins: None,
         };
         app_manager.create_app(test_app).await.unwrap();
 
