@@ -423,7 +423,9 @@ impl RedisAdapter {
                                                 .as_nanos()
                                                 as f64
                                                 / 1_000_000.0;
-                                            let latency_ms = now_ms - (timestamp_ms as f64);
+                                            let latency_ms =
+                                                ((now_ms - (timestamp_ms as f64)) * 1000.0).round()
+                                                    / 1000.0; // Round to 3 decimal places
 
                                             // Get recipient count (from broadcast message or estimate)
                                             let recipient_count =
