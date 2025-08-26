@@ -13,6 +13,33 @@ use tokio::io::WriteHalf;
 use tracing::warn;
 
 impl ConnectionHandler {
+    pub async fn send_message_to_socket(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+        message: PusherMessage,
+    ) -> Result<()> {
+        // Calculate message size for metrics
+        let message_size = serde_json::to_string(&message).unwrap_or_default().len();
+
+        // Send the message
+        let mut conn_manager = self.connection_manager.lock().await;
+        let result = conn_manager.send_message(app_id, socket_id, message).await;
+
+        // Release the lock before metrics
+        drop(conn_manager);
+
+        // Track metrics if message was sent successfully
+        if result.is_ok()
+            && let Some(ref metrics) = self.metrics
+        {
+            let metrics_locked = metrics.lock().await;
+            metrics_locked.mark_ws_message_sent(app_id, message_size);
+        }
+
+        result
+    }
+
     /// Broadcast to channel with optional timing for latency tracking
     pub async fn broadcast_to_channel(
         &self,
@@ -76,33 +103,6 @@ impl ConnectionHandler {
                     latency_ms,
                 );
             }
-        }
-
-        result
-    }
-
-    pub async fn send_message_to_socket(
-        &self,
-        app_id: &str,
-        socket_id: &SocketId,
-        message: PusherMessage,
-    ) -> Result<()> {
-        // Calculate message size for metrics
-        let message_size = serde_json::to_string(&message).unwrap_or_default().len();
-
-        // Send the message
-        let mut conn_manager = self.connection_manager.lock().await;
-        let result = conn_manager.send_message(app_id, socket_id, message).await;
-
-        // Release the lock before metrics
-        drop(conn_manager);
-
-        // Track metrics if message was sent successfully
-        if result.is_ok()
-            && let Some(ref metrics) = self.metrics
-        {
-            let metrics_locked = metrics.lock().await;
-            metrics_locked.mark_ws_message_sent(app_id, message_size);
         }
 
         result
