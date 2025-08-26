@@ -620,4 +620,62 @@ impl HorizontalAdapter {
 
         Ok(())
     }
+
+    /// Helper function to track broadcast latency metrics
+    /// This consolidates the duplicated logic across Redis, NATS, and RedisCluster adapters
+    pub async fn track_broadcast_latency_if_successful(
+        send_result: &Result<()>,
+        timestamp_ms: Option<u64>,
+        recipient_count: Option<usize>,
+        app_id: &str,
+        channel: &str,
+        metrics_ref: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+    ) {
+        if send_result.is_ok()
+            && let Some(timestamp_ms) = timestamp_ms
+        {
+            // Only proceed if we have metrics
+            if let Some(metrics) = metrics_ref {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as f64
+                    / 1_000_000.0;
+                let latency_ms = ((now_ms - (timestamp_ms as f64)) * 1000.0).round() / 1000.0; // Round to 3 decimal places
+
+                // Only get recipient count if we're actually going to use it
+                let recipient_count = recipient_count.unwrap_or(1);
+
+                let metrics_locked = metrics.lock().await;
+                metrics_locked.track_broadcast_latency(
+                    app_id,
+                    channel,
+                    recipient_count,
+                    latency_ms,
+                );
+            }
+        }
+    }
+
+    /// Helper function to calculate local recipient count for broadcasting
+    /// This consolidates the duplicated logic across Redis, NATS, and RedisCluster adapters
+    pub async fn get_local_recipient_count(
+        &mut self,
+        app_id: &str,
+        channel: &str,
+        except: Option<&SocketId>,
+    ) -> usize {
+        // Get recipient count before sending
+        let recipient_count = self
+            .local_adapter
+            .get_channel_socket_count(app_id, channel)
+            .await;
+
+        // Adjust for excluded socket
+        if except.is_some() && recipient_count > 0 {
+            recipient_count - 1
+        } else {
+            recipient_count
+        }
+    }
 }

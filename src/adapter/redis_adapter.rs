@@ -427,40 +427,19 @@ impl RedisAdapter {
                                             )
                                             .await;
 
-                                        // Track broadcast latency metrics AFTER sending if timestamp is available
-                                        if send_result.is_ok()
-                                            && let Some(timestamp_ms) = broadcast.timestamp_ms
-                                        {
-                                            // Clone metrics reference and release horizontal lock before acquiring metrics lock
-                                            let metrics_ref = horizontal_lock.metrics.clone();
-                                            drop(horizontal_lock); // Release horizontal lock to avoid deadlock
+                                        // Track broadcast latency metrics using helper function
+                                        let metrics_ref = horizontal_lock.metrics.clone();
+                                        drop(horizontal_lock); // Release horizontal lock to avoid deadlock
 
-                                            // Only proceed if we have metrics
-                                            if let Some(metrics) = metrics_ref {
-                                                let now_ms = std::time::SystemTime::now()
-                                                    .duration_since(std::time::UNIX_EPOCH)
-                                                    .unwrap_or_default()
-                                                    .as_nanos()
-                                                    as f64
-                                                    / 1_000_000.0;
-                                                let latency_ms = ((now_ms - (timestamp_ms as f64))
-                                                    * 1000.0)
-                                                    .round()
-                                                    / 1000.0; // Round to 3 decimal places
-
-                                                // Only get recipient count if we're actually going to use it
-                                                let recipient_count =
-                                                    broadcast.recipient_count.unwrap_or(1);
-
-                                                let metrics_locked = metrics.lock().await;
-                                                metrics_locked.track_broadcast_latency(
-                                                    &broadcast.app_id,
-                                                    &broadcast.channel,
-                                                    recipient_count,
-                                                    latency_ms,
-                                                );
-                                            }
-                                        }
+                                        HorizontalAdapter::track_broadcast_latency_if_successful(
+                                            &send_result,
+                                            broadcast.timestamp_ms,
+                                            broadcast.recipient_count,
+                                            &broadcast.app_id,
+                                            &broadcast.channel,
+                                            metrics_ref,
+                                        )
+                                        .await;
                                     }
                                 }
                             } else if channel == request_channel_clone {
@@ -638,18 +617,10 @@ impl ConnectionManager for RedisAdapter {
         let (node_id, local_result, local_recipient_count) = {
             let mut horizontal_lock = self.horizontal.lock().await;
 
-            // Get recipient count before sending
-            let recipient_count = horizontal_lock
-                .local_adapter
-                .get_channel_socket_count(app_id, channel)
+            // Use helper function to calculate recipient count
+            let adjusted_count = horizontal_lock
+                .get_local_recipient_count(app_id, channel, except)
                 .await;
-
-            // Adjust for excluded socket
-            let adjusted_count = if except.is_some() && recipient_count > 0 {
-                recipient_count - 1
-            } else {
-                recipient_count
-            };
 
             let result = horizontal_lock
                 .local_adapter

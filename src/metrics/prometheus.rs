@@ -587,6 +587,10 @@ impl MetricsInterface for PrometheusMetricsDriver {
             "public"
         };
 
+        if recipient_count == 0 {
+            return;
+        }
+
         // Determine recipient count bucket
         let bucket = match recipient_count {
             1..=10 => "xs",
