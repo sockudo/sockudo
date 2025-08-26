@@ -431,8 +431,12 @@ impl RedisClusterAdapter {
                                 if send_result.is_ok()
                                     && let Some(timestamp_ms) = broadcast.timestamp_ms
                                 {
-                                    // Only check for metrics if we have a timestamp
-                                    if let Some(metrics) = &horizontal_lock.metrics {
+                                    // Clone metrics reference and release horizontal lock before acquiring metrics lock
+                                    let metrics_ref = horizontal_lock.metrics.clone();
+                                    drop(horizontal_lock); // Release horizontal lock to avoid deadlock
+
+                                    // Only proceed if we have metrics
+                                    if let Some(metrics) = metrics_ref {
                                         let now_ms = std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .unwrap_or_default()
