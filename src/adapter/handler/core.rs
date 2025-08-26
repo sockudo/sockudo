@@ -126,7 +126,6 @@ impl ConnectionHandler {
                         &channel_name,
                         member_removed_msg,
                         Some(socket_id),
-                        None,
                     )
                     .await?;
                 }
@@ -389,7 +388,6 @@ impl ConnectionHandler {
                         channel_str,
                         member_removed_msg,
                         Some(socket_id),
-                        None,
                     )
                     .await
                     .ok();

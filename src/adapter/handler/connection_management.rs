@@ -40,8 +40,20 @@ impl ConnectionHandler {
         result
     }
 
-    /// Broadcast to channel with optional timing for latency tracking
+    /// Broadcast to channel (backward compatible version)
     pub async fn broadcast_to_channel(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        exclude_socket: Option<&SocketId>,
+    ) -> Result<()> {
+        self.broadcast_to_channel_with_timing(app_config, channel, message, exclude_socket, None)
+            .await
+    }
+
+    /// Broadcast to channel with optional timing for latency tracking
+    pub async fn broadcast_to_channel_with_timing(
         &self,
         app_config: &App,
         channel: &str,
