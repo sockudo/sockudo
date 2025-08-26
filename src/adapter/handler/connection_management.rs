@@ -94,6 +94,7 @@ impl ConnectionHandler {
 
         // Track metrics if message was sent successfully
         if result.is_ok()
+            && target_socket_count > 0
             && let Some(ref metrics) = self.metrics
         {
             let metrics_locked = metrics.lock().await;
