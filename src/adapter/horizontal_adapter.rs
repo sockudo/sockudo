@@ -622,7 +622,6 @@ impl HorizontalAdapter {
     }
 
     /// Helper function to track broadcast latency metrics
-    /// This consolidates the duplicated logic across Redis, NATS, and RedisCluster adapters
     pub async fn track_broadcast_latency_if_successful(
         send_result: &Result<()>,
         timestamp_ms: Option<u64>,
@@ -643,7 +642,6 @@ impl HorizontalAdapter {
                     / 1_000_000.0;
                 let latency_ms = ((now_ms - (timestamp_ms as f64)) * 1000.0).round() / 1000.0; // Round to 3 decimal places
 
-                // Only get recipient count if we're actually going to use it
                 let recipient_count = recipient_count.unwrap_or(1);
 
                 let metrics_locked = metrics.lock().await;
@@ -658,7 +656,6 @@ impl HorizontalAdapter {
     }
 
     /// Helper function to calculate local recipient count for broadcasting
-    /// This consolidates the duplicated logic across Redis, NATS, and RedisCluster adapters
     pub async fn get_local_recipient_count(
         &mut self,
         app_id: &str,
