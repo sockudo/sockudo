@@ -378,8 +378,6 @@ impl NatsAdapter {
                         // Send the message first
                         let mut horizontal_lock = broadcast_horizontal.lock().await;
                         // Use the timestamp from the broadcast message for end-to-end tracking
-                        let timestamp_ms = broadcast.timestamp_ms.map(|ms| ms as f64);
-
                         let send_result = horizontal_lock
                             .local_adapter
                             .send(
@@ -387,7 +385,7 @@ impl NatsAdapter {
                                 message,
                                 except_id.as_ref(),
                                 &broadcast.app_id,
-                                timestamp_ms, // Pass through the original timestamp
+                                broadcast.timestamp_ms, // Pass through the original timestamp
                             )
                             .await;
 
