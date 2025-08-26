@@ -344,13 +344,14 @@ async fn process_single_event_parallel(
                 event: name_for_task,
                 data: Some(message_data.clone()),
             };
-            // Convert start_time to milliseconds if available
+            // Convert start_time to milliseconds with precision
             let start_time_ms = start_time.map(|t| {
-                std::time::SystemTime::now()
+                let now_nanos = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_millis() as u64
-                    - (t.elapsed().as_millis() as u64)
+                    .as_nanos() as f64;
+                let elapsed_nanos = t.elapsed().as_nanos() as f64;
+                (now_nanos - elapsed_nanos) / 1_000_000.0 // Convert to milliseconds
             });
             handler_clone.broadcast_to_channel(
                 app,
