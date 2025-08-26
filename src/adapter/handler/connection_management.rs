@@ -97,12 +97,8 @@ impl ConnectionHandler {
             && let Some(ref metrics) = self.metrics
         {
             let metrics_locked = metrics.lock().await;
-
-            // Track message sent metrics
-            if target_socket_count > 0 {
-                for _ in 0..target_socket_count {
-                    metrics_locked.mark_ws_message_sent(&app_config.id, message_size);
-                }
+            for _ in 0..target_socket_count {
+                metrics_locked.mark_ws_message_sent(&app_config.id, message_size);
             }
 
             // Track broadcast latency if we have a start time
