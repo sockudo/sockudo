@@ -66,8 +66,8 @@ impl ConnectionHandler {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_nanos() as f64
-                    / 1_000_000.0; // Convert to milliseconds with decimal precision
-                let latency_ms = now_ms - start_ms;
+                    / 1_000_000.0; // Convert to milliseconds
+                let latency_ms = ((now_ms - start_ms) * 1000.0).round() / 1000.0; // Round to 3 decimal places (microsecond precision)
 
                 metrics_locked.track_broadcast_latency(
                     &app_config.id,

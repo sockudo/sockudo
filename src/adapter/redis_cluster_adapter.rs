@@ -420,9 +420,12 @@ impl RedisClusterAdapter {
                                     let now_ms = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
-                                        .as_millis()
-                                        as u64;
-                                    let latency_ms = (now_ms - timestamp_ms) as f64;
+                                        .as_nanos()
+                                        as f64
+                                        / 1_000_000.0;
+                                    let latency_ms = ((now_ms - (timestamp_ms as f64)) * 1000.0)
+                                        .round()
+                                        / 1000.0; // Round to 3 decimal places
 
                                     // Get recipient count (from broadcast message or estimate)
                                     let recipient_count = broadcast.recipient_count.unwrap_or(1);
