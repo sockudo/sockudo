@@ -346,7 +346,7 @@ async fn process_single_event_parallel(
             };
             // Use the provided timestamp directly
             let timestamp_ms = start_time_ms;
-            handler_clone.broadcast_to_channel(
+            handler_clone.broadcast_to_channel_with_timing(
                 app,
                 &target_channel_str,
                 _message_to_send,
