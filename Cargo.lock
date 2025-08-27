@@ -3474,6 +3474,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "axum-server",
+ "bytes",
  "chrono",
  "clap",
  "dashmap",
