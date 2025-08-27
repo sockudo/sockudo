@@ -5,6 +5,7 @@ use crate::app::config::App;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
 use crate::protocol::messages::PusherMessage;
+use bytes::Bytes;
 use fastwebsockets::{Frame, Payload, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
@@ -353,8 +354,10 @@ impl MessageSender {
         self.send(frame)
     }
 
-    pub fn send_raw_bytes(&self, bytes: Arc<Vec<u8>>) -> Result<()> {
-        let frame = Frame::text(Payload::from(bytes.as_ref().clone()));
+    pub fn send_raw_bytes(&self, bytes: Bytes) -> Result<()> {
+        // Unfortunately we must convert to owned Vec for Payload due to "static" lifetime requirement
+        // Bytes still helps us avoid cloning during the broadcasting phase
+        let frame = Frame::text(Payload::from(bytes.to_vec()));
         self.send(frame)
     }
 
@@ -431,7 +434,7 @@ impl WebSocket {
         }
     }
 
-    pub fn send_raw_bytes(&self, bytes: Arc<Vec<u8>>) -> Result<()> {
+    pub fn send_raw_bytes(&self, bytes: Bytes) -> Result<()> {
         // Check if connection is in a valid state to send messages
         match self.state.status {
             ConnectionStatus::Active | ConnectionStatus::PingSent(_) => {
@@ -528,7 +531,7 @@ impl WebSocketRef {
         ws.send_message(message)
     }
 
-    pub async fn send_raw_message(&self, bytes: Arc<Vec<u8>>) -> Result<()> {
+    pub async fn send_raw_message(&self, bytes: Bytes) -> Result<()> {
         let ws = self.0.lock().await;
         ws.send_raw_bytes(bytes)
     }

@@ -7,6 +7,7 @@ use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocketRef};
 use async_trait::async_trait;
+use bytes::Bytes;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
 use futures_util::future::join_all;
@@ -52,7 +53,7 @@ impl LocalAdapter {
     async fn send_batched_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: Arc<Vec<u8>>,
+        message_bytes: Bytes,
     ) -> Vec<std::result::Result<Vec<Result<()>>, tokio::task::JoinError>> {
         // Determine optimal batch size and concurrency based on socket count
         let socket_count = target_socket_refs.len();
@@ -99,7 +100,7 @@ impl LocalAdapter {
     async fn send_streaming_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: Arc<Vec<u8>>,
+        message_bytes: Bytes,
     ) -> Vec<Result<()>> {
         let socket_count = target_socket_refs.len();
 
@@ -129,7 +130,7 @@ impl LocalAdapter {
     async fn send_hybrid_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: Arc<Vec<u8>>,
+        message_bytes: Bytes,
     ) -> Vec<Result<()>> {
         let subscriber_count = target_socket_refs.len();
 
@@ -241,6 +242,11 @@ impl ConnectionManager for LocalAdapter {
         debug!("Sending message to channel: {}", channel);
         debug!("Message: {:?}", message);
 
+        // Serialize message once to avoid repeated serialization overhead
+        let serialized_message = serde_json::to_vec(&message)
+            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+        let message_bytes = Bytes::from(serialized_message);
+
         if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
             let namespace = self.get_namespace(app_id).await.unwrap();
@@ -260,12 +266,6 @@ impl ConnectionManager for LocalAdapter {
                 "Broadcasting to user channel '{}': {} user sockets",
                 channel, subscriber_count
             );
-
-            // Serialize message once to avoid repeated serialization overhead
-            let message_bytes =
-                Arc::new(serde_json::to_vec(&message).map_err(|e| {
-                    Error::InvalidMessageFormat(format!("Serialization failed: {e}"))
-                })?);
 
             // Send messages using hybrid approach (streaming for small, batching for large)
             let results = self
@@ -298,12 +298,6 @@ impl ConnectionManager for LocalAdapter {
                 "Broadcasting to channel '{}': {} subscribers",
                 channel, subscriber_count
             );
-
-            // Serialize message once to avoid repeated serialization overhead
-            let message_bytes =
-                Arc::new(serde_json::to_vec(&message).map_err(|e| {
-                    Error::InvalidMessageFormat(format!("Serialization failed: {e}"))
-                })?);
 
             // Send messages using hybrid approach (streaming for small, batching for large)
             let results = self
