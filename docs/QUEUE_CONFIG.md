@@ -44,10 +44,10 @@ CLEANUP_MAX_RETRY_ATTEMPTS=2
 |-----------|---------|-------------|
 | `async_enabled` | `true` | Enable/disable async cleanup globally |
 | `fallback_to_sync` | `true` | Fall back to sync cleanup if queue fails |
-| `queue_buffer_size` | `2000` | Maximum queued disconnect tasks per worker |
+| `queue_buffer_size` | `50000` | Maximum queued disconnect tasks per worker |
 | `batch_size` | `25` | Tasks processed per batch per worker |
 | `batch_timeout_ms` | `50` | Max wait time to fill batch per worker |
-| `worker_threads` | `1` | Number of cleanup worker threads (or "auto") |
+| `worker_threads` | `"auto"` | Number of cleanup worker threads (or "auto") |
 | `max_retry_attempts` | `2` | Retries before giving up per worker |
 
 ### Worker Threads Configuration
@@ -78,6 +78,8 @@ When using "auto", the system uses **25% of available CPU cores** (minimum 1, ma
 - 16+ CPUs → 4 workers
 
 **Multiple Workers**: When using multiple workers, each worker operates with the configured `batch_size` independently. Work is distributed among workers using round-robin scheduling for optimal load balancing.
+
+**Single Worker Optimization**: When `worker_threads` is set to 1 (either explicitly or via "auto"), the system automatically uses a direct sender optimization that bypasses the multi-worker distribution overhead, providing better performance for single-worker deployments.
 
 ### Per-Worker Configuration
 
@@ -110,7 +112,7 @@ This design allows for:
   }
 }
 ```
-- **Memory Usage**: ~4KB queue buffer per worker (total: ~4KB with 1 worker)
+- **Memory Usage**: ~300KB queue buffer per worker (500 slots × ~625 bytes each)
 - **CPU Impact**: Minimal (1 worker thread)
 - **Latency**: 100ms max cleanup delay per worker
 
@@ -120,16 +122,16 @@ This design allows for:
 {
   "cleanup": {
     "async_enabled": true,
-    "queue_buffer_size": 2000,
+    "queue_buffer_size": 50000,
     "batch_size": 25,
     "batch_timeout_ms": 50,
-    "worker_threads": 1,
+    "worker_threads": "auto",
     "max_retry_attempts": 2
   }
 }
 ```
-- **Memory Usage**: ~16KB queue buffer per worker (total: ~16KB with 1 worker)
-- **CPU Impact**: Low (1 worker, leaves CPU for main server)
+- **Memory Usage**: ~30MB queue buffer per worker (50000 slots × ~625 bytes each)
+- **CPU Impact**: Low (auto selects 1 worker for 2vCPU, leaves CPU for main server)
 - **Latency**: 50ms max cleanup delay per worker
 
 ### 3. High-Traffic Deployment (4vCPU/4GB+ RAM)
@@ -146,7 +148,7 @@ This design allows for:
   }
 }
 ```
-- **Memory Usage**: ~80KB queue buffer per worker (total: ~160KB with 2 workers)
+- **Memory Usage**: ~6MB queue buffer per worker (total: ~12MB with 2 workers)
 - **CPU Impact**: Moderate (2 workers)
 - **Latency**: 25ms max cleanup delay per worker
 
@@ -164,7 +166,7 @@ This design allows for:
   }
 }
 ```
-- **Memory Usage**: ~400KB queue buffer per worker (total: ~1.6MB with 4 workers)
+- **Memory Usage**: ~30MB queue buffer per worker (total: ~120MB with 4 workers)
 - **CPU Impact**: High (4 workers)
 - **Latency**: 10ms max cleanup delay per worker
 
@@ -182,7 +184,7 @@ This design allows for:
   }
 }
 ```
-- **Memory Usage**: ~8KB queue buffer per worker (total: ~16KB with 2 workers)
+- **Memory Usage**: ~600KB queue buffer per worker (total: ~1.2MB with 2 workers)
 - **CPU Impact**: Moderate (2 workers, frequent small batches)
 - **Latency**: 5ms max cleanup delay per worker
 
@@ -200,7 +202,7 @@ This design allows for:
   }
 }
 ```
-- **Memory Usage**: ~800B queue buffer per worker (total: ~800B with 1 worker)
+- **Memory Usage**: ~60KB queue buffer per worker (100 slots × ~625 bytes each)
 - **CPU Impact**: Minimal (1 worker)
 - **Latency**: 200ms max cleanup delay per worker
 
@@ -370,11 +372,11 @@ systemctl restart sockudo
 
 ## Configuration Examples by Server Size
 
-| Server Spec | queue_buffer_size | batch_size | batch_timeout_ms | worker_threads |
-|-------------|-------------------|------------|------------------|----------------|
-| 1vCPU/1GB   | 500              | 10         | 100              | 1              |
-| 2vCPU/2GB   | 2000             | 25         | 50               | 1              |
-| 4vCPU/4GB   | 10000            | 100        | 25               | 2              |
-| 8vCPU/8GB   | 50000            | 500        | 10               | 4              |
+| Server Spec | queue_buffer_size | batch_size | batch_timeout_ms | worker_threads  |
+|-------------|-------------------|------------|------------------|-----------------|
+| 1vCPU/1GB   | 500               | 10         | 100              | 1               |
+| 2vCPU/2GB   | 50000             | 25         | 50               | "auto" (1)      |
+| 4vCPU/4GB   | 10000             | 100        | 25               | 2               |
+| 8vCPU/8GB   | 50000             | 500        | 10               | 4               |
 
 Remember: These are starting points. Monitor and adjust based on your specific traffic patterns and performance requirements.
