@@ -387,6 +387,16 @@ impl WebSocket {
         &self.state.socket_id
     }
 
+    fn ensure_can_send(&self) -> Result<()> {
+        if self.is_connected() {
+            Ok(())
+        } else {
+            Err(Error::ConnectionClosed(
+                "Cannot send message on closed connection".to_string(),
+            ))
+        }
+    }
+
     pub async fn close(&mut self, code: u16, reason: String) -> Result<()> {
         // Check if already closing or closed
         match self.state.status {
@@ -421,30 +431,17 @@ impl WebSocket {
     }
 
     pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
-        // Check if connection is in a valid state to send messages
-        match self.state.status {
-            ConnectionStatus::Active | ConnectionStatus::PingSent(_) => {
-                self.message_sender.send_json(message)
-            }
-            ConnectionStatus::Closing | ConnectionStatus::Closed => Err(Error::ConnectionClosed(
-                "Cannot send message on closed connection".to_string(),
-            )),
-        }
+        self.ensure_can_send()?;
+        self.message_sender.send_json(message)
     }
 
     pub fn send_raw_bytes(&self, bytes: BytesMut) -> Result<()> {
-        // Check if connection is in a valid state to send messages
-        match self.state.status {
-            ConnectionStatus::Active | ConnectionStatus::PingSent(_) => {
-                self.message_sender.send_raw_bytes(bytes)
-            }
-            ConnectionStatus::Closing | ConnectionStatus::Closed => Err(Error::ConnectionClosed(
-                "Cannot send message on closed connection".to_string(),
-            )),
-        }
+        self.ensure_can_send()?;
+        self.message_sender.send_raw_bytes(bytes)
     }
 
     pub fn send_text(&self, text: String) -> Result<()> {
+        self.ensure_can_send()?;
         self.message_sender.send_text(text)
     }
 
