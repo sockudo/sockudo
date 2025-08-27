@@ -10,7 +10,7 @@ use fastwebsockets::{Frame, Payload, WebSocketWrite};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use tokio::io::WriteHalf;
-use tracing::{info, warn};
+use tracing::warn;
 
 impl ConnectionHandler {
     pub async fn send_message_to_socket(
