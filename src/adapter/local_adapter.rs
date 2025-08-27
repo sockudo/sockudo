@@ -7,7 +7,7 @@ use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocketRef};
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::BytesMut;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
 use futures_util::future::join_all;
@@ -53,7 +53,7 @@ impl LocalAdapter {
     async fn send_batched_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: Bytes,
+        message_bytes: BytesMut,
     ) -> Vec<std::result::Result<Vec<Result<()>>, tokio::task::JoinError>> {
         // Determine optimal batch size and concurrency based on socket count
         let socket_count = target_socket_refs.len();
@@ -100,7 +100,7 @@ impl LocalAdapter {
     async fn send_streaming_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: Bytes,
+        message_bytes: BytesMut,
     ) -> Vec<Result<()>> {
         let socket_count = target_socket_refs.len();
 
@@ -130,7 +130,7 @@ impl LocalAdapter {
     async fn send_hybrid_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: Bytes,
+        message_bytes: BytesMut,
     ) -> Vec<Result<()>> {
         let subscriber_count = target_socket_refs.len();
 
@@ -245,7 +245,7 @@ impl ConnectionManager for LocalAdapter {
         let serialized_message = serde_json::to_vec(&message).map_err(|e| {
             Error::InvalidMessageFormat(format!("Serialization failed: {e}"))
         })?;
-        let message_bytes = Bytes::from(serialized_message);
+        let message_bytes = BytesMut::from(serialized_message.as_slice());
 
         if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
