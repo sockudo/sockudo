@@ -61,7 +61,6 @@ impl ConnectionHandler {
         exclude_socket: Option<&SocketId>,
         start_time_ms: Option<f64>,
     ) -> Result<()> {
-        let broadcast_start = std::time::Instant::now();
         // Calculate message size for metrics
         let message_size = serde_json::to_string(&message).unwrap_or_default().len();
 
@@ -123,15 +122,6 @@ impl ConnectionHandler {
                 );
             }
         }
-
-        let broadcast_elapsed = broadcast_start.elapsed();
-        info!(
-            "End-to-end broadcast to '{}': {} subscribers in {:?} ({:.2}ms)",
-            channel,
-            target_socket_count,
-            broadcast_elapsed,
-            broadcast_elapsed.as_secs_f64() * 1000.0
-        );
 
         result
     }
