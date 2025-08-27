@@ -92,8 +92,8 @@ impl LocalAdapter {
             .collect();
 
         // Wait for all batch tasks to complete and flatten results
-        let batch_results = join_all(batch_tasks).await;
-        batch_results
+
+        join_all(batch_tasks).await
     }
 
     /// Send messages using streaming pipeline with buffer_unordered for optimal throughput
@@ -238,7 +238,6 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
         _start_time_ms: Option<f64>,
     ) -> Result<()> {
-        let start_time = std::time::Instant::now();
         debug!("Sending message to channel: {}", channel);
         debug!("Message: {:?}", message);
 
@@ -261,25 +260,10 @@ impl ConnectionManager for LocalAdapter {
                 }
             }
 
-            let subscriber_count = target_socket_refs.len();
-            info!(
-                "Broadcasting to user channel '{}': {} user sockets",
-                channel, subscriber_count
-            );
-
             // Send messages using hybrid approach (streaming for small, batching for large)
             let results = self
                 .send_hybrid_messages(target_socket_refs, message_bytes)
                 .await;
-
-            let elapsed = start_time.elapsed();
-            info!(
-                "User broadcast completed for channel '{}': {} sockets in {:?} ({:.2}ms)",
-                channel,
-                subscriber_count,
-                elapsed,
-                elapsed.as_secs_f64() * 1000.0
-            );
 
             // Handle any errors from the hybrid messaging
             for send_result in results {
@@ -293,25 +277,10 @@ impl ConnectionManager for LocalAdapter {
             // Get socket references with exclusion handled efficiently during collection
             let target_socket_refs = namespace.get_channel_socket_refs_except(channel, except);
 
-            let subscriber_count = target_socket_refs.len();
-            info!(
-                "Broadcasting to channel '{}': {} subscribers",
-                channel, subscriber_count
-            );
-
             // Send messages using hybrid approach (streaming for small, batching for large)
             let results = self
                 .send_hybrid_messages(target_socket_refs, message_bytes)
                 .await;
-
-            let elapsed = start_time.elapsed();
-            info!(
-                "Broadcast completed for channel '{}': {} subscribers in {:?} ({:.2}ms)",
-                channel,
-                subscriber_count,
-                elapsed,
-                elapsed.as_secs_f64() * 1000.0
-            );
 
             // Handle any errors from the hybrid messaging
             for send_result in results {
