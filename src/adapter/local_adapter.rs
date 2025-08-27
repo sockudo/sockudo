@@ -130,8 +130,6 @@ impl ConnectionManager for LocalAdapter {
                 }
             }
 
-            let subscriber_count = target_socket_refs.len();
-
             // Send messages in parallel using WebSocketRef
             let send_tasks: Vec<JoinHandle<Result<()>>> = target_socket_refs
                 .into_iter()
