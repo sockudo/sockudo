@@ -5,7 +5,7 @@
 # -----------------------------------------------------------------------------
 # Build Stage: Compile the Rust application
 # -----------------------------------------------------------------------------
-FROM rust:latest AS builder
+FROM rust:1.89-bookworm AS builder
 
 # Use stable toolchain (already default)
 
