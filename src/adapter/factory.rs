@@ -54,8 +54,8 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(Mutex::new(LocalAdapter::new_with_threshold(
-                            config.broadcast_streaming_threshold,
+                        Ok(Arc::new(Mutex::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
                         ))))
                     }
                 }
@@ -97,8 +97,8 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(Mutex::new(LocalAdapter::new_with_threshold(
-                            config.broadcast_streaming_threshold,
+                        Ok(Arc::new(Mutex::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
                         ))))
                     }
                 }
@@ -125,8 +125,8 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(Mutex::new(LocalAdapter::new_with_threshold(
-                            config.broadcast_streaming_threshold,
+                        Ok(Arc::new(Mutex::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
                         ))))
                     }
                 }
@@ -134,8 +134,8 @@ impl AdapterFactory {
             AdapterDriver::Local => {
                 // Handle unknown as Local or make it an error
                 info!("{}", "Using local adapter.".to_string());
-                Ok(Arc::new(Mutex::new(LocalAdapter::new_with_threshold(
-                    config.broadcast_streaming_threshold,
+                Ok(Arc::new(Mutex::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
                 ))))
             }
         }

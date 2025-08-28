@@ -283,12 +283,12 @@ pub struct AdapterConfig {
     pub redis: RedisAdapterConfig,
     pub cluster: RedisClusterAdapterConfig,
     pub nats: NatsAdapterConfig,
-    #[serde(default = "default_broadcast_streaming_threshold")]
-    pub broadcast_streaming_threshold: usize,
+    #[serde(default = "default_buffer_multiplier_per_cpu")]
+    pub buffer_multiplier_per_cpu: usize,
 }
 
-fn default_broadcast_streaming_threshold() -> usize {
-    1500
+fn default_buffer_multiplier_per_cpu() -> usize {
+    64  // 64 concurrent operations per CPU core
 }
 
 impl Default for AdapterConfig {
@@ -298,7 +298,7 @@ impl Default for AdapterConfig {
             redis: RedisAdapterConfig::default(),
             cluster: RedisClusterAdapterConfig::default(),
             nats: NatsAdapterConfig::default(),
-            broadcast_streaming_threshold: default_broadcast_streaming_threshold(),
+            buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
         }
     }
 }
@@ -972,9 +972,9 @@ impl ServerOptions {
             self.adapter.driver =
                 parse_driver_enum(driver_str, self.adapter.driver.clone(), "Adapter");
         }
-        self.adapter.broadcast_streaming_threshold = parse_env::<usize>(
-            "ADAPTER_BROADCAST_STREAMING_THRESHOLD",
-            self.adapter.broadcast_streaming_threshold,
+        self.adapter.buffer_multiplier_per_cpu = parse_env::<usize>(
+            "ADAPTER_BUFFER_MULTIPLIER_PER_CPU",
+            self.adapter.buffer_multiplier_per_cpu,
         );
         if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
             self.cache.driver = parse_driver_enum(driver_str, self.cache.driver.clone(), "Cache");
