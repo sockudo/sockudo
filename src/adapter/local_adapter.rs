@@ -89,7 +89,6 @@ impl LocalAdapter {
                     let chunk_results: Vec<Result<()>> = stream::iter(socket_chunk.iter())
                         .map(|socket_ref| {
                             let bytes = message_bytes.clone();
-                            let socket_ref = socket_ref.clone();
                             async move { socket_ref.send_broadcast(bytes) }
                         })
                         .buffer_unordered(chunk_size)
