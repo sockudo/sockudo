@@ -7,7 +7,7 @@ use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocketRef};
 use async_trait::async_trait;
-use bytes::BytesMut;
+use bytes::Bytes;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
 use futures_util::future::join_all;
@@ -53,7 +53,7 @@ impl LocalAdapter {
     async fn send_batched_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: BytesMut,
+        message_bytes: Bytes,
     ) -> Vec<std::result::Result<Vec<Result<()>>, tokio::task::JoinError>> {
         // Determine optimal batch size and concurrency based on socket count
         let socket_count = target_socket_refs.len();
@@ -82,7 +82,7 @@ impl LocalAdapter {
 
                     // Process all sockets in this batch sequentially to reduce task overhead
                     for socket_ref in batch {
-                        let result = socket_ref.send_raw_message(bytes.clone()).await;
+                        let result = socket_ref.send_broadcast(bytes.clone());
                         batch_results.push(result);
                     }
 
@@ -100,7 +100,7 @@ impl LocalAdapter {
     async fn send_streaming_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: BytesMut,
+        message_bytes: Bytes,
     ) -> Vec<Result<()>> {
         let socket_count = target_socket_refs.len();
 
@@ -117,7 +117,7 @@ impl LocalAdapter {
         let results: Vec<Result<()>> =
             stream::iter(target_socket_refs.into_iter().map(|socket_ref| {
                 let bytes = message_bytes.clone();
-                async move { socket_ref.send_raw_message(bytes).await }
+                async move { socket_ref.send_broadcast(bytes) }
             }))
             .buffer_unordered(buffer_size)
             .collect()
@@ -130,7 +130,7 @@ impl LocalAdapter {
     async fn send_hybrid_messages(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
-        message_bytes: BytesMut,
+        message_bytes: Bytes,
     ) -> Vec<Result<()>> {
         let subscriber_count = target_socket_refs.len();
 
@@ -244,7 +244,7 @@ impl ConnectionManager for LocalAdapter {
         // Serialize message once to avoid repeated serialization overhead
         let serialized_message = serde_json::to_vec(&message)
             .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
-        let message_bytes = BytesMut::from(serialized_message.as_slice());
+        let message_bytes = Bytes::from(serialized_message);
 
         if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
@@ -400,7 +400,7 @@ impl ConnectionManager for LocalAdapter {
     async fn add_user(&mut self, ws_ref: WebSocketRef) -> Result<()> {
         // Get app_id using WebSocketRef async method
         let app_id = {
-            let ws_guard = ws_ref.0.lock().await;
+            let ws_guard = ws_ref.inner.lock().await;
             ws_guard.state.get_app_key()
         };
         let namespace = self.get_namespace(&app_id).await.unwrap();
@@ -411,7 +411,7 @@ impl ConnectionManager for LocalAdapter {
     async fn remove_user(&mut self, ws_ref: WebSocketRef) -> Result<()> {
         // Get app_id using WebSocketRef async method
         let app_id = {
-            let ws_guard = ws_ref.0.lock().await;
+            let ws_guard = ws_ref.inner.lock().await;
             ws_guard.state.get_app_key()
         };
         let namespace = self.get_namespace(&app_id).await.unwrap();

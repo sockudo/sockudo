@@ -65,7 +65,7 @@ impl Namespace {
             }
         };
 
-        // Create the WebSocket using your new structure
+        // Create the WebSocket using new structure
         let mut websocket = WebSocket::new(socket_id.clone(), socket_writer);
 
         // Set the app configuration
@@ -105,7 +105,7 @@ impl Namespace {
                 let socket_id = socket_id_entry.key();
                 if let Some(connection) = self.get_connection(socket_id) {
                     let presence_data = {
-                        let conn_guard = connection.0.lock().await;
+                        let conn_guard = connection.inner.lock().await;
                         conn_guard
                             .state
                             .presence
@@ -312,7 +312,7 @@ impl Namespace {
         socket_id: &SocketId,
     ) -> Option<PresenceMemberInfo> {
         if let Some(connection) = self.get_connection(socket_id) {
-            let conn_guard = connection.0.lock().await;
+            let conn_guard = connection.inner.lock().await;
             conn_guard
                 .state
                 .presence
