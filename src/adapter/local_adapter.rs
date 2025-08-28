@@ -10,19 +10,21 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
-use futures_util::stream::{self, StreamExt};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::WriteHalf;
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info};
 
 #[derive(Clone)]
 pub struct LocalAdapter {
     pub namespaces: DashMap<String, Arc<Namespace>>,
     pub buffer_multiplier_per_cpu: usize,
+    // Global semaphore to limit total concurrent broadcast operations across all channels
+    broadcast_semaphore: Arc<Semaphore>,
 }
 
 impl Default for LocalAdapter {
@@ -33,40 +35,55 @@ impl Default for LocalAdapter {
 
 impl LocalAdapter {
     pub fn new() -> Self {
-        Self {
-            namespaces: DashMap::new(),
-            buffer_multiplier_per_cpu: 64, // Default: 64 concurrent ops per CPU
-        }
+        Self::new_with_buffer_multiplier(64) // Default: 64 concurrent ops per CPU
     }
 
     pub fn new_with_buffer_multiplier(multiplier: usize) -> Self {
+        let cpu_cores = num_cpus::get();
+        let max_concurrent = cpu_cores * multiplier;
+
         Self {
             namespaces: DashMap::new(),
             buffer_multiplier_per_cpu: multiplier,
+            broadcast_semaphore: Arc::new(Semaphore::new(max_concurrent)),
         }
     }
 
-    /// Send messages using streaming pipeline with buffer_unordered for optimal throughput
-    async fn send_streaming_messages(
+    /// Send messages using tokio::spawn with semaphore-controlled concurrency
+    async fn send_messages_concurrent(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
         message_bytes: Bytes,
     ) -> Vec<Result<()>> {
-        let socket_count = target_socket_refs.len();
-
-        // Use 1 buffer per socket, capped at CPU capacity
-        let cpu_cores = num_cpus::get();
-        let buffer_size = socket_count.min(cpu_cores * self.buffer_multiplier_per_cpu);
-
-        // Create streaming pipeline using buffer_unordered for concurrent processing
-        let results: Vec<Result<()>> =
-            stream::iter(target_socket_refs.into_iter().map(|socket_ref| {
+        // Spawn a task for each connection with semaphore-controlled concurrency
+        let tasks: Vec<_> = target_socket_refs
+            .into_iter()
+            .map(|socket_ref| {
+                let semaphore = Arc::clone(&self.broadcast_semaphore);
                 let bytes = message_bytes.clone();
-                async move { socket_ref.send_broadcast(bytes) }
-            }))
-            .buffer_unordered(buffer_size)
-            .collect()
-            .await;
+
+                tokio::spawn(async move {
+                    match semaphore.acquire().await {
+                        Ok(_permit) => {
+                            // Permit automatically released when _permit is dropped
+                            socket_ref.send_broadcast(bytes)
+                        }
+                        Err(_) => Err(Error::Connection(
+                            "Broadcast semaphore unavailable".to_string(),
+                        )),
+                    }
+                })
+            })
+            .collect();
+
+        // Wait for all tasks and collect results
+        let mut results = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            match task.await {
+                Ok(result) => results.push(result),
+                Err(_) => results.push(Err(Error::Connection("Task panicked".to_string()))),
+            }
+        }
 
         results
     }
@@ -176,12 +193,12 @@ impl ConnectionManager for LocalAdapter {
             namespace.get_channel_socket_refs_except(channel, except)
         };
 
-        // Send messages using streaming pipeline with lock-free architecture
+        // Send messages using concurrent tasks with semaphore-controlled concurrency
         let results = self
-            .send_streaming_messages(target_socket_refs, message_bytes)
+            .send_messages_concurrent(target_socket_refs, message_bytes)
             .await;
 
-        // Handle any errors from streaming
+        // Handle any errors from concurrent messaging
         for send_result in results {
             if let Err(e) = send_result {
                 error!("Failed to send message: {}", e);
