@@ -49,42 +49,74 @@ impl LocalAdapter {
         }
     }
 
-    /// Send messages using tokio::spawn with semaphore-controlled concurrency
+    /// Send messages using adaptive batch spawning with semaphore-controlled concurrency
     async fn send_messages_concurrent(
         &self,
         target_socket_refs: Vec<WebSocketRef>,
         message_bytes: Bytes,
     ) -> Vec<Result<()>> {
-        // Spawn a task for each connection with semaphore-controlled concurrency
-        let tasks: Vec<_> = target_socket_refs
-            .into_iter()
-            .map(|socket_ref| {
+        let socket_count = target_socket_refs.len();
+        
+        // Calculate adaptive batch size based on socket count
+        let batch_size = if socket_count <= 50 {
+            socket_count // Single batch for small broadcasts
+        } else if socket_count <= 1000 {
+            32 // Efficient batching for medium broadcasts
+        } else {
+            64 // Larger batches for big broadcasts
+        };
+        
+        // Spawn batch tasks with semaphore-controlled concurrency
+        let batch_tasks: Vec<_> = target_socket_refs
+            .chunks(batch_size)
+            .map(|batch| {
                 let semaphore = Arc::clone(&self.broadcast_semaphore);
                 let bytes = message_bytes.clone();
-
+                let batch_sockets: Vec<WebSocketRef> = batch.to_vec();
+                
                 tokio::spawn(async move {
-                    match semaphore.acquire().await {
-                        Ok(_permit) => {
-                            // Permit automatically released when _permit is dropped
-                            socket_ref.send_broadcast(bytes)
+                    let batch_size = batch_sockets.len();
+                    
+                    // Acquire permits for entire batch
+                    match semaphore.acquire_many(batch_size as u32).await {
+                        Ok(_permits) => {
+                            // Process all sockets in this batch concurrently
+                            let mut batch_results = Vec::with_capacity(batch_size);
+                            
+                            for socket_ref in batch_sockets {
+                                let result = socket_ref.send_broadcast(bytes.clone());
+                                batch_results.push(result);
+                            }
+                            
+                            batch_results
                         }
-                        Err(_) => Err(Error::Connection(
-                            "Broadcast semaphore unavailable".to_string(),
-                        )),
+                        Err(_) => {
+                            // Return errors for all sockets in batch if semaphore fails
+                            (0..batch_size)
+                                .map(|_| Err(Error::Connection("Broadcast semaphore unavailable".to_string())))
+                                .collect()
+                        }
                     }
                 })
             })
             .collect();
-
-        // Wait for all tasks and collect results
-        let mut results = Vec::with_capacity(tasks.len());
-        for task in tasks {
-            match task.await {
-                Ok(result) => results.push(result),
-                Err(_) => results.push(Err(Error::Connection("Task panicked".to_string()))),
+        
+        // Wait for all batch tasks and flatten results
+        let mut results = Vec::with_capacity(socket_count);
+        for batch_task in batch_tasks {
+            match batch_task.await {
+                Ok(batch_results) => results.extend(batch_results),
+                Err(_) => {
+                    // If batch task panicked, create error for expected results
+                    let remaining = socket_count - results.len();
+                    let error_count = remaining.min(batch_size);
+                    for _ in 0..error_count {
+                        results.push(Err(Error::Connection("Batch task panicked".to_string())));
+                    }
+                }
             }
         }
-
+        
         results
     }
 
