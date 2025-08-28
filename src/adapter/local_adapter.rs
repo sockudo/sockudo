@@ -104,14 +104,9 @@ impl LocalAdapter {
     ) -> Vec<Result<()>> {
         let socket_count = target_socket_refs.len();
 
-        // Determine optimal buffer size based on socket count and system capabilities
-        let buffer_size = if socket_count <= 100 {
-            socket_count.min(16) // Small broadcasts: limited buffering
-        } else if socket_count <= 1000 {
-            64 // Medium broadcasts: moderate buffering
-        } else {
-            128 // Large broadcasts: high buffering for maximum throughput
-        };
+        // Use 1 buffer per socket, capped at CPU capacity
+        let cpu_cores = num_cpus::get();
+        let buffer_size = socket_count.min(cpu_cores * 64);
 
         // Create streaming pipeline using buffer_unordered for concurrent processing
         let results: Vec<Result<()>> =
