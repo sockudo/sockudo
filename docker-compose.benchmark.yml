@@ -1,3 +1,5 @@
+name: sockudo-benchmark
+
 services:
   sockudo-node:
     build:
