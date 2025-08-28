@@ -156,47 +156,36 @@ impl ConnectionManager for LocalAdapter {
             .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
         let message_bytes = Bytes::from(serialized_message);
 
-        if channel.starts_with("#server-to-user-") {
+        let namespace = self.get_namespace(app_id).await.unwrap();
+        
+        // Get target socket references based on channel type
+        let target_socket_refs = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
-            let namespace = self.get_namespace(app_id).await.unwrap();
             let socket_refs = namespace.get_user_sockets(user_id).await?;
 
-            // Collect socket IDs that should receive the message, using WebSocketRef methods
-            let mut target_socket_refs = Vec::new();
+            // Collect socket IDs that should receive the message, applying exclusion
+            let mut target_refs = Vec::new();
             for socket_ref in socket_refs.iter() {
                 let socket_id = socket_ref.get_socket_id().await;
                 if except != Some(&socket_id) {
-                    target_socket_refs.push(socket_ref.clone());
+                    target_refs.push(socket_ref.clone());
                 }
             }
-
-            // Send messages using streaming pipeline with lock-free architecture
-            let results = self
-                .send_streaming_messages(target_socket_refs, message_bytes)
-                .await;
-
-            // Handle any errors from the hybrid messaging
-            for send_result in results {
-                if let Err(e) = send_result {
-                    error!("Failed to send message to user socket: {}", e);
-                }
-            }
+            target_refs
         } else {
-            let namespace = self.get_namespace(app_id).await.unwrap();
-
             // Get socket references with exclusion handled efficiently during collection
-            let target_socket_refs = namespace.get_channel_socket_refs_except(channel, except);
+            namespace.get_channel_socket_refs_except(channel, except)
+        };
 
-            // Send messages using streaming pipeline with lock-free architecture
-            let results = self
-                .send_streaming_messages(target_socket_refs, message_bytes)
-                .await;
+        // Send messages using streaming pipeline with lock-free architecture
+        let results = self
+            .send_streaming_messages(target_socket_refs, message_bytes)
+            .await;
 
-            // Handle any errors from the hybrid messaging
-            for send_result in results {
-                if let Err(e) = send_result {
-                    error!("Failed to send message to channel socket: {}", e);
-                }
+        // Handle any errors from streaming
+        for send_result in results {
+            if let Err(e) = send_result {
+                error!("Failed to send message: {}", e);
             }
         }
 
