@@ -71,7 +71,6 @@ impl LocalAdapter {
         results
     }
 
-
     // Helper function to get or create namespace
     async fn get_or_create_namespace(&mut self, app_id: &str) -> Arc<Namespace> {
         if !self.namespaces.contains_key(app_id) {
@@ -157,7 +156,7 @@ impl ConnectionManager for LocalAdapter {
         let message_bytes = Bytes::from(serialized_message);
 
         let namespace = self.get_namespace(app_id).await.unwrap();
-        
+
         // Get target socket references based on channel type
         let target_socket_refs = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");

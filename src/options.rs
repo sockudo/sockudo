@@ -288,7 +288,7 @@ pub struct AdapterConfig {
 }
 
 fn default_buffer_multiplier_per_cpu() -> usize {
-    64  // 64 concurrent operations per CPU core
+    64 // 64 concurrent operations per CPU core
 }
 
 impl Default for AdapterConfig {
