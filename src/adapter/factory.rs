@@ -75,8 +75,8 @@ impl AdapterFactory {
 
                 if nodes.is_empty() {
                     warn!("{}", "Redis Cluster Adapter selected, but no nodes configured. Falling back to local adapter.".to_string());
-                    return Ok(Arc::new(Mutex::new(LocalAdapter::new_with_threshold(
-                        config.broadcast_streaming_threshold,
+                    return Ok(Arc::new(Mutex::new(LocalAdapter::new_with_buffer_multiplier(
+                        config.buffer_multiplier_per_cpu,
                     ))));
                 }
 
