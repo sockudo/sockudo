@@ -62,9 +62,7 @@ impl LocalAdapter {
         let socket_count = target_socket_refs.len();
 
         // Determine target number of chunks (1-8 based on socket count vs max concurrency)
-        let target_chunks = ((socket_count + self.max_concurrent - 1) / self.max_concurrent)
-            .min(8)
-            .max(1);
+        let target_chunks = socket_count.div_ceil(self.max_concurrent).clamp(1, 8);
 
         // Calculate socket chunk size based on socket count divided by target chunks
         // With a max of self.max_concurrent/2 sockets per chunk (better utilization)
@@ -86,7 +84,7 @@ impl LocalAdapter {
             {
                 Ok(_permits) => {
                     // Process sockets in this chunk using buffered unordered streaming
-                    let chunk_vec: Vec<_> = socket_chunk.iter().cloned().collect();
+                    let chunk_vec: Vec<_> = socket_chunk.to_vec();
                     let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
                         .map(|socket_ref| {
                             let bytes = message_bytes.clone();
