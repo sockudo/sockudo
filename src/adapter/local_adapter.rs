@@ -36,7 +36,7 @@ impl Default for LocalAdapter {
 
 impl LocalAdapter {
     pub fn new() -> Self {
-        Self::new_with_buffer_multiplier(64) // Default: 64 concurrent ops per CPU
+        Self::new_with_buffer_multiplier(32) // Default: 32 concurrent ops per CPU
     }
 
     pub fn new_with_buffer_multiplier(multiplier: usize) -> Self {
