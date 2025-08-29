@@ -72,38 +72,58 @@ impl LocalAdapter {
             .min(self.max_concurrent)
             .max(1);
 
-        // Process chunks sequentially with controlled concurrency
+        // Process chunks in parallel with controlled concurrency
+        let chunk_tasks: Vec<_> = target_socket_refs
+            .chunks(socket_chunk_size)
+            .map(|socket_chunk| {
+                let semaphore = Arc::clone(&self.broadcast_semaphore);
+                let bytes = message_bytes.clone();
+                let chunk_vec: Vec<_> = socket_chunk.iter().cloned().collect();
+
+                tokio::spawn(async move {
+                    let chunk_size = chunk_vec.len();
+
+                    // Acquire permits for the entire chunk
+                    match semaphore.acquire_many(chunk_size as u32).await {
+                        Ok(_permits) => {
+                            // Process sockets in this chunk using buffered unordered streaming
+                            let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
+                                .map(|socket_ref| {
+                                    let bytes = bytes.clone();
+                                    async move { socket_ref.send_broadcast(bytes) }
+                                })
+                                .buffer_unordered(chunk_size)
+                                .collect()
+                                .await;
+
+                            chunk_results
+                        }
+                        Err(_) => {
+                            // Return errors for all sockets if semaphore fails
+                            (0..chunk_size)
+                                .map(|_| {
+                                    Err(Error::Connection(
+                                        "Broadcast semaphore unavailable".to_string(),
+                                    ))
+                                })
+                                .collect()
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        // Wait for all chunks and flatten results
         let mut results = Vec::with_capacity(socket_count);
-
-        for socket_chunk in target_socket_refs.chunks(socket_chunk_size) {
-            let chunk_size = socket_chunk.len();
-
-            // Acquire permits for the entire chunk
-            match self
-                .broadcast_semaphore
-                .acquire_many(chunk_size as u32)
-                .await
-            {
-                Ok(_permits) => {
-                    // Process sockets in this chunk using buffered unordered streaming
-                    let chunk_vec: Vec<_> = socket_chunk.iter().cloned().collect();
-                    let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
-                        .map(|socket_ref| {
-                            let bytes = message_bytes.clone();
-                            async move { socket_ref.send_broadcast(bytes) }
-                        })
-                        .buffer_unordered(chunk_size)
-                        .collect()
-                        .await;
-
-                    results.extend(chunk_results);
-                }
+        for chunk_task in chunk_tasks {
+            match chunk_task.await {
+                Ok(chunk_results) => results.extend(chunk_results),
                 Err(_) => {
-                    // Return errors for all sockets if semaphore fails
-                    for _ in 0..chunk_size {
-                        results.push(Err(Error::Connection(
-                            "Broadcast semaphore unavailable".to_string(),
-                        )));
+                    // If chunk task panicked, fill with errors
+                    let remaining = socket_count - results.len();
+                    let error_count = remaining.min(socket_chunk_size);
+                    for _ in 0..error_count {
+                        results.push(Err(Error::Connection("Chunk task panicked".to_string())));
                     }
                 }
             }
