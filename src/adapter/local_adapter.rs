@@ -36,27 +36,21 @@ impl Default for LocalAdapter {
 
 impl LocalAdapter {
     pub fn new() -> Self {
-        Self::new_with_buffer_multiplier(64) // Default: 64 concurrent ops per CPU
+        Self::new_with_buffer_multiplier(128) // Default: 64 concurrent ops per CPU
     }
 
     pub fn new_with_buffer_multiplier(multiplier: usize) -> Self {
         let cpu_cores = num_cpus::get();
-        let buffer_multiplier = match cpu_cores {
-            1..=2 => 128, // High multiplier for low CPU count
-            3..=4 => 64,  // Medium multiplier for medium systems
-            _ => 32,      // Keep low for high-CPU systems
-        };
-
-        let max_concurrent = cpu_cores * buffer_multiplier;
+        let max_concurrent = cpu_cores * multiplier;
 
         info!(
             "LocalAdapter initialized with {} CPU cores, buffer multiplier {}, max concurrent {}",
-            cpu_cores, buffer_multiplier, max_concurrent
+            cpu_cores, multiplier, max_concurrent
         );
 
         Self {
             namespaces: DashMap::new(),
-            buffer_multiplier_per_cpu: buffer_multiplier,
+            buffer_multiplier_per_cpu: multiplier,
             max_concurrent,
             broadcast_semaphore: Arc::new(Semaphore::new(max_concurrent)),
         }
@@ -76,7 +70,7 @@ impl LocalAdapter {
         let target_chunks = socket_count.div_ceil(self.max_concurrent).clamp(1, 8);
 
         // Calculate socket chunk size based on socket count divided by target chunks
-        // With a max of self.max_concurrent/2 sockets per chunk (better utilization)
+        // With a max of self.max_concurrent sockets per chunk (better utilization)
         let socket_chunk_size = (socket_count / target_chunks)
             .min(self.max_concurrent)
             .max(1);

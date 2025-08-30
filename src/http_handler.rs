@@ -351,9 +351,9 @@ async fn process_single_event_parallel(
                 &target_channel_str,
                 _message_to_send,
                 socket_id_for_task.as_ref(),
-                timestamp_ms
+                timestamp_ms,
             )
-            .await?;
+                .await?;
 
 
             // If info collection is requested, gather details for this channel.
@@ -450,7 +450,7 @@ async fn process_single_event_parallel(
 
     // Execute all channel processing futures concurrently.
     let results: Vec<Result<Option<(String, Value)>, AppError>> =
-        join_all(channel_processing_futures).await;
+        join_all(channel_processing_futures).await; 
 
     // Aggregate results from all tasks.
     let mut final_channels_info_map = HashMap::new();
