@@ -450,7 +450,7 @@ async fn process_single_event_parallel(
 
     // Execute all channel processing futures concurrently.
     let results: Vec<Result<Option<(String, Value)>, AppError>> =
-        join_all(channel_processing_futures).await; 
+        join_all(channel_processing_futures).await;
 
     // Aggregate results from all tasks.
     let mut final_channels_info_map = HashMap::new();
