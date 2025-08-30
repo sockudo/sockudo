@@ -34,6 +34,7 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, AtomicU64};
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, warn};
@@ -49,6 +50,8 @@ pub struct ConnectionHandler {
     watchlist_manager: Arc<WatchlistManager>,
     server_options: Arc<ServerOptions>,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
+    cleanup_consecutive_failures: Arc<AtomicUsize>,
+    cleanup_circuit_breaker_opened_at: Arc<AtomicU64>,
 }
 
 impl ConnectionHandler {
@@ -74,6 +77,8 @@ impl ConnectionHandler {
             watchlist_manager: Arc::new(WatchlistManager::new()),
             server_options: Arc::new(server_options),
             cleanup_queue,
+            cleanup_consecutive_failures: Arc::new(AtomicUsize::new(0)),
+            cleanup_circuit_breaker_opened_at: Arc::new(AtomicU64::new(0)),
         }
     }
 
