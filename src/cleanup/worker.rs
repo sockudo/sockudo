@@ -263,11 +263,14 @@ impl CleanupWorker {
                     .push(event);
             }
 
+            // Collect webhook task handles for error tracking
+            let mut webhook_handles = Vec::new();
+
             for (app_id, events) in events_by_app {
                 let webhook_integration = webhook_integration.clone();
                 let app_manager = self.app_manager.clone();
 
-                tokio::spawn(async move {
+                let handle = tokio::spawn(async move {
                     // Get app config once for all events
                     let app_config = match app_manager.find_by_id(&app_id).await {
                         Ok(Some(app)) => app,
@@ -291,6 +294,15 @@ impl CleanupWorker {
                         }
                     }
                 });
+
+                webhook_handles.push(handle);
+            }
+
+            // Wait for all webhook tasks to complete and log any failures
+            for handle in webhook_handles {
+                if let Err(e) = handle.await {
+                    error!("Webhook task panicked or was cancelled: {}", e);
+                }
             }
         }
     }
