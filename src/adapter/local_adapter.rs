@@ -41,11 +41,22 @@ impl LocalAdapter {
 
     pub fn new_with_buffer_multiplier(multiplier: usize) -> Self {
         let cpu_cores = num_cpus::get();
-        let max_concurrent = cpu_cores * multiplier;
+        let buffer_multiplier = match cpu_cores {
+            1..=2 => 128, // High multiplier for low CPU count
+            3..=4 => 64,  // Medium multiplier for medium systems
+            _ => 32,      // Keep low for high-CPU systems
+        };
+
+        let max_concurrent = cpu_cores * buffer_multiplier;
+
+        info!(
+            "LocalAdapter initialized with {} CPU cores, buffer multiplier {}, max concurrent {}",
+            cpu_cores, buffer_multiplier, max_concurrent
+        );
 
         Self {
             namespaces: DashMap::new(),
-            buffer_multiplier_per_cpu: multiplier,
+            buffer_multiplier_per_cpu: buffer_multiplier,
             max_concurrent,
             broadcast_semaphore: Arc::new(Semaphore::new(max_concurrent)),
         }
