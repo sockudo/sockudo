@@ -420,6 +420,13 @@ impl SockudoServer {
 
         // Initialize cleanup queue if enabled
         let cleanup_config = config.cleanup.clone();
+        
+        // Validate cleanup configuration
+        if let Err(e) = cleanup_config.validate() {
+            error!("Invalid cleanup configuration: {}", e);
+            return Err(Error::Internal(format!("Invalid cleanup configuration: {}", e)));
+        }
+        
         let (cleanup_queue, cleanup_worker_handles) = if cleanup_config.async_enabled {
             let multi_worker_system = MultiWorkerCleanupSystem::new(
                 connection_manager.clone(),
