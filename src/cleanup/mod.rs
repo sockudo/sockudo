@@ -82,21 +82,21 @@ impl CleanupConfig {
         if self.queue_buffer_size == 0 {
             return Err("queue_buffer_size must be greater than 0".to_string());
         }
-        
+
         if self.batch_size == 0 {
             return Err("batch_size must be greater than 0".to_string());
         }
-        
+
         if self.batch_timeout_ms == 0 {
             return Err("batch_timeout_ms must be greater than 0".to_string());
         }
-        
-        if let WorkerThreadsConfig::Fixed(n) = self.worker_threads {
-            if n == 0 {
-                return Err("worker_threads must be greater than 0 when using fixed count".to_string());
-            }
+
+        if let WorkerThreadsConfig::Fixed(n) = self.worker_threads
+            && n == 0
+        {
+            return Err("worker_threads must be greater than 0 when using fixed count".to_string());
         }
-        
+
         // Warn if potentially problematic configurations
         if self.queue_buffer_size < self.batch_size {
             return Err(format!(
@@ -104,18 +104,18 @@ impl CleanupConfig {
                 self.queue_buffer_size, self.batch_size
             ));
         }
-        
+
         if self.batch_timeout_ms > 60000 {
             return Err(format!(
                 "batch_timeout_ms ({}) is unusually high (> 60 seconds), this may cause delays",
                 self.batch_timeout_ms
             ));
         }
-        
+
         if !self.async_enabled && !self.fallback_to_sync {
             return Err("Either async_enabled or fallback_to_sync must be true".to_string());
         }
-        
+
         Ok(())
     }
 }

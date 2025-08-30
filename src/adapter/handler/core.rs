@@ -159,21 +159,24 @@ impl ConnectionHandler {
     async fn should_use_async_cleanup(&self) -> bool {
         const MAX_CONSECUTIVE_FAILURES: usize = 10;
         const CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS: u64 = 30;
-        
+
         if let Some(ref cleanup_queue) = self.cleanup_queue {
             let failures = self.cleanup_consecutive_failures.load(Ordering::Relaxed);
-            
+
             if failures > MAX_CONSECUTIVE_FAILURES {
                 // Circuit breaker is open - check if we should try recovery
-                let opened_at = self.cleanup_circuit_breaker_opened_at.load(Ordering::Relaxed);
+                let opened_at = self
+                    .cleanup_circuit_breaker_opened_at
+                    .load(Ordering::Relaxed);
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                
+
                 if opened_at == 0 {
                     // First time hitting the limit - record when circuit breaker opened
-                    self.cleanup_circuit_breaker_opened_at.store(current_time, Ordering::Relaxed);
+                    self.cleanup_circuit_breaker_opened_at
+                        .store(current_time, Ordering::Relaxed);
                     warn!(
                         "Circuit breaker opened: too many cleanup failures ({}), disabling async cleanup for {} seconds",
                         failures, CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS
@@ -195,7 +198,7 @@ impl ConnectionHandler {
                     return false;
                 }
             }
-            
+
             // Normal operation or successful recovery
             !cleanup_queue.is_closed()
         } else {
@@ -216,18 +219,27 @@ impl ConnectionHandler {
             {
                 Ok(()) => {
                     // Success - reset both failure counter and circuit breaker state
-                    let previous_failures = self.cleanup_consecutive_failures.swap(0, Ordering::Relaxed);
-                    let was_circuit_breaker_open = self.cleanup_circuit_breaker_opened_at.swap(0, Ordering::Relaxed);
-                    
+                    let previous_failures =
+                        self.cleanup_consecutive_failures.swap(0, Ordering::Relaxed);
+                    let was_circuit_breaker_open = self
+                        .cleanup_circuit_breaker_opened_at
+                        .swap(0, Ordering::Relaxed);
+
                     if was_circuit_breaker_open > 0 {
-                        info!("Circuit breaker recovered: async cleanup successful after {} failures", previous_failures);
+                        info!(
+                            "Circuit breaker recovered: async cleanup successful after {} failures",
+                            previous_failures
+                        );
                     }
-                    
+
                     return Ok(());
                 }
                 Err(e) => {
                     // Failure - increment counter (circuit breaker logic handles the rest)
-                    let new_failure_count = self.cleanup_consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                    let new_failure_count = self
+                        .cleanup_consecutive_failures
+                        .fetch_add(1, Ordering::Relaxed)
+                        + 1;
                     warn!(
                         "Async cleanup failed for socket {} (failure #{}: {}), falling back to sync",
                         socket_id, new_failure_count, e

@@ -150,7 +150,8 @@ impl MultiWorkerSender {
         }
 
         // Use round-robin distribution with wrapping to prevent overflow
-        let worker_index = self.round_robin_counter
+        let worker_index = self
+            .round_robin_counter
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some((current + 1) % self.senders.len())
             })

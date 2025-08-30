@@ -34,7 +34,7 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, AtomicU64};
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, warn};
