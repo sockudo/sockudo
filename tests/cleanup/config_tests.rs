@@ -135,4 +135,172 @@ mod tests {
             original_config.fallback_to_sync
         );
     }
+
+    #[test]
+    fn test_cleanup_config_validation_valid_configs() {
+        // Test default config is valid
+        let config = CleanupConfig::default();
+        assert!(config.validate().is_ok());
+
+        // Test valid config with Auto workers
+        let config = CleanupConfig {
+            queue_buffer_size: 1000,
+            batch_size: 10,
+            batch_timeout_ms: 100,
+            worker_threads: WorkerThreadsConfig::Auto,
+            max_retry_attempts: 3,
+            async_enabled: true,
+            fallback_to_sync: true,
+        };
+        assert!(config.validate().is_ok());
+
+        // Test valid config with Fixed workers
+        let config = CleanupConfig {
+            queue_buffer_size: 1000,
+            batch_size: 10,
+            batch_timeout_ms: 100,
+            worker_threads: WorkerThreadsConfig::Fixed(4),
+            max_retry_attempts: 3,
+            async_enabled: true,
+            fallback_to_sync: false,
+        };
+        assert!(config.validate().is_ok());
+
+        // Test edge case: only fallback_to_sync enabled
+        let config = CleanupConfig {
+            queue_buffer_size: 100,
+            batch_size: 10,
+            batch_timeout_ms: 100,
+            worker_threads: WorkerThreadsConfig::Auto,
+            max_retry_attempts: 1,
+            async_enabled: false,
+            fallback_to_sync: true,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_invalid_queue_buffer_size() {
+        let config = CleanupConfig {
+            queue_buffer_size: 0,
+            ..CleanupConfig::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "queue_buffer_size must be greater than 0");
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_invalid_batch_size() {
+        let config = CleanupConfig {
+            batch_size: 0,
+            ..CleanupConfig::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "batch_size must be greater than 0");
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_invalid_batch_timeout() {
+        let config = CleanupConfig {
+            batch_timeout_ms: 0,
+            ..CleanupConfig::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "batch_timeout_ms must be greater than 0");
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_invalid_fixed_workers() {
+        let config = CleanupConfig {
+            worker_threads: WorkerThreadsConfig::Fixed(0),
+            ..CleanupConfig::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "worker_threads must be greater than 0 when using fixed count"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_queue_smaller_than_batch() {
+        let config = CleanupConfig {
+            queue_buffer_size: 5,
+            batch_size: 10,
+            ..CleanupConfig::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "queue_buffer_size (5) should be at least as large as batch_size (10)"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_timeout_too_high() {
+        let config = CleanupConfig {
+            batch_timeout_ms: 70000, // 70 seconds
+            ..CleanupConfig::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("batch_timeout_ms (70000) is unusually high"));
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_neither_async_nor_sync() {
+        let config = CleanupConfig {
+            async_enabled: false,
+            fallback_to_sync: false,
+            ..CleanupConfig::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "Either async_enabled or fallback_to_sync must be true"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_auto_workers_passes() {
+        // Specifically test that Auto worker configuration passes validation
+        let config = CleanupConfig {
+            worker_threads: WorkerThreadsConfig::Auto,
+            ..CleanupConfig::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cleanup_config_validation_edge_cases() {
+        // Test maximum reasonable timeout (60 seconds exactly should pass)
+        let config = CleanupConfig {
+            batch_timeout_ms: 60000,
+            ..CleanupConfig::default()
+        };
+        assert!(config.validate().is_ok());
+
+        // Test 60001ms should fail
+        let config = CleanupConfig {
+            batch_timeout_ms: 60001,
+            ..CleanupConfig::default()
+        };
+        assert!(config.validate().is_err());
+
+        // Test queue_buffer_size equals batch_size (should pass)
+        let config = CleanupConfig {
+            queue_buffer_size: 100,
+            batch_size: 100,
+            ..CleanupConfig::default()
+        };
+        assert!(config.validate().is_ok());
+    }
 }
