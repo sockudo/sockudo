@@ -187,7 +187,10 @@ mod tests {
         };
         let result = config.validate();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "queue_buffer_size must be greater than 0");
+        assert_eq!(
+            result.unwrap_err(),
+            "queue_buffer_size must be greater than 0"
+        );
     }
 
     #[test]
@@ -209,7 +212,10 @@ mod tests {
         };
         let result = config.validate();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "batch_timeout_ms must be greater than 0");
+        assert_eq!(
+            result.unwrap_err(),
+            "batch_timeout_ms must be greater than 0"
+        );
     }
 
     #[test]
@@ -249,9 +255,11 @@ mod tests {
         };
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("batch_timeout_ms (70000) is unusually high"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("batch_timeout_ms (70000) is unusually high")
+        );
     }
 
     #[test]
