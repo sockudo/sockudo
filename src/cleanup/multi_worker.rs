@@ -149,9 +149,12 @@ impl MultiWorkerSender {
             return Err(Box::new(mpsc::error::SendError(task)));
         }
 
-        // Use round-robin distribution
-        let worker_index =
-            self.round_robin_counter.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        // Use round-robin distribution with wrapping to prevent overflow
+        let worker_index = self.round_robin_counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some((current + 1) % self.senders.len())
+            })
+            .unwrap_or(0);
 
         match self.senders[worker_index].try_send(task) {
             Ok(()) => Ok(()),
