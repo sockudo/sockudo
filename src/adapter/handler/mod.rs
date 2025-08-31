@@ -34,6 +34,7 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, warn};
@@ -48,9 +49,13 @@ pub struct ConnectionHandler {
     client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
     watchlist_manager: Arc<WatchlistManager>,
     server_options: Arc<ServerOptions>,
+    cleanup_queue: Option<crate::cleanup::CleanupSender>,
+    cleanup_consecutive_failures: Arc<AtomicUsize>,
+    cleanup_circuit_breaker_opened_at: Arc<AtomicU64>,
 }
 
 impl ConnectionHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         app_manager: Arc<dyn AppManager + Send + Sync>,
         channel_manager: Arc<RwLock<ChannelManager>>,
@@ -59,6 +64,7 @@ impl ConnectionHandler {
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
         server_options: ServerOptions,
+        cleanup_queue: Option<crate::cleanup::CleanupSender>,
     ) -> Self {
         Self {
             app_manager,
@@ -70,6 +76,9 @@ impl ConnectionHandler {
             client_event_limiters: Arc::new(DashMap::new()),
             watchlist_manager: Arc::new(WatchlistManager::new()),
             server_options: Arc::new(server_options),
+            cleanup_queue,
+            cleanup_consecutive_failures: Arc::new(AtomicUsize::new(0)),
+            cleanup_circuit_breaker_opened_at: Arc::new(AtomicU64::new(0)),
         }
     }
 
