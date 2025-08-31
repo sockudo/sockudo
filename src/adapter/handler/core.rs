@@ -348,7 +348,7 @@ impl ConnectionHandler {
                     let mut connection_manager = self.connection_manager.lock().await;
                     if let Some(conn_ref) =
                         connection_manager.get_connection(socket_id, app_id).await
-                        && let Ok(mut conn_locked) = conn_ref.0.try_lock()
+                        && let Ok(mut conn_locked) = conn_ref.inner.try_lock()
                     {
                         conn_locked.state.disconnecting = false;
                     }
