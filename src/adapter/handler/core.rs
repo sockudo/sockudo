@@ -1,11 +1,14 @@
 // src/adapter/handler/core_methods.rs
 use super::ConnectionHandler;
 use crate::app::config::App;
+use crate::cleanup::{AuthInfo, ConnectionCleanupInfo, DisconnectTask};
 use crate::error::{Error, Result};
 use crate::protocol::messages::{ErrorData, MessageData, PusherMessage};
 use crate::websocket::SocketId;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 impl ConnectionHandler {
@@ -51,7 +54,7 @@ impl ConnectionHandler {
 
         // Perform unsubscription through channel manager
         {
-            let channel_manager = self.channel_manager.write().await;
+            let channel_manager = self.channel_manager.read().await;
             channel_manager
                 .unsubscribe(
                     socket_id.as_ref(),
@@ -153,32 +156,248 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    async fn should_use_async_cleanup(&self) -> bool {
+        const MAX_CONSECUTIVE_FAILURES: usize = 10;
+        const CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS: u64 = 30;
+
+        if let Some(ref cleanup_queue) = self.cleanup_queue {
+            let failures = self.cleanup_consecutive_failures.load(Ordering::Relaxed);
+
+            if failures > MAX_CONSECUTIVE_FAILURES {
+                // Circuit breaker is open - check if we should try recovery
+                let opened_at = self
+                    .cleanup_circuit_breaker_opened_at
+                    .load(Ordering::Relaxed);
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                if opened_at == 0 {
+                    // First time hitting the limit - record when circuit breaker opened
+                    self.cleanup_circuit_breaker_opened_at
+                        .store(current_time, Ordering::Relaxed);
+                    warn!(
+                        "Circuit breaker opened: too many cleanup failures ({}), disabling async cleanup for {} seconds",
+                        failures, CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS
+                    );
+                    return false;
+                } else if current_time >= opened_at + CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS {
+                    // Time to try recovery - enter half-open state
+                    debug!(
+                        "Circuit breaker entering half-open state after {} seconds, attempting recovery",
+                        current_time - opened_at
+                    );
+                    return !cleanup_queue.is_closed();
+                } else {
+                    // Still in timeout period
+                    debug!(
+                        "Circuit breaker still open, {} seconds remaining until recovery attempt",
+                        (opened_at + CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS) - current_time
+                    );
+                    return false;
+                }
+            }
+
+            // Normal operation or successful recovery
+            !cleanup_queue.is_closed()
+        } else {
+            false
+        }
+    }
+
     pub async fn handle_disconnect(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         debug!("Handling disconnect for socket: {}", socket_id);
 
+        // Try async cleanup first if queue is available and circuit breaker allows
+        if self.should_use_async_cleanup().await {
+            // should_use_async_cleanup() already verified cleanup_queue exists
+            let cleanup_queue = self.cleanup_queue.as_ref().unwrap();
+            match self
+                .handle_disconnect_async(app_id, socket_id, cleanup_queue)
+                .await
+            {
+                Ok(()) => {
+                    // Success - reset both failure counter and circuit breaker state
+                    let previous_failures =
+                        self.cleanup_consecutive_failures.swap(0, Ordering::Relaxed);
+                    let was_circuit_breaker_open = self
+                        .cleanup_circuit_breaker_opened_at
+                        .swap(0, Ordering::Relaxed);
+
+                    if was_circuit_breaker_open > 0 {
+                        info!(
+                            "Circuit breaker recovered: async cleanup successful after {} failures",
+                            previous_failures
+                        );
+                    }
+
+                    return Ok(());
+                }
+                Err(e) => {
+                    // Failure - increment counter (circuit breaker logic handles the rest)
+                    let new_failure_count = self
+                        .cleanup_consecutive_failures
+                        .fetch_add(1, Ordering::Relaxed)
+                        + 1;
+                    warn!(
+                        "Async cleanup failed for socket {} (failure #{}: {}), falling back to sync",
+                        socket_id, new_failure_count, e
+                    );
+                }
+            }
+        }
+
+        // Fall back to original synchronous cleanup
+        self.handle_disconnect_sync(app_id, socket_id).await
+    }
+
+    async fn handle_disconnect_async(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+        cleanup_queue: &crate::cleanup::CleanupSender,
+    ) -> Result<()> {
+        use std::time::Instant;
+
+        debug!("Using async cleanup for socket: {}", socket_id);
+
+        // Step 1: Quick connection state capture (< 1ms)
+        let disconnect_info = {
+            let mut connection_manager = self.connection_manager.lock().await;
+            let connection = connection_manager.get_connection(socket_id, app_id).await;
+
+            if let Some(conn_ref) = connection {
+                // Atomic check-and-set for disconnecting flag to ensure idempotency
+                let mut conn_locked = conn_ref.inner.lock().await;
+
+                if conn_locked.state.disconnecting {
+                    debug!("Connection {} already disconnecting, skipping", socket_id);
+                    return Ok(());
+                }
+
+                // Set disconnecting flag atomically
+                conn_locked.state.disconnecting = true;
+
+                let channels: Vec<String> = conn_locked
+                    .state
+                    .subscribed_channels
+                    .iter()
+                    .cloned()
+                    .collect();
+                let user_id = conn_locked.state.user_id.clone();
+
+                // Extract presence channel info for webhook processing
+                let presence_channels: Vec<String> = channels
+                    .iter()
+                    .filter(|ch| ch.starts_with("presence-"))
+                    .cloned()
+                    .collect();
+
+                Some(DisconnectTask {
+                    socket_id: socket_id.clone(),
+                    app_id: app_id.to_string(),
+                    subscribed_channels: channels,
+                    user_id: user_id.clone(),
+                    timestamp: Instant::now(),
+                    connection_info: if !presence_channels.is_empty() {
+                        Some(ConnectionCleanupInfo {
+                            presence_channels,
+                            auth_info: user_id.map(|uid| AuthInfo {
+                                user_id: uid,
+                                user_info: None,
+                            }),
+                        })
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                // Connection doesn't exist - might have been cleaned up already
+                debug!("Connection {} not found during disconnect", socket_id);
+                return Ok(());
+            }
+        }; // Lock released immediately
+
+        // Step 2: Clear immediate timeouts (these should be fast)
+        self.clear_activity_timeout(app_id, socket_id).await.ok();
+        self.clear_user_authentication_timeout(app_id, socket_id)
+            .await
+            .ok();
+
+        // Step 3: Clean up client event rate limiter (lock-free)
+        if self.client_event_limiters.remove(socket_id).is_some() {
+            debug!(
+                "Removed client event rate limiter for socket: {}",
+                socket_id
+            );
+        }
+
+        // Step 4: Queue cleanup work (non-blocking)
+        if let Some(task) = disconnect_info {
+            if let Err(_send_error) = cleanup_queue.try_send(task) {
+                // Queue is full or closed - don't return error, fall back to sync cleanup
+                warn!(
+                    "Failed to queue async cleanup for socket {} (queue full/closed), falling back to sync cleanup",
+                    socket_id
+                );
+
+                // Reset the disconnecting flag since we're going to fall back to sync
+                // This ensures the sync cleanup can proceed properly
+                {
+                    let mut connection_manager = self.connection_manager.lock().await;
+                    if let Some(conn_ref) =
+                        connection_manager.get_connection(socket_id, app_id).await
+                        && let Ok(mut conn_locked) = conn_ref.0.try_lock()
+                    {
+                        conn_locked.state.disconnecting = false;
+                    }
+                }
+
+                // Fall back to synchronous cleanup immediately
+                // We already have the disconnect task info, so use sync cleanup
+                return self.handle_disconnect_sync(app_id, socket_id).await;
+            }
+            debug!("Queued async cleanup for socket: {}", socket_id);
+        }
+
+        // Step 5: Update metrics immediately (outside connection lock to minimize contention)
+        if let Some(ref metrics) = self.metrics {
+            // Use regular lock instead of try_lock to ensure metrics are always updated
+            let metrics_locked = metrics.lock().await;
+            metrics_locked.mark_disconnection(app_id, socket_id);
+        }
+
+        debug!(
+            "Fast disconnect processing completed for socket: {}",
+            socket_id
+        );
+        Ok(())
+    }
+
+    async fn handle_disconnect_sync(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        debug!("Using synchronous cleanup for socket: {}", socket_id);
+
+        // This is the original synchronous implementation
         // Check if already disconnecting and set flag atomically
-        // Release connection_manager lock quickly to reduce contention
         let conn = {
             let mut connection_manager = self.connection_manager.lock().await;
             connection_manager.get_connection(socket_id, app_id).await
         };
 
         let already_disconnecting = if let Some(conn) = conn {
-            // Use try_lock to avoid blocking on nested locks (prevents deadlock)
             if let Ok(mut conn_locked) = conn.inner.try_lock() {
                 let was_disconnecting = conn_locked.state.disconnecting;
                 conn_locked.state.disconnecting = true;
                 was_disconnecting
             } else {
-                // Connection is busy being accessed by another thread - assume it's being handled
                 debug!(
                     "Connection {} is busy, assuming disconnect already in progress",
                     socket_id
                 );
-                true // Skip processing
+                true
             }
         } else {
-            // Connection doesn't exist - it may have been cleaned up already
             true
         };
 
@@ -208,7 +427,6 @@ impl ConnectionHandler {
             Some(app) => app,
             None => {
                 error!("App not found during disconnect: {}", app_id);
-                // Attempt cleanup even if app is gone
                 self.cleanup_connection_from_manager(socket_id, app_id)
                     .await;
                 return Err(Error::ApplicationNotFound);
@@ -253,7 +471,7 @@ impl ConnectionHandler {
         }
 
         debug!(
-            "Successfully processed disconnect for socket: {}",
+            "Successfully processed synchronous disconnect for socket: {}",
             socket_id
         );
         Ok(())
@@ -305,7 +523,7 @@ impl ConnectionHandler {
         subscribed_channels: &HashSet<String>,
         user_id: &Option<String>,
     ) -> Result<()> {
-        let channel_manager = self.channel_manager.write().await;
+        let channel_manager = self.channel_manager.read().await;
 
         for channel_str in subscribed_channels {
             debug!(
