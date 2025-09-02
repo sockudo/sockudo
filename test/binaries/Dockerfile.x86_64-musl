@@ -1,0 +1,16 @@
+# Test x86_64 musl binary
+FROM alpine:3.19
+
+# Alpine already has musl, just need certificates
+RUN apk add --no-cache ca-certificates
+
+# Copy and extract the binary from tgz
+COPY sockudo-x86_64-unknown-linux-musl.tgz /tmp/
+RUN tar -xzf /tmp/sockudo-x86_64-unknown-linux-musl.tgz -C /usr/local/bin/ && \
+    rm /tmp/sockudo-x86_64-unknown-linux-musl.tgz
+
+# Make it executable
+RUN chmod +x /usr/local/bin/sockudo
+
+# Test the binary
+CMD ["/usr/local/bin/sockudo", "--version"]

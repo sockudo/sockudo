@@ -7,7 +7,7 @@ use crate::protocol::messages::{MessageData, PusherMessage};
 use crate::token::{Token, secure_compare};
 use crate::websocket::SocketId;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -196,12 +196,20 @@ impl ChannelManager {
             .get("channel_data")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::Channel("Missing channel_data in presence data".into()))?;
-        let user_info: Value = serde_json::from_str(channel_data)
+
+        let user_data: Value = serde_json::from_str(channel_data)
             .map_err(|_| Error::Channel("Invalid JSON in channel_data".into()))?;
-        let user_id = user_info
+
+        let user_id = user_data
             .get("user_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::Channel("Missing user_id in channel_data".into()))?;
+
+        // FIX: Extract user_info directly without double-nesting
+        let user_info = user_data
+            .get("user_info")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
 
         let socket_id = extra
             .get("socket_id")
@@ -210,7 +218,7 @@ impl ChannelManager {
 
         Ok(PresenceMember {
             user_id: user_id.to_string(),
-            user_info,
+            user_info, // This will now be the actual user_info object, not double-nested
             socket_id,
         })
     }
