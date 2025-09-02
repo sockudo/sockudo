@@ -31,7 +31,7 @@ jobs:
   # =============================================================================
   prepare:
     name: Prepare Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -111,7 +111,7 @@ jobs:
     with:
       target_name: Linux x86_64 (musl)
       target_triple: x86_64-unknown-linux-musl
-      runner_os: ubuntu-latest
+      runner_os: ubuntu-24.04
       archive_ext: tgz
       binary_name: sockudo
       version: ${{ needs.prepare.outputs.version }}
@@ -122,7 +122,7 @@ jobs:
     with:
       target_name: Linux x86_64 (GNU)
       target_triple: x86_64-unknown-linux-gnu
-      runner_os: ubuntu-latest
+      runner_os: ubuntu-24.04
       archive_ext: tar.gz
       binary_name: sockudo
       version: ${{ needs.prepare.outputs.version }}
@@ -196,7 +196,7 @@ jobs:
         platform:
           - name: amd64
             arch: linux/amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - name: arm64
             arch: linux/arm64
             runner: ubuntu-24.04-arm
@@ -241,7 +241,7 @@ jobs:
   # =============================================================================
   docker-manifest:
     name: Create Multi-Platform Manifests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [prepare, build-docker]
     
     steps:
@@ -321,7 +321,7 @@ jobs:
   # =============================================================================
   publish-crates:
     name: Publish to Crates.io
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [prepare, build-linux-x64-musl, build-linux-x64-gnu, build-linux-arm64-gnu, build-linux-arm64-musl, build-macos-x64, build-macos-arm64, build-windows-x64]
     if: needs.prepare.outputs.prerelease != 'true'
     
@@ -348,7 +348,7 @@ jobs:
   # =============================================================================
   create-release:
     name: Create GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [prepare, build-linux-x64-musl, build-linux-x64-gnu, build-linux-arm64-gnu, build-linux-arm64-musl, build-macos-x64, build-macos-arm64, build-windows-x64, docker-manifest, publish-crates]
     if: |
       always() && !cancelled() && 
