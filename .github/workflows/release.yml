@@ -114,6 +114,16 @@ jobs:
       fail-fast: false
       matrix:
         target:
+          - name: Linux x86_64 (musl)
+            triple: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive_ext: tgz
+            binary_name: sockudo
+          - name: Linux ARM64 (musl)
+            triple: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive_ext: tgz
+            binary_name: sockudo
           - name: Linux x86_64 (GNU)
             triple: x86_64-unknown-linux-gnu
             os: ubuntu-latest
@@ -149,8 +159,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake
-          sudo apt-get install -y libssl-dev curl # Install for GNU targets
-
+          sudo apt-get install -y libssl-dev curl
+          # Add musl tools
+          sudo apt-get install -y musl-tools musl-dev
+          # For cross-compilation to ARM64 musl
+          sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
