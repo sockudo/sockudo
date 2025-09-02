@@ -269,7 +269,7 @@ impl ConnectionHandler {
 
             if let Some(conn_ref) = connection {
                 // Atomic check-and-set for disconnecting flag to ensure idempotency
-                let mut conn_locked = conn_ref.0.lock().await;
+                let mut conn_locked = conn_ref.inner.lock().await;
 
                 if conn_locked.state.disconnecting {
                     debug!("Connection {} already disconnecting, skipping", socket_id);
@@ -348,7 +348,7 @@ impl ConnectionHandler {
                     let mut connection_manager = self.connection_manager.lock().await;
                     if let Some(conn_ref) =
                         connection_manager.get_connection(socket_id, app_id).await
-                        && let Ok(mut conn_locked) = conn_ref.0.try_lock()
+                        && let Ok(mut conn_locked) = conn_ref.inner.try_lock()
                     {
                         conn_locked.state.disconnecting = false;
                     }
