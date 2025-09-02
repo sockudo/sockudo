@@ -21,7 +21,7 @@ jobs:
   # =============================================================================
   lint:
     name: Lint and Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -51,7 +51,7 @@ jobs:
   # =============================================================================
   test:
     name: Test Suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     
     services:
       redis:
@@ -125,7 +125,7 @@ jobs:
   # =============================================================================
   security:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     
     steps:
       - name: Checkout repository
@@ -145,7 +145,7 @@ jobs:
   # =============================================================================
   manual-build-info:
     name: 🔨 Manual Build Instructions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [lint, test, security]
     steps:
       - name: Post build instructions

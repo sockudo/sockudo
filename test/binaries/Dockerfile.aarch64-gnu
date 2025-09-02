@@ -1,0 +1,18 @@
+# Test ARM64/aarch64 GNU binary
+FROM --platform=linux/arm64 ubuntu:24.04
+
+# Install minimal dependencies that might be needed
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and extract the binary from tar.gz
+COPY sockudo-aarch64-unknown-linux-gnu.tar.gz /tmp/
+RUN tar -xzf /tmp/sockudo-aarch64-unknown-linux-gnu.tar.gz -C /usr/local/bin/ && \
+    rm /tmp/sockudo-aarch64-unknown-linux-gnu.tar.gz
+
+# Make it executable
+RUN chmod +x /usr/local/bin/sockudo
+
+# Test the binary
+CMD ["/usr/local/bin/sockudo", "--version"]

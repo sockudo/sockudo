@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       build_linux_x64:
-        description: 'Build Linux x86_64 (GNU)'
+        description: 'Build Linux x86_64 (GNU + musl)'
+        required: false
+        type: boolean
+        default: false
+      build_linux_arm64:
+        description: 'Build Linux ARM64 (GNU + musl)'
         required: false
         type: boolean
         default: false
@@ -40,126 +45,92 @@ env:
 
 jobs:
   # =============================================================================
-  # Build Matrix Setup
+  # Build Binaries using Reusable Workflow
   # =============================================================================
-  setup:
-    name: Setup Build Matrix
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-      has_builds: ${{ steps.set-matrix.outputs.has_builds }}
-    steps:
-      - name: Setup matrix
-        id: set-matrix
-        run: |
-          matrix_items='[]'
-          
-          if [[ "${{ inputs.build_linux_x64 }}" == "true" ]]; then
-            matrix_items=$(echo "$matrix_items" | jq '. += [{"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "name": "linux-x64", "binary_name": "sockudo"}]')
-          fi
-          
-          if [[ "${{ inputs.build_macos_x64 }}" == "true" ]]; then
-            matrix_items=$(echo "$matrix_items" | jq '. += [{"os": "macos-13", "target": "x86_64-apple-darwin", "name": "macos-x64", "binary_name": "sockudo"}]')
-          fi
-          
-          if [[ "${{ inputs.build_macos_arm64 }}" == "true" ]]; then
-            matrix_items=$(echo "$matrix_items" | jq '. += [{"os": "macos-latest", "target": "aarch64-apple-darwin", "name": "macos-arm64", "binary_name": "sockudo"}]')
-          fi
-          
-          if [[ "${{ inputs.build_windows_x64 }}" == "true" ]]; then
-            matrix_items=$(echo "$matrix_items" | jq '. += [{"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "name": "windows-x64", "binary_name": "sockudo.exe"}]')
-          fi
-          
-          {
-            echo "matrix<<EOF"
-            echo "{\"include\":$matrix_items}"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          
-          if [[ "$matrix_items" != "[]" ]]; then
-            echo "has_builds=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_builds=false" >> "$GITHUB_OUTPUT"
-          fi
+  build-linux-x64-gnu:
+    if: inputs.build_linux_x64
+    uses: ./.github/workflows/build-binary.yml
+    with:
+      target_name: Linux x86_64 (GNU)
+      target_triple: x86_64-unknown-linux-gnu
+      runner_os: ubuntu-24.04
+      archive_ext: tar.gz
+      binary_name: sockudo
+      artifact_retention_days: 30
 
-  # =============================================================================
-  # Build Binaries
-  # =============================================================================
-  build:
-    name: Build ${{ matrix.name }}
-    needs: setup
-    if: needs.setup.outputs.has_builds == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+  build-linux-x64-musl:
+    if: inputs.build_linux_x64
+    uses: ./.github/workflows/build-binary.yml
+    with:
+      target_name: Linux x86_64 (musl)
+      target_triple: x86_64-unknown-linux-musl
+      runner_os: ubuntu-24.04
+      archive_ext: tgz
+      binary_name: sockudo
+      artifact_retention_days: 30
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
+  build-linux-arm64-gnu:
+    if: inputs.build_linux_arm64
+    uses: ./.github/workflows/build-binary.yml
+    with:
+      target_name: Linux ARM64 (GNU)
+      target_triple: aarch64-unknown-linux-gnu
+      runner_os: ubuntu-24.04-arm
+      archive_ext: tar.gz
+      binary_name: sockudo
+      artifact_retention_days: 30
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake
-          sudo apt-get install -y libssl-dev curl
+  build-linux-arm64-musl:
+    if: inputs.build_linux_arm64
+    uses: ./.github/workflows/build-binary.yml
+    with:
+      target_name: Linux ARM64 (musl)
+      target_triple: aarch64-unknown-linux-musl
+      runner_os: ubuntu-24.04-arm
+      archive_ext: tgz
+      binary_name: sockudo
+      artifact_retention_days: 30
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-${{ matrix.target }}-
-            ${{ runner.os }}-cargo-build-
 
-      - name: Build release binary
-        shell: bash
-        run: |
-          cargo build --release --target ${{ matrix.target }}
+  build-macos-x64:
+    if: inputs.build_macos_x64
+    uses: ./.github/workflows/build-binary.yml
+    with:
+      target_name: macOS x86_64
+      target_triple: x86_64-apple-darwin
+      runner_os: macos-13
+      archive_ext: tar.gz
+      binary_name: sockudo
+      artifact_retention_days: 30
 
-      - name: Strip and prepare artifact
-        shell: bash
-        run: |
-          SOURCE_PATH="./target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
-          
-          # Strip binary on Unix systems
-          if [[ "$RUNNER_OS" == "Linux" || "$RUNNER_OS" == "macOS" ]]; then
-            strip "${SOURCE_PATH}" || echo "Strip failed, continuing..."
-          fi
-          
-          # Create artifacts directory and copy binary
-          mkdir -p artifacts
-          cp "${SOURCE_PATH}" "artifacts/sockudo-${{ matrix.name }}$([[ $RUNNER_OS == 'Windows' ]] && echo '.exe' || echo '')"
-          
-          # Make executable on Unix
-          if [[ "$RUNNER_OS" != "Windows" ]]; then
-            chmod +x "artifacts/sockudo-${{ matrix.name }}"
-          fi
+  build-macos-arm64:
+    if: inputs.build_macos_arm64
+    uses: ./.github/workflows/build-binary.yml
+    with:
+      target_name: macOS ARM64
+      target_triple: aarch64-apple-darwin
+      runner_os: macos-latest
+      archive_ext: tar.gz
+      binary_name: sockudo
+      artifact_retention_days: 30
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sockudo-${{ matrix.name }}
-          path: artifacts/*
-          retention-days: 30
+  build-windows-x64:
+    if: inputs.build_windows_x64
+    uses: ./.github/workflows/build-binary.yml
+    with:
+      target_name: Windows x86_64
+      target_triple: x86_64-pc-windows-msvc
+      runner_os: windows-latest
+      archive_ext: zip
+      binary_name: sockudo.exe
+      artifact_retention_days: 30
 
   # =============================================================================
   # Docker Build
   # =============================================================================
   docker:
     name: Docker Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: inputs.build_docker
     
     steps:
@@ -225,8 +196,8 @@ jobs:
   # =============================================================================
   post-to-pr:
     name: Post Results to PR
-    runs-on: ubuntu-latest
-    needs: [setup, build, docker]
+    runs-on: ubuntu-24.04
+    needs: [build-linux-x64-gnu, build-linux-x64-musl, build-linux-arm64-gnu, build-linux-arm64-musl, build-macos-x64, build-macos-arm64, build-windows-x64, docker]
     permissions:
       contents: read
       pull-requests: write
@@ -234,7 +205,7 @@ jobs:
     if: |
       always() && 
       inputs.upload_to_pr &&
-      (needs.build.result == 'success' || needs.docker.result == 'success')
+      (contains(needs.*.result, 'success'))
     
     steps:
       - name: Checkout repository
@@ -260,7 +231,8 @@ jobs:
           script: |
             const artifacts = [];
             
-            if ('${{ inputs.build_linux_x64 }}' === 'true') artifacts.push('Linux x64');
+            if ('${{ inputs.build_linux_x64 }}' === 'true') artifacts.push('Linux x64 (GNU + musl)');
+            if ('${{ inputs.build_linux_arm64 }}' === 'true') artifacts.push('Linux ARM64 (GNU + musl)');
             if ('${{ inputs.build_macos_x64 }}' === 'true') artifacts.push('macOS x64');
             if ('${{ inputs.build_macos_arm64 }}' === 'true') artifacts.push('macOS ARM64');
             if ('${{ inputs.build_windows_x64 }}' === 'true') artifacts.push('Windows x64');
