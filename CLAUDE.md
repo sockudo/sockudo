@@ -189,6 +189,16 @@ Key variables (see `.env.example` for complete list):
 - Use batch operations when processing multiple channels/connections
 - Metrics are exposed at `/metrics` for Prometheus scraping
 
+## Platform Support
+
+### Supported Architectures
+- **Linux**: x86_64 (GNU and musl), ARM64/AArch64 (GNU and musl)  
+- **macOS**: x86_64 (Intel), ARM64 (Apple Silicon)
+- **Windows**: x86_64
+
+### Removed Support
+- **Linux ARMv7**: Removed due to build complexity with AWS SDK dependencies (`aws-lc-sys` bindgen issues). Can be restored if there's demand and the underlying dependency issues are resolved.
+
 ## Deployment
 
 ### Production Checklist

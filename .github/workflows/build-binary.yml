@@ -69,19 +69,6 @@ jobs:
             sudo apt-get install -y musl-tools musl-dev
           fi
           
-      - name: Install cross-compilation tools (ARMv7)
-        if: runner.os == 'Linux' && inputs.cross_compile == true && contains(inputs.target_triple, 'armv7')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake libssl-dev curl
-          sudo apt-get install -y gcc-arm-linux-gnueabihf
-          # Install cross-compilation tools for musl ARMv7 targets
-          if [[ "${{ inputs.target_triple }}" == "armv7-unknown-linux-musleabihf" ]]; then
-            wget -q https://musl.cc/armv7l-linux-musleabihf-cross.tgz
-            tar -xzf armv7l-linux-musleabihf-cross.tgz
-            sudo mv armv7l-linux-musleabihf-cross /opt/
-            echo "/opt/armv7l-linux-musleabihf-cross/bin" >> $GITHUB_PATH
-          fi
           
       - name: Install system dependencies (Linux ARM64)
         if: runner.os == 'Linux' && runner.arch == 'ARM64'

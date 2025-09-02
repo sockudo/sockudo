@@ -149,29 +149,6 @@ jobs:
       binary_name: sockudo
       version: ${{ needs.prepare.outputs.version }}
 
-  build-linux-armv7-gnu:
-    needs: prepare
-    uses: ./.github/workflows/build-binary.yml
-    with:
-      target_name: Linux ARMv7 (GNU)
-      target_triple: armv7-unknown-linux-gnueabihf
-      runner_os: ubuntu-latest
-      archive_ext: tar.gz
-      binary_name: sockudo
-      cross_compile: true
-      version: ${{ needs.prepare.outputs.version }}
-
-  build-linux-armv7-musl:
-    needs: prepare
-    uses: ./.github/workflows/build-binary.yml
-    with:
-      target_name: Linux ARMv7 (musl)
-      target_triple: armv7-unknown-linux-musleabihf
-      runner_os: ubuntu-latest
-      archive_ext: tgz
-      binary_name: sockudo
-      cross_compile: true
-      version: ${{ needs.prepare.outputs.version }}
 
   build-macos-x64:
     needs: prepare
@@ -345,7 +322,7 @@ jobs:
   publish-crates:
     name: Publish to Crates.io
     runs-on: ubuntu-latest
-    needs: [prepare, build-linux-x64-musl, build-linux-x64-gnu, build-linux-arm64-gnu, build-linux-arm64-musl, build-linux-armv7-gnu, build-linux-armv7-musl, build-macos-x64, build-macos-arm64, build-windows-x64]
+    needs: [prepare, build-linux-x64-musl, build-linux-x64-gnu, build-linux-arm64-gnu, build-linux-arm64-musl, build-macos-x64, build-macos-arm64, build-windows-x64]
     if: needs.prepare.outputs.prerelease != 'true'
     
     steps:
@@ -372,7 +349,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [prepare, build-linux-x64-musl, build-linux-x64-gnu, build-linux-arm64-gnu, build-linux-arm64-musl, build-linux-armv7-gnu, build-linux-armv7-musl, build-macos-x64, build-macos-arm64, build-windows-x64, docker-manifest, publish-crates]
+    needs: [prepare, build-linux-x64-musl, build-linux-x64-gnu, build-linux-arm64-gnu, build-linux-arm64-musl, build-macos-x64, build-macos-arm64, build-windows-x64, docker-manifest, publish-crates]
     if: |
       always() && !cancelled() && 
       needs.build-linux-x64-musl.result == 'success' &&
@@ -380,8 +357,6 @@ jobs:
       needs.build-macos-x64.result == 'success' &&
       needs.build-macos-arm64.result == 'success' &&
       needs.build-windows-x64.result == 'success' &&
-      needs.build-linux-armv7-gnu.result == 'success' &&
-      needs.build-linux-armv7-musl == 'success' &&
       needs.docker-manifest.result == 'success' &&
       (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
     
@@ -426,8 +401,6 @@ jobs:
             - ✅ Linux x86_64 (musl)
             - ✅ Linux ARM64 (GNU)
             - ✅ Linux ARM64 (musl)
-            - ✅ Linux ARMv7 (GNU)
-            - ✅ Linux ARMv7 (musl)
             - ✅ macOS x86_64 (Intel)
             - ✅ macOS ARM64 (Apple Silicon)
             - ✅ Windows x86_64
