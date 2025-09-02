@@ -196,9 +196,6 @@ Key variables (see `.env.example` for complete list):
 - **macOS**: x86_64 (Intel), ARM64 (Apple Silicon)
 - **Windows**: x86_64
 
-### Removed Support
-- **Linux ARMv7**: Removed due to build complexity with AWS SDK dependencies (`aws-lc-sys` bindgen issues). Can be restored if there's demand and the underlying dependency issues are resolved.
-
 ## Deployment
 
 ### Production Checklist
