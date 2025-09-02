@@ -229,7 +229,14 @@ impl ConnectionManager for LocalAdapter {
         // Handle any errors from concurrent messaging
         for send_result in results {
             if let Err(e) = send_result {
-                error!("Failed to send message: {}", e);
+                match &e {
+                    Error::ConnectionClosed(_) => {
+                        debug!("Failed to send message to closed connection: {}", e);
+                    }
+                    _ => {
+                        warn!("Failed to send message: {}", e);
+                    }
+                }
             }
         }
 
