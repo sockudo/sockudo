@@ -53,7 +53,7 @@ jobs:
     with:
       target_name: Linux x86_64 (GNU)
       target_triple: x86_64-unknown-linux-gnu
-      runner_os: ubuntu-latest
+      runner_os: ubuntu-24.04
       archive_ext: tar.gz
       binary_name: sockudo
       artifact_retention_days: 30
@@ -64,7 +64,7 @@ jobs:
     with:
       target_name: Linux x86_64 (musl)
       target_triple: x86_64-unknown-linux-musl
-      runner_os: ubuntu-latest
+      runner_os: ubuntu-24.04
       archive_ext: tgz
       binary_name: sockudo
       artifact_retention_days: 30
@@ -130,7 +130,7 @@ jobs:
   # =============================================================================
   docker:
     name: Docker Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: inputs.build_docker
     
     steps:
@@ -196,7 +196,7 @@ jobs:
   # =============================================================================
   post-to-pr:
     name: Post Results to PR
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-linux-x64-gnu, build-linux-x64-musl, build-linux-arm64-gnu, build-linux-arm64-musl, build-macos-x64, build-macos-arm64, build-windows-x64, docker]
     permissions:
       contents: read
