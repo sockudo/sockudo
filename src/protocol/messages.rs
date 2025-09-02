@@ -172,12 +172,14 @@ impl PusherMessage {
         Self {
             event: Some("pusher_internal:member_added".to_string()),
             channel: Some(channel),
-            data: Some(MessageData::Json(json!(
-                {
+            // FIX: Use MessageData::String with JSON-encoded string instead of MessageData::Json
+            data: Some(MessageData::String(
+                json!({
                     "user_id": user_id,
                     "user_info": user_info.unwrap_or_else(|| json!({}))
-                }
-            ))),
+                })
+                .to_string(),
+            )),
             name: None,
         }
     }
@@ -186,7 +188,13 @@ impl PusherMessage {
         Self {
             event: Some("pusher_internal:member_removed".to_string()),
             channel: Some(channel),
-            data: Some(MessageData::Json(json!({ "user_id": user_id }))),
+            // FIX: Also apply same fix to member_removed for consistency
+            data: Some(MessageData::String(
+                json!({
+                    "user_id": user_id
+                })
+                .to_string(),
+            )),
             name: None,
         }
     }

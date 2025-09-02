@@ -32,7 +32,7 @@ jobs:
   # =============================================================================
   update-dependencies:
     name: Update Dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event.inputs.update_type == 'dependencies' || github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
     
     steps:
@@ -134,7 +134,7 @@ jobs:
   # =============================================================================
   security-updates:
     name: Security Updates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event.inputs.update_type == 'security' || github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
     
     steps:
@@ -230,7 +230,7 @@ jobs:
   # =============================================================================
   dockerfile-updates:
     name: Dockerfile Base Image Updates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
     
     steps:
@@ -270,7 +270,7 @@ jobs:
   # =============================================================================
   actions-updates:
     name: GitHub Actions Updates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
     
     steps:
@@ -301,7 +301,7 @@ jobs:
   # =============================================================================
   cleanup:
     name: Repository Cleanup
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event.inputs.update_type == 'all' || github.event_name == 'schedule'
     
     steps:
@@ -364,7 +364,7 @@ jobs:
   # =============================================================================
   summary:
     name: Maintenance Summary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [update-dependencies, security-updates, dockerfile-updates, actions-updates, cleanup]
     if: always()
     

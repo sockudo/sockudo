@@ -1,0 +1,10 @@
+# Ignore tar archives and binaries
+sockudo-*.tar.gz
+sockudo-*.tgz
+sockudo-*.zip
+sockudo
+
+# But keep the Dockerfiles and scripts
+!Dockerfile.*
+!*.sh
+!*.md
