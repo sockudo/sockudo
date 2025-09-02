@@ -3,33 +3,18 @@ name: Manual Build - Cross Platform Artifacts
 on:
   workflow_dispatch:
     inputs:
-      build_linux_x64_gnu:
-        description: 'Build Linux x86_64 (GNU)'
+      build_linux_x64:
+        description: 'Build Linux x86_64 (GNU + musl)'
         required: false
         type: boolean
         default: false
-      build_linux_x64_musl:
-        description: 'Build Linux x86_64 (musl)'
+      build_linux_arm64:
+        description: 'Build Linux ARM64 (GNU + musl)'
         required: false
         type: boolean
         default: false
-      build_linux_arm64_gnu:
-        description: 'Build Linux ARM64 (GNU)'
-        required: false
-        type: boolean
-        default: false
-      build_linux_arm64_musl:
-        description: 'Build Linux ARM64 (musl)'
-        required: false
-        type: boolean
-        default: false
-      build_linux_armv7_gnu:
-        description: 'Build Linux ARMv7 (GNU)'
-        required: false
-        type: boolean
-        default: false
-      build_linux_armv7_musl:
-        description: 'Build Linux ARMv7 (musl)'
+      build_linux_armv7:
+        description: 'Build Linux ARMv7 (GNU + musl)'
         required: false
         type: boolean
         default: false
@@ -68,7 +53,7 @@ jobs:
   # Build Binaries using Reusable Workflow
   # =============================================================================
   build-linux-x64-gnu:
-    if: inputs.build_linux_x64_gnu
+    if: inputs.build_linux_x64
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux x86_64 (GNU)
@@ -79,7 +64,7 @@ jobs:
       artifact_retention_days: 30
 
   build-linux-x64-musl:
-    if: inputs.build_linux_x64_musl
+    if: inputs.build_linux_x64
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux x86_64 (musl)
@@ -90,7 +75,7 @@ jobs:
       artifact_retention_days: 30
 
   build-linux-arm64-gnu:
-    if: inputs.build_linux_arm64_gnu
+    if: inputs.build_linux_arm64
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux ARM64 (GNU)
@@ -101,7 +86,7 @@ jobs:
       artifact_retention_days: 30
 
   build-linux-arm64-musl:
-    if: inputs.build_linux_arm64_musl
+    if: inputs.build_linux_arm64
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux ARM64 (musl)
@@ -112,7 +97,7 @@ jobs:
       artifact_retention_days: 30
 
   build-linux-armv7-gnu:
-    if: inputs.build_linux_armv7_gnu
+    if: inputs.build_linux_armv7
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux ARMv7 (GNU)
@@ -124,7 +109,7 @@ jobs:
       artifact_retention_days: 30
 
   build-linux-armv7-musl:
-    if: inputs.build_linux_armv7_musl
+    if: inputs.build_linux_armv7
     uses: ./.github/workflows/build-binary.yml
     with:
       target_name: Linux ARMv7 (musl)
@@ -274,12 +259,9 @@ jobs:
           script: |
             const artifacts = [];
             
-            if ('${{ inputs.build_linux_x64_gnu }}' === 'true') artifacts.push('Linux x64 (GNU)');
-            if ('${{ inputs.build_linux_x64_musl }}' === 'true') artifacts.push('Linux x64 (musl)');
-            if ('${{ inputs.build_linux_arm64_gnu }}' === 'true') artifacts.push('Linux ARM64 (GNU)');
-            if ('${{ inputs.build_linux_arm64_musl }}' === 'true') artifacts.push('Linux ARM64 (musl)');
-            if ('${{ inputs.build_linux_armv7_gnu }}' === 'true') artifacts.push('Linux ARMv7 (GNU)');
-            if ('${{ inputs.build_linux_armv7_musl }}' === 'true') artifacts.push('Linux ARMv7 (musl)');
+            if ('${{ inputs.build_linux_x64 }}' === 'true') artifacts.push('Linux x64 (GNU + musl)');
+            if ('${{ inputs.build_linux_arm64 }}' === 'true') artifacts.push('Linux ARM64 (GNU + musl)');
+            if ('${{ inputs.build_linux_armv7 }}' === 'true') artifacts.push('Linux ARMv7 (GNU + musl)');
             if ('${{ inputs.build_macos_x64 }}' === 'true') artifacts.push('macOS x64');
             if ('${{ inputs.build_macos_arm64 }}' === 'true') artifacts.push('macOS ARM64');
             if ('${{ inputs.build_windows_x64 }}' === 'true') artifacts.push('Windows x64');
