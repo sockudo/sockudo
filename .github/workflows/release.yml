@@ -119,11 +119,6 @@ jobs:
             os: ubuntu-latest
             archive_ext: tgz
             binary_name: sockudo
-          - name: Linux ARM64 (musl)
-            triple: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            archive_ext: tgz
-            binary_name: sockudo
           - name: Linux x86_64 (GNU)
             triple: x86_64-unknown-linux-gnu
             os: ubuntu-latest
@@ -419,6 +414,7 @@ jobs:
             
             ## Platform Support
             - ✅ Linux x86_64 (GNU)
+            - ✅ Linux x86_64 (musl)
             - ✅ macOS x86_64 (Intel)
             - ✅ macOS ARM64 (Apple Silicon)
             - ✅ Windows x86_64
