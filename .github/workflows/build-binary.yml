@@ -1,0 +1,137 @@
+name: Reusable Build Binary Workflow
+
+on:
+  workflow_call:
+    inputs:
+      target_name:
+        required: true
+        type: string
+        description: 'Human-readable target name'
+      target_triple:
+        required: true
+        type: string
+        description: 'Rust target triple'
+      runner_os:
+        required: true
+        type: string
+        description: 'Runner OS to use'
+      archive_ext:
+        required: true
+        type: string
+        description: 'Archive extension (tar.gz, tgz, zip)'
+      binary_name:
+        required: true
+        type: string
+        description: 'Binary filename'
+      cross_compile:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether this is a cross-compilation build'
+      version:
+        required: false
+        type: string
+        default: 'dev'
+        description: 'Version for the archive name'
+      upload_artifact:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to upload the artifact'
+      artifact_retention_days:
+        required: false
+        type: number
+        default: 1
+        description: 'Number of days to retain artifacts'
+
+jobs:
+  build:
+    name: Build ${{ inputs.target_name }}
+    runs-on: ${{ inputs.runner_os }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.target_triple }}
+
+      - name: Install system dependencies (Linux x86_64)
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake
+          sudo apt-get install -y libssl-dev curl
+          # Add musl tools for x86_64
+          if [[ "${{ inputs.target_triple }}" == *"musl"* ]]; then
+            sudo apt-get install -y musl-tools musl-dev
+          fi
+          
+          
+      - name: Install system dependencies (Linux ARM64)
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake
+          sudo apt-get install -y libssl-dev curl
+          # Add musl tools for ARM64
+          if [[ "${{ inputs.target_triple }}" == *"musl"* ]]; then
+            sudo apt-get install -y musl-tools musl-dev
+          fi
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ inputs.target_triple }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          cargo build --release --target ${{ inputs.target_triple }}
+
+      - name: Prepare binary and create archive
+        id: prepare_artifact
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          TARGET_TRIPLE="${{ inputs.target_triple }}"
+          ARCHIVE_EXT="${{ inputs.archive_ext }}"
+          BINARY_NAME="${{ inputs.binary_name }}"
+          
+          SOURCE_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
+          
+          # Use different naming for release vs manual builds
+          if [[ "$VERSION" == "dev" ]]; then
+            ARCHIVE_NAME="sockudo-${TARGET_TRIPLE}.${ARCHIVE_EXT}"
+          else
+            ARCHIVE_NAME="sockudo-v${VERSION}-${TARGET_TRIPLE}.${ARCHIVE_EXT}"
+          fi
+          
+          # Strip binary on Unix systems
+          if [[ "$RUNNER_OS" == "Linux" || "$RUNNER_OS" == "macOS" ]]; then
+            strip "${SOURCE_PATH}" || echo "Strip failed, continuing..."
+          fi
+          
+          # Create archive
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            powershell Compress-Archive -Path "${SOURCE_PATH}" -DestinationPath "${ARCHIVE_NAME}"
+          else
+            cd $(dirname "${SOURCE_PATH}")
+            tar -czf "${GITHUB_WORKSPACE}/${ARCHIVE_NAME}" "${BINARY_NAME}"
+          fi
+          
+          echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        if: inputs.upload_artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sockudo-${{ inputs.target_triple }}
+          path: ${{ steps.prepare_artifact.outputs.archive_name }}
+          retention-days: ${{ inputs.artifact_retention_days }}
