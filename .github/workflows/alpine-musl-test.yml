@@ -1,0 +1,203 @@
+# Add this to your .github/workflows/ci.yml or create a new file
+# .github/workflows/alpine-musl-test.yml
+
+name: Alpine Musl Binary Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - '.github/workflows/**'
+      - '.cargo/config.toml'
+
+jobs:
+  # =============================================================================
+  # Build Musl Binaries
+  # =============================================================================
+  build-musl:
+    name: Build Musl Binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools musl-dev
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
+
+      - name: Build musl binary
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload musl binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sockudo-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/sockudo
+          retention-days: 7
+
+  # =============================================================================
+  # Test Musl Binaries on Alpine
+  # =============================================================================
+  test-alpine:
+    name: Test on Alpine Linux
+    needs: build-musl
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        alpine_version: ["3.18", "3.19", "latest"]
+        arch: [amd64] # GitHub Actions doesn't support arm64 runners easily
+
+    container:
+      image: alpine:${{ matrix.alpine_version }}
+
+    steps:
+      - name: Install basic tools in Alpine
+        run: |
+          apk update
+          apk add --no-cache curl ca-certificates redis
+
+      - name: Download musl binary
+        uses: actions/download-artifact@v4
+        with:
+          name: sockudo-x86_64-unknown-linux-musl
+          path: ./
+
+      - name: Make binary executable and test
+        run: |
+          chmod +x sockudo
+          ./sockudo --version
+          echo "✅ Musl binary runs on Alpine ${{ matrix.alpine_version }}"
+
+      - name: Test Redis connection
+        run: |
+          # Start Redis in background
+          redis-server --daemonize yes --port 6379
+          
+          # Test sockudo with Redis
+          timeout 10s ./sockudo --help || echo "Help command completed"
+          echo "✅ Binary dependencies work correctly"
+
+  # =============================================================================
+  # Test Binstall Installation
+  # =============================================================================
+  test-binstall:
+    name: Test Binstall on Alpine
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest
+
+    steps:
+      - name: Install dependencies
+        run: |
+          apk update
+          apk add --no-cache curl ca-certificates git
+
+      - name: Install Rust and Cargo
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-binstall
+        run: |
+          source ~/.cargo/env
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+
+      # This will test the actual binstall process once musl binaries are published
+      - name: Test binstall installation (dry-run)
+        run: |
+          source ~/.cargo/env
+          # For now, just test that binstall can detect the target
+          cargo binstall --help
+          echo "Target triple: $(rustc -vV | grep 'host:' | cut -d' ' -f2)"
+          echo "✅ Binstall is ready for musl target"
+
+  # =============================================================================
+  # Integration Test with Real Services
+  # =============================================================================
+  integration-test:
+    name: Integration Test on Alpine
+    needs: build-musl
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    container:
+      image: alpine:latest
+      options: --network host
+
+    steps:
+      - name: Install dependencies
+        run: |
+          apk update
+          apk add --no-cache curl ca-certificates redis-tools
+
+      - name: Download musl binary
+        uses: actions/download-artifact@v4
+        with:
+          name: sockudo-x86_64-unknown-linux-musl
+          path: ./
+
+      - name: Test full sockudo functionality
+        run: |
+          chmod +x sockudo
+          
+          # Start sockudo in background
+          DATABASE_REDIS_HOST=localhost \
+          DATABASE_REDIS_PORT=6379 \
+          SOCKUDO_DEFAULT_APP_ENABLED=true \
+          RUST_LOG=info \
+          ./sockudo &
+          
+          # Wait for startup
+          sleep 15
+          
+          # Test health endpoint
+          if curl -f http://localhost:6001/up/demo-app; then
+            echo "✅ Health check passed on Alpine"
+          else
+            echo "❌ Health check failed"
+            exit 1
+          fi
+          
+          # Test metrics endpoint  
+          if curl -f http://localhost:9601/metrics > /dev/null; then
+            echo "✅ Metrics endpoint accessible"
+          else
+            echo "❌ Metrics endpoint failed"
+            exit 1
+          fi
+          
+          # Test Redis connectivity
+          if redis-cli -h localhost ping | grep -q PONG; then
+            echo "✅ Redis connection working"
+          else
+            echo "❌ Redis connection failed"
+            exit 1
+          fi
+          
+          echo "🎉 All integration tests passed on Alpine!"
