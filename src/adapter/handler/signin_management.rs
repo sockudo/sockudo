@@ -153,15 +153,7 @@ impl ConnectionHandler {
         app_config: &App,
         request: &SignInRequest,
     ) -> Result<()> {
-        let success_message = PusherMessage {
-            channel: None,
-            name: None,
-            event: Some("pusher:signin_success".into()),
-            data: Some(MessageData::Json(json!({
-                "user_data": request.user_data
-            }))),
-            user_id: None,
-        };
+        let success_message = PusherMessage::signin_success(request.user_data.clone());
 
         self.connection_manager
             .lock()
