@@ -335,14 +335,15 @@ async fn process_single_event_parallel(
             // Construct the message to be sent to this specific channel.
             let message_data = match payload_for_task {
                 Some(ApiMessageData::String(s)) => MessageData::String(s),
-                Some(ApiMessageData::Json(j_val)) => MessageData::Json(j_val),
-                None => MessageData::Json(json!(null)), // Default to null if no data
+                Some(ApiMessageData::Json(j_val)) => MessageData::String(j_val.to_string()),
+                None => MessageData::String("null".to_string()), // Default to "null" string if no data
             };
             let _message_to_send = PusherMessage {
                 channel: Some(target_channel_str.clone()),
                 name: None,
                 event: name_for_task,
                 data: Some(message_data.clone()),
+                user_id: None,
             };
             // Use the provided timestamp directly
             let timestamp_ms = start_time_ms;
