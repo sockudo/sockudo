@@ -302,6 +302,28 @@ impl PusherMessage {
             user_id: None,
         }
     }
+
+    pub fn cache_miss_event(channel: String) -> Self {
+        Self {
+            event: Some("pusher:cache_miss".to_string()),
+            channel: Some(channel),
+            data: None,
+            name: None,
+            user_id: None,
+        }
+    }
+
+    pub fn signin_success(user_data: Value) -> Self {
+        Self {
+            event: Some("pusher:signin_success".to_string()),
+            data: Some(MessageData::Json(json!({
+                "user_data": user_data
+            }))),
+            channel: None,
+            name: None,
+            user_id: None,
+        }
+    }
 }
 
 // Add a helper extension trait for working with info parameters

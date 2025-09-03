@@ -806,13 +806,7 @@ impl ConnectionHandler {
             }
             Ok(None) => {
                 // No cache found, send cache miss event
-                let cache_miss_message = PusherMessage {
-                    channel: Some(channel.to_string()),
-                    name: None,
-                    event: Some("pusher:cache_miss".to_string()),
-                    data: None,
-                    user_id: None,
-                };
+                let cache_miss_message = PusherMessage::cache_miss_event(channel.to_string());
 
                 self.send_message_to_socket(app_id, socket_id, cache_miss_message)
                     .await?;
@@ -839,13 +833,7 @@ impl ConnectionHandler {
                 error!("Failed to get cache for channel {}: {}", channel, e);
 
                 // Send cache miss event as fallback
-                let cache_miss_message = PusherMessage {
-                    channel: Some(channel.to_string()),
-                    name: None,
-                    event: Some("pusher:cache_miss".to_string()),
-                    data: None,
-                    user_id: None,
-                };
+                let cache_miss_message = PusherMessage::cache_miss_event(channel.to_string());
 
                 self.send_message_to_socket(app_id, socket_id, cache_miss_message)
                     .await?;
