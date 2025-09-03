@@ -4,6 +4,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceData {
+    pub ids: Vec<String>,
+    pub hash: HashMap<String, Option<Value>>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageData {
     String(String),
@@ -131,9 +138,15 @@ impl PusherMessage {
         }
     }
 
-    pub fn subscription_succeeded(channel: String, presence_data: Option<Value>) -> Self {
+    pub fn subscription_succeeded(channel: String, presence_data: Option<PresenceData>) -> Self {
         let data_obj = if let Some(data) = presence_data {
-            json!({ "presence": data })
+            json!({ 
+                "presence": {
+                    "ids": data.ids,
+                    "hash": data.hash,
+                    "count": data.count
+                }
+            })
         } else {
             json!({})
         };

@@ -4,10 +4,10 @@ use super::types::*;
 use crate::app::config::App;
 use crate::channel::{ChannelType, PresenceMemberInfo};
 use crate::error::Result;
-use crate::protocol::messages::{MessageData, PusherMessage};
+use crate::protocol::messages::{MessageData, PusherMessage, PresenceData};
 use crate::utils::is_cache_channel;
 use crate::websocket::SocketId;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -231,15 +231,13 @@ impl ConnectionHandler {
                 .get_channel_members(&app_config.id, &request.channel)
                 .await?;
 
-            let presence_data = json!({
-                "presence": {
-                    "ids": members_map.keys().collect::<Vec<&String>>(),
-                    "hash": members_map.iter()
-                        .map(|(k, v)| (k.as_str(), v.user_info.clone()))
-                        .collect::<HashMap<&str, Option<Value>>>(),
-                    "count": members_map.len()
-                }
-            });
+            let presence_data = PresenceData {
+                ids: members_map.keys().cloned().collect::<Vec<String>>(),
+                hash: members_map.iter()
+                    .map(|(k, v)| (k.clone(), v.user_info.clone()))
+                    .collect::<HashMap<String, Option<Value>>>(),
+                count: members_map.len(),
+            };
 
             self.send_subscription_succeeded(
                 socket_id,
@@ -266,7 +264,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
         channel: &str,
-        data: Option<Value>,
+        data: Option<PresenceData>,
     ) -> Result<()> {
         let response_msg = PusherMessage::subscription_succeeded(channel.to_string(), data);
         self.connection_manager
