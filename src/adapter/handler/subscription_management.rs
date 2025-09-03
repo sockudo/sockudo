@@ -41,6 +41,7 @@ impl ConnectionHandler {
                 "channel_data": request.channel_data
             }))),
             name: None,
+            user_id: None,
         };
 
         let subscription_result = {

@@ -158,9 +158,9 @@ impl ConnectionHandler {
             name: None,
             event: Some("pusher:signin_success".into()),
             data: Some(MessageData::Json(json!({
-                "user_data": request.user_data,
-                "auth": request.auth
+                "user_data": request.user_data
             }))),
+            user_id: None,
         };
 
         self.connection_manager
