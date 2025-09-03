@@ -161,21 +161,19 @@ fn test_subscription_succeeded_format() {
     // For presence channels, it contains presence data
     use sockudo::protocol::messages::PresenceData;
     use std::collections::HashMap;
-    
+
     let mut hash = HashMap::new();
     hash.insert("user1".to_string(), Some(json!({"name": "Alice"})));
     hash.insert("user2".to_string(), Some(json!({"name": "Bob"})));
-    
+
     let presence_data = PresenceData {
         ids: vec!["user1".to_string(), "user2".to_string()],
         hash: hash.clone(),
         count: 2,
     };
 
-    let message = PusherMessage::subscription_succeeded(
-        "presence-room".to_string(),
-        Some(presence_data),
-    );
+    let message =
+        PusherMessage::subscription_succeeded("presence-room".to_string(), Some(presence_data));
     let json = message_to_json(&message);
 
     // Assert event and channel fields exist and have correct values
@@ -202,13 +200,13 @@ fn test_subscription_succeeded_format() {
     let parsed_data: Value =
         serde_json::from_str(data_str).expect("Data string should contain valid JSON");
 
-    // Assert parsed data has correct structure  
+    // Assert parsed data has correct structure
     assert!(parsed_data.is_object(), "Parsed data should be an object");
     assert!(
         parsed_data.get("presence").is_some(),
         "Should have 'presence' field"
     );
-    
+
     // Verify the presence data structure (not double-wrapped)
     let presence = &parsed_data["presence"];
     assert_eq!(presence["count"], 2);

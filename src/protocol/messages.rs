@@ -140,7 +140,7 @@ impl PusherMessage {
 
     pub fn subscription_succeeded(channel: String, presence_data: Option<PresenceData>) -> Self {
         let data_obj = if let Some(data) = presence_data {
-            json!({ 
+            json!({
                 "presence": {
                     "ids": data.ids,
                     "hash": data.hash,
