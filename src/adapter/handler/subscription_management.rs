@@ -4,7 +4,7 @@ use super::types::*;
 use crate::app::config::App;
 use crate::channel::{ChannelType, PresenceMemberInfo};
 use crate::error::Result;
-use crate::protocol::messages::{MessageData, PusherMessage, PresenceData};
+use crate::protocol::messages::{MessageData, PresenceData, PusherMessage};
 use crate::utils::is_cache_channel;
 use crate::websocket::SocketId;
 use serde_json::Value;
@@ -233,7 +233,8 @@ impl ConnectionHandler {
 
             let presence_data = PresenceData {
                 ids: members_map.keys().cloned().collect::<Vec<String>>(),
-                hash: members_map.iter()
+                hash: members_map
+                    .iter()
                     .map(|(k, v)| (k.clone(), v.user_info.clone()))
                     .collect::<HashMap<String, Option<Value>>>(),
                 count: members_map.len(),
