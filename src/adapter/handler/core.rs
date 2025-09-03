@@ -811,6 +811,7 @@ impl ConnectionHandler {
                     name: None,
                     event: Some("pusher:cache_miss".to_string()),
                     data: None,
+                    user_id: None,
                 };
 
                 self.send_message_to_socket(app_id, socket_id, cache_miss_message)
@@ -843,6 +844,7 @@ impl ConnectionHandler {
                     name: None,
                     event: Some("pusher:cache_miss".to_string()),
                     data: None,
+                    user_id: None,
                 };
 
                 self.send_message_to_socket(app_id, socket_id, cache_miss_message)
