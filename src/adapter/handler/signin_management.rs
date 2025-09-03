@@ -5,9 +5,9 @@ use super::ConnectionHandler;
 use super::types::*;
 use crate::app::config::App;
 use crate::error::{Error, Result};
-use crate::protocol::messages::{MessageData, PusherMessage};
+use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, UserInfo};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tracing::{info, warn};
 
 impl ConnectionHandler {
