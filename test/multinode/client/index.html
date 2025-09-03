@@ -82,13 +82,45 @@
             </div>
         </div>
 
+        <!-- User Config for Presence Channels -->
+        <div class="mb-6">
+            <h2 class="text-base font-semibold mb-3 text-gray-700">User Identity</h2>
+            
+            <!-- Node 1 User -->
+            <div class="mb-4">
+                <h3 class="font-medium text-gray-600 text-sm mb-2">Node 1 User</h3>
+                <div class="space-y-2">
+                    <input type="text" id="node1-user-id" value="user-1" placeholder="User ID"
+                           class="w-full px-2 py-1 border rounded text-xs">
+                    <input type="text" id="node1-user-name" value="Alice" placeholder="Name"
+                           class="w-full px-2 py-1 border rounded text-xs">
+                    <input type="text" id="node1-user-email" value="alice@example.com" placeholder="Email"
+                           class="w-full px-2 py-1 border rounded text-xs">
+                </div>
+            </div>
+            
+            <!-- Node 2 User -->
+            <div class="mb-4">
+                <h3 class="font-medium text-gray-600 text-sm mb-2">Node 2 User</h3>
+                <div class="space-y-2">
+                    <input type="text" id="node2-user-id" value="user-2" placeholder="User ID"
+                           class="w-full px-2 py-1 border rounded text-xs">
+                    <input type="text" id="node2-user-name" value="Bob" placeholder="Name"
+                           class="w-full px-2 py-1 border rounded text-xs">
+                    <input type="text" id="node2-user-email" value="bob@example.com" placeholder="Email"
+                           class="w-full px-2 py-1 border rounded text-xs">
+                </div>
+            </div>
+        </div>
+
         <!-- Test Info -->
         <div class="text-xs text-gray-500 bg-gray-50 p-3 rounded">
+            <p class="mb-2"><strong>Channel Types:</strong></p>
+            <p class="mb-1">• <strong>Public:</strong> test-channel</p>
+            <p class="mb-1">• <strong>Private:</strong> private-test</p>
+            <p class="mb-1">• <strong>Presence:</strong> presence-test</p>
             <p class="mb-2"><strong>Redis Recovery Test:</strong></p>
-            <p class="mb-1">1. Stop Redis container</p>
-            <p class="mb-1">2. Try sending messages (will fail)</p>
-            <p class="mb-1">3. Start Redis container</p>
-            <p>4. Send messages again (should work)</p>
+            <p class="mb-1">Stop/Start Redis to test recovery</p>
         </div>
     </div>
 
@@ -109,7 +141,7 @@
                 </button>
             </div>
         </div>
-
+        
         <!-- Connection Controls -->
         <div class="grid grid-cols-2 gap-4 flex-1 min-h-0">
             <!-- Node 1 Panel -->
@@ -123,21 +155,31 @@
                 </div>
 
                 <div class="flex flex-col flex-1 min-h-0">
-                    <div class="flex gap-1 mb-2 flex-shrink-0">
-                        <button id="node1-connect" onclick="toggleConnection(1)"
-                                class="flex-1 bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600 transition">
-                            Connect
-                        </button>
-                        <button onclick="subscribeToChannel(1)"
-                                class="flex-1 bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                id="node1-subscribe">
-                            Subscribe
-                        </button>
+                    <div class="flex flex-col gap-1 mb-2 flex-shrink-0">
+                        <div class="flex gap-1">
+                            <button id="node1-connect" onclick="toggleConnection(1)"
+                                    class="flex-1 bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600 transition">
+                                Connect
+                            </button>
+                        </div>
+                        <div class="flex gap-1">
+                            <select id="node1-channel-type" class="flex-1 px-2 py-1 border rounded text-xs">
+                                <option value="public">Public</option>
+                                <option value="private">Private</option>
+                                <option value="presence">Presence</option>
+                            </select>
+                            <button onclick="subscribeToChannel(1)"
+                                    class="flex-1 bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    id="node1-subscribe" disabled>
+                                Subscribe
+                            </button>
+                        </div>
                     </div>
 
                     <div class="message-log bg-gray-50 rounded p-2 text-xs flex-1 mb-2 min-h-0" id="node1-messages">
                         <div class="text-gray-400">Not connected</div>
                     </div>
+                    
 
                     <div class="flex gap-1 flex-shrink-0">
                         <input type="text" id="node1-message" placeholder="Type a message..."
@@ -162,21 +204,31 @@
                 </div>
 
                 <div class="flex flex-col flex-1 min-h-0">
-                    <div class="flex gap-1 mb-2 flex-shrink-0">
-                        <button id="node2-connect" onclick="toggleConnection(2)"
-                                class="flex-1 bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600 transition">
-                            Connect
-                        </button>
-                        <button onclick="subscribeToChannel(2)"
-                                class="flex-1 bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                id="node2-subscribe">
-                            Subscribe
-                        </button>
+                    <div class="flex flex-col gap-1 mb-2 flex-shrink-0">
+                        <div class="flex gap-1">
+                            <button id="node2-connect" onclick="toggleConnection(2)"
+                                    class="flex-1 bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600 transition">
+                                Connect
+                            </button>
+                        </div>
+                        <div class="flex gap-1">
+                            <select id="node2-channel-type" class="flex-1 px-2 py-1 border rounded text-xs">
+                                <option value="public">Public</option>
+                                <option value="private">Private</option>
+                                <option value="presence">Presence</option>
+                            </select>
+                            <button onclick="subscribeToChannel(2)"
+                                    class="flex-1 bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    id="node2-subscribe" disabled>
+                                Subscribe
+                            </button>
+                        </div>
                     </div>
 
                     <div class="message-log bg-gray-50 rounded p-2 text-xs flex-1 mb-2 min-h-0" id="node2-messages">
                         <div class="text-gray-400">Not connected</div>
                     </div>
+                    
 
                     <div class="flex gap-1 flex-shrink-0">
                         <input type="text" id="node2-message" placeholder="Type a message..."
@@ -188,6 +240,18 @@
                         </button>
                     </div>
                 </div>
+            </div>
+        </div>
+        
+        <!-- Global Presence Members -->
+        <div class="bg-white rounded-lg shadow-md p-4 mt-4 flex-shrink-0 hidden" id="global-presence-panel">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="text-base font-semibold text-gray-700">Presence Channel Members</h3>
+                <span class="text-xs bg-blue-500 text-white px-2 py-1 rounded-full" id="global-member-count">0</span>
+            </div>
+            <div class="text-sm" id="global-presence-channel">No presence channel</div>
+            <div class="grid grid-cols-2 gap-2 mt-3" id="global-members-list">
+                <div class="text-gray-400 col-span-2">No members connected</div>
             </div>
         </div>
     </div>
@@ -208,15 +272,30 @@
         1: false,
         2: false
     };
+    
+    let channelMembers = {
+        1: {},
+        2: {}
+    };
+    
+    let globalPresenceMembers = {};
 
     // Configuration management
     function saveConfig() {
         const config = {
             node1: {
                 host: document.getElementById('node1-host').value,
+                userId: document.getElementById('node1-user-id').value,
+                userName: document.getElementById('node1-user-name').value,
+                userEmail: document.getElementById('node1-user-email').value,
+                channelType: document.getElementById('node1-channel-type').value,
             },
             node2: {
                 host: document.getElementById('node2-host').value,
+                userId: document.getElementById('node2-user-id').value,
+                userName: document.getElementById('node2-user-name').value,
+                userEmail: document.getElementById('node2-user-email').value,
+                channelType: document.getElementById('node2-channel-type').value,
             },
             appKey: document.getElementById('app-key').value,
             channel: document.getElementById('channel').value,
@@ -236,9 +315,17 @@
                 // Load node configurations
                 if (config.node1) {
                     document.getElementById('node1-host').value = config.node1.host || 'node1.ghslocal.com';
+                    document.getElementById('node1-user-id').value = config.node1.userId || 'user-1';
+                    document.getElementById('node1-user-name').value = config.node1.userName || 'Alice';
+                    document.getElementById('node1-user-email').value = config.node1.userEmail || 'alice@example.com';
+                    document.getElementById('node1-channel-type').value = config.node1.channelType || 'public';
                 }
                 if (config.node2) {
                     document.getElementById('node2-host').value = config.node2.host || 'node2.ghslocal.com';
+                    document.getElementById('node2-user-id').value = config.node2.userId || 'user-2';
+                    document.getElementById('node2-user-name').value = config.node2.userName || 'Bob';
+                    document.getElementById('node2-user-email').value = config.node2.userEmail || 'bob@example.com';
+                    document.getElementById('node2-channel-type').value = config.node2.channelType || 'public';
                 }
 
                 // Load app configuration
@@ -279,6 +366,7 @@
             connectBtn.className = 'flex-1 bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600 transition';
             subscribeBtn.disabled = false;
             sendBtn.disabled = !subscribed[nodeNum];
+            updateSubscribeButton(nodeNum);
         } else {
             statusDot.className = 'w-2 h-2 bg-red-500 rounded-full';
             statusText.textContent = 'Disconnected';
@@ -287,7 +375,45 @@
             subscribeBtn.disabled = true;
             sendBtn.disabled = true;
             subscribed[nodeNum] = false;
+            channelMembers[nodeNum] = {};
+            updateSubscribeButton(nodeNum);
         }
+    }
+
+    function updateSubscribeButton(nodeNum) {
+        const subscribeBtn = document.getElementById(`node${nodeNum}-subscribe`);
+        
+        if (subscribed[nodeNum]) {
+            subscribeBtn.textContent = 'Unsubscribe';
+            subscribeBtn.className = 'flex-1 bg-orange-500 text-white px-2 py-1 rounded text-xs hover:bg-orange-600 transition disabled:opacity-50 disabled:cursor-not-allowed';
+            subscribeBtn.onclick = () => unsubscribeFromChannel(nodeNum);
+        } else {
+            subscribeBtn.textContent = 'Subscribe';
+            subscribeBtn.className = 'flex-1 bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600 transition disabled:opacity-50 disabled:cursor-not-allowed';
+            subscribeBtn.onclick = () => subscribeToChannel(nodeNum);
+        }
+    }
+    
+    function unsubscribeFromChannel(nodeNum) {
+        if (!pusherConnections[nodeNum] || !channels[nodeNum]) return;
+        
+        const channelName = getChannelName(nodeNum);
+        const pusher = pusherConnections[nodeNum];
+        
+        // Unsubscribe from channel
+        pusher.unsubscribe(channels[nodeNum].name);
+        channels[nodeNum] = null;
+        subscribed[nodeNum] = false;
+        
+        // Clear members data
+        channelMembers[nodeNum] = {};
+        updateGlobalPresenceMembers();
+        
+        // Update UI
+        updateSubscribeButton(nodeNum);
+        document.getElementById(`node${nodeNum}-send`).disabled = true;
+        
+        addMessage(nodeNum, `Unsubscribed from ${channelName}`, 'system');
     }
 
     function addMessage(nodeNum, message, type = 'received') {
@@ -347,7 +473,25 @@
             enabledTransports: ['ws', 'wss'],
             activityTimeout: 120000,
             pongTimeout: 30000,
-            unavailableTimeout: 10000
+            unavailableTimeout: 10000,
+            authorizer: function(channel, options) {
+                return {
+                    authorize: function(socketId, callback) {
+                        // Generate authentication for private/presence channels
+                        if (channel.name.startsWith('presence-')) {
+                            generatePresenceAuth(channel.name, socketId, nodeNum)
+                                .then(auth => callback(null, auth))
+                                .catch(err => callback(err, null));
+                        } else if (channel.name.startsWith('private-')) {
+                            generatePrivateAuth(channel.name, socketId)
+                                .then(auth => callback(null, auth))
+                                .catch(err => callback(err, null));
+                        } else {
+                            callback(null, {});
+                        }
+                    }
+                };
+            }
         });
 
         // Enable Pusher logging for debugging
@@ -378,41 +522,163 @@
         pusherConnections[nodeNum] = pusher;
     }
 
-    function subscribeToChannel(nodeNum) {
+    // Helper function to get user data for a node
+    function getUserData(nodeNum) {
+        return {
+            user_id: document.getElementById(`node${nodeNum}-user-id`).value,
+            user_info: {
+                name: document.getElementById(`node${nodeNum}-user-name`).value,
+                email: document.getElementById(`node${nodeNum}-user-email`).value
+            }
+        };
+    }
+    
+    // Update members display (removed - only using global display now)
+    
+    // Update global presence members display
+    function updateGlobalPresenceMembers() {
+        const globalPanel = document.getElementById('global-presence-panel');
+        const globalMembersList = document.getElementById('global-members-list');
+        const globalMemberCount = document.getElementById('global-member-count');
+        const globalChannelName = document.getElementById('global-presence-channel');
+        
+        const memberKeys = Object.keys(globalPresenceMembers);
+        globalMemberCount.textContent = memberKeys.length;
+        
+        // Check if any node is subscribed to a presence channel
+        let presenceChannelName = null;
+        for (let nodeNum = 1; nodeNum <= 2; nodeNum++) {
+            if (subscribed[nodeNum] && channels[nodeNum] && channels[nodeNum].name.startsWith('presence-')) {
+                presenceChannelName = channels[nodeNum].name;
+                break;
+            }
+        }
+        
+        if (presenceChannelName) {
+            globalPanel.classList.remove('hidden');
+            globalChannelName.textContent = presenceChannelName;
+            
+            if (memberKeys.length > 0) {
+                globalMembersList.innerHTML = memberKeys.map(userId => {
+                    const info = globalPresenceMembers[userId];
+                    return `<div class="p-2 bg-gray-50 rounded border">
+                        <div class="font-medium text-sm">${userId}</div>
+                        <div class="text-xs text-gray-600">${info.name || 'Unknown'}</div>
+                        <div class="text-xs text-gray-500">${info.email || ''}</div>
+                    </div>`;
+                }).join('');
+            } else {
+                globalMembersList.innerHTML = '<div class="text-gray-400 col-span-2">No members connected</div>';
+            }
+        } else {
+            globalPanel.classList.add('hidden');
+            globalChannelName.textContent = 'No presence channel';
+        }
+    }
+
+    // Get the channel name based on selected type
+    function getChannelName(nodeNum) {
+        const baseChannelName = document.getElementById('channel').value;
+        const channelType = document.getElementById(`node${nodeNum}-channel-type`).value;
+        
+        switch (channelType) {
+            case 'private':
+                return `private-${baseChannelName}`;
+            case 'presence':
+                return `presence-${baseChannelName}`;
+            case 'public':
+            default:
+                return baseChannelName;
+        }
+    }
+
+    async function subscribeToChannel(nodeNum) {
         if (!pusherConnections[nodeNum]) return;
 
-        const channelName = document.getElementById('channel').value;
+        const channelName = getChannelName(nodeNum);
         const pusher = pusherConnections[nodeNum];
 
         // Unsubscribe from previous channel if exists
         if (channels[nodeNum]) {
             pusher.unsubscribe(channels[nodeNum].name);
             channels[nodeNum] = null;
+            channelMembers[nodeNum] = {};
+            updateMembersDisplay(nodeNum);
         }
 
-        // Subscribe to new channel
+        // Subscribe to new channel (auth handled by authorizer)
         const channel = pusher.subscribe(channelName);
 
-        channel.bind('pusher:subscription_succeeded', function () {
-            addMessage(nodeNum, `Subscribed to channel: ${channelName}`, 'system');
+        channel.bind('pusher:subscription_succeeded', function (members) {
+            addMessage(nodeNum, `Subscribed to channel: ${channelName}`, 'success');
             subscribed[nodeNum] = true;
             channels[nodeNum] = channel;
             document.getElementById(`node${nodeNum}-send`).disabled = false;
+            updateSubscribeButton(nodeNum);
+            
+            // For presence channels, use the members parameter from subscription_succeeded
+            if (channelName.startsWith('presence-')) {
+                if (members && members.count > 0) {
+                    // Clear current members for this node
+                    channelMembers[nodeNum] = {};
+                    
+                    // Reset global presence members (since this represents the current state)
+                    globalPresenceMembers = {};
+                    
+                    // Iterate through members using the Pusher API
+                    members.each((member) => {
+                        channelMembers[nodeNum][member.id] = member.info || {};
+                        globalPresenceMembers[member.id] = member.info || {};
+                    });
+                    
+                    updateGlobalPresenceMembers();
+                    addMessage(nodeNum, `Initial members (${members.count}): ${Object.keys(channelMembers[nodeNum]).join(', ')}`, 'system');
+                } else {
+                    // Empty presence channel
+                    channelMembers[nodeNum] = {};
+                    // Reset global presence members
+                    globalPresenceMembers = {};
+                    updateGlobalPresenceMembers();
+                    addMessage(nodeNum, `Presence channel ready (no members yet)`, 'system');
+                }
+            }
 
             // Bind to all events on this channel
             channel.bind_global(function (eventName, data) {
-                if (!eventName.startsWith('pusher:')) {
+                if (!eventName.startsWith('pusher:') && !eventName.startsWith('pusher_internal:')) {
                     addMessage(nodeNum, `${eventName}: ${JSON.stringify(data)}`, 'received');
                 }
             });
         });
+        
+        // Bind to presence member events (only for presence channels)
+        if (channelName.startsWith('presence-')) {
+            
+            channel.bind('pusher:member_added', function(member) {
+                console.log('Member added event:', member);
+                // Pusher.js provides the member object directly
+                channelMembers[nodeNum][member.id] = member.info || {};
+                globalPresenceMembers[member.id] = member.info || {};
+                updateGlobalPresenceMembers();
+                addMessage(nodeNum, `🟢 Member joined: ${member.id} (${member.info?.name || 'Unknown'})`, 'success');
+            });
+            
+            channel.bind('pusher:member_removed', function(member) {
+                console.log('Member removed event:', member);
+                // Pusher.js provides the member object directly
+                delete channelMembers[nodeNum][member.id];
+                delete globalPresenceMembers[member.id];
+                updateGlobalPresenceMembers();
+                addMessage(nodeNum, `🔴 Member left: ${member.id}`, 'system');
+            });
+        }
 
         channel.bind('pusher:subscription_error', function (error) {
-            addMessage(nodeNum, `Subscription error: ${error}`, 'error');
+            addMessage(nodeNum, `Subscription error: ${JSON.stringify(error)}`, 'error');
             subscribed[nodeNum] = false;
         });
 
-        addMessage(nodeNum, `Subscribing to channel: ${channelName}`, 'system');
+        addMessage(nodeNum, `Subscribing to ${channelName}...`, 'system');
     }
 
     async function sendMessage(nodeNum) {
@@ -420,13 +686,13 @@
         const message = messageInput.value.trim();
         if (!message) return;
 
-        const channelName = document.getElementById('channel').value;
+        const channelName = getChannelName(nodeNum);
         const eventName = document.getElementById('event-name').value;
 
-        // For private channels, we could use client events
+        // For private and presence channels, we could use client events
         // For public channels, we need to use the API
-        if (channelName.startsWith('private-') && channels[nodeNum]) {
-            // Use Pusher client event for private channels
+        if ((channelName.startsWith('private-') || channelName.startsWith('presence-')) && channels[nodeNum]) {
+            // Use Pusher client event for private/presence channels
             const triggered = channels[nodeNum].trigger(eventName, {
                 message: message,
                 from: `node${nodeNum}`,
@@ -658,6 +924,35 @@
         return md5(text);
     }
 
+    // Generate auth for presence channels
+    async function generatePresenceAuth(channel, socketId, nodeNum) {
+        const appKey = document.getElementById('app-key').value;
+        const appSecret = 'app-secret';
+        
+        const userData = getUserData(nodeNum);
+        const channelData = JSON.stringify(userData);
+        const stringToSign = `${socketId}:${channel}:${channelData}`;
+        const signature = await generateSignature(stringToSign, appSecret);
+        
+        return {
+            auth: `${appKey}:${signature}`,
+            channel_data: channelData
+        };
+    }
+    
+    // Generate auth for private channels
+    async function generatePrivateAuth(channel, socketId) {
+        const appKey = document.getElementById('app-key').value;
+        const appSecret = 'app-secret';
+        
+        const stringToSign = `${socketId}:${channel}`;
+        const signature = await generateSignature(stringToSign, appSecret);
+        
+        return {
+            auth: `${appKey}:${signature}`
+        };
+    }
+
     // Helper function to generate HMAC-SHA256 signature
     async function generateSignature(stringToSign, secret) {
         const encoder = new TextEncoder();
@@ -678,7 +973,7 @@
     }
 
     async function sendApiMessage(nodeNum, messageText, fromSource) {
-        const channel = document.getElementById('channel').value;
+        const channel = getChannelName(nodeNum);
         const eventName = document.getElementById('event-name').value;
         const appKey = document.getElementById('app-key').value;
         const appSecret = 'app-secret'; // App secret
@@ -759,8 +1054,8 @@
 
         // Save configuration when inputs change
         const configInputs = [
-            'node1-host',
-            'node2-host',
+            'node1-host', 'node1-user-id', 'node1-user-name', 'node1-user-email', 'node1-channel-type',
+            'node2-host', 'node2-user-id', 'node2-user-name', 'node2-user-email', 'node2-channel-type',
             'app-key',
             'channel',
             'event-name'
