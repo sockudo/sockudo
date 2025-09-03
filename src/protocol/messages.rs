@@ -4,6 +4,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceData {
+    pub ids: Vec<String>,
+    pub hash: HashMap<String, Option<Value>>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageData {
     String(String),
@@ -36,6 +43,8 @@ pub struct PusherMessage {
     pub event: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<MessageData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,17 +134,29 @@ impl PusherMessage {
             )),
             channel: None,
             name: None,
+            user_id: None,
         }
     }
 
-    pub fn subscription_succeeded(channel: String, presence_data: Option<Value>) -> Self {
+    pub fn subscription_succeeded(channel: String, presence_data: Option<PresenceData>) -> Self {
+        let data_obj = if let Some(data) = presence_data {
+            json!({
+                "presence": {
+                    "ids": data.ids,
+                    "hash": data.hash,
+                    "count": data.count
+                }
+            })
+        } else {
+            json!({})
+        };
+
         Self {
             event: Some("pusher_internal:subscription_succeeded".to_string()),
             channel: Some(channel),
-            data: Some(MessageData::Json(
-                presence_data.unwrap_or_else(|| json!({})),
-            )),
+            data: Some(MessageData::String(data_obj.to_string())),
             name: None,
+            user_id: None,
         }
     }
 
@@ -148,6 +169,7 @@ impl PusherMessage {
             }))),
             channel,
             name: None,
+            user_id: None,
         }
     }
 
@@ -157,14 +179,16 @@ impl PusherMessage {
             data: None,
             channel: None,
             name: None,
+            user_id: None,
         }
     }
     pub fn channel_event<S: Into<String>>(event: S, channel: S, data: Value) -> Self {
         Self {
             event: Some(event.into()),
             channel: Some(channel.into()),
-            data: Some(MessageData::Json(data)),
+            data: Some(MessageData::String(data.to_string())),
             name: None,
+            user_id: None,
         }
     }
 
@@ -181,6 +205,7 @@ impl PusherMessage {
                 .to_string(),
             )),
             name: None,
+            user_id: None,
         }
     }
 
@@ -196,6 +221,7 @@ impl PusherMessage {
                 .to_string(),
             )),
             name: None,
+            user_id: None,
         }
     }
 
@@ -206,6 +232,7 @@ impl PusherMessage {
             data: None,
             channel: None,
             name: None,
+            user_id: None,
         }
     }
 
@@ -273,6 +300,7 @@ impl PusherMessage {
             data: Some(MessageData::Json(json!({
                 "user_ids": user_ids
             }))),
+            user_id: None,
         }
     }
 
@@ -284,6 +312,29 @@ impl PusherMessage {
             data: Some(MessageData::Json(json!({
                 "user_ids": user_ids
             }))),
+            user_id: None,
+        }
+    }
+
+    pub fn cache_miss_event(channel: String) -> Self {
+        Self {
+            event: Some("pusher:cache_miss".to_string()),
+            channel: Some(channel),
+            data: None,
+            name: None,
+            user_id: None,
+        }
+    }
+
+    pub fn signin_success(user_data: String) -> Self {
+        Self {
+            event: Some("pusher:signin_success".to_string()),
+            data: Some(MessageData::Json(json!({
+                "user_data": user_data
+            }))),
+            channel: None,
+            name: None,
+            user_id: None,
         }
     }
 }

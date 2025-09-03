@@ -64,6 +64,7 @@ async fn test_verify_channel_authentication_private_channel_with_auth() {
             "channel_data": null
         }))),
         name: None,
+        user_id: None,
     };
 
     channel_manager.expect_signature_validation(auth.clone(), expected_message, true);
@@ -104,6 +105,7 @@ async fn test_verify_channel_authentication_presence_channel() {
             "channel_data": channel_data
         }))),
         name: None,
+        user_id: None,
     };
 
     channel_manager.expect_signature_validation(auth.clone(), expected_message, true);

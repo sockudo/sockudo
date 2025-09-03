@@ -37,6 +37,7 @@ impl ConnectionHandler {
                 }),
             )),
             name: None,
+            user_id: None,
         };
 
         let is_valid = channel_manager.signature_is_valid(

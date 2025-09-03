@@ -144,6 +144,7 @@ impl ConnectionHandler {
                 request.data.clone(),
             )),
             name: None,
+            user_id: None,
         };
 
         self.broadcast_to_channel(app_config, &request.channel, message, Some(socket_id))
