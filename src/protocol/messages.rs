@@ -313,7 +313,7 @@ impl PusherMessage {
         }
     }
 
-    pub fn signin_success(user_data: Value) -> Self {
+    pub fn signin_success(user_data: String) -> Self {
         Self {
             event: Some("pusher:signin_success".to_string()),
             data: Some(MessageData::Json(json!({
