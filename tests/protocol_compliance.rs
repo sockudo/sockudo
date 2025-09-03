@@ -90,16 +90,8 @@ fn test_signin_success_format() {
         auth: "app_key:signature".to_string(),
     };
 
-    // This is how signin_success is created in the handler
-    let message = PusherMessage {
-        channel: None,
-        name: None,
-        event: Some("pusher:signin_success".into()),
-        data: Some(MessageData::Json(json!({
-            "user_data": request.user_data
-        }))),
-        user_id: None,
-    };
+    // Use the helper function to ensure consistency with production code
+    let message = PusherMessage::signin_success(request.user_data);
 
     let json = message_to_json(&message);
 
@@ -167,18 +159,22 @@ fn test_pong_format() {
 fn test_subscription_succeeded_format() {
     // According to spec: data should be a String (JSON-encoded object)
     // For presence channels, it contains presence data
-    let presence_data = json!({
-        "ids": ["user1", "user2"],
-        "hash": {
-            "user1": {"name": "Alice"},
-            "user2": {"name": "Bob"}
-        },
-        "count": 2
-    });
+    use sockudo::protocol::messages::PresenceData;
+    use std::collections::HashMap;
+    
+    let mut hash = HashMap::new();
+    hash.insert("user1".to_string(), Some(json!({"name": "Alice"})));
+    hash.insert("user2".to_string(), Some(json!({"name": "Bob"})));
+    
+    let presence_data = PresenceData {
+        ids: vec!["user1".to_string(), "user2".to_string()],
+        hash: hash.clone(),
+        count: 2,
+    };
 
     let message = PusherMessage::subscription_succeeded(
         "presence-room".to_string(),
-        Some(presence_data.clone()),
+        Some(presence_data),
     );
     let json = message_to_json(&message);
 
@@ -206,13 +202,19 @@ fn test_subscription_succeeded_format() {
     let parsed_data: Value =
         serde_json::from_str(data_str).expect("Data string should contain valid JSON");
 
-    // Assert parsed data has correct structure
+    // Assert parsed data has correct structure  
     assert!(parsed_data.is_object(), "Parsed data should be an object");
     assert!(
         parsed_data.get("presence").is_some(),
         "Should have 'presence' field"
     );
-    assert_eq!(parsed_data["presence"], presence_data);
+    
+    // Verify the presence data structure (not double-wrapped)
+    let presence = &parsed_data["presence"];
+    assert_eq!(presence["count"], 2);
+    assert_eq!(presence["ids"], json!(["user1", "user2"]));
+    assert_eq!(presence["hash"]["user1"], json!({"name": "Alice"}));
+    assert_eq!(presence["hash"]["user2"], json!({"name": "Bob"}));
 }
 
 #[test]
