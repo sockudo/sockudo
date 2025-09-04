@@ -973,6 +973,10 @@ impl ServerOptions {
                 "RateLimiter Backend",
             );
         }
+        // --- Adapter: Redis ---
+        if let Ok(prefix) = std::env::var("RATE_LIMITER_REDIS_PREFIX") {
+            self.rate_limiter.redis.prefix = Some(prefix);
+        }
 
         // --- Database: Redis ---
         if let Ok(host) = std::env::var("DATABASE_REDIS_HOST") {
