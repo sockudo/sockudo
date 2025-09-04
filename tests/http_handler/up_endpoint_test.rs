@@ -529,6 +529,14 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         self
     }
 
+    async fn remove_user_socket(&mut self, _user_id: &str, _socket_id: &sockudo::websocket::SocketId, _app_id: &str) -> sockudo::error::Result<()> {
+        Ok(())
+    }
+
+    async fn has_user_connections_in_channel(&mut self, _user_id: &str, _app_id: &str, _channel: &str, _excluding_socket: Option<&sockudo::websocket::SocketId>) -> sockudo::error::Result<usize> {
+        Ok(0)
+    }
+
     // This is the key - make health check fail
     async fn check_health(&self) -> sockudo::error::Result<()> {
         Err(sockudo::error::Error::ApplicationNotFound)
