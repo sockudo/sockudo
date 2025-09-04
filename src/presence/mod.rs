@@ -161,7 +161,7 @@ impl PresenceManager {
         // Use cluster-wide connection check for multi-node support
         let mut connection_manager = connection_manager.lock().await;
         let subscribed_count = connection_manager
-            .has_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+            .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
             .await?;
         
         let has_other_connections = subscribed_count > 0;

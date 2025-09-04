@@ -297,7 +297,7 @@ impl HorizontalAdapter {
                     // Count user's connections in the specific channel on this node
                     response.sockets_count = self
                         .local_adapter
-                        .has_user_connections_in_channel(user_id, &request.app_id, channel, None)
+                        .count_user_connections_in_channel(user_id, &request.app_id, channel, None)
                         .await?;
                 }
             }
