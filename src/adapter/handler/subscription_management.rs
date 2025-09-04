@@ -4,6 +4,7 @@ use super::types::*;
 use crate::app::config::App;
 use crate::channel::{ChannelType, PresenceMemberInfo};
 use crate::error::Result;
+use crate::presence::PresenceManager;
 use crate::protocol::messages::{MessageData, PresenceData, PusherMessage};
 use crate::utils::is_cache_channel;
 use crate::websocket::SocketId;
@@ -190,6 +191,21 @@ impl ConnectionHandler {
                 };
 
                 conn_locked.add_presence_info(request.channel.clone(), presence_info);
+
+                // Release the connection lock before calling add_user
+                drop(conn_locked);
+                drop(connection_manager);
+
+                // Add user to the user-socket mapping so get_user_sockets() can find it
+                self.connection_manager
+                    .lock()
+                    .await
+                    .add_user(conn_arc.clone())
+                    .await?;
+            } else {
+                // Release locks when not needed
+                drop(conn_locked);
+                drop(connection_manager);
             }
         }
 
@@ -204,24 +220,17 @@ impl ConnectionHandler {
         subscription_result: &SubscriptionResult,
     ) -> Result<()> {
         if let Some(ref presence_member) = subscription_result.member {
-            // Send member_added event to existing members
-            let member_added_msg = PusherMessage::member_added(
-                request.channel.clone(),
-                presence_member.user_id.clone(),
-                Some(presence_member.user_info.clone()),
-            );
-
-            self.connection_manager
-                .lock()
-                .await
-                .send(
-                    &request.channel,
-                    member_added_msg,
-                    Some(socket_id),
-                    &app_config.id,
-                    None, // No timing info for presence member added
-                )
-                .await?;
+            // Use centralized presence member addition logic (handles both webhook and broadcast)
+            PresenceManager::handle_member_added(
+                &self.connection_manager,
+                self.webhook_integration.as_ref(),
+                app_config,
+                &request.channel,
+                &presence_member.user_id,
+                Some(&presence_member.user_info),
+                Some(socket_id),
+            )
+            .await?;
 
             // Get current members and send presence data to new member
             let members_map = self
@@ -247,14 +256,6 @@ impl ConnectionHandler {
                 Some(presence_data),
             )
             .await?;
-
-            // Send member_added webhook
-            if let Some(webhook_integration) = &self.webhook_integration {
-                webhook_integration
-                    .send_member_added(app_config, &request.channel, &presence_member.user_id)
-                    .await
-                    .ok();
-            }
         }
 
         Ok(())

@@ -308,7 +308,7 @@ impl ConnectionManager for LocalAdapter {
         // Get app_id using WebSocketRef async method
         let app_id = {
             let ws_guard = ws_ref.0.lock().await;
-            ws_guard.state.get_app_key()
+            ws_guard.state.get_app_id()
         };
         let namespace = self.get_namespace(&app_id).await.unwrap();
         namespace.add_user(ws_ref).await
@@ -319,10 +319,33 @@ impl ConnectionManager for LocalAdapter {
         // Get app_id using WebSocketRef async method
         let app_id = {
             let ws_guard = ws_ref.0.lock().await;
-            ws_guard.state.get_app_key()
+            ws_guard.state.get_app_id()
         };
         let namespace = self.get_namespace(&app_id).await.unwrap();
         namespace.remove_user(ws_ref).await
+    }
+
+    async fn remove_user_socket(
+        &mut self,
+        user_id: &str,
+        socket_id: &SocketId,
+        app_id: &str,
+    ) -> Result<()> {
+        let namespace = self.get_namespace(app_id).await.unwrap();
+        namespace.remove_user_socket(user_id, socket_id).await
+    }
+
+    async fn count_user_connections_in_channel(
+        &mut self,
+        user_id: &str,
+        app_id: &str,
+        channel: &str,
+        excluding_socket: Option<&SocketId>,
+    ) -> Result<usize> {
+        let namespace = self.get_namespace(app_id).await.unwrap();
+        namespace
+            .count_user_connections_in_channel(user_id, channel, excluding_socket)
+            .await
     }
 
     async fn get_channels_with_socket_count(

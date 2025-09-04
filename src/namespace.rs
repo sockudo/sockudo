@@ -328,6 +328,68 @@ impl Namespace {
         Ok(())
     }
 
+    pub async fn remove_user_socket(&self, user_id: &str, socket_id: &SocketId) -> Result<()> {
+        if let Some(user_sockets_ref) = self.users.get_mut(user_id) {
+            // Find and remove the first matching socket (socket_id should be unique)
+            let mut found_socket = None;
+
+            for ws_ref in user_sockets_ref.iter() {
+                let ws_socket_id = ws_ref.get_socket_id().await;
+                if ws_socket_id == *socket_id {
+                    found_socket = Some(ws_ref.clone());
+                    break;
+                }
+            }
+
+            // Remove the matching socket if found
+            if let Some(ws_ref) = found_socket {
+                user_sockets_ref.remove(&ws_ref);
+            }
+
+            let is_empty = user_sockets_ref.is_empty();
+            drop(user_sockets_ref);
+
+            if is_empty {
+                self.users.remove(user_id);
+                debug!("Removed empty user entry for: {}", user_id);
+            }
+
+            debug!("Removed socket {} from user {}", socket_id, user_id);
+        } else {
+            debug!(
+                "User {} not found when removing socket {}",
+                user_id, socket_id
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn count_user_connections_in_channel(
+        &self,
+        user_id: &str,
+        channel: &str,
+        excluding_socket: Option<&SocketId>,
+    ) -> Result<usize> {
+        let mut count = 0;
+
+        if let Some(user_sockets_ref) = self.users.get(user_id) {
+            for ws_ref in user_sockets_ref.iter() {
+                let socket_state_guard = ws_ref.0.lock().await;
+                let socket_id = &socket_state_guard.state.socket_id;
+                let is_subscribed = socket_state_guard.state.is_subscribed(channel);
+
+                // Skip this socket if it's the one we're excluding
+                let should_exclude = excluding_socket == Some(socket_id);
+
+                if is_subscribed && !should_exclude {
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
     // Retrieves a map of channel names to their current subscriber counts.
     pub async fn get_channels_with_socket_count(&self) -> Result<DashMap<String, usize>> {
         let channels_with_count: DashMap<String, usize> = DashMap::new();
