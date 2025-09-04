@@ -361,7 +361,7 @@ impl Namespace {
         Ok(())
     }
 
-    pub async fn has_user_connections_in_channel(&self, user_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
+    pub async fn count_user_connections_in_channel(&self, user_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
         let mut count = 0;
         
         if let Some(user_sockets_ref) = self.users.get(user_id) {

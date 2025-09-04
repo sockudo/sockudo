@@ -878,13 +878,13 @@ impl ConnectionManager for RedisClusterAdapter {
         horizontal.local_adapter.remove_user_socket(user_id, socket_id, app_id).await
     }
 
-    async fn has_user_connections_in_channel(&mut self, user_id: &str, app_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
+    async fn count_user_connections_in_channel(&mut self, user_id: &str, app_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
         // Get local count (with excluding_socket filter)
         let local_count = {
             let mut horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter
-                .has_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+                .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
                 .await?
         };
         

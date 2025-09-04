@@ -533,7 +533,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         Ok(())
     }
 
-    async fn has_user_connections_in_channel(&mut self, _user_id: &str, _app_id: &str, _channel: &str, _excluding_socket: Option<&sockudo::websocket::SocketId>) -> sockudo::error::Result<usize> {
+    async fn count_user_connections_in_channel(&mut self, _user_id: &str, _app_id: &str, _channel: &str, _excluding_socket: Option<&sockudo::websocket::SocketId>) -> sockudo::error::Result<usize> {
         Ok(0)
     }
 
