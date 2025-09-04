@@ -166,35 +166,13 @@ impl PresenceManager {
             debug!("  excluding_socket: None");
         }
         
+        // Use cluster-wide connection check for multi-node support
         let mut connection_manager = connection_manager.lock().await;
+        let subscribed_count = connection_manager
+            .has_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+            .await?;
         
-        // Get all sockets for this user across the app
-        debug!("  About to call get_user_sockets with app_id: {}, user_id: {}", app_id, user_id);
-        let user_sockets = connection_manager.get_user_sockets(user_id, app_id).await?;
-        debug!("  Found {} sockets for user {}", user_sockets.len(), user_id);
-        
-        let mut subscribed_count = 0;
-        let mut socket_details = Vec::new();
-        
-        // Check if any of the user's sockets are still subscribed to this channel
-        for (index, ws_ref) in user_sockets.iter().enumerate() {
-            let socket_state_guard = ws_ref.0.lock().await;
-            let socket_id = &socket_state_guard.state.socket_id;
-            let is_subscribed = socket_state_guard.state.is_subscribed(channel);
-            
-            // Skip this socket if it's the one we're excluding
-            let should_exclude = excluding_socket.map_or(false, |exclude_id| socket_id == exclude_id);
-            
-            socket_details.push(format!("socket_{}: {} (subscribed: {}, excluded: {})", 
-                index, socket_id, is_subscribed, should_exclude));
-            
-            if is_subscribed && !should_exclude {
-                subscribed_count += 1;
-            }
-        }
-        
-        debug!("  Socket details: {}", socket_details.join(", "));
-        debug!("  Total subscribed to {} (excluding specified socket): {}", channel, subscribed_count);
+        debug!("  Cluster-wide subscribed count for {} in {}: {}", user_id, channel, subscribed_count);
         
         let has_other_connections = subscribed_count > 0;
         debug!("  Result: has_other_connections = {}", has_other_connections);

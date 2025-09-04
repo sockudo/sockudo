@@ -330,6 +330,11 @@ impl ConnectionManager for LocalAdapter {
         namespace.remove_user_socket(user_id, socket_id).await
     }
 
+    async fn has_user_connections_in_channel(&mut self, user_id: &str, app_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
+        let namespace = self.get_namespace(app_id).await.unwrap();
+        namespace.has_user_connections_in_channel(user_id, channel, excluding_socket).await
+    }
+
     async fn get_channels_with_socket_count(
         &mut self,
         app_id: &str,

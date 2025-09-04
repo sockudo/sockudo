@@ -361,6 +361,27 @@ impl Namespace {
         Ok(())
     }
 
+    pub async fn has_user_connections_in_channel(&self, user_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
+        let mut count = 0;
+        
+        if let Some(user_sockets_ref) = self.users.get(user_id) {
+            for ws_ref in user_sockets_ref.iter() {
+                let socket_state_guard = ws_ref.0.lock().await;
+                let socket_id = &socket_state_guard.state.socket_id;
+                let is_subscribed = socket_state_guard.state.is_subscribed(channel);
+                
+                // Skip this socket if it's the one we're excluding
+                let should_exclude = excluding_socket.map_or(false, |exclude_id| socket_id == exclude_id);
+                
+                if is_subscribed && !should_exclude {
+                    count += 1;
+                }
+            }
+        }
+        
+        Ok(count)
+    }
+
     // Retrieves a map of channel names to their current subscriber counts.
     pub async fn get_channels_with_socket_count(&self) -> Result<DashMap<String, usize>> {
         let channels_with_count: DashMap<String, usize> = DashMap::new();

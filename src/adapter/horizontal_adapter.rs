@@ -34,6 +34,7 @@ pub enum RequestType {
     Channels,            // Get all channels
     SocketsCount,        // Get count of all sockets
     ChannelMembersCount, // Get count of members in a channel
+    HasUserConnectionsInChannel, // Check if user has connections in a specific channel
 }
 
 /// Request body for horizontal communication
@@ -289,6 +290,15 @@ impl HorizontalAdapter {
                         .get_channel_members(&request.app_id, channel)
                         .await?;
                     response.members_count = members.len();
+                }
+            }
+            RequestType::HasUserConnectionsInChannel => {
+                if let (Some(user_id), Some(channel)) = (&request.user_id, &request.channel) {
+                    // Count user's connections in the specific channel on this node
+                    response.sockets_count = self
+                        .local_adapter
+                        .has_user_connections_in_channel(user_id, &request.app_id, channel, None)
+                        .await?;
                 }
             }
         }
@@ -571,6 +581,11 @@ impl HorizontalAdapter {
                 RequestType::ChannelMembersCount => {
                     // FIXED: Actually sum the members count
                     combined_response.members_count += response.members_count;
+                }
+
+                RequestType::HasUserConnectionsInChannel => {
+                    // Sum connection counts from all nodes
+                    combined_response.sockets_count += response.sockets_count;
                 }
             }
         }
