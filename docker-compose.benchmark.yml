@@ -21,6 +21,7 @@ services:
       - SOCKUDO_ENABLE_CLIENT_MESSAGES=true
       - SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND=10000
       - SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS=100000
+      - ADAPTER_BUFFER_MULTIPLIER_PER_CPU=128
     ports:
       - "6003:6003"
       - "9603:9603"
@@ -30,15 +31,15 @@ services:
 #    stdin_open: true
 #    tty: true
     # Resource limits optimized for memory-only (more resources available)
-#    deploy:
-#      resources:
-#        limits:
-#          # All resources for Sockudo (no Redis)
-#          cpus: '8.0'      # Use all available CPU
-#          memory: 8G       # Use most available memory
-#        reservations:
-#          cpus: '4.0'      # Minimum guaranteed CPU
-#          memory: 4G       # Minimum guaranteed memory
+    deploy:
+      resources:
+        limits:
+          # All resources for Sockudo (no Redis)
+          cpus: '2.0'      # Use all available CPU
+          memory: 2G       # Use most available memory
+        reservations:
+          cpus: '2.0'      # Minimum guaranteed CPU
+          memory: 2G       # Minimum guaranteed memory
 
     # System limits optimized for high connection count
     ulimits:
