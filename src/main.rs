@@ -695,7 +695,7 @@ impl SockudoServer {
                 let options = crate::rate_limiter::middleware::RateLimitOptions {
                     include_headers: true,                // Include X-RateLimit-* headers
                     fail_open: false,                     // If rate limiter fails, deny request
-                    key_prefix: Some("api:".to_string()), // Prefix for keys in store
+                    key_prefix: Some("api".to_string()), // Prefix for keys in store
                 };
                 // Get trust_hops from config, default to 0 if not present
                 let trust_hops = self

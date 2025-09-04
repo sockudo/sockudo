@@ -144,7 +144,7 @@
       "trust_hops": 0
     },
     "redis": {
-      "prefix": "sockudo_rl:",
+      "prefix": "sockudo_rl",
       "cluster_mode": false
     }
   },
