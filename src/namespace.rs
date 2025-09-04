@@ -328,6 +328,39 @@ impl Namespace {
         Ok(())
     }
 
+    pub async fn remove_user_socket(&self, user_id: &str, socket_id: &SocketId) -> Result<()> {
+        if let Some(user_sockets_ref) = self.users.get_mut(user_id) {
+            // Find and remove the socket with matching socket_id
+            // We need to collect sockets to remove first, then remove them
+            let mut sockets_to_remove = Vec::new();
+            
+            for ws_ref in user_sockets_ref.iter() {
+                let ws_socket_id = ws_ref.get_socket_id().await;
+                if ws_socket_id == *socket_id {
+                    sockets_to_remove.push(ws_ref.clone());
+                }
+            }
+            
+            // Remove the matching sockets
+            for ws_ref in sockets_to_remove {
+                user_sockets_ref.remove(&ws_ref);
+            }
+            
+            let is_empty = user_sockets_ref.is_empty();
+            drop(user_sockets_ref);
+            
+            if is_empty {
+                self.users.remove(user_id);
+                debug!("Removed empty user entry for: {}", user_id);
+            }
+            
+            debug!("Removed socket {} from user {}", socket_id, user_id);
+        } else {
+            debug!("User {} not found when removing socket {}", user_id, socket_id);
+        }
+        Ok(())
+    }
+
     // Retrieves a map of channel names to their current subscriber counts.
     pub async fn get_channels_with_socket_count(&self) -> Result<DashMap<String, usize>> {
         let channels_with_count: DashMap<String, usize> = DashMap::new();
