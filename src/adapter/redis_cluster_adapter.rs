@@ -878,6 +878,35 @@ impl ConnectionManager for RedisClusterAdapter {
         horizontal.local_adapter.remove_user_socket(user_id, socket_id, app_id).await
     }
 
+    async fn has_user_connections_in_channel(&mut self, user_id: &str, app_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
+        // Get local count (with excluding_socket filter)
+        let local_count = {
+            let mut horizontal = self.horizontal.lock().await;
+            horizontal
+                .local_adapter
+                .has_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+                .await?
+        };
+        
+        // Get remote count (no excluding_socket since it's local-only)
+        match self
+            .send_request(
+                app_id,
+                RequestType::HasUserConnectionsInChannel,
+                Some(channel),
+                None,
+                Some(user_id),
+            )
+            .await
+        {
+            Ok(response) => Ok(local_count + response.sockets_count),
+            Err(e) => {
+                error!("Failed to get remote user connections count: {}", e);
+                Ok(local_count)
+            }
+        }
+    }
+
     async fn get_channels_with_socket_count(
         &mut self,
         app_id: &str,
