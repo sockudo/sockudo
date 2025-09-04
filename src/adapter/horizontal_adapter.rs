@@ -34,7 +34,7 @@ pub enum RequestType {
     Channels,                      // Get all channels
     SocketsCount,                  // Get count of all sockets
     ChannelMembersCount,           // Get count of members in a channel
-    CountUserConnectionsInChannel, // Check if user has connections in a specific channel
+    CountUserConnectionsInChannel, // Count user's connections in a specific channel
 }
 
 /// Request body for horizontal communication
