@@ -158,25 +158,13 @@ impl PresenceManager {
         user_id: &str,
         excluding_socket: Option<&SocketId>,
     ) -> Result<bool> {
-        debug!("=== DEBUG user_has_other_connections_in_presence_channel ===");
-        debug!("  app_id: {}, channel: {}, user_id: {}", app_id, channel, user_id);
-        if let Some(excluding) = excluding_socket {
-            debug!("  excluding_socket: {}", excluding);
-        } else {
-            debug!("  excluding_socket: None");
-        }
-        
         // Use cluster-wide connection check for multi-node support
         let mut connection_manager = connection_manager.lock().await;
         let subscribed_count = connection_manager
             .has_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
             .await?;
         
-        debug!("  Cluster-wide subscribed count for {} in {}: {}", user_id, channel, subscribed_count);
-        
         let has_other_connections = subscribed_count > 0;
-        debug!("  Result: has_other_connections = {}", has_other_connections);
-        debug!("=== END DEBUG ===");
         
         Ok(has_other_connections)
     }
