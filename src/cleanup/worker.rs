@@ -2,6 +2,7 @@ use super::{CleanupConfig, ConnectionCleanupInfo, DisconnectTask, WebhookEvent};
 use crate::adapter::connection_manager::ConnectionManager;
 use crate::app::manager::AppManager;
 use crate::channel::manager::ChannelManager;
+use crate::presence::PresenceManager;
 use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::SocketId;
 use std::collections::HashMap;
@@ -270,6 +271,7 @@ impl CleanupWorker {
                 let webhook_integration = webhook_integration.clone();
                 let app_manager = self.app_manager.clone();
 
+                let connection_manager = self.connection_manager.clone();
                 let handle = tokio::spawn(async move {
                     // Get app config once for all events
                     let app_config = match app_manager.find_by_id(&app_id).await {
@@ -287,7 +289,7 @@ impl CleanupWorker {
                     // Process all events for this app
                     for event in events {
                         if let Err(e) =
-                            Self::send_webhook_event(&webhook_integration, &app_config, &event)
+                            Self::send_webhook_event(&connection_manager, &webhook_integration, &app_config, &event)
                                 .await
                         {
                             error!("Failed to send webhook event {}: {}", event.event_type, e);
@@ -308,7 +310,8 @@ impl CleanupWorker {
     }
 
     async fn send_webhook_event(
-        webhook_integration: &WebhookIntegration,
+        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        webhook_integration: &Arc<WebhookIntegration>,
         app_config: &crate::app::config::App,
         event: &WebhookEvent,
     ) -> crate::error::Result<()> {
@@ -320,11 +323,18 @@ impl CleanupWorker {
         match event.event_type.as_str() {
             "member_removed" => {
                 if let Some(user_id) = &event.user_id {
-                    webhook_integration
-                        .send_member_removed(app_config, &event.channel, user_id)
-                        .await?;
+                    // Use centralized presence member removal logic (handles both webhook and broadcast)
+                    PresenceManager::handle_member_removed(
+                        &connection_manager,
+                        Some(&webhook_integration),
+                        app_config,
+                        &event.channel,
+                        user_id,
+                        None, // No socket to exclude in cleanup (connection already gone)
+                    )
+                    .await?;
                     debug!(
-                        "Sent member_removed webhook for user {} in channel {}",
+                        "Processed centralized member_removed for user {} in channel {}",
                         user_id, event.channel
                     );
                 }

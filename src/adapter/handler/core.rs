@@ -3,6 +3,7 @@ use super::ConnectionHandler;
 use crate::app::config::App;
 use crate::cleanup::{AuthInfo, ConnectionCleanupInfo, DisconnectTask};
 use crate::error::{Error, Result};
+use crate::presence::PresenceManager;
 use crate::protocol::messages::{ErrorData, MessageData, PusherMessage};
 use crate::websocket::SocketId;
 use serde_json::Value;
@@ -104,34 +105,16 @@ impl ConnectionHandler {
         // Handle presence channel member removal
         if channel_name.starts_with("presence-") {
             if let Some(user_id_str) = user_id {
-                let has_other_connections = self
-                    .user_has_other_connections_in_presence_channel(
-                        &app_config.id,
-                        &channel_name,
-                        &user_id_str,
-                    )
-                    .await?;
-
-                if !has_other_connections {
-                    // Send member_removed webhook
-                    if let Some(webhook_integration) = &self.webhook_integration {
-                        webhook_integration
-                            .send_member_removed(app_config, &channel_name, &user_id_str)
-                            .await
-                            .ok();
-                    }
-
-                    // Send member_removed event to channel
-                    let member_removed_msg =
-                        PusherMessage::member_removed(channel_name.clone(), user_id_str);
-                    self.broadcast_to_channel(
-                        app_config,
-                        &channel_name,
-                        member_removed_msg,
-                        Some(socket_id),
-                    )
-                    .await?;
-                }
+                // Use centralized presence member removal logic
+                PresenceManager::handle_member_removed(
+                    &self.connection_manager,
+                    self.webhook_integration.as_ref(),
+                    app_config,
+                    &channel_name,
+                    &user_id_str,
+                    Some(socket_id),
+                )
+                .await?;
             }
         } else {
             // Send subscription count webhook for non-presence channels
@@ -579,37 +562,17 @@ impl ConnectionHandler {
     ) -> Result<()> {
         if channel_str.starts_with("presence-") {
             if let Some(disconnected_user_id) = user_id {
-                let has_other_connections = self
-                    .user_has_other_connections_in_presence_channel(
-                        &app_config.id,
-                        channel_str,
-                        disconnected_user_id,
-                    )
-                    .await?;
-
-                if !has_other_connections {
-                    // Send member_removed webhook
-                    if let Some(webhook_integration) = &self.webhook_integration {
-                        webhook_integration
-                            .send_member_removed(app_config, channel_str, disconnected_user_id)
-                            .await
-                            .ok();
-                    }
-
-                    // Send member_removed event to channel
-                    let member_removed_msg = PusherMessage::member_removed(
-                        channel_str.to_string(),
-                        disconnected_user_id.clone(),
-                    );
-                    self.broadcast_to_channel(
-                        app_config,
-                        channel_str,
-                        member_removed_msg,
-                        Some(socket_id),
-                    )
-                    .await
-                    .ok();
-                }
+                // Use centralized presence member removal logic
+                PresenceManager::handle_member_removed(
+                    &self.connection_manager,
+                    self.webhook_integration.as_ref(),
+                    app_config,
+                    channel_str,
+                    disconnected_user_id,
+                    Some(socket_id),
+                )
+                .await
+                .ok();
             }
         } else {
             // Send subscription count webhook for non-presence channels
@@ -762,6 +725,7 @@ impl ConnectionHandler {
     }
 
     /// Helper to check if a user has any other connections to a specific presence channel.
+    #[allow(dead_code)]
     async fn user_has_other_connections_in_presence_channel(
         &self,
         app_id: &str,
