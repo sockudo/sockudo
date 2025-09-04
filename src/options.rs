@@ -732,7 +732,7 @@ impl Default for RedisConnection {
             db: 0,
             username: None,
             password: None,
-            key_prefix: "sockudo".to_string(),
+            key_prefix: "sockudo:".to_string(),
             sentinels: Vec::new(),
             sentinel_password: None,
             name: "mymaster".to_string(),
@@ -884,7 +884,7 @@ impl Default for RateLimiterConfig {
             },
             redis: RedisConfig {
                 // Specific Redis settings if Redis is chosen as backend for rate limiting
-                prefix: Some("sockudo_rl".to_string()),
+                prefix: Some("sockudo_rl:".to_string()),
                 url_override: None,
                 cluster_mode: false,
             },
@@ -972,9 +972,6 @@ impl ServerOptions {
                 self.rate_limiter.driver.clone(),
                 "RateLimiter Backend",
             );
-        }
-        if let Ok(prefix) = std::env::var("RATE_LIMITER_REDIS_PREFIX") {
-            self.rate_limiter.redis.prefix = Some(prefix);
         }
 
         // --- Database: Redis ---
