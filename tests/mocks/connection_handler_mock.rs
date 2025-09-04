@@ -193,11 +193,22 @@ impl ConnectionManager for MockAdapter {
         self
     }
 
-    async fn remove_user_socket(&mut self, _user_id: &str, _socket_id: &SocketId, _app_id: &str) -> Result<()> {
+    async fn remove_user_socket(
+        &mut self,
+        _user_id: &str,
+        _socket_id: &SocketId,
+        _app_id: &str,
+    ) -> Result<()> {
         Ok(())
     }
 
-    async fn count_user_connections_in_channel(&mut self, _user_id: &str, _app_id: &str, _channel: &str, _excluding_socket: Option<&SocketId>) -> Result<usize> {
+    async fn count_user_connections_in_channel(
+        &mut self,
+        _user_id: &str,
+        _app_id: &str,
+        _channel: &str,
+        _excluding_socket: Option<&SocketId>,
+    ) -> Result<usize> {
         Ok(0)
     }
 
