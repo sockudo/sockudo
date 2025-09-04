@@ -421,17 +421,6 @@ impl ConnectionHandler {
             .extract_connection_state_for_disconnect(socket_id, &app_config)
             .await?;
 
-        // Process channel unsubscriptions
-        if !subscribed_channels.is_empty() {
-            self.process_channel_unsubscriptions_on_disconnect(
-                socket_id,
-                &app_config,
-                &subscribed_channels,
-                &user_id,
-            )
-            .await?;
-        }
-
         // Handle watchlist offline events
         if let Some(ref user_id_str) = user_id {
             self.handle_disconnect_watchlist_events(
@@ -443,9 +432,20 @@ impl ConnectionHandler {
             .await?;
         }
 
-        // Final cleanup from connection manager
+        // Final cleanup from connection manager (removes socket from users map)
         self.cleanup_connection_from_manager(socket_id, app_id)
             .await;
+
+        // Process channel unsubscriptions AFTER cleanup so presence checks see correct state
+        if !subscribed_channels.is_empty() {
+            self.process_channel_unsubscriptions_on_disconnect(
+                socket_id,
+                &app_config,
+                &subscribed_channels,
+                &user_id,
+            )
+            .await?;
+        }
 
         // Update metrics
         if let Some(ref metrics) = self.metrics {
