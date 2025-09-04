@@ -892,7 +892,7 @@ impl ConnectionManager for RedisClusterAdapter {
         match self
             .send_request(
                 app_id,
-                RequestType::HasUserConnectionsInChannel,
+                RequestType::CountUserConnectionsInChannel,
                 Some(channel),
                 None,
                 Some(user_id),
