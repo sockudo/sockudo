@@ -1103,6 +1103,9 @@ impl ServerOptions {
             "RATE_LIMITER_WS_WINDOW_SECONDS",
             self.rate_limiter.websocket_rate_limit.window_seconds,
         );
+        if let Ok(prefix) = std::env::var("RATE_LIMITER_REDIS_PREFIX") {
+            self.rate_limiter.redis.prefix = Some(prefix);
+        }
 
         // --- Queue: Redis ---
         self.queue.redis.concurrency =
