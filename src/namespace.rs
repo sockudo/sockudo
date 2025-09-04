@@ -416,7 +416,7 @@ impl Namespace {
 
         if let Some(user_sockets_ref) = self.users.get(user_id) {
             for ws_ref in user_sockets_ref.iter() {
-                let socket_state_guard = ws_ref.0.lock().await;
+                let socket_state_guard = ws_ref.inner.lock().await;
                 let socket_id = &socket_state_guard.state.socket_id;
                 let is_subscribed = socket_state_guard.state.is_subscribed(channel);
 
