@@ -56,7 +56,7 @@ impl PresenceManager {
 
             // Broadcast member_added event to existing clients in the channel
             let member_added_msg = crate::protocol::messages::PusherMessage::member_added(
-                channel.to_string(), 
+                channel.to_string(),
                 user_id.to_string(),
                 user_info.cloned(),
             );
@@ -124,7 +124,8 @@ impl PresenceManager {
             }
 
             // Broadcast member_removed event to remaining clients in the channel
-            let member_removed_msg = PusherMessage::member_removed(channel.to_string(), user_id.to_string());
+            let member_removed_msg =
+                PusherMessage::member_removed(channel.to_string(), user_id.to_string());
             Self::broadcast_to_channel(
                 connection_manager,
                 &app_config.id,
@@ -163,9 +164,9 @@ impl PresenceManager {
         let subscribed_count = connection_manager
             .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
             .await?;
-        
+
         let has_other_connections = subscribed_count > 0;
-        
+
         Ok(has_other_connections)
     }
 

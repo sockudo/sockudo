@@ -333,52 +333,60 @@ impl Namespace {
             // Find and remove the socket with matching socket_id
             // We need to collect sockets to remove first, then remove them
             let mut sockets_to_remove = Vec::new();
-            
+
             for ws_ref in user_sockets_ref.iter() {
                 let ws_socket_id = ws_ref.get_socket_id().await;
                 if ws_socket_id == *socket_id {
                     sockets_to_remove.push(ws_ref.clone());
                 }
             }
-            
+
             // Remove the matching sockets
             for ws_ref in sockets_to_remove {
                 user_sockets_ref.remove(&ws_ref);
             }
-            
+
             let is_empty = user_sockets_ref.is_empty();
             drop(user_sockets_ref);
-            
+
             if is_empty {
                 self.users.remove(user_id);
                 debug!("Removed empty user entry for: {}", user_id);
             }
-            
+
             debug!("Removed socket {} from user {}", socket_id, user_id);
         } else {
-            debug!("User {} not found when removing socket {}", user_id, socket_id);
+            debug!(
+                "User {} not found when removing socket {}",
+                user_id, socket_id
+            );
         }
         Ok(())
     }
 
-    pub async fn count_user_connections_in_channel(&self, user_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
+    pub async fn count_user_connections_in_channel(
+        &self,
+        user_id: &str,
+        channel: &str,
+        excluding_socket: Option<&SocketId>,
+    ) -> Result<usize> {
         let mut count = 0;
-        
+
         if let Some(user_sockets_ref) = self.users.get(user_id) {
             for ws_ref in user_sockets_ref.iter() {
                 let socket_state_guard = ws_ref.0.lock().await;
                 let socket_id = &socket_state_guard.state.socket_id;
                 let is_subscribed = socket_state_guard.state.is_subscribed(channel);
-                
+
                 // Skip this socket if it's the one we're excluding
-                let should_exclude = excluding_socket.map_or(false, |exclude_id| socket_id == exclude_id);
-                
+                let should_exclude = excluding_socket == Some(socket_id);
+
                 if is_subscribed && !should_exclude {
                     count += 1;
                 }
             }
         }
-        
+
         Ok(count)
     }
 

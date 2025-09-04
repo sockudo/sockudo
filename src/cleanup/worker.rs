@@ -109,7 +109,11 @@ impl CleanupWorker {
             }
 
             // Prepare connection removal with user_id for user socket cleanup
-            connections_to_remove.push((task.socket_id.clone(), task.app_id.clone(), task.user_id.clone()));
+            connections_to_remove.push((
+                task.socket_id.clone(),
+                task.app_id.clone(),
+                task.user_id.clone(),
+            ));
 
             // Prepare webhook events without holding locks
             if let Some(info) = &task.connection_info {
@@ -194,17 +198,19 @@ impl CleanupWorker {
                 let remove_result = connection_manager
                     .remove_connection(&socket_id, &app_id)
                     .await;
-                
+
                 // Then remove from user mapping if user_id exists
-                if let Some(ref uid) = user_id {
-                    if let Err(e) = connection_manager
+                if let Some(ref uid) = user_id
+                    && let Err(e) = connection_manager
                         .remove_user_socket(uid, &socket_id, &app_id)
                         .await
-                    {
-                        warn!("Failed to remove user socket mapping for {}: {}", socket_id, e);
-                    }
+                {
+                    warn!(
+                        "Failed to remove user socket mapping for {}: {}",
+                        socket_id, e
+                    );
                 }
-                
+
                 remove_result
             }; // Lock released here after each removal
 
@@ -301,9 +307,13 @@ impl CleanupWorker {
 
                     // Process all events for this app
                     for event in events {
-                        if let Err(e) =
-                            Self::send_webhook_event(&connection_manager, &webhook_integration, &app_config, &event)
-                                .await
+                        if let Err(e) = Self::send_webhook_event(
+                            &connection_manager,
+                            &webhook_integration,
+                            &app_config,
+                            &event,
+                        )
+                        .await
                         {
                             error!("Failed to send webhook event {}: {}", event.event_type, e);
                         }
@@ -338,8 +348,8 @@ impl CleanupWorker {
                 if let Some(user_id) = &event.user_id {
                     // Use centralized presence member removal logic (handles both webhook and broadcast)
                     PresenceManager::handle_member_removed(
-                        &connection_manager,
-                        Some(&webhook_integration),
+                        connection_manager,
+                        Some(webhook_integration),
                         app_config,
                         &event.channel,
                         user_id,

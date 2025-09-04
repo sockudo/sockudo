@@ -191,11 +191,11 @@ impl ConnectionHandler {
                 };
 
                 conn_locked.add_presence_info(request.channel.clone(), presence_info);
-                
+
                 // Release the connection lock before calling add_user
                 drop(conn_locked);
                 drop(connection_manager);
-                
+
                 // Add user to the user-socket mapping so get_user_sockets() can find it
                 self.connection_manager
                     .lock()
