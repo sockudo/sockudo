@@ -2,6 +2,7 @@ use super::{CleanupConfig, ConnectionCleanupInfo, DisconnectTask, WebhookEvent};
 use crate::adapter::connection_manager::ConnectionManager;
 use crate::app::manager::AppManager;
 use crate::channel::manager::ChannelManager;
+use crate::presence::PresenceManager;
 use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::SocketId;
 use std::collections::HashMap;
@@ -107,8 +108,12 @@ impl CleanupWorker {
                     .push(task.socket_id.clone());
             }
 
-            // Prepare connection removal
-            connections_to_remove.push((task.socket_id.clone(), task.app_id.clone()));
+            // Prepare connection removal with user_id for user socket cleanup
+            connections_to_remove.push((
+                task.socket_id.clone(),
+                task.app_id.clone(),
+                task.user_id.clone(),
+            ));
 
             // Prepare webhook events without holding locks
             if let Some(info) = &task.connection_info {
@@ -177,7 +182,7 @@ impl CleanupWorker {
         );
     }
 
-    async fn batch_connection_removal(&self, connections: Vec<(SocketId, String)>) {
+    async fn batch_connection_removal(&self, connections: Vec<(SocketId, String, Option<String>)>) {
         if connections.is_empty() {
             return;
         }
@@ -185,13 +190,28 @@ impl CleanupWorker {
         debug!("Removing {} connections", connections.len());
 
         // Process each connection removal with minimal lock duration
-        for (socket_id, app_id) in connections {
+        for (socket_id, app_id, user_id) in connections {
             // Acquire lock for each individual removal to minimize contention
             let result = {
                 let mut connection_manager = self.connection_manager.lock().await;
-                connection_manager
+                // First remove the connection
+                let remove_result = connection_manager
                     .remove_connection(&socket_id, &app_id)
-                    .await
+                    .await;
+
+                // Then remove from user mapping if user_id exists
+                if let Some(ref uid) = user_id
+                    && let Err(e) = connection_manager
+                        .remove_user_socket(uid, &socket_id, &app_id)
+                        .await
+                {
+                    warn!(
+                        "Failed to remove user socket mapping for {}: {}",
+                        socket_id, e
+                    );
+                }
+
+                remove_result
             }; // Lock released here after each removal
 
             if let Err(e) = result {
@@ -270,6 +290,7 @@ impl CleanupWorker {
                 let webhook_integration = webhook_integration.clone();
                 let app_manager = self.app_manager.clone();
 
+                let connection_manager = self.connection_manager.clone();
                 let handle = tokio::spawn(async move {
                     // Get app config once for all events
                     let app_config = match app_manager.find_by_id(&app_id).await {
@@ -286,9 +307,13 @@ impl CleanupWorker {
 
                     // Process all events for this app
                     for event in events {
-                        if let Err(e) =
-                            Self::send_webhook_event(&webhook_integration, &app_config, &event)
-                                .await
+                        if let Err(e) = Self::send_webhook_event(
+                            &connection_manager,
+                            &webhook_integration,
+                            &app_config,
+                            &event,
+                        )
+                        .await
                         {
                             error!("Failed to send webhook event {}: {}", event.event_type, e);
                         }
@@ -308,7 +333,8 @@ impl CleanupWorker {
     }
 
     async fn send_webhook_event(
-        webhook_integration: &WebhookIntegration,
+        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        webhook_integration: &Arc<WebhookIntegration>,
         app_config: &crate::app::config::App,
         event: &WebhookEvent,
     ) -> crate::error::Result<()> {
@@ -320,11 +346,18 @@ impl CleanupWorker {
         match event.event_type.as_str() {
             "member_removed" => {
                 if let Some(user_id) = &event.user_id {
-                    webhook_integration
-                        .send_member_removed(app_config, &event.channel, user_id)
-                        .await?;
+                    // Use centralized presence member removal logic (handles both webhook and broadcast)
+                    PresenceManager::handle_member_removed(
+                        connection_manager,
+                        Some(webhook_integration),
+                        app_config,
+                        &event.channel,
+                        user_id,
+                        None, // No socket to exclude in cleanup (connection already gone)
+                    )
+                    .await?;
                     debug!(
-                        "Sent member_removed webhook for user {} in channel {}",
+                        "Processed centralized member_removed for user {} in channel {}",
                         user_id, event.channel
                     );
                 }

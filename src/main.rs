@@ -13,6 +13,7 @@ mod metrics;
 mod middleware;
 mod namespace;
 mod options;
+mod presence;
 mod protocol;
 mod queue;
 mod rate_limiter;

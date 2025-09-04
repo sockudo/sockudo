@@ -8,6 +8,7 @@ pub mod http_handler;
 pub mod metrics;
 pub mod namespace;
 pub mod options;
+pub mod presence;
 pub mod protocol;
 pub mod queue;
 pub mod rate_limiter;
