@@ -330,19 +330,19 @@ impl Namespace {
 
     pub async fn remove_user_socket(&self, user_id: &str, socket_id: &SocketId) -> Result<()> {
         if let Some(user_sockets_ref) = self.users.get_mut(user_id) {
-            // Find and remove the socket with matching socket_id
-            // We need to collect sockets to remove first, then remove them
-            let mut sockets_to_remove = Vec::new();
-
+            // Find and remove the first matching socket (socket_id should be unique)
+            let mut found_socket = None;
+            
             for ws_ref in user_sockets_ref.iter() {
                 let ws_socket_id = ws_ref.get_socket_id().await;
                 if ws_socket_id == *socket_id {
-                    sockets_to_remove.push(ws_ref.clone());
+                    found_socket = Some(ws_ref.clone());
+                    break;
                 }
             }
 
-            // Remove the matching sockets
-            for ws_ref in sockets_to_remove {
+            // Remove the matching socket if found
+            if let Some(ws_ref) = found_socket {
                 user_sockets_ref.remove(&ws_ref);
             }
 
