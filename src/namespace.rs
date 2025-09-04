@@ -332,7 +332,7 @@ impl Namespace {
         if let Some(user_sockets_ref) = self.users.get_mut(user_id) {
             // Find and remove the first matching socket (socket_id should be unique)
             let mut found_socket = None;
-            
+
             for ws_ref in user_sockets_ref.iter() {
                 let ws_socket_id = ws_ref.get_socket_id().await;
                 if ws_socket_id == *socket_id {
