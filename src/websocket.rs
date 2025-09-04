@@ -205,6 +205,13 @@ impl ConnectionState {
             .unwrap_or_default()
     }
 
+    pub fn get_app_id(&self) -> String {
+        self.app
+            .as_ref()
+            .map(|app| app.id.clone())
+            .unwrap_or_default()
+    }
+
     pub fn time_since_last_ping(&self) -> std::time::Duration {
         self.last_ping.elapsed()
     }
