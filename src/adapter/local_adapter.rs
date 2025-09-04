@@ -308,7 +308,7 @@ impl ConnectionManager for LocalAdapter {
         // Get app_id using WebSocketRef async method
         let app_id = {
             let ws_guard = ws_ref.0.lock().await;
-            ws_guard.state.get_app_key()
+            ws_guard.state.get_app_id()
         };
         let namespace = self.get_namespace(&app_id).await.unwrap();
         namespace.add_user(ws_ref).await
@@ -319,7 +319,7 @@ impl ConnectionManager for LocalAdapter {
         // Get app_id using WebSocketRef async method
         let app_id = {
             let ws_guard = ws_ref.0.lock().await;
-            ws_guard.state.get_app_key()
+            ws_guard.state.get_app_id()
         };
         let namespace = self.get_namespace(&app_id).await.unwrap();
         namespace.remove_user(ws_ref).await
