@@ -30,12 +30,13 @@ impl PresenceManager {
             user_id, channel, app_config.id
         );
 
-        // Check if user already had connections in this presence channel
+        // Check if user already had connections in this presence channel (excluding current socket)
         let had_other_connections = Self::user_has_other_connections_in_presence_channel(
             connection_manager,
             &app_config.id,
             channel,
             user_id,
+            excluding_socket,
         )
         .await?;
 
@@ -104,6 +105,7 @@ impl PresenceManager {
             &app_config.id,
             channel,
             user_id,
+            excluding_socket,
         )
         .await?;
 
@@ -148,15 +150,21 @@ impl PresenceManager {
 
     /// Check if a user has other connections in a presence channel
     /// Uses the same logic as the original working implementation:
-    /// Get all user's sockets and check if any are still subscribed to this channel
+    /// Get all user's sockets and check if any are still subscribed to this channel (excluding specified socket)
     async fn user_has_other_connections_in_presence_channel(
         connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
         app_id: &str,
         channel: &str,
         user_id: &str,
+        excluding_socket: Option<&SocketId>,
     ) -> Result<bool> {
         debug!("=== DEBUG user_has_other_connections_in_presence_channel ===");
         debug!("  app_id: {}, channel: {}, user_id: {}", app_id, channel, user_id);
+        if let Some(excluding) = excluding_socket {
+            debug!("  excluding_socket: {}", excluding);
+        } else {
+            debug!("  excluding_socket: None");
+        }
         
         let mut connection_manager = connection_manager.lock().await;
         
@@ -174,16 +182,19 @@ impl PresenceManager {
             let socket_id = &socket_state_guard.state.socket_id;
             let is_subscribed = socket_state_guard.state.is_subscribed(channel);
             
-            socket_details.push(format!("socket_{}: {} (subscribed: {})", 
-                index, socket_id, is_subscribed));
+            // Skip this socket if it's the one we're excluding
+            let should_exclude = excluding_socket.map_or(false, |exclude_id| socket_id == exclude_id);
             
-            if is_subscribed {
+            socket_details.push(format!("socket_{}: {} (subscribed: {}, excluded: {})", 
+                index, socket_id, is_subscribed, should_exclude));
+            
+            if is_subscribed && !should_exclude {
                 subscribed_count += 1;
             }
         }
         
         debug!("  Socket details: {}", socket_details.join(", "));
-        debug!("  Total subscribed to {}: {}", channel, subscribed_count);
+        debug!("  Total subscribed to {} (excluding specified socket): {}", channel, subscribed_count);
         
         let has_other_connections = subscribed_count > 0;
         debug!("  Result: has_other_connections = {}", has_other_connections);
