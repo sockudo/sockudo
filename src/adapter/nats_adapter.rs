@@ -836,12 +836,26 @@ impl ConnectionManager for NatsAdapter {
         horizontal.local_adapter.remove_user(ws).await
     }
 
-    async fn remove_user_socket(&mut self, user_id: &str, socket_id: &SocketId, app_id: &str) -> Result<()> {
+    async fn remove_user_socket(
+        &mut self,
+        user_id: &str,
+        socket_id: &SocketId,
+        app_id: &str,
+    ) -> Result<()> {
         let mut horizontal = self.horizontal.lock().await;
-        horizontal.local_adapter.remove_user_socket(user_id, socket_id, app_id).await
+        horizontal
+            .local_adapter
+            .remove_user_socket(user_id, socket_id, app_id)
+            .await
     }
 
-    async fn count_user_connections_in_channel(&mut self, user_id: &str, app_id: &str, channel: &str, excluding_socket: Option<&SocketId>) -> Result<usize> {
+    async fn count_user_connections_in_channel(
+        &mut self,
+        user_id: &str,
+        app_id: &str,
+        channel: &str,
+        excluding_socket: Option<&SocketId>,
+    ) -> Result<usize> {
         // Get local count (with excluding_socket filter)
         let local_count = {
             let mut horizontal = self.horizontal.lock().await;
@@ -850,7 +864,7 @@ impl ConnectionManager for NatsAdapter {
                 .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
                 .await?
         };
-        
+
         // Get remote count (no excluding_socket since it's local-only)
         match self
             .send_request(

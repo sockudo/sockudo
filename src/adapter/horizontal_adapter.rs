@@ -30,10 +30,10 @@ pub enum RequestType {
     ChannelsWithSocketsCount, // Get channels with socket counts
 
     // New request types
-    Sockets,             // Get all sockets
-    Channels,            // Get all channels
-    SocketsCount,        // Get count of all sockets
-    ChannelMembersCount, // Get count of members in a channel
+    Sockets,                       // Get all sockets
+    Channels,                      // Get all channels
+    SocketsCount,                  // Get count of all sockets
+    ChannelMembersCount,           // Get count of members in a channel
     CountUserConnectionsInChannel, // Check if user has connections in a specific channel
 }
 
