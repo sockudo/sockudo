@@ -108,8 +108,8 @@ impl CleanupWorker {
                     .push(task.socket_id.clone());
             }
 
-            // Prepare connection removal
-            connections_to_remove.push((task.socket_id.clone(), task.app_id.clone()));
+            // Prepare connection removal with user_id for user socket cleanup
+            connections_to_remove.push((task.socket_id.clone(), task.app_id.clone(), task.user_id.clone()));
 
             // Prepare webhook events without holding locks
             if let Some(info) = &task.connection_info {
@@ -178,7 +178,7 @@ impl CleanupWorker {
         );
     }
 
-    async fn batch_connection_removal(&self, connections: Vec<(SocketId, String)>) {
+    async fn batch_connection_removal(&self, connections: Vec<(SocketId, String, Option<String>)>) {
         if connections.is_empty() {
             return;
         }
@@ -186,13 +186,26 @@ impl CleanupWorker {
         debug!("Removing {} connections", connections.len());
 
         // Process each connection removal with minimal lock duration
-        for (socket_id, app_id) in connections {
+        for (socket_id, app_id, user_id) in connections {
             // Acquire lock for each individual removal to minimize contention
             let result = {
                 let mut connection_manager = self.connection_manager.lock().await;
-                connection_manager
+                // First remove the connection
+                let remove_result = connection_manager
                     .remove_connection(&socket_id, &app_id)
-                    .await
+                    .await;
+                
+                // Then remove from user mapping if user_id exists
+                if let Some(ref uid) = user_id {
+                    if let Err(e) = connection_manager
+                        .remove_user_socket(uid, &socket_id, &app_id)
+                        .await
+                    {
+                        warn!("Failed to remove user socket mapping for {}: {}", socket_id, e);
+                    }
+                }
+                
+                remove_result
             }; // Lock released here after each removal
 
             if let Err(e) = result {

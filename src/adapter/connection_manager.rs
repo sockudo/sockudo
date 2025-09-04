@@ -96,6 +96,7 @@ pub trait ConnectionManager: Send + Sync {
     async fn terminate_user_connections(&mut self, app_id: &str, user_id: &str) -> Result<()>;
     async fn add_user(&mut self, ws: WebSocketRef) -> Result<()>;
     async fn remove_user(&mut self, ws: WebSocketRef) -> Result<()>;
+    async fn remove_user_socket(&mut self, user_id: &str, socket_id: &SocketId, app_id: &str) -> Result<()>;
     async fn get_channels_with_socket_count(
         &mut self,
         app_id: &str,

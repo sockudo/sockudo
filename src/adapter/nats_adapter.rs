@@ -836,6 +836,11 @@ impl ConnectionManager for NatsAdapter {
         horizontal.local_adapter.remove_user(ws).await
     }
 
+    async fn remove_user_socket(&mut self, user_id: &str, socket_id: &SocketId, app_id: &str) -> Result<()> {
+        let mut horizontal = self.horizontal.lock().await;
+        horizontal.local_adapter.remove_user_socket(user_id, socket_id, app_id).await
+    }
+
     async fn get_channels_with_socket_count(
         &mut self,
         app_id: &str,
