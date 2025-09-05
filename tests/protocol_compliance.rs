@@ -605,6 +605,258 @@ fn test_cache_miss_event_format() {
 }
 
 #[test]
+fn test_channel_info_minimal_format() {
+    // Test channel_info with only occupied field (minimal case)
+    let response = PusherMessage::channel_info(false, None, None, None);
+
+    // Assert response is a valid JSON object
+    assert!(response.is_object(), "Response should be an object");
+
+    // Assert occupied field exists and is correct type
+    assert!(
+        response.get("occupied").is_some(),
+        "Should have 'occupied' field"
+    );
+    assert!(
+        response["occupied"].is_boolean(),
+        "'occupied' should be a boolean"
+    );
+    assert_eq!(response["occupied"], false);
+
+    // Assert no optional fields are present
+    assert!(
+        response.get("subscription_count").is_none(),
+        "Should not have 'subscription_count' when None"
+    );
+    assert!(
+        response.get("user_count").is_none(),
+        "Should not have 'user_count' when None"
+    );
+    assert!(
+        response.get("cache").is_none(),
+        "Should not have 'cache' when None"
+    );
+
+    // Assert exactly 1 field
+    let obj = response.as_object().expect("Response should be an object");
+    assert_eq!(obj.len(), 1, "Should have exactly 1 field when minimal");
+}
+
+#[test]
+fn test_channel_info_with_subscription_count() {
+    // Test channel_info with subscription_count
+    let response = PusherMessage::channel_info(true, Some(42), None, None);
+
+    // Assert response is a valid JSON object
+    assert!(response.is_object(), "Response should be an object");
+
+    // Assert occupied field
+    assert!(
+        response.get("occupied").is_some(),
+        "Should have 'occupied' field"
+    );
+    assert!(
+        response["occupied"].is_boolean(),
+        "'occupied' should be a boolean"
+    );
+    assert_eq!(response["occupied"], true);
+
+    // Assert subscription_count field
+    assert!(
+        response.get("subscription_count").is_some(),
+        "Should have 'subscription_count' field"
+    );
+    assert!(
+        response["subscription_count"].is_u64(),
+        "'subscription_count' should be a number"
+    );
+    assert_eq!(response["subscription_count"], 42);
+
+    // Assert other optional fields are not present
+    assert!(
+        response.get("user_count").is_none(),
+        "Should not have 'user_count' when None"
+    );
+    assert!(
+        response.get("cache").is_none(),
+        "Should not have 'cache' when None"
+    );
+}
+
+#[test]
+fn test_channel_info_with_user_count() {
+    // Test channel_info with user_count (for presence channels)
+    let response = PusherMessage::channel_info(true, Some(10), Some(8), None);
+
+    // Assert response is a valid JSON object
+    assert!(response.is_object(), "Response should be an object");
+
+    // Assert all fields
+    assert_eq!(response["occupied"], true);
+    assert_eq!(response["subscription_count"], 10);
+    assert_eq!(response["user_count"], 8);
+
+    // Verify types
+    assert!(
+        response["occupied"].is_boolean(),
+        "'occupied' should be a boolean"
+    );
+    assert!(
+        response["subscription_count"].is_u64(),
+        "'subscription_count' should be a number"
+    );
+    assert!(
+        response["user_count"].is_u64(),
+        "'user_count' should be a number"
+    );
+
+    // Assert cache is not present
+    assert!(
+        response.get("cache").is_none(),
+        "Should not have 'cache' when None"
+    );
+}
+
+#[test]
+fn test_channel_info_with_cache_data() {
+    use std::time::Duration;
+
+    // Test channel_info with cache data
+    let cache_content = r#"{"event":"test","data":"cached"}"#.to_string();
+    let ttl = Duration::from_secs(3600); // 1 hour
+
+    let response =
+        PusherMessage::channel_info(true, Some(5), None, Some((cache_content.clone(), ttl)));
+
+    // Assert response is a valid JSON object
+    assert!(response.is_object(), "Response should be an object");
+
+    // Assert basic fields
+    assert_eq!(response["occupied"], true);
+    assert_eq!(response["subscription_count"], 5);
+
+    // Assert cache field exists and has correct structure
+    assert!(response.get("cache").is_some(), "Should have 'cache' field");
+    assert!(response["cache"].is_object(), "'cache' should be an object");
+
+    // Assert cache subfields
+    let cache_obj = response["cache"]
+        .as_object()
+        .expect("Cache should be an object");
+    assert!(
+        cache_obj.contains_key("data"),
+        "Cache should have 'data' field"
+    );
+    assert!(
+        cache_obj.contains_key("ttl"),
+        "Cache should have 'ttl' field"
+    );
+
+    // Verify cache data field
+    assert!(
+        response["cache"]["data"].is_string(),
+        "Cache data should be a string"
+    );
+    assert_eq!(response["cache"]["data"], cache_content);
+
+    // Verify cache ttl field
+    assert!(
+        response["cache"]["ttl"].is_u64(),
+        "Cache ttl should be a number"
+    );
+    assert_eq!(response["cache"]["ttl"], 3600);
+
+    // Assert user_count is not present
+    assert!(
+        response.get("user_count").is_none(),
+        "Should not have 'user_count' when None"
+    );
+}
+
+#[test]
+fn test_channel_info_full_format() {
+    use std::time::Duration;
+
+    // Test channel_info with all fields populated
+    let cache_content = r#"{"message":"Hello from cache"}"#.to_string();
+    let ttl = Duration::from_secs(7200); // 2 hours
+
+    let response = PusherMessage::channel_info(
+        true,
+        Some(100),
+        Some(75),
+        Some((cache_content.clone(), ttl)),
+    );
+
+    // Assert response is a valid JSON object
+    assert!(response.is_object(), "Response should be an object");
+
+    // Assert all fields are present and have correct values
+    assert_eq!(response["occupied"], true);
+    assert_eq!(response["subscription_count"], 100);
+    assert_eq!(response["user_count"], 75);
+
+    // Assert cache structure
+    assert!(response["cache"].is_object(), "'cache' should be an object");
+    assert_eq!(response["cache"]["data"], cache_content);
+    assert_eq!(response["cache"]["ttl"], 7200);
+
+    // Verify exact field count
+    let obj = response.as_object().expect("Response should be an object");
+    assert_eq!(
+        obj.len(),
+        4,
+        "Should have exactly 4 fields when all are populated"
+    );
+
+    // Verify field types
+    assert!(
+        response["occupied"].is_boolean(),
+        "'occupied' should be a boolean"
+    );
+    assert!(
+        response["subscription_count"].is_u64(),
+        "'subscription_count' should be a number"
+    );
+    assert!(
+        response["user_count"].is_u64(),
+        "'user_count' should be a number"
+    );
+    assert!(
+        response["cache"]["data"].is_string(),
+        "Cache data should be a string"
+    );
+    assert!(
+        response["cache"]["ttl"].is_u64(),
+        "Cache ttl should be a number"
+    );
+}
+
+#[test]
+fn test_channel_info_zero_values() {
+    // Test that zero values are properly included (not filtered out)
+    let response = PusherMessage::channel_info(false, Some(0), Some(0), None);
+
+    // Assert response is a valid JSON object
+    assert!(response.is_object(), "Response should be an object");
+
+    // Assert all fields with zero values are present
+    assert_eq!(response["occupied"], false);
+    assert_eq!(response["subscription_count"], 0);
+    assert_eq!(response["user_count"], 0);
+
+    // Verify that zero counts are included (not filtered)
+    assert!(
+        response.get("subscription_count").is_some(),
+        "Should include subscription_count even when 0"
+    );
+    assert!(
+        response.get("user_count").is_some(),
+        "Should include user_count even when 0"
+    );
+}
+
+#[test]
 fn test_watchlist_events_format() {
     // Watchlist events are custom Sockudo extensions, not in Pusher spec
     // They can keep their current format
