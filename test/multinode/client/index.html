@@ -119,8 +119,12 @@
             <p class="mb-1">• <strong>Public:</strong> test-channel</p>
             <p class="mb-1">• <strong>Private:</strong> private-test</p>
             <p class="mb-1">• <strong>Presence:</strong> presence-test</p>
+            <p class="mb-1">• <strong>Cache:</strong> cache-test</p>
+            <p class="mb-1">• <strong>Private Cache:</strong> private-cache-test</p>
             <p class="mb-2"><strong>Redis Recovery Test:</strong></p>
             <p class="mb-1">Stop/Start Redis to test recovery</p>
+            <p class="mb-2"><strong>Cache Channel Test:</strong></p>
+            <p class="mb-1">Send events to cache channels to test last event delivery on subscription</p>
         </div>
     </div>
 
@@ -128,7 +132,7 @@
     <div class="flex-1 p-4 flex flex-col h-screen">
         <!-- Broadcast Section -->
         <div class="bg-white rounded-lg shadow-md p-4 mb-4 flex-shrink-0">
-            <div class="flex gap-2">
+            <div class="flex gap-2 mb-2">
                 <select id="broadcast-node" class="px-3 py-2 border rounded-md text-sm">
                     <option value="1">Node 1</option>
                     <option value="2">Node 2</option>
@@ -138,6 +142,23 @@
                 <button onclick="broadcastMessage()"
                         class="bg-indigo-500 text-white px-6 py-2 rounded-md hover:bg-indigo-600 transition text-sm">
                     Broadcast
+                </button>
+            </div>
+            <!-- Cache Event Section -->
+            <div class="flex gap-2 border-t pt-2">
+                <select id="cache-node" class="px-3 py-2 border rounded-md text-sm">
+                    <option value="1">Node 1</option>
+                    <option value="2">Node 2</option>
+                </select>
+                <select id="cache-channel-type" class="px-3 py-2 border rounded-md text-sm">
+                    <option value="cache">Cache Channel</option>
+                    <option value="private-cache">Private Cache</option>
+                </select>
+                <input type="text" id="cache-message" placeholder="Cache event message..."
+                       class="flex-1 px-3 py-2 border rounded-md text-sm">
+                <button onclick="sendCacheEvent()"
+                        class="bg-yellow-500 text-white px-6 py-2 rounded-md hover:bg-yellow-600 transition text-sm">
+                    Send Cache Event
                 </button>
             </div>
         </div>
@@ -167,6 +188,8 @@
                                 <option value="public">Public</option>
                                 <option value="private">Private</option>
                                 <option value="presence">Presence</option>
+                                <option value="cache">Cache</option>
+                                <option value="private-cache">Private Cache</option>
                             </select>
                             <button onclick="subscribeToChannel(1)"
                                     class="flex-1 bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
@@ -216,6 +239,8 @@
                                 <option value="public">Public</option>
                                 <option value="private">Private</option>
                                 <option value="presence">Presence</option>
+                                <option value="cache">Cache</option>
+                                <option value="private-cache">Private Cache</option>
                             </select>
                             <button onclick="subscribeToChannel(2)"
                                     class="flex-1 bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
@@ -477,12 +502,12 @@
             authorizer: function(channel, options) {
                 return {
                     authorize: function(socketId, callback) {
-                        // Generate authentication for private/presence channels
+                        // Generate authentication for private/presence/cache channels
                         if (channel.name.startsWith('presence-')) {
                             generatePresenceAuth(channel.name, socketId, nodeNum)
                                 .then(auth => callback(null, auth))
                                 .catch(err => callback(err, null));
-                        } else if (channel.name.startsWith('private-')) {
+                        } else if (channel.name.startsWith('private-cache-') || channel.name.startsWith('private-')) {
                             generatePrivateAuth(channel.name, socketId)
                                 .then(auth => callback(null, auth))
                                 .catch(err => callback(err, null));
@@ -586,6 +611,10 @@
                 return `private-${baseChannelName}`;
             case 'presence':
                 return `presence-${baseChannelName}`;
+            case 'cache':
+                return `cache-${baseChannelName}`;
+            case 'private-cache':
+                return `private-cache-${baseChannelName}`;
             case 'public':
             default:
                 return baseChannelName;
@@ -689,10 +718,10 @@
         const channelName = getChannelName(nodeNum);
         const eventName = document.getElementById('event-name').value;
 
-        // For private and presence channels, we could use client events
-        // For public channels, we need to use the API
+        // For private, presence, and private-cache channels, we could use client events
+        // For public and cache channels, we need to use the API
         if ((channelName.startsWith('private-') || channelName.startsWith('presence-')) && channels[nodeNum]) {
-            // Use Pusher client event for private/presence channels
+            // Use Pusher client event for private/presence/private-cache channels
             const triggered = channels[nodeNum].trigger(eventName, {
                 message: message,
                 from: `node${nodeNum}`,
@@ -705,7 +734,7 @@
                 addMessage(nodeNum, `Failed to send client event (not subscribed?)`, 'error');
             }
         } else {
-            // Use API for public channels or when not subscribed
+            // Use API for public and cache channels or when not subscribed
             await sendApiMessage(nodeNum, message, `node${nodeNum}`);
         }
 
@@ -1046,6 +1075,97 @@
         await sendApiMessage(selectedNode, message, 'broadcast');
 
         document.getElementById('broadcast-message').value = '';
+    }
+
+    async function sendCacheEvent() {
+        const message = document.getElementById('cache-message').value.trim();
+        if (!message) return;
+
+        const selectedNode = parseInt(document.getElementById('cache-node').value);
+        const cacheChannelType = document.getElementById('cache-channel-type').value;
+        const baseChannelName = document.getElementById('channel').value;
+        
+        // Build the cache channel name
+        let cacheChannelName;
+        if (cacheChannelType === 'private-cache') {
+            cacheChannelName = `private-cache-${baseChannelName}`;
+        } else {
+            cacheChannelName = `cache-${baseChannelName}`;
+        }
+
+        // Send the cache event via API
+        const eventName = 'cache-update';
+        const appKey = document.getElementById('app-key').value;
+        const appSecret = 'app-secret';
+        const appId = 'app-id';
+
+        const apiData = {
+            name: eventName,
+            channel: cacheChannelName,
+            data: {
+                message: message,
+                from: 'cache-sender',
+                timestamp: new Date().toISOString(),
+                cached: true
+            }
+        };
+
+        try {
+            const bodyStr = JSON.stringify(apiData);
+            const bodyMd5 = generateMD5(bodyStr);
+            const timestamp = Math.floor(Date.now() / 1000).toString();
+            const path = `/apps/${appId}/events`;
+
+            // Build query parameters for signature
+            const authParams = new URLSearchParams({
+                auth_key: appKey,
+                auth_timestamp: timestamp,
+                auth_version: '1.0',
+                body_md5: bodyMd5
+            });
+
+            // Create string to sign
+            const queryString = authParams.toString();
+            const stringToSign = `POST\n${path}\n${queryString}`;
+
+            // Generate signature
+            const signature = await generateSignature(stringToSign, appSecret);
+            authParams.append('auth_signature', signature);
+
+            // Get node configuration
+            const scheme = 'https';
+            const host = document.getElementById(`node${selectedNode}-host`).value;
+            const port = 444;
+            const url = `${scheme}://${host}:${port}${path}?${authParams.toString()}`;
+
+            // Add visual feedback to both nodes
+            addMessage(1, `Sending cache event to ${cacheChannelName}: ${message}`, 'system');
+            addMessage(2, `Sending cache event to ${cacheChannelName}: ${message}`, 'system');
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: bodyStr
+            });
+
+            if (response.ok) {
+                addMessage(1, `✅ Cache event sent successfully to ${cacheChannelName}`, 'success');
+                addMessage(2, `✅ Cache event sent successfully to ${cacheChannelName}`, 'success');
+                addMessage(1, `Subscribe to ${cacheChannelName} to receive the cached event`, 'system');
+                addMessage(2, `Subscribe to ${cacheChannelName} to receive the cached event`, 'system');
+            } else {
+                const errorText = await response.text();
+                addMessage(1, `❌ Failed to send cache event: ${response.status} ${errorText}`, 'error');
+                addMessage(2, `❌ Failed to send cache event: ${response.status} ${errorText}`, 'error');
+            }
+        } catch (error) {
+            addMessage(1, `❌ Cache event error: ${error.message}`, 'error');
+            addMessage(2, `❌ Cache event error: ${error.message}`, 'error');
+        }
+
+        document.getElementById('cache-message').value = '';
     }
 
     // Initialize configuration management
