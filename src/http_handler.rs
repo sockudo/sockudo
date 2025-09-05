@@ -161,7 +161,11 @@ struct UsageResponse {
 // --- Helper Functions ---
 
 /// Helper to build cache payload string
-fn build_cache_payload(event_name: &str, event_data: &Value, channel: &str) -> Result<String, serde_json::Error> {
+fn build_cache_payload(
+    event_name: &str,
+    event_data: &Value,
+    channel: &str,
+) -> Result<String, serde_json::Error> {
     serde_json::to_string(&json!({
         "event": event_name,
         "channel": channel,
