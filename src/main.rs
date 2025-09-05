@@ -693,9 +693,9 @@ impl SockudoServer {
         let rate_limiter_middleware_layer = if self.config.rate_limiter.enabled {
             if let Some(rate_limiter_instance) = &self.state.http_api_rate_limiter {
                 let options = crate::rate_limiter::middleware::RateLimitOptions {
-                    include_headers: true,               // Include X-RateLimit-* headers
-                    fail_open: false,                    // If rate limiter fails, deny request
-                    key_prefix: Some("api".to_string()), // Prefix for keys in store
+                    include_headers: true,                // Include X-RateLimit-* headers
+                    fail_open: false,                     // If rate limiter fails, deny request
+                    key_prefix: Some("api:".to_string()), // Prefix for keys in store
                 };
                 // Get trust_hops from config, default to 0 if not present
                 let trust_hops = self
@@ -1071,7 +1071,7 @@ impl SockudoServer {
                     .into_iter()
                     .map(|(_app_id, ws_raw_obj)| {
                         async move {
-                            let mut ws = ws_raw_obj.0.lock().await; // Lock the WebSocketRef
+                            let mut ws = ws_raw_obj.inner.lock().await; // Lock the WebSocketRef
                             if let Err(e) = ws
                                 .close(4009, "You got disconnected by the app.".to_string())
                                 .await

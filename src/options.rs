@@ -277,13 +277,31 @@ pub struct SqsQueueConfig {
     pub message_group_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdapterConfig {
     pub driver: AdapterDriver,
     pub redis: RedisAdapterConfig,
     pub cluster: RedisClusterAdapterConfig,
     pub nats: NatsAdapterConfig,
+    #[serde(default = "default_buffer_multiplier_per_cpu")]
+    pub buffer_multiplier_per_cpu: usize,
+}
+
+fn default_buffer_multiplier_per_cpu() -> usize {
+    64 // 64 concurrent operations per CPU core
+}
+
+impl Default for AdapterConfig {
+    fn default() -> Self {
+        Self {
+            driver: AdapterDriver::default(),
+            redis: RedisAdapterConfig::default(),
+            cluster: RedisClusterAdapterConfig::default(),
+            nats: NatsAdapterConfig::default(),
+            buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -732,7 +750,7 @@ impl Default for RedisConnection {
             db: 0,
             username: None,
             password: None,
-            key_prefix: "sockudo".to_string(),
+            key_prefix: "sockudo:".to_string(),
             sentinels: Vec::new(),
             sentinel_password: None,
             name: "mymaster".to_string(),
@@ -884,7 +902,7 @@ impl Default for RateLimiterConfig {
             },
             redis: RedisConfig {
                 // Specific Redis settings if Redis is chosen as backend for rate limiting
-                prefix: Some("sockudo_rl".to_string()),
+                prefix: Some("sockudo_rl:".to_string()),
                 url_override: None,
                 cluster_mode: false,
             },
@@ -956,6 +974,10 @@ impl ServerOptions {
             self.adapter.driver =
                 parse_driver_enum(driver_str, self.adapter.driver.clone(), "Adapter");
         }
+        self.adapter.buffer_multiplier_per_cpu = parse_env::<usize>(
+            "ADAPTER_BUFFER_MULTIPLIER_PER_CPU",
+            self.adapter.buffer_multiplier_per_cpu,
+        );
         if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
             self.cache.driver = parse_driver_enum(driver_str, self.cache.driver.clone(), "Cache");
         }
@@ -972,9 +994,6 @@ impl ServerOptions {
                 self.rate_limiter.driver.clone(),
                 "RateLimiter Backend",
             );
-        }
-        if let Ok(prefix) = std::env::var("RATE_LIMITER_REDIS_PREFIX") {
-            self.rate_limiter.redis.prefix = Some(prefix);
         }
 
         // --- Database: Redis ---
@@ -1106,6 +1125,9 @@ impl ServerOptions {
             "RATE_LIMITER_WS_WINDOW_SECONDS",
             self.rate_limiter.websocket_rate_limit.window_seconds,
         );
+        if let Ok(prefix) = std::env::var("RATE_LIMITER_REDIS_PREFIX") {
+            self.rate_limiter.redis.prefix = Some(prefix);
+        }
 
         // --- Queue: Redis ---
         self.queue.redis.concurrency =
