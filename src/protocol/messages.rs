@@ -320,7 +320,7 @@ impl PusherMessage {
         Self {
             event: Some("pusher:cache_miss".to_string()),
             channel: Some(channel),
-            data: Some(MessageData::String("{}".to_string())),
+            data: Some(MessageData::Json(json!({}))),
             name: None,
             user_id: None,
         }
