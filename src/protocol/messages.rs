@@ -258,7 +258,7 @@ impl PusherMessage {
         if let Some((data, ttl)) = cache_data {
             response["cache"] = json!({
                 "data": data,
-                "ttl": ttl
+                "ttl": ttl.as_secs()
             });
         }
 
