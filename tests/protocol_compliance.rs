@@ -564,6 +564,47 @@ fn test_client_event_accepts_json() {
 }
 
 #[test]
+fn test_cache_miss_event_format() {
+    // According to spec: cache_miss event should send an empty JSON object as a string
+    let message = PusherMessage::cache_miss_event("cache-channel".to_string());
+    let json = message_to_json(&message);
+
+    // Assert event field exists and has correct value
+    assert!(json.get("event").is_some(), "Should have 'event' field");
+    assert!(json["event"].is_string(), "Event field should be a string");
+    assert_eq!(json["event"], "pusher:cache_miss");
+
+    // Assert channel field exists and has correct value
+    assert!(json.get("channel").is_some(), "Should have 'channel' field");
+    assert!(
+        json["channel"].is_string(),
+        "Channel field should be a string"
+    );
+    assert_eq!(json["channel"], "cache-channel");
+
+    // Assert data field exists and is a string containing empty JSON object
+    assert!(json.get("data").is_some(), "Should have 'data' field");
+    assert!(
+        json["data"].is_string(),
+        "Data field should be a String (empty JSON object)"
+    );
+
+    // Verify the string is exactly "{}"
+    let data_str = json["data"].as_str().expect("Data should be a string");
+    assert_eq!(data_str, "{}", "Data should be exactly '{{}}'");
+
+    // Also verify it parses to an empty JSON object
+    let parsed_data: Value =
+        serde_json::from_str(data_str).expect("Data string should contain valid JSON");
+    assert!(parsed_data.is_object(), "Parsed data should be an object");
+    assert_eq!(
+        parsed_data,
+        json!({}),
+        "Parsed data should be an empty object"
+    );
+}
+
+#[test]
 fn test_watchlist_events_format() {
     // Watchlist events are custom Sockudo extensions, not in Pusher spec
     // They can keep their current format
