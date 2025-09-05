@@ -60,7 +60,7 @@ impl IntoResponse for AppError {
             AppError::AppValidationFailed(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
             }
-            AppError::ApiAuthFailed(msg) => (StatusCode::FORBIDDEN, json!({ "error": msg })),
+            AppError::ApiAuthFailed(msg) => (StatusCode::UNAUTHORIZED, json!({ "error": msg })),
             AppError::MissingChannelInfo => (
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Request must contain 'channels' (list) or 'channel' (string)" }),
@@ -79,7 +79,9 @@ impl IntoResponse for AppError {
             AppError::InternalError(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
             }
-            AppError::LimitExceeded(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
+            AppError::LimitExceeded(msg) => {
+                (StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": msg }))
+            }
             AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
         };
         error!(error.message = %self, status_code = %status, "HTTP request failed");
