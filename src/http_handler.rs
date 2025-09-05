@@ -49,6 +49,8 @@ pub enum AppError {
     HeaderBuildError(#[from] axum::http::Error),
     #[error("Limit exceeded: {0}")]
     LimitExceeded(String),
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 }
@@ -79,7 +81,8 @@ impl IntoResponse for AppError {
             AppError::InternalError(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
             }
-            AppError::LimitExceeded(msg) => {
+            AppError::LimitExceeded(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
+            AppError::PayloadTooLarge(msg) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": msg }))
             }
             AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
@@ -280,7 +283,7 @@ async fn process_single_event_parallel(
         };
         let payload_size_bytes = utils::data_to_bytes_flexible(vec![value_for_size_calc]);
         if payload_size_bytes > (max_payload_kb as usize * 1024) {
-            return Err(AppError::LimitExceeded(format!(
+            return Err(AppError::PayloadTooLarge(format!(
                 "Event payload size ({payload_size_bytes} bytes) for event '{event_name_str}' exceeds limit ({max_payload_kb}KB)"
             )));
         }
