@@ -87,6 +87,13 @@ impl ConnectionHandler {
             ));
         }
 
+        // Check for reserved prefixes that clients cannot use
+        if request.event.starts_with("pusher:") || request.event.starts_with("pusher_internal:") {
+            return Err(Error::InvalidEventName(
+                "Client events cannot use reserved prefixes 'pusher:' or 'pusher_internal:'".into(),
+            ));
+        }
+
         // Validate event name
         if !request.event.starts_with(CLIENT_EVENT_PREFIX) {
             return Err(Error::InvalidEventName(
