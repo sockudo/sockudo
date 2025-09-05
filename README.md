@@ -815,7 +815,7 @@ Backends like Memory or Redis can be used for rate limiting.
       "window_seconds": 60
     },
     "redis": { // If Redis driver is used for rate limiting
-        "prefix": "sockudo_rl"
+        "prefix": "sockudo_rl:"
         // url_override can also be set here if different from main Redis
     }
   }
