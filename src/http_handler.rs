@@ -161,13 +161,13 @@ struct UsageResponse {
 // --- Helper Functions ---
 
 /// Helper to build cache payload string
-fn build_cache_payload(event_name: &str, event_data: &Value) -> Result<String, serde_json::Error> {
+fn build_cache_payload(event_name: &str, event_data: &Value, channel: &str) -> Result<String, serde_json::Error> {
     serde_json::to_string(&json!({
         "event": event_name,
+        "channel": channel,
         "data": event_data,
     }))
 }
-
 /// Records API metrics (helper async function)
 #[instrument(skip(handler, incoming_request_size, outgoing_response_size), fields(app_id = %app_id))]
 async fn record_api_metrics(
@@ -418,7 +418,7 @@ async fn process_single_event_parallel(
                 let message_data = serde_json::to_value(&message_data)
                     .map_err(AppError::SerializationError)?;
                 // Attempt to build the cache payload string.
-                match build_cache_payload(&event_name_for_task, &message_data) {
+                match build_cache_payload(&event_name_for_task, &message_data, &target_channel_str) {
                     Ok(cache_payload_str) => {
                         let mut cache_manager_locked = handler_clone.cache_manager.lock().await;
                         let cache_key_str =
