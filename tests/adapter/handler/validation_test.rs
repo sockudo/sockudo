@@ -117,11 +117,10 @@ mod client_event_validation_tests {
     }
 
     #[tokio::test]
-    async fn test_client_event_only_on_private_or_presence_channels() {
+    async fn test_client_event_rejected_on_public_channel() {
         let (handler, _app_manager, _channel_manager) = create_test_connection_handler();
         let app = setup_test_app();
 
-        // Test public channel (should fail)
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "public-channel".to_string(),
@@ -136,8 +135,13 @@ mod client_event_validation_tests {
             err.to_string()
                 .contains("Client events can only be sent to private or presence channels")
         );
+    }
 
-        // Test private channel (should pass)
+    #[tokio::test]
+    async fn test_client_event_allowed_on_private_channel() {
+        let (handler, _app_manager, _channel_manager) = create_test_connection_handler();
+        let app = setup_test_app();
+
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "private-channel".to_string(),
@@ -146,8 +150,13 @@ mod client_event_validation_tests {
 
         let result = handler.validate_client_event(&app, &request).await;
         assert!(result.is_ok());
+    }
 
-        // Test presence channel (should pass)
+    #[tokio::test]
+    async fn test_client_event_allowed_on_presence_channel() {
+        let (handler, _app_manager, _channel_manager) = create_test_connection_handler();
+        let app = setup_test_app();
+
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
             channel: "presence-channel".to_string(),
