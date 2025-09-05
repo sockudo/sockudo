@@ -329,7 +329,8 @@ impl WebhookIntegration {
         }
         let event_obj = json!({
             "name": "cache_miss",
-            "channel": channel
+            "channel": channel,
+            "data" : "{}"
         });
         let signature = format!("{}:{}:cache_miss", app.id, channel);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
