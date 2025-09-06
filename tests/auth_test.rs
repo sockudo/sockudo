@@ -459,3 +459,287 @@ async fn test_sign_in_token_generation() {
         auth_validator.sign_in_token_is_valid(socket_id, user_data, "wrong-signature", app_config);
     assert!(!is_invalid);
 }
+
+#[tokio::test]
+async fn test_api_auth_empty_parameter_values() {
+    let app_manager = create_test_app_manager().await;
+    let auth_validator = AuthValidator::new(app_manager);
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+
+    // Test with empty parameter values
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "test-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+    query_params.insert("empty_param".to_string(), "".to_string()); // Empty value
+    query_params.insert("another_empty".to_string(), "".to_string()); // Another empty value
+
+    let signature = generate_valid_signature(
+        "test-app-key",
+        "test-app-secret",
+        "GET",
+        "/apps/test-app-id/events",
+        &query_params,
+    );
+
+    let auth_query = EventQuery {
+        auth_key: "test-app-key".to_string(),
+        auth_timestamp: current_timestamp,
+        auth_version: "1.0".to_string(),
+        body_md5: "".to_string(),
+        auth_signature: signature,
+    };
+
+    let result = auth_validator
+        .validate_pusher_api_request(
+            &auth_query,
+            "GET",
+            "/apps/test-app-id/events",
+            &query_params,
+            None,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Empty parameter values should be handled correctly"
+    );
+    assert!(result.unwrap());
+}
+
+#[tokio::test]
+async fn test_api_auth_special_characters_in_keys() {
+    let app_manager = create_test_app_manager().await;
+    let auth_validator = AuthValidator::new(app_manager);
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+
+    // Test with special characters in parameter keys (already URL decoded)
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "test-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+    query_params.insert("param_with-dash".to_string(), "value1".to_string());
+    query_params.insert("param.with.dots".to_string(), "value2".to_string());
+    query_params.insert("param_with_underscores".to_string(), "value3".to_string());
+
+    let signature = generate_valid_signature(
+        "test-app-key",
+        "test-app-secret",
+        "GET",
+        "/apps/test-app-id/events",
+        &query_params,
+    );
+
+    let auth_query = EventQuery {
+        auth_key: "test-app-key".to_string(),
+        auth_timestamp: current_timestamp,
+        auth_version: "1.0".to_string(),
+        body_md5: "".to_string(),
+        auth_signature: signature,
+    };
+
+    let result = auth_validator
+        .validate_pusher_api_request(
+            &auth_query,
+            "GET",
+            "/apps/test-app-id/events",
+            &query_params,
+            None,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Special characters in parameter keys should be handled correctly"
+    );
+    assert!(result.unwrap());
+}
+
+#[tokio::test]
+async fn test_api_auth_large_number_of_parameters() {
+    let app_manager = create_test_app_manager().await;
+    let auth_validator = AuthValidator::new(app_manager);
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+
+    // Test with a large number of parameters to ensure no performance regression
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "test-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+
+    // Add 100 parameters with mixed case keys
+    for i in 0..100 {
+        let key = if i % 2 == 0 {
+            format!("PARAM_{}", i) // Uppercase
+        } else {
+            format!("param_{}", i) // Lowercase
+        };
+        query_params.insert(key, format!("value_{}", i));
+    }
+
+    let signature = generate_valid_signature(
+        "test-app-key",
+        "test-app-secret",
+        "GET",
+        "/apps/test-app-id/events",
+        &query_params,
+    );
+
+    let auth_query = EventQuery {
+        auth_key: "test-app-key".to_string(),
+        auth_timestamp: current_timestamp,
+        auth_version: "1.0".to_string(),
+        body_md5: "".to_string(),
+        auth_signature: signature,
+    };
+
+    let start = std::time::Instant::now();
+    let result = auth_validator
+        .validate_pusher_api_request(
+            &auth_query,
+            "GET",
+            "/apps/test-app-id/events",
+            &query_params,
+            None,
+        )
+        .await;
+    let duration = start.elapsed();
+
+    assert!(
+        result.is_ok(),
+        "Large number of parameters should be handled correctly"
+    );
+    assert!(result.unwrap());
+    assert!(
+        duration.as_millis() < 100,
+        "Performance should remain reasonable with many parameters"
+    );
+}
+
+#[tokio::test]
+async fn test_api_auth_post_empty_body_no_body_md5() {
+    let app_manager = create_test_app_manager().await;
+    let auth_validator = AuthValidator::new(app_manager);
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+    let empty_body = b"";
+
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "test-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+    // Intentionally NOT including body_md5 for empty body
+
+    let signature = generate_valid_signature(
+        "test-app-key",
+        "test-app-secret",
+        "POST",
+        "/apps/test-app-id/events",
+        &query_params,
+    );
+
+    let auth_query = EventQuery {
+        auth_key: "test-app-key".to_string(),
+        auth_timestamp: current_timestamp,
+        auth_version: "1.0".to_string(),
+        body_md5: "".to_string(),
+        auth_signature: signature,
+    };
+
+    let result = auth_validator
+        .validate_pusher_api_request(
+            &auth_query,
+            "POST",
+            "/apps/test-app-id/events",
+            &query_params,
+            Some(empty_body),
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "POST with empty body and no body_md5 should be valid"
+    );
+    assert!(result.unwrap());
+}
+
+#[tokio::test]
+async fn test_api_auth_post_empty_body_with_body_md5_should_fail() {
+    let app_manager = create_test_app_manager().await;
+    let auth_validator = AuthValidator::new(app_manager);
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+    let empty_body = b"";
+
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "test-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+    query_params.insert("body_md5".to_string(), "some_hash".to_string()); // Should not be present for empty body
+
+    let auth_query = EventQuery {
+        auth_key: "test-app-key".to_string(),
+        auth_timestamp: current_timestamp,
+        auth_version: "1.0".to_string(),
+        body_md5: "some_hash".to_string(),
+        auth_signature: "any-signature".to_string(),
+    };
+
+    let result = auth_validator
+        .validate_pusher_api_request(
+            &auth_query,
+            "POST",
+            "/apps/test-app-id/events",
+            &query_params,
+            Some(empty_body),
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "POST with empty body should not contain body_md5"
+    );
+    match result.unwrap_err() {
+        Error::Auth(msg) => {
+            assert!(msg.contains("body_md5 must not be present"));
+        }
+        _ => panic!("Expected Auth error for body_md5 with empty body"),
+    }
+}
+
+#[tokio::test]
+async fn test_api_auth_get_with_body_md5_should_fail() {
+    let app_manager = create_test_app_manager().await;
+    let auth_validator = AuthValidator::new(app_manager);
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "test-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+    query_params.insert("body_md5".to_string(), "some_hash".to_string()); // Should not be present for GET
+
+    let auth_query = EventQuery {
+        auth_key: "test-app-key".to_string(),
+        auth_timestamp: current_timestamp,
+        auth_version: "1.0".to_string(),
+        body_md5: "some_hash".to_string(),
+        auth_signature: "any-signature".to_string(),
+    };
+
+    let result = auth_validator
+        .validate_pusher_api_request(
+            &auth_query,
+            "GET",
+            "/apps/test-app-id/events",
+            &query_params,
+            None,
+        )
+        .await;
+
+    assert!(result.is_err(), "GET requests should not contain body_md5");
+    match result.unwrap_err() {
+        Error::Auth(msg) => {
+            assert!(msg.contains("body_md5 must not be present"));
+        }
+        _ => panic!("Expected Auth error for body_md5 with GET request"),
+    }
+}
