@@ -357,7 +357,7 @@ async fn test_api_auth_post_with_body_md5() {
         auth_key: "test-app-key".to_string(),
         auth_timestamp: current_timestamp,
         auth_version: "1.0".to_string(),
-        body_md5: body_md5,
+        body_md5,
         auth_signature: signature,
     };
 
