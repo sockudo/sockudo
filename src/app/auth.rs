@@ -208,11 +208,11 @@ impl AuthValidator {
         expected_signature: &str,
         app_config: App,
     ) -> bool {
-        let signature = self.sing_in_token_for_user_data(socket_id, user_data, app_config);
+        let signature = self.sign_in_token_for_user_data(socket_id, user_data, app_config);
         secure_compare(&signature, expected_signature)
     }
 
-    pub fn sing_in_token_for_user_data(
+    pub fn sign_in_token_for_user_data(
         &self,
         socket_id: &str,
         user_data: &str,
