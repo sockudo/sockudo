@@ -1,10 +1,10 @@
 use super::manager::AppManager;
 use crate::app::config::App;
 use crate::error::Error;
-use crate::http_handler::EventQuery; // Assuming EventQuery is in http_handler.rs
+use crate::http_handler::EventQuery;
 use crate::token::{Token, secure_compare};
 use crate::websocket::SocketId;
-use chrono::Utc; // For timestamp validation
+use chrono::Utc;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ impl AuthValidator {
         user_data: &str,
         auth: &str,
     ) -> Result<bool, Error> {
-        let app = self.app_manager.find_by_id(app_key).await?;
+        let app = self.app_manager.find_by_key(app_key).await?;
         if app.is_none() {
             return Err(Error::InvalidAppKey);
         }
@@ -108,8 +108,12 @@ impl AuthValidator {
         }
 
         // --- Prepare parameters for signing string construction ---
-        // Start with a copy of all query parameters received in the URL (excluding auth_signature)
-        let params_for_signing_string: BTreeMap<String, String> = all_query_params_from_url.clone();
+        // Start with all query parameters received in the URL (excluding auth_signature)
+        // Convert keys to lowercase before sorting to ensure case-insensitive alphabetical order
+        let mut params_for_signing_string: BTreeMap<String, String> = BTreeMap::new();
+        for (key, value) in all_query_params_from_url {
+            params_for_signing_string.insert(key.to_lowercase(), value.clone());
+        }
 
         // --- body_md5 validation and inclusion in signature params ---
         let uppercased_http_method = http_method.to_uppercase();
@@ -167,10 +171,10 @@ impl AuthValidator {
 
         // --- Construct the string to sign ---
         // BTreeMap iterates in key-sorted order.
-        // Keys must be lowercased for the signature string construction.
+        // Keys are already lowercased when inserted into the map.
         let mut sorted_params_kv_pairs: Vec<String> = Vec::new();
         for (key, value) in &params_for_signing_string {
-            sorted_params_kv_pairs.push(format!("{}={}", key.to_lowercase(), value));
+            sorted_params_kv_pairs.push(format!("{}={}", key, value));
         }
         let query_string_for_sig = sorted_params_kv_pairs.join("&");
 
