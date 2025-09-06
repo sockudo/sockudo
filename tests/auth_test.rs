@@ -447,7 +447,7 @@ async fn test_sign_in_token_generation() {
     };
 
     let signature =
-        auth_validator.sing_in_token_for_user_data(socket_id, user_data, app_config.clone());
+        auth_validator.sign_in_token_for_user_data(socket_id, user_data, app_config.clone());
 
     // Verify the signature is valid
     let is_valid =
