@@ -617,17 +617,18 @@ async fn test_api_auth_large_number_of_parameters() {
 }
 
 #[tokio::test]
-async fn test_api_auth_post_empty_body_no_body_md5() {
+async fn test_api_auth_post_empty_body_with_body_md5() {
     let app_manager = create_test_app_manager().await;
     let auth_validator = AuthValidator::new(app_manager);
 
     let current_timestamp = Utc::now().timestamp().to_string();
     let empty_body = b"";
+    let empty_body_md5 = "d41d8cd98f00b204e9800998ecf8427e"; // MD5 of empty bytes
 
     let mut query_params = BTreeMap::new();
     query_params.insert("auth_key".to_string(), "test-app-key".to_string());
     query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
-    // Intentionally NOT including body_md5 for empty body
+    query_params.insert("body_md5".to_string(), empty_body_md5.to_string()); // Include body_md5 for empty body
 
     let signature = generate_valid_signature(
         "test-app-key",
@@ -641,7 +642,7 @@ async fn test_api_auth_post_empty_body_no_body_md5() {
         auth_key: "test-app-key".to_string(),
         auth_timestamp: current_timestamp,
         auth_version: "1.0".to_string(),
-        body_md5: "".to_string(),
+        body_md5: empty_body_md5.to_string(),
         auth_signature: signature,
     };
 
@@ -657,29 +658,30 @@ async fn test_api_auth_post_empty_body_no_body_md5() {
 
     assert!(
         result.is_ok(),
-        "POST with empty body and no body_md5 should be valid"
+        "POST with empty body and correct body_md5 should be valid"
     );
     assert!(result.unwrap());
 }
 
 #[tokio::test]
-async fn test_api_auth_post_empty_body_with_body_md5_should_fail() {
+async fn test_api_auth_post_empty_body_with_wrong_body_md5_should_fail() {
     let app_manager = create_test_app_manager().await;
     let auth_validator = AuthValidator::new(app_manager);
 
     let current_timestamp = Utc::now().timestamp().to_string();
     let empty_body = b"";
+    let wrong_body_md5 = "wrong_hash_value"; // Wrong MD5 for empty body
 
     let mut query_params = BTreeMap::new();
     query_params.insert("auth_key".to_string(), "test-app-key".to_string());
     query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
-    query_params.insert("body_md5".to_string(), "some_hash".to_string()); // Should not be present for empty body
+    query_params.insert("body_md5".to_string(), wrong_body_md5.to_string());
 
     let auth_query = EventQuery {
         auth_key: "test-app-key".to_string(),
         auth_timestamp: current_timestamp,
         auth_version: "1.0".to_string(),
-        body_md5: "some_hash".to_string(),
+        body_md5: wrong_body_md5.to_string(),
         auth_signature: "any-signature".to_string(),
     };
 
@@ -695,13 +697,13 @@ async fn test_api_auth_post_empty_body_with_body_md5_should_fail() {
 
     assert!(
         result.is_err(),
-        "POST with empty body should not contain body_md5"
+        "POST with empty body and wrong body_md5 should fail"
     );
     match result.unwrap_err() {
         Error::Auth(msg) => {
-            assert!(msg.contains("body_md5 must not be present"));
+            assert!(msg.contains("body_md5 mismatch"));
         }
-        _ => panic!("Expected Auth error for body_md5 with empty body"),
+        _ => panic!("Expected Auth error for body_md5 mismatch"),
     }
 }
 
@@ -741,5 +743,47 @@ async fn test_api_auth_get_with_body_md5_should_fail() {
             assert!(msg.contains("body_md5 must not be present"));
         }
         _ => panic!("Expected Auth error for body_md5 with GET request"),
+    }
+}
+
+#[tokio::test]
+async fn test_api_auth_post_no_body_with_body_md5_should_fail() {
+    let app_manager = create_test_app_manager().await;
+    let auth_validator = AuthValidator::new(app_manager);
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "test-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+    query_params.insert("body_md5".to_string(), "some_hash".to_string()); // Should not be present when no body
+
+    let auth_query = EventQuery {
+        auth_key: "test-app-key".to_string(),
+        auth_timestamp: current_timestamp,
+        auth_version: "1.0".to_string(),
+        body_md5: "some_hash".to_string(),
+        auth_signature: "any-signature".to_string(),
+    };
+
+    let result = auth_validator
+        .validate_pusher_api_request(
+            &auth_query,
+            "POST",
+            "/apps/test-app-id/events",
+            &query_params,
+            None, // No body provided
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "POST with no body should not contain body_md5"
+    );
+    match result.unwrap_err() {
+        Error::Auth(msg) => {
+            assert!(msg.contains("body_md5 must not be present"));
+        }
+        _ => panic!("Expected Auth error for body_md5 with no body"),
     }
 }
