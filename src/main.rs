@@ -24,6 +24,7 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
+use auto_allocator;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::Method;
 use axum::http::header::HeaderName;
