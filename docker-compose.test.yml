@@ -9,7 +9,7 @@ services:
   redis-test:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "16379:6379"
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 15s
@@ -42,7 +42,7 @@ services:
   redis-node-1:
     image: redis:7-alpine
     ports:
-      - "7001:6379"
+      - "17001:6379"
     volumes:
       - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
@@ -58,7 +58,7 @@ services:
   redis-node-2:
     image: redis:7-alpine
     ports:
-      - "7002:6379"
+      - "17002:6379"
     volumes:
       - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
@@ -74,7 +74,7 @@ services:
   redis-node-3:
     image: redis:7-alpine
     ports:
-      - "7003:6379"
+      - "17003:6379"
     volumes:
       - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
@@ -90,7 +90,7 @@ services:
   redis-node-4:
     image: redis:7-alpine
     ports:
-      - "7004:6379"
+      - "17004:6379"
     volumes:
       - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
@@ -106,7 +106,7 @@ services:
   redis-node-5:
     image: redis:7-alpine
     ports:
-      - "7005:6379"
+      - "17005:6379"
     volumes:
       - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
@@ -122,7 +122,7 @@ services:
   redis-node-6:
     image: redis:7-alpine
     ports:
-      - "7006:6379"
+      - "17006:6379"
     volumes:
       - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
@@ -139,8 +139,8 @@ services:
   nats-1:
     image: nats:latest
     ports:
-      - "4222:4222"
-      - "8222:8222"  # HTTP monitoring
+      - "14222:4222"
+      - "18222:8222"  # HTTP monitoring
     command: |
       --name nats-1
       --cluster_name NATS
@@ -153,8 +153,8 @@ services:
   nats-2:
     image: nats:latest
     ports:
-      - "4223:4222"
-      - "8223:8222"  # HTTP monitoring
+      - "14223:4222"
+      - "18223:8222"  # HTTP monitoring
     command: |
       --name nats-2
       --cluster_name NATS
@@ -167,8 +167,8 @@ services:
   nats-3:
     image: nats:latest
     ports:
-      - "4224:4222"
-      - "8224:8222"  # HTTP monitoring
+      - "14224:4222"
+      - "18224:8222"  # HTTP monitoring
     command: |
       --name nats-3
       --cluster_name NATS
@@ -186,7 +186,7 @@ services:
       - MYSQL_DATABASE=sockudo
     command: --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password
     ports:
-      - "3306:3306"
+      - "13306:3306"
     volumes:
       - mysql-test-data:/var/lib/mysql
       - ./sql/init-sql-docker.sql:/docker-entrypoint-initdb.d/01-init-sql.sql:ro
