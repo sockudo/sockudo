@@ -1,9 +1,9 @@
-use crate::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use crate::adapter::horizontal_adapter::HorizontalAdapter;
 use crate::adapter::transports::{RedisAdapterConfig, RedisTransport};
 use crate::error::Result;
 
-/// Redis adapter for horizontal scaling - now a type alias for the base implementation
-pub type RedisAdapter = HorizontalAdapterBase<RedisTransport>;
+/// Redis adapter for horizontal scaling - now a type alias for the merged implementation
+pub type RedisAdapter = HorizontalAdapter<RedisTransport>;
 
 // Re-export config for backward compatibility
 pub use crate::adapter::transports::RedisAdapterConfig as RedisAdapterOptions;
@@ -14,6 +14,6 @@ impl RedisAdapter {
             url: redis_url.to_string(),
             ..Default::default()
         };
-        HorizontalAdapterBase::new(config).await
+        HorizontalAdapter::new(config).await
     }
 }
