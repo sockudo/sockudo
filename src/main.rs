@@ -24,7 +24,6 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
-use auto_allocator as _;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::Method;
 use axum::http::header::HeaderName;
@@ -38,6 +37,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use error::Error;
 use futures_util::future::join_all;
+use mimalloc::MiMalloc;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -1119,6 +1119,9 @@ impl SockudoServer {
         Ok(())
     }
 }
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[tokio::main]
 async fn main() -> Result<()> {

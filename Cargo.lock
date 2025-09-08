@@ -190,21 +190,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "auto-allocator"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9266f84a16e307ce6f7bc70f426ca310fb79ed507756307000f228d99ff635c"
-dependencies = [
- "embedded-alloc",
- "libc",
- "log",
- "mimalloc",
- "once_cell",
- "wasm-bindgen",
- "winapi",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1094,12 +1079,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "critical-section"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
-
-[[package]]
 name = "crossbeam-channel"
 version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1300,16 +1279,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "embedded-alloc"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddae17915accbac2cfbc64ea0ae6e3b330e6ea124ba108dada63646fd3c6f815"
-dependencies = [
- "critical-section",
- "linked_list_allocator",
 ]
 
 [[package]]
@@ -2188,12 +2157,6 @@ dependencies = [
  "pkg-config",
  "vcpkg",
 ]
-
-[[package]]
-name = "linked_list_allocator"
-version = "0.10.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afa463f5405ee81cdb9cc2baf37e08ec7e4c8209442b5d72c04cfb2cd6e6286"
 
 [[package]]
 name = "linux-raw-sys"
@@ -3501,7 +3464,6 @@ dependencies = [
  "ahash",
  "async-nats",
  "async-trait",
- "auto-allocator",
  "aws-config",
  "aws-sdk-dynamodb",
  "aws-sdk-lambda",
@@ -3523,6 +3485,7 @@ dependencies = [
  "hyper 1.6.0",
  "hyper-util",
  "md5",
+ "mimalloc",
  "mockall",
  "moka",
  "num_cpus",
