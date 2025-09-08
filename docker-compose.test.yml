@@ -5,38 +5,192 @@
 name: sockudo-test
 
 services:
+  # Single Redis instance
   redis-test:
     image: redis:7-alpine
-    # Keep external port for development access
     ports:
       - "6379:6379"
-    # Relaxed health check
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 15s
       timeout: 5s
       retries: 2
       start_period: 5s
+    networks:
+      - sockudo-network
+
+  # Redis Cluster Setup
+  redis-cluster-setup:
+    image: redis:7-alpine
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+      redis-node-4:
+        condition: service_healthy
+      redis-node-5:
+        condition: service_healthy
+      redis-node-6:
+        condition: service_healthy
+    networks:
+      - sockudo-network
+    command: sh -c "sleep 5 && redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 redis-node-4:6379 redis-node-5:6379 redis-node-6:6379 --cluster-replicas 1 --cluster-yes"
+
+  redis-node-1:
+    image: redis:7-alpine
+    ports:
+      - "7001:6379"
+    volumes:
+      - ./redis-cluster-config:/usr/local/etc/redis
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - sockudo-network
+
+  redis-node-2:
+    image: redis:7-alpine
+    ports:
+      - "7002:6379"
+    volumes:
+      - ./redis-cluster-config:/usr/local/etc/redis
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - sockudo-network
+
+  redis-node-3:
+    image: redis:7-alpine
+    ports:
+      - "7003:6379"
+    volumes:
+      - ./redis-cluster-config:/usr/local/etc/redis
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - sockudo-network
+
+  redis-node-4:
+    image: redis:7-alpine
+    ports:
+      - "7004:6379"
+    volumes:
+      - ./redis-cluster-config:/usr/local/etc/redis
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - sockudo-network
+
+  redis-node-5:
+    image: redis:7-alpine
+    ports:
+      - "7005:6379"
+    volumes:
+      - ./redis-cluster-config:/usr/local/etc/redis
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - sockudo-network
+
+  redis-node-6:
+    image: redis:7-alpine
+    ports:
+      - "7006:6379"
+    volumes:
+      - ./redis-cluster-config:/usr/local/etc/redis
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - sockudo-network
+
+  # NATS Cluster
+  nats-1:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+      - "8222:8222"  # HTTP monitoring
+    command: |
+      --name nats-1
+      --cluster_name NATS
+      --cluster nats://0.0.0.0:6222
+      --routes nats://nats-2:6222,nats://nats-3:6222
+      --http_port 8222
+    networks:
+      - sockudo-network
+
+  nats-2:
+    image: nats:latest
+    ports:
+      - "4223:4222"
+      - "8223:8222"  # HTTP monitoring
+    command: |
+      --name nats-2
+      --cluster_name NATS
+      --cluster nats://0.0.0.0:6222
+      --routes nats://nats-1:6222,nats://nats-3:6222
+      --http_port 8222
+    networks:
+      - sockudo-network
+
+  nats-3:
+    image: nats:latest
+    ports:
+      - "4224:4222"
+      - "8224:8222"  # HTTP monitoring
+    command: |
+      --name nats-3
+      --cluster_name NATS
+      --cluster nats://0.0.0.0:6222
+      --routes nats://nats-1:6222,nats://nats-2:6222
+      --http_port 8222
+    networks:
+      - sockudo-network
 
   # Development MySQL with sample data
   mysql-test:
     image: mysql:8.0
-
     environment:
       - MYSQL_ROOT_PASSWORD=root123
       - MYSQL_DATABASE=sockudo
-
     command: --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password
-
-    # Keep external port for development access
     ports:
       - "3306:3306"
-
     volumes:
       - mysql-test-data:/var/lib/mysql
       - ./sql/init-sql-docker.sql:/docker-entrypoint-initdb.d/01-init-sql.sql:ro
       - ./sql/init-test.sql:/docker-entrypoint-initdb.d/02-init-test.sql:ro
-
     networks:
       - sockudo-network
 
