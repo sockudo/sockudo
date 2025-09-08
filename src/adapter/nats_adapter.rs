@@ -1,4 +1,4 @@
-use crate::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use crate::adapter::horizontal_adapter::HorizontalAdapter;
 use crate::adapter::transports::NatsTransport;
 use crate::error::Result;
 pub(crate) use crate::options::NatsAdapterConfig;
@@ -6,8 +6,8 @@ pub(crate) use crate::options::NatsAdapterConfig;
 /// NATS channels/subjects
 pub const DEFAULT_PREFIX: &str = "sockudo";
 
-/// NATS adapter for horizontal scaling - now a type alias for the base implementation
-pub type NatsAdapter = HorizontalAdapterBase<NatsTransport>;
+/// NATS adapter for horizontal scaling - now a type alias for the merged implementation
+pub type NatsAdapter = HorizontalAdapter<NatsTransport>;
 
 impl NatsAdapter {
     pub async fn with_servers(servers: Vec<String>) -> Result<Self> {
@@ -15,6 +15,6 @@ impl NatsAdapter {
             servers,
             ..Default::default()
         };
-        HorizontalAdapterBase::new(config).await
+        HorizontalAdapter::new(config).await
     }
 }
