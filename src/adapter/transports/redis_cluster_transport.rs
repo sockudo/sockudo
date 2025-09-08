@@ -9,6 +9,16 @@ use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use tracing::{debug, error};
 
+/// Helper function to convert redis::Value to String
+fn value_to_string(v: &redis::Value) -> Option<String> {
+    match v {
+        redis::Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
+        redis::Value::SimpleString(s) => Some(s.clone()),
+        redis::Value::VerbatimString { format: _, text } => Some(text.clone()),
+        _ => None,
+    }
+}
+
 impl TransportConfig for RedisClusterAdapterConfig {
     fn request_timeout_ms(&self) -> u64 {
         self.request_timeout_ms
@@ -153,34 +163,18 @@ impl HorizontalTransport for RedisClusterTransport {
                     continue;
                 }
 
-                let channel = match &push_info.data[0] {
-                    redis::Value::BulkString(bytes) => match String::from_utf8(bytes.clone()) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            error!("Failed to parse channel name from bulk string bytes");
-                            continue;
-                        }
-                    },
-                    redis::Value::SimpleString(s) => s.clone(),
-                    redis::Value::VerbatimString { format: _, text } => text.clone(),
-                    _ => {
-                        error!("Unexpected channel format: {:?}", push_info.data[0]);
+                let channel = match value_to_string(&push_info.data[0]) {
+                    Some(s) => s,
+                    None => {
+                        error!("Failed to parse channel name: {:?}", push_info.data[0]);
                         continue;
                     }
                 };
 
-                let payload = match &push_info.data[1] {
-                    redis::Value::BulkString(bytes) => match String::from_utf8(bytes.clone()) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            error!("Failed to parse payload from bulk string bytes");
-                            continue;
-                        }
-                    },
-                    redis::Value::SimpleString(s) => s.clone(),
-                    redis::Value::VerbatimString { format: _, text } => text.clone(),
-                    _ => {
-                        error!("Unexpected payload format: {:?}", push_info.data[1]);
+                let payload = match value_to_string(&push_info.data[1]) {
+                    Some(s) => s,
+                    None => {
+                        error!("Failed to parse payload: {:?}", push_info.data[1]);
                         continue;
                     }
                 };
