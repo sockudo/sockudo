@@ -137,7 +137,9 @@ impl HorizontalTransport for RedisTransport {
         }
 
         // This should never be reached due to the loop logic, but return error for safety
-        Err(Error::Redis("All retry attempts failed unexpectedly".to_string()))
+        Err(Error::Redis(
+            "All retry attempts failed unexpectedly".to_string(),
+        ))
     }
 
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
@@ -311,11 +313,11 @@ impl HorizontalTransport for RedisTransport {
                     let node_count = nodes_info
                         .lines()
                         .filter(|line| {
-                            !line.trim().is_empty() && 
-                            (line.contains(" master ") || line.contains(" slave "))
+                            !line.trim().is_empty()
+                                && (line.contains(" master ") || line.contains(" slave "))
                         })
                         .count();
-                    
+
                     if node_count > 0 {
                         debug!("Detected {} Redis cluster nodes", node_count);
                         Ok(node_count)
