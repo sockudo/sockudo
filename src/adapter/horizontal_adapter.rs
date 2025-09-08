@@ -1,30 +1,21 @@
 #![allow(dead_code)]
 
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::adapter::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
-use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::ConnectionManager;
-use crate::app::manager::AppManager;
+use crate::adapter::local_adapter::LocalAdapter;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
+
 use crate::metrics::MetricsInterface;
-use crate::namespace::Namespace;
-use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocketRef};
-use async_trait::async_trait;
-use dashmap::{DashMap, DashSet};
-use fastwebsockets::WebSocketWrite;
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
+use crate::websocket::SocketId;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::io::WriteHalf;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Request types for horizontal communication
@@ -94,8 +85,8 @@ pub struct PendingRequest {
     pub(crate) notify: Arc<Notify>,
 }
 
-/// Unified horizontal adapter with transport abstraction
-pub struct HorizontalAdapter<T: HorizontalTransport> {
+/// Base horizontal adapter
+pub struct HorizontalAdapter {
     /// Unique node ID
     pub node_id: String,
 
@@ -108,46 +99,31 @@ pub struct HorizontalAdapter<T: HorizontalTransport> {
     /// Timeout for requests in milliseconds
     pub requests_timeout: u64,
 
-    /// Metrics interface
     pub metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
-
-    /// Transport implementation for messaging
-    pub transport: T,
-
-    /// Transport configuration
-    pub config: T::Config,
 }
 
-impl<T: HorizontalTransport> HorizontalAdapter<T>
-where
-    T::Config: TransportConfig,
-{
-    /// Create a new horizontal adapter with transport
-    pub async fn new(config: T::Config) -> Result<Self> {
-        let transport = T::new(config.clone()).await?;
-        let requests_timeout = config.request_timeout_ms();
+impl Default for HorizontalAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-        Ok(Self {
+impl HorizontalAdapter {
+    /// Create a new horizontal adapter
+    pub fn new() -> Self {
+        Self {
             node_id: Uuid::new_v4().to_string(),
             local_adapter: LocalAdapter::new(),
             pending_requests: DashMap::new(),
-            requests_timeout,
+            requests_timeout: 5000, // Default 5 seconds
             metrics: None,
-            transport,
-            config,
-        })
-    }
-
-    pub async fn set_metrics(
-        &mut self,
-        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
-    ) -> Result<()> {
-        self.metrics = Some(metrics);
-        Ok(())
+        }
     }
 
     /// Start the request cleanup task
     pub fn start_request_cleanup(&mut self) {
+        // Clone data needed for the task
+        // let node_id = self.node_id.clone();
         let timeout = self.requests_timeout;
         let pending_requests_clone = self.pending_requests.clone();
 
@@ -351,6 +327,171 @@ where
         Ok(())
     }
 
+    /// Send a request to other nodes and wait for responses
+    pub async fn send_request(
+        &mut self,
+        app_id: &str,
+        request_type: RequestType,
+        channel: Option<&str>,
+        socket_id: Option<&str>,
+        user_id: Option<&str>,
+        expected_node_count: usize,
+    ) -> Result<ResponseBody> {
+        let request_id = Uuid::new_v4().to_string();
+        let start = Instant::now();
+
+        // Create the request
+        let _request = RequestBody {
+            request_id: request_id.clone(),
+            node_id: self.node_id.clone(),
+            app_id: app_id.to_string(),
+            request_type: request_type.clone(),
+            channel: channel.map(String::from),
+            socket_id: socket_id.map(String::from),
+            user_id: user_id.map(String::from),
+        };
+
+        // Add to pending requests with proper initialization
+        self.pending_requests.insert(
+            request_id.clone(),
+            PendingRequest {
+                start_time: start,
+                app_id: app_id.to_string(),
+                responses: Vec::with_capacity(expected_node_count.saturating_sub(1)),
+                notify: Arc::new(Notify::new()),
+            },
+        );
+
+        // Track sent request in metrics
+        if let Some(metrics_ref) = &self.metrics {
+            let metrics = metrics_ref.lock().await;
+            metrics.mark_horizontal_adapter_request_sent(app_id);
+        }
+
+        // ✅ IMPORTANT: Broadcasting is handled by the adapter implementation
+        // For Redis: RedisAdapter publishes to request_channel in its listeners
+        // For NATS: NatsAdapter would publish to NATS subjects
+        // For HTTP: HttpAdapter would POST to other nodes
+        debug!(
+            "Request {} created for type {:?} on app {} - broadcasting handled by adapter",
+            request_id, request_type, app_id
+        );
+
+        // Wait for responses with proper timeout handling
+        let timeout_duration = Duration::from_millis(self.requests_timeout);
+        let max_expected_responses = expected_node_count.saturating_sub(1);
+
+        // If we don't expect any responses (single node), return immediately
+        if max_expected_responses == 0 {
+            debug!(
+                "Single node deployment, no responses expected for request {}",
+                request_id
+            );
+            self.pending_requests.remove(&request_id);
+            return Ok(ResponseBody {
+                request_id: request_id.clone(),
+                node_id: self.node_id.clone(),
+                app_id: app_id.to_string(),
+                members: HashMap::new(),
+                socket_ids: Vec::new(),
+                sockets_count: 0,
+                channels_with_sockets_count: HashMap::new(),
+                exists: false,
+                channels: HashSet::new(),
+                members_count: 0,
+            });
+        }
+
+        // Improved waiting logic
+        let check_interval = Duration::from_millis(50);
+        let mut checks = 0;
+        let max_checks = (timeout_duration.as_millis() / check_interval.as_millis()) as usize;
+
+        let responses = loop {
+            if checks >= max_checks {
+                let current_responses = self
+                    .pending_requests
+                    .get(&request_id)
+                    .map(|r| r.responses.len())
+                    .unwrap_or(0);
+
+                warn!(
+                    "Request {} timed out after {}ms, got {} responses out of {} expected",
+                    request_id,
+                    start.elapsed().as_millis(),
+                    current_responses,
+                    max_expected_responses
+                );
+                break self
+                    .pending_requests
+                    .remove(&request_id)
+                    .map(|(_, req)| req.responses)
+                    .unwrap_or_default();
+            }
+
+            if let Some(pending_request) = self.pending_requests.get(&request_id) {
+                if pending_request.responses.len() >= max_expected_responses {
+                    debug!(
+                        "Request {} completed successfully with {}/{} responses in {}ms",
+                        request_id,
+                        pending_request.responses.len(),
+                        max_expected_responses,
+                        start.elapsed().as_millis()
+                    );
+                    break self
+                        .pending_requests
+                        .remove(&request_id)
+                        .map(|(_, req)| req.responses)
+                        .unwrap_or_default();
+                }
+            } else {
+                return Err(Error::Other(format!(
+                    "Request {request_id} was removed unexpectedly (possibly by cleanup task)"
+                )));
+            }
+
+            tokio::time::sleep(check_interval).await;
+            checks += 1;
+        };
+
+        // Use the aggregation method
+        let combined_response = self.aggregate_responses(
+            request_id.clone(),
+            self.node_id.clone(),
+            app_id.to_string(),
+            &request_type,
+            responses,
+        );
+
+        // Validate the aggregated response
+        if let Err(e) = self.validate_aggregated_response(&combined_response, &request_type) {
+            warn!(
+                "Response validation failed for request {}: {}",
+                request_id, e
+            );
+        }
+
+        // Track metrics
+        if let Some(metrics_ref) = &self.metrics {
+            let metrics = metrics_ref.lock().await;
+            let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
+
+            metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
+
+            let resolved = combined_response.sockets_count > 0
+                || !combined_response.members.is_empty()
+                || combined_response.exists
+                || !combined_response.channels.is_empty()
+                || combined_response.members_count > 0
+                || !combined_response.channels_with_sockets_count.is_empty()
+                || max_expected_responses == 0;
+
+            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
+        }
+
+        Ok(combined_response)
+    }
+
     pub fn aggregate_responses(
         &self,
         request_id: String,
@@ -547,802 +688,5 @@ where
         } else {
             recipient_count
         }
-    }
-
-    /// Send a request to other nodes and wait for responses
-    pub async fn send_request(
-        &self,
-        app_id: &str,
-        request_type: RequestType,
-        channel: Option<&str>,
-        socket_id: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<ResponseBody> {
-        let node_count = self.transport.get_node_count().await?;
-
-        // Create the request
-        let request_id = Uuid::new_v4().to_string();
-        let node_id = self.node_id.clone();
-
-        let request = RequestBody {
-            request_id: request_id.clone(),
-            node_id,
-            app_id: app_id.to_string(),
-            request_type: request_type.clone(),
-            channel: channel.map(String::from),
-            socket_id: socket_id.map(String::from),
-            user_id: user_id.map(String::from),
-        };
-
-        // Add to pending requests
-        self.pending_requests.insert(
-            request_id.clone(),
-            PendingRequest {
-                start_time: Instant::now(),
-                app_id: app_id.to_string(),
-                responses: Vec::with_capacity(node_count.saturating_sub(1)),
-                notify: Arc::new(Notify::new()),
-            },
-        );
-
-        if let Some(metrics_ref) = &self.metrics {
-            let metrics = metrics_ref.lock().await;
-            metrics.mark_horizontal_adapter_request_sent(app_id);
-        }
-
-        // Broadcast the request via transport
-        self.transport.publish_request(&request).await?;
-
-        // Wait for responses
-        let timeout_duration = Duration::from_millis(self.config.request_timeout_ms());
-        let max_expected_responses = node_count.saturating_sub(1);
-
-        if max_expected_responses == 0 {
-            self.pending_requests.remove(&request_id);
-            return Ok(ResponseBody {
-                request_id,
-                node_id: request.node_id,
-                app_id: app_id.to_string(),
-                members: HashMap::new(),
-                socket_ids: Vec::new(),
-                sockets_count: 0,
-                channels_with_sockets_count: HashMap::new(),
-                exists: false,
-                channels: HashSet::new(),
-                members_count: 0,
-            });
-        }
-
-        // Wait for responses using event-driven approach
-        let start = Instant::now();
-        let notify = self
-            .pending_requests
-            .get(&request_id)
-            .map(|req| req.notify.clone())
-            .ok_or_else(|| {
-                Error::Other(format!(
-                    "Request {request_id} not found in pending requests"
-                ))
-            })?;
-
-        let responses = loop {
-            // Wait for notification or timeout
-            let result = tokio::select! {
-                _ = notify.notified() => {
-                    // Check if we have enough responses
-                    if let Some(pending_request) = self.pending_requests.get(&request_id) {
-                        if pending_request.responses.len() >= max_expected_responses {
-                            debug!(
-                                "Request {} completed with {}/{} responses in {}ms",
-                                request_id,
-                                pending_request.responses.len(),
-                                max_expected_responses,
-                                start.elapsed().as_millis()
-                            );
-                            // Extract responses without removing the entry yet to avoid race condition
-                            let responses = pending_request.responses.clone();
-                            Some(responses)
-                        } else {
-                            None // Continue waiting
-                        }
-                    } else {
-                        return Err(Error::Other(format!(
-                            "Request {request_id} was removed unexpectedly"
-                        )));
-                    }
-                }
-                _ = tokio::time::sleep(timeout_duration) => {
-                    // Timeout occurred
-                    warn!(
-                        "Request {} timed out after {}ms",
-                        request_id,
-                        start.elapsed().as_millis()
-                    );
-                    let responses = if let Some(pending_request) = self.pending_requests.get(&request_id) {
-                        pending_request.responses.clone()
-                    } else {
-                        Vec::new()
-                    };
-                    Some(responses)
-                }
-            };
-
-            if let Some(responses) = result {
-                break responses;
-            }
-            // If result is None, continue waiting (notification came but not enough responses yet)
-        };
-
-        // Clean up the pending request now that we're done
-        self.pending_requests.remove(&request_id);
-
-        // Aggregate responses
-        let combined_response = self.aggregate_responses(
-            request_id.clone(),
-            request.node_id,
-            app_id.to_string(),
-            &request_type,
-            responses,
-        );
-
-        // Validate aggregated response
-        if let Err(e) = self.validate_aggregated_response(&combined_response, &request_type) {
-            warn!("Response validation failed for request {}: {}", request_id, e);
-        }
-
-        // Track metrics
-        if let Some(metrics_ref) = &self.metrics {
-            let metrics = metrics_ref.lock().await;
-            let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
-            metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
-
-            let resolved = combined_response.sockets_count > 0
-                || !combined_response.members.is_empty()
-                || combined_response.exists
-                || !combined_response.channels.is_empty()
-                || combined_response.members_count > 0
-                || !combined_response.channels_with_sockets_count.is_empty();
-
-            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
-        }
-
-        Ok(combined_response)
-    }
-
-    pub async fn start_listeners(&mut self) -> Result<()> {
-        self.start_request_cleanup();
-
-        // Create shared state for handlers
-        let node_id = self.node_id.clone();
-        let local_adapter = Arc::new(Mutex::new(self.local_adapter.clone()));
-        let pending_requests = self.pending_requests.clone();
-        let metrics = self.metrics.clone();
-
-        // Clone for each handler
-        let broadcast_node_id = node_id.clone();
-        let broadcast_local_adapter = local_adapter.clone();
-        let broadcast_metrics = metrics.clone();
-
-        let request_node_id = node_id.clone();
-        let request_local_adapter = local_adapter.clone();
-        let request_metrics = metrics.clone();
-
-        let response_node_id = node_id.clone();
-        let response_pending_requests = pending_requests.clone();
-        let response_metrics = metrics.clone();
-
-        let handlers = TransportHandlers {
-            on_broadcast: Arc::new(move |broadcast| {
-                let node_id = broadcast_node_id.clone();
-                let local_adapter = broadcast_local_adapter.clone();
-                let metrics = broadcast_metrics.clone();
-                
-                Box::pin(async move {
-                    if broadcast.node_id == node_id {
-                        return;
-                    }
-
-                    if let Ok(message) = serde_json::from_str(&broadcast.message) {
-                        let except_id = broadcast
-                            .except_socket_id
-                            .as_ref()
-                            .map(|id| SocketId(id.clone()));
-
-                        // Send the message locally
-                        let mut local_adapter_lock = local_adapter.lock().await;
-                        
-                        // Count local recipients for this node (adjusts for excluded socket)
-                        let local_recipient_count = local_adapter_lock
-                            .get_channel_socket_count(&broadcast.app_id, &broadcast.channel)
-                            .await;
-                        
-                        let adjusted_count = if except_id.is_some() && local_recipient_count > 0 {
-                            local_recipient_count - 1
-                        } else {
-                            local_recipient_count
-                        };
-
-                        // Use the timestamp from the broadcast message for end-to-end tracking
-                        let send_result = local_adapter_lock
-                            .send(
-                                &broadcast.channel,
-                                message,
-                                except_id.as_ref(),
-                                &broadcast.app_id,
-                                broadcast.timestamp_ms,
-                            )
-                            .await;
-
-                        drop(local_adapter_lock); // Release lock before metrics
-
-                        // Track broadcast latency metrics
-                        Self::track_broadcast_latency_if_successful(
-                            &send_result,
-                            broadcast.timestamp_ms,
-                            Some(adjusted_count),
-                            &broadcast.app_id,
-                            &broadcast.channel,
-                            metrics,
-                        )
-                        .await;
-                    }
-                })
-            }),
-            on_request: Arc::new(move |request| {
-                let node_id = request_node_id.clone();
-                let local_adapter = request_local_adapter.clone();
-                let metrics = request_metrics.clone();
-                
-                Box::pin(async move {
-                    if request.node_id == node_id {
-                        return Err(Error::Other("Skipping own request".to_string()));
-                    }
-
-                    // Track metrics for received request
-                    if let Some(ref metrics) = metrics {
-                        let metrics = metrics.lock().await;
-                        metrics.mark_horizontal_adapter_request_received(&request.app_id);
-                    }
-
-                    // Process the request using local adapter
-                    let mut local_adapter_lock = local_adapter.lock().await;
-                    let mut response = ResponseBody {
-                        request_id: request.request_id.clone(),
-                        node_id: node_id.clone(),
-                        app_id: request.app_id.clone(),
-                        members: HashMap::new(),
-                        socket_ids: Vec::new(),
-                        sockets_count: 0,
-                        channels_with_sockets_count: HashMap::new(),
-                        exists: false,
-                        channels: HashSet::new(),
-                        members_count: 0,
-                    };
-
-                    // Process ALL request types (complete implementation)
-                    match request.request_type {
-                        RequestType::ChannelMembers => {
-                            if let Some(channel) = &request.channel {
-                                let members = local_adapter_lock
-                                    .get_channel_members(&request.app_id, channel)
-                                    .await?;
-                                response.members = members;
-                            }
-                        }
-                        RequestType::ChannelSockets => {
-                            if let Some(channel) = &request.channel {
-                                let channel_set = local_adapter_lock
-                                    .get_channel_sockets(&request.app_id, channel)
-                                    .await?;
-                                response.socket_ids = channel_set
-                                    .iter()
-                                    .map(|socket_id| socket_id.0.clone())
-                                    .collect();
-                            }
-                        }
-                        RequestType::ChannelSocketsCount => {
-                            if let Some(channel) = &request.channel {
-                                response.sockets_count = local_adapter_lock
-                                    .get_channel_socket_count(&request.app_id, channel)
-                                    .await;
-                            }
-                        }
-                        RequestType::SocketExistsInChannel => {
-                            if let (Some(channel), Some(socket_id)) = (&request.channel, &request.socket_id) {
-                                let socket_id = SocketId(socket_id.clone());
-                                response.exists = local_adapter_lock
-                                    .is_in_channel(&request.app_id, channel, &socket_id)
-                                    .await?;
-                            }
-                        }
-                        RequestType::TerminateUserConnections => {
-                            if let Some(user_id) = &request.user_id {
-                                local_adapter_lock
-                                    .terminate_user_connections(&request.app_id, user_id)
-                                    .await?;
-                                response.exists = true;
-                            }
-                        }
-                        RequestType::ChannelsWithSocketsCount => {
-                            let channels = local_adapter_lock
-                                .get_channels_with_socket_count(&request.app_id)
-                                .await?;
-                            response.channels_with_sockets_count = channels
-                                .iter()
-                                .map(|entry| (entry.key().clone(), *entry.value()))
-                                .collect();
-                        }
-                        RequestType::Sockets => {
-                            let connections = local_adapter_lock
-                                .get_all_connections(&request.app_id)
-                                .await;
-                            response.socket_ids = connections
-                                .iter()
-                                .map(|entry| entry.key().0.clone())
-                                .collect();
-                            response.sockets_count = connections.len();
-                        }
-                        RequestType::Channels => {
-                            let channels = local_adapter_lock
-                                .get_channels_with_socket_count(&request.app_id)
-                                .await?;
-                            response.channels = channels.iter().map(|entry| entry.key().clone()).collect();
-                        }
-                        RequestType::SocketsCount => {
-                            let connections = local_adapter_lock
-                                .get_all_connections(&request.app_id)
-                                .await;
-                            response.sockets_count = connections.len();
-                        }
-                        RequestType::ChannelMembersCount => {
-                            if let Some(channel) = &request.channel {
-                                let members = local_adapter_lock
-                                    .get_channel_members(&request.app_id, channel)
-                                    .await?;
-                                response.members_count = members.len();
-                            }
-                        }
-                        RequestType::CountUserConnectionsInChannel => {
-                            if let (Some(user_id), Some(channel)) = (&request.user_id, &request.channel) {
-                                response.sockets_count = local_adapter_lock
-                                    .count_user_connections_in_channel(user_id, &request.app_id, channel, None)
-                                    .await?;
-                            }
-                        }
-                    }
-
-                    Ok(response)
-                })
-            }),
-            on_response: Arc::new(move |response| {
-                let node_id = response_node_id.clone();
-                let pending_requests = response_pending_requests.clone();
-                let metrics = response_metrics.clone();
-                
-                Box::pin(async move {
-                    if response.node_id == node_id {
-                        return;
-                    }
-
-                    // Track received response
-                    if let Some(metrics_ref) = &metrics {
-                        let metrics = metrics_ref.lock().await;
-                        metrics.mark_horizontal_adapter_response_received(&response.app_id);
-                    }
-
-                    // Get the pending request and notify waiters
-                    if let Some(mut request) = pending_requests.get_mut(&response.request_id) {
-                        // Add response to the list
-                        request.responses.push(response);
-
-                        // Notify any waiting send_request calls that a new response has arrived
-                        request.notify.notify_one();
-                    }
-                })
-            }),
-        };
-
-        self.transport.start_listeners(handlers).await?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl<T: HorizontalTransport + 'static> ConnectionManager for HorizontalAdapter<T>
-where
-    T::Config: TransportConfig,
-{
-    async fn init(&mut self) {
-        self.local_adapter.init().await;
-
-        if let Err(e) = self.start_listeners().await {
-            error!("Failed to start transport listeners: {}", e);
-        }
-    }
-
-    async fn get_namespace(&mut self, app_id: &str) -> Option<Arc<Namespace>> {
-        self.local_adapter.get_namespace(app_id).await
-    }
-
-    async fn add_socket(
-        &mut self,
-        socket_id: SocketId,
-        socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
-        app_id: &str,
-        app_manager: &Arc<dyn AppManager + Send + Sync>,
-    ) -> Result<()> {
-        self.local_adapter
-            .add_socket(socket_id, socket, app_id, app_manager)
-            .await
-    }
-
-    async fn get_connection(&mut self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
-        self.local_adapter.get_connection(socket_id, app_id).await
-    }
-
-    async fn remove_connection(&mut self, socket_id: &SocketId, app_id: &str) -> Result<()> {
-        self.local_adapter.remove_connection(socket_id, app_id).await
-    }
-
-    async fn send_message(
-        &mut self,
-        app_id: &str,
-        socket_id: &SocketId,
-        message: PusherMessage,
-    ) -> Result<()> {
-        self.local_adapter
-            .send_message(app_id, socket_id, message)
-            .await
-    }
-
-    async fn send(
-        &mut self,
-        channel: &str,
-        message: PusherMessage,
-        except: Option<&SocketId>,
-        app_id: &str,
-        start_time_ms: Option<f64>,
-    ) -> Result<()> {
-        // Send locally first (tracked in connection manager for metrics)
-        let local_result = self.local_adapter
-            .send(channel, message.clone(), except, app_id, start_time_ms)
-            .await;
-
-        if let Err(e) = local_result {
-            warn!("Local send failed for channel {}: {}", channel, e);
-        }
-
-        // Broadcast to other nodes
-        let message_json = serde_json::to_string(&message)?;
-        let broadcast = BroadcastMessage {
-            node_id: self.node_id.clone(),
-            app_id: app_id.to_string(),
-            channel: channel.to_string(),
-            message: message_json,
-            except_socket_id: except.map(|id| id.0.clone()),
-            timestamp_ms: start_time_ms.or_else(|| {
-                Some(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as f64
-                        / 1_000_000.0, // Convert to milliseconds with microsecond precision
-                )
-            }),
-        };
-
-        self.transport.publish_broadcast(&broadcast).await?;
-
-        Ok(())
-    }
-
-    async fn get_channel_members(
-        &mut self,
-        app_id: &str,
-        channel: &str,
-    ) -> Result<HashMap<String, PresenceMemberInfo>> {
-        // Get local members
-        let mut members = self
-            .local_adapter
-            .get_channel_members(app_id, channel)
-            .await?;
-
-        // Get distributed members
-        let response = self
-            .send_request(
-                app_id,
-                RequestType::ChannelMembers,
-                Some(channel),
-                None,
-                None,
-            )
-            .await?;
-
-        members.extend(response.members);
-        Ok(members)
-    }
-
-    async fn get_channel_sockets(
-        &mut self,
-        app_id: &str,
-        channel: &str,
-    ) -> Result<DashSet<SocketId>> {
-        let all_socket_ids = DashSet::new();
-
-        // Get local sockets
-        let sockets = self
-            .local_adapter
-            .get_channel_sockets(app_id, channel)
-            .await?;
-
-        for entry in sockets.iter() {
-            all_socket_ids.insert(entry.key().clone());
-        }
-
-        // Get remote sockets
-        let response = self
-            .send_request(
-                app_id,
-                RequestType::ChannelSockets,
-                Some(channel),
-                None,
-                None,
-            )
-            .await?;
-
-        for socket_id in response.socket_ids {
-            all_socket_ids.insert(SocketId(socket_id));
-        }
-
-        Ok(all_socket_ids)
-    }
-
-    async fn remove_channel(&mut self, app_id: &str, channel: &str) {
-        self.local_adapter.remove_channel(app_id, channel).await
-    }
-
-    async fn is_in_channel(
-        &mut self,
-        app_id: &str,
-        channel: &str,
-        socket_id: &SocketId,
-    ) -> Result<bool> {
-        // Check locally first
-        let local_result = self
-            .local_adapter
-            .is_in_channel(app_id, channel, socket_id)
-            .await?;
-
-        if local_result {
-            return Ok(true);
-        }
-
-        // Check other nodes
-        let response = self
-            .send_request(
-                app_id,
-                RequestType::SocketExistsInChannel,
-                Some(channel),
-                Some(&socket_id.0),
-                None,
-            )
-            .await?;
-
-        Ok(response.exists)
-    }
-
-    async fn get_user_sockets(
-        &mut self,
-        user_id: &str,
-        app_id: &str,
-    ) -> Result<DashSet<WebSocketRef>> {
-        self.local_adapter.get_user_sockets(user_id, app_id).await
-    }
-
-    async fn cleanup_connection(&mut self, app_id: &str, ws: WebSocketRef) {
-        self.local_adapter.cleanup_connection(app_id, ws).await
-    }
-
-    async fn terminate_connection(&mut self, app_id: &str, user_id: &str) -> Result<()> {
-        // Terminate locally
-        self.local_adapter
-            .terminate_connection(app_id, user_id)
-            .await?;
-
-        // Broadcast termination to other nodes
-        let _response = self
-            .send_request(
-                app_id,
-                RequestType::TerminateUserConnections,
-                None,
-                None,
-                Some(user_id),
-            )
-            .await?;
-
-        Ok(())
-    }
-
-    async fn add_channel_to_sockets(&mut self, app_id: &str, channel: &str, socket_id: &SocketId) {
-        self.local_adapter
-            .add_channel_to_sockets(app_id, channel, socket_id)
-            .await
-    }
-
-    async fn get_channel_socket_count(&mut self, app_id: &str, channel: &str) -> usize {
-        // Get local count
-        let local_count = self
-            .local_adapter
-            .get_channel_socket_count(app_id, channel)
-            .await;
-
-        // Get distributed count
-        match self
-            .send_request(
-                app_id,
-                RequestType::ChannelSocketsCount,
-                Some(channel),
-                None,
-                None,
-            )
-            .await
-        {
-            Ok(response) => local_count + response.sockets_count,
-            Err(e) => {
-                error!("Failed to get remote channel socket count: {}", e);
-                local_count
-            }
-        }
-    }
-
-    async fn add_to_channel(
-        &mut self,
-        app_id: &str,
-        channel: &str,
-        socket_id: &SocketId,
-    ) -> Result<bool> {
-        self.local_adapter
-            .add_to_channel(app_id, channel, socket_id)
-            .await
-    }
-
-    async fn remove_from_channel(
-        &mut self,
-        app_id: &str,
-        channel: &str,
-        socket_id: &SocketId,
-    ) -> Result<bool> {
-        self.local_adapter
-            .remove_from_channel(app_id, channel, socket_id)
-            .await
-    }
-
-    async fn get_presence_member(
-        &mut self,
-        app_id: &str,
-        channel: &str,
-        socket_id: &SocketId,
-    ) -> Option<PresenceMemberInfo> {
-        self.local_adapter
-            .get_presence_member(app_id, channel, socket_id)
-            .await
-    }
-
-    async fn terminate_user_connections(&mut self, app_id: &str, user_id: &str) -> Result<()> {
-        self.terminate_connection(app_id, user_id).await
-    }
-
-    async fn add_user(&mut self, ws: WebSocketRef) -> Result<()> {
-        self.local_adapter.add_user(ws).await
-    }
-
-    async fn remove_user(&mut self, ws: WebSocketRef) -> Result<()> {
-        self.local_adapter.remove_user(ws).await
-    }
-
-    async fn remove_user_socket(
-        &mut self,
-        user_id: &str,
-        socket_id: &SocketId,
-        app_id: &str,
-    ) -> Result<()> {
-        self.local_adapter
-            .remove_user_socket(user_id, socket_id, app_id)
-            .await
-    }
-
-    async fn count_user_connections_in_channel(
-        &mut self,
-        user_id: &str,
-        app_id: &str,
-        channel: &str,
-        excluding_socket: Option<&SocketId>,
-    ) -> Result<usize> {
-        // Get local count (with excluding_socket filter)
-        let local_count = self
-            .local_adapter
-            .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
-            .await?;
-
-        // Get remote count (no excluding_socket since it's local-only)
-        match self
-            .send_request(
-                app_id,
-                RequestType::CountUserConnectionsInChannel,
-                Some(channel),
-                None,
-                Some(user_id),
-            )
-            .await
-        {
-            Ok(response) => Ok(local_count + response.sockets_count),
-            Err(e) => {
-                error!("Failed to get remote user connections count: {}", e);
-                Ok(local_count)
-            }
-        }
-    }
-
-    async fn get_channels_with_socket_count(
-        &mut self,
-        app_id: &str,
-    ) -> Result<DashMap<String, usize>> {
-        // Get local channels
-        let channels = self
-            .local_adapter
-            .get_channels_with_socket_count(app_id)
-            .await?;
-
-        // Get distributed channels
-        match self
-            .send_request(
-                app_id,
-                RequestType::ChannelsWithSocketsCount,
-                None,
-                None,
-                None,
-            )
-            .await
-        {
-            Ok(response) => {
-                for (channel, count) in response.channels_with_sockets_count {
-                    *channels.entry(channel).or_insert(0) += count;
-                }
-            }
-            Err(e) => {
-                error!("Failed to get remote channels with socket count: {}", e);
-            }
-        }
-
-        Ok(channels)
-    }
-
-    async fn get_sockets_count(&self, app_id: &str) -> Result<usize> {
-        // Get local count
-        let local_count = self.local_adapter.get_sockets_count(app_id).await?;
-
-        // Get distributed count
-        match self
-            .send_request(app_id, RequestType::SocketsCount, None, None, None)
-            .await
-        {
-            Ok(response) => Ok(local_count + response.sockets_count),
-            Err(e) => {
-                error!("Failed to get remote socket count: {}", e);
-                Ok(local_count)
-            }
-        }
-    }
-
-    async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {
-        self.local_adapter.get_namespaces().await
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    async fn check_health(&self) -> Result<()> {
-        self.transport.check_health().await
     }
 }
