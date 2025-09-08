@@ -199,23 +199,23 @@ where
             // If result is None, continue waiting (notification came but not enough responses yet)
         };
 
-        // Clean up the pending request now that we're done
-        {
-            let horizontal = self.horizontal.lock().await;
-            horizontal.pending_requests.remove(&request_id);
-        }
-
-        // Aggregate responses
+        // Aggregate responses first, then clean up to prevent race condition
         let combined_response = {
             let horizontal = self.horizontal.lock().await;
             horizontal.aggregate_responses(
-                request_id,
+                request_id.clone(),
                 request.node_id,
                 app_id.to_string(),
                 &request_type,
                 responses,
             )
         }; // horizontal lock released here
+
+        // Clean up the pending request after aggregation is complete
+        {
+            let horizontal = self.horizontal.lock().await;
+            horizontal.pending_requests.remove(&request_id);
+        }
 
         // Track metrics
         {
