@@ -136,7 +136,8 @@ impl HorizontalTransport for RedisTransport {
             }
         }
 
-        unreachable!() // Should never reach here due to early return or final attempt error
+        // This should never be reached due to the loop logic, but return error for safety
+        Err(Error::Redis("All retry attempts failed unexpectedly".to_string()))
     }
 
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
