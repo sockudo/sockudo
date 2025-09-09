@@ -1,7 +1,7 @@
 // src/adapter/handler/timeout_management.rs
 use super::ConnectionHandler;
 use crate::error::Result;
-use crate::protocol::constants::{PONG_TIMEOUT};
+use crate::protocol::constants::PONG_TIMEOUT;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::SocketId;
 use std::time::Duration;
