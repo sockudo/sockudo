@@ -7,7 +7,7 @@
   "shutdown_grace_period": 10,
   "websocket_max_payload_kb": 64,
   "user_authentication_timeout": 3600,
-
+  "activity_timeout": 120,
   "adapter": {
     "driver": "local",
     "redis": {
