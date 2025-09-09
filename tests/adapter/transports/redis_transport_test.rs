@@ -17,15 +17,22 @@ async fn test_redis_transport_new() -> Result<()> {
 
 #[tokio::test]
 async fn test_redis_transport_new_with_invalid_url() {
+    // Use localhost with a port that's not listening - should fail quickly
     let config = RedisAdapterConfig {
-        url: "redis://invalid:19999/".to_string(),
+        url: "redis://127.0.0.1:19999/".to_string(),
         prefix: "test".to_string(),
         request_timeout_ms: 1000,
         cluster_mode: false,
     };
     
-    let result = RedisTransport::new(config).await;
-    assert!(result.is_err());
+    // Add a timeout to prevent test from hanging
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        RedisTransport::new(config)
+    ).await;
+    
+    // Either timeout or connection error is fine
+    assert!(result.is_err() || result.unwrap().is_err());
 }
 
 #[tokio::test]

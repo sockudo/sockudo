@@ -17,17 +17,17 @@ pub fn get_redis_config() -> RedisAdapterConfig {
     }
 }
 
-/// Get Redis Cluster configuration for testing (ports 17001-17003)
+/// Get Redis Cluster configuration for testing (ports 7000-7002)
 pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
     RedisClusterAdapterConfig {
         nodes: vec![
-            "redis://127.0.0.1:17001".to_string(),
-            "redis://127.0.0.1:17002".to_string(),
-            "redis://127.0.0.1:17003".to_string(),
+            "redis://127.0.0.1:7000".to_string(),
+            "redis://127.0.0.1:7001".to_string(),
+            "redis://127.0.0.1:7002".to_string(),
         ],
         prefix: format!("test_{}", Uuid::new_v4().to_string().replace('-', "")),
         request_timeout_ms: 1000, // Reduced timeout
-        use_connection_manager: true,
+        use_connection_manager: false, // Disable for grokzen cluster compatibility
     }
 }
 

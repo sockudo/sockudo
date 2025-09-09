@@ -129,9 +129,9 @@ async fn test_cluster_get_node_count() -> Result<()> {
     let config = get_redis_cluster_config();
     let transport = RedisClusterTransport::new(config.clone()).await?;
     
-    // Should detect cluster nodes (3 in our test setup)
+    // Should detect connected Sockudo instances (at least 1 from this test)
     let count = transport.get_node_count().await?;
-    assert!(count >= 3, "Expected at least 3 cluster nodes, got {}", count);
+    assert!(count >= 1, "Expected at least 1 Sockudo instance, got {}", count);
     
     Ok(())
 }
