@@ -122,13 +122,13 @@ impl From<Value> for MessageData {
 }
 
 impl PusherMessage {
-    pub fn connection_established(socket_id: String) -> Self {
+    pub fn connection_established(socket_id: String, activity_timeout: u64) -> Self {
         Self {
             event: Some("pusher:connection_established".to_string()),
             data: Some(MessageData::from(
                 json!({
                     "socket_id": socket_id,
-                    "activity_timeout": 120
+                    "activity_timeout": activity_timeout  // Now configurable
                 })
                 .to_string(),
             )),
@@ -137,7 +137,6 @@ impl PusherMessage {
             user_id: None,
         }
     }
-
     pub fn subscription_succeeded(channel: String, presence_data: Option<PresenceData>) -> Self {
         let data_obj = if let Some(data) = presence_data {
             json!({
