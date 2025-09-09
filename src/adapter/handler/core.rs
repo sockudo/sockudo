@@ -18,12 +18,13 @@ impl ConnectionHandler {
         app_id: &str,
         socket_id: &SocketId,
     ) -> Result<()> {
-        let connection_message =
-            PusherMessage::connection_established(socket_id.as_ref().to_string());
+        let connection_message = PusherMessage::connection_established(
+            socket_id.as_ref().to_string(),
+            self.server_options.activity_timeout,
+        );
         self.send_message_to_socket(app_id, socket_id, connection_message)
             .await
     }
-
     pub async fn send_error(
         &self,
         app_id: &str,
