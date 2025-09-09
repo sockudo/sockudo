@@ -396,7 +396,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
@@ -417,7 +419,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
@@ -430,6 +434,7 @@ mod tests {
         // Test with webhook enabled
         let config = WebhookConfig {
             enabled: true,
+            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
         let integration = WebhookIntegration::new(config, app_manager).await.unwrap();
@@ -467,7 +472,8 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_integration_new() {
         let app_manager = Arc::new(MemoryAppManager::new());
-        let config = WebhookConfig::default();
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
 
         let integration = WebhookIntegration::new(config, app_manager).await;
         assert!(integration.is_ok());
@@ -486,7 +492,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
@@ -516,7 +524,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
@@ -546,7 +556,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
@@ -569,7 +581,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
@@ -592,7 +606,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
@@ -615,7 +631,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
@@ -636,7 +654,9 @@ mod tests {
             ..Default::default()
         };
         let app_manager = Arc::new(MemoryAppManager::new());
-        let integration = WebhookIntegration::new(WebhookConfig::default(), app_manager.clone())
+        let mut config = WebhookConfig::default();
+        config.redis_url = Some("redis://127.0.0.1:16379/".to_string());
+        let integration = WebhookIntegration::new(config, app_manager.clone())
             .await
             .unwrap();
 
