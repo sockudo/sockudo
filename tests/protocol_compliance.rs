@@ -9,7 +9,7 @@ fn message_to_json(message: &PusherMessage) -> Value {
 #[test]
 fn test_connection_established_format() {
     // According to spec: data should be a String (JSON-encoded object)
-    let message = PusherMessage::connection_established("test-socket-123".to_string());
+    let message = PusherMessage::connection_established("test-socket-123".to_string(), 120);
     let json = message_to_json(&message);
 
     // Assert event field exists and has correct value
