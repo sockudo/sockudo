@@ -259,6 +259,7 @@ pub struct ServerOptions {
     pub webhooks: WebhooksConfig,
     pub websocket_max_payload_kb: u32,
     pub cleanup: crate::cleanup::CleanupConfig,
+    pub activity_timeout: u64,
 }
 
 // --- Configuration Sub-Structs ---
@@ -610,6 +611,7 @@ impl Default for ServerOptions {
             webhooks: WebhooksConfig::default(),
             websocket_max_payload_kb: 64,
             cleanup: crate::cleanup::CleanupConfig::default(),
+            activity_timeout: 120,
         }
     }
 }
@@ -952,6 +954,8 @@ impl ServerOptions {
             self.debug = true;
             info!("DEBUG environment variable forces debug mode ON");
         }
+
+        self.activity_timeout = parse_env::<u64>("ACTIVITY_TIMEOUT", self.activity_timeout);
 
         if let Ok(host) = std::env::var("HOST") {
             self.host = host;
