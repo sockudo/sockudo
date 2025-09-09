@@ -1,5 +1,5 @@
 # =============================================================================
-# Sockudo Test Run Services
+# Sockudo Lightweight Test Services
 # =============================================================================
 
 name: sockudo-test
@@ -18,8 +18,10 @@ services:
       start_period: 5s
     networks:
       - sockudo-network
+    mem_limit: 128m
+    cpus: '0.5'
 
-  # Redis Cluster Setup
+  # Minimal Redis Cluster (3 nodes only - minimum for cluster)
   redis-cluster-setup:
     image: redis:7-alpine
     depends_on:
@@ -29,22 +31,15 @@ services:
         condition: service_healthy
       redis-node-3:
         condition: service_healthy
-      redis-node-4:
-        condition: service_healthy
-      redis-node-5:
-        condition: service_healthy
-      redis-node-6:
-        condition: service_healthy
     networks:
       - sockudo-network
-    command: sh -c "sleep 5 && redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 redis-node-4:6379 redis-node-5:6379 redis-node-6:6379 --cluster-replicas 1 --cluster-yes"
+    command: sh -c "sleep 5 && redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 --cluster-replicas 0 --cluster-yes"
+    mem_limit: 64m
 
   redis-node-1:
     image: redis:7-alpine
     ports:
       - "17001:6379"
-    volumes:
-      - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
@@ -54,13 +49,13 @@ services:
       start_period: 5s
     networks:
       - sockudo-network
+    mem_limit: 128m
+    cpus: '0.25'
 
   redis-node-2:
     image: redis:7-alpine
     ports:
       - "17002:6379"
-    volumes:
-      - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
@@ -70,13 +65,13 @@ services:
       start_period: 5s
     networks:
       - sockudo-network
+    mem_limit: 128m
+    cpus: '0.25'
 
   redis-node-3:
     image: redis:7-alpine
     ports:
       - "17003:6379"
-    volumes:
-      - ./redis-cluster-config:/usr/local/etc/redis
     command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
@@ -86,58 +81,12 @@ services:
       start_period: 5s
     networks:
       - sockudo-network
+    mem_limit: 128m
+    cpus: '0.25'
 
-  redis-node-4:
-    image: redis:7-alpine
-    ports:
-      - "17004:6379"
-    volumes:
-      - ./redis-cluster-config:/usr/local/etc/redis
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-    networks:
-      - sockudo-network
-
-  redis-node-5:
-    image: redis:7-alpine
-    ports:
-      - "17005:6379"
-    volumes:
-      - ./redis-cluster-config:/usr/local/etc/redis
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-    networks:
-      - sockudo-network
-
-  redis-node-6:
-    image: redis:7-alpine
-    ports:
-      - "17006:6379"
-    volumes:
-      - ./redis-cluster-config:/usr/local/etc/redis
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-    networks:
-      - sockudo-network
-
-  # NATS Cluster
+  # Minimal NATS Cluster (2 nodes)
   nats-1:
-    image: nats:latest
+    image: nats:alpine
     ports:
       - "14222:4222"
       - "18222:8222"  # HTTP monitoring
@@ -145,13 +94,15 @@ services:
       --name nats-1
       --cluster_name NATS
       --cluster nats://0.0.0.0:6222
-      --routes nats://nats-2:6222,nats://nats-3:6222
+      --routes nats://nats-2:6222
       --http_port 8222
     networks:
       - sockudo-network
+    mem_limit: 128m
+    cpus: '0.25'
 
   nats-2:
-    image: nats:latest
+    image: nats:alpine
     ports:
       - "14223:4222"
       - "18223:8222"  # HTTP monitoring
@@ -159,24 +110,12 @@ services:
       --name nats-2
       --cluster_name NATS
       --cluster nats://0.0.0.0:6222
-      --routes nats://nats-1:6222,nats://nats-3:6222
+      --routes nats://nats-1:6222
       --http_port 8222
     networks:
       - sockudo-network
-
-  nats-3:
-    image: nats:latest
-    ports:
-      - "14224:4222"
-      - "18224:8222"  # HTTP monitoring
-    command: |
-      --name nats-3
-      --cluster_name NATS
-      --cluster nats://0.0.0.0:6222
-      --routes nats://nats-1:6222,nats://nats-2:6222
-      --http_port 8222
-    networks:
-      - sockudo-network
+    mem_limit: 128m
+    cpus: '0.25'
 
   # Development MySQL with sample data
   mysql-test:
@@ -193,6 +132,8 @@ services:
       - ./sql/init-test.sql:/docker-entrypoint-initdb.d/02-init-test.sql:ro
     networks:
       - sockudo-network
+    mem_limit: 256m
+    cpus: '0.5'
 
 networks:
   sockudo-network:
