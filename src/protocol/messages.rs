@@ -127,10 +127,10 @@ impl PusherMessage {
             event: Some("pusher:connection_established".to_string()),
             data: Some(MessageData::from(
                 json!({
-                "socket_id": socket_id,
-                "activity_timeout": activity_timeout  // Now configurable
-            })
-                    .to_string(),
+                    "socket_id": socket_id,
+                    "activity_timeout": activity_timeout  // Now configurable
+                })
+                .to_string(),
             )),
             channel: None,
             name: None,
