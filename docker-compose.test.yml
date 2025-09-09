@@ -123,7 +123,8 @@ services:
     environment:
       - MYSQL_ROOT_PASSWORD=root123
       - MYSQL_DATABASE=sockudo
-    command: --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password
+      - MYSQL_INITDB_SKIP_TZINFO=1
+    command: --bind-address=0.0.0.0 --default-authentication-plugin=mysql_native_password --innodb-buffer-pool-size=128M --max-connections=50 --performance-schema=OFF
     ports:
       - "13306:3306"
     volumes:
@@ -132,8 +133,14 @@ services:
       - ./sql/init-test.sql:/docker-entrypoint-initdb.d/02-init-test.sql:ro
     networks:
       - sockudo-network
-    mem_limit: 256m
+    mem_limit: 512m
     cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot123"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 networks:
   sockudo-network:

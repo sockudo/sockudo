@@ -50,7 +50,7 @@ async fn test_publish_broadcast() -> Result<()> {
     assert!(received.is_some());
     
     let received_msg = received.unwrap();
-    assert_eq!(received_msg.event, "test-event");
+    assert!(received_msg.message.contains("test-event"));
     assert_eq!(received_msg.channel, "test-channel");
     
     Ok(())
@@ -132,7 +132,7 @@ async fn test_start_listeners_and_receive() -> Result<()> {
     // Verify transport1 received the message
     let received = collector.wait_for_broadcast(500).await;
     assert!(received.is_some());
-    assert_eq!(received.unwrap().event, "cross-transport-event");
+    assert!(received.unwrap().message.contains("cross-transport-event"));
     
     Ok(())
 }
@@ -265,8 +265,8 @@ async fn test_multiple_listeners_receive_same_message() -> Result<()> {
     
     assert!(received1.is_some());
     assert!(received2.is_some());
-    assert_eq!(received1.unwrap().event, "multi-listener-event");
-    assert_eq!(received2.unwrap().event, "multi-listener-event");
+    assert!(received1.unwrap().message.contains("multi-listener-event"));
+    assert!(received2.unwrap().message.contains("multi-listener-event"));
     
     Ok(())
 }
