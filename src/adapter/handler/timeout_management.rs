@@ -1,7 +1,7 @@
 // src/adapter/handler/timeout_management.rs
 use super::ConnectionHandler;
 use crate::error::Result;
-use crate::protocol::constants::{ACTIVITY_TIMEOUT, PONG_TIMEOUT};
+use crate::protocol::constants::{PONG_TIMEOUT};
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::SocketId;
 use std::time::Duration;
@@ -28,6 +28,7 @@ impl ConnectionHandler {
     }
 
     pub async fn set_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        let activity_timeout = self.server_options.activity_timeout;
         let socket_id_clone = socket_id.clone();
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
@@ -37,7 +38,7 @@ impl ConnectionHandler {
 
         let timeout_handle = tokio::spawn(async move {
             // Initial sleep before first check
-            sleep(Duration::from_secs(ACTIVITY_TIMEOUT)).await;
+            sleep(Duration::from_secs(activity_timeout)).await;
 
             loop {
                 // Check if connection still exists and get actual inactivity time
@@ -60,8 +61,8 @@ impl ConnectionHandler {
                 };
 
                 // If less than activity timeout seconds have passed since last activity, wait more
-                if time_since_activity < Duration::from_secs(ACTIVITY_TIMEOUT) {
-                    let remaining = Duration::from_secs(ACTIVITY_TIMEOUT) - time_since_activity;
+                if time_since_activity < Duration::from_secs(activity_timeout) {
+                    let remaining = Duration::from_secs(activity_timeout) - time_since_activity;
                     debug!(
                         "Socket {} still active ({}s ago), waiting {} more seconds",
                         socket_id_clone,
@@ -121,7 +122,10 @@ impl ConnectionHandler {
                         }
                         // After handling ping/pong, wait full activity timeout before next check
                         drop(conn_manager);
-                        sleep(Duration::from_secs(ACTIVITY_TIMEOUT)).await;
+                        let activity_timeout = self.server_options.activity_timeout;
+
+                        // Initial sleep before first check
+                        sleep(Duration::from_secs(activity_timeout)).await;
                     }
                     Err(e) => {
                         // Connection is broken (e.g., broken pipe)
