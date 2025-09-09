@@ -1,9 +1,9 @@
 use sockudo::adapter::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
-use sockudo::adapter::transports::{NatsAdapterConfig, RedisAdapterConfig};
-use sockudo::options::RedisClusterAdapterConfig;
+use sockudo::adapter::transports::RedisAdapterConfig;
+use sockudo::options::{NatsAdapterConfig, RedisClusterAdapterConfig};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -27,31 +27,36 @@ pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
         ],
         prefix: format!("test_{}", Uuid::new_v4().to_string().replace('-', "")),
         request_timeout_ms: 1000, // Reduced timeout
+        use_connection_manager: true,
     }
 }
 
-/// Get NATS configuration for testing (ports 14222-14223)
+/// Get NATS configuration for testing (ports 14222-14223)  
 pub fn get_nats_config() -> NatsAdapterConfig {
     NatsAdapterConfig {
-        servers: "nats://127.0.0.1:14222,nats://127.0.0.1:14223".to_string(),
+        servers: vec![
+            "nats://127.0.0.1:14222".to_string(),
+            "nats://127.0.0.1:14223".to_string(),
+        ],
         prefix: format!("test_{}", Uuid::new_v4().to_string().replace('-', "")),
         request_timeout_ms: 1000, // Reduced timeout
         connection_timeout_ms: 1000, // Reduced timeout
         username: None,
         password: None,
         token: None,
+        nodes_number: Some(2),
     }
 }
 
 /// Create a test broadcast message
 pub fn create_test_broadcast(event: &str) -> BroadcastMessage {
     BroadcastMessage {
-        event: event.to_string(),
-        channel: "test-channel".to_string(),
-        data: serde_json::json!({"test": "data"}),
-        socket: None,
+        node_id: "test-node".to_string(),
         app_id: "test-app".to_string(),
-        namespace: None,
+        channel: "test-channel".to_string(),
+        message: format!("{{\"event\": \"{}\", \"data\": {{\"test\": \"data\"}}}}", event),
+        except_socket_id: None,
+        timestamp_ms: None,
     }
 }
 
@@ -59,18 +64,29 @@ pub fn create_test_broadcast(event: &str) -> BroadcastMessage {
 pub fn create_test_request() -> RequestBody {
     RequestBody {
         request_id: Uuid::new_v4().to_string(),
-        r#type: sockudo::adapter::horizontal_adapter::RequestType::FetchSockets,
+        node_id: "test-node".to_string(),
         app_id: "test-app".to_string(),
-        namespaces: None,
-        rooms: None,
+        request_type: sockudo::adapter::horizontal_adapter::RequestType::Sockets,
+        channel: None,
+        socket_id: None,
+        user_id: None,
     }
 }
 
 /// Create a test response message
 pub fn create_test_response(request_id: &str) -> ResponseBody {
+    use std::collections::{HashMap, HashSet};
     ResponseBody {
         request_id: request_id.to_string(),
-        sockets: vec![],
+        node_id: "test-node".to_string(),
+        app_id: "test-app".to_string(),
+        members: HashMap::new(),
+        channels_with_sockets_count: HashMap::new(),
+        socket_ids: vec![],
+        sockets_count: 0,
+        exists: false,
+        channels: HashSet::new(),
+        members_count: 0,
     }
 }
 
@@ -213,9 +229,18 @@ pub fn create_test_handlers(
             Box::pin(async move {
                 collector.collect_request(msg.clone()).await;
                 // Return a dummy response for testing
+                use std::collections::{HashMap, HashSet};
                 Ok(ResponseBody {
                     request_id: msg.request_id,
-                    sockets: vec![],
+                    node_id: "test-node".to_string(),
+                    app_id: "test-app".to_string(),
+                    members: HashMap::new(),
+                    channels_with_sockets_count: HashMap::new(),
+                    socket_ids: vec![],
+                    sockets_count: 0,
+                    exists: false,
+                    channels: HashSet::new(),
+                    members_count: 0,
                 })
             }) as BoxFuture<'static, sockudo::error::Result<ResponseBody>>
         }),
