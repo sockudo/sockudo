@@ -67,11 +67,12 @@ impl HorizontalTransport for RedisClusterTransport {
         let broadcast_json = serde_json::to_string(message)?;
 
         // Use client's internal connection pooling - this is efficient
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for broadcast: {e}")))?;
-        
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!(
+                "Failed to get cluster connection for broadcast: {e}"
+            ))
+        })?;
+
         conn.publish::<_, _, ()>(&self.broadcast_channel, broadcast_json)
             .await
             .map_err(|e| Error::Redis(format!("Failed to publish broadcast: {e}")))?;
@@ -84,11 +85,10 @@ impl HorizontalTransport for RedisClusterTransport {
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
 
         // Use client's internal connection pooling - this is efficient for cluster
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for request: {e}")))?;
-        
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!("Failed to get cluster connection for request: {e}"))
+        })?;
+
         let subscriber_count: i32 = conn
             .publish(&self.request_channel, &request_json)
             .await
@@ -107,11 +107,12 @@ impl HorizontalTransport for RedisClusterTransport {
             .map_err(|e| Error::Other(format!("Failed to serialize response: {e}")))?;
 
         // Use client's internal connection pooling - this is efficient for cluster
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for response: {e}")))?;
-        
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!(
+                "Failed to get cluster connection for response: {e}"
+            ))
+        })?;
+
         conn.publish::<_, _, ()>(&self.response_channel, response_json)
             .await
             .map_err(|e| Error::Redis(format!("Failed to publish response: {e}")))?;
@@ -237,11 +238,12 @@ impl HorizontalTransport for RedisClusterTransport {
 
     async fn get_node_count(&self) -> Result<usize> {
         // Use client's connection pooling for node count queries
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for node count: {e}")))?;
-        
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!(
+                "Failed to get cluster connection for node count: {e}"
+            ))
+        })?;
+
         let result: redis::RedisResult<Vec<redis::Value>> = redis::cmd("PUBSUB")
             .arg("NUMSUB")
             .arg(&self.request_channel)
@@ -269,11 +271,12 @@ impl HorizontalTransport for RedisClusterTransport {
 
     async fn check_health(&self) -> Result<()> {
         // Use client's connection pooling for health checks
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for health check: {e}")))?;
-        
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!(
+                "Failed to get cluster connection for health check: {e}"
+            ))
+        })?;
+
         let response = redis::cmd("PING")
             .query_async::<String>(&mut conn)
             .await
