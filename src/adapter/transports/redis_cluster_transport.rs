@@ -33,7 +33,6 @@ impl TransportConfig for RedisClusterAdapterConfig {
 #[derive(Clone)]
 pub struct RedisClusterTransport {
     client: ClusterClient,
-    connection: redis::cluster_async::ClusterConnection,
     broadcast_channel: String,
     request_channel: String,
     response_channel: String,
@@ -47,14 +46,10 @@ impl HorizontalTransport for RedisClusterTransport {
     async fn new(config: Self::Config) -> Result<Self> {
         let client = ClusterClientBuilder::new(config.nodes.clone())
             .retries(3)
-            .read_from_replicas() 
+            .read_from_replicas()
             .build()
             .map_err(|e| Error::Redis(format!("Failed to create Redis Cluster client: {e}")))?;
 
-        let connection = client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to connect to Redis Cluster: {e}")))?;
 
         let broadcast_channel = format!("{}:#broadcast", config.prefix);
         let request_channel = format!("{}:#requests", config.prefix);
@@ -62,7 +57,6 @@ impl HorizontalTransport for RedisClusterTransport {
 
         Ok(Self {
             client,
-            connection,
             broadcast_channel,
             request_channel,
             response_channel,
@@ -72,13 +66,14 @@ impl HorizontalTransport for RedisClusterTransport {
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
         let broadcast_json = serde_json::to_string(message)?;
-        
+
         // Get a fresh connection for each publish operation
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for broadcast: {e}")))?;
-            
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!(
+                "Failed to get cluster connection for broadcast: {e}"
+            ))
+        })?;
+
         conn.publish::<_, _, ()>(&self.broadcast_channel, broadcast_json)
             .await
             .map_err(|e| Error::Redis(format!("Failed to publish broadcast: {e}")))?;
@@ -91,11 +86,10 @@ impl HorizontalTransport for RedisClusterTransport {
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
 
         // Get a fresh connection for each publish operation
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for request: {e}")))?;
-            
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!("Failed to get cluster connection for request: {e}"))
+        })?;
+
         let subscriber_count: i32 = conn
             .publish(&self.request_channel, &request_json)
             .await
@@ -114,11 +108,12 @@ impl HorizontalTransport for RedisClusterTransport {
             .map_err(|e| Error::Other(format!("Failed to serialize response: {e}")))?;
 
         // Get a fresh connection for each publish operation
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for response: {e}")))?;
-            
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!(
+                "Failed to get cluster connection for response: {e}"
+            ))
+        })?;
+
         conn.publish::<_, _, ()>(&self.response_channel, response_json)
             .await
             .map_err(|e| Error::Redis(format!("Failed to publish response: {e}")))?;
@@ -243,10 +238,11 @@ impl HorizontalTransport for RedisClusterTransport {
     }
 
     async fn get_node_count(&self) -> Result<usize> {
-        let mut conn = self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Redis(format!("Failed to get cluster connection for node count: {e}")))?;
+        let mut conn = self.client.get_async_connection().await.map_err(|e| {
+            Error::Redis(format!(
+                "Failed to get cluster connection for node count: {e}"
+            ))
+        })?;
         // Use PUBSUB NUMSUB to count Sockudo instances subscribed to request channel
         let result: redis::RedisResult<Vec<redis::Value>> = redis::cmd("PUBSUB")
             .arg("NUMSUB")

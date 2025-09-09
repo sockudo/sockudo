@@ -26,7 +26,7 @@ pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
             "redis://127.0.0.1:7002".to_string(),
         ],
         prefix: format!("test_{}", Uuid::new_v4().to_string().replace('-', "")),
-        request_timeout_ms: 1000, // Reduced timeout
+        request_timeout_ms: 1000,      // Reduced timeout
         use_connection_manager: false, // Disable for grokzen cluster compatibility
     }
 }
@@ -39,7 +39,7 @@ pub fn get_nats_config() -> NatsAdapterConfig {
             "nats://127.0.0.1:14223".to_string(),
         ],
         prefix: format!("test_{}", Uuid::new_v4().to_string().replace('-', "")),
-        request_timeout_ms: 1000, // Reduced timeout
+        request_timeout_ms: 1000,    // Reduced timeout
         connection_timeout_ms: 1000, // Reduced timeout
         username: None,
         password: None,
@@ -54,7 +54,10 @@ pub fn create_test_broadcast(event: &str) -> BroadcastMessage {
         node_id: "test-node".to_string(),
         app_id: "test-app".to_string(),
         channel: "test-channel".to_string(),
-        message: format!("{{\"event\": \"{}\", \"data\": {{\"test\": \"data\"}}}}", event),
+        message: format!(
+            "{{\"event\": \"{}\", \"data\": {{\"test\": \"data\"}}}}",
+            event
+        ),
         except_socket_id: None,
         timestamp_ms: None,
     }
@@ -98,6 +101,12 @@ pub struct MessageCollector {
     responses: Arc<Mutex<Vec<ResponseBody>>>,
 }
 
+impl Default for MessageCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageCollector {
     pub fn new() -> Self {
         Self {
@@ -134,7 +143,7 @@ impl MessageCollector {
     pub async fn wait_for_broadcast(&self, timeout_ms: u64) -> Option<BroadcastMessage> {
         let start = tokio::time::Instant::now();
         let timeout_duration = Duration::from_millis(timeout_ms);
-        
+
         while start.elapsed() < timeout_duration {
             let broadcasts = self.broadcasts.lock().await;
             if !broadcasts.is_empty() {
@@ -149,7 +158,7 @@ impl MessageCollector {
     pub async fn wait_for_request(&self, timeout_ms: u64) -> Option<RequestBody> {
         let start = tokio::time::Instant::now();
         let timeout_duration = Duration::from_millis(timeout_ms);
-        
+
         while start.elapsed() < timeout_duration {
             let requests = self.requests.lock().await;
             if !requests.is_empty() {
@@ -164,7 +173,7 @@ impl MessageCollector {
     pub async fn wait_for_response(&self, timeout_ms: u64) -> Option<ResponseBody> {
         let start = tokio::time::Instant::now();
         let timeout_duration = Duration::from_millis(timeout_ms);
-        
+
         while start.elapsed() < timeout_duration {
             let responses = self.responses.lock().await;
             if !responses.is_empty() {
@@ -184,26 +193,21 @@ impl MessageCollector {
 }
 
 /// Wait for a condition with timeout
-pub async fn wait_for_condition<F, Fut>(
-    condition: F,
-    timeout_ms: u64,
-) -> bool
+pub async fn wait_for_condition<F, Fut>(condition: F, timeout_ms: u64) -> bool
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = bool>,
 {
-    let result = timeout(
-        Duration::from_millis(timeout_ms),
-        async {
-            loop {
-                if condition().await {
-                    return true;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+    let result = timeout(Duration::from_millis(timeout_ms), async {
+        loop {
+            if condition().await {
+                return true;
             }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    ).await;
-    
+    })
+    .await;
+
     result.unwrap_or(false)
 }
 
@@ -212,7 +216,7 @@ pub fn create_test_handlers(
     collector: MessageCollector,
 ) -> sockudo::adapter::horizontal_transport::TransportHandlers {
     use sockudo::adapter::horizontal_transport::BoxFuture;
-    
+
     let broadcast_collector = collector.clone();
     let request_collector = collector.clone();
     let response_collector = collector.clone();
