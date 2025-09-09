@@ -21,68 +21,22 @@ services:
     mem_limit: 128m
     cpus: '0.5'
 
-  # Minimal Redis Cluster (3 nodes only - minimum for cluster)
-  redis-cluster-setup:
-    image: redis:7-alpine
-    depends_on:
-      redis-node-1:
-        condition: service_healthy
-      redis-node-2:
-        condition: service_healthy
-      redis-node-3:
-        condition: service_healthy
-    networks:
-      - sockudo-network
-    command: sh -c "sleep 5 && redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 --cluster-replicas 0 --cluster-yes"
-    mem_limit: 64m
-
-  redis-node-1:
-    image: redis:7-alpine
+  # Redis Cluster using grokzen/redis-cluster image (designed for testing)
+  redis-cluster:
+    image: grokzen/redis-cluster:7.0.10
+    environment:
+      IP: 0.0.0.0
+      INITIAL_PORT: 7000
+      MASTERS: 3
+      SLAVES_PER_MASTER: 0
     ports:
-      - "17001:6379"
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+      - "7000:7000"
+      - "7001:7001"  
+      - "7002:7002"
     networks:
       - sockudo-network
-    mem_limit: 128m
-    cpus: '0.25'
-
-  redis-node-2:
-    image: redis:7-alpine
-    ports:
-      - "17002:6379"
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-    networks:
-      - sockudo-network
-    mem_limit: 128m
-    cpus: '0.25'
-
-  redis-node-3:
-    image: redis:7-alpine
-    ports:
-      - "17003:6379"
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-    networks:
-      - sockudo-network
-    mem_limit: 128m
-    cpus: '0.25'
+    mem_limit: 256m
+    cpus: '0.5'
 
   # Minimal NATS Cluster (2 nodes)
   nats-1:
