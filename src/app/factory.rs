@@ -18,10 +18,7 @@ impl AppManagerFactory {
         config: &AppManagerConfig,
         db_config: &DatabaseConfig,
     ) -> Result<Arc<dyn AppManager + Send + Sync>> {
-        info!(
-            "Initializing AppManager with driver: {:?}",
-            config.driver
-        );
+        info!("Initializing AppManager with driver: {:?}", config.driver);
         match config.driver {
             AppManagerDriver::Memory => Ok(Arc::new(MemoryAppManager::new())),
 
