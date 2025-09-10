@@ -191,15 +191,13 @@ async fn test_distributed_socket_count_redis() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Query socket count from adapter1 - should see all sockets
-    let count1 = adapter1.get_sockets_count("test-app").await?;
+    let _count1 = adapter1.get_sockets_count("test-app").await?;
 
     // Query socket count from adapter2 - should see the same aggregated count
-    let count2 = adapter2.get_sockets_count("test-app").await?;
+    let _count2 = adapter2.get_sockets_count("test-app").await?;
 
     // Both adapters should report consistent counts
     // The exact count depends on the local adapter implementation, but should be consistent
-    assert!(count1 >= 0);
-    assert!(count2 >= 0);
 
     // Verify adapters can communicate by checking channel sockets
     let sockets1 = adapter1
@@ -257,12 +255,10 @@ async fn test_distributed_socket_count_nats() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Query socket count from both adapters
-    let count1 = adapter1.get_sockets_count("test-app").await?;
-    let count2 = adapter2.get_sockets_count("test-app").await?;
+    let _count1 = adapter1.get_sockets_count("test-app").await?;
+    let _count2 = adapter2.get_sockets_count("test-app").await?;
 
     // Both adapters should report valid counts
-    assert!(count1 >= 0);
-    assert!(count2 >= 0);
 
     // Verify channel-specific operations work
     let channel_count1 = adapter1
@@ -380,11 +376,8 @@ async fn test_redis_vs_nats_consistency() -> Result<()> {
     assert!(!redis_response.request_id.is_empty());
     assert!(!nats_response.request_id.is_empty());
 
-    // Response structure should be consistent
-    assert_eq!(
-        redis_response.sockets_count >= 0,
-        nats_response.sockets_count >= 0
-    );
+    // Response structure should be consistent - both should have valid counts
+    assert_eq!(redis_response.sockets_count, nats_response.sockets_count);
 
     Ok(())
 }

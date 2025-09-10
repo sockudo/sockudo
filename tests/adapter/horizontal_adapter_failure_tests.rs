@@ -14,8 +14,10 @@ use super::horizontal_adapter_helpers::{MockConfig, MockNodeState, MockTransport
 /// Test comprehensive failure scenarios and edge cases
 #[tokio::test]
 async fn test_transport_publish_failure_recovery() -> Result<()> {
-    let mut config = MockConfig::default();
-    config.simulate_failures = true;
+    let config = MockConfig {
+        simulate_failures: true,
+        ..Default::default()
+    };
 
     let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.init().await;
@@ -54,8 +56,10 @@ async fn test_transport_publish_failure_recovery() -> Result<()> {
 
 #[tokio::test]
 async fn test_request_publish_failure_recovery() -> Result<()> {
-    let mut config = MockConfig::default();
-    config.simulate_failures = true;
+    let config = MockConfig {
+        simulate_failures: true,
+        ..Default::default()
+    };
 
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.start_listeners().await?;

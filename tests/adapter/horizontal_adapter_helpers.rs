@@ -150,7 +150,6 @@ pub struct MockTransport {
 
 impl MockTransport {
     /// Create test configurations for specific scenarios
-
     /// Configuration with conflicting data between nodes
     pub fn conflicting_data() -> MockConfig {
         let node1 = MockNodeState::new("node-1")
@@ -253,23 +252,6 @@ impl MockTransport {
     /// Get published broadcasts for verification
     pub async fn get_published_broadcasts(&self) -> Vec<BroadcastMessage> {
         self.published_broadcasts.lock().await.clone()
-    }
-
-    /// Get published requests for verification
-    pub async fn get_published_requests(&self) -> Vec<RequestBody> {
-        self.published_requests.lock().await.clone()
-    }
-
-    /// Get published responses for verification
-    pub async fn get_published_responses(&self) -> Vec<ResponseBody> {
-        self.published_responses.lock().await.clone()
-    }
-
-    /// Clear all published messages
-    pub async fn clear_published_messages(&self) {
-        self.published_broadcasts.lock().await.clear();
-        self.published_requests.lock().await.clear();
-        self.published_responses.lock().await.clear();
     }
 
     /// Set health status for testing
@@ -540,57 +522,4 @@ impl HorizontalTransport for MockTransport {
             Err(Error::Internal("MockTransport is unhealthy".to_string()))
         }
     }
-}
-
-// Helper functions for creating test scenarios
-
-pub fn create_test_request(
-    app_id: &str,
-    request_type: RequestType,
-    channel: Option<&str>,
-    socket_id: Option<&str>,
-    user_id: Option<&str>,
-) -> RequestBody {
-    RequestBody {
-        request_id: format!("test-{}", uuid::Uuid::new_v4()),
-        node_id: "test-node".to_string(),
-        app_id: app_id.to_string(),
-        request_type,
-        channel: channel.map(|s| s.to_string()),
-        socket_id: socket_id.map(|s| s.to_string()),
-        user_id: user_id.map(|s| s.to_string()),
-    }
-}
-
-pub fn create_test_broadcast(app_id: &str, channel: &str, message: &str) -> BroadcastMessage {
-    BroadcastMessage {
-        node_id: "test-node".to_string(),
-        app_id: app_id.to_string(),
-        channel: channel.to_string(),
-        message: message.to_string(),
-        except_socket_id: None,
-        timestamp_ms: Some(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as f64,
-        ),
-    }
-}
-
-pub async fn wait_for_condition<F, Fut>(condition: F, timeout_ms: u64) -> bool
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_millis(timeout_ms);
-
-    while start.elapsed() < timeout {
-        if condition().await {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    false
 }
