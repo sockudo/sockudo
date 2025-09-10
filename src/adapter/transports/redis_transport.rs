@@ -47,7 +47,6 @@ pub struct RedisTransport {
     broadcast_channel: String,
     request_channel: String,
     response_channel: String,
-    config: RedisAdapterConfig,
 }
 
 #[async_trait]
@@ -91,7 +90,6 @@ impl HorizontalTransport for RedisTransport {
             broadcast_channel,
             request_channel,
             response_channel,
-            config,
         })
     }
 
