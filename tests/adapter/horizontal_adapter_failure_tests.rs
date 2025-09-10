@@ -503,7 +503,7 @@ async fn test_unicode_and_special_characters() -> Result<()> {
 
     // Verify broadcast was published
     let broadcasts = adapter.transport.get_published_broadcasts().await;
-    assert!(broadcasts.len() > 0);
+    assert!(!broadcasts.is_empty());
     assert_eq!(broadcasts.last().unwrap().app_id, unicode_app);
     assert_eq!(broadcasts.last().unwrap().channel, unicode_channel);
 

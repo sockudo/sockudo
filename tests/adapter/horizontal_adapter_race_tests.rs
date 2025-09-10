@@ -86,7 +86,6 @@ async fn test_concurrent_health_checks_during_operations() -> Result<()> {
                     )
                     .await
                     .map(|r| r.app_id)
-                    .map_err(|e| e)
             });
             handles.push(handle);
         } else {
@@ -97,7 +96,6 @@ async fn test_concurrent_health_checks_during_operations() -> Result<()> {
                     .check_health()
                     .await
                     .map(|_| format!("health-ok-{}", i))
-                    .map_err(|e| e)
             });
             handles.push(handle);
         }
@@ -605,9 +603,9 @@ async fn test_adapter_state_isolation() -> Result<()> {
 
             // Verify response matches request parameters
             if response.app_id != format!("isolation-app-{}", i) {
-                return Err(sockudo::error::Error::Internal(format!(
-                    "State isolation failed: wrong app_id"
-                )));
+                return Err(sockudo::error::Error::Internal(
+                    "State isolation failed: wrong app_id".to_string(),
+                ));
             }
 
             Ok(response.request_id)
