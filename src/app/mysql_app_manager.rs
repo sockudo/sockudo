@@ -708,6 +708,7 @@ mod tests {
                 database: "sockudo".to_string(),
                 table_name: "applications".to_string(),
                 cache_ttl: 5, // Short TTL for testing
+                port: 13306,
                 ..Default::default()
             };
 

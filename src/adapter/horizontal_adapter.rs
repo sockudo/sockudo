@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Request types for horizontal communication
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RequestType {
     // Original request types
     ChannelMembers,           // Get members in a channel
@@ -600,6 +600,11 @@ impl HorizontalAdapter {
             if matches!(request_type, RequestType::ChannelSockets) {
                 combined_response.sockets_count = combined_response.socket_ids.len();
             }
+        }
+
+        // Update members_count to reflect actual merged member count
+        if matches!(request_type, RequestType::ChannelMembers) {
+            combined_response.members_count = combined_response.members.len();
         }
 
         combined_response
