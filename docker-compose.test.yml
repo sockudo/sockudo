@@ -26,11 +26,11 @@ services:
     image: grokzen/redis-cluster:7.0.10
     environment:
       IP: 0.0.0.0
-      INITIAL_PORT: 7000
+      INITIAL_PORT: 7003
       MASTERS: 3
       SLAVES_PER_MASTER: 0
     ports:
-      - "7000:7000"
+      - "7003:7003"
       - "7001:7001"  
       - "7002:7002"
     networks:
