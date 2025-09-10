@@ -54,6 +54,7 @@ jobs:
     runs-on: ubuntu-24.04
     
     services:
+      # Single Redis instance for basic tests
       redis:
         image: redis:7-alpine
         ports:
@@ -64,6 +65,57 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       
+      # Redis test instance matching docker-compose.test.yml
+      redis-test:
+        image: redis:7-alpine
+        ports:
+          - 16379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 15s
+          --health-timeout 5s
+          --health-retries 2
+      
+      # Redis Cluster for horizontal adapter tests
+      redis-cluster:
+        image: grokzen/redis-cluster:7.0.10
+        env:
+          IP: 0.0.0.0
+          INITIAL_PORT: 7003
+          MASTERS: 3
+          SLAVES_PER_MASTER: 0
+        ports:
+          - 7001:7001
+          - 7002:7002
+          - 7003:7003
+      
+      # NATS cluster node 1
+      nats-1:
+        image: nats:alpine
+        ports:
+          - 14222:4222
+          - 18222:8222
+        options: >-
+          --name nats-1
+          --cluster_name NATS
+          --cluster nats://0.0.0.0:6222
+          --routes nats://nats-2:6222
+          --http_port 8222
+      
+      # NATS cluster node 2
+      nats-2:
+        image: nats:alpine
+        ports:
+          - 14223:4222
+          - 18223:8222
+        options: >-
+          --name nats-2
+          --cluster_name NATS
+          --cluster nats://0.0.0.0:6222
+          --routes nats://nats-1:6222
+          --http_port 8222
+      
+      # MySQL for app management tests
       mysql:
         image: mysql:8.0
         env:
@@ -75,6 +127,21 @@ jobs:
           - 3306:3306
         options: >-
           --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      
+      # MySQL test instance matching docker-compose.test.yml
+      mysql-test:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root123
+          MYSQL_DATABASE: sockudo
+          MYSQL_INITDB_SKIP_TZINFO: 1
+        ports:
+          - 13306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -proot123"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
@@ -91,20 +158,37 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake mysql-client
       
-      - name: Wait for MySQL to be ready
+      - name: Wait for MySQL instances to be ready
         run: |
+          # Wait for main MySQL instance
           for i in {1..30}; do
-            if mysql -h 127.0.0.1 -u root -proot123 -e "SELECT 1" &> /dev/null; then
-              echo "MySQL is ready!"
+            if mysql -h 127.0.0.1 -P 3306 -u root -proot123 -e "SELECT 1" &> /dev/null; then
+              echo "MySQL (port 3306) is ready!"
               break
             fi
-            echo "Waiting for MySQL... ($i/30)"
+            echo "Waiting for MySQL (port 3306)... ($i/30)"
+            sleep 2
+          done
+          
+          # Wait for test MySQL instance
+          for i in {1..30}; do
+            if mysql -h 127.0.0.1 -P 13306 -u root -proot123 -e "SELECT 1" &> /dev/null; then
+              echo "MySQL test (port 13306) is ready!"
+              break
+            fi
+            echo "Waiting for MySQL test (port 13306)... ($i/30)"
             sleep 2
           done
       
-      - name: Initialize MySQL database
+      - name: Initialize MySQL databases
         run: |
-          mysql -h 127.0.0.1 -u root -proot123 sockudo < ./sql/init-sql.sql
+          # Initialize main MySQL database
+          mysql -h 127.0.0.1 -P 3306 -u root -proot123 sockudo < ./sql/init-sql.sql
+          
+          # Initialize test MySQL database
+          mysql -h 127.0.0.1 -P 13306 -u root -proot123 -e "CREATE DATABASE IF NOT EXISTS sockudo;"
+          mysql -h 127.0.0.1 -P 13306 -u root -proot123 sockudo < ./sql/init-sql-docker.sql
+          mysql -h 127.0.0.1 -P 13306 -u root -proot123 sockudo < ./sql/init-test.sql
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -118,7 +202,23 @@ jobs:
       - name: Run tests
         run: cargo test --verbose --all-features
         env:
+          # Redis configurations
           REDIS_URL: redis://localhost:6379
+          DATABASE_REDIS_HOST: localhost
+          DATABASE_REDIS_PORT: 16379
+          
+          # Redis Cluster configuration  
+          REDIS_CLUSTER_NODES: localhost:7001,localhost:7002,localhost:7003
+          
+          # NATS configuration
+          NATS_SERVERS: nats://localhost:14222,nats://localhost:14223
+          
+          # MySQL configurations
+          DATABASE_MYSQL_HOST: localhost
+          DATABASE_MYSQL_PORT: 13306
+          DATABASE_MYSQL_USER: root
+          DATABASE_MYSQL_PASSWORD: root123
+          DATABASE_MYSQL_DATABASE: sockudo
 
   # =============================================================================
   # Security Audit
