@@ -37,6 +37,79 @@ async fn test_redis_transport_new_with_invalid_url() {
 }
 
 #[tokio::test]
+async fn test_redis_transport_config_edge_cases() -> Result<()> {
+    // Test with empty prefix
+    let config = RedisAdapterConfig {
+        url: "redis://127.0.0.1:16379/".to_string(),
+        prefix: "".to_string(), // Empty prefix
+        request_timeout_ms: 1000,
+        cluster_mode: false,
+    };
+
+    let transport = RedisTransport::new(config).await?;
+    transport.check_health().await?;
+
+    // Test with very short timeout
+    let config = RedisAdapterConfig {
+        url: "redis://127.0.0.1:16379/".to_string(),
+        prefix: "test_short_timeout".to_string(),
+        request_timeout_ms: 1, // 1ms timeout
+        cluster_mode: false,
+    };
+
+    let transport = RedisTransport::new(config).await?;
+    transport.check_health().await?;
+
+    // Test with zero timeout (edge case)
+    let config = RedisAdapterConfig {
+        url: "redis://127.0.0.1:16379/".to_string(),
+        prefix: "test_zero_timeout".to_string(),
+        request_timeout_ms: 0, // Zero timeout
+        cluster_mode: false,
+    };
+
+    let transport = RedisTransport::new(config).await?;
+    transport.check_health().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_redis_transport_malformed_url() {
+    // Test various malformed URLs to ensure our error handling works
+    let malformed_urls = vec![
+        "not-a-url",
+        "redis://",
+        "redis://localhost:99999999", // Invalid port
+        "http://localhost:6379",      // Wrong protocol
+        "",
+        "redis://invalid-host-that-should-not-exist:6379",
+    ];
+
+    for url in malformed_urls {
+        let config = RedisAdapterConfig {
+            url: url.to_string(),
+            prefix: "test".to_string(),
+            request_timeout_ms: 1000,
+            cluster_mode: false,
+        };
+
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            RedisTransport::new(config),
+        )
+        .await;
+
+        // Should either timeout or return an error
+        assert!(
+            result.is_err() || result.unwrap().is_err(),
+            "Expected error for malformed URL: {}",
+            url
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_publish_broadcast() -> Result<()> {
     let config = get_redis_config();
     let transport = RedisTransport::new(config.clone()).await?;
@@ -150,9 +223,9 @@ async fn test_get_node_count() -> Result<()> {
     let config = get_redis_config();
     let transport1 = RedisTransport::new(config.clone()).await?;
 
-    // With just one connection, should return 1
+    // With just one connection, should return exactly 1
     let count = transport1.get_node_count().await?;
-    assert!(count >= 1);
+    assert_eq!(count, 1);
 
     // Set up a listener to increment subscriber count
     let collector = MessageCollector::new();

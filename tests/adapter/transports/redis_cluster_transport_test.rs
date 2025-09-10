@@ -1,6 +1,7 @@
 use sockudo::adapter::horizontal_transport::HorizontalTransport;
 use sockudo::adapter::transports::RedisClusterTransport;
 use sockudo::error::Result;
+use sockudo::options::RedisClusterAdapterConfig;
 
 use super::test_helpers::*;
 
@@ -13,6 +14,87 @@ async fn test_redis_cluster_transport_new() -> Result<()> {
     transport.check_health().await?;
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_redis_cluster_config_edge_cases() -> Result<()> {
+    // Test with empty prefix
+    let config = RedisClusterAdapterConfig {
+        nodes: vec![
+            "redis://127.0.0.1:7003".to_string(),
+            "redis://127.0.0.1:7001".to_string(),
+        ],
+        prefix: "".to_string(), // Empty prefix
+        request_timeout_ms: 1000,
+        use_connection_manager: false,
+    };
+
+    let transport = RedisClusterTransport::new(config).await?;
+    transport.check_health().await?;
+
+    // Test with single node (minimal cluster)
+    let config = RedisClusterAdapterConfig {
+        nodes: vec!["redis://127.0.0.1:7003".to_string()], // Only one node
+        prefix: "test_single_node".to_string(),
+        request_timeout_ms: 1000,
+        use_connection_manager: false,
+    };
+
+    let transport = RedisClusterTransport::new(config).await?;
+    transport.check_health().await?;
+
+    // Test with connection manager enabled
+    let config = RedisClusterAdapterConfig {
+        nodes: vec![
+            "redis://127.0.0.1:7003".to_string(),
+            "redis://127.0.0.1:7001".to_string(),
+        ],
+        prefix: "test_conn_mgr".to_string(),
+        request_timeout_ms: 1000,
+        use_connection_manager: true, // Enable connection manager
+    };
+
+    let transport = RedisClusterTransport::new(config).await?;
+    transport.check_health().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_redis_cluster_invalid_config() {
+    // Test with empty nodes list
+    let config = RedisClusterAdapterConfig {
+        nodes: vec![], // Empty nodes list
+        prefix: "test".to_string(),
+        request_timeout_ms: 1000,
+        use_connection_manager: false,
+    };
+
+    let result = RedisClusterTransport::new(config).await;
+    assert!(result.is_err(), "Expected error for empty nodes list");
+
+    // Test with invalid node URLs
+    let config = RedisClusterAdapterConfig {
+        nodes: vec![
+            "not-a-url".to_string(),
+            "redis://".to_string(),
+            "".to_string(),
+        ],
+        prefix: "test".to_string(),
+        request_timeout_ms: 1000,
+        use_connection_manager: false,
+    };
+
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(3),
+        RedisClusterTransport::new(config),
+    )
+    .await;
+
+    assert!(
+        result.is_err() || result.unwrap().is_err(),
+        "Expected error for malformed cluster URLs"
+    );
 }
 
 #[tokio::test]
