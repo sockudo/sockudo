@@ -284,9 +284,14 @@ impl SurrealDbAppManager {
             self.config.table_name
         );
         let key_ref = key.to_string();
-        let mut response = self.db.query(query).bind(("key", key_ref)).await.map_err(|e| {
-            Error::Internal(format!("Failed to fetch app by key from SurrealDB: {e}"))
-        })?;
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("key", key_ref))
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to fetch app by key from SurrealDB: {e}"))
+            })?;
 
         let app_records: Vec<AppRecord> = response
             .take(0)
@@ -309,7 +314,8 @@ impl SurrealDbAppManager {
         let app_record = AppRecord::from(&app);
         let record_id = RecordId::from_table_key(&self.config.table_name, &app.id);
 
-        let _: Option<AppRecord> = self.db
+        let _: Option<AppRecord> = self
+            .db
             .create(record_id)
             .content(app_record)
             .await
