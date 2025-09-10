@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Request types for horizontal communication
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RequestType {
     // Original request types
     ChannelMembers,           // Get members in a channel
