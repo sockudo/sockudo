@@ -819,6 +819,18 @@ where
         self
     }
 
+    fn as_cluster_capable(&mut self) -> Option<&dyn crate::cluster::ClusterNodeTracking> {
+        // Try to downcast to cluster-capable adapters
+        use std::any::Any;
+        if let Some(redis_adapter) = (self as &dyn Any).downcast_ref::<crate::adapter::redis_adapter::RedisAdapter>() {
+            Some(redis_adapter)
+        } else if let Some(redis_cluster_adapter) = (self as &dyn Any).downcast_ref::<crate::adapter::redis_cluster_adapter::RedisClusterAdapter>() {
+            Some(redis_cluster_adapter)
+        } else {
+            None // LocalAdapter, NatsAdapter, etc. don't support clustering
+        }
+    }
+
     async fn check_health(&self) -> Result<()> {
         self.transport.check_health().await
     }

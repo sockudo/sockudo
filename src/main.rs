@@ -7,6 +7,7 @@ mod app;
 mod cache;
 mod channel;
 pub mod cleanup;
+mod cluster;
 mod error;
 mod http_handler;
 mod metrics;
@@ -88,6 +89,7 @@ use crate::cache::manager::CacheManager;
 use crate::cache::memory_cache_manager::MemoryCacheManager; // Import for fallback
 // MetricsInterface trait
 use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
+use crate::cluster::ClusterConfig;
 use crate::metrics::MetricsInterface;
 use crate::middleware::pusher_api_auth_middleware;
 use crate::websocket::WebSocketRef;
@@ -476,6 +478,72 @@ impl SockudoServer {
             cleanup_config,
         };
 
+        // Create cluster service if enabled
+        let cluster_service = if config.cluster.enabled {
+            info!("Initializing cluster service for dead node detection");
+            
+            // Check if the adapter supports cluster tracking
+            let cluster_config = ClusterConfig {
+                heartbeat_interval_ms: config.cluster.heartbeat_interval_ms,
+                node_timeout_ms: config.cluster.node_timeout_ms,
+                cleanup_interval_ms: config.cluster.cleanup_interval_ms,
+            };
+            
+            // We need to check the adapter type dynamically
+            // For now, create cluster service based on adapter driver type
+            let result = match config.adapter.driver {
+                AdapterDriver::Redis => {
+                    info!("Redis adapter detected - cluster tracking supported");
+                    let mut connection_manager_guard = state.connection_manager.lock().await;
+                    if let Some(cluster_capable) = connection_manager_guard.as_cluster_capable() {
+                        cluster_capable.create_cluster_service(
+                            uuid::Uuid::new_v4().to_string(),
+                            cluster_config
+                        ).await.map(Some)
+                    } else {
+                        return Err(Error::Internal("Redis adapter should support cluster tracking".to_string()));
+                    }
+                },
+                AdapterDriver::RedisCluster => {
+                    info!("Redis Cluster adapter detected - cluster tracking supported");
+                    let mut connection_manager_guard = state.connection_manager.lock().await;
+                    if let Some(cluster_capable) = connection_manager_guard.as_cluster_capable() {
+                        cluster_capable.create_cluster_service(
+                            uuid::Uuid::new_v4().to_string(),
+                            cluster_config
+                        ).await.map(Some)
+                    } else {
+                        return Err(Error::Internal("Redis Cluster adapter should support cluster tracking".to_string()));
+                    }
+                },
+                _ => {
+                    info!("Adapter does not support cluster tracking");
+                    Ok(None)
+                }
+            };
+            
+            match result {
+                Ok(Some(service)) => {
+                    // Start the cluster service
+                    let service_clone = service.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = service_clone.start().await {
+                            error!("Cluster service error: {}", e);
+                        }
+                    });
+                    
+                    Some(service)
+                },
+                Ok(None) => None,
+                Err(e) => {
+                    warn!("Failed to create cluster service: {}. Continuing without cluster support.", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let handler = Arc::new(ConnectionHandler::new(
             state.app_manager.clone(),
             state.channel_manager.clone(),
@@ -485,6 +553,7 @@ impl SockudoServer {
             Some(webhook_integration), // Pass the (potentially disabled) webhook_integration
             config.clone(),
             state.cleanup_queue.clone(),
+            cluster_service,
         ));
 
         // Set metrics for adapters

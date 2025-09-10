@@ -49,6 +49,13 @@ pub struct RedisTransport {
     response_channel: String,
 }
 
+impl RedisTransport {
+    /// Get access to the underlying Redis client for cluster operations
+    pub fn get_redis_client(&self) -> redis::Client {
+        self.client.clone()
+    }
+}
+
 #[async_trait]
 impl HorizontalTransport for RedisTransport {
     type Config = RedisAdapterConfig;

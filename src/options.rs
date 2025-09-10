@@ -237,6 +237,7 @@ pub struct ServerOptions {
     pub app_manager: AppManagerConfig,
     pub cache: CacheConfig,
     pub channel_limits: ChannelLimits,
+    pub cluster: ClusterConfig,
     pub cors: CorsConfig,
     pub database: DatabaseConfig,
     pub database_pooling: DatabasePooling,
@@ -580,6 +581,15 @@ pub struct BatchingConfig {
     pub duration: u64, // ms
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClusterConfig {
+    pub enabled: bool,
+    pub heartbeat_interval_ms: u64,
+    pub node_timeout_ms: u64,
+    pub cleanup_interval_ms: u64,
+}
+
 // --- Default Implementations ---
 
 impl Default for ServerOptions {
@@ -589,6 +599,7 @@ impl Default for ServerOptions {
             app_manager: AppManagerConfig::default(),
             cache: CacheConfig::default(),
             channel_limits: ChannelLimits::default(),
+            cluster: ClusterConfig::default(),
             cors: CorsConfig::default(),
             database: DatabaseConfig::default(),
             database_pooling: DatabasePooling::default(),
@@ -931,6 +942,17 @@ impl Default for BatchingConfig {
         Self {
             enabled: true,
             duration: 50,
+        }
+    }
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            heartbeat_interval_ms: 30000,  // 30 seconds
+            node_timeout_ms: 90000,        // 90 seconds (3x heartbeat)
+            cleanup_interval_ms: 60000,    // 60 seconds
         }
     }
 }
@@ -1376,6 +1398,21 @@ impl ServerOptions {
         self.cleanup.max_retry_attempts = parse_env::<u32>(
             "CLEANUP_MAX_RETRY_ATTEMPTS",
             self.cleanup.max_retry_attempts,
+        );
+
+        // --- Cluster Configuration ---
+        self.cluster.enabled = parse_bool_env("CLUSTER_ENABLED", self.cluster.enabled);
+        self.cluster.heartbeat_interval_ms = parse_env::<u64>(
+            "CLUSTER_HEARTBEAT_INTERVAL_MS",
+            self.cluster.heartbeat_interval_ms,
+        );
+        self.cluster.node_timeout_ms = parse_env::<u64>(
+            "CLUSTER_NODE_TIMEOUT_MS",
+            self.cluster.node_timeout_ms,
+        );
+        self.cluster.cleanup_interval_ms = parse_env::<u64>(
+            "CLUSTER_CLEANUP_INTERVAL_MS",
+            self.cluster.cleanup_interval_ms,
         );
 
         Ok(())

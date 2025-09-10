@@ -1,5 +1,6 @@
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
+use crate::cluster::ClusterNodeTracking;
 use crate::error::Result;
 use crate::namespace::Namespace;
 use crate::protocol::messages::PusherMessage;
@@ -121,4 +122,10 @@ pub trait ConnectionManager: Send + Sync {
     /// Check the health of the connection manager and its underlying adapter
     /// Returns Ok(()) if healthy, Err(error_message) if unhealthy with specific reason
     async fn check_health(&self) -> Result<()>;
+
+    /// Check if this connection manager supports cluster node tracking
+    /// Returns Some(cluster_capable) if supported, None otherwise
+    fn as_cluster_capable(&mut self) -> Option<&dyn ClusterNodeTracking> {
+        None // Default implementation - adapters override if they support clustering
+    }
 }

@@ -133,6 +133,15 @@ impl ConnectionHandler {
                     subscription_result,
                 )
                 .await?;
+                
+                // Track presence join in cluster service if available
+                if let Some(cluster_service) = &self.cluster_service {
+                    if let Some(ref member) = subscription_result.member {
+                        if let Err(e) = cluster_service.track_presence_join(&request.channel, &member.user_id).await {
+                            tracing::warn!("Failed to track presence join in cluster: {}", e);
+                        }
+                    }
+                }
             }
             _ => {
                 self.send_subscription_succeeded(socket_id, app_config, &request.channel, None)
