@@ -9,3 +9,9 @@ mod horizontal_adapter_base_test;
 
 #[cfg(test)]
 mod horizontal_adapter_integration;
+
+#[cfg(test)]
+mod horizontal_adapter_failure_tests;
+
+#[cfg(test)]
+mod horizontal_adapter_race_tests;

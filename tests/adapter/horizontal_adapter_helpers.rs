@@ -1,32 +1,127 @@
 use async_trait::async_trait;
-use sockudo::adapter::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
+use serde_json::{Value, json};
+use sockudo::adapter::horizontal_adapter::{
+    BroadcastMessage, RequestBody, RequestType, ResponseBody,
+};
 use sockudo::adapter::horizontal_transport::{
     HorizontalTransport, TransportConfig, TransportHandlers,
 };
+use sockudo::channel::PresenceMemberInfo;
 use sockudo::error::{Error, Result};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-/// Mock configuration for testing
+/// Realistic state for each simulated node
+#[derive(Clone, Debug)]
+pub struct MockNodeState {
+    pub node_id: String,
+    pub sockets: Vec<String>,
+    pub channels: HashMap<String, Vec<String>>, // channel -> socket_ids
+    pub presence_members: HashMap<String, HashMap<String, Value>>, // channel -> user_id -> user_info
+    pub user_sockets: HashMap<String, Vec<String>>,                // user_id -> socket_ids
+    pub response_delay_ms: u64,
+    pub will_respond: bool,
+    pub corrupt_responses: bool,
+}
+
+impl MockNodeState {
+    pub fn new(node_id: &str) -> Self {
+        Self {
+            node_id: node_id.to_string(),
+            sockets: Vec::new(),
+            channels: HashMap::new(),
+            presence_members: HashMap::new(),
+            user_sockets: HashMap::new(),
+            response_delay_ms: 10,
+            will_respond: true,
+            corrupt_responses: false,
+        }
+    }
+
+    pub fn with_sockets(mut self, sockets: Vec<&str>) -> Self {
+        self.sockets = sockets.into_iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    pub fn with_channel(mut self, channel: &str, sockets: Vec<&str>) -> Self {
+        self.channels.insert(
+            channel.to_string(),
+            sockets.into_iter().map(|s| s.to_string()).collect(),
+        );
+        self
+    }
+
+    pub fn with_presence_member(mut self, channel: &str, user_id: &str, user_info: Value) -> Self {
+        self.presence_members
+            .entry(channel.to_string())
+            .or_insert_with(HashMap::new)
+            .insert(user_id.to_string(), user_info);
+        self
+    }
+
+    pub fn with_user_sockets(mut self, user_id: &str, sockets: Vec<&str>) -> Self {
+        self.user_sockets.insert(
+            user_id.to_string(),
+            sockets.into_iter().map(|s| s.to_string()).collect(),
+        );
+        self
+    }
+
+    pub fn with_response_delay(mut self, delay_ms: u64) -> Self {
+        self.response_delay_ms = delay_ms;
+        self
+    }
+
+    pub fn will_not_respond(mut self) -> Self {
+        self.will_respond = false;
+        self
+    }
+
+    pub fn with_corrupt_responses(mut self) -> Self {
+        self.corrupt_responses = true;
+        self
+    }
+}
+
+/// Mock configuration for testing with realistic distributed state
 #[derive(Clone)]
 pub struct MockConfig {
     pub prefix: String,
     pub request_timeout_ms: u64,
-    pub simulate_node_count: usize,
     pub simulate_failures: bool,
-    pub response_delay_ms: u64,
+    pub healthy: bool,
+    /// Each node's simulated state - realistic distributed data
+    pub node_states: Vec<MockNodeState>,
 }
 
 impl Default for MockConfig {
     fn default() -> Self {
+        // Create realistic overlapping distributed state
+        let node1 = MockNodeState::new("node-1")
+            .with_sockets(vec!["socket-1", "socket-2", "socket-shared"])
+            .with_channel("channel-1", vec!["socket-1", "socket-shared"])
+            .with_channel("presence-channel", vec!["socket-1"])
+            .with_presence_member("presence-channel", "user-1", json!({"name": "Alice"}))
+            .with_user_sockets("user-1", vec!["socket-1"])
+            .with_user_sockets("shared-user", vec!["socket-shared"]);
+
+        let node2 = MockNodeState::new("node-2")
+            .with_sockets(vec!["socket-3", "socket-4", "socket-shared"])
+            .with_channel("channel-1", vec!["socket-3", "socket-shared"])
+            .with_channel("channel-2", vec!["socket-4"])
+            .with_channel("presence-channel", vec!["socket-3"])
+            .with_presence_member("presence-channel", "user-2", json!({"name": "Bob"}))
+            .with_user_sockets("user-2", vec!["socket-3"])
+            .with_user_sockets("shared-user", vec!["socket-shared"]);
+
         Self {
             prefix: "test".to_string(),
             request_timeout_ms: 1000,
-            simulate_node_count: 2,
             simulate_failures: false,
-            response_delay_ms: 0,
+            healthy: true,
+            node_states: vec![node1, node2],
         }
     }
 }
@@ -41,100 +136,281 @@ impl TransportConfig for MockConfig {
     }
 }
 
-/// Mock transport for testing HorizontalAdapterBase
+/// Mock transport for testing HorizontalAdapterBase with realistic distributed behavior
+#[derive(Clone)]
 pub struct MockTransport {
     config: MockConfig,
     handlers: Arc<Mutex<Option<TransportHandlers>>>,
     published_broadcasts: Arc<Mutex<Vec<BroadcastMessage>>>,
     published_requests: Arc<Mutex<Vec<RequestBody>>>,
     published_responses: Arc<Mutex<Vec<ResponseBody>>>,
-    health_status: Arc<Mutex<bool>>,
+    healthy: Arc<Mutex<bool>>,
+    node_count: Arc<Mutex<usize>>,
 }
 
-impl Clone for MockTransport {
-    fn clone(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-            handlers: self.handlers.clone(),
-            published_broadcasts: self.published_broadcasts.clone(),
-            published_requests: self.published_requests.clone(),
-            published_responses: self.published_responses.clone(),
-            health_status: self.health_status.clone(),
+impl MockTransport {
+    /// Create test configurations for specific scenarios
+
+    /// Configuration with conflicting data between nodes
+    pub fn conflicting_data() -> MockConfig {
+        let node1 = MockNodeState::new("node-1")
+            .with_sockets(vec!["socket-1", "socket-shared"])
+            .with_channel("test-channel", vec!["socket-1"])
+            .with_presence_member(
+                "presence-channel",
+                "user-1",
+                json!({"name": "Alice", "status": "online"}),
+            );
+
+        let node2 = MockNodeState::new("node-2")
+            .with_sockets(vec!["socket-2", "socket-shared"])
+            .with_channel("test-channel", vec!["socket-2", "socket-shared"]) // Different membership!
+            .with_presence_member(
+                "presence-channel",
+                "user-1",
+                json!({"name": "Alice Updated", "status": "busy"}),
+            ); // Conflicting user info!
+
+        MockConfig {
+            prefix: "test".to_string(),
+            request_timeout_ms: 1000,
+            simulate_failures: false,
+            healthy: true,
+            node_states: vec![node1, node2],
+        }
+    }
+
+    /// Configuration with partial node failures
+    pub fn partial_failures() -> MockConfig {
+        let node1 = MockNodeState::new("node-1")
+            .with_sockets(vec!["socket-1", "socket-2"])
+            .with_channel("test-channel", vec!["socket-1"]);
+
+        let node2 = MockNodeState::new("node-2")
+            .with_sockets(vec!["socket-3", "socket-4"])
+            .with_channel("test-channel", vec!["socket-3"])
+            .will_not_respond(); // This node will not respond
+
+        let node3 = MockNodeState::new("node-3")
+            .with_sockets(vec!["socket-5"])
+            .with_channel("test-channel", vec!["socket-5"])
+            .with_response_delay(2000); // This node will respond too late
+
+        MockConfig {
+            prefix: "test".to_string(),
+            request_timeout_ms: 500,
+            simulate_failures: false,
+            healthy: true,
+            node_states: vec![node1, node2, node3],
+        }
+    }
+
+    /// Configuration with large scale data to test performance
+    pub fn large_scale() -> MockConfig {
+        let mut nodes = Vec::new();
+        for i in 0..10 {
+            let mut node = MockNodeState::new(&format!("node-{}", i));
+            // Each node has 100 sockets
+            node.sockets = (0..100).map(|s| format!("socket-{}-{}", i, s)).collect();
+            // Each node has sockets in 20 channels
+            for c in 0..20 {
+                let channel_sockets: Vec<String> =
+                    (0..5).map(|s| format!("socket-{}-{}", i, s)).collect();
+                node.channels
+                    .insert(format!("channel-{}", c), channel_sockets);
+            }
+            nodes.push(node);
+        }
+
+        MockConfig {
+            prefix: "test".to_string(),
+            request_timeout_ms: 1000,
+            simulate_failures: false,
+            healthy: true,
+            node_states: nodes,
+        }
+    }
+
+    /// Configuration with corrupt response data
+    pub fn corrupt_responses() -> MockConfig {
+        let node1 = MockNodeState::new("node-1")
+            .with_sockets(vec!["socket-1"])
+            .with_corrupt_responses();
+
+        let node2 = MockNodeState::new("node-2").with_sockets(vec!["socket-2"]);
+
+        MockConfig {
+            prefix: "test".to_string(),
+            request_timeout_ms: 1000,
+            simulate_failures: false,
+            healthy: true,
+            node_states: vec![node1, node2],
         }
     }
 }
 
 impl MockTransport {
-    pub fn new(config: MockConfig) -> Self {
-        Self {
-            config,
-            handlers: Arc::new(Mutex::new(None)),
-            published_broadcasts: Arc::new(Mutex::new(Vec::new())),
-            published_requests: Arc::new(Mutex::new(Vec::new())),
-            published_responses: Arc::new(Mutex::new(Vec::new())),
-            health_status: Arc::new(Mutex::new(true)),
-        }
-    }
-
+    /// Get published broadcasts for verification
     pub async fn get_published_broadcasts(&self) -> Vec<BroadcastMessage> {
         self.published_broadcasts.lock().await.clone()
     }
 
+    /// Get published requests for verification
     pub async fn get_published_requests(&self) -> Vec<RequestBody> {
         self.published_requests.lock().await.clone()
     }
 
+    /// Get published responses for verification
     pub async fn get_published_responses(&self) -> Vec<ResponseBody> {
         self.published_responses.lock().await.clone()
     }
 
+    /// Clear all published messages
     pub async fn clear_published_messages(&self) {
         self.published_broadcasts.lock().await.clear();
         self.published_requests.lock().await.clear();
         self.published_responses.lock().await.clear();
     }
 
+    /// Set health status for testing
     pub async fn set_health_status(&self, healthy: bool) {
-        *self.health_status.lock().await = healthy;
+        *self.healthy.lock().await = healthy;
     }
 
-    pub async fn simulate_incoming_request(&self, request: RequestBody) -> Result<()> {
-        let handlers = self.handlers.lock().await;
-        if let Some(handlers) = handlers.as_ref() {
-            // Simulate processing delay if configured
-            if self.config.response_delay_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(self.config.response_delay_ms)).await;
+    /// Simulate a node joining the cluster
+    pub async fn add_node(&self) {
+        let mut count = self.node_count.lock().await;
+        *count += 1;
+    }
+
+    /// Simulate a node leaving the cluster
+    pub async fn remove_node(&self) {
+        let mut count = self.node_count.lock().await;
+        if *count > 0 {
+            *count -= 1;
+        }
+    }
+
+    /// Simulate realistic response based on node state and request
+    fn create_realistic_response(
+        &self,
+        node_state: &MockNodeState,
+        request: &RequestBody,
+    ) -> ResponseBody {
+        if node_state.corrupt_responses {
+            // Return corrupted data to test error handling
+            return ResponseBody {
+                request_id: request.request_id.clone(),
+                node_id: node_state.node_id.clone(),
+                app_id: request.app_id.clone(),
+                members: HashMap::new(),
+                socket_ids: vec!["CORRUPTED_DATA_💀".to_string()],
+                sockets_count: 999_999_999, // Large but safe value to test corruption handling
+                channels_with_sockets_count: HashMap::new(),
+                exists: true,
+                channels: HashSet::new(),
+                members_count: 999_999_999,
+            };
+        }
+
+        let mut response = ResponseBody {
+            request_id: request.request_id.clone(),
+            node_id: node_state.node_id.clone(),
+            app_id: request.app_id.clone(),
+            members: HashMap::new(),
+            socket_ids: Vec::new(),
+            sockets_count: 0,
+            channels_with_sockets_count: HashMap::new(),
+            exists: false,
+            channels: HashSet::new(),
+            members_count: 0,
+        };
+
+        match request.request_type {
+            RequestType::Sockets => {
+                response.socket_ids = node_state.sockets.clone();
+                response.sockets_count = node_state.sockets.len();
             }
-
-            // Call the request handler
-            match (handlers.on_request)(request.clone()).await {
-                Ok(response) => {
-                    // Auto-publish the response
-                    (handlers.on_response)(response).await;
-                }
-                Err(e) if !self.config.simulate_failures => {
-                    return Err(e);
-                }
-                _ => {
-                    // Ignore errors if simulating failures
+            RequestType::ChannelMembers => {
+                if let Some(channel) = &request.channel {
+                    if let Some(members) = node_state.presence_members.get(channel) {
+                        // Convert Value members to PresenceMemberInfo
+                        let presence_members: HashMap<String, PresenceMemberInfo> = members
+                            .iter()
+                            .map(|(user_id, user_info)| {
+                                let member_info = PresenceMemberInfo {
+                                    user_id: user_id.clone(),
+                                    user_info: Some(user_info.clone()),
+                                };
+                                (user_id.clone(), member_info)
+                            })
+                            .collect();
+                        response.members = presence_members;
+                        response.members_count = members.len();
+                    }
                 }
             }
+            RequestType::ChannelSockets => {
+                if let Some(channel) = &request.channel {
+                    if let Some(sockets) = node_state.channels.get(channel) {
+                        response.socket_ids = sockets.clone();
+                        response.sockets_count = sockets.len();
+                    }
+                }
+            }
+            RequestType::ChannelSocketsCount => {
+                if let Some(channel) = &request.channel {
+                    if let Some(sockets) = node_state.channels.get(channel) {
+                        response.sockets_count = sockets.len();
+                    }
+                }
+            }
+            RequestType::SocketExistsInChannel => {
+                if let Some(channel) = &request.channel {
+                    if let Some(socket_id) = &request.socket_id {
+                        if let Some(sockets) = node_state.channels.get(channel) {
+                            response.exists = sockets.contains(socket_id);
+                        }
+                    }
+                }
+            }
+            RequestType::Channels => {
+                response.channels = node_state.channels.keys().cloned().collect();
+            }
+            RequestType::SocketsCount => {
+                response.sockets_count = node_state.sockets.len();
+            }
+            RequestType::ChannelMembersCount => {
+                if let Some(channel) = &request.channel {
+                    if let Some(members) = node_state.presence_members.get(channel) {
+                        response.members_count = members.len();
+                    }
+                }
+            }
+            RequestType::CountUserConnectionsInChannel => {
+                if let Some(channel) = &request.channel {
+                    if let Some(user_id) = &request.user_id {
+                        let count = node_state
+                            .channels
+                            .get(channel)
+                            .map(|sockets| {
+                                node_state
+                                    .user_sockets
+                                    .get(user_id)
+                                    .map(|user_sockets| {
+                                        sockets.iter().filter(|s| user_sockets.contains(s)).count()
+                                    })
+                                    .unwrap_or(0)
+                            })
+                            .unwrap_or(0);
+                        response.sockets_count = count;
+                    }
+                }
+            }
+            _ => {} // Handle other request types as needed
         }
-        Ok(())
-    }
 
-    pub async fn simulate_incoming_response(&self, response: ResponseBody) {
-        let handlers = self.handlers.lock().await;
-        if let Some(handlers) = handlers.as_ref() {
-            (handlers.on_response)(response).await;
-        }
-    }
-
-    pub async fn simulate_incoming_broadcast(&self, broadcast: BroadcastMessage) {
-        let handlers = self.handlers.lock().await;
-        if let Some(handlers) = handlers.as_ref() {
-            (handlers.on_broadcast)(broadcast).await;
-        }
+        response
     }
 }
 
@@ -143,10 +419,19 @@ impl HorizontalTransport for MockTransport {
     type Config = MockConfig;
 
     async fn new(config: Self::Config) -> Result<Self> {
-        if config.simulate_failures && config.prefix == "fail_on_new" {
-            return Err(Error::Internal("Simulated connection failure".to_string()));
+        if config.simulate_failures && config.prefix == "fail_new" {
+            return Err(Error::Internal("Simulated constructor failure".to_string()));
         }
-        Ok(Self::new(config))
+
+        Ok(Self {
+            healthy: Arc::new(Mutex::new(config.healthy)),
+            node_count: Arc::new(Mutex::new(config.node_states.len())),
+            config,
+            handlers: Arc::new(Mutex::new(None)),
+            published_broadcasts: Arc::new(Mutex::new(Vec::new())),
+            published_requests: Arc::new(Mutex::new(Vec::new())),
+            published_responses: Arc::new(Mutex::new(Vec::new())),
+        })
     }
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
@@ -156,12 +441,12 @@ impl HorizontalTransport for MockTransport {
 
         self.published_broadcasts.lock().await.push(message.clone());
 
-        // If handlers are set, simulate receiving our own broadcast
+        // Simulate receiving our own broadcast with realistic handler behavior
         let handlers_guard = self.handlers.lock().await;
         if let Some(handlers) = handlers_guard.as_ref() {
             let on_broadcast = handlers.on_broadcast.clone();
             let message = message.clone();
-            drop(handlers_guard); // Release the lock
+            drop(handlers_guard);
             tokio::spawn(async move {
                 // Simulate network delay
                 if let Some(delay) = std::env::var("MOCK_NETWORK_DELAY_MS").ok() {
@@ -183,57 +468,49 @@ impl HorizontalTransport for MockTransport {
 
         self.published_requests.lock().await.push(request.clone());
 
-        // Simulate responses from other nodes
+        // Simulate realistic responses from configured node states
         let handlers_guard = self.handlers.lock().await;
         if let Some(handlers) = handlers_guard.as_ref() {
             let on_response = handlers.on_response.clone();
             let request = request.clone();
-            let node_count = self.config.simulate_node_count;
-            let response_delay = self.config.response_delay_ms;
-            let simulate_failures = self.config.simulate_failures;
+            let node_states = self.config.node_states.clone();
 
-            drop(handlers_guard); // Release the lock
+            drop(handlers_guard);
 
-            // Spawn responses from simulated nodes
-            for node_idx in 1..node_count {
+            // Spawn responses from each configured node
+            for node_state in node_states {
+                if !node_state.will_respond {
+                    continue; // Skip nodes that won't respond
+                }
+
                 let on_response = on_response.clone();
                 let request = request.clone();
+                let node_state = node_state.clone();
+
                 tokio::spawn(async move {
                     // Simulate network/processing delay
-                    if response_delay > 0 {
-                        tokio::time::sleep(Duration::from_millis(response_delay)).await;
+                    if node_state.response_delay_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(node_state.response_delay_ms))
+                            .await;
                     }
 
                     // Don't respond if simulating failures for this request
-                    if simulate_failures && request.request_id.contains("no_response") {
+                    if request.request_id.contains("no_response") {
                         return;
                     }
 
-                    // Create a mock response
-                    let response = ResponseBody {
-                        request_id: request.request_id.clone(),
-                        node_id: format!("mock-node-{}", node_idx),
-                        app_id: request.app_id.clone(),
-                        members: HashMap::new(),
-                        socket_ids: vec![format!("socket-{}-{}", node_idx, 1)],
-                        sockets_count: 1,
-                        channels_with_sockets_count: {
-                            let mut map = HashMap::new();
-                            if let Some(channel) = &request.channel {
-                                map.insert(channel.clone(), 1);
-                            }
-                            map
-                        },
-                        exists: true,
-                        channels: {
-                            let mut set = HashSet::new();
-                            if let Some(channel) = &request.channel {
-                                set.insert(channel.clone());
-                            }
-                            set
-                        },
-                        members_count: 1,
+                    // Create realistic response based on node state
+                    let dummy_transport = MockTransport {
+                        config: MockConfig::default(),
+                        handlers: Arc::new(Mutex::new(None)),
+                        published_broadcasts: Arc::new(Mutex::new(Vec::new())),
+                        published_requests: Arc::new(Mutex::new(Vec::new())),
+                        published_responses: Arc::new(Mutex::new(Vec::new())),
+                        healthy: Arc::new(Mutex::new(true)),
+                        node_count: Arc::new(Mutex::new(1)),
                     };
+
+                    let response = dummy_transport.create_realistic_response(&node_state, &request);
 
                     (on_response)(response).await;
                 });
@@ -244,10 +521,6 @@ impl HorizontalTransport for MockTransport {
     }
 
     async fn publish_response(&self, response: &ResponseBody) -> Result<()> {
-        if self.config.simulate_failures && response.app_id == "fail_response" {
-            return Err(Error::Internal("Simulated response failure".to_string()));
-        }
-
         self.published_responses.lock().await.push(response.clone());
         Ok(())
     }
@@ -258,37 +531,38 @@ impl HorizontalTransport for MockTransport {
     }
 
     async fn get_node_count(&self) -> Result<usize> {
-        Ok(self.config.simulate_node_count)
+        Ok(*self.node_count.lock().await)
     }
 
     async fn check_health(&self) -> Result<()> {
-        let healthy = *self.health_status.lock().await;
-        if healthy {
+        if *self.healthy.lock().await {
             Ok(())
         } else {
-            Err(Error::Connection("Mock transport unhealthy".to_string()))
+            Err(Error::Internal("MockTransport is unhealthy".to_string()))
         }
     }
 }
 
-/// Helper to create test request body
+// Helper functions for creating test scenarios
+
 pub fn create_test_request(
-    request_id: String,
     app_id: &str,
-    request_type: sockudo::adapter::horizontal_adapter::RequestType,
+    request_type: RequestType,
+    channel: Option<&str>,
+    socket_id: Option<&str>,
+    user_id: Option<&str>,
 ) -> RequestBody {
     RequestBody {
-        request_id,
+        request_id: format!("test-{}", uuid::Uuid::new_v4()),
         node_id: "test-node".to_string(),
         app_id: app_id.to_string(),
         request_type,
-        channel: Some("test-channel".to_string()),
-        socket_id: Some("test-socket".to_string()),
-        user_id: Some("test-user".to_string()),
+        channel: channel.map(|s| s.to_string()),
+        socket_id: socket_id.map(|s| s.to_string()),
+        user_id: user_id.map(|s| s.to_string()),
     }
 }
 
-/// Helper to create test broadcast message
 pub fn create_test_broadcast(app_id: &str, channel: &str, message: &str) -> BroadcastMessage {
     BroadcastMessage {
         node_id: "test-node".to_string(),
@@ -296,11 +570,15 @@ pub fn create_test_broadcast(app_id: &str, channel: &str, message: &str) -> Broa
         channel: channel.to_string(),
         message: message.to_string(),
         except_socket_id: None,
-        timestamp_ms: None,
+        timestamp_ms: Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as f64,
+        ),
     }
 }
 
-/// Helper to wait for a condition with timeout
 pub async fn wait_for_condition<F, Fut>(condition: F, timeout_ms: u64) -> bool
 where
     F: Fn() -> Fut,
