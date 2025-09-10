@@ -17,11 +17,11 @@ pub fn get_redis_config() -> RedisAdapterConfig {
     }
 }
 
-/// Get Redis Cluster configuration for testing (ports 7000-7002)
+/// Get Redis Cluster configuration for testing (ports 7001-7003)
 pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
     RedisClusterAdapterConfig {
         nodes: vec![
-            "redis://127.0.0.1:7000".to_string(),
+            "redis://127.0.0.1:7003".to_string(),
             "redis://127.0.0.1:7001".to_string(),
             "redis://127.0.0.1:7002".to_string(),
         ],
