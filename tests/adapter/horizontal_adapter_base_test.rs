@@ -24,9 +24,11 @@ async fn test_horizontal_adapter_base_new() -> Result<()> {
 
 #[tokio::test]
 async fn test_horizontal_adapter_base_new_failure() -> Result<()> {
-    let mut config = MockConfig::default();
-    config.prefix = "fail_new".to_string();
-    config.simulate_failures = true;
+    let config = MockConfig {
+        prefix: "fail_new".to_string(),
+        simulate_failures: true,
+        ..Default::default()
+    };
 
     let result = HorizontalAdapterBase::<MockTransport>::new(config).await;
     assert!(result.is_err());
