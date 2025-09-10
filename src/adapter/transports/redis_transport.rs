@@ -299,65 +299,35 @@ impl HorizontalTransport for RedisTransport {
     }
 
     async fn get_node_count(&self) -> Result<usize> {
-        if self.config.cluster_mode {
-            // Use CLUSTER NODES command to get actual cluster node count
-            let mut conn = self.connection.clone();
-            let result: redis::RedisResult<String> = redis::cmd("CLUSTER")
-                .arg("NODES")
-                .query_async(&mut conn)
-                .await;
+        let mut conn = self.connection.clone();
+        let result: redis::RedisResult<Vec<redis::Value>> = redis::cmd("PUBSUB")
+            .arg("NUMSUB")
+            .arg(&self.request_channel)
+            .query_async(&mut conn)
+            .await;
 
-            match result {
-                Ok(nodes_info) => {
-                    // Parse CLUSTER NODES response - count all active nodes
-                    let node_count = nodes_info
-                        .lines()
-                        .filter(|line| {
-                            !line.trim().is_empty()
-                                && (line.contains(" master ") || line.contains(" slave "))
-                        })
-                        .count();
-
-                    if node_count > 0 {
-                        debug!("Detected {} Redis cluster nodes", node_count);
+        match result {
+            Ok(values) => {
+                if values.len() >= 2 {
+                    if let redis::Value::Int(count) = values[1] {
+                        let node_count = (count as usize).max(1);
+                        debug!(
+                            "Detected {} application instances via PUBSUB NUMSUB",
+                            node_count
+                        );
                         Ok(node_count)
                     } else {
-                        warn!("CLUSTER NODES returned no valid nodes, defaulting to 1");
+                        warn!("PUBSUB NUMSUB returned non-integer count: {:?}", values[1]);
                         Ok(1)
                     }
-                }
-                Err(e) => {
-                    warn!("Failed to execute CLUSTER NODES: {}, defaulting to 1", e);
+                } else {
+                    warn!("PUBSUB NUMSUB returned unexpected format: {:?}", values);
                     Ok(1)
                 }
             }
-        } else {
-            let mut conn = self.connection.clone();
-            let result: redis::RedisResult<Vec<redis::Value>> = redis::cmd("PUBSUB")
-                .arg("NUMSUB")
-                .arg(&self.request_channel)
-                .query_async(&mut conn)
-                .await;
-
-            match result {
-                Ok(values) => {
-                    if values.len() >= 2 {
-                        if let redis::Value::Int(count) = values[1] {
-                            let node_count = (count as usize).max(1);
-                            Ok(node_count)
-                        } else {
-                            warn!("PUBSUB NUMSUB returned non-integer count: {:?}", values[1]);
-                            Ok(1)
-                        }
-                    } else {
-                        warn!("PUBSUB NUMSUB returned unexpected format: {:?}", values);
-                        Ok(1)
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to execute PUBSUB NUMSUB: {}", e);
-                    Ok(1)
-                }
+            Err(e) => {
+                error!("Failed to execute PUBSUB NUMSUB: {}", e);
+                Ok(1)
             }
         }
     }
