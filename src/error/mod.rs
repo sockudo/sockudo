@@ -160,13 +160,6 @@ pub enum Error {
     ConfigFile(String),
 }
 
-// Redis error conversion
-impl From<redis::RedisError> for Error {
-    fn from(error: redis::RedisError) -> Self {
-        Error::Redis(error.to_string())
-    }
-}
-
 // Add conversion to WebSocket close codes
 impl Error {
     pub fn close_code(&self) -> u16 {

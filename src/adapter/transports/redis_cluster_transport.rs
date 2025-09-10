@@ -39,19 +39,6 @@ pub struct RedisClusterTransport {
     config: RedisClusterAdapterConfig,
 }
 
-impl RedisClusterTransport {
-    /// Get access to a Redis client for cluster operations
-    /// Uses the first node in the cluster configuration
-    pub fn get_redis_client(&self) -> crate::error::Result<redis::Client> {
-        if let Some(first_node) = self.config.nodes.first() {
-            redis::Client::open(first_node.as_str())
-                .map_err(|e| crate::error::Error::Redis(format!("Failed to create Redis client: {e}")))
-        } else {
-            Err(crate::error::Error::Redis("No Redis cluster nodes configured".to_string()))
-        }
-    }
-}
-
 #[async_trait]
 impl HorizontalTransport for RedisClusterTransport {
     type Config = RedisClusterAdapterConfig;

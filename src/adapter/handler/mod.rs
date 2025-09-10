@@ -17,7 +17,6 @@ use crate::app::config::App;
 use crate::app::manager::AppManager;
 use crate::cache::manager::CacheManager;
 use crate::channel::ChannelManager;
-use crate::cluster::ClusterService;
 use crate::error::{Error, Result};
 use crate::metrics::MetricsInterface;
 use crate::options::ServerOptions;
@@ -53,7 +52,6 @@ pub struct ConnectionHandler {
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
     cleanup_consecutive_failures: Arc<AtomicUsize>,
     cleanup_circuit_breaker_opened_at: Arc<AtomicU64>,
-    cluster_service: Option<Arc<dyn ClusterService>>,
 }
 
 impl ConnectionHandler {
@@ -67,7 +65,6 @@ impl ConnectionHandler {
         webhook_integration: Option<Arc<WebhookIntegration>>,
         server_options: ServerOptions,
         cleanup_queue: Option<crate::cleanup::CleanupSender>,
-        cluster_service: Option<Arc<dyn ClusterService>>,
     ) -> Self {
         Self {
             app_manager,
@@ -82,7 +79,6 @@ impl ConnectionHandler {
             cleanup_queue,
             cleanup_consecutive_failures: Arc::new(AtomicUsize::new(0)),
             cleanup_circuit_breaker_opened_at: Arc::new(AtomicU64::new(0)),
-            cluster_service,
         }
     }
 
