@@ -54,6 +54,15 @@ impl ConnectionHandler {
         // Get user ID before unsubscribing (for presence channels)
         let user_id = self.get_user_id_for_socket(socket_id, app_config).await?;
 
+        // Track presence leave in cluster service if available (before unsubscribing)
+        if channel_name.starts_with("presence-") {
+            if let (Some(cluster_service), Some(user_id_str)) = (&self.cluster_service, &user_id) {
+                if let Err(e) = cluster_service.track_presence_leave(&channel_name, user_id_str).await {
+                    tracing::warn!("Failed to track presence leave in cluster: {}", e);
+                }
+            }
+        }
+
         // Perform unsubscription through channel manager
         {
             let channel_manager = self.channel_manager.read().await;
@@ -563,6 +572,13 @@ impl ConnectionHandler {
     ) -> Result<()> {
         if channel_str.starts_with("presence-") {
             if let Some(disconnected_user_id) = user_id {
+                // Track presence leave in cluster service if available
+                if let Some(cluster_service) = &self.cluster_service {
+                    if let Err(e) = cluster_service.track_presence_leave(channel_str, disconnected_user_id).await {
+                        tracing::warn!("Failed to track presence leave in cluster: {}", e);
+                    }
+                }
+                
                 // Use centralized presence member removal logic
                 PresenceManager::handle_member_removed(
                     &self.connection_manager,
