@@ -71,7 +71,7 @@ jobs:
       - name: Start test services with docker-compose
         run: |
           # Start all test services using the exact same configuration
-          docker-compose -f docker-compose.test.yml up -d
+          docker compose -f docker-compose.test.yml up -d
           
           # Wait for services to be healthy
           echo "Waiting for services to be ready..."
@@ -169,7 +169,7 @@ jobs:
         if: always()
         run: |
           echo "Stopping test services..."
-          docker-compose -f docker-compose.test.yml down -v || true
+          docker compose -f docker-compose.test.yml down -v || true
           docker system prune -f || true
 
   # =============================================================================
