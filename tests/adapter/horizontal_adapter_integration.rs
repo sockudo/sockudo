@@ -210,7 +210,7 @@ async fn test_distributed_socket_count_redis() -> Result<()> {
         .await?;
 
     // Should have some sockets from the local state
-    assert!(sockets1.len() > 0 || sockets2.len() > 0);
+    assert!(!sockets1.is_empty() || !sockets2.is_empty());
 
     Ok(())
 }

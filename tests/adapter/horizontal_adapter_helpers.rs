@@ -56,7 +56,7 @@ impl MockNodeState {
     pub fn with_presence_member(mut self, channel: &str, user_id: &str, user_info: Value) -> Self {
         self.presence_members
             .entry(channel.to_string())
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(user_id.to_string(), user_info);
         self
     }
@@ -332,46 +332,45 @@ impl MockTransport {
                 response.sockets_count = node_state.sockets.len();
             }
             RequestType::ChannelMembers => {
-                if let Some(channel) = &request.channel {
-                    if let Some(members) = node_state.presence_members.get(channel) {
-                        // Convert Value members to PresenceMemberInfo
-                        let presence_members: HashMap<String, PresenceMemberInfo> = members
-                            .iter()
-                            .map(|(user_id, user_info)| {
-                                let member_info = PresenceMemberInfo {
-                                    user_id: user_id.clone(),
-                                    user_info: Some(user_info.clone()),
-                                };
-                                (user_id.clone(), member_info)
-                            })
-                            .collect();
-                        response.members = presence_members;
-                        response.members_count = members.len();
-                    }
+                if let Some(channel) = &request.channel
+                    && let Some(members) = node_state.presence_members.get(channel)
+                {
+                    // Convert Value members to PresenceMemberInfo
+                    let presence_members: HashMap<String, PresenceMemberInfo> = members
+                        .iter()
+                        .map(|(user_id, user_info)| {
+                            let member_info = PresenceMemberInfo {
+                                user_id: user_id.clone(),
+                                user_info: Some(user_info.clone()),
+                            };
+                            (user_id.clone(), member_info)
+                        })
+                        .collect();
+                    response.members = presence_members;
+                    response.members_count = members.len();
                 }
             }
             RequestType::ChannelSockets => {
-                if let Some(channel) = &request.channel {
-                    if let Some(sockets) = node_state.channels.get(channel) {
-                        response.socket_ids = sockets.clone();
-                        response.sockets_count = sockets.len();
-                    }
+                if let Some(channel) = &request.channel
+                    && let Some(sockets) = node_state.channels.get(channel)
+                {
+                    response.socket_ids = sockets.clone();
+                    response.sockets_count = sockets.len();
                 }
             }
             RequestType::ChannelSocketsCount => {
-                if let Some(channel) = &request.channel {
-                    if let Some(sockets) = node_state.channels.get(channel) {
-                        response.sockets_count = sockets.len();
-                    }
+                if let Some(channel) = &request.channel
+                    && let Some(sockets) = node_state.channels.get(channel)
+                {
+                    response.sockets_count = sockets.len();
                 }
             }
             RequestType::SocketExistsInChannel => {
-                if let Some(channel) = &request.channel {
-                    if let Some(socket_id) = &request.socket_id {
-                        if let Some(sockets) = node_state.channels.get(channel) {
-                            response.exists = sockets.contains(socket_id);
-                        }
-                    }
+                if let Some(channel) = &request.channel
+                    && let Some(socket_id) = &request.socket_id
+                    && let Some(sockets) = node_state.channels.get(channel)
+                {
+                    response.exists = sockets.contains(socket_id);
                 }
             }
             RequestType::Channels => {
@@ -381,30 +380,30 @@ impl MockTransport {
                 response.sockets_count = node_state.sockets.len();
             }
             RequestType::ChannelMembersCount => {
-                if let Some(channel) = &request.channel {
-                    if let Some(members) = node_state.presence_members.get(channel) {
-                        response.members_count = members.len();
-                    }
+                if let Some(channel) = &request.channel
+                    && let Some(members) = node_state.presence_members.get(channel)
+                {
+                    response.members_count = members.len();
                 }
             }
             RequestType::CountUserConnectionsInChannel => {
-                if let Some(channel) = &request.channel {
-                    if let Some(user_id) = &request.user_id {
-                        let count = node_state
-                            .channels
-                            .get(channel)
-                            .map(|sockets| {
-                                node_state
-                                    .user_sockets
-                                    .get(user_id)
-                                    .map(|user_sockets| {
-                                        sockets.iter().filter(|s| user_sockets.contains(s)).count()
-                                    })
-                                    .unwrap_or(0)
-                            })
-                            .unwrap_or(0);
-                        response.sockets_count = count;
-                    }
+                if let Some(channel) = &request.channel
+                    && let Some(user_id) = &request.user_id
+                {
+                    let count = node_state
+                        .channels
+                        .get(channel)
+                        .map(|sockets| {
+                            node_state
+                                .user_sockets
+                                .get(user_id)
+                                .map(|user_sockets| {
+                                    sockets.iter().filter(|s| user_sockets.contains(s)).count()
+                                })
+                                .unwrap_or(0)
+                        })
+                        .unwrap_or(0);
+                    response.sockets_count = count;
                 }
             }
             _ => {} // Handle other request types as needed
@@ -449,10 +448,10 @@ impl HorizontalTransport for MockTransport {
             drop(handlers_guard);
             tokio::spawn(async move {
                 // Simulate network delay
-                if let Some(delay) = std::env::var("MOCK_NETWORK_DELAY_MS").ok() {
-                    if let Ok(delay_ms) = delay.parse::<u64>() {
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                    }
+                if let Ok(delay) = std::env::var("MOCK_NETWORK_DELAY_MS")
+                    && let Ok(delay_ms) = delay.parse::<u64>()
+                {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 }
                 (on_broadcast)(message).await;
             });
