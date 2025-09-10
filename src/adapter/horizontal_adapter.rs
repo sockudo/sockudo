@@ -602,6 +602,11 @@ impl HorizontalAdapter {
             }
         }
 
+        // Update members_count to reflect actual merged member count
+        if matches!(request_type, RequestType::ChannelMembers) {
+            combined_response.members_count = combined_response.members.len();
+        }
+
         combined_response
     }
 
