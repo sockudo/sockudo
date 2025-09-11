@@ -339,14 +339,45 @@ impl HorizontalAdapter {
                         .await?;
                 }
             }
-            // Placeholder handlers for new request types (to be implemented in Phase 2)
+            // Presence replication handlers
             RequestType::PresenceMemberJoined => {
-                // TODO: Implement in Phase 2
-                // Will use: request.channel, request.user_id, request.user_info, request.node_id (as owner)
+                if let (Some(channel), Some(user_id)) = (&request.channel, &request.user_id) {
+                    // Update local cluster presence registry
+                    let mut registry = self.cluster_presence_registry.write().await;
+                    registry
+                        .entry(channel.clone())
+                        .or_insert_with(HashMap::new)
+                        .insert(
+                            user_id.clone(),
+                            PresenceEntry {
+                                user_info: request.user_info.clone(),
+                                node_id: request.node_id.clone(),
+                                joined_at: current_timestamp(),
+                            },
+                        );
+
+                    debug!(
+                        "Replicated presence join: {} in channel {} from node {}",
+                        user_id, channel, request.node_id
+                    );
+                }
             }
             RequestType::PresenceMemberLeft => {
-                // TODO: Implement in Phase 2
-                // Will use: request.channel, request.user_id, request.node_id (as owner)
+                if let (Some(channel), Some(user_id)) = (&request.channel, &request.user_id) {
+                    // Update local cluster presence registry
+                    let mut registry = self.cluster_presence_registry.write().await;
+                    if let Some(channel_members) = registry.get_mut(channel) {
+                        channel_members.remove(user_id);
+                        if channel_members.is_empty() {
+                            registry.remove(channel);
+                        }
+                    }
+
+                    debug!(
+                        "Replicated presence leave: {} from channel {} from node {}",
+                        user_id, channel, request.node_id
+                    );
+                }
             }
             RequestType::Heartbeat => {
                 // TODO: Implement in Phase 2
@@ -646,13 +677,11 @@ impl HorizontalAdapter {
                     // Sum connection counts from all nodes
                     combined_response.sockets_count += response.sockets_count;
                 }
-                // Placeholder handlers for new request types (to be implemented in Phase 2)
+                // Presence replication - no response aggregation needed (broadcast-only)
                 RequestType::PresenceMemberJoined => {
-                    // TODO: Implement in Phase 2
                     // These are broadcast-only requests, no response aggregation needed
                 }
                 RequestType::PresenceMemberLeft => {
-                    // TODO: Implement in Phase 2
                     // These are broadcast-only requests, no response aggregation needed
                 }
                 RequestType::Heartbeat => {
