@@ -100,6 +100,7 @@ where
             user_info: None,
             timestamp: None,
             dead_node_id: None,
+            target_node_id: None,
         };
 
         // Add to pending requests
@@ -268,6 +269,7 @@ where
         let broadcast_horizontal = horizontal_arc.clone();
         let request_horizontal = horizontal_arc.clone();
         let response_horizontal = horizontal_arc.clone();
+        let transport_for_request = self.transport.clone();
 
         let handlers = TransportHandlers {
             on_broadcast: Arc::new(move |broadcast| {
@@ -330,6 +332,7 @@ where
             }),
             on_request: Arc::new(move |request| {
                 let horizontal_clone = request_horizontal.clone();
+                let transport_clone = transport_for_request.clone();
                 Box::pin(async move {
                     let node_id = {
                         let horizontal = horizontal_clone.lock().await;
@@ -340,8 +343,45 @@ where
                         return Err(Error::Other("Skipping own request".to_string()));
                     }
 
+                    // Check if this is a targeted request for another node
+                    if let Some(ref target_node) = request.target_node_id {
+                        if target_node != &node_id {
+                            // Not for us, ignore silently
+                            return Err(Error::Other("Request not for this node".to_string()));
+                        }
+                    }
+
                     let mut horizontal_lock = horizontal_clone.lock().await;
-                    horizontal_lock.process_request(request).await
+                    let response = horizontal_lock.process_request(request.clone()).await?;
+
+                    // Check if this was a heartbeat that detected a new node
+                    if request.request_type == RequestType::Heartbeat && response.exists {
+                        // New node detected, send our presence state to it
+                        // Spawn task to avoid blocking request processing
+                        let new_node_id = request.node_id.clone();
+                        let horizontal_clone_for_task = horizontal_clone.clone();
+                        let transport_for_task = transport_clone.clone();
+
+                        tokio::spawn(async move {
+                            // Small delay to let the new node finish initialization
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+
+                            if let Err(e) = send_presence_state_to_node(
+                                &horizontal_clone_for_task,
+                                &transport_for_task,
+                                &new_node_id,
+                            )
+                            .await
+                            {
+                                error!(
+                                    "Failed to send presence state to new node {}: {}",
+                                    new_node_id, e
+                                );
+                            }
+                        });
+                    }
+
+                    Ok(response)
                 })
             }),
             on_response: Arc::new(move |response| {
@@ -878,6 +918,21 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             horizontal.node_id.clone()
         };
 
+        // Store in our own registry first
+        {
+            let horizontal = self.horizontal.lock().await;
+            horizontal
+                .add_presence_entry(
+                    &node_id,
+                    channel,
+                    socket_id,
+                    user_id,
+                    app_id,
+                    user_info.clone(),
+                )
+                .await;
+        }
+
         let request = RequestBody {
             request_id: crate::adapter::horizontal_adapter::generate_request_id(),
             node_id,
@@ -890,6 +945,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             user_info,
             timestamp: None,
             dead_node_id: None,
+            target_node_id: None,
         };
 
         // Send without waiting for response (broadcast)
@@ -909,6 +965,14 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             horizontal.node_id.clone()
         };
 
+        // Remove from our own registry first
+        {
+            let horizontal = self.horizontal.lock().await;
+            horizontal
+                .remove_presence_entry(&node_id, channel, socket_id)
+                .await;
+        }
+
         let request = RequestBody {
             request_id: crate::adapter::horizontal_adapter::generate_request_id(),
             node_id,
@@ -921,6 +985,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             user_info: None,
             timestamp: None,
             dead_node_id: None,
+            target_node_id: None,
         };
 
         // Send without waiting for response (broadcast)
@@ -963,6 +1028,25 @@ where
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
 
+            // Send immediate heartbeat on startup to announce ourselves
+            let initial_heartbeat = RequestBody {
+                request_id: generate_request_id(),
+                node_id: node_id.clone(),
+                app_id: "cluster".to_string(),
+                request_type: RequestType::Heartbeat,
+                channel: None,
+                socket_id: None,
+                user_id: None,
+                user_info: None,
+                timestamp: Some(current_timestamp()),
+                dead_node_id: None,
+                target_node_id: None,
+            };
+
+            if let Err(e) = transport.publish_request(&initial_heartbeat).await {
+                error!("Failed to send initial heartbeat: {}", e);
+            }
+
             loop {
                 interval.tick().await;
 
@@ -977,6 +1061,7 @@ where
                     user_info: None,
                     timestamp: Some(current_timestamp()),
                     dead_node_id: None,
+                    target_node_id: None,
                 };
 
                 if let Err(e) = transport.publish_request(&heartbeat_request).await {
@@ -1094,6 +1179,7 @@ where
                                 user_info: None,
                                 timestamp: Some(current_timestamp()),
                                 dead_node_id: Some(dead_node_id.clone()),
+                                target_node_id: None,
                             };
 
                             if let Err(e) = transport.publish_request(&dead_node_request).await {
@@ -1110,4 +1196,60 @@ where
             }
         });
     }
+}
+
+/// Helper function to send presence state to a new node
+async fn send_presence_state_to_node<T: HorizontalTransport>(
+    horizontal: &Arc<tokio::sync::Mutex<HorizontalAdapter>>,
+    transport: &T,
+    target_node_id: &str,
+) -> Result<()> {
+    // Get our presence data
+    let (our_node_id, data_to_send) = {
+        let horizontal_lock = horizontal.lock().await;
+        let registry = horizontal_lock.cluster_presence_registry.read().await;
+
+        // Get only our node's data
+        if let Some(our_presence_data) = registry.get(&horizontal_lock.node_id) {
+            // Clone the data to avoid holding the lock
+            (
+                horizontal_lock.node_id.clone(),
+                Some(our_presence_data.clone()),
+            )
+        } else {
+            (horizontal_lock.node_id.clone(), None)
+        }
+    };
+
+    if let Some(data_to_send) = data_to_send {
+        // Serialize the presence data
+        let serialized_data = serde_json::to_value(&data_to_send)?;
+
+        let sync_request = RequestBody {
+            request_id: generate_request_id(),
+            node_id: our_node_id,
+            app_id: "cluster".to_string(),
+            request_type: RequestType::PresenceStateSync,
+            target_node_id: Some(target_node_id.to_string()),
+            user_info: Some(serialized_data), // Reuse this field for bulk data
+            channel: None,
+            socket_id: None,
+            user_id: None,
+            timestamp: None,
+            dead_node_id: None,
+        };
+
+        // This broadcasts but only target_node will process it
+        transport.publish_request(&sync_request).await?;
+
+        info!(
+            "Sent presence state to new node: {} ({} channels)",
+            target_node_id,
+            data_to_send.len()
+        );
+    } else {
+        debug!("No presence data to send to new node: {}", target_node_id);
+    }
+
+    Ok(())
 }
