@@ -1,5 +1,6 @@
 // src/adapter/handler/core_methods.rs
 use super::ConnectionHandler;
+use crate::adapter::horizontal_adapter::DeadNodeEvent;
 use crate::app::config::App;
 use crate::cleanup::{AuthInfo, ConnectionCleanupInfo, DisconnectTask};
 use crate::error::{Error, Result};
@@ -872,5 +873,64 @@ impl ConnectionHandler {
                 Ok(false) // Assume no cache on error
             }
         }
+    }
+
+    /// Handle dead node cleanup event by processing each orphaned member
+    pub async fn handle_dead_node_cleanup(&self, event: DeadNodeEvent) -> Result<()> {
+        let orphaned_members_count = event.orphaned_members.len();
+        debug!(
+            "Processing dead node cleanup for node {}, cleaning up {} orphaned members",
+            event.dead_node_id, orphaned_members_count
+        );
+
+        for orphaned_member in event.orphaned_members {
+            // Get app config for the orphaned member
+            let app_config = match self.app_manager.find_by_id(&orphaned_member.app_id).await {
+                Ok(Some(app)) => app,
+                Ok(None) => {
+                    warn!(
+                        "App {} not found during dead node cleanup for user {} in channel {}",
+                        orphaned_member.app_id, orphaned_member.user_id, orphaned_member.channel
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    error!(
+                        "Error fetching app {} during dead node cleanup: {}",
+                        orphaned_member.app_id, e
+                    );
+                    continue;
+                }
+            };
+
+            // Use PresenceManager to handle member removal
+            if let Err(e) = PresenceManager::handle_member_removed(
+                &self.connection_manager,
+                self.webhook_integration.as_ref(),
+                &app_config,
+                &orphaned_member.channel,
+                &orphaned_member.user_id,
+                None, // No excluding socket for dead node cleanup
+            )
+            .await
+            {
+                error!(
+                    "Failed to handle member removal for user {} in channel {} (app: {}) during dead node cleanup: {}",
+                    orphaned_member.user_id, orphaned_member.channel, orphaned_member.app_id, e
+                );
+            } else {
+                debug!(
+                    "Successfully cleaned up orphaned member {} from channel {} (app: {})",
+                    orphaned_member.user_id, orphaned_member.channel, orphaned_member.app_id
+                );
+            }
+        }
+
+        info!(
+            "Completed dead node cleanup for node {}, processed {} orphaned members",
+            event.dead_node_id, orphaned_members_count
+        );
+
+        Ok(())
     }
 }

@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use crate::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
 use crate::adapter::horizontal_adapter::{
-    BroadcastMessage, HorizontalAdapter, PendingRequest, RequestBody, RequestType, ResponseBody,
-    current_timestamp, generate_request_id,
+    BroadcastMessage, DeadNodeEvent, HorizontalAdapter, OrphanedMember, PendingRequest,
+    RequestBody, RequestType, ResponseBody, current_timestamp, generate_request_id,
 };
 use crate::adapter::horizontal_transport::{
     HorizontalTransport, TransportConfig, TransportHandlers,
@@ -33,6 +33,7 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub horizontal: Arc<Mutex<HorizontalAdapter>>,
     pub transport: T,
     pub config: T::Config,
+    pub event_bus: Option<tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>>,
 }
 
 impl<T: HorizontalTransport + 'static> HorizontalAdapterBase<T>
@@ -49,6 +50,7 @@ where
             horizontal: Arc::new(Mutex::new(horizontal)),
             transport,
             config,
+            event_bus: None,
         })
     }
 
@@ -59,6 +61,13 @@ where
         let mut horizontal = self.horizontal.lock().await;
         horizontal.metrics = Some(metrics);
         Ok(())
+    }
+
+    pub fn set_event_bus(
+        &mut self,
+        event_sender: tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>,
+    ) {
+        self.event_bus = Some(event_sender);
     }
 
     /// Enhanced send_request that properly integrates with HorizontalAdapter
@@ -968,6 +977,7 @@ where
     async fn start_dead_node_detection(&self) {
         let transport = self.transport.clone();
         let horizontal = self.horizontal.clone();
+        let event_bus = self.event_bus.clone();
         let (node_id, node_timeout_ms) = {
             let horizontal = self.horizontal.lock().await;
             (horizontal.node_id.clone(), horizontal.node_timeout_ms)
@@ -1026,16 +1036,35 @@ where
                                 }
                             };
 
-                            // 3. TODO: Broadcast presence leave for each orphaned member
-                            // Need to determine app_id for each orphaned member
-                            // for (channel, user_id) in &cleanup_tasks {
-                            //     self.broadcast_presence_leave(app_id, channel, user_id).await?;
-                            // }
-
                             if !cleanup_tasks.is_empty() {
+                                // 3. Convert to orphaned members and emit event
+                                let orphaned_members: Vec<OrphanedMember> = cleanup_tasks
+                                    .into_iter()
+                                    .map(|(app_id, channel, user_id, user_info)| OrphanedMember {
+                                        app_id,
+                                        channel,
+                                        user_id,
+                                        user_info, // Preserve user_info for proper presence management
+                                    })
+                                    .collect();
+
+                                let event = DeadNodeEvent {
+                                    dead_node_id: dead_node_id.clone(),
+                                    orphaned_members: orphaned_members.clone(),
+                                };
+
+                                // Emit event for processing by ConnectionHandler
+                                if let Some(event_sender) = &event_bus {
+                                    if let Err(e) = event_sender.send(event) {
+                                        error!("Failed to send dead node event: {}", e);
+                                    }
+                                } else {
+                                    warn!("No event bus configured for dead node cleanup");
+                                }
+
                                 info!(
-                                    "Cleaned up {} orphaned presence members from dead node {}",
-                                    cleanup_tasks.len(),
+                                    "Emitted cleanup event for {} orphaned presence members from dead node {}",
+                                    orphaned_members.len(),
                                     dead_node_id
                                 );
                             }
