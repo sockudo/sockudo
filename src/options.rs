@@ -260,6 +260,7 @@ pub struct ServerOptions {
     pub websocket_max_payload_kb: u32,
     pub cleanup: crate::cleanup::CleanupConfig,
     pub activity_timeout: u64,
+    pub cluster_health: ClusterHealthConfig,
 }
 
 // --- Configuration Sub-Structs ---
@@ -580,6 +581,15 @@ pub struct BatchingConfig {
     pub duration: u64, // ms
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClusterHealthConfig {
+    pub enabled: bool,              // Enable cluster health monitoring
+    pub heartbeat_interval_ms: u64, // Heartbeat broadcast interval
+    pub node_timeout_ms: u64,       // Node considered dead after this timeout
+    pub cleanup_interval_ms: u64,   // How often to check for dead nodes
+}
+
 // --- Default Implementations ---
 
 impl Default for ServerOptions {
@@ -612,6 +622,7 @@ impl Default for ServerOptions {
             websocket_max_payload_kb: 64,
             cleanup: crate::cleanup::CleanupConfig::default(),
             activity_timeout: 120,
+            cluster_health: ClusterHealthConfig::default(),
         }
     }
 }
@@ -931,6 +942,17 @@ impl Default for BatchingConfig {
         Self {
             enabled: true,
             duration: 50,
+        }
+    }
+}
+
+impl Default for ClusterHealthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,                // Enable by default for horizontal adapters
+            heartbeat_interval_ms: 10000, // 10 seconds
+            node_timeout_ms: 30000,       // 30 seconds
+            cleanup_interval_ms: 10000,   // 10 seconds
         }
     }
 }
@@ -1376,6 +1398,22 @@ impl ServerOptions {
         self.cleanup.max_retry_attempts = parse_env::<u32>(
             "CLEANUP_MAX_RETRY_ATTEMPTS",
             self.cleanup.max_retry_attempts,
+        );
+
+        // Cluster health configuration
+        self.cluster_health.enabled =
+            parse_bool_env("CLUSTER_HEALTH_ENABLED", self.cluster_health.enabled);
+        self.cluster_health.heartbeat_interval_ms = parse_env::<u64>(
+            "CLUSTER_HEALTH_HEARTBEAT_INTERVAL",
+            self.cluster_health.heartbeat_interval_ms,
+        );
+        self.cluster_health.node_timeout_ms = parse_env::<u64>(
+            "CLUSTER_HEALTH_NODE_TIMEOUT",
+            self.cluster_health.node_timeout_ms,
+        );
+        self.cluster_health.cleanup_interval_ms = parse_env::<u64>(
+            "CLUSTER_HEALTH_CLEANUP_INTERVAL",
+            self.cluster_health.cleanup_interval_ms,
         );
 
         Ok(())

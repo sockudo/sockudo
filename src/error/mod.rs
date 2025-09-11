@@ -158,6 +158,12 @@ pub enum Error {
 
     #[error("Config file Error: {0}")]
     ConfigFile(String),
+
+    #[error("Cluster presence error: {0}")]
+    ClusterPresence(String),
+
+    #[error("Dead node cleanup error: {0}")]
+    DeadNodeCleanup(String),
 }
 
 // Add conversion to WebSocket close codes

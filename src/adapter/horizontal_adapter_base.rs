@@ -86,6 +86,10 @@ where
             channel: channel.map(String::from),
             socket_id: socket_id.map(String::from),
             user_id: user_id.map(String::from),
+            // Cluster presence fields (not used for regular requests)
+            user_info: None,
+            timestamp: None,
+            dead_node_id: None,
         };
 
         // Add to pending requests
