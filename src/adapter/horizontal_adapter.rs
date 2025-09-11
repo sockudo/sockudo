@@ -109,6 +109,10 @@ pub struct PresenceEntry {
     pub joined_at: u64,    // Timestamp when user joined
 }
 
+/// Type alias for the cluster presence registry structure
+/// HashMap<node_id, HashMap<channel, HashMap<socket_id, PresenceEntry>>>
+pub type ClusterPresenceRegistry = HashMap<String, HashMap<String, HashMap<String, PresenceEntry>>>;
+
 /// Event emitted when a node dies and orphaned presence members need cleanup
 #[derive(Debug, Clone)]
 pub struct DeadNodeEvent {
@@ -143,8 +147,7 @@ pub struct HorizontalAdapter {
 
     /// Complete cluster-wide presence registry (node-first structure for efficient cleanup)
     /// HashMap<node_id, HashMap<channel, HashMap<socket_id, PresenceEntry>>>
-    pub cluster_presence_registry:
-        Arc<RwLock<HashMap<String, HashMap<String, HashMap<String, PresenceEntry>>>>>,
+    pub cluster_presence_registry: Arc<RwLock<ClusterPresenceRegistry>>,
 
     /// Track node heartbeats: HashMap<node_id, last_heartbeat_timestamp>
     pub node_heartbeats: Arc<RwLock<HashMap<String, u64>>>,
