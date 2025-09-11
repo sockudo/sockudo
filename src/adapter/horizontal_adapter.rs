@@ -149,8 +149,8 @@ pub struct HorizontalAdapter {
     /// HashMap<node_id, HashMap<channel, HashMap<socket_id, PresenceEntry>>>
     pub cluster_presence_registry: Arc<RwLock<ClusterPresenceRegistry>>,
 
-    /// Track node heartbeats: HashMap<node_id, last_heartbeat_timestamp>
-    pub node_heartbeats: Arc<RwLock<HashMap<String, u64>>>,
+    /// Track node heartbeats: HashMap<node_id, last_heartbeat_received_time>
+    pub node_heartbeats: Arc<RwLock<HashMap<String, Instant>>>,
 
     /// Cleanup configuration
     pub heartbeat_interval_ms: u64, // Default: 10000 (10 seconds)
@@ -417,17 +417,16 @@ impl HorizontalAdapter {
                 }
             }
             RequestType::Heartbeat => {
-                if let Some(timestamp) = request.timestamp {
-                    // Update heartbeat tracking (don't track our own heartbeat)
-                    if request.node_id != self.node_id {
-                        let mut heartbeats = self.node_heartbeats.write().await;
-                        heartbeats.insert(request.node_id.clone(), timestamp);
+                // Update heartbeat tracking (don't track our own heartbeat)
+                if request.node_id != self.node_id {
+                    let mut heartbeats = self.node_heartbeats.write().await;
+                    let receive_time = Instant::now();
+                    heartbeats.insert(request.node_id.clone(), receive_time);
 
-                        debug!(
-                            "Received heartbeat from node: {} at timestamp: {}",
-                            request.node_id, timestamp
-                        );
-                    }
+                    debug!(
+                        "Received heartbeat from node: {} at local time: {:?}",
+                        request.node_id, receive_time
+                    );
                 }
             }
             RequestType::NodeDead => {
@@ -862,14 +861,14 @@ impl HorizontalAdapter {
 
     /// Get dead nodes by checking heartbeat timeouts
     pub async fn get_dead_nodes(&self, dead_node_timeout_ms: u64) -> Vec<String> {
-        let current_time = current_timestamp();
-        let timeout_threshold = current_time.saturating_sub(dead_node_timeout_ms / 1000);
+        let now = Instant::now();
+        let timeout_duration = Duration::from_millis(dead_node_timeout_ms);
 
         let heartbeats_guard = self.node_heartbeats.read().await;
         heartbeats_guard
             .iter()
-            .filter_map(|(node, last_heartbeat)| {
-                if *last_heartbeat < timeout_threshold {
+            .filter_map(|(node, last_heartbeat_time)| {
+                if now.duration_since(*last_heartbeat_time) > timeout_duration {
                     Some(node.clone())
                 } else {
                     None
