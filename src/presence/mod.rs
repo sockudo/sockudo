@@ -46,6 +46,16 @@ impl PresenceManager {
                 user_id, channel
             );
 
+            // Broadcast presence join to all nodes for cluster replication
+            if let Some(horizontal_adapter) =
+                connection_manager.lock().await.as_horizontal_adapter()
+            {
+                horizontal_adapter
+                    .broadcast_presence_join(&app_config.id, channel, user_id, user_info.cloned())
+                    .await
+                    .ok(); // Don't fail the entire operation if broadcast fails
+            }
+
             // Send member_added webhook
             if let Some(webhook_integration) = webhook_integration {
                 webhook_integration
@@ -114,6 +124,16 @@ impl PresenceManager {
                 "User {} has no other connections in channel {}, sending member_removed events",
                 user_id, channel
             );
+
+            // Broadcast presence leave to all nodes for cluster replication
+            if let Some(horizontal_adapter) =
+                connection_manager.lock().await.as_horizontal_adapter()
+            {
+                horizontal_adapter
+                    .broadcast_presence_leave(&app_config.id, channel, user_id)
+                    .await
+                    .ok(); // Don't fail the entire operation if broadcast fails
+            }
 
             // Send member_removed webhook
             if let Some(webhook_integration) = webhook_integration {

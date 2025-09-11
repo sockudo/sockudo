@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::adapter::ConnectionManager;
+use crate::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
 use crate::adapter::horizontal_adapter::{
     BroadcastMessage, HorizontalAdapter, PendingRequest, RequestBody, RequestType, ResponseBody,
 };
@@ -825,5 +825,79 @@ where
 
     async fn check_health(&self) -> Result<()> {
         self.transport.check_health().await
+    }
+
+    fn get_node_id(&self) -> String {
+        // Access the node_id from the horizontal adapter
+        let horizontal = self.horizontal.try_lock().unwrap();
+        horizontal.node_id.clone()
+    }
+
+    fn as_horizontal_adapter(&self) -> Option<&dyn HorizontalAdapterInterface> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBase<T> {
+    /// Broadcast presence member joined to all nodes
+    async fn broadcast_presence_join(
+        &self,
+        app_id: &str,
+        channel: &str,
+        user_id: &str,
+        user_info: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let node_id = {
+            let horizontal = self.horizontal.lock().await;
+            horizontal.node_id.clone()
+        };
+
+        let request = RequestBody {
+            request_id: crate::adapter::horizontal_adapter::generate_request_id(),
+            node_id,
+            app_id: app_id.to_string(),
+            request_type: RequestType::PresenceMemberJoined,
+            channel: Some(channel.to_string()),
+            socket_id: None,
+            user_id: Some(user_id.to_string()),
+            // Cluster presence fields
+            user_info,
+            timestamp: None,
+            dead_node_id: None,
+        };
+
+        // Send without waiting for response (broadcast)
+        self.transport.publish_request(&request).await
+    }
+
+    /// Broadcast presence member left to all nodes
+    async fn broadcast_presence_leave(
+        &self,
+        app_id: &str,
+        channel: &str,
+        user_id: &str,
+    ) -> Result<()> {
+        let node_id = {
+            let horizontal = self.horizontal.lock().await;
+            horizontal.node_id.clone()
+        };
+
+        let request = RequestBody {
+            request_id: crate::adapter::horizontal_adapter::generate_request_id(),
+            node_id,
+            app_id: app_id.to_string(),
+            request_type: RequestType::PresenceMemberLeft,
+            channel: Some(channel.to_string()),
+            socket_id: None,
+            user_id: Some(user_id.to_string()),
+            // Cluster presence fields
+            user_info: None,
+            timestamp: None,
+            dead_node_id: None,
+        };
+
+        // Send without waiting for response (broadcast)
+        self.transport.publish_request(&request).await
     }
 }
