@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Request types for horizontal communication
@@ -43,6 +43,9 @@ pub enum RequestType {
     // Node health requests
     Heartbeat, // Node health heartbeat
     NodeDead,  // Dead node notification
+
+    // State synchronization
+    PresenceStateSync, // Send bulk presence state to a specific node
 }
 
 /// Request body for horizontal communication
@@ -60,6 +63,7 @@ pub struct RequestBody {
     pub user_info: Option<serde_json::Value>, // For presence member info (needed for rich presence data)
     pub timestamp: Option<u64>,               // For heartbeat timestamp
     pub dead_node_id: Option<String>,         // For dead node notifications
+    pub target_node_id: Option<String>,       // Which node should process this request
 }
 
 /// Response body for horizontal requests
@@ -99,7 +103,7 @@ pub struct PendingRequest {
 }
 
 /// Presence entry for cluster-wide presence tracking
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceEntry {
     pub user_info: Option<serde_json::Value>,
     pub node_id: String,   // Which node owns this connection
@@ -367,65 +371,49 @@ impl HorizontalAdapter {
                 if let (Some(channel), Some(user_id), Some(socket_id)) =
                     (&request.channel, &request.user_id, &request.socket_id)
                 {
-                    // Update local cluster presence registry (node-first structure, keyed by socket_id)
-                    let mut registry = self.cluster_presence_registry.write().await;
-                    registry
-                        .entry(request.node_id.clone())
-                        .or_insert_with(HashMap::new)
-                        .entry(channel.clone())
-                        .or_insert_with(HashMap::new)
-                        .insert(
-                            socket_id.clone(),
-                            PresenceEntry {
-                                user_info: request.user_info.clone(),
-                                node_id: request.node_id.clone(),
-                                app_id: request.app_id.clone(),
-                                user_id: user_id.clone(),
-                                socket_id: socket_id.clone(),
-                                joined_at: current_timestamp(),
-                            },
-                        );
-
-                    debug!(
-                        "Replicated presence join: user {} (socket {}) in channel {} from node {}",
-                        user_id, socket_id, channel, request.node_id
-                    );
+                    // Use the helper method to update cluster presence registry
+                    self.add_presence_entry(
+                        &request.node_id,
+                        channel,
+                        socket_id,
+                        user_id,
+                        &request.app_id,
+                        request.user_info.clone(),
+                    )
+                    .await;
                 }
             }
             RequestType::PresenceMemberLeft => {
-                if let (Some(channel), Some(user_id), Some(socket_id)) =
+                if let (Some(channel), Some(_user_id), Some(socket_id)) =
                     (&request.channel, &request.user_id, &request.socket_id)
                 {
-                    // Update local cluster presence registry (node-first structure, keyed by socket_id)
-                    let mut registry = self.cluster_presence_registry.write().await;
-                    if let Some(node_data) = registry.get_mut(&request.node_id) {
-                        if let Some(channel_sockets) = node_data.get_mut(channel) {
-                            channel_sockets.remove(socket_id);
-                            if channel_sockets.is_empty() {
-                                node_data.remove(channel);
-                            }
-                        }
-                        if node_data.is_empty() {
-                            registry.remove(&request.node_id);
-                        }
-                    }
-
-                    debug!(
-                        "Replicated presence leave: user {} (socket {}) from channel {} from node {}",
-                        user_id, socket_id, channel, request.node_id
-                    );
+                    // Use the helper method to update cluster presence registry
+                    self.remove_presence_entry(&request.node_id, channel, socket_id)
+                        .await;
                 }
             }
             RequestType::Heartbeat => {
                 // Update heartbeat tracking (don't track our own heartbeat)
                 if request.node_id != self.node_id {
                     let mut heartbeats = self.node_heartbeats.write().await;
+
+                    // Check if this is a new node (not in heartbeats map)
+                    let is_new_node = !heartbeats.contains_key(&request.node_id);
+
+                    // Store the heartbeat receive time
                     let receive_time = Instant::now();
                     heartbeats.insert(request.node_id.clone(), receive_time);
 
+                    if is_new_node {
+                        info!("New node detected: {}", request.node_id);
+                        // Note: State sync will be handled by the caller
+                        // Return a special response that indicates new node detected
+                        response.exists = true; // Use this field to signal new node
+                    }
+
                     debug!(
-                        "Received heartbeat from node: {} at local time: {:?}",
-                        request.node_id, receive_time
+                        "Received heartbeat from node: {} at local time: {:?} (new: {})",
+                        request.node_id, receive_time, is_new_node
                     );
                 }
             }
@@ -444,6 +432,62 @@ impl HorizontalAdapter {
 
                     // Clean up local presence registry only
                     self.cleanup_local_presence_registry(dead_node_id).await;
+                }
+            }
+            RequestType::PresenceStateSync => {
+                if let Some(presence_data) = request.user_info {
+                    // Deserialize the bulk presence data
+                    match serde_json::from_value::<HashMap<String, HashMap<String, PresenceEntry>>>(
+                        presence_data,
+                    ) {
+                        Ok(incoming_node_data) => {
+                            let mut registry = self.cluster_presence_registry.write().await;
+
+                            // Get or create the sending node's entry
+                            // Each node sends its own data, so different nodes update different keys
+                            let node_registry = registry
+                                .entry(request.node_id.clone())
+                                .or_insert_with(HashMap::new);
+
+                            // Merge channel data
+                            for (channel, incoming_sockets) in incoming_node_data {
+                                let channel_registry = node_registry
+                                    .entry(channel.clone())
+                                    .or_insert_with(HashMap::new);
+
+                                // Merge socket entries, preferring newer data
+                                for (socket_id, incoming_entry) in incoming_sockets {
+                                    match channel_registry.get(&socket_id) {
+                                        Some(existing)
+                                            if existing.joined_at > incoming_entry.joined_at =>
+                                        {
+                                            // Keep existing (it's newer)
+                                            debug!(
+                                                "Keeping existing entry for socket {} (newer)",
+                                                socket_id
+                                            );
+                                        }
+                                        _ => {
+                                            // Insert new or replace older
+                                            channel_registry.insert(socket_id, incoming_entry);
+                                        }
+                                    }
+                                }
+                            }
+
+                            info!(
+                                "Merged presence state from node: {} ({} channels)",
+                                request.node_id,
+                                registry.get(&request.node_id).map(|d| d.len()).unwrap_or(0)
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to deserialize presence state from node {}: {}",
+                                request.node_id, e
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -498,6 +542,7 @@ impl HorizontalAdapter {
             user_info: None,
             timestamp: None,
             dead_node_id: None,
+            target_node_id: None,
         };
 
         // Add to pending requests with proper initialization
@@ -751,6 +796,9 @@ impl HorizontalAdapter {
                     // TODO: Implement in Phase 2
                     // These are broadcast-only requests, no response aggregation needed
                 }
+                RequestType::PresenceStateSync => {
+                    // These are broadcast-only requests, no response aggregation needed
+                }
             }
         }
 
@@ -961,6 +1009,60 @@ impl HorizontalAdapter {
             debug!("No presence members found for dead node {}", dead_node_id);
             Ok(Vec::new())
         }
+    }
+    /// Add a presence entry to the cluster registry
+    pub async fn add_presence_entry(
+        &self,
+        node_id: &str,
+        channel: &str,
+        socket_id: &str,
+        user_id: &str,
+        app_id: &str,
+        user_info: Option<serde_json::Value>,
+    ) {
+        let mut registry = self.cluster_presence_registry.write().await;
+        registry
+            .entry(node_id.to_string())
+            .or_insert_with(HashMap::new)
+            .entry(channel.to_string())
+            .or_insert_with(HashMap::new)
+            .insert(
+                socket_id.to_string(),
+                PresenceEntry {
+                    user_info,
+                    node_id: node_id.to_string(),
+                    app_id: app_id.to_string(),
+                    user_id: user_id.to_string(),
+                    socket_id: socket_id.to_string(),
+                    joined_at: current_timestamp(),
+                },
+            );
+
+        debug!(
+            "Added presence entry: user {} (socket {}) in channel {} for node {}",
+            user_id, socket_id, channel, node_id
+        );
+    }
+
+    /// Remove a presence entry from the cluster registry
+    pub async fn remove_presence_entry(&self, node_id: &str, channel: &str, socket_id: &str) {
+        let mut registry = self.cluster_presence_registry.write().await;
+        if let Some(node_data) = registry.get_mut(node_id) {
+            if let Some(channel_sockets) = node_data.get_mut(channel) {
+                channel_sockets.remove(socket_id);
+                if channel_sockets.is_empty() {
+                    node_data.remove(channel);
+                }
+            }
+            if node_data.is_empty() {
+                registry.remove(node_id);
+            }
+        }
+
+        debug!(
+            "Removed presence entry: socket {} in channel {} for node {}",
+            socket_id, channel, node_id
+        );
     }
 }
 
