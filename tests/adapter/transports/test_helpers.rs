@@ -76,6 +76,7 @@ pub fn create_test_request() -> RequestBody {
         user_info: None,
         timestamp: None,
         dead_node_id: None,
+        target_node_id: None,
     }
 }
 
