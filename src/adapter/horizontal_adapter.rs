@@ -13,7 +13,7 @@ use crate::metrics::MetricsInterface;
 use crate::websocket::SocketId;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -35,6 +35,14 @@ pub enum RequestType {
     SocketsCount,                  // Get count of all sockets
     ChannelMembersCount,           // Get count of members in a channel
     CountUserConnectionsInChannel, // Count user's connections in a specific channel
+
+    // Presence replication requests
+    PresenceMemberJoined, // Replicate presence member join across nodes
+    PresenceMemberLeft,   // Replicate presence member leave across nodes
+
+    // Node health requests
+    Heartbeat, // Node health heartbeat
+    NodeDead,  // Dead node notification
 }
 
 /// Request body for horizontal communication
@@ -47,6 +55,11 @@ pub struct RequestBody {
     pub channel: Option<String>,
     pub socket_id: Option<String>,
     pub user_id: Option<String>,
+
+    // Additional fields for cluster presence replication
+    pub user_info: Option<serde_json::Value>, // For presence member info (needed for rich presence data)
+    pub timestamp: Option<u64>,               // For heartbeat timestamp
+    pub dead_node_id: Option<String>,         // For dead node notifications
 }
 
 /// Response body for horizontal requests
@@ -85,6 +98,14 @@ pub struct PendingRequest {
     pub(crate) notify: Arc<Notify>,
 }
 
+/// Presence entry for cluster-wide presence tracking
+#[derive(Debug, Clone)]
+pub struct PresenceEntry {
+    pub user_info: Option<serde_json::Value>,
+    pub node_id: String, // Which node owns this connection
+    pub joined_at: u64,  // Timestamp when user joined
+}
+
 /// Base horizontal adapter
 pub struct HorizontalAdapter {
     /// Unique node ID
@@ -100,6 +121,18 @@ pub struct HorizontalAdapter {
     pub requests_timeout: u64,
 
     pub metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+
+    /// Complete cluster-wide presence registry
+    /// HashMap<channel, HashMap<user_id, PresenceEntry>>
+    pub cluster_presence_registry: Arc<RwLock<HashMap<String, HashMap<String, PresenceEntry>>>>,
+
+    /// Track node heartbeats: HashMap<node_id, last_heartbeat_timestamp>
+    pub node_heartbeats: Arc<RwLock<HashMap<String, u64>>>,
+
+    /// Cleanup configuration
+    pub heartbeat_interval_ms: u64, // Default: 10000 (10 seconds)
+    pub node_timeout_ms: u64,     // Default: 30000 (30 seconds)
+    pub cleanup_interval_ms: u64, // Default: 10000 (10 seconds)
 }
 
 impl Default for HorizontalAdapter {
@@ -117,6 +150,11 @@ impl HorizontalAdapter {
             pending_requests: DashMap::new(),
             requests_timeout: 5000, // Default 5 seconds
             metrics: None,
+            cluster_presence_registry: Arc::new(RwLock::new(HashMap::new())),
+            node_heartbeats: Arc::new(RwLock::new(HashMap::new())),
+            heartbeat_interval_ms: 10000, // 10 seconds
+            node_timeout_ms: 30000,       // 30 seconds
+            cleanup_interval_ms: 10000,   // 10 seconds
         }
     }
 
@@ -301,6 +339,23 @@ impl HorizontalAdapter {
                         .await?;
                 }
             }
+            // Placeholder handlers for new request types (to be implemented in Phase 2)
+            RequestType::PresenceMemberJoined => {
+                // TODO: Implement in Phase 2
+                // Will use: request.channel, request.user_id, request.user_info, request.node_id (as owner)
+            }
+            RequestType::PresenceMemberLeft => {
+                // TODO: Implement in Phase 2
+                // Will use: request.channel, request.user_id, request.node_id (as owner)
+            }
+            RequestType::Heartbeat => {
+                // TODO: Implement in Phase 2
+                // Will use: request.node_id, request.timestamp
+            }
+            RequestType::NodeDead => {
+                // TODO: Implement in Phase 2
+                // Will use: request.dead_node_id
+            }
         }
 
         // Return the response
@@ -349,6 +404,10 @@ impl HorizontalAdapter {
             channel: channel.map(String::from),
             socket_id: socket_id.map(String::from),
             user_id: user_id.map(String::from),
+            // Cluster presence fields (not used for regular requests)
+            user_info: None,
+            timestamp: None,
+            dead_node_id: None,
         };
 
         // Add to pending requests with proper initialization
@@ -587,6 +646,23 @@ impl HorizontalAdapter {
                     // Sum connection counts from all nodes
                     combined_response.sockets_count += response.sockets_count;
                 }
+                // Placeholder handlers for new request types (to be implemented in Phase 2)
+                RequestType::PresenceMemberJoined => {
+                    // TODO: Implement in Phase 2
+                    // These are broadcast-only requests, no response aggregation needed
+                }
+                RequestType::PresenceMemberLeft => {
+                    // TODO: Implement in Phase 2
+                    // These are broadcast-only requests, no response aggregation needed
+                }
+                RequestType::Heartbeat => {
+                    // TODO: Implement in Phase 2
+                    // These are broadcast-only requests, no response aggregation needed
+                }
+                RequestType::NodeDead => {
+                    // TODO: Implement in Phase 2
+                    // These are broadcast-only requests, no response aggregation needed
+                }
             }
         }
 
@@ -694,4 +770,17 @@ impl HorizontalAdapter {
             recipient_count
         }
     }
+}
+
+/// Generate unique request ID
+pub fn generate_request_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+/// Get current timestamp in seconds
+pub fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
