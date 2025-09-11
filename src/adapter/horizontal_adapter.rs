@@ -103,6 +103,7 @@ pub struct PendingRequest {
 pub struct PresenceEntry {
     pub user_info: Option<serde_json::Value>,
     pub node_id: String, // Which node owns this connection
+    pub app_id: String,  // Which app this member belongs to
     pub joined_at: u64,  // Timestamp when user joined
 }
 
@@ -355,6 +356,7 @@ impl HorizontalAdapter {
                             PresenceEntry {
                                 user_info: request.user_info.clone(),
                                 node_id: request.node_id.clone(),
+                                app_id: request.app_id.clone(),
                                 joined_at: current_timestamp(),
                             },
                         );
@@ -889,21 +891,22 @@ impl HorizontalAdapter {
 
     /// Handle cleanup for a dead node (called only by elected leader)
     /// Returns the list of orphaned presence members that need broadcast cleanup
+    /// Format: Vec<(app_id, channel, user_id)>
     pub async fn handle_dead_node_cleanup(
         &self,
         dead_node_id: &str,
-    ) -> Result<Vec<(String, String)>> {
+    ) -> Result<Vec<(String, String, String)>> {
         let mut registry = self.cluster_presence_registry.write().await;
 
         // O(1) lookup and removal of entire node's data
         if let Some(dead_node_data) = registry.remove(dead_node_id) {
-            // Flatten the data structure to get list of (channel, user_id) pairs
-            let cleanup_tasks: Vec<(String, String)> = dead_node_data
+            // Flatten the data structure to get list of (app_id, channel, user_id) tuples
+            let cleanup_tasks: Vec<(String, String, String)> = dead_node_data
                 .into_iter()
                 .flat_map(|(channel, users)| {
                     users
-                        .into_keys()
-                        .map(move |user_id| (channel.clone(), user_id))
+                        .into_iter()
+                        .map(move |(user_id, entry)| (entry.app_id, channel.clone(), user_id))
                 })
                 .collect();
 
@@ -913,10 +916,10 @@ impl HorizontalAdapter {
                 dead_node_id
             );
 
-            for (channel, user_id) in &cleanup_tasks {
+            for (app_id, channel, user_id) in &cleanup_tasks {
                 debug!(
-                    "Cleaned up orphaned presence member: {} from channel {} (dead node: {})",
-                    user_id, channel, dead_node_id
+                    "Cleaned up orphaned presence member: {} from channel {} (app: {}, dead node: {})",
+                    user_id, channel, app_id, dead_node_id
                 );
             }
 
