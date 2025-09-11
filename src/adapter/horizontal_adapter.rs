@@ -107,6 +107,22 @@ pub struct PresenceEntry {
     pub joined_at: u64,  // Timestamp when user joined
 }
 
+/// Event emitted when a node dies and orphaned presence members need cleanup
+#[derive(Debug, Clone)]
+pub struct DeadNodeEvent {
+    pub dead_node_id: String,
+    pub orphaned_members: Vec<OrphanedMember>,
+}
+
+/// Information about an orphaned presence member that needs cleanup
+#[derive(Debug, Clone)]
+pub struct OrphanedMember {
+    pub app_id: String,
+    pub channel: String,
+    pub user_id: String,
+    pub user_info: Option<serde_json::Value>,
+}
+
 /// Base horizontal adapter
 pub struct HorizontalAdapter {
     /// Unique node ID
@@ -891,37 +907,31 @@ impl HorizontalAdapter {
 
     /// Handle cleanup for a dead node (called only by elected leader)
     /// Returns the list of orphaned presence members that need broadcast cleanup
-    /// Format: Vec<(app_id, channel, user_id)>
+    /// Format: Vec<(app_id, channel, user_id, user_info)>
     pub async fn handle_dead_node_cleanup(
         &self,
         dead_node_id: &str,
-    ) -> Result<Vec<(String, String, String)>> {
+    ) -> Result<Vec<(String, String, String, Option<serde_json::Value>)>> {
         let mut registry = self.cluster_presence_registry.write().await;
 
         // O(1) lookup and removal of entire node's data
         if let Some(dead_node_data) = registry.remove(dead_node_id) {
-            // Flatten the data structure to get list of (app_id, channel, user_id) tuples
-            let cleanup_tasks: Vec<(String, String, String)> = dead_node_data
-                .into_iter()
-                .flat_map(|(channel, users)| {
-                    users
-                        .into_iter()
-                        .map(move |(user_id, entry)| (entry.app_id, channel.clone(), user_id))
-                })
-                .collect();
+            // Flatten the data structure to get list of (app_id, channel, user_id, user_info) tuples
+            let cleanup_tasks: Vec<(String, String, String, Option<serde_json::Value>)> =
+                dead_node_data
+                    .into_iter()
+                    .flat_map(|(channel, users)| {
+                        users.into_iter().map(move |(user_id, entry)| {
+                            (entry.app_id, channel.clone(), user_id, entry.user_info)
+                        })
+                    })
+                    .collect();
 
             debug!(
                 "Found {} presence members to clean up from dead node {}",
                 cleanup_tasks.len(),
                 dead_node_id
             );
-
-            for (app_id, channel, user_id) in &cleanup_tasks {
-                debug!(
-                    "Cleaned up orphaned presence member: {} from channel {} (app: {}, dead node: {})",
-                    user_id, channel, app_id, dead_node_id
-                );
-            }
 
             // Return the list of members that need broadcast cleanup
             Ok(cleanup_tasks)

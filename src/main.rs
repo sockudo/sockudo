@@ -201,6 +201,56 @@ impl SockudoServer {
             config.adapter.driver
         );
 
+        // Set up dead node cleanup event bus for horizontal adapters
+        let dead_node_event_receiver = {
+            use crate::adapter::horizontal_adapter::DeadNodeEvent;
+            let (event_sender, event_receiver) =
+                tokio::sync::mpsc::unbounded_channel::<DeadNodeEvent>();
+
+            // Set up event bus for horizontal adapters that support clustering
+            match config.adapter.driver {
+                AdapterDriver::Redis => {
+                    if let Some(adapter) = connection_manager
+                        .lock()
+                        .await
+                        .as_any_mut()
+                        .downcast_mut::<RedisAdapter>()
+                    {
+                        adapter.set_event_bus(event_sender);
+                        info!("Event bus configured for RedisAdapter");
+                    }
+                }
+                AdapterDriver::Nats => {
+                    if let Some(adapter) = connection_manager
+                        .lock()
+                        .await
+                        .as_any_mut()
+                        .downcast_mut::<NatsAdapter>()
+                    {
+                        adapter.set_event_bus(event_sender);
+                        info!("Event bus configured for NatsAdapter");
+                    }
+                }
+                AdapterDriver::RedisCluster => {
+                    if let Some(adapter) = connection_manager
+                        .lock()
+                        .await
+                        .as_any_mut()
+                        .downcast_mut::<RedisClusterAdapter>()
+                    {
+                        adapter.set_event_bus(event_sender);
+                        info!("Event bus configured for RedisClusterAdapter");
+                    }
+                }
+                AdapterDriver::Local => {
+                    // Local adapter doesn't need clustering support
+                    info!("Local adapter doesn't require dead node cleanup events");
+                }
+            }
+
+            Some(event_receiver)
+        };
+
         let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
             .await
             .unwrap_or_else(|e| {
@@ -486,6 +536,20 @@ impl SockudoServer {
             config.clone(),
             state.cleanup_queue.clone(),
         ));
+
+        // Start dead node cleanup event processing loop
+        if let Some(mut event_receiver) = dead_node_event_receiver {
+            let handler_clone = handler.clone();
+            tokio::spawn(async move {
+                info!("Starting dead node cleanup event processing loop");
+                while let Some(event) = event_receiver.recv().await {
+                    if let Err(e) = handler_clone.handle_dead_node_cleanup(event).await {
+                        error!("Error processing dead node cleanup event: {}", e);
+                    }
+                }
+                info!("Dead node cleanup event processing loop ended");
+            });
+        }
 
         // Set metrics for adapters
         if let Some(metrics_instance_arc) = &metrics {
