@@ -867,6 +867,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
         app_id: &str,
         channel: &str,
         user_id: &str,
+        socket_id: &str,
         user_info: Option<serde_json::Value>,
     ) -> Result<()> {
         let node_id = {
@@ -880,7 +881,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             app_id: app_id.to_string(),
             request_type: RequestType::PresenceMemberJoined,
             channel: Some(channel.to_string()),
-            socket_id: None,
+            socket_id: Some(socket_id.to_string()),
             user_id: Some(user_id.to_string()),
             // Cluster presence fields
             user_info,
@@ -898,6 +899,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
         app_id: &str,
         channel: &str,
         user_id: &str,
+        socket_id: &str,
     ) -> Result<()> {
         let node_id = {
             let horizontal = self.horizontal.lock().await;
@@ -910,7 +912,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             app_id: app_id.to_string(),
             request_type: RequestType::PresenceMemberLeft,
             channel: Some(channel.to_string()),
-            socket_id: None,
+            socket_id: Some(socket_id.to_string()),
             user_id: Some(user_id.to_string()),
             // Cluster presence fields
             user_info: None,

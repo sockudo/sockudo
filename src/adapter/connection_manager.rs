@@ -23,6 +23,7 @@ pub trait HorizontalAdapterInterface: Send + Sync {
         app_id: &str,
         channel: &str,
         user_id: &str,
+        socket_id: &str,
         user_info: Option<serde_json::Value>,
     ) -> Result<()>;
 
@@ -32,6 +33,7 @@ pub trait HorizontalAdapterInterface: Send + Sync {
         app_id: &str,
         channel: &str,
         user_id: &str,
+        socket_id: &str,
     ) -> Result<()>;
 }
 

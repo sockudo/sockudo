@@ -102,9 +102,11 @@ pub struct PendingRequest {
 #[derive(Debug, Clone)]
 pub struct PresenceEntry {
     pub user_info: Option<serde_json::Value>,
-    pub node_id: String, // Which node owns this connection
-    pub app_id: String,  // Which app this member belongs to
-    pub joined_at: u64,  // Timestamp when user joined
+    pub node_id: String,   // Which node owns this connection
+    pub app_id: String,    // Which app this member belongs to
+    pub user_id: String,   // Which user this socket belongs to
+    pub socket_id: String, // Socket ID for this connection
+    pub joined_at: u64,    // Timestamp when user joined
 }
 
 /// Event emitted when a node dies and orphaned presence members need cleanup
@@ -140,7 +142,7 @@ pub struct HorizontalAdapter {
     pub metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
 
     /// Complete cluster-wide presence registry (node-first structure for efficient cleanup)
-    /// HashMap<node_id, HashMap<channel, HashMap<user_id, PresenceEntry>>>
+    /// HashMap<node_id, HashMap<channel, HashMap<socket_id, PresenceEntry>>>
     pub cluster_presence_registry:
         Arc<RwLock<HashMap<String, HashMap<String, HashMap<String, PresenceEntry>>>>>,
 
@@ -359,8 +361,10 @@ impl HorizontalAdapter {
             }
             // Presence replication handlers
             RequestType::PresenceMemberJoined => {
-                if let (Some(channel), Some(user_id)) = (&request.channel, &request.user_id) {
-                    // Update local cluster presence registry (node-first structure)
+                if let (Some(channel), Some(user_id), Some(socket_id)) =
+                    (&request.channel, &request.user_id, &request.socket_id)
+                {
+                    // Update local cluster presence registry (node-first structure, keyed by socket_id)
                     let mut registry = self.cluster_presence_registry.write().await;
                     registry
                         .entry(request.node_id.clone())
@@ -368,29 +372,33 @@ impl HorizontalAdapter {
                         .entry(channel.clone())
                         .or_insert_with(HashMap::new)
                         .insert(
-                            user_id.clone(),
+                            socket_id.clone(),
                             PresenceEntry {
                                 user_info: request.user_info.clone(),
                                 node_id: request.node_id.clone(),
                                 app_id: request.app_id.clone(),
+                                user_id: user_id.clone(),
+                                socket_id: socket_id.clone(),
                                 joined_at: current_timestamp(),
                             },
                         );
 
                     debug!(
-                        "Replicated presence join: {} in channel {} from node {}",
-                        user_id, channel, request.node_id
+                        "Replicated presence join: user {} (socket {}) in channel {} from node {}",
+                        user_id, socket_id, channel, request.node_id
                     );
                 }
             }
             RequestType::PresenceMemberLeft => {
-                if let (Some(channel), Some(user_id)) = (&request.channel, &request.user_id) {
-                    // Update local cluster presence registry (node-first structure)
+                if let (Some(channel), Some(user_id), Some(socket_id)) =
+                    (&request.channel, &request.user_id, &request.socket_id)
+                {
+                    // Update local cluster presence registry (node-first structure, keyed by socket_id)
                     let mut registry = self.cluster_presence_registry.write().await;
                     if let Some(node_data) = registry.get_mut(&request.node_id) {
-                        if let Some(channel_members) = node_data.get_mut(channel) {
-                            channel_members.remove(user_id);
-                            if channel_members.is_empty() {
+                        if let Some(channel_sockets) = node_data.get_mut(channel) {
+                            channel_sockets.remove(socket_id);
+                            if channel_sockets.is_empty() {
                                 node_data.remove(channel);
                             }
                         }
@@ -400,8 +408,8 @@ impl HorizontalAdapter {
                     }
 
                     debug!(
-                        "Replicated presence leave: {} from channel {} from node {}",
-                        user_id, channel, request.node_id
+                        "Replicated presence leave: user {} (socket {}) from channel {} from node {}",
+                        user_id, socket_id, channel, request.node_id
                     );
                 }
             }
@@ -916,19 +924,31 @@ impl HorizontalAdapter {
 
         // O(1) lookup and removal of entire node's data
         if let Some(dead_node_data) = registry.remove(dead_node_id) {
-            // Flatten the data structure to get list of (app_id, channel, user_id, user_info) tuples
+            // Group sockets by (app_id, channel, user_id) to avoid duplicate cleanup calls for same user
+            let mut unique_members = std::collections::HashMap::<
+                (String, String, String),
+                Option<serde_json::Value>,
+            >::new();
+
+            for (channel, sockets) in dead_node_data {
+                for (_socket_id, entry) in sockets {
+                    let key = (entry.app_id.clone(), channel.clone(), entry.user_id.clone());
+                    // Keep user_info from first socket (they should all be the same for same user)
+                    unique_members.entry(key).or_insert(entry.user_info);
+                }
+            }
+
+            // Convert to list format
             let cleanup_tasks: Vec<(String, String, String, Option<serde_json::Value>)> =
-                dead_node_data
+                unique_members
                     .into_iter()
-                    .flat_map(|(channel, users)| {
-                        users.into_iter().map(move |(user_id, entry)| {
-                            (entry.app_id, channel.clone(), user_id, entry.user_info)
-                        })
+                    .map(|((app_id, channel, user_id), user_info)| {
+                        (app_id, channel, user_id, user_info)
                     })
                     .collect();
 
             debug!(
-                "Found {} presence members to clean up from dead node {}",
+                "Found {} unique presence members to clean up from dead node {}",
                 cleanup_tasks.len(),
                 dead_node_id
             );
