@@ -81,21 +81,20 @@ impl PresenceManager {
         }
 
         // Always broadcast presence join to all nodes for cluster replication (for every connection)
-        if let Some(excluding_socket) = excluding_socket {
-            if let Some(horizontal_adapter) =
+        if let Some(excluding_socket) = excluding_socket
+            && let Some(horizontal_adapter) =
                 connection_manager.lock().await.as_horizontal_adapter()
-            {
-                horizontal_adapter
-                    .broadcast_presence_join(
-                        &app_config.id,
-                        channel,
-                        user_id,
-                        &excluding_socket.to_string(),
-                        user_info.cloned(),
-                    )
-                    .await
-                    .ok(); // Don't fail the entire operation if broadcast fails
-            }
+        {
+            horizontal_adapter
+                .broadcast_presence_join(
+                    &app_config.id,
+                    channel,
+                    user_id,
+                    excluding_socket.as_ref(),
+                    user_info.cloned(),
+                )
+                .await
+                .ok(); // Don't fail the entire operation if broadcast fails
         }
 
         Ok(())
@@ -165,20 +164,19 @@ impl PresenceManager {
         }
 
         // Always broadcast presence leave to all nodes for cluster replication (for every disconnection)
-        if let Some(excluding_socket) = excluding_socket {
-            if let Some(horizontal_adapter) =
+        if let Some(excluding_socket) = excluding_socket
+            && let Some(horizontal_adapter) =
                 connection_manager.lock().await.as_horizontal_adapter()
-            {
-                horizontal_adapter
-                    .broadcast_presence_leave(
-                        &app_config.id,
-                        channel,
-                        user_id,
-                        &excluding_socket.to_string(),
-                    )
-                    .await
-                    .ok(); // Don't fail the entire operation if broadcast fails
-            }
+        {
+            horizontal_adapter
+                .broadcast_presence_leave(
+                    &app_config.id,
+                    channel,
+                    user_id,
+                    excluding_socket.as_ref(),
+                )
+                .await
+                .ok(); // Don't fail the entire operation if broadcast fails
         }
 
         Ok(())
