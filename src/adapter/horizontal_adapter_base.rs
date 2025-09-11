@@ -933,17 +933,12 @@ where
     /// Start heartbeat broadcasting loop
     async fn start_heartbeat_loop(&self) {
         let transport = self.transport.clone();
-        let horizontal = self.horizontal.clone();
+        let (node_id, heartbeat_interval_ms) = {
+            let horizontal = self.horizontal.lock().await;
+            (horizontal.node_id.clone(), horizontal.heartbeat_interval_ms)
+        };
 
         tokio::spawn(async move {
-            let (node_id, heartbeat_interval_ms) = {
-                let horizontal_guard = horizontal.lock().await;
-                (
-                    horizontal_guard.node_id.clone(),
-                    horizontal_guard.heartbeat_interval_ms,
-                )
-            };
-
             let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
 
             loop {
@@ -973,16 +968,12 @@ where
     async fn start_dead_node_detection(&self) {
         let transport = self.transport.clone();
         let horizontal = self.horizontal.clone();
+        let (node_id, node_timeout_ms) = {
+            let horizontal = self.horizontal.lock().await;
+            (horizontal.node_id.clone(), horizontal.node_timeout_ms)
+        };
 
         tokio::spawn(async move {
-            let (node_id, node_timeout_ms) = {
-                let horizontal_guard = horizontal.lock().await;
-                (
-                    horizontal_guard.node_id.clone(),
-                    horizontal_guard.node_timeout_ms,
-                )
-            };
-
             let mut interval = tokio::time::interval(Duration::from_millis(node_timeout_ms / 2));
 
             loop {
@@ -1017,7 +1008,7 @@ where
                                 horizontal_guard.remove_dead_node(&dead_node_id).await;
                             }
 
-                            // 2. Do full cleanup immediately
+                            // 2. Get orphaned members and clean up local registry
                             let cleanup_tasks = {
                                 let horizontal_guard = horizontal.lock().await;
                                 match horizontal_guard
@@ -1035,9 +1026,12 @@ where
                                 }
                             };
 
-                            // 3. Broadcast presence leaves for orphaned members
-                            // Note: This would be handled by broadcast_presence_leave calls
-                            // but since we're in the transport layer, we'll let the handler do it
+                            // 3. TODO: Broadcast presence leave for each orphaned member
+                            // Need to determine app_id for each orphaned member
+                            // for (channel, user_id) in &cleanup_tasks {
+                            //     self.broadcast_presence_leave(app_id, channel, user_id).await?;
+                            // }
+
                             if !cleanup_tasks.is_empty() {
                                 info!(
                                     "Cleaned up {} orphaned presence members from dead node {}",
@@ -1063,8 +1057,6 @@ where
                             if let Err(e) = transport.publish_request(&dead_node_request).await {
                                 error!("Failed to send dead node notification: {}", e);
                             }
-
-                            //?
                         }
                     } else {
                         debug!(
