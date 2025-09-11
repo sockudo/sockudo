@@ -122,9 +122,10 @@ pub struct HorizontalAdapter {
 
     pub metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
 
-    /// Complete cluster-wide presence registry
-    /// HashMap<channel, HashMap<user_id, PresenceEntry>>
-    pub cluster_presence_registry: Arc<RwLock<HashMap<String, HashMap<String, PresenceEntry>>>>,
+    /// Complete cluster-wide presence registry (node-first structure for efficient cleanup)
+    /// HashMap<node_id, HashMap<channel, HashMap<user_id, PresenceEntry>>>
+    pub cluster_presence_registry:
+        Arc<RwLock<HashMap<String, HashMap<String, HashMap<String, PresenceEntry>>>>>,
 
     /// Track node heartbeats: HashMap<node_id, last_heartbeat_timestamp>
     pub node_heartbeats: Arc<RwLock<HashMap<String, u64>>>,
@@ -342,9 +343,11 @@ impl HorizontalAdapter {
             // Presence replication handlers
             RequestType::PresenceMemberJoined => {
                 if let (Some(channel), Some(user_id)) = (&request.channel, &request.user_id) {
-                    // Update local cluster presence registry
+                    // Update local cluster presence registry (node-first structure)
                     let mut registry = self.cluster_presence_registry.write().await;
                     registry
+                        .entry(request.node_id.clone())
+                        .or_insert_with(HashMap::new)
                         .entry(channel.clone())
                         .or_insert_with(HashMap::new)
                         .insert(
@@ -364,12 +367,17 @@ impl HorizontalAdapter {
             }
             RequestType::PresenceMemberLeft => {
                 if let (Some(channel), Some(user_id)) = (&request.channel, &request.user_id) {
-                    // Update local cluster presence registry
+                    // Update local cluster presence registry (node-first structure)
                     let mut registry = self.cluster_presence_registry.write().await;
-                    if let Some(channel_members) = registry.get_mut(channel) {
-                        channel_members.remove(user_id);
-                        if channel_members.is_empty() {
-                            registry.remove(channel);
+                    if let Some(node_data) = registry.get_mut(&request.node_id) {
+                        if let Some(channel_members) = node_data.get_mut(channel) {
+                            channel_members.remove(user_id);
+                            if channel_members.is_empty() {
+                                node_data.remove(channel);
+                            }
+                        }
+                        if node_data.is_empty() {
+                            registry.remove(&request.node_id);
                         }
                     }
 
@@ -380,12 +388,35 @@ impl HorizontalAdapter {
                 }
             }
             RequestType::Heartbeat => {
-                // TODO: Implement in Phase 2
-                // Will use: request.node_id, request.timestamp
+                if let Some(timestamp) = request.timestamp {
+                    // Update heartbeat tracking (don't track our own heartbeat)
+                    if request.node_id != self.node_id {
+                        let mut heartbeats = self.node_heartbeats.write().await;
+                        heartbeats.insert(request.node_id.clone(), timestamp);
+
+                        debug!(
+                            "Received heartbeat from node: {} at timestamp: {}",
+                            request.node_id, timestamp
+                        );
+                    }
+                }
             }
             RequestType::NodeDead => {
-                // TODO: Implement in Phase 2
-                // Will use: request.dead_node_id
+                if let Some(dead_node_id) = &request.dead_node_id {
+                    debug!("Received dead node notification for: {}", dead_node_id);
+
+                    // This message is only for followers to clean registry
+                    // Leader already did full cleanup before sending this message
+
+                    // Remove from heartbeat tracking
+                    {
+                        let mut heartbeats = self.node_heartbeats.write().await;
+                        heartbeats.remove(dead_node_id);
+                    }
+
+                    // Clean up local presence registry only
+                    self.cleanup_local_presence_registry(dead_node_id).await;
+                }
             }
         }
 
@@ -797,6 +828,103 @@ impl HorizontalAdapter {
             recipient_count - 1
         } else {
             recipient_count
+        }
+    }
+
+    /// Get dead nodes by checking heartbeat timeouts
+    pub async fn get_dead_nodes(&self, dead_node_timeout_ms: u64) -> Vec<String> {
+        let current_time = current_timestamp();
+        let timeout_threshold = current_time.saturating_sub(dead_node_timeout_ms / 1000);
+
+        let heartbeats_guard = self.node_heartbeats.read().await;
+        heartbeats_guard
+            .iter()
+            .filter_map(|(node, last_heartbeat)| {
+                if *last_heartbeat < timeout_threshold {
+                    Some(node.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Remove a dead node from heartbeat tracking
+    pub async fn remove_dead_node(&self, dead_node_id: &str) {
+        let mut heartbeats = self.node_heartbeats.write().await;
+        heartbeats.remove(dead_node_id);
+    }
+
+    /// Clean up local presence registry for a dead node (followers only)
+    pub async fn cleanup_local_presence_registry(&self, dead_node_id: &str) {
+        let mut registry = self.cluster_presence_registry.write().await;
+
+        // O(1) removal of entire node's data
+        if let Some(dead_node_data) = registry.remove(dead_node_id) {
+            let total_members: usize = dead_node_data
+                .values()
+                .map(|channel_members| channel_members.len())
+                .sum();
+
+            debug!(
+                "Removed {} orphaned presence members from dead node: {}",
+                total_members, dead_node_id
+            );
+        }
+    }
+
+    /// Determine if this node should be the cleanup leader
+    /// Excludes dead nodes from the election pool
+    pub async fn is_cleanup_leader(&self, dead_nodes: &[String]) -> bool {
+        let heartbeats = self.node_heartbeats.read().await;
+        let mut alive_nodes: Vec<String> = heartbeats.keys().cloned().collect();
+        alive_nodes.push(self.node_id.clone()); // Include ourselves
+
+        // Remove dead nodes from election pool
+        alive_nodes.retain(|node| !dead_nodes.contains(node));
+
+        alive_nodes.sort();
+        alive_nodes.first() == Some(&self.node_id)
+    }
+
+    /// Handle cleanup for a dead node (called only by elected leader)
+    /// Returns the list of orphaned presence members that need broadcast cleanup
+    pub async fn handle_dead_node_cleanup(
+        &self,
+        dead_node_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let mut registry = self.cluster_presence_registry.write().await;
+
+        // O(1) lookup and removal of entire node's data
+        if let Some(dead_node_data) = registry.remove(dead_node_id) {
+            // Flatten the data structure to get list of (channel, user_id) pairs
+            let cleanup_tasks: Vec<(String, String)> = dead_node_data
+                .into_iter()
+                .flat_map(|(channel, users)| {
+                    users
+                        .into_keys()
+                        .map(move |user_id| (channel.clone(), user_id))
+                })
+                .collect();
+
+            debug!(
+                "Found {} presence members to clean up from dead node {}",
+                cleanup_tasks.len(),
+                dead_node_id
+            );
+
+            for (channel, user_id) in &cleanup_tasks {
+                debug!(
+                    "Cleaned up orphaned presence member: {} from channel {} (dead node: {})",
+                    user_id, channel, dead_node_id
+                );
+            }
+
+            // Return the list of members that need broadcast cleanup
+            Ok(cleanup_tasks)
+        } else {
+            debug!("No presence members found for dead node {}", dead_node_id);
+            Ok(Vec::new())
         }
     }
 }
