@@ -1028,25 +1028,6 @@ where
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
 
-            // Send immediate heartbeat on startup to announce ourselves
-            let initial_heartbeat = RequestBody {
-                request_id: generate_request_id(),
-                node_id: node_id.clone(),
-                app_id: "cluster".to_string(),
-                request_type: RequestType::Heartbeat,
-                channel: None,
-                socket_id: None,
-                user_id: None,
-                user_info: None,
-                timestamp: Some(current_timestamp()),
-                dead_node_id: None,
-                target_node_id: None,
-            };
-
-            if let Err(e) = transport.publish_request(&initial_heartbeat).await {
-                error!("Failed to send initial heartbeat: {}", e);
-            }
-
             loop {
                 interval.tick().await;
 
