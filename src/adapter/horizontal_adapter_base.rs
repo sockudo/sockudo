@@ -842,7 +842,10 @@ where
 
     fn get_node_id(&self) -> String {
         // Access the node_id from the horizontal adapter
-        let horizontal = self.horizontal.try_lock().unwrap();
+        let horizontal = self
+            .horizontal
+            .try_lock()
+            .expect("Failed to acquire lock on horizontal adapter: lock is poisoned");
         horizontal.node_id.clone()
     }
 
