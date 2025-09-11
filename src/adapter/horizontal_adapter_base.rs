@@ -849,6 +849,14 @@ where
     fn as_horizontal_adapter(&self) -> Option<&dyn HorizontalAdapterInterface> {
         Some(self)
     }
+
+    fn configure_dead_node_events(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<DeadNodeEvent>> {
+        let (event_sender, event_receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.set_event_bus(event_sender);
+        Some(event_receiver)
+    }
 }
 
 #[async_trait]
