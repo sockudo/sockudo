@@ -148,4 +148,14 @@ pub trait ConnectionManager: Send + Sync {
 
     /// Get reference to horizontal adapter if available (for cluster presence replication)
     fn as_horizontal_adapter(&self) -> Option<&dyn HorizontalAdapterInterface>;
+
+    /// Configure dead node event bus if this adapter supports clustering
+    /// Returns Some(receiver) if configured, None if not supported
+    fn configure_dead_node_events(
+        &mut self,
+    ) -> Option<
+        tokio::sync::mpsc::UnboundedReceiver<crate::adapter::horizontal_adapter::DeadNodeEvent>,
+    > {
+        None // Default: no clustering support
+    }
 }

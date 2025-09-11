@@ -203,52 +203,22 @@ impl SockudoServer {
 
         // Set up dead node cleanup event bus for horizontal adapters
         let dead_node_event_receiver = {
-            use crate::adapter::horizontal_adapter::DeadNodeEvent;
-            let (event_sender, event_receiver) =
-                tokio::sync::mpsc::unbounded_channel::<DeadNodeEvent>();
+            let mut connection_manager_guard = connection_manager.lock().await;
+            let receiver_opt = connection_manager_guard.configure_dead_node_events();
 
-            // Set up event bus for horizontal adapters that support clustering
-            match config.adapter.driver {
-                AdapterDriver::Redis => {
-                    if let Some(adapter) = connection_manager
-                        .lock()
-                        .await
-                        .as_any_mut()
-                        .downcast_mut::<RedisAdapter>()
-                    {
-                        adapter.set_event_bus(event_sender);
-                        info!("Event bus configured for RedisAdapter");
-                    }
-                }
-                AdapterDriver::Nats => {
-                    if let Some(adapter) = connection_manager
-                        .lock()
-                        .await
-                        .as_any_mut()
-                        .downcast_mut::<NatsAdapter>()
-                    {
-                        adapter.set_event_bus(event_sender);
-                        info!("Event bus configured for NatsAdapter");
-                    }
-                }
-                AdapterDriver::RedisCluster => {
-                    if let Some(adapter) = connection_manager
-                        .lock()
-                        .await
-                        .as_any_mut()
-                        .downcast_mut::<RedisClusterAdapter>()
-                    {
-                        adapter.set_event_bus(event_sender);
-                        info!("Event bus configured for RedisClusterAdapter");
-                    }
-                }
-                AdapterDriver::Local => {
-                    // Local adapter doesn't need clustering support
-                    info!("Local adapter doesn't require dead node cleanup events");
-                }
+            if receiver_opt.is_some() {
+                info!(
+                    "Event bus configured for clustering adapter: {:?}",
+                    config.adapter.driver
+                );
+            } else {
+                info!(
+                    "Adapter {:?} doesn't require dead node cleanup events",
+                    config.adapter.driver
+                );
             }
 
-            Some(event_receiver)
+            receiver_opt
         };
 
         let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
