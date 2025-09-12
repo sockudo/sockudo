@@ -50,7 +50,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         Ok(Arc::new(Mutex::new(adapter)))
-                    },
+                    }
                     Err(e) => {
                         warn!(
                             "{}",
@@ -98,7 +98,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         Ok(Arc::new(Mutex::new(adapter)))
-                    },
+                    }
                     Err(e) => {
                         warn!(
                             "{}",
@@ -131,7 +131,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         Ok(Arc::new(Mutex::new(adapter)))
-                    },
+                    }
                     Err(e) => {
                         warn!(
                             "{}",
@@ -158,4 +158,3 @@ impl AdapterFactory {
         }
     }
 }
-

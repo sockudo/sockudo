@@ -151,8 +151,8 @@ pub struct MockTransport {
 impl MockTransport {
     /// Create a new MockTransport with shared state for multi-node simulation
     pub fn new_with_shared_state(
-        config: MockConfig, 
-        _shared_state: Arc<Mutex<HashMap<String, MockNodeState>>>
+        config: MockConfig,
+        _shared_state: Arc<Mutex<HashMap<String, MockNodeState>>>,
     ) -> Self {
         Self {
             config,
@@ -165,7 +165,7 @@ impl MockTransport {
         }
     }
 
-    /// Set the health status of this transport (for simulating node failures) 
+    /// Set the health status of this transport (for simulating node failures)
     pub async fn set_health_status(&self, healthy: bool) {
         *self.healthy.lock().await = healthy;
     }
@@ -176,7 +176,9 @@ impl MockTransport {
     }
 
     /// Get access to published requests for testing
-    pub async fn get_published_requests(&self) -> Vec<sockudo::adapter::horizontal_adapter::RequestBody> {
+    pub async fn get_published_requests(
+        &self,
+    ) -> Vec<sockudo::adapter::horizontal_adapter::RequestBody> {
         self.published_requests.lock().await.clone()
     }
 
@@ -284,7 +286,6 @@ impl MockTransport {
     pub async fn get_published_broadcasts(&self) -> Vec<BroadcastMessage> {
         self.published_broadcasts.lock().await.clone()
     }
-
 
     /// Simulate a node joining the cluster
     pub async fn add_node(&self) {
