@@ -144,6 +144,9 @@ pub enum Error {
     #[error("Own request ignored")]
     OwnRequestIgnored,
 
+    #[error("Request not for this node")]
+    RequestNotForThisNode,
+
     #[error("Horizontal adapter error: {0}")]
     HorizontalAdapter(String),
 
