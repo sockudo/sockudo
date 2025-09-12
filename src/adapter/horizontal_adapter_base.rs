@@ -340,7 +340,7 @@ where
                     };
 
                     if request.node_id == node_id {
-                        return Err(Error::Other("Skipping own request".to_string()));
+                        return Err(Error::OwnRequestIgnored);
                     }
 
                     // Check if this is a targeted request for another node
@@ -348,7 +348,7 @@ where
                         && target_node != &node_id
                     {
                         // Not for us, ignore silently
-                        return Err(Error::Other("Request not for this node".to_string()));
+                        return Err(Error::RequestNotForThisNode);
                     }
 
                     let mut horizontal_lock = horizontal_clone.lock().await;
