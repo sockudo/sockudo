@@ -344,11 +344,11 @@ where
                     }
 
                     // Check if this is a targeted request for another node
-                    if let Some(ref target_node) = request.target_node_id {
-                        if target_node != &node_id {
-                            // Not for us, ignore silently
-                            return Err(Error::Other("Request not for this node".to_string()));
-                        }
+                    if let Some(ref target_node) = request.target_node_id
+                        && target_node != &node_id
+                    {
+                        // Not for us, ignore silently
+                        return Err(Error::Other("Request not for this node".to_string()));
                     }
 
                     let mut horizontal_lock = horizontal_clone.lock().await;

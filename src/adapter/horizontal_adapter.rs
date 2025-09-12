@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::adapter::ConnectionManager;
@@ -106,11 +108,11 @@ pub struct PendingRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceEntry {
     pub user_info: Option<serde_json::Value>,
-    pub node_id: String,   // Which node owns this connection
-    pub app_id: String,    // Which app this member belongs to
-    pub user_id: String,   // Which user this socket belongs to
-    pub socket_id: String, // Socket ID for this connection
-    pub joined_at: u64,    // Timestamp when user joined
+    pub node_id: String,      // Which node owns this connection
+    pub app_id: String,       // Which app this member belongs to
+    pub user_id: String,      // Which user this socket belongs to
+    pub socket_id: String,    // Socket ID for this connection
+    pub sequence_number: u64, // Sequence number for conflict resolution
 }
 
 /// Type alias for the cluster presence registry structure
@@ -160,6 +162,9 @@ pub struct HorizontalAdapter {
     pub heartbeat_interval_ms: u64, // Default: 10000 (10 seconds)
     pub node_timeout_ms: u64,     // Default: 30000 (30 seconds)
     pub cleanup_interval_ms: u64, // Default: 10000 (10 seconds)
+
+    /// Sequence counter for conflict resolution
+    pub sequence_counter: Arc<AtomicU64>,
 }
 
 impl Default for HorizontalAdapter {
@@ -182,6 +187,7 @@ impl HorizontalAdapter {
             heartbeat_interval_ms: 10000, // 10 seconds
             node_timeout_ms: 30000,       // 30 seconds
             cleanup_interval_ms: 10000,   // 10 seconds
+            sequence_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -397,12 +403,18 @@ impl HorizontalAdapter {
                 if request.node_id != self.node_id {
                     let mut heartbeats = self.node_heartbeats.write().await;
 
-                    // Check if this is a new node (not in heartbeats map)
-                    let is_new_node = !heartbeats.contains_key(&request.node_id);
-
-                    // Store the heartbeat receive time
+                    // Atomically check and insert to avoid race conditions
                     let receive_time = Instant::now();
-                    heartbeats.insert(request.node_id.clone(), receive_time);
+                    let is_new_node = match heartbeats.entry(request.node_id.clone()) {
+                        Entry::Vacant(e) => {
+                            e.insert(receive_time);
+                            true
+                        }
+                        Entry::Occupied(mut e) => {
+                            e.insert(receive_time);
+                            false
+                        }
+                    };
 
                     if is_new_node {
                         info!("New node detected: {}", request.node_id);
@@ -459,7 +471,8 @@ impl HorizontalAdapter {
                                 for (socket_id, incoming_entry) in incoming_sockets {
                                     match channel_registry.get(&socket_id) {
                                         Some(existing)
-                                            if existing.joined_at > incoming_entry.joined_at =>
+                                            if existing.sequence_number
+                                                > incoming_entry.sequence_number =>
                                         {
                                             // Keep existing (it's newer)
                                             debug!(
@@ -1034,7 +1047,7 @@ impl HorizontalAdapter {
                     app_id: app_id.to_string(),
                     user_id: user_id.to_string(),
                     socket_id: socket_id.to_string(),
-                    joined_at: current_timestamp(),
+                    sequence_number: self.sequence_counter.fetch_add(1, Ordering::SeqCst),
                 },
             );
 
