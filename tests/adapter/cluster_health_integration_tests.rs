@@ -25,8 +25,10 @@ impl MockCluster {
         let shared_state = Arc::new(Mutex::new(HashMap::new()));
 
         for i in 0..node_count {
-            let mut config = MockConfig::default();
-            config.prefix = format!("cluster_test_{}", i);
+            let config = MockConfig {
+                prefix: format!("cluster_test_{}", i),
+                ..Default::default()
+            };
 
             // Create transport with shared state
             let transport =
