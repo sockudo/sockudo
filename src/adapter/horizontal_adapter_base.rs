@@ -34,6 +34,7 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub transport: T,
     pub config: T::Config,
     pub event_bus: Option<tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>>,
+    pub node_id: String,
 }
 
 impl<T: HorizontalTransport + 'static> HorizontalAdapterBase<T>
@@ -43,6 +44,7 @@ where
     pub async fn new(config: T::Config) -> Result<Self> {
         let mut horizontal = HorizontalAdapter::new();
         horizontal.requests_timeout = config.request_timeout_ms();
+        let node_id = horizontal.node_id.clone();
 
         let transport = T::new(config.clone()).await?;
 
@@ -51,6 +53,7 @@ where
             transport,
             config,
             event_bus: None,
+            node_id,
         })
     }
 
@@ -881,12 +884,7 @@ where
     }
 
     fn get_node_id(&self) -> String {
-        // Access the node_id from the horizontal adapter
-        let horizontal = self
-            .horizontal
-            .try_lock()
-            .expect("Failed to acquire lock on horizontal adapter: lock is poisoned");
-        horizontal.node_id.clone()
+        self.node_id.clone()
     }
 
     fn as_horizontal_adapter(&self) -> Option<&dyn HorizontalAdapterInterface> {
@@ -913,17 +911,12 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
         socket_id: &str,
         user_info: Option<serde_json::Value>,
     ) -> Result<()> {
-        let node_id = {
-            let horizontal = self.horizontal.lock().await;
-            horizontal.node_id.clone()
-        };
-
-        // Store in our own registry first
+        // Store in our own registry first with a single lock acquisition
         {
             let horizontal = self.horizontal.lock().await;
             horizontal
                 .add_presence_entry(
-                    &node_id,
+                    &self.node_id,
                     channel,
                     socket_id,
                     user_id,
@@ -935,7 +928,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
 
         let request = RequestBody {
             request_id: crate::adapter::horizontal_adapter::generate_request_id(),
-            node_id,
+            node_id: self.node_id.clone(),
             app_id: app_id.to_string(),
             request_type: RequestType::PresenceMemberJoined,
             channel: Some(channel.to_string()),
@@ -960,22 +953,17 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
         user_id: &str,
         socket_id: &str,
     ) -> Result<()> {
-        let node_id = {
-            let horizontal = self.horizontal.lock().await;
-            horizontal.node_id.clone()
-        };
-
-        // Remove from our own registry first
+        // Remove from our own registry first with a single lock acquisition
         {
             let horizontal = self.horizontal.lock().await;
             horizontal
-                .remove_presence_entry(&node_id, channel, socket_id)
+                .remove_presence_entry(&self.node_id, channel, socket_id)
                 .await;
         }
 
         let request = RequestBody {
             request_id: crate::adapter::horizontal_adapter::generate_request_id(),
-            node_id,
+            node_id: self.node_id.clone(),
             app_id: app_id.to_string(),
             request_type: RequestType::PresenceMemberLeft,
             channel: Some(channel.to_string()),
