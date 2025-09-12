@@ -232,5 +232,12 @@
     "batch_timeout_ms": 50,
     "worker_threads": "auto",
     "max_retry_attempts": 2
+  },
+
+  "cluster_health": {
+    "enabled": true,
+    "heartbeat_interval_ms": 10000,
+    "node_timeout_ms": 30000,
+    "cleanup_interval_ms": 10000
   }
 }
