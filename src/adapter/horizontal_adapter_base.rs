@@ -84,13 +84,13 @@ where
         self.event_bus = Some(event_sender);
     }
 
-    pub async fn set_cluster_health(
-        &mut self,
-        cluster_health: &ClusterHealthConfig,
-    ) -> Result<()> {
+    pub async fn set_cluster_health(&mut self, cluster_health: &ClusterHealthConfig) -> Result<()> {
         // Validate cluster health configuration first
         if let Err(validation_error) = cluster_health.validate() {
-            warn!("Cluster health configuration validation failed: {}", validation_error);
+            warn!(
+                "Cluster health configuration validation failed: {}",
+                validation_error
+            );
             warn!("Keeping current cluster health settings");
             return Ok(());
         }
@@ -100,7 +100,7 @@ where
         self.node_timeout_ms = cluster_health.node_timeout_ms;
         self.cleanup_interval_ms = cluster_health.cleanup_interval_ms;
         self.cluster_health_enabled = cluster_health.enabled;
-        
+
         // Log warning for high-frequency heartbeats
         if cluster_health.heartbeat_interval_ms < 1000 {
             warn!(
@@ -1268,4 +1268,3 @@ async fn send_presence_state_to_node<T: HorizontalTransport>(
 
     Ok(())
 }
-

@@ -987,8 +987,7 @@ impl ClusterHealthConfig {
         if self.cleanup_interval_ms > self.node_timeout_ms {
             return Err(format!(
                 "cleanup_interval_ms ({}) should not be larger than node_timeout_ms ({}) to ensure timely dead node detection",
-                self.cleanup_interval_ms,
-                self.node_timeout_ms
+                self.cleanup_interval_ms, self.node_timeout_ms
             ));
         }
 
@@ -1001,7 +1000,6 @@ impl ClusterHealthConfig {
         Ok(())
     }
 }
-
 
 impl ServerOptions {
     pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
