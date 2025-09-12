@@ -288,6 +288,7 @@ pub struct AdapterConfig {
     pub nats: NatsAdapterConfig,
     #[serde(default = "default_buffer_multiplier_per_cpu")]
     pub buffer_multiplier_per_cpu: usize,
+    pub cluster_health: ClusterHealthConfig,
 }
 
 fn default_buffer_multiplier_per_cpu() -> usize {
@@ -302,6 +303,7 @@ impl Default for AdapterConfig {
             cluster: RedisClusterAdapterConfig::default(),
             nats: NatsAdapterConfig::default(),
             buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
+            cluster_health: ClusterHealthConfig::default(),
         }
     }
 }
