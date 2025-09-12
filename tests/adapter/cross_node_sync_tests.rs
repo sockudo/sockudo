@@ -15,35 +15,34 @@ async fn test_request_response_aggregation_logic() {
     let node_id = adapter.node_id.clone();
 
     // Simulate multiple responses from different nodes
-    let mut responses = Vec::new();
-
-    // Response 1: Node has 2 sockets in channel
-    responses.push(ResponseBody {
-        request_id: request_id.to_string(),
-        node_id: "node-1".to_string(),
-        app_id: "test-app".to_string(),
-        members: HashMap::new(),
-        channels_with_sockets_count: HashMap::new(),
-        socket_ids: vec!["socket-1".to_string(), "socket-2".to_string()],
-        sockets_count: 2,
-        exists: true,
-        channels: HashSet::new(),
-        members_count: 0,
-    });
-
-    // Response 2: Node has 1 socket in channel
-    responses.push(ResponseBody {
-        request_id: request_id.to_string(),
-        node_id: "node-2".to_string(),
-        app_id: "test-app".to_string(),
-        members: HashMap::new(),
-        channels_with_sockets_count: HashMap::new(),
-        socket_ids: vec!["socket-3".to_string()],
-        sockets_count: 1,
-        exists: true,
-        channels: HashSet::new(),
-        members_count: 0,
-    });
+    let responses = vec![
+        // Response 1: Node has 2 sockets in channel
+        ResponseBody {
+            request_id: request_id.to_string(),
+            node_id: "node-1".to_string(),
+            app_id: "test-app".to_string(),
+            members: HashMap::new(),
+            channels_with_sockets_count: HashMap::new(),
+            socket_ids: vec!["socket-1".to_string(), "socket-2".to_string()],
+            sockets_count: 2,
+            exists: true,
+            channels: HashSet::new(),
+            members_count: 0,
+        },
+        // Response 2: Node has 1 socket in channel
+        ResponseBody {
+            request_id: request_id.to_string(),
+            node_id: "node-2".to_string(),
+            app_id: "test-app".to_string(),
+            members: HashMap::new(),
+            channels_with_sockets_count: HashMap::new(),
+            socket_ids: vec!["socket-3".to_string()],
+            sockets_count: 1,
+            exists: true,
+            channels: HashSet::new(),
+            members_count: 0,
+        },
+    ];
 
     // Test the aggregation logic
     let combined_response = {
@@ -289,31 +288,32 @@ async fn test_exists_flag_aggregation_logic() {
     );
 
     // Test case 2: One node returns exists=true
-    let mut responses = Vec::new();
-    responses.push(ResponseBody {
-        request_id: request_id.to_string(),
-        node_id: "node-0".to_string(),
-        app_id: "test-app".to_string(),
-        members: HashMap::new(),
-        channels_with_sockets_count: HashMap::new(),
-        socket_ids: Vec::new(),
-        sockets_count: 0,
-        exists: false,
-        channels: HashSet::new(),
-        members_count: 0,
-    });
-    responses.push(ResponseBody {
-        request_id: request_id.to_string(),
-        node_id: "node-1".to_string(),
-        app_id: "test-app".to_string(),
-        members: HashMap::new(),
-        channels_with_sockets_count: HashMap::new(),
-        socket_ids: Vec::new(),
-        sockets_count: 0,
-        exists: true, // One returns true
-        channels: HashSet::new(),
-        members_count: 0,
-    });
+    let responses = vec![
+        ResponseBody {
+            request_id: request_id.to_string(),
+            node_id: "node-0".to_string(),
+            app_id: "test-app".to_string(),
+            members: HashMap::new(),
+            channels_with_sockets_count: HashMap::new(),
+            socket_ids: Vec::new(),
+            sockets_count: 0,
+            exists: false,
+            channels: HashSet::new(),
+            members_count: 0,
+        },
+        ResponseBody {
+            request_id: request_id.to_string(),
+            node_id: "node-1".to_string(),
+            app_id: "test-app".to_string(),
+            members: HashMap::new(),
+            channels_with_sockets_count: HashMap::new(),
+            socket_ids: Vec::new(),
+            sockets_count: 0,
+            exists: true, // One returns true
+            channels: HashSet::new(),
+            members_count: 0,
+        },
+    ];
 
     let combined_response = {
         let horizontal = adapter.horizontal.lock().await;

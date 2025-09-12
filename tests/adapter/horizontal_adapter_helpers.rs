@@ -171,6 +171,7 @@ impl MockTransport {
     }
 
     /// Check if this transport is healthy
+    #[allow(dead_code)]
     pub async fn is_healthy(&self) -> bool {
         *self.healthy.lock().await
     }
