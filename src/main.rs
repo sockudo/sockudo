@@ -201,8 +201,8 @@ impl SockudoServer {
             config.adapter.driver
         );
 
-        // Set up dead node cleanup event bus for horizontal adapters
-        let dead_node_event_receiver = {
+        // Set up dead node cleanup event bus for horizontal adapters (only if cluster health is enabled)
+        let dead_node_event_receiver = if config.adapter.cluster_health.enabled {
             let mut connection_manager_guard = connection_manager.lock().await;
             let receiver_opt = connection_manager_guard.configure_dead_node_events();
 
@@ -219,6 +219,9 @@ impl SockudoServer {
             }
 
             receiver_opt
+        } else {
+            info!("Cluster health disabled, skipping dead node cleanup event bus setup");
+            None
         };
 
         let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
@@ -507,7 +510,7 @@ impl SockudoServer {
             state.cleanup_queue.clone(),
         ));
 
-        // Start dead node cleanup event processing loop
+        // Start dead node cleanup event processing loop (only runs if cluster health is enabled)
         if let Some(mut event_receiver) = dead_node_event_receiver {
             let handler_clone = handler.clone();
             tokio::spawn(async move {
