@@ -158,11 +158,6 @@ pub struct HorizontalAdapter {
     /// Track node heartbeats: HashMap<node_id, last_heartbeat_received_time>
     pub node_heartbeats: Arc<RwLock<HashMap<String, Instant>>>,
 
-    /// Cleanup configuration
-    pub heartbeat_interval_ms: u64, // Default: 10000 (10 seconds)
-    pub node_timeout_ms: u64,     // Default: 30000 (30 seconds)
-    pub cleanup_interval_ms: u64, // Default: 10000 (10 seconds)
-
     /// Sequence counter for conflict resolution
     pub sequence_counter: Arc<AtomicU64>,
 }
@@ -184,9 +179,6 @@ impl HorizontalAdapter {
             metrics: None,
             cluster_presence_registry: Arc::new(RwLock::new(HashMap::new())),
             node_heartbeats: Arc::new(RwLock::new(HashMap::new())),
-            heartbeat_interval_ms: 10000, // 10 seconds
-            node_timeout_ms: 30000,       // 30 seconds
-            cleanup_interval_ms: 10000,   // 10 seconds
             sequence_counter: Arc::new(AtomicU64::new(0)),
         }
     }

@@ -16,6 +16,7 @@ use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
 use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
+use crate::options::ClusterHealthConfig;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocketRef};
 use async_trait::async_trait;
@@ -35,6 +36,10 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub config: T::Config,
     pub event_bus: Option<tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>>,
     pub node_id: String,
+    pub cluster_health_enabled: bool,
+    pub heartbeat_interval_ms: u64,
+    pub node_timeout_ms: u64,
+    pub cleanup_interval_ms: u64,
 }
 
 impl<T: HorizontalTransport + 'static> HorizontalAdapterBase<T>
@@ -54,6 +59,10 @@ where
             config,
             event_bus: None,
             node_id,
+            cluster_health_enabled: true, // Default to enabled for backward compatibility
+            heartbeat_interval_ms: 10000, // Default: 10 seconds
+            node_timeout_ms: 30000,       // Default: 30 seconds  
+            cleanup_interval_ms: 10000,   // Default: 10 seconds
         })
     }
 
@@ -71,6 +80,34 @@ where
         event_sender: tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>,
     ) {
         self.event_bus = Some(event_sender);
+    }
+
+    pub async fn set_cluster_health(
+        &mut self,
+        cluster_health: &ClusterHealthConfig,
+    ) -> Result<()> {
+        // Validate cluster health configuration first
+        if let Err(validation_error) = cluster_health.validate() {
+            warn!("Cluster health configuration validation failed: {}", validation_error);
+            warn!("Keeping current cluster health settings");
+            return Ok(());
+        }
+
+        // Set cluster health configuration directly on the base adapter
+        self.heartbeat_interval_ms = cluster_health.heartbeat_interval_ms;
+        self.node_timeout_ms = cluster_health.node_timeout_ms;
+        self.cleanup_interval_ms = cluster_health.cleanup_interval_ms;
+        self.cluster_health_enabled = cluster_health.enabled;
+        
+        // Log warning for high-frequency heartbeats
+        if cluster_health.heartbeat_interval_ms < 1000 {
+            warn!(
+                "High-frequency heartbeat interval ({} ms) may cause unnecessary network load. Consider using >= 1000 ms unless high availability is critical.",
+                cluster_health.heartbeat_interval_ms
+            );
+        }
+
+        Ok(())
     }
 
     /// Enhanced send_request that properly integrates with HorizontalAdapter
@@ -263,8 +300,10 @@ where
             horizontal.start_request_cleanup();
         }
 
-        // Start cluster health system
-        self.start_cluster_health_system().await;
+        // Start cluster health system only if enabled
+        if self.cluster_health_enabled {
+            self.start_cluster_health_system().await;
+        }
 
         // Set up transport handlers
         let horizontal_arc = self.horizontal.clone();
@@ -926,6 +965,11 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
                 .await;
         }
 
+        // Skip cluster broadcast if cluster health is disabled
+        if !self.cluster_health_enabled {
+            return Ok(());
+        }
+
         let request = RequestBody {
             request_id: crate::adapter::horizontal_adapter::generate_request_id(),
             node_id: self.node_id.clone(),
@@ -961,6 +1005,11 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
                 .await;
         }
 
+        // Skip cluster broadcast if cluster health is disabled
+        if !self.cluster_health_enabled {
+            return Ok(());
+        }
+
         let request = RequestBody {
             request_id: crate::adapter::horizontal_adapter::generate_request_id(),
             node_id: self.node_id.clone(),
@@ -988,10 +1037,8 @@ where
 {
     /// Start cluster health monitoring system
     pub async fn start_cluster_health_system(&self) {
-        let (heartbeat_interval_ms, node_timeout_ms) = {
-            let horizontal = self.horizontal.lock().await;
-            (horizontal.heartbeat_interval_ms, horizontal.node_timeout_ms)
-        };
+        let heartbeat_interval_ms = self.heartbeat_interval_ms;
+        let node_timeout_ms = self.node_timeout_ms;
 
         info!(
             "Starting cluster health system with heartbeat interval: {}ms, timeout: {}ms",
@@ -1008,10 +1055,8 @@ where
     /// Start heartbeat broadcasting loop
     async fn start_heartbeat_loop(&self) {
         let transport = self.transport.clone();
-        let (node_id, heartbeat_interval_ms) = {
-            let horizontal = self.horizontal.lock().await;
-            (horizontal.node_id.clone(), horizontal.heartbeat_interval_ms)
-        };
+        let node_id = self.node_id.clone();
+        let heartbeat_interval_ms = self.heartbeat_interval_ms;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
@@ -1045,13 +1090,12 @@ where
         let transport = self.transport.clone();
         let horizontal = self.horizontal.clone();
         let event_bus = self.event_bus.clone();
-        let (node_id, node_timeout_ms) = {
-            let horizontal = self.horizontal.lock().await;
-            (horizontal.node_id.clone(), horizontal.node_timeout_ms)
-        };
+        let node_id = self.node_id.clone();
+        let cleanup_interval_ms = self.cleanup_interval_ms;
+        let node_timeout_ms = self.node_timeout_ms;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(node_timeout_ms / 2));
+            let mut interval = tokio::time::interval(Duration::from_millis(cleanup_interval_ms));
 
             loop {
                 interval.tick().await;
