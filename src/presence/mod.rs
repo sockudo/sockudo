@@ -6,7 +6,7 @@ use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::SocketId;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, error};
 
 /// Centralized presence channel management functionality
 /// This module handles presence member removal logic that needs to be
@@ -94,7 +94,11 @@ impl PresenceManager {
                     user_info.cloned(),
                 )
                 .await
-                .ok(); // Don't fail the entire operation if broadcast fails
+                .map_err(|e| {
+                    error!("Failed to broadcast presence join: {}", e);
+                    e
+                })
+                .ok(); // Log but don't fail the operation
         }
 
         Ok(())
@@ -176,7 +180,11 @@ impl PresenceManager {
                     excluding_socket.as_ref(),
                 )
                 .await
-                .ok(); // Don't fail the entire operation if broadcast fails
+                .map_err(|e| {
+                    error!("Failed to broadcast presence leave: {}", e);
+                    e
+                })
+                .ok(); // Log but don't fail the operation
         }
 
         Ok(())
