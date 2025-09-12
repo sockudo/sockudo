@@ -53,16 +53,18 @@ where
 
         let transport = T::new(config.clone()).await?;
 
+        let cluster_health_defaults = ClusterHealthConfig::default();
+
         Ok(Self {
             horizontal: Arc::new(Mutex::new(horizontal)),
             transport,
             config,
             event_bus: None,
             node_id,
-            cluster_health_enabled: true, // Default to enabled for backward compatibility
-            heartbeat_interval_ms: 10000, // Default: 10 seconds
-            node_timeout_ms: 30000,       // Default: 30 seconds  
-            cleanup_interval_ms: 10000,   // Default: 10 seconds
+            cluster_health_enabled: cluster_health_defaults.enabled,
+            heartbeat_interval_ms: cluster_health_defaults.heartbeat_interval_ms,
+            node_timeout_ms: cluster_health_defaults.node_timeout_ms,
+            cleanup_interval_ms: cluster_health_defaults.cleanup_interval_ms,
         })
     }
 
@@ -1266,3 +1268,4 @@ async fn send_presence_state_to_node<T: HorizontalTransport>(
 
     Ok(())
 }
+

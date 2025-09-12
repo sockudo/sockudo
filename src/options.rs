@@ -952,7 +952,7 @@ impl Default for ClusterHealthConfig {
     fn default() -> Self {
         Self {
             enabled: true,                // Enable by default for horizontal adapters
-            heartbeat_interval_ms: 10000, // 10 seconds
+            heartbeat_interval_ms: 10000, // 10 seconds (= 30000/3 = 10000)
             node_timeout_ms: 30000,       // 30 seconds
             cleanup_interval_ms: 10000,   // 10 seconds
         }
@@ -974,7 +974,7 @@ impl ClusterHealthConfig {
         }
 
         // Heartbeat interval should be much smaller than node timeout to avoid false positives
-        if self.heartbeat_interval_ms >= self.node_timeout_ms / 3 {
+        if self.heartbeat_interval_ms > self.node_timeout_ms / 3 {
             return Err(format!(
                 "heartbeat_interval_ms ({}) should be at least 3x smaller than node_timeout_ms ({}) to avoid false positive dead node detection. Recommended: heartbeat_interval_ms <= {}",
                 self.heartbeat_interval_ms,
@@ -1001,6 +1001,7 @@ impl ClusterHealthConfig {
         Ok(())
     }
 }
+
 
 impl ServerOptions {
     pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
