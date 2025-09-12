@@ -957,6 +957,49 @@ impl Default for ClusterHealthConfig {
     }
 }
 
+impl ClusterHealthConfig {
+    /// Validate cluster health configuration and return helpful error messages
+    pub fn validate(&self) -> Result<(), String> {
+        // All intervals must be positive
+        if self.heartbeat_interval_ms == 0 {
+            return Err("heartbeat_interval_ms must be greater than 0".to_string());
+        }
+        if self.node_timeout_ms == 0 {
+            return Err("node_timeout_ms must be greater than 0".to_string());
+        }
+        if self.cleanup_interval_ms == 0 {
+            return Err("cleanup_interval_ms must be greater than 0".to_string());
+        }
+
+        // Heartbeat interval should be much smaller than node timeout to avoid false positives
+        if self.heartbeat_interval_ms >= self.node_timeout_ms / 3 {
+            return Err(format!(
+                "heartbeat_interval_ms ({}) should be at least 3x smaller than node_timeout_ms ({}) to avoid false positive dead node detection. Recommended: heartbeat_interval_ms <= {}",
+                self.heartbeat_interval_ms,
+                self.node_timeout_ms,
+                self.node_timeout_ms / 3
+            ));
+        }
+
+        // Cleanup interval should be reasonable compared to node timeout
+        if self.cleanup_interval_ms > self.node_timeout_ms {
+            return Err(format!(
+                "cleanup_interval_ms ({}) should not be larger than node_timeout_ms ({}) to ensure timely dead node detection",
+                self.cleanup_interval_ms,
+                self.node_timeout_ms
+            ));
+        }
+
+        // Warn about very high frequencies that might cause unnecessary load
+        if self.heartbeat_interval_ms < 1000 {
+            // This is just a warning in the logs, not a validation error
+            // Users might legitimately want high-frequency heartbeats in some scenarios
+        }
+
+        Ok(())
+    }
+}
+
 impl ServerOptions {
     pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = tokio::fs::read_to_string(path).await?;
