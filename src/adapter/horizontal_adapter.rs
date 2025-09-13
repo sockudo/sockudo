@@ -794,11 +794,9 @@ impl HorizontalAdapter {
                     // These are broadcast-only requests, no response aggregation needed
                 }
                 RequestType::Heartbeat => {
-                    // TODO: Implement in Phase 2
                     // These are broadcast-only requests, no response aggregation needed
                 }
                 RequestType::NodeDead => {
-                    // TODO: Implement in Phase 2
                     // These are broadcast-only requests, no response aggregation needed
                 }
                 RequestType::PresenceStateSync => {
