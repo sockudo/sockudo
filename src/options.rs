@@ -991,12 +991,6 @@ impl ClusterHealthConfig {
             ));
         }
 
-        // Warn about very high frequencies that might cause unnecessary load
-        if self.heartbeat_interval_ms < 1000 {
-            // This is just a warning in the logs, not a validation error
-            // Users might legitimately want high-frequency heartbeats in some scenarios
-        }
-
         Ok(())
     }
 }
