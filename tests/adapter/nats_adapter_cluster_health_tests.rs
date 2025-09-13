@@ -1,8 +1,8 @@
-use sockudo::adapter::nats_adapter::NatsAdapter;
-use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
-use sockudo::adapter::ConnectionManager;
-use sockudo::options::{ClusterHealthConfig, NatsAdapterConfig};
 use serde_json::json;
+use sockudo::adapter::ConnectionManager;
+use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
+use sockudo::adapter::nats_adapter::NatsAdapter;
+use sockudo::options::{ClusterHealthConfig, NatsAdapterConfig};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,11 +12,8 @@ use tokio::time::sleep;
 /// Helper to check if NATS is available
 async fn is_nats_available() -> bool {
     let nats_url = env::var("NATS_SERVERS").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
-    
-    match async_nats::connect(&nats_url).await {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+
+    (async_nats::connect(&nats_url).await).is_ok()
 }
 
 /// Helper to create a NATS adapter with cluster health enabled
@@ -26,7 +23,7 @@ async fn create_nats_adapter(node_id: &str, cluster_config: &ClusterHealthConfig
         .split(',')
         .map(|s| s.to_string())
         .collect();
-    
+
     let config = NatsAdapterConfig {
         servers: nats_servers,
         prefix: format!("test_cluster_health_{}", node_id),
@@ -37,7 +34,7 @@ async fn create_nats_adapter(node_id: &str, cluster_config: &ClusterHealthConfig
         connection_timeout_ms: 5000,
         nodes_number: Some(1),
     };
-    
+
     let mut adapter = NatsAdapter::new(config).await.unwrap();
     adapter.set_cluster_health(cluster_config).await.unwrap();
     adapter
@@ -68,7 +65,7 @@ async fn test_nats_adapter_heartbeat_system() {
     sleep(Duration::from_millis(300)).await;
 
     // Both adapters should be aware of each other
-    
+
     drop(adapter1);
     drop(adapter2);
 }
@@ -100,17 +97,35 @@ async fn test_nats_presence_broadcast_and_sync() {
 
     // Broadcast presence from different nodes
     adapter1
-        .broadcast_presence_join(app_id, channel, "user1", "socket1", Some(json!({"from": "node1"})))
+        .broadcast_presence_join(
+            app_id,
+            channel,
+            "user1",
+            "socket1",
+            Some(json!({"from": "node1"})),
+        )
         .await
         .unwrap();
 
     adapter2
-        .broadcast_presence_join(app_id, channel, "user2", "socket2", Some(json!({"from": "node2"})))
+        .broadcast_presence_join(
+            app_id,
+            channel,
+            "user2",
+            "socket2",
+            Some(json!({"from": "node2"})),
+        )
         .await
         .unwrap();
 
     adapter3
-        .broadcast_presence_join(app_id, channel, "user3", "socket3", Some(json!({"from": "node3"})))
+        .broadcast_presence_join(
+            app_id,
+            channel,
+            "user3",
+            "socket3",
+            Some(json!({"from": "node3"})),
+        )
         .await
         .unwrap();
 
@@ -118,7 +133,7 @@ async fn test_nats_presence_broadcast_and_sync() {
     sleep(Duration::from_millis(300)).await;
 
     // All nodes should have synchronized presence state
-    
+
     // Test presence leave
     adapter2
         .broadcast_presence_leave(app_id, channel, "user2", "socket2")
@@ -142,13 +157,13 @@ async fn test_nats_dead_node_detection_and_cleanup() {
     let cluster_config = ClusterHealthConfig {
         enabled: true,
         heartbeat_interval_ms: 100,
-        node_timeout_ms: 300,  // Short timeout for testing
+        node_timeout_ms: 300, // Short timeout for testing
         cleanup_interval_ms: 150,
     };
 
     let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
     let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
-    
+
     adapter1.init().await;
     adapter2.init().await;
 
@@ -162,7 +177,7 @@ async fn test_nats_dead_node_detection_and_cleanup() {
             channel,
             "user_orphaned",
             "socket_orphaned",
-            Some(json!({"status": "will_be_orphaned"}))
+            Some(json!({"status": "will_be_orphaned"})),
         )
         .await
         .unwrap();
@@ -176,7 +191,7 @@ async fn test_nats_dead_node_detection_and_cleanup() {
     sleep(Duration::from_millis(500)).await;
 
     // Adapter1 should detect the dead node and clean up orphaned presence
-    
+
     drop(adapter1);
 }
 
@@ -215,7 +230,7 @@ async fn test_nats_pub_sub_pattern_isolation() {
     sleep(Duration::from_millis(200)).await;
 
     // Adapters should be isolated by prefix
-    
+
     drop(adapter1);
     drop(adapter2);
 }
@@ -239,13 +254,13 @@ async fn test_nats_wildcard_subscriptions() {
 
     // Test presence across multiple apps and channels
     let apps = vec!["app1", "app2", "app3"];
-    let channels = vec!["channel.a", "channel.b", "channel.c"];
+    let channels = ["channel.a", "channel.b", "channel.c"];
 
     for app in &apps {
         for (i, channel) in channels.iter().enumerate() {
             let user_id = format!("{}-user-{}", app, i);
             let socket_id = format!("{}-socket-{}", app, i);
-            
+
             adapter
                 .broadcast_presence_join(app, channel, &user_id, &socket_id, None)
                 .await
@@ -272,8 +287,10 @@ async fn test_nats_concurrent_operations() {
         cleanup_interval_ms: 200,
     };
 
-    let adapter = Arc::new(Mutex::new(create_nats_adapter("nats_node1", &cluster_config).await));
-    
+    let adapter = Arc::new(Mutex::new(
+        create_nats_adapter("nats_node1", &cluster_config).await,
+    ));
+
     {
         let mut adapter_guard = adapter.lock().await;
         adapter_guard.init().await;
@@ -284,17 +301,23 @@ async fn test_nats_concurrent_operations() {
 
     // Spawn multiple concurrent operations
     let mut handles = vec![];
-    
+
     for i in 0..20 {
         let adapter_clone = adapter.clone();
         let handle = tokio::spawn(async move {
             let adapter_guard = adapter_clone.lock().await;
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);
-            
+
             if i % 2 == 0 {
                 adapter_guard
-                    .broadcast_presence_join(app_id, channel, &user_id, &socket_id, Some(json!({"concurrent": true})))
+                    .broadcast_presence_join(
+                        app_id,
+                        channel,
+                        &user_id,
+                        &socket_id,
+                        Some(json!({"concurrent": true})),
+                    )
                     .await
                     .unwrap();
             } else {
@@ -303,7 +326,7 @@ async fn test_nats_concurrent_operations() {
                     .broadcast_presence_join(app_id, channel, &user_id, &socket_id, None)
                     .await
                     .unwrap();
-                
+
                 adapter_guard
                     .broadcast_presence_leave(app_id, channel, &user_id, &socket_id)
                     .await
@@ -340,18 +363,30 @@ async fn test_nats_reconnection_handling() {
 
     // Add initial presence
     adapter
-        .broadcast_presence_join("app1", "channel1", "user1", "socket1", Some(json!({"before": "disconnect"})))
+        .broadcast_presence_join(
+            "app1",
+            "channel1",
+            "user1",
+            "socket1",
+            Some(json!({"before": "disconnect"})),
+        )
         .await
         .unwrap();
 
     // NATS client should handle reconnection automatically
     // In a real scenario, we would simulate network interruption here
-    
+
     sleep(Duration::from_millis(100)).await;
 
     // Should still work after potential reconnection
     adapter
-        .broadcast_presence_join("app1", "channel2", "user2", "socket2", Some(json!({"after": "reconnect"})))
+        .broadcast_presence_join(
+            "app1",
+            "channel2",
+            "user2",
+            "socket2",
+            Some(json!({"after": "reconnect"})),
+        )
         .await
         .unwrap();
 
@@ -366,7 +401,7 @@ async fn test_nats_cluster_health_disabled() {
     }
 
     let cluster_config = ClusterHealthConfig {
-        enabled: false,  // Disabled
+        enabled: false, // Disabled
         heartbeat_interval_ms: 100,
         node_timeout_ms: 500,
         cleanup_interval_ms: 200,
@@ -421,7 +456,13 @@ async fn test_nats_message_ordering() {
     for i in 0..5 {
         if i % 2 == 0 {
             adapter1
-                .broadcast_presence_join(app_id, channel, user_id, socket_id, Some(json!({"iteration": i})))
+                .broadcast_presence_join(
+                    app_id,
+                    channel,
+                    user_id,
+                    socket_id,
+                    Some(json!({"iteration": i})),
+                )
                 .await
                 .unwrap();
         } else {
@@ -435,7 +476,7 @@ async fn test_nats_message_ordering() {
     sleep(Duration::from_millis(300)).await;
 
     // Final state should be consistent across all nodes
-    
+
     drop(adapter1);
     drop(adapter2);
 }
