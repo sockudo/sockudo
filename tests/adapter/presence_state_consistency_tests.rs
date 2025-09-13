@@ -17,7 +17,9 @@ async fn test_sequence_number_conflict_resolution() {
     };
 
     let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await.unwrap();
+    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config)
+        .await
+        .unwrap();
     adapter.set_cluster_health(&cluster_config).await.unwrap();
 
     let app_id = "test-app";
@@ -27,7 +29,7 @@ async fn test_sequence_number_conflict_resolution() {
 
     // Get access to horizontal adapter
     let horizontal = adapter.horizontal.lock().await;
-    
+
     // Create two presence entries with different sequence numbers
     let entry1 = sockudo::adapter::horizontal_adapter::PresenceEntry {
         user_info: Some(json!({"version": 1})),
@@ -44,20 +46,20 @@ async fn test_sequence_number_conflict_resolution() {
         app_id: app_id.to_string(),
         user_id: user_id.to_string(),
         socket_id: socket_id.to_string(),
-        sequence_number: 200,  // Higher sequence number should win
+        sequence_number: 200, // Higher sequence number should win
     };
 
     // Add both entries
     {
         let mut registry = horizontal.cluster_presence_registry.write().await;
-        
+
         registry
             .entry("node-1".to_string())
             .or_insert_with(HashMap::new)
             .entry(channel.to_string())
             .or_insert_with(HashMap::new)
             .insert(socket_id.to_string(), entry1);
-        
+
         registry
             .entry("node-2".to_string())
             .or_insert_with(HashMap::new)
@@ -72,13 +74,10 @@ async fn test_sequence_number_conflict_resolution() {
         .get("node-2")
         .and_then(|channels| channels.get(channel))
         .and_then(|sockets| sockets.get(socket_id));
-    
+
     assert!(node2_entry.is_some());
     assert_eq!(node2_entry.unwrap().sequence_number, 200);
-    assert_eq!(
-        node2_entry.unwrap().user_info,
-        Some(json!({"version": 2}))
-    );
+    assert_eq!(node2_entry.unwrap().user_info, Some(json!({"version": 2})));
 }
 
 /// Test handling of presence updates with clock skew
@@ -93,7 +92,9 @@ async fn test_presence_state_with_clock_skew() {
     };
 
     let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await.unwrap();
+    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config)
+        .await
+        .unwrap();
     adapter.set_cluster_health(&cluster_config).await.unwrap();
 
     // Simulate receiving presence updates with clock skew
@@ -106,7 +107,7 @@ async fn test_presence_state_with_clock_skew() {
         socket_id: Some("socket-1".to_string()),
         user_id: Some("user-1".to_string()),
         user_info: Some(json!({"timestamp": "early"})),
-        timestamp: Some(1000),  // Earlier timestamp
+        timestamp: Some(1000), // Earlier timestamp
         dead_node_id: None,
         target_node_id: None,
     };
@@ -120,7 +121,7 @@ async fn test_presence_state_with_clock_skew() {
         socket_id: Some("socket-1".to_string()),
         user_id: Some("user-1".to_string()),
         user_info: Some(json!({"timestamp": "late"})),
-        timestamp: Some(2000),  // Later timestamp
+        timestamp: Some(2000), // Later timestamp
         dead_node_id: None,
         target_node_id: None,
     };
@@ -148,9 +149,11 @@ async fn test_bulk_presence_cleanup() {
     };
 
     let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await.unwrap();
+    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config)
+        .await
+        .unwrap();
     adapter.set_cluster_health(&cluster_config).await.unwrap();
-    
+
     let app_id = "test-app";
     let channels = 5;
     let users_per_channel = 20;
@@ -159,13 +162,13 @@ async fn test_bulk_presence_cleanup() {
     {
         let horizontal = adapter.horizontal.lock().await;
         let mut registry = horizontal.cluster_presence_registry.write().await;
-        
+
         for c in 0..channels {
             for u in 0..users_per_channel {
                 let channel = format!("channel-{}", c);
                 let user_id = format!("user-{}-{}", c, u);
                 let socket_id = format!("socket-{}-{}", c, u);
-                
+
                 let entry = sockudo::adapter::horizontal_adapter::PresenceEntry {
                     user_info: Some(json!({"bulk": true})),
                     node_id: "bulk-node".to_string(),
@@ -174,7 +177,7 @@ async fn test_bulk_presence_cleanup() {
                     socket_id: socket_id.clone(),
                     sequence_number: (c * users_per_channel + u) as u64,
                 };
-                
+
                 registry
                     .entry("bulk-node".to_string())
                     .or_insert_with(HashMap::new)
@@ -188,13 +191,24 @@ async fn test_bulk_presence_cleanup() {
     // Test bulk cleanup performance and correctness
     {
         let horizontal = adapter.horizontal.lock().await;
-        let cleanup_tasks = horizontal.handle_dead_node_cleanup("bulk-node").await.unwrap();
-        
+        let cleanup_tasks = horizontal
+            .handle_dead_node_cleanup("bulk-node")
+            .await
+            .unwrap();
+
         let expected_total = channels * users_per_channel;
-        assert_eq!(cleanup_tasks.len(), expected_total, "Should cleanup all {} entries", expected_total);
-        
+        assert_eq!(
+            cleanup_tasks.len(),
+            expected_total,
+            "Should cleanup all {} entries",
+            expected_total
+        );
+
         // Verify registry is properly cleaned
         let registry = horizontal.cluster_presence_registry.read().await;
-        assert!(!registry.contains_key("bulk-node"), "Bulk node should be completely removed");
+        assert!(
+            !registry.contains_key("bulk-node"),
+            "Bulk node should be completely removed"
+        );
     }
 }

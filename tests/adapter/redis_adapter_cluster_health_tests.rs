@@ -1,8 +1,8 @@
-use sockudo::adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
-use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
-use sockudo::adapter::ConnectionManager;
-use sockudo::options::ClusterHealthConfig;
 use serde_json::json;
+use sockudo::adapter::ConnectionManager;
+use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
+use sockudo::adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
+use sockudo::options::ClusterHealthConfig;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use tokio::time::sleep;
 /// Helper to check if Redis is available
 async fn is_redis_available() -> bool {
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    
+
     match redis::Client::open(redis_url) {
         Ok(client) => match client.get_connection() {
             Ok(mut conn) => {
@@ -29,14 +29,14 @@ async fn is_redis_available() -> bool {
 /// Helper to create a Redis adapter with cluster health enabled
 async fn create_redis_adapter(node_id: &str, cluster_config: &ClusterHealthConfig) -> RedisAdapter {
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    
+
     let options = RedisAdapterOptions {
         url: redis_url,
         prefix: format!("test_cluster_health_{}", node_id),
         request_timeout_ms: 5000,
         cluster_mode: false,
     };
-    
+
     let mut adapter = RedisAdapter::new(options).await.unwrap();
     adapter.set_cluster_health(cluster_config).await.unwrap();
     adapter
@@ -70,7 +70,7 @@ async fn test_redis_adapter_heartbeat_propagation() {
     // Both adapters should see each other's heartbeats
     // Note: This test assumes the adapters track heartbeats internally
     // The actual implementation may need to expose this for testing
-    
+
     // Clean up
     drop(adapter1);
     drop(adapter2);
@@ -114,7 +114,7 @@ async fn test_redis_adapter_presence_join_broadcast() {
     // Adapter2 should receive the presence update
     // Note: The actual verification depends on how the adapter stores presence data
     // This might need access to internal state or a get_presence_members method
-    
+
     drop(adapter1);
     drop(adapter2);
 }
@@ -163,7 +163,7 @@ async fn test_redis_adapter_presence_leave_broadcast() {
 
     // Verify the presence was removed
     // Note: Implementation-specific verification needed here
-    
+
     drop(adapter1);
     drop(adapter2);
 }
@@ -178,22 +178,28 @@ async fn test_redis_adapter_dead_node_detection() {
     let cluster_config = ClusterHealthConfig {
         enabled: true,
         heartbeat_interval_ms: 100,
-        node_timeout_ms: 300,  // Short timeout for testing
+        node_timeout_ms: 300, // Short timeout for testing
         cleanup_interval_ms: 150,
     };
 
     let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
     let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
-    
+
     adapter1.init().await;
     adapter2.init().await;
 
     let app_id = "test-app";
     let channel = "presence-test";
-    
+
     // Add presence member on adapter2
     adapter2
-        .broadcast_presence_join(app_id, channel, "user2", "socket2", Some(json!({"name": "User2"})))
+        .broadcast_presence_join(
+            app_id,
+            channel,
+            "user2",
+            "socket2",
+            Some(json!({"name": "User2"})),
+        )
         .await
         .unwrap();
 
@@ -207,7 +213,7 @@ async fn test_redis_adapter_dead_node_detection() {
 
     // Adapter1 should detect that adapter2 is dead and clean up its presence data
     // Note: Need to verify cleanup actually happened
-    
+
     drop(adapter1);
 }
 
@@ -236,7 +242,7 @@ async fn test_redis_adapter_multiple_apps_isolation() {
         .broadcast_presence_join("app1", "channel1", "user1", "socket1", None)
         .await
         .unwrap();
-    
+
     adapter1
         .broadcast_presence_join("app2", "channel1", "user2", "socket2", None)
         .await
@@ -246,7 +252,7 @@ async fn test_redis_adapter_multiple_apps_isolation() {
 
     // Verify app isolation is maintained
     // Each app should only see its own presence data
-    
+
     drop(adapter1);
     drop(adapter2);
 }
@@ -277,7 +283,7 @@ async fn test_redis_adapter_reconnection_after_failure() {
     // Simulate connection loss and recovery
     // Note: This would require the ability to disconnect/reconnect the Redis connection
     // which may not be exposed in the current API
-    
+
     // After reconnection, adapter should still function
     adapter
         .broadcast_presence_join("app1", "channel2", "user2", "socket2", None)
@@ -295,7 +301,7 @@ async fn test_redis_adapter_cluster_health_disabled() {
     }
 
     let cluster_config = ClusterHealthConfig {
-        enabled: false,  // Disabled
+        enabled: false, // Disabled
         heartbeat_interval_ms: 100,
         node_timeout_ms: 500,
         cleanup_interval_ms: 200,
@@ -336,8 +342,10 @@ async fn test_redis_adapter_concurrent_presence_operations() {
         cleanup_interval_ms: 200,
     };
 
-    let adapter = Arc::new(Mutex::new(create_redis_adapter("node1", &cluster_config).await));
-    
+    let adapter = Arc::new(Mutex::new(
+        create_redis_adapter("node1", &cluster_config).await,
+    ));
+
     {
         let mut adapter_guard = adapter.lock().await;
         adapter_guard.init().await;
@@ -348,14 +356,14 @@ async fn test_redis_adapter_concurrent_presence_operations() {
 
     // Spawn multiple concurrent presence operations
     let mut handles = vec![];
-    
+
     for i in 0..10 {
         let adapter_clone = adapter.clone();
         let handle = tokio::spawn(async move {
             let adapter_guard = adapter_clone.lock().await;
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);
-            
+
             adapter_guard
                 .broadcast_presence_join(app_id, channel, &user_id, &socket_id, None)
                 .await

@@ -1,8 +1,8 @@
-use sockudo::adapter::redis_cluster_adapter::RedisClusterAdapter;
-use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
-use sockudo::adapter::ConnectionManager;
-use sockudo::options::{ClusterHealthConfig, RedisClusterAdapterConfig};
 use serde_json::json;
+use sockudo::adapter::ConnectionManager;
+use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
+use sockudo::adapter::redis_cluster_adapter::RedisClusterAdapter;
+use sockudo::options::{ClusterHealthConfig, RedisClusterAdapterConfig};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,11 +11,12 @@ use tokio::time::sleep;
 
 /// Helper to check if Redis Cluster is available
 async fn is_redis_cluster_available() -> bool {
-    let nodes = env::var("REDIS_CLUSTER_NODES")
-        .unwrap_or_else(|_| "redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002".to_string());
-    
+    let nodes = env::var("REDIS_CLUSTER_NODES").unwrap_or_else(|_| {
+        "redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002".to_string()
+    });
+
     let node_list: Vec<String> = nodes.split(',').map(|s| s.to_string()).collect();
-    
+
     if node_list.is_empty() {
         return false;
     }
@@ -39,18 +40,19 @@ async fn create_redis_cluster_adapter(
     node_id: &str,
     cluster_config: &ClusterHealthConfig,
 ) -> RedisClusterAdapter {
-    let nodes = env::var("REDIS_CLUSTER_NODES")
-        .unwrap_or_else(|_| "redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002".to_string());
-    
+    let nodes = env::var("REDIS_CLUSTER_NODES").unwrap_or_else(|_| {
+        "redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002".to_string()
+    });
+
     let node_list: Vec<String> = nodes.split(',').map(|s| s.to_string()).collect();
-    
+
     let config = RedisClusterAdapterConfig {
         nodes: node_list,
         prefix: format!("test_cluster_health_{}", node_id),
         request_timeout_ms: 5000,
         use_connection_manager: true,
     };
-    
+
     let mut adapter = RedisClusterAdapter::new(config).await.unwrap();
     adapter.set_cluster_health(cluster_config).await.unwrap();
     adapter
@@ -81,7 +83,7 @@ async fn test_redis_cluster_adapter_heartbeat() {
     sleep(Duration::from_millis(300)).await;
 
     // Both nodes should be aware of each other through heartbeats
-    
+
     drop(adapter1);
     drop(adapter2);
 }
@@ -113,17 +115,35 @@ async fn test_redis_cluster_presence_synchronization() {
 
     // Add presence members from different nodes
     adapter1
-        .broadcast_presence_join(app_id, channel, "user1", "socket1", Some(json!({"node": 1})))
+        .broadcast_presence_join(
+            app_id,
+            channel,
+            "user1",
+            "socket1",
+            Some(json!({"node": 1})),
+        )
         .await
         .unwrap();
 
     adapter2
-        .broadcast_presence_join(app_id, channel, "user2", "socket2", Some(json!({"node": 2})))
+        .broadcast_presence_join(
+            app_id,
+            channel,
+            "user2",
+            "socket2",
+            Some(json!({"node": 2})),
+        )
         .await
         .unwrap();
 
     adapter3
-        .broadcast_presence_join(app_id, channel, "user3", "socket3", Some(json!({"node": 3})))
+        .broadcast_presence_join(
+            app_id,
+            channel,
+            "user3",
+            "socket3",
+            Some(json!({"node": 3})),
+        )
         .await
         .unwrap();
 
@@ -132,7 +152,7 @@ async fn test_redis_cluster_presence_synchronization() {
 
     // All adapters should see all presence members
     // Note: Verification depends on implementation details
-    
+
     drop(adapter1);
     drop(adapter2);
     drop(adapter3);
@@ -148,13 +168,13 @@ async fn test_redis_cluster_dead_node_cleanup() {
     let cluster_config = ClusterHealthConfig {
         enabled: true,
         heartbeat_interval_ms: 100,
-        node_timeout_ms: 300,  // Short timeout for testing
+        node_timeout_ms: 300, // Short timeout for testing
         cleanup_interval_ms: 150,
     };
 
     let mut adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
     let mut adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
-    
+
     adapter1.init().await;
     adapter2.init().await;
 
@@ -163,7 +183,13 @@ async fn test_redis_cluster_dead_node_cleanup() {
 
     // Add presence on adapter2 (which will "die")
     adapter2
-        .broadcast_presence_join(app_id, channel, "user_to_cleanup", "socket_cleanup", Some(json!({"status": "online"})))
+        .broadcast_presence_join(
+            app_id,
+            channel,
+            "user_to_cleanup",
+            "socket_cleanup",
+            Some(json!({"status": "online"})),
+        )
         .await
         .unwrap();
 
@@ -176,7 +202,7 @@ async fn test_redis_cluster_dead_node_cleanup() {
     sleep(Duration::from_millis(500)).await;
 
     // Adapter1 should have cleaned up the dead node's presence data
-    
+
     drop(adapter1);
 }
 
@@ -198,7 +224,7 @@ async fn test_redis_cluster_sharding_consistency() {
     adapter.init().await;
 
     // Test presence across different shards (different channel names will hash to different slots)
-    let channels = vec![
+    let channels = [
         "presence-shard-{1}",
         "presence-shard-{2}",
         "presence-shard-{3}",
@@ -209,7 +235,7 @@ async fn test_redis_cluster_sharding_consistency() {
     for (i, channel) in channels.iter().enumerate() {
         let user_id = format!("user-{}", i);
         let socket_id = format!("socket-{}", i);
-        
+
         adapter
             .broadcast_presence_join("test-app", channel, &user_id, &socket_id, None)
             .await
@@ -219,7 +245,7 @@ async fn test_redis_cluster_sharding_consistency() {
     sleep(Duration::from_millis(200)).await;
 
     // All presence data should be correctly stored across shards
-    
+
     drop(adapter);
 }
 
@@ -242,13 +268,19 @@ async fn test_redis_cluster_failover_handling() {
 
     // Add presence data
     adapter
-        .broadcast_presence_join("app1", "channel1", "user1", "socket1", Some(json!({"test": true})))
+        .broadcast_presence_join(
+            "app1",
+            "channel1",
+            "user1",
+            "socket1",
+            Some(json!({"test": true})),
+        )
         .await
         .unwrap();
 
     // In a real scenario, we would simulate a Redis node failover here
     // The adapter should handle reconnection and continue working
-    
+
     sleep(Duration::from_millis(100)).await;
 
     // Try to add more presence data after potential failover
@@ -276,9 +308,10 @@ async fn test_redis_cluster_concurrent_multi_node_operations() {
 
     // Create multiple adapters
     let adapters = Arc::new(Mutex::new(Vec::new()));
-    
+
     for i in 0..3 {
-        let mut adapter = create_redis_cluster_adapter(&format!("cluster_node_{}", i), &cluster_config).await;
+        let mut adapter =
+            create_redis_cluster_adapter(&format!("cluster_node_{}", i), &cluster_config).await;
         adapter.init().await;
         adapters.lock().await.push(adapter);
     }
@@ -288,19 +321,25 @@ async fn test_redis_cluster_concurrent_multi_node_operations() {
 
     // Spawn concurrent operations from different adapters
     let mut handles = vec![];
-    
+
     for i in 0..9 {
         let adapters_clone = adapters.clone();
         let handle = tokio::spawn(async move {
             let mut adapters_guard = adapters_clone.lock().await;
-            let adapter_index = i % 3;  // Round-robin across adapters
+            let adapter_index = i % 3; // Round-robin across adapters
             let adapter = &mut adapters_guard[adapter_index];
-            
+
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);
-            
+
             adapter
-                .broadcast_presence_join(app_id, channel, &user_id, &socket_id, Some(json!({"concurrent": true})))
+                .broadcast_presence_join(
+                    app_id,
+                    channel,
+                    &user_id,
+                    &socket_id,
+                    Some(json!({"concurrent": true})),
+                )
                 .await
                 .unwrap();
         });
@@ -344,7 +383,13 @@ async fn test_redis_cluster_large_presence_data() {
 
     // Should handle large presence data correctly
     adapter
-        .broadcast_presence_join("app1", "channel1", "user_large", "socket_large", Some(user_info))
+        .broadcast_presence_join(
+            "app1",
+            "channel1",
+            "user_large",
+            "socket_large",
+            Some(user_info),
+        )
         .await
         .unwrap();
 
@@ -361,7 +406,7 @@ async fn test_redis_cluster_disabled_health_monitoring() {
     }
 
     let cluster_config = ClusterHealthConfig {
-        enabled: false,  // Disabled
+        enabled: false, // Disabled
         heartbeat_interval_ms: 100,
         node_timeout_ms: 500,
         cleanup_interval_ms: 200,
