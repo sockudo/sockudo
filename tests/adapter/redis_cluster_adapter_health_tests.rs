@@ -158,21 +158,24 @@ async fn test_redis_cluster_presence_synchronization() {
     // Each adapter should have all three presence entries in their registry
     let registry = adapter1.get_cluster_presence_registry().await;
     assert!(
-        registry.get(&node1_id)
+        registry
+            .get(&node1_id)
             .and_then(|n| n.get(channel))
             .map(|c| c.contains_key("socket1"))
             .unwrap_or(false),
         "Adapter1 should have its own presence entry"
     );
     assert!(
-        registry.get(&node2_id)
+        registry
+            .get(&node2_id)
             .and_then(|n| n.get(channel))
             .map(|c| c.contains_key("socket2"))
             .unwrap_or(false),
         "Adapter1 should have node2's presence entry"
     );
     assert!(
-        registry.get(&node3_id)
+        registry
+            .get(&node3_id)
             .and_then(|n| n.get(channel))
             .map(|c| c.contains_key("socket3"))
             .unwrap_or(false),

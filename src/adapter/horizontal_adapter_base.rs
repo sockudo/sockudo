@@ -449,6 +449,199 @@ where
         self.transport.start_listeners(handlers).await?;
         Ok(())
     }
+
+    /// Start cluster health monitoring system
+    pub async fn start_cluster_health_system(&self) {
+        let heartbeat_interval_ms = self.heartbeat_interval_ms;
+        let node_timeout_ms = self.node_timeout_ms;
+
+        info!(
+            "Starting cluster health system with heartbeat interval: {}ms, timeout: {}ms",
+            heartbeat_interval_ms, node_timeout_ms
+        );
+
+        // Start heartbeat broadcasting
+        self.start_heartbeat_loop().await;
+
+        // Start dead node detection
+        self.start_dead_node_detection().await;
+    }
+
+    /// Start heartbeat broadcasting loop
+    async fn start_heartbeat_loop(&self) {
+        let transport = self.transport.clone();
+        let node_id = self.node_id.clone();
+        let heartbeat_interval_ms = self.heartbeat_interval_ms;
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
+
+            loop {
+                interval.tick().await;
+
+                let heartbeat_request = RequestBody {
+                    request_id: generate_request_id(),
+                    node_id: node_id.clone(),
+                    app_id: "cluster".to_string(),
+                    request_type: RequestType::Heartbeat,
+                    channel: None,
+                    socket_id: None,
+                    user_id: None,
+                    user_info: None,
+                    timestamp: Some(current_timestamp()),
+                    dead_node_id: None,
+                    target_node_id: None,
+                };
+
+                if let Err(e) = transport.publish_request(&heartbeat_request).await {
+                    error!("Failed to send heartbeat: {}", e);
+                }
+            }
+        });
+    }
+
+    /// Start dead node detection loop
+    async fn start_dead_node_detection(&self) {
+        let transport = self.transport.clone();
+        let horizontal = self.horizontal.clone();
+        let event_bus = self.event_bus.clone();
+        let node_id = self.node_id.clone();
+        let cleanup_interval_ms = self.cleanup_interval_ms;
+        let node_timeout_ms = self.node_timeout_ms;
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(cleanup_interval_ms));
+
+            loop {
+                interval.tick().await;
+
+                let dead_nodes = {
+                    let horizontal_guard = horizontal.lock().await;
+                    horizontal_guard.get_dead_nodes(node_timeout_ms).await
+                };
+
+                if !dead_nodes.is_empty() {
+                    // Single leader election for entire cleanup round
+                    let is_leader = {
+                        let horizontal_guard = horizontal.lock().await;
+                        horizontal_guard.is_cleanup_leader(&dead_nodes).await
+                    };
+
+                    if is_leader {
+                        info!(
+                            "Elected as cleanup leader for {} dead nodes: {:?}",
+                            dead_nodes.len(),
+                            dead_nodes
+                        );
+
+                        // Process ALL dead nodes as the elected leader
+                        for dead_node_id in dead_nodes {
+                            debug!("Processing dead node: {}", dead_node_id);
+
+                            // 1. Remove from local heartbeat tracking
+                            {
+                                let horizontal_guard = horizontal.lock().await;
+                                horizontal_guard.remove_dead_node(&dead_node_id).await;
+                            }
+
+                            // 2. Get orphaned members and clean up local registry
+                            let cleanup_tasks = {
+                                let horizontal_guard = horizontal.lock().await;
+                                match horizontal_guard
+                                    .handle_dead_node_cleanup(&dead_node_id)
+                                    .await
+                                {
+                                    Ok(tasks) => tasks,
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to cleanup dead node {}: {}",
+                                            dead_node_id, e
+                                        );
+                                        continue;
+                                    }
+                                }
+                            };
+
+                            if !cleanup_tasks.is_empty() {
+                                // 3. Convert to orphaned members and emit event
+                                let orphaned_members: Vec<OrphanedMember> = cleanup_tasks
+                                    .into_iter()
+                                    .map(|(app_id, channel, user_id, user_info)| OrphanedMember {
+                                        app_id,
+                                        channel,
+                                        user_id,
+                                        user_info, // Preserve user_info for proper presence management
+                                    })
+                                    .collect();
+
+                                let event = DeadNodeEvent {
+                                    dead_node_id: dead_node_id.clone(),
+                                    orphaned_members: orphaned_members.clone(),
+                                };
+
+                                // Emit event for processing by ConnectionHandler
+                                if let Some(event_sender) = &event_bus {
+                                    if let Err(e) = event_sender.send(event) {
+                                        error!("Failed to send dead node event: {}", e);
+                                    }
+                                } else {
+                                    warn!("No event bus configured for dead node cleanup");
+                                }
+
+                                info!(
+                                    "Emitted cleanup event for {} orphaned presence members from dead node {}",
+                                    orphaned_members.len(),
+                                    dead_node_id
+                                );
+                            }
+
+                            // 4. Notify followers to clean their registries
+                            let dead_node_request = RequestBody {
+                                request_id: generate_request_id(),
+                                node_id: node_id.clone(),
+                                app_id: "cluster".to_string(),
+                                request_type: RequestType::NodeDead,
+                                channel: None,
+                                socket_id: None,
+                                user_id: None,
+                                user_info: None,
+                                timestamp: Some(current_timestamp()),
+                                dead_node_id: Some(dead_node_id.clone()),
+                                target_node_id: None,
+                            };
+
+                            if let Err(e) = transport.publish_request(&dead_node_request).await {
+                                error!("Failed to send dead node notification: {}", e);
+                            }
+                        }
+                    } else {
+                        debug!(
+                            "Not cleanup leader for {} dead nodes, waiting for leader's broadcasts",
+                            dead_nodes.len()
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    /// Get a snapshot of the cluster presence registry
+    pub async fn get_cluster_presence_registry(
+        &self,
+    ) -> crate::adapter::horizontal_adapter::ClusterPresenceRegistry {
+        let horizontal = self.horizontal.lock().await;
+        let registry = horizontal.cluster_presence_registry.read().await;
+        registry.clone()
+    }
+
+    /// Get a snapshot of node heartbeat tracking
+    pub async fn get_node_heartbeats(
+        &self,
+    ) -> std::collections::HashMap<String, std::time::Instant> {
+        let horizontal = self.horizontal.lock().await;
+        let heartbeats = horizontal.node_heartbeats.read().await;
+        heartbeats.clone()
+    }
 }
 
 #[async_trait]
@@ -1029,187 +1222,6 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
 
         // Send without waiting for response (broadcast)
         self.transport.publish_request(&request).await
-    }
-}
-
-// Additional methods for cluster health (not part of the trait)
-impl<T: HorizontalTransport + 'static> HorizontalAdapterBase<T>
-where
-    T::Config: TransportConfig,
-{
-    /// Start cluster health monitoring system
-    pub async fn start_cluster_health_system(&self) {
-        let heartbeat_interval_ms = self.heartbeat_interval_ms;
-        let node_timeout_ms = self.node_timeout_ms;
-
-        info!(
-            "Starting cluster health system with heartbeat interval: {}ms, timeout: {}ms",
-            heartbeat_interval_ms, node_timeout_ms
-        );
-
-        // Start heartbeat broadcasting
-        self.start_heartbeat_loop().await;
-
-        // Start dead node detection
-        self.start_dead_node_detection().await;
-    }
-
-    /// Start heartbeat broadcasting loop
-    async fn start_heartbeat_loop(&self) {
-        let transport = self.transport.clone();
-        let node_id = self.node_id.clone();
-        let heartbeat_interval_ms = self.heartbeat_interval_ms;
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
-
-            loop {
-                interval.tick().await;
-
-                let heartbeat_request = RequestBody {
-                    request_id: generate_request_id(),
-                    node_id: node_id.clone(),
-                    app_id: "cluster".to_string(),
-                    request_type: RequestType::Heartbeat,
-                    channel: None,
-                    socket_id: None,
-                    user_id: None,
-                    user_info: None,
-                    timestamp: Some(current_timestamp()),
-                    dead_node_id: None,
-                    target_node_id: None,
-                };
-
-                if let Err(e) = transport.publish_request(&heartbeat_request).await {
-                    error!("Failed to send heartbeat: {}", e);
-                }
-            }
-        });
-    }
-
-    /// Start dead node detection loop
-    async fn start_dead_node_detection(&self) {
-        let transport = self.transport.clone();
-        let horizontal = self.horizontal.clone();
-        let event_bus = self.event_bus.clone();
-        let node_id = self.node_id.clone();
-        let cleanup_interval_ms = self.cleanup_interval_ms;
-        let node_timeout_ms = self.node_timeout_ms;
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(cleanup_interval_ms));
-
-            loop {
-                interval.tick().await;
-
-                let dead_nodes = {
-                    let horizontal_guard = horizontal.lock().await;
-                    horizontal_guard.get_dead_nodes(node_timeout_ms).await
-                };
-
-                if !dead_nodes.is_empty() {
-                    // Single leader election for entire cleanup round
-                    let is_leader = {
-                        let horizontal_guard = horizontal.lock().await;
-                        horizontal_guard.is_cleanup_leader(&dead_nodes).await
-                    };
-
-                    if is_leader {
-                        info!(
-                            "Elected as cleanup leader for {} dead nodes: {:?}",
-                            dead_nodes.len(),
-                            dead_nodes
-                        );
-
-                        // Process ALL dead nodes as the elected leader
-                        for dead_node_id in dead_nodes {
-                            debug!("Processing dead node: {}", dead_node_id);
-
-                            // 1. Remove from local heartbeat tracking
-                            {
-                                let horizontal_guard = horizontal.lock().await;
-                                horizontal_guard.remove_dead_node(&dead_node_id).await;
-                            }
-
-                            // 2. Get orphaned members and clean up local registry
-                            let cleanup_tasks = {
-                                let horizontal_guard = horizontal.lock().await;
-                                match horizontal_guard
-                                    .handle_dead_node_cleanup(&dead_node_id)
-                                    .await
-                                {
-                                    Ok(tasks) => tasks,
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to cleanup dead node {}: {}",
-                                            dead_node_id, e
-                                        );
-                                        continue;
-                                    }
-                                }
-                            };
-
-                            if !cleanup_tasks.is_empty() {
-                                // 3. Convert to orphaned members and emit event
-                                let orphaned_members: Vec<OrphanedMember> = cleanup_tasks
-                                    .into_iter()
-                                    .map(|(app_id, channel, user_id, user_info)| OrphanedMember {
-                                        app_id,
-                                        channel,
-                                        user_id,
-                                        user_info, // Preserve user_info for proper presence management
-                                    })
-                                    .collect();
-
-                                let event = DeadNodeEvent {
-                                    dead_node_id: dead_node_id.clone(),
-                                    orphaned_members: orphaned_members.clone(),
-                                };
-
-                                // Emit event for processing by ConnectionHandler
-                                if let Some(event_sender) = &event_bus {
-                                    if let Err(e) = event_sender.send(event) {
-                                        error!("Failed to send dead node event: {}", e);
-                                    }
-                                } else {
-                                    warn!("No event bus configured for dead node cleanup");
-                                }
-
-                                info!(
-                                    "Emitted cleanup event for {} orphaned presence members from dead node {}",
-                                    orphaned_members.len(),
-                                    dead_node_id
-                                );
-                            }
-
-                            // 4. Notify followers to clean their registries
-                            let dead_node_request = RequestBody {
-                                request_id: generate_request_id(),
-                                node_id: node_id.clone(),
-                                app_id: "cluster".to_string(),
-                                request_type: RequestType::NodeDead,
-                                channel: None,
-                                socket_id: None,
-                                user_id: None,
-                                user_info: None,
-                                timestamp: Some(current_timestamp()),
-                                dead_node_id: Some(dead_node_id.clone()),
-                                target_node_id: None,
-                            };
-
-                            if let Err(e) = transport.publish_request(&dead_node_request).await {
-                                error!("Failed to send dead node notification: {}", e);
-                            }
-                        }
-                    } else {
-                        debug!(
-                            "Not cleanup leader for {} dead nodes, waiting for leader's broadcasts",
-                            dead_nodes.len()
-                        );
-                    }
-                }
-            }
-        });
     }
 }
 
