@@ -114,16 +114,18 @@ impl CleanupWorker {
                 task.app_id.clone(),
                 task.user_id.clone(),
             ));
-
-            // Prepare webhook events without holding locks
-            if let Some(info) = &task.connection_info {
-                webhook_events.extend(self.prepare_webhook_events(task, info).await);
-            }
         }
 
         // Execute batch operations
         self.batch_channel_cleanup(channel_operations).await;
         self.batch_connection_removal(connections_to_remove).await;
+
+        // Prepare webhook events AFTER channel cleanup to correctly detect empty channels
+        for task in batch.iter() {
+            if let Some(info) = &task.connection_info {
+                webhook_events.extend(self.prepare_webhook_events(task, info).await);
+            }
+        }
 
         // Process webhooks asynchronously (non-blocking)
         if !webhook_events.is_empty() {
