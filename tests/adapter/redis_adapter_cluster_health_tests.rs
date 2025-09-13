@@ -74,11 +74,15 @@ async fn test_redis_adapter_heartbeat_propagation() {
 
     // Each adapter should see the other node in its heartbeat tracking
     assert!(
-        adapter1_heartbeats.keys().any(|node| node.contains("node2")),
+        adapter1_heartbeats
+            .keys()
+            .any(|node| node.contains("node2")),
         "Adapter1 should track node2's heartbeats"
     );
     assert!(
-        adapter2_heartbeats.keys().any(|node| node.contains("node1")),
+        adapter2_heartbeats
+            .keys()
+            .any(|node| node.contains("node1")),
         "Adapter2 should track node1's heartbeats"
     );
 
@@ -123,20 +127,22 @@ async fn test_redis_adapter_presence_join_broadcast() {
 
     // Verify that the presence entry was broadcasted and received
     let node1_id = adapter1.node_id.clone();
-    
+
     // Both adapters should have the presence entry in their cluster registry
     let adapter1_registry = adapter1.get_cluster_presence_registry().await;
     let adapter2_registry = adapter2.get_cluster_presence_registry().await;
-    
+
     assert!(
-        adapter1_registry.get(&node1_id)
+        adapter1_registry
+            .get(&node1_id)
             .and_then(|n| n.get(channel))
             .map(|c| c.contains_key(socket_id))
             .unwrap_or(false),
         "Adapter1 should have its own presence entry"
     );
     assert!(
-        adapter2_registry.get(&node1_id)
+        adapter2_registry
+            .get(&node1_id)
             .and_then(|n| n.get(channel))
             .map(|c| c.contains_key(socket_id))
             .unwrap_or(false),
@@ -191,19 +197,21 @@ async fn test_redis_adapter_presence_leave_broadcast() {
 
     // Verify the presence was removed from both adapters
     let node1_id = adapter1.node_id.clone();
-    
+
     let adapter1_registry = adapter1.get_cluster_presence_registry().await;
     let adapter2_registry = adapter2.get_cluster_presence_registry().await;
-    
+
     assert!(
-        !adapter1_registry.get(&node1_id)
+        !adapter1_registry
+            .get(&node1_id)
             .and_then(|n| n.get(channel))
             .map(|c| c.contains_key(socket_id))
             .unwrap_or(false),
         "Adapter1 should have removed its own presence entry"
     );
     assert!(
-        !adapter2_registry.get(&node1_id)
+        !adapter2_registry
+            .get(&node1_id)
             .and_then(|n| n.get(channel))
             .map(|c| c.contains_key(socket_id))
             .unwrap_or(false),
@@ -252,12 +260,13 @@ async fn test_redis_adapter_dead_node_detection() {
     sleep(Duration::from_millis(200)).await;
 
     let node2_id = adapter2.node_id.clone();
-    
+
     // Verify presence exists before node dies
     {
         let registry = adapter1.get_cluster_presence_registry().await;
         assert!(
-            registry.get(&node2_id)
+            registry
+                .get(&node2_id)
                 .and_then(|n| n.get(channel))
                 .map(|c| c.contains_key("socket2"))
                 .unwrap_or(false),
@@ -275,14 +284,15 @@ async fn test_redis_adapter_dead_node_detection() {
     {
         let registry = adapter1.get_cluster_presence_registry().await;
         assert!(
-            !registry.get(&node2_id)
+            !registry
+                .get(&node2_id)
                 .and_then(|n| n.get(channel))
                 .map(|c| c.contains_key("socket2"))
                 .unwrap_or(false),
             "Adapter1 should have cleaned up dead node2's presence data"
         );
     }
-    
+
     // Verify node2 is no longer tracked as alive
     {
         let heartbeats = adapter1.get_node_heartbeats().await;
@@ -332,9 +342,15 @@ async fn test_redis_adapter_multiple_apps_isolation() {
     // Test that local channel operations work correctly regardless of presence broadcasts
     let socket_app1 = SocketId("local-socket1".to_string());
     let socket_app2 = SocketId("local-socket2".to_string());
-    
-    adapter1.add_to_channel("app1", "channel1", &socket_app1).await.unwrap();
-    adapter1.add_to_channel("app2", "channel1", &socket_app2).await.unwrap();
+
+    adapter1
+        .add_to_channel("app1", "channel1", &socket_app1)
+        .await
+        .unwrap();
+    adapter1
+        .add_to_channel("app2", "channel1", &socket_app2)
+        .await
+        .unwrap();
 
     // Each app should only see its own local sockets
     let app1_count = adapter1.get_channel_socket_count("app1", "channel1").await;
@@ -379,19 +395,21 @@ async fn test_redis_adapter_reconnection_after_failure() {
         .broadcast_presence_join("app1", "channel2", "user2", "socket2", None)
         .await
         .unwrap();
-        
+
     // Verify both operations succeeded
     let node_id = adapter.node_id.clone();
     let registry = adapter.get_cluster_presence_registry().await;
     assert!(
-        registry.get(&node_id)
+        registry
+            .get(&node_id)
             .and_then(|n| n.get("channel1"))
             .map(|c| c.contains_key("socket1"))
             .unwrap_or(false),
         "First presence entry should exist"
     );
     assert!(
-        registry.get(&node_id)
+        registry
+            .get(&node_id)
             .and_then(|n| n.get("channel2"))
             .map(|c| c.contains_key("socket2"))
             .unwrap_or(false),
