@@ -231,20 +231,20 @@ impl CleanupWorker {
         let mut events = Vec::new();
 
         // Generate member_removed events for presence channels (only if we have connection info)
-        if let Some(info) = info {
+        if let Some(info) = info
+            && let Some(user_id) = &task.user_id
+        {
             for channel in &info.presence_channels {
-                if let Some(user_id) = &task.user_id {
-                    events.push(WebhookEvent {
-                        event_type: "member_removed".to_string(),
-                        app_id: task.app_id.clone(),
-                        channel: channel.clone(),
-                        user_id: Some(user_id.clone()),
-                        data: serde_json::json!({
-                            "user_id": user_id,
-                            "socket_id": task.socket_id.0
-                        }),
-                    });
-                }
+                events.push(WebhookEvent {
+                    event_type: "member_removed".to_string(),
+                    app_id: task.app_id.clone(),
+                    channel: channel.clone(),
+                    user_id: Some(user_id.clone()),
+                    data: serde_json::json!({
+                        "user_id": user_id,
+                        "socket_id": task.socket_id.0
+                    }),
+                });
             }
         }
 
