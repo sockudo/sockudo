@@ -122,9 +122,10 @@ impl CleanupWorker {
 
         // Prepare webhook events AFTER channel cleanup to correctly detect empty channels
         for task in batch.iter() {
-            if let Some(info) = &task.connection_info {
-                webhook_events.extend(self.prepare_webhook_events(task, info).await);
-            }
+            webhook_events.extend(
+                self.prepare_webhook_events(task, task.connection_info.as_ref())
+                    .await,
+            );
         }
 
         // Process webhooks asynchronously (non-blocking)
@@ -225,23 +226,25 @@ impl CleanupWorker {
     async fn prepare_webhook_events(
         &self,
         task: &DisconnectTask,
-        info: &ConnectionCleanupInfo,
+        info: Option<&ConnectionCleanupInfo>,
     ) -> Vec<WebhookEvent> {
         let mut events = Vec::new();
 
-        // Generate member_removed events for presence channels
-        for channel in &info.presence_channels {
-            if let Some(user_id) = &task.user_id {
-                events.push(WebhookEvent {
-                    event_type: "member_removed".to_string(),
-                    app_id: task.app_id.clone(),
-                    channel: channel.clone(),
-                    user_id: Some(user_id.clone()),
-                    data: serde_json::json!({
-                        "user_id": user_id,
-                        "socket_id": task.socket_id.0
-                    }),
-                });
+        // Generate member_removed events for presence channels (only if we have connection info)
+        if let Some(info) = info {
+            for channel in &info.presence_channels {
+                if let Some(user_id) = &task.user_id {
+                    events.push(WebhookEvent {
+                        event_type: "member_removed".to_string(),
+                        app_id: task.app_id.clone(),
+                        channel: channel.clone(),
+                        user_id: Some(user_id.clone()),
+                        data: serde_json::json!({
+                            "user_id": user_id,
+                            "socket_id": task.socket_id.0
+                        }),
+                    });
+                }
             }
         }
 
