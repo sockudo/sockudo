@@ -150,8 +150,37 @@ async fn test_redis_cluster_presence_synchronization() {
     // Allow time for synchronization
     sleep(Duration::from_millis(300)).await;
 
-    // All adapters should see all presence members
-    // Note: Verification depends on implementation details
+    // Verify that all adapters see each other's presence entries
+    let node1_id = adapter1.node_id.clone();
+    let node2_id = adapter2.node_id.clone();
+    let node3_id = adapter3.node_id.clone();
+
+    // Each adapter should have all three presence entries in their registry
+    let registry = adapter1.get_cluster_presence_registry().await;
+    assert!(
+        registry.get(&node1_id)
+            .and_then(|n| n.get(channel))
+            .map(|c| c.contains_key("socket1"))
+            .unwrap_or(false),
+        "Adapter1 should have its own presence entry"
+    );
+    assert!(
+        registry.get(&node2_id)
+            .and_then(|n| n.get(channel))
+            .map(|c| c.contains_key("socket2"))
+            .unwrap_or(false),
+        "Adapter1 should have node2's presence entry"
+    );
+    assert!(
+        registry.get(&node3_id)
+            .and_then(|n| n.get(channel))
+            .map(|c| c.contains_key("socket3"))
+            .unwrap_or(false),
+        "Adapter1 should have node3's presence entry"
+    );
+
+    // Verify cluster registry has all nodes
+    assert_eq!(registry.len(), 3, "Registry should track all 3 nodes");
 
     drop(adapter1);
     drop(adapter2);
