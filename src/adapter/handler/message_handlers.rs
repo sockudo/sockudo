@@ -150,9 +150,18 @@ impl ConnectionHandler {
         self.broadcast_to_channel(app_config, &request.channel, message, Some(socket_id))
             .await?;
 
-        // Send webhook if configured
-        self.send_client_event_webhook(socket_id, app_config, &request)
-            .await?;
+        // Send webhook asynchronously (non-blocking for client)
+        let webhook_socket_id = socket_id.clone();
+        let webhook_app_config = app_config.clone();
+        let webhook_request = request.clone();
+        let webhook_handler = self.webhook_integration.clone();
+        tokio::spawn(async move {
+            if let Some(webhook_integration) = webhook_handler {
+                if let Err(e) = Self::send_client_event_webhook_static(&webhook_integration, &webhook_socket_id, &webhook_app_config, &webhook_request).await {
+                    tracing::error!("Failed to send client event webhook: {}", e);
+                }
+            }
+        });
 
         Ok(())
     }
