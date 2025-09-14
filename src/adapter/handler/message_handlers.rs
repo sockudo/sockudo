@@ -156,10 +156,16 @@ impl ConnectionHandler {
         let webhook_request = request.clone();
         let webhook_handler = self.webhook_integration.clone();
         tokio::spawn(async move {
-            if let Some(webhook_integration) = webhook_handler {
-                if let Err(e) = Self::send_client_event_webhook_static(&webhook_integration, &webhook_socket_id, &webhook_app_config, &webhook_request).await {
-                    tracing::error!("Failed to send client event webhook: {}", e);
-                }
+            if let Some(webhook_integration) = webhook_handler
+                && let Err(e) = Self::send_client_event_webhook_static(
+                    &webhook_integration,
+                    &webhook_socket_id,
+                    &webhook_app_config,
+                    &webhook_request,
+                )
+                .await
+            {
+                tracing::error!("Failed to send client event webhook: {}", e);
             }
         });
 
