@@ -102,7 +102,7 @@ impl ChannelManager {
             .await?
             .len();
 
-        Ok(JoinResponse {
+        let response = JoinResponse {
             success: true,
             channel_connections: Some(total_connections),
             member,
@@ -110,7 +110,9 @@ impl ChannelManager {
             error_message: None,
             error_code: None,
             _type: None,
-        })
+        };
+        drop(connection_manager);
+        Ok(response)
     }
 
     pub async fn unsubscribe(
