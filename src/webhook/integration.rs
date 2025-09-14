@@ -3,7 +3,7 @@ use crate::app::config::App;
 use crate::app::manager::AppManager;
 use crate::error::{Error, Result};
 
-use crate::queue::manager::{QueueManager, QueueManagerFactory};
+use crate::queue::manager::QueueManager;
 use crate::webhook::sender::WebhookSender;
 use crate::webhook::types::{JobData, JobPayload};
 use serde::{Deserialize, Serialize};
@@ -15,17 +15,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::interval;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Configuration for the webhook integration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookConfig {
     pub enabled: bool,
     pub batching: BatchingConfig,
-    pub queue_driver: String,
-    pub redis_url: Option<String>,
-    pub redis_prefix: Option<String>,
-    pub redis_concurrency: Option<usize>,
     pub process_id: String,
     pub debug: bool,
 }
@@ -35,10 +31,6 @@ impl Default for WebhookConfig {
         Self {
             enabled: true,
             batching: BatchingConfig::default(),
-            queue_driver: "redis".to_string(),
-            redis_url: None,
-            redis_prefix: None,
-            redis_concurrency: Some(5),
             process_id: uuid::Uuid::new_v4().to_string(),
             debug: false,
         }
@@ -69,7 +61,7 @@ pub type JobProcessorFnAsync = Box<
 pub struct WebhookIntegration {
     config: WebhookConfig,
     batched_webhooks: Arc<Mutex<HashMap<String, Vec<JobData>>>>,
-    queue_manager: Option<Arc<Mutex<QueueManager>>>,
+    queue_manager: Option<Arc<QueueManager>>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
 }
 
@@ -77,6 +69,7 @@ impl WebhookIntegration {
     pub async fn new(
         config: WebhookConfig,
         app_manager: Arc<dyn AppManager + Send + Sync>,
+        queue_manager: Option<Arc<QueueManager>>,
     ) -> Result<Self> {
         let mut integration = Self {
             config,
@@ -85,47 +78,43 @@ impl WebhookIntegration {
             app_manager,
         };
 
+        // Initialize webhook processor if queue manager is provided and webhooks are enabled
         if integration.config.enabled {
-            integration.init_queue_manager().await?;
+            if let Some(qm) = queue_manager {
+                integration.setup_webhook_processor(qm).await?;
+            } else {
+                warn!(
+                    "Webhooks are enabled but no queue manager provided, webhooks will be disabled"
+                );
+                integration.config.enabled = false;
+            }
         }
+
+        if integration.config.enabled && integration.config.batching.enabled {
+            integration.start_batching_task();
+        }
+
         Ok(integration)
     }
 
-    async fn init_queue_manager(&mut self) -> Result<()> {
-        if self.is_enabled() {
-            let driver = QueueManagerFactory::create(
-                &self.config.queue_driver,
-                self.config.redis_url.as_deref(),
-                self.config.redis_prefix.as_deref(),
-                self.config.redis_concurrency,
-            )
-            .await?;
-            let queue_manager = Arc::new(Mutex::new(QueueManager::new(driver)));
-            let webhook_sender = Arc::new(WebhookSender::new(self.app_manager.clone()));
-            let queue_name = "webhooks".to_string();
-            let sender_clone = webhook_sender.clone();
+    async fn setup_webhook_processor(&mut self, queue_manager: Arc<QueueManager>) -> Result<()> {
+        let webhook_sender = Arc::new(WebhookSender::new(self.app_manager.clone()));
+        let queue_name = "webhooks".to_string();
+        let sender_clone = webhook_sender.clone();
 
-            let processor: JobProcessorFnAsync = Box::new(move |job_data| {
-                let sender_for_task = sender_clone.clone();
-                Box::pin(async move {
-                    info!(
-                        "{}",
-                        format!("Processing webhook job from queue: {:?}", job_data.app_id)
-                    );
-                    sender_for_task.process_webhook_job(job_data).await
-                })
-            });
+        let processor: JobProcessorFnAsync = Box::new(move |job_data| {
+            let sender_for_task = sender_clone.clone();
+            Box::pin(async move {
+                info!(
+                    "{}",
+                    format!("Processing webhook job from queue: {:?}", job_data.app_id)
+                );
+                sender_for_task.process_webhook_job(job_data).await
+            })
+        });
 
-            {
-                let manager = queue_manager.lock().await;
-                manager.process_queue(&queue_name, processor).await?;
-            }
-            self.queue_manager = Some(queue_manager);
-
-            if self.config.batching.enabled {
-                self.start_batching_task();
-            }
-        }
+        queue_manager.process_queue(&queue_name, processor).await?;
+        self.queue_manager = Some(queue_manager);
         Ok(())
     }
 
@@ -157,11 +146,10 @@ impl WebhookIntegration {
                     )
                 );
 
-                if let Some(manager_arc) = &queue_manager_clone {
+                if let Some(qm) = &queue_manager_clone {
                     for (queue_name, jobs) in webhooks_to_process {
-                        let manager_locked = manager_arc.lock().await;
                         for job in jobs {
-                            if let Err(e) = manager_locked.add_to_queue(&queue_name, job).await {
+                            if let Err(e) = qm.add_to_queue(&queue_name, job).await {
                                 error!(
                                     "{}",
                                     format!(
@@ -191,9 +179,8 @@ impl WebhookIntegration {
                 .entry(queue_name.to_string())
                 .or_default()
                 .push(job_data);
-        } else if let Some(qm_arc) = &self.queue_manager {
-            let manager = qm_arc.lock().await;
-            manager.add_to_queue(queue_name, job_data).await?;
+        } else if let Some(qm) = &self.queue_manager {
+            qm.add_to_queue(queue_name, job_data).await?;
         } else {
             return Err(Error::Internal(
                 "Queue manager not initialized for webhooks".to_string(),
@@ -242,6 +229,7 @@ impl WebhookIntegration {
         });
         let signature = format!("{}:{}:channel_occupied", app.id, channel);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
+
         self.add_webhook("webhooks", job_data).await
     }
 
@@ -368,9 +356,8 @@ impl WebhookIntegration {
 
     /// Check the health of the queue manager used by webhook integration
     pub async fn check_queue_health(&self) -> Result<()> {
-        if let Some(queue_manager_arc) = &self.queue_manager {
-            let queue_manager = queue_manager_arc.lock().await;
-            queue_manager.check_health().await
+        if let Some(qm) = &self.queue_manager {
+            qm.check_health().await
         } else {
             // If no queue manager is configured, consider it healthy
             Ok(())
@@ -382,6 +369,15 @@ impl WebhookIntegration {
 mod tests {
     use super::*;
     use crate::app::{config::App, memory_app_manager::MemoryAppManager};
+    use crate::queue::manager::{QueueManager, QueueManagerFactory};
+
+    async fn create_test_queue_manager() -> Arc<QueueManager> {
+        // Create a memory queue manager for testing
+        let driver = QueueManagerFactory::create("memory", None, None, None)
+            .await
+            .expect("Failed to create test queue manager");
+        Arc::new(QueueManager::new(driver))
+    }
 
     #[tokio::test]
     async fn test_send_cache_missed() {
@@ -397,10 +393,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
@@ -422,10 +418,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
@@ -438,10 +434,12 @@ mod tests {
         // Test with webhook enabled
         let config = WebhookConfig {
             enabled: true,
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager).await.unwrap();
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager))
+            .await
+            .unwrap();
 
         let result = integration
             .send_subscription_count_changed(&app, "test_channel", 5)
@@ -457,10 +455,6 @@ mod tests {
                 enabled: true,
                 duration: 1000,
             },
-            queue_driver: "redis".to_string(),
-            redis_url: Some("redis://localhost".to_string()),
-            redis_prefix: Some("webhook".to_string()),
-            redis_concurrency: Some(5),
             process_id: "test-process".to_string(),
             debug: false,
         };
@@ -477,11 +471,11 @@ mod tests {
     async fn test_webhook_integration_new() {
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
 
-        let integration = WebhookIntegration::new(config, app_manager).await;
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager)).await;
         assert!(integration.is_ok());
     }
 
@@ -499,10 +493,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
@@ -533,10 +527,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
@@ -567,10 +561,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
@@ -594,10 +588,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
@@ -621,10 +615,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
@@ -648,10 +642,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
@@ -673,10 +667,10 @@ mod tests {
         };
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
-            redis_url: Some("redis://127.0.0.1:16379/".to_string()),
             ..Default::default()
         };
-        let integration = WebhookIntegration::new(config, app_manager.clone())
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
             .await
             .unwrap();
 
