@@ -55,4 +55,32 @@ impl ConnectionHandler {
 
         Ok(())
     }
+
+    pub async fn send_client_event_webhook_static(
+        webhook_integration: &std::sync::Arc<crate::webhook::integration::WebhookIntegration>,
+        socket_id: &SocketId,
+        app_config: &App,
+        request: &ClientEventRequest,
+    ) -> Result<()> {
+        // For async spawned webhooks, we skip presence user_id lookup to avoid
+        // holding connection manager locks across spawn boundaries
+        webhook_integration
+            .send_client_event(
+                app_config,
+                &request.channel,
+                &request.event,
+                request.data.clone(),
+                Some(socket_id.as_ref()),
+                None, // Skip user_id for async webhooks to avoid lock dependencies
+            )
+            .await
+            .unwrap_or_else(|e| {
+                warn!(
+                    "Failed to send client_event webhook for {}: {}",
+                    request.channel, e
+                );
+            });
+
+        Ok(())
+    }
 }

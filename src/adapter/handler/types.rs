@@ -10,7 +10,7 @@ pub struct SubscriptionRequest {
     pub channel_data: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClientEventRequest {
     pub event: String,
     pub channel: String,
