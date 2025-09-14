@@ -206,6 +206,7 @@ impl WebhookSender {
                 signature,
                 body_to_send,
             };
+
             self.create_http_webhook_task(params)
         } else if webhook_config.lambda.is_some() || webhook_config.lambda_function.is_some() {
             self.create_lambda_webhook_task(webhook_config, permit, app_id, body_to_send)
@@ -347,7 +348,6 @@ async fn send_pusher_webhook(
 // Helper function to log webhook processing details (Pusher format)
 fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPayload) {
     debug!("Pusher Webhook for app ID: {}", app_id);
-    info!("Time (ms): {}", payload.time_ms);
     for event in &payload.events {
         debug!("  Event: {:?}", event);
     }
