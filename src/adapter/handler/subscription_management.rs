@@ -47,6 +47,7 @@ impl ConnectionHandler {
 
         let subscription_result = {
             let channel_manager = self.channel_manager.read().await;
+
             channel_manager
                 .subscribe(
                     socket_id.as_ref(),

@@ -1,5 +1,4 @@
-// --- MemoryQueueManager ---
-// No major logical changes, but added comments and ensured consistency.
+// Memory-based queue manager implementation
 
 use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
@@ -47,34 +46,43 @@ impl MemoryQueueManager {
             loop {
                 interval.tick().await;
 
-                // Iterate through queues. DashMap allows concurrent access.
-                for queue_entry in queues.iter() {
-                    // Use iter() for read access
-                    let queue_name = queue_entry.key();
+                // Collect queue names first to avoid holding iterator while modifying
+                // Only collect queues that have registered processors for efficiency
+                let queue_names: Vec<String> = queues
+                    .iter()
+                    .map(|entry| entry.key().clone())
+                    .filter(|name| processors.contains_key(name))
+                    .collect();
 
-                    // Get the processor for this queue
-                    if let Some(processor) = processors.get(queue_name) {
-                        // Get a mutable reference to the queue's Vec
-                        if let Some(mut jobs_vec) = queues.get_mut(queue_name) {
-                            // Take all jobs from the queue for this tick
-                            // Note: If a job processor is slow, it blocks others in the same queue during this tick.
-                            // Consider spawning tasks per job for better isolation if needed.
-
+                // Process each queue without holding any iterator
+                for queue_name in queue_names {
+                    // Get the processor for this queue (we know it exists from filter above)
+                    if let Some(processor) = processors.get(&queue_name) {
+                        // Try to remove and drain the queue atomically
+                        if let Some((_, mut jobs_vec)) = queues.remove(&queue_name) {
+                            // Only process if there are jobs
                             if !jobs_vec.is_empty() {
                                 debug!(
-                                    "{}",
-                                    format!(
-                                        "Processing {} jobs from memory queue {}",
-                                        jobs_vec.len(),
-                                        queue_name
-                                    )
+                                    "Processing {} jobs from memory queue {}",
+                                    jobs_vec.len(),
+                                    queue_name
                                 );
-                                // Process each job sequentially within this tick
+
+                                // Re-insert empty queue immediately for new jobs
+                                queues.insert(queue_name.clone(), Vec::new());
+
+                                // Spawn each job asynchronously to avoid blocking
                                 for job in jobs_vec.drain(..) {
-                                    // Clone the Arc'd processor for the call
                                     let processor_clone = Arc::clone(&processor);
-                                    processor_clone(job).await.unwrap();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = processor_clone(job).await {
+                                            tracing::error!("Failed to process webhook job: {}", e);
+                                        }
+                                    });
                                 }
+                            } else {
+                                // Re-insert the empty queue
+                                queues.insert(queue_name, jobs_vec);
                             }
                         }
                     }
@@ -100,12 +108,9 @@ impl QueueInterface for MemoryQueueManager {
         queue_name: &str,
         callback: JobProcessorFnAsync,
     ) -> crate::error::Result<()> {
-        // Ensure the queue Vec exists (might be redundant if add_to_queue is always called first, but safe)
-        self.queues.entry(queue_name.to_string()).or_default();
-
         // Register processor, wrapping it in Arc
         self.processors
-            .insert(queue_name.to_string(), Arc::from(callback)); // Store as Arc
+            .insert(queue_name.to_string(), Arc::from(callback));
         debug!("Registered processor for memory queue: {}", queue_name);
 
         Ok(())

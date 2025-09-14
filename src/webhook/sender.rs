@@ -206,6 +206,7 @@ impl WebhookSender {
                 signature,
                 body_to_send,
             };
+
             self.create_http_webhook_task(params)
         } else if webhook_config.lambda.is_some() || webhook_config.lambda_function.is_some() {
             self.create_lambda_webhook_task(webhook_config, permit, app_id, body_to_send)

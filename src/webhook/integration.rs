@@ -242,6 +242,7 @@ impl WebhookIntegration {
         });
         let signature = format!("{}:{}:channel_occupied", app.id, channel);
         let job_data = self.create_job_data(app, vec![event_obj], &signature);
+
         self.add_webhook("webhooks", job_data).await
     }
 
