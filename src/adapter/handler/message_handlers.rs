@@ -151,23 +151,26 @@ impl ConnectionHandler {
             .await?;
 
         // Send webhook asynchronously (non-blocking for client)
-        let webhook_socket_id = socket_id.clone();
-        let webhook_app_config = app_config.clone();
-        let webhook_request = request.clone();
-        let webhook_handler = self.webhook_integration.clone();
-        tokio::spawn(async move {
-            if let Some(webhook_integration) = webhook_handler
-                && let Err(e) = Self::send_client_event_webhook_static(
-                    &webhook_integration,
-                    &webhook_socket_id,
-                    &webhook_app_config,
-                    &webhook_request,
-                )
-                .await
-            {
-                tracing::error!("Failed to send client event webhook: {}", e);
-            }
-        });
+        if let Some(webhook_integration) = self.webhook_integration.clone() {
+            let socket_id = socket_id.clone();
+            let app_config = app_config.clone();
+            let request = request.clone();
+            tokio::spawn(async move {
+                if let Err(e) = webhook_integration
+                    .send_client_event(
+                        &app_config,
+                        &request.channel,
+                        &request.event,
+                        request.data.clone(),
+                        Some(socket_id.as_ref()),
+                        None, // Skip user_id for async webhooks to avoid lock dependencies
+                    )
+                    .await
+                {
+                    tracing::error!("Failed to send client event webhook: {}", e);
+                }
+            });
+        }
 
         Ok(())
     }
