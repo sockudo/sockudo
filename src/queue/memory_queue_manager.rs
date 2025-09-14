@@ -59,17 +59,17 @@ impl MemoryQueueManager {
                     // Get the processor for this queue (we know it exists from filter above)
                     if let Some(processor) = processors.get(&queue_name) {
                         // Try to remove and drain the queue atomically
-                        if let Some((_, mut jobs_vec)) = queues.remove(&queue_name) {
+                        if let Some((key, mut jobs_vec)) = queues.remove(&queue_name) {
                             // Only process if there are jobs
                             if !jobs_vec.is_empty() {
                                 debug!(
                                     "Processing {} jobs from memory queue {}",
                                     jobs_vec.len(),
-                                    queue_name
+                                    key
                                 );
 
                                 // Re-insert empty queue immediately for new jobs
-                                queues.insert(queue_name.clone(), Vec::new());
+                                queues.insert(key, Vec::new());
 
                                 // Spawn each job asynchronously to avoid blocking
                                 for job in jobs_vec.drain(..) {
@@ -82,7 +82,7 @@ impl MemoryQueueManager {
                                 }
                             } else {
                                 // Re-insert the empty queue
-                                queues.insert(queue_name, jobs_vec);
+                                queues.insert(key, jobs_vec);
                             }
                         }
                     }
