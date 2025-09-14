@@ -83,7 +83,9 @@ impl WebhookIntegration {
             if let Some(qm) = queue_manager {
                 integration.setup_webhook_processor(qm).await?;
             } else {
-                warn!("Webhooks are enabled but no queue manager provided, webhooks will be disabled");
+                warn!(
+                    "Webhooks are enabled but no queue manager provided, webhooks will be disabled"
+                );
                 integration.config.enabled = false;
             }
         }
@@ -371,14 +373,9 @@ mod tests {
 
     async fn create_test_queue_manager() -> Arc<QueueManager> {
         // Create a memory queue manager for testing
-        let driver = QueueManagerFactory::create(
-            "memory",
-            None,
-            None,
-            None,
-        )
-        .await
-        .expect("Failed to create test queue manager");
+        let driver = QueueManagerFactory::create("memory", None, None, None)
+            .await
+            .expect("Failed to create test queue manager");
         Arc::new(QueueManager::new(driver))
     }
 
@@ -440,7 +437,9 @@ mod tests {
             ..Default::default()
         };
         let queue_manager = create_test_queue_manager().await;
-        let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager)).await.unwrap();
+        let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager))
+            .await
+            .unwrap();
 
         let result = integration
             .send_subscription_count_changed(&app, "test_channel", 5)
