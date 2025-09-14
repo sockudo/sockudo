@@ -348,7 +348,6 @@ async fn send_pusher_webhook(
 // Helper function to log webhook processing details (Pusher format)
 fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPayload) {
     debug!("Pusher Webhook for app ID: {}", app_id);
-    info!("Time (ms): {}", payload.time_ms);
     for event in &payload.events {
         debug!("  Event: {:?}", event);
     }
