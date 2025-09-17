@@ -48,7 +48,7 @@ make health
 ## Architecture
 
 ### Core Module Structure
-- `src/adapter/` - Connection management and horizontal scaling (Local, Redis, RedisCluster, NATS)
+- `src/adapter/` - Connection management and horizontal scaling (Local, Redis, RedisCluster, NATS, Pulsar)
 - `src/app/` - Application management with multiple backend support (Memory, MySQL, PostgreSQL, DynamoDB)
 - `src/cache/` - Caching layer (Memory, Redis, RedisCluster)
 - `src/channel/` - Channel types and subscription management
@@ -139,7 +139,7 @@ docker-compose -f docker-compose.multinode.yml up
 Key variables (see `.env.example` for complete list):
 - `PORT` - Server port (default: 6001)
 - `HOST` - Server host (default: 0.0.0.0)
-- `ADAPTER_DRIVER` - Connection adapter (local|redis|redis-cluster|nats)
+- `ADAPTER_DRIVER` - Connection adapter (local|redis|redis-cluster|nats|pulsar)
 - `APP_MANAGER_DRIVER` - App storage (memory|mysql|postgresql|dynamodb)
 - `CACHE_DRIVER` - Cache backend (memory|redis|redis-cluster|none)
 - `QUEUE_DRIVER` - Queue backend (memory|redis|redis-cluster|sqs|none)
@@ -161,10 +161,11 @@ Key variables (see `.env.example` for complete list):
 
 **Important**: JSON format (`LOG_OUTPUT_FORMAT=json`) can only be configured via environment variable at startup due to tracing subscriber limitations. It cannot be set in config files.
 
-### Redis/NATS Configuration
+### Redis/NATS/Pulsar Configuration
 - Redis: Set `DATABASE_REDIS_HOST`, `DATABASE_REDIS_PORT`, `DATABASE_REDIS_PASSWORD`
 - Redis Cluster: Set `REDIS_CLUSTER_NODES` as comma-separated list
 - NATS: Set `NATS_SERVERS` as comma-separated list (e.g., "nats://localhost:4222")
+- Pulsar: Set `PULSAR_URL` (e.g., "pulsar://localhost:6650"), `PULSAR_NAMESPACE`, `PULSAR_AUTH_METHOD`
 
 ## Development Guidelines
 
@@ -261,7 +262,7 @@ echo -n "socket_id:channel_name" | openssl dgst -sha256 -hmac "app_secret" -hex
 ```
 
 ### Scale Horizontally
-1. Choose adapter: Redis, Redis Cluster, or NATS
+1. Choose adapter: Redis, Redis Cluster, NATS, or Pulsar
 2. Configure all instances with same adapter settings
 3. Load balance WebSocket connections (use sticky sessions)
 4. Share app configuration via database backend
