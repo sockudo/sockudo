@@ -4,12 +4,14 @@ use tokio::sync::Mutex;
 use crate::adapter::ConnectionManager;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::NatsAdapter;
+use crate::adapter::pulsar_adapter::PulsarAdapter;
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
 use crate::adapter::redis_cluster_adapter::RedisClusterAdapter;
 use crate::error::Result;
 
 use crate::options::{
-    AdapterConfig, AdapterDriver, DatabaseConfig, NatsAdapterConfig, RedisClusterAdapterConfig,
+    AdapterConfig, AdapterDriver, DatabaseConfig, NatsAdapterConfig, PulsarAdapterConfig,
+    RedisClusterAdapterConfig,
 }; // Import AdapterDriver, RedisConnection
 use tracing::{info, warn};
 
@@ -137,6 +139,37 @@ impl AdapterFactory {
                             "{}",
                             format!(
                                 "Failed to initialize NATS adapter: {}, falling back to local adapter",
+                                e
+                            )
+                        );
+                        Ok(Arc::new(Mutex::new(
+                            LocalAdapter::new_with_buffer_multiplier(
+                                config.buffer_multiplier_per_cpu,
+                            ),
+                        )))
+                    }
+                }
+            }
+            AdapterDriver::Pulsar => {
+                let pulsar_cfg = PulsarAdapterConfig {
+                    url: config.pulsar.url.clone(),
+                    namespace: config.pulsar.namespace.clone(),
+                    prefix: config.pulsar.prefix.clone(),
+                    request_timeout_ms: config.pulsar.request_timeout_ms,
+                    connection_timeout_ms: config.pulsar.connection_timeout_ms,
+                    nodes_number: config.pulsar.nodes_number,
+                    auth: config.pulsar.auth.clone(),
+                };
+                match PulsarAdapter::new(pulsar_cfg).await {
+                    Ok(mut adapter) => {
+                        adapter.set_cluster_health(&config.cluster_health).await?;
+                        Ok(Arc::new(Mutex::new(adapter)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize Pulsar adapter: {}, falling back to local adapter",
                                 e
                             )
                         );
