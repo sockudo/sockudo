@@ -114,16 +114,19 @@ impl CleanupWorker {
                 task.app_id.clone(),
                 task.user_id.clone(),
             ));
-
-            // Prepare webhook events without holding locks
-            if let Some(info) = &task.connection_info {
-                webhook_events.extend(self.prepare_webhook_events(task, info).await);
-            }
         }
 
         // Execute batch operations
         self.batch_channel_cleanup(channel_operations).await;
         self.batch_connection_removal(connections_to_remove).await;
+
+        // Prepare webhook events AFTER channel cleanup to correctly detect empty channels
+        for task in batch.iter() {
+            webhook_events.extend(
+                self.prepare_webhook_events(task, task.connection_info.as_ref())
+                    .await,
+            );
+        }
 
         // Process webhooks asynchronously (non-blocking)
         if !webhook_events.is_empty() {
@@ -223,13 +226,15 @@ impl CleanupWorker {
     async fn prepare_webhook_events(
         &self,
         task: &DisconnectTask,
-        info: &ConnectionCleanupInfo,
+        info: Option<&ConnectionCleanupInfo>,
     ) -> Vec<WebhookEvent> {
         let mut events = Vec::new();
 
-        // Generate member_removed events for presence channels
-        for channel in &info.presence_channels {
-            if let Some(user_id) = &task.user_id {
+        // Generate member_removed events for presence channels (only if we have connection info)
+        if let Some(info) = info
+            && let Some(user_id) = &task.user_id
+        {
+            for channel in &info.presence_channels {
                 events.push(WebhookEvent {
                     event_type: "member_removed".to_string(),
                     app_id: task.app_id.clone(),

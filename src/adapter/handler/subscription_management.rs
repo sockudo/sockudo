@@ -47,6 +47,7 @@ impl ConnectionHandler {
 
         let subscription_result = {
             let channel_manager = self.channel_manager.read().await;
+
             channel_manager
                 .subscribe(
                     socket_id.as_ref(),
@@ -103,16 +104,6 @@ impl ConnectionHandler {
         request: &SubscriptionRequest,
         subscription_result: &SubscriptionResult,
     ) -> Result<()> {
-        // Send webhooks if this is the first connection to the channel
-        if subscription_result.channel_connections == Some(1)
-            && let Some(webhook_integration) = &self.webhook_integration
-        {
-            webhook_integration
-                .send_channel_occupied(app_config, &request.channel)
-                .await
-                .ok();
-        }
-
         // Update connection state
         self.update_connection_subscription_state(
             socket_id,
@@ -122,7 +113,7 @@ impl ConnectionHandler {
         )
         .await?;
 
-        // Handle channel-specific logic
+        // Handle channel-specific logic - send subscription success response first
         let channel_type = ChannelType::from_name(&request.channel);
         match channel_type {
             ChannelType::Presence => {
@@ -138,6 +129,26 @@ impl ConnectionHandler {
                 self.send_subscription_succeeded(socket_id, app_config, &request.channel, None)
                     .await?;
             }
+        }
+
+        // Send webhooks after subscription success response (non-blocking for client)
+        if subscription_result.channel_connections == Some(1)
+            && let Some(webhook_integration) = self.webhook_integration.clone()
+        {
+            let app_config = app_config.clone();
+            let channel = request.channel.clone();
+            tokio::spawn(async move {
+                if let Err(e) = webhook_integration
+                    .send_channel_occupied(&app_config, &channel)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to send channel_occupied webhook for {}: {}",
+                        channel,
+                        e
+                    );
+                }
+            });
         }
 
         // Send subscription count webhook for non-presence channels
