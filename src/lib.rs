@@ -18,3 +18,4 @@ pub mod watchlist;
 pub mod webhook;
 pub mod websocket;
 pub mod ws_handler;
+pub mod server;

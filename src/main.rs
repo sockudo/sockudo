@@ -23,6 +23,7 @@ mod watchlist;
 mod webhook;
 mod websocket;
 mod ws_handler;
+pub mod server;
 
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::Method;
@@ -38,6 +39,7 @@ use clap::Parser;
 use error::Error;
 use futures_util::future::join_all;
 use mimalloc::MiMalloc;
+use sockudo::adapter::pulsar_adapter::PulsarAdapter;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -90,6 +92,7 @@ use crate::cache::memory_cache_manager::MemoryCacheManager; // Import for fallba
 use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
 use crate::metrics::MetricsInterface;
 use crate::middleware::pusher_api_auth_middleware;
+use crate::server::socket_listener::{ServerBinding, ServerListener, SocketListener};
 use crate::websocket::WebSocketRef;
 
 /// Server state containing all managers
@@ -550,12 +553,24 @@ impl SockudoServer {
                     // Assuming RedisClusterAdapter also has a set_metrics method
                     if let Some(adapter_mut) = adapter_as_any.downcast_mut::<RedisClusterAdapter>()
                     {
-                        // adapter_mut.set_metrics(metrics_instance_arc.clone()).await.ok(); // Uncomment if method exists
+                        adapter_mut
+                            .set_metrics(metrics_instance_arc.clone())
+                            .await
+                            .ok(); // Uncomment if method exists
                         info!(
                             "Metrics setup for RedisClusterAdapter (call set_metrics if available)"
                         );
                     } else {
                         warn!("Failed to downcast to RedisClusterAdapter for metrics setup");
+                    }
+                }
+                AdapterDriver::Pulsar => {
+                    // Assuming PulsarAdapter might have a set_metrics method
+                    if let Some(adapter_mut) = adapter_as_any.downcast_mut::<PulsarAdapter>() {
+                        // adapter_mut.set_metrics(metrics_instance_arc.clone()).await.ok(); // Uncomment if method exists
+                        info!("Metrics setup for PulsarAdapter (call set_metrics if applicable)");
+                    } else {
+                        warn!("Failed to downcast to PulsarAdapter for metrics setup");
                     }
                 }
                 AdapterDriver::Local => {
@@ -841,15 +856,16 @@ impl SockudoServer {
         info!("Starting Sockudo server services (after init)...");
 
         let http_router = self.configure_http_routes();
+        let metrics_router = self.configure_metrics_routes();
 
+        // Apply middleware
         let middleware = tower::util::MapRequestLayer::new(rewrite_request_uri);
         let router_with_middleware = middleware.layer(http_router.clone());
 
         let middleware_ssl = tower::util::MapRequestLayer::new(rewrite_request_uri_ssl);
         let router_with_middleware_ssl = middleware_ssl.layer(http_router);
 
-        let metrics_router = self.configure_metrics_routes();
-
+        // Get addresses
         let http_addr = self.get_http_addr().await;
         let metrics_addr = self.get_metrics_addr().await;
 
@@ -857,148 +873,260 @@ impl SockudoServer {
             && !self.config.ssl.cert_path.is_empty()
             && !self.config.ssl.key_path.is_empty()
         {
+            // === SSL MODE ===
             info!("SSL is enabled, starting HTTPS server");
             let tls_config = self.load_tls_config().await?;
 
-            // HTTP to HTTPS redirect server
+            // Start HTTP to HTTPS redirect server (if enabled)
             if self.config.ssl.redirect_http {
                 let http_port = self.config.ssl.http_port.unwrap_or(80);
-                // Use the configured host for the redirect server binding, default to 0.0.0.0 if parsing fails
                 let host_ip = self
                     .config
                     .host
                     .parse::<std::net::IpAddr>()
                     .unwrap_or_else(|_| "0.0.0.0".parse().unwrap());
                 let redirect_addr = SocketAddr::from((host_ip, http_port));
-                info!(
-                    "Starting HTTP to HTTPS redirect server on {}",
-                    redirect_addr
-                );
-                let https_port = self.config.port; // The main HTTPS port
-                let redirect_app =
-                    Router::new().fallback(move |Host(host): Host, uri: Uri| async move {
-                        match make_https(&host, uri, https_port) {
-                            Ok(uri_https) => Ok(Redirect::permanent(&uri_https.to_string())),
-                            Err(error) => {
-                                error!(error = ?error, "failed to convert URI to HTTPS for redirect");
-                                Err(StatusCode::BAD_REQUEST)
-                            }
+
+                info!("Starting HTTP to HTTPS redirect server on {}", redirect_addr);
+
+                let https_port = self.config.port;
+                let redirect_app = Router::new().fallback(move |Host(host): Host, uri: Uri| async move {
+                    match make_https(&host, uri, https_port) {
+                        Ok(uri_https) => Ok(Redirect::permanent(&uri_https.to_string())),
+                        Err(error) => {
+                            error!(error = ?error, "failed to convert URI to HTTPS for redirect");
+                            Err(StatusCode::BAD_REQUEST)
+                        }
+                    }
+                });
+
+                if let Ok(redirect_listener) = TcpListener::bind(redirect_addr).await {
+                    tokio::spawn(async move {
+                        if let Err(e) = axum::serve(
+                            redirect_listener,
+                            redirect_app.into_make_service_with_connect_info::<SocketAddr>(),
+                        )
+                            .await
+                        {
+                            error!("HTTP redirect server error: {}", e);
                         }
                     });
-                match TcpListener::bind(redirect_addr).await {
-                    Ok(redirect_listener) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = axum::serve(
-                                redirect_listener,
-                                redirect_app.into_make_service_with_connect_info::<SocketAddr>(),
-                            )
-                            .await
-                            {
-                                error!("HTTP redirect server error: {}", e);
-                            }
-                        });
-                    }
-                    Err(e) => warn!(
-                        "Failed to bind HTTP redirect server on {}: {}. Redirect will not be available.",
-                        redirect_addr, e
-                    ),
+                } else {
+                    warn!("Failed to bind HTTP redirect server on {}", redirect_addr);
                 }
             }
 
-            // Metrics server (always HTTP for Prometheus, typically)
+            // Start metrics server (always HTTP, parallel to HTTPS main server)
             if self.config.metrics.enabled {
                 if let Ok(metrics_listener) = TcpListener::bind(metrics_addr).await {
-                    info!(
-                        "Metrics server listening on http://{}",
-                        metrics_addr // Clarify HTTP
-                    );
-                    let metrics_router_clone = metrics_router.clone(); // Clone for the new task
+                    info!("Metrics server listening on http://{}", metrics_addr);
+
+                    let metrics_router_clone = metrics_router.clone();
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            axum::serve(metrics_listener, metrics_router_clone.into_make_service())
-                                .await
-                        {
+                        if let Err(e) = axum::serve(
+                            metrics_listener,
+                            metrics_router_clone.into_make_service()
+                        ).await {
                             error!("Metrics server error: {}", e);
                         }
                     });
                 } else {
-                    warn!(
-                        "Failed to start metrics server on {}. Metrics will not be available.",
-                        metrics_addr
-                    );
+                    warn!("Failed to start metrics server on {}", metrics_addr);
                 }
             }
 
-            // Main HTTPS server
-            info!("HTTPS server listening on https://{}", http_addr); // Clarify HTTPS
+            // Main HTTPS server (always TCP in SSL mode)
+            info!("HTTPS server listening on https://{}", http_addr);
             let running = &self.state.running;
             let server = axum_server::bind_rustls(http_addr, tls_config);
+
             tokio::select! {
                 result = server.serve(router_with_middleware_ssl.into_make_service_with_connect_info::<SocketAddr>()) => {
-                    if let Err(err) = result { error!("HTTPS server error: {}", err); }
+                    if let Err(err) = result {
+                        error!("HTTPS server error: {}", err);
+                    }
                 }
                 _ = self.shutdown_signal() => {
                     info!("Shutdown signal received, stopping HTTPS server...");
                     running.store(false, Ordering::SeqCst);
-                    // Graceful shutdown for axum_server might be handled by its drop or a specific method if available
                 }
             }
         } else {
-            // HTTP only mode
+            // === HTTP MODE (with Unix socket support) ===
             info!("SSL is not enabled, starting HTTP server");
-            let http_listener = TcpListener::bind(http_addr).await?;
 
-            // Metrics server (HTTP)
-            let metrics_listener_opt = if self.config.metrics.enabled {
-                match TcpListener::bind(metrics_addr).await {
-                    Ok(listener) => {
-                        info!("Metrics server listening on http://{}", metrics_addr);
-                        Some(listener)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to bind metrics server on {}: {}. Metrics will not be available.",
-                            metrics_addr, e
-                        );
-                        None
-                    }
+            // Determine socket binding (TCP or Unix)
+            let binding = self.get_server_binding();
+            let listener = SocketListener::bind(&binding).await?;
+
+            // Set Unix socket permissions if specified
+            #[cfg(unix)]
+            if let (ServerListener::Unix(_), ServerBinding::Unix { path }) = (&listener, &binding) {
+                if let Some(perms_str) = &self.config.socket.unix_socket_permissions {
+                    self.set_unix_socket_permissions(path, perms_str)?;
                 }
-            } else {
-                None
-            };
-
-            info!("HTTP server listening on http://{}", http_addr);
-            let running = &self.state.running;
-
-            if let Some(metrics_listener) = metrics_listener_opt {
-                let metrics_router_clone = metrics_router.clone(); // Clone for the new task
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        axum::serve(metrics_listener, metrics_router_clone.into_make_service())
-                            .await
-                    {
-                        error!("Metrics server error: {}", e);
-                    }
-                });
             }
 
-            // Main HTTP server
-            let http_server = axum::serve(
-                http_listener,
-                router_with_middleware.into_make_service_with_connect_info::<SocketAddr>(),
-            ); // .with_graceful_shutdown(self.shutdown_signal()); // Add graceful shutdown
+            // Start metrics server (HTTP, parallel to main server)
+            if self.config.metrics.enabled {
+                if let Ok(metrics_listener) = TcpListener::bind(metrics_addr).await {
+                    info!("Metrics server listening on http://{}", metrics_addr);
+
+                    let metrics_router_clone = metrics_router.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = axum::serve(
+                            metrics_listener,
+                            metrics_router_clone.into_make_service()
+                        ).await {
+                            error!("Metrics server error: {}", e);
+                        }
+                    });
+                } else {
+                    warn!("Failed to start metrics server on {}", metrics_addr);
+                }
+            }
+
+            // Start main server based on socket type
+            let running = &self.state.running;
+
+            // ✅ FIXED: Create the shutdown signal future outside tokio::select!
+            let shutdown_fut = self.shutdown_signal();
 
             tokio::select! {
-                res = http_server => {
-                    if let Err(err) = res { error!("HTTP server error: {}", err); }
+                result = async {
+                    match listener {
+                        ServerListener::Tcp(tcp_listener) => {
+                            info!("HTTP server listening on http://{}", tcp_listener.local_addr()?);
+                            let app = router_with_middleware.into_make_service_with_connect_info::<SocketAddr>();
+                            // ✅ FIXED: Create a separate shutdown signal for graceful shutdown
+                            let graceful_shutdown = async {
+                                let ctrl_c = async {
+                                    signal::ctrl_c()
+                                        .await
+                                        .expect("Failed to install Ctrl+C handler");
+                                };
+
+                                #[cfg(unix)]
+                                let terminate = async {
+                                    signal::unix::signal(signal::unix::SignalKind::terminate())
+                                        .expect("Failed to install signal handler")
+                                        .recv()
+                                        .await;
+                                };
+
+                                #[cfg(not(unix))]
+                                let terminate = std::future::pending::<()>();
+
+                                tokio::select! {
+                                    _ = ctrl_c => {},
+                                    _ = terminate => {},
+                                }
+                            };
+
+                            axum::serve(tcp_listener, app)
+                                .with_graceful_shutdown(graceful_shutdown)
+                                .await
+                                .map_err(|e| Error::Internal(format!("TCP server error: {}", e)))
+                        }
+
+                        #[cfg(unix)]
+                        ServerListener::Unix(unix_listener) => {
+                            info!("HTTP server listening on Unix socket");
+                            let app = router_with_middleware.into_make_service_with_connect_info::<SocketAddr>();
+
+                            // ✅ FIXED: Create a separate shutdown signal for graceful shutdown
+                            let graceful_shutdown = async {
+                                let ctrl_c = async {
+                                    signal::ctrl_c()
+                                        .await
+                                        .expect("Failed to install Ctrl+C handler");
+                                };
+
+                                #[cfg(unix)]
+                                let terminate = async {
+                                    signal::unix::signal(signal::unix::SignalKind::terminate())
+                                        .expect("Failed to install signal handler")
+                                        .recv()
+                                        .await;
+                                };
+
+                                tokio::select! {
+                                    _ = ctrl_c => {},
+                                    _ = terminate => {},
+                                }
+                            };
+
+                            axum::serve(unix_listener, app)
+                                .with_graceful_shutdown(graceful_shutdown)
+                                .await
+                                .map_err(|e| Error::Internal(format!("Unix socket server error: {}", e)))
+                        }
+                    }
+                } => {
+                    if let Err(err) = result {
+                        error!("HTTP server error: {}", err);
+                    }
                 }
-                _ = self.shutdown_signal() => {
+                _ = shutdown_fut => {
                     info!("Shutdown signal received, stopping HTTP server...");
                     running.store(false, Ordering::SeqCst);
                 }
             }
         }
-        info!("Server main loop ended. Initiating final stop sequence."); // Clarified message
+
+        info!("Server main loop ended. Initiating final stop sequence.");
+        Ok(())
+    }
+
+    fn get_server_binding(&self) -> ServerBinding {
+        // Check if Unix socket is configured via socket config
+        let socket_config = &self.config.socket;
+
+        // Fallback: Check environment variables directly
+        if let Ok(socket_path) = std::env::var("UNIX_SOCKET_PATH") {
+            #[cfg(unix)]
+            {
+                return ServerBinding::Unix { path: PathBuf::from(socket_path) };
+            }
+            #[cfg(not(unix))]
+            {
+                warn!("Unix sockets not supported on this platform, falling back to TCP");
+            }
+        }
+
+        // Check SOCKET_TYPE environment variable
+        match std::env::var("SOCKET_TYPE").as_deref().unwrap_or("tcp") {
+            #[cfg(unix)]
+            "unix" => {
+                if let Ok(path) = std::env::var("UNIX_SOCKET_PATH") {
+                    ServerBinding::Unix { path: PathBuf::from(path) }
+                } else {
+                    warn!("SOCKET_TYPE=unix but UNIX_SOCKET_PATH not set, falling back to TCP");
+                    ServerBinding::Tcp {
+                        host: self.config.host.clone(),
+                        port: self.config.port
+                    }
+                }
+            }
+            _ => ServerBinding::Tcp {
+                host: self.config.host.clone(),
+                port: self.config.port
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn set_unix_socket_permissions(&self, path: &PathBuf, perms_str: &str) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let perms = u32::from_str_radix(perms_str, 8)
+            .map_err(|e| Error::Configuration(format!("Invalid Unix socket permissions '{}': {}", perms_str, e)))?;
+
+        let permissions = std::fs::Permissions::from_mode(perms);
+        std::fs::set_permissions(path, permissions)
+            .map_err(|e| Error::Internal(format!("Failed to set Unix socket permissions: {}", e)))?;
+
+        info!("Set Unix socket permissions to {} for {}", perms_str, path.display());
         Ok(())
     }
 

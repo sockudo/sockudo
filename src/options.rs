@@ -2,11 +2,13 @@ use crate::app::config::App;
 use crate::utils::{parse_bool_env, parse_env, parse_env_optional};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::{info, warn};
 // Assuming DEFAULT_PREFIX is pub const in nats_adapter or imported appropriately
 use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
 use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
+use crate::server::socket_listener::ServerBinding;
 
 // Helper function to parse driver enums with fallback behavior (matches main.rs)
 fn parse_driver_enum<T: FromStr + Clone + std::fmt::Debug>(
@@ -28,6 +30,99 @@ where
         }
     }
 }
+
+fn default_socket_type() -> String { "tcp".to_string() }
+fn default_host() -> String { "0.0.0.0".to_string() }
+fn default_port() -> u16 { 6001 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocketConfig {
+    /// Socket type: "tcp" or "unix"
+    #[serde(default = "default_socket_type")]
+    pub socket_type: String,
+
+    /// TCP configuration
+    #[serde(default = "default_host")]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+
+    /// Unix socket configuration
+    pub unix_socket_path: Option<PathBuf>,
+
+    /// Unix socket permissions (octal, e.g., "755")
+    pub unix_socket_permissions: Option<String>,
+}
+
+
+
+impl Default for SocketConfig {
+    fn default() -> Self {
+        Self {
+            socket_type: default_socket_type(),
+            host: default_host(),
+            port: default_port(),
+            unix_socket_path: None,
+            unix_socket_permissions: None,
+        }
+    }
+}
+
+impl SocketConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        match self.socket_type.as_str() {
+            "tcp" => {
+                // TCP validation is handled by host/port validation in ServerOptions
+                Ok(())
+            }
+            "unix" => {
+                #[cfg(not(unix))]
+                {
+                    return Err("Unix sockets are not supported on this platform".to_string());
+                }
+
+                #[cfg(unix)]
+                {
+                    if self.unix_socket_path.is_none() {
+                        return Err("Unix socket path is required when socket_type is 'unix'".to_string());
+                    }
+
+                    if let Some(path) = &self.unix_socket_path {
+                        if let Some(parent) = path.parent() {
+                            if !parent.exists() && !parent.to_str().unwrap_or("").starts_with("/tmp") {
+                                tracing::warn!("Unix socket parent directory does not exist: {}", parent.display());
+                            }
+                        }
+                    }
+
+                    // Validate permissions format if provided
+                    if let Some(perms) = &self.unix_socket_permissions {
+                        if u32::from_str_radix(perms, 8).is_err() {
+                            return Err(format!("Invalid Unix socket permissions '{}': must be octal format (e.g., '755')", perms));
+                        }
+                    }
+
+                    Ok(())
+                }
+            }
+            _ => {
+                Err(format!("Invalid socket_type '{}': must be 'tcp' or 'unix'", self.socket_type))
+            }
+        }
+    }
+
+    pub fn to_server_binding(&self) -> ServerBinding {
+        match self.socket_type.as_str() {
+            "unix" => ServerBinding::Unix {
+                path: self.unix_socket_path.clone().unwrap_or_else(|| PathBuf::from("/tmp/sockudo.sock")),
+            },
+            _ => ServerBinding::Tcp {
+                host: self.host.clone(),
+                port: self.port,
+            }
+        }
+    }
+}
+
 
 // --- Enums for Driver Types ---
 
@@ -263,6 +358,7 @@ pub struct ServerOptions {
     pub cleanup: crate::cleanup::CleanupConfig,
     pub activity_timeout: u64,
     pub cluster_health: ClusterHealthConfig,
+    pub socket: SocketConfig,
 }
 
 // --- Configuration Sub-Structs ---
@@ -651,6 +747,7 @@ impl Default for ServerOptions {
             cleanup: crate::cleanup::CleanupConfig::default(),
             activity_timeout: 120,
             cluster_health: ClusterHealthConfig::default(),
+            socket: SocketConfig::default()
         }
     }
 }
@@ -1061,6 +1158,37 @@ impl ServerOptions {
             self.host = host;
         }
         self.port = parse_env::<u16>("PORT", self.port);
+        if let Ok(socket_type) = std::env::var("SOCKET_TYPE") {
+            self.socket.socket_type = socket_type;
+        }
+
+        if let Ok(socket_path) = std::env::var("UNIX_SOCKET_PATH") {
+            self.socket.unix_socket_path = Some(PathBuf::from(socket_path));
+
+            // Auto-set socket_type to unix if path is provided
+            if self.socket.socket_type == "tcp" {
+                self.socket.socket_type = "unix".to_string();
+                info!("Auto-detected socket_type=unix from UNIX_SOCKET_PATH");
+            }
+        }
+
+        if let Ok(permissions) = std::env::var("UNIX_SOCKET_PERMISSIONS") {
+            self.socket.unix_socket_permissions = Some(permissions);
+        }
+
+        // Validate socket configuration after all parsing
+        if let Err(e) = self.socket.validate() {
+            return Err(format!("Invalid socket configuration: {}", e).into());
+        }
+
+        if self.ssl.enabled && self.socket.socket_type == "unix" {
+            warn!("SSL is enabled with Unix sockets. SSL will be ignored for Unix socket connections.");
+        }
+
+        // Validate port for TCP mode
+        if self.socket.socket_type == "tcp" && self.port == 0 {
+            return Err(Box::from("Port cannot be 0 when using TCP sockets".to_string()));
+        }
         self.shutdown_grace_period =
             parse_env::<u64>("SHUTDOWN_GRACE_PERIOD", self.shutdown_grace_period);
         self.user_authentication_timeout = parse_env::<u64>(
