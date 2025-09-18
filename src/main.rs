@@ -394,26 +394,12 @@ impl SockudoServer {
             None
         };
 
-        let webhook_redis_url = if let Some(url_override) = config.queue.redis.url_override.as_ref()
-        {
-            url_override.clone()
-        } else {
-            format!(
-                "redis://{}:{}",
-                config.database.redis.host, config.database.redis.port
-            )
-        };
-
         let webhook_config_for_integration = WebhookConfig {
-            enabled: true, // Assuming webhooks are generally enabled if configured
+            enabled: queue_manager_opt.is_some(), // Webhooks enabled if queue manager exists
             batching: BatchingConfig {
                 enabled: config.webhooks.batching.enabled,
                 duration: config.webhooks.batching.duration,
             },
-            queue_driver: config.queue.driver.as_ref().to_string(),
-            redis_url: Some(webhook_redis_url),
-            redis_prefix: Some(config.database.redis.key_prefix.clone() + "webhooks:"), // Ensure key_prefix exists
-            redis_concurrency: Some(config.queue.redis.concurrency as usize),
             process_id: config.instance.process_id.clone(),
             debug: config.debug,
         };
@@ -421,16 +407,23 @@ impl SockudoServer {
         let webhook_integration = match WebhookIntegration::new(
             webhook_config_for_integration,
             app_manager.clone(),
+            queue_manager_opt.clone(),
         )
         .await
         {
             Ok(integration) => {
-                info!("Webhook integration initialized successfully");
+                if integration.is_enabled() {
+                    info!("Webhook integration initialized successfully with queue manager");
+                } else if queue_manager_opt.is_none() {
+                    info!("Webhooks disabled (no queue manager available)");
+                } else {
+                    info!("Webhook integration initialized (disabled)");
+                }
                 Arc::new(integration)
             }
             Err(e) => {
                 warn!(
-                    "Failed to initialize webhook integration: {}, webhooks will be disabled",
+                    "Failed to initialize webhook integration: {}, creating disabled instance",
                     e
                 );
                 // Create a disabled WebhookIntegration as a fallback
@@ -438,8 +431,8 @@ impl SockudoServer {
                     enabled: false,
                     ..Default::default() // Use default for other fields
                 };
-                // This should not fail if enabled is false
-                Arc::new(WebhookIntegration::new(disabled_config, app_manager.clone()).await?)
+                // Pass None for queue_manager since it's disabled
+                Arc::new(WebhookIntegration::new(disabled_config, app_manager.clone(), None).await?)
             }
         };
 
