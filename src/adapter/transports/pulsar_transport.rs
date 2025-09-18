@@ -7,11 +7,8 @@ use crate::options::PulsarAdapterConfig;
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use pulsar::authentication::oauth2::{OAuth2Authentication, OAuth2Params};
-use pulsar::{
-    Authentication, ConnectionRetryOptions, Consumer, Pulsar, PulsarBuilder, TokioExecutor,
-    consumer::ConsumerOptions, producer::ProducerOptions,
-};
-use pulsar::message::{proto::command_subscribe::SubType, Payload};
+use pulsar::message::proto::command_subscribe::SubType;
+use pulsar::{Authentication, ConnectionRetryOptions, Consumer, Pulsar, TokioExecutor};
 use std::time::Duration;
 use tracing::{debug, error, info};
 
@@ -103,14 +100,19 @@ impl HorizontalTransport for PulsarTransport {
                 }
             }
         }
+        if config.connection_timeout_ms == 0 {
+            return Err(Error::Configuration(
+                "Pulsar connection_timeout_ms must be a positive, non-zero value.".to_string(),
+            ));
+        }
 
         // Set connection timeout
         let connection_retry_options = ConnectionRetryOptions {
             min_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(10),
-            max_retries: 0,
+            max_retries: 10,
             connection_timeout: Duration::from_millis(config.connection_timeout_ms),
-            keep_alive: Default::default(),
+            keep_alive: Duration::from_secs(30),
         };
         pulsar_builder = pulsar_builder.with_connection_retry_options(connection_retry_options);
 
@@ -223,6 +225,7 @@ impl HorizontalTransport for PulsarTransport {
             "sockudo-{}",
             std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string())
         );
+        info!("Using subscription name: {}", subscription_name);
 
         // Subscribe to broadcast topic
         let mut broadcast_consumer: Consumer<Vec<u8>, TokioExecutor> = pulsar
@@ -230,7 +233,7 @@ impl HorizontalTransport for PulsarTransport {
             .with_topic(&broadcast_topic)
             .with_subscription(&subscription_name)
             .with_consumer_name("broadcast-consumer")
-            .with_subscription_type(1)
+            .with_subscription_type(SubType::Shared)
             .build()
             .await
             .map_err(|e| Error::Internal(format!("Failed to create broadcast consumer: {e}")))?;
@@ -241,7 +244,7 @@ impl HorizontalTransport for PulsarTransport {
             .with_topic(&request_topic)
             .with_subscription(&subscription_name)
             .with_consumer_name("request-consumer")
-            .with_subscription_type(1)
+            .with_subscription_type(SubType::Shared)
             .build()
             .await
             .map_err(|e| Error::Internal(format!("Failed to create request consumer: {e}")))?;
@@ -252,7 +255,7 @@ impl HorizontalTransport for PulsarTransport {
             .with_topic(&response_topic)
             .with_subscription(&subscription_name)
             .with_consumer_name("response-consumer")
-            .with_subscription_type(1)
+            .with_subscription_type(SubType::Shared)
             .build()
             .await
             .map_err(|e| Error::Internal(format!("Failed to create response consumer: {e}")))?;
