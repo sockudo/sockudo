@@ -384,7 +384,7 @@ Provides detailed control over all aspects. Below is a snippet; refer to your up
   "unix_socket": {
     "enabled": false, // Set to true to use Unix socket instead of HTTP/HTTPS
     "path": "/tmp/sockudo.sock", // Path to Unix socket file
-    "permission_mode": 493 // Socket file permissions (755 in octal = 493 in decimal)
+    "permission_mode": "755" // Socket file permissions in octal (preferred)
   }
   // ... many other options available, see src/options.rs
 }
@@ -593,17 +593,24 @@ UNIX_SOCKET_PERMISSION_MODE=755  # Octal permissions
   "unix_socket": {
     "enabled": true,
     "path": "/var/run/sockudo/sockudo.sock",
-    "permission_mode": 493  // 755 in octal = 493 in decimal
+    "permission_mode": "755"  // Octal string notation (recommended)
   }
 }
 ```
 
+**Alternative formats supported:**
+```json
+"permission_mode": "755"  // Octal string (recommended)
+"permission_mode": 755    // Parsed as octal if ≤ 777 and all digits 0-7
+"permission_mode": 493    // Decimal equivalent (legacy support)
+```
+
 #### Common Permission Values
-| Octal | Decimal | Permissions | Use Case |
-|-------|---------|-------------|----------|
-| `755` | `493` | rwxr-xr-x | Standard (recommended) |
-| `660` | `432` | rw-rw---- | Restricted to group |
-| `644` | `420` | rw-r--r-- | Read-only for group/others |
+| Octal | JSON Value | Permissions | Use Case |
+|-------|------------|-------------|----------|
+| `755` | `"755"` | rwxr-xr-x | Standard (recommended) |
+| `660` | `"660"` | rw-rw---- | Restricted to group |
+| `644` | `"644"` | rw-r--r-- | Read-only for group/others |
 
 ### Reverse Proxy Integration
 
