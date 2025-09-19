@@ -24,6 +24,8 @@ mod webhook;
 mod websocket;
 mod ws_handler;
 
+#[cfg(unix)]
+use axum::extract::connect_info::{self};
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::Method;
 use axum::http::header::HeaderName;
@@ -31,11 +33,9 @@ use axum::http::uri::Authority;
 use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
 use axum::routing::{get, post};
-use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
-#[cfg(unix)]
-use axum::extract::connect_info::{self};
 #[cfg(unix)]
 use axum::serve::IncomingStream;
+use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
@@ -43,16 +43,16 @@ use error::Error;
 use futures_util::future::join_all;
 use mimalloc::MiMalloc;
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::signal;
 #[cfg(unix)]
 use tokio::net::UnixListener;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
 
 // Updated factory imports
@@ -906,13 +906,19 @@ impl SockudoServer {
                     info!("Metrics server listening on http://{}", metrics_addr);
                     let metrics_router_clone = metrics_router.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = axum::serve(metrics_listener, metrics_router_clone.into_make_service()).await {
+                        if let Err(e) =
+                            axum::serve(metrics_listener, metrics_router_clone.into_make_service())
+                                .await
+                        {
                             error!("Metrics server error: {}", e);
                         }
                     });
                 }
                 Err(e) => {
-                    warn!("Failed to bind metrics server on {}: {}. Metrics will not be available.", metrics_addr, e);
+                    warn!(
+                        "Failed to bind metrics server on {}: {}. Metrics will not be available.",
+                        metrics_addr, e
+                    );
                 }
             }
         }
@@ -929,7 +935,10 @@ impl SockudoServer {
 
     #[cfg(unix)]
     async fn start_unix_socket_server(&self, http_router: Router) -> Result<()> {
-        info!("Starting Unix socket server at path: {}", self.config.unix_socket.path);
+        info!(
+            "Starting Unix socket server at path: {}",
+            self.config.unix_socket.path
+        );
         let path = std::path::PathBuf::from(&self.config.unix_socket.path);
 
         // Remove existing socket file if it exists
@@ -943,16 +952,21 @@ impl SockudoServer {
         if let Some(parent) = path.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
                 error!("Failed to create parent directory for Unix socket: {}", e);
-                return Err(Error::Internal(format!("Failed to create Unix socket directory: {}", e)));
+                return Err(Error::Internal(format!(
+                    "Failed to create Unix socket directory: {}",
+                    e
+                )));
             }
         }
 
-        let uds = UnixListener::bind(&path).map_err(|e| {
-            Error::Internal(format!("Failed to bind Unix socket: {}", e))
-        })?;
+        let uds = UnixListener::bind(&path)
+            .map_err(|e| Error::Internal(format!("Failed to bind Unix socket: {}", e)))?;
 
         // Set permissions on the socket file
-        if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(self.config.unix_socket.permission_mode)) {
+        if let Err(e) = std::fs::set_permissions(
+            &path,
+            std::fs::Permissions::from_mode(self.config.unix_socket.permission_mode),
+        ) {
             warn!("Failed to set Unix socket permissions: {}", e);
         }
 
@@ -1006,7 +1020,10 @@ impl SockudoServer {
                     .parse::<std::net::IpAddr>()
                     .unwrap_or_else(|_| "0.0.0.0".parse().unwrap());
                 let redirect_addr = SocketAddr::from((host_ip, http_port));
-                info!("Starting HTTP to HTTPS redirect server on {}", redirect_addr);
+                info!(
+                    "Starting HTTP to HTTPS redirect server on {}",
+                    redirect_addr
+                );
 
                 let https_port = self.config.port;
                 let redirect_app = Router::new().fallback(move |Host(host): Host, uri: Uri| async move {
@@ -1025,7 +1042,9 @@ impl SockudoServer {
                             if let Err(e) = axum::serve(
                                 redirect_listener,
                                 redirect_app.into_make_service_with_connect_info::<SocketAddr>(),
-                            ).await {
+                            )
+                            .await
+                            {
                                 error!("HTTP redirect server error: {}", e);
                             }
                         });
@@ -1380,7 +1399,10 @@ async fn main() -> Result<()> {
     // 5. Validate the final configuration
     if let Err(e) = config.validate() {
         error!("Configuration validation failed: {}", e);
-        return Err(Error::ConfigFile(format!("Configuration validation failed: {}", e)));
+        return Err(Error::ConfigFile(format!(
+            "Configuration validation failed: {}",
+            e
+        )));
     }
 
     // --- Update logging configuration if needed ---

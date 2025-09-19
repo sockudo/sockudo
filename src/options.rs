@@ -1492,7 +1492,9 @@ impl ServerOptions {
         if self.unix_socket.enabled {
             // Unix socket path validation
             if self.unix_socket.path.is_empty() {
-                return Err("Unix socket path cannot be empty when Unix socket is enabled".to_string());
+                return Err(
+                    "Unix socket path cannot be empty when Unix socket is enabled".to_string(),
+                );
             }
 
             // Warn about potential conflicts with SSL when Unix socket is enabled
