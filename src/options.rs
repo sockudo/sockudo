@@ -1178,8 +1178,15 @@ impl ServerOptions {
         if let Ok(path) = std::env::var("UNIX_SOCKET_PATH") {
             self.unix_socket.path = path;
         }
-        if let Some(mode) = parse_env_optional::<u32>("UNIX_SOCKET_PERMISSION_MODE") {
-            self.unix_socket.permission_mode = mode;
+        if let Ok(mode_str) = std::env::var("UNIX_SOCKET_PERMISSION_MODE") {
+            if let Ok(mode) = u32::from_str_radix(&mode_str, 8) {
+                self.unix_socket.permission_mode = mode;
+            } else {
+                warn!(
+                    "Failed to parse UNIX_SOCKET_PERMISSION_MODE '{}' as an octal value. Using current value: {:o}",
+                    mode_str, self.unix_socket.permission_mode
+                );
+            }
         }
 
         // --- Metrics ---
