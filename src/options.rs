@@ -974,7 +974,7 @@ impl Default for UnixSocketConfig {
         Self {
             enabled: false,
             path: "/tmp/sockudo.sock".to_string(),
-            permission_mode: 0o755,
+            permission_mode: 0o770,
         }
     }
 }
