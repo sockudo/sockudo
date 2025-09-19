@@ -182,19 +182,19 @@ fn rewrite_request_uri_ssl(req: Request<hyper::body::Incoming>) -> Request<hyper
     let (mut parts, body) = req.into_parts();
     let normalized_path = normalize_uri_path(parts.uri.path());
 
-    if normalized_path != parts.uri.path() {
-        if let Some(path_and_query) = &parts.uri.path_and_query() {
-            let query = path_and_query
-                .query()
-                .map(|q| format!("?{q}"))
-                .unwrap_or_default();
-            let new_path_and_query = format!("{normalized_path}{query}");
-            if let Ok(new_pq) = new_path_and_query.parse() {
-                let mut uri_parts = parts.uri.clone().into_parts();
-                uri_parts.path_and_query = Some(new_pq);
-                if let Ok(new_uri) = Uri::from_parts(uri_parts) {
-                    parts.uri = new_uri;
-                }
+    if normalized_path != parts.uri.path()
+        && let Some(path_and_query) = &parts.uri.path_and_query()
+    {
+        let query = path_and_query
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+        let new_path_and_query = format!("{normalized_path}{query}");
+        if let Ok(new_pq) = new_path_and_query.parse() {
+            let mut uri_parts = parts.uri.clone().into_parts();
+            uri_parts.path_and_query = Some(new_pq);
+            if let Ok(new_uri) = Uri::from_parts(uri_parts) {
+                parts.uri = new_uri;
             }
         }
     }
@@ -942,21 +942,21 @@ impl SockudoServer {
         let path = std::path::PathBuf::from(&self.config.unix_socket.path);
 
         // Remove existing socket file if it exists
-        if path.exists() {
-            if let Err(e) = tokio::fs::remove_file(&path).await {
-                warn!("Failed to remove existing Unix socket file: {}", e);
-            }
+        if path.exists()
+            && let Err(e) = tokio::fs::remove_file(&path).await
+        {
+            warn!("Failed to remove existing Unix socket file: {}", e);
         }
 
         // Create parent directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                error!("Failed to create parent directory for Unix socket: {}", e);
-                return Err(Error::Internal(format!(
-                    "Failed to create Unix socket directory: {}",
-                    e
-                )));
-            }
+        if let Some(parent) = path.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            error!("Failed to create parent directory for Unix socket: {}", e);
+            return Err(Error::Internal(format!(
+                "Failed to create Unix socket directory: {}",
+                e
+            )));
         }
 
         let uds = UnixListener::bind(&path)
