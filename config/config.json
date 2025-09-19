@@ -8,6 +8,11 @@
   "websocket_max_payload_kb": 64,
   "user_authentication_timeout": 3600,
   "activity_timeout": 120,
+  "unix_socket": {
+    "enabled": true,
+    "path": "sockudo.sock",
+    "permission_mode": 493
+  },
   "adapter": {
     "driver": "local",
     "redis": {

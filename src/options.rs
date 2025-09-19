@@ -261,6 +261,7 @@ pub struct ServerOptions {
     pub cleanup: crate::cleanup::CleanupConfig,
     pub activity_timeout: u64,
     pub cluster_health: ClusterHealthConfig,
+    pub unix_socket: UnixSocketConfig,
 }
 
 // --- Configuration Sub-Structs ---
@@ -592,6 +593,14 @@ pub struct ClusterHealthConfig {
     pub cleanup_interval_ms: u64,   // How often to check for dead nodes
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UnixSocketConfig {
+    pub enabled: bool,
+    pub path: String,
+    pub permission_mode: u32, // Octal file permissions (e.g., 0o755)
+}
+
 // --- Default Implementations ---
 
 impl Default for ServerOptions {
@@ -625,6 +634,7 @@ impl Default for ServerOptions {
             cleanup: crate::cleanup::CleanupConfig::default(),
             activity_timeout: 120,
             cluster_health: ClusterHealthConfig::default(),
+            unix_socket: UnixSocketConfig::default(),
         }
     }
 }
@@ -959,6 +969,16 @@ impl Default for ClusterHealthConfig {
     }
 }
 
+impl Default for UnixSocketConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: "/tmp/sockudo.sock".to_string(),
+            permission_mode: 0o755,
+        }
+    }
+}
+
 impl ClusterHealthConfig {
     /// Validate cluster health configuration and return helpful error messages
     pub fn validate(&self) -> Result<(), String> {
@@ -1151,6 +1171,15 @@ impl ServerOptions {
         self.ssl.redirect_http = parse_bool_env("SSL_REDIRECT_HTTP", self.ssl.redirect_http);
         if let Some(port) = parse_env_optional::<u16>("SSL_HTTP_PORT") {
             self.ssl.http_port = Some(port);
+        }
+
+        // --- Unix Socket Configuration ---
+        self.unix_socket.enabled = parse_bool_env("UNIX_SOCKET_ENABLED", self.unix_socket.enabled);
+        if let Ok(path) = std::env::var("UNIX_SOCKET_PATH") {
+            self.unix_socket.path = path;
+        }
+        if let Some(mode) = parse_env_optional::<u32>("UNIX_SOCKET_PERMISSION_MODE") {
+            self.unix_socket.permission_mode = mode;
         }
 
         // --- Metrics ---
@@ -1453,6 +1482,40 @@ impl ServerOptions {
             "CLUSTER_HEALTH_CLEANUP_INTERVAL",
             self.cluster_health.cleanup_interval_ms,
         );
+
+        Ok(())
+    }
+
+    /// Validate configuration for logical consistency
+    pub fn validate(&self) -> Result<(), String> {
+        // Unix socket validation
+        if self.unix_socket.enabled {
+            // Unix socket path validation
+            if self.unix_socket.path.is_empty() {
+                return Err("Unix socket path cannot be empty when Unix socket is enabled".to_string());
+            }
+
+            // Warn about potential conflicts with SSL when Unix socket is enabled
+            if self.ssl.enabled {
+                // This is just a warning - technically both can be enabled but it's unusual
+                tracing::warn!(
+                    "Both Unix socket and SSL are enabled. This is unusual as Unix sockets are typically used behind reverse proxies that handle SSL termination."
+                );
+            }
+
+            // Validate permission mode (should be valid octal)
+            if self.unix_socket.permission_mode > 0o777 {
+                return Err(format!(
+                    "Unix socket permission_mode ({:o}) is invalid. Must be a valid octal mode (0o000 to 0o777)",
+                    self.unix_socket.permission_mode
+                ));
+            }
+        }
+
+        // Validate cleanup configuration if present
+        if let Err(e) = self.cleanup.validate() {
+            return Err(format!("Invalid cleanup configuration: {}", e));
+        }
 
         Ok(())
     }
