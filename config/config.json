@@ -10,7 +10,7 @@
   "activity_timeout": 120,
   "unix_socket": {
     "enabled": true,
-    "path": "sockudo.sock",
+    "path": "/tmp/sockudo.sock",
     "permission_mode": 493
   },
   "adapter": {
