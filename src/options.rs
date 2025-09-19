@@ -8,6 +8,64 @@ use tracing::{info, warn};
 use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
 use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
 
+// Custom deserializer for octal permission mode
+fn deserialize_octal_permission<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct OctalVisitor;
+
+    impl<'de> Visitor<'de> for OctalVisitor {
+        type Value = u32;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an octal permission mode as string (e.g., \"755\") or number")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            u32::from_str_radix(value, 8)
+                .map_err(|_| E::custom(format!("invalid octal permission mode: {}", value)))
+        }
+
+        fn visit_u32<E>(self, value: u32) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            // If it's a number, try to parse it as octal if it looks like octal (all digits 0-7)
+            let value_str = value.to_string();
+            if value_str.chars().all(|c| c.is_digit(8)) && value <= 777 {
+                u32::from_str_radix(&value_str, 8)
+                    .map_err(|_| E::custom(format!("invalid octal permission mode: {}", value)))
+            } else {
+                // If it's not a valid octal range, treat as decimal but validate it's within octal range
+                if value > 0o777 {
+                    Err(E::custom(format!(
+                        "permission mode {} exceeds maximum octal value 777",
+                        value
+                    )))
+                } else {
+                    Ok(value)
+                }
+            }
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_u32(value as u32)
+        }
+    }
+
+    deserializer.deserialize_any(OctalVisitor)
+}
+
 // Helper function to parse driver enums with fallback behavior (matches main.rs)
 fn parse_driver_enum<T: FromStr + Clone + std::fmt::Debug>(
     driver_str: String,
@@ -598,7 +656,8 @@ pub struct ClusterHealthConfig {
 pub struct UnixSocketConfig {
     pub enabled: bool,
     pub path: String,
-    pub permission_mode: u32, // Octal file permissions (e.g., 0o755)
+    #[serde(deserialize_with = "deserialize_octal_permission")]
+    pub permission_mode: u32, // Octal file permissions (e.g., "755" string, 755 number, or 0o755 literal)
 }
 
 // --- Default Implementations ---
