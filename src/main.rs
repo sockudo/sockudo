@@ -110,8 +110,8 @@ struct UdsConnectInfo {
 #[cfg(unix)]
 impl connect_info::Connected<IncomingStream<'_, UnixListener>> for UdsConnectInfo {
     fn connect_info(stream: IncomingStream<'_, UnixListener>) -> Self {
-        let peer_addr = stream.io().peer_addr().unwrap();
-        let peer_cred = stream.io().peer_cred().unwrap();
+        let peer_addr = stream.io().peer_addr().expect("Failed to get peer address from Unix socket");
+        let peer_cred = stream.io().peer_cred().expect("Failed to get peer credentials from Unix socket");
         Self {
             peer_addr: Arc::new(peer_addr),
             peer_cred,
