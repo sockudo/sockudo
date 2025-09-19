@@ -232,7 +232,7 @@ UNIX_SOCKET_PERMISSION_MODE=755
   "unix_socket": {
     "enabled": true,
     "path": "/var/run/sockudo/sockudo.sock",
-    "permission_mode": 755
+    "permission_mode": 493  // 755 in octal
   }
 }
 ```
