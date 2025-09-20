@@ -995,7 +995,7 @@ impl SockudoServer {
             ) {
                 warn!("Failed to set secure permissions on Unix socket parent directory: {}", e);
             } else {
-                debug!("Set secure permissions (755) on Unix socket parent directory: {}", parent.display());
+                info!("Set secure permissions (755) on Unix socket parent directory: {}", parent.display());
             }
         }
 
