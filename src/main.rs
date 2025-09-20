@@ -971,11 +971,21 @@ impl SockudoServer {
         );
         let path = std::path::PathBuf::from(&self.config.unix_socket.path);
 
-        // Remove existing socket file if it exists
-        if path.exists()
-            && let Err(e) = tokio::fs::remove_file(&path).await
-        {
-            warn!("Failed to remove existing Unix socket file: {}", e);
+        // Remove existing socket file if it exists (with error handling for race conditions)
+        if path.exists() {
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {
+                    debug!("Removed existing Unix socket file: {}", path.display());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Socket file was removed by another process - this is fine
+                    debug!("Unix socket file was already removed: {}", path.display());
+                }
+                Err(e) => {
+                    warn!("Failed to remove existing Unix socket file: {}", e);
+                    // Continue anyway - UnixListener::bind will fail if the file is still in use
+                }
+            }
         }
 
         // Create parent directory if it doesn't exist with secure permissions
@@ -1285,15 +1295,21 @@ impl SockudoServer {
         // Add disconnect for app_manager if it has such a method
         // self.state.app_manager.disconnect().await?;
 
-        // Clean up Unix socket file if it exists
+        // Clean up Unix socket file if it exists (with race condition handling)
         #[cfg(unix)]
         if self.config.unix_socket.enabled {
             let path = std::path::PathBuf::from(&self.config.unix_socket.path);
-            if path.exists() {
-                if let Err(e) = tokio::fs::remove_file(&path).await {
-                    warn!("Failed to remove Unix socket file during shutdown: {}", e);
-                } else {
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {
                     info!("Removed Unix socket file: {}", self.config.unix_socket.path);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Socket file was already removed - this is normal
+                    debug!("Unix socket file was already removed: {}", path.display());
+                }
+                Err(e) => {
+                    warn!("Failed to remove Unix socket file during shutdown: {}", e);
+                    // This is not critical for shutdown - continue anyway
                 }
             }
         }
