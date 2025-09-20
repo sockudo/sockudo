@@ -108,6 +108,28 @@ struct UdsConnectInfo {
 }
 
 #[cfg(unix)]
+/// Convert octal permission mode to human-readable string (e.g., 0o755 -> "rwxr-xr-x")
+fn format_permission_string(mode: u32) -> String {
+    let owner = [(mode & 0o400) != 0, (mode & 0o200) != 0, (mode & 0o100) != 0];
+    let group = [(mode & 0o040) != 0, (mode & 0o020) != 0, (mode & 0o010) != 0];
+    let other = [(mode & 0o004) != 0, (mode & 0o002) != 0, (mode & 0o001) != 0];
+
+    let perm_chars = [owner, group, other]
+        .iter()
+        .map(|perms| {
+            format!("{}{}{}",
+                if perms[0] { 'r' } else { '-' },
+                if perms[1] { 'w' } else { '-' },
+                if perms[2] { 'x' } else { '-' }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    perm_chars
+}
+
+#[cfg(unix)]
 impl connect_info::Connected<IncomingStream<'_, UnixListener>> for UdsConnectInfo {
     fn connect_info(stream: IncomingStream<'_, UnixListener>) -> Self {
         let peer_addr = stream
@@ -964,15 +986,25 @@ impl SockudoServer {
             warn!("Failed to remove existing Unix socket file: {}", e);
         }
 
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = path.parent()
-            && let Err(e) = tokio::fs::create_dir_all(parent).await
-        {
-            error!("Failed to create parent directory for Unix socket: {}", e);
-            return Err(Error::Internal(format!(
-                "Failed to create Unix socket directory: {}",
-                e
-            )));
+        // Create parent directory if it doesn't exist with secure permissions
+        if let Some(parent) = path.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                error!("Failed to create parent directory for Unix socket: {}", e);
+                return Err(Error::Internal(format!(
+                    "Failed to create Unix socket directory: {}",
+                    e
+                )));
+            }
+
+            // Set secure permissions on parent directory (0o755 - rwxr-xr-x)
+            if let Err(e) = std::fs::set_permissions(
+                parent,
+                std::fs::Permissions::from_mode(0o755),
+            ) {
+                warn!("Failed to set secure permissions on Unix socket parent directory: {}", e);
+            } else {
+                debug!("Set secure permissions (755) on Unix socket parent directory: {}", parent.display());
+            }
         }
 
         let uds = UnixListener::bind(&path)
@@ -984,6 +1016,12 @@ impl SockudoServer {
             std::fs::Permissions::from_mode(self.config.unix_socket.permission_mode),
         ) {
             warn!("Failed to set Unix socket permissions: {}", e);
+        } else {
+            info!(
+                "Set Unix socket permissions to {:o} ({})",
+                self.config.unix_socket.permission_mode,
+                format_permission_string(self.config.unix_socket.permission_mode)
+            );
         }
 
         // Apply middleware to the router

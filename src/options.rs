@@ -1552,6 +1552,11 @@ impl ServerOptions {
                 );
             }
 
+            // Security validation: Check for dangerous socket paths
+            if let Err(e) = self.validate_unix_socket_security() {
+                return Err(e);
+            }
+
             // Warn about potential conflicts with SSL when Unix socket is enabled
             if self.ssl.enabled {
                 // This is just a warning - technically both can be enabled but it's unusual
@@ -1572,6 +1577,51 @@ impl ServerOptions {
         // Validate cleanup configuration if present
         if let Err(e) = self.cleanup.validate() {
             return Err(format!("Invalid cleanup configuration: {}", e));
+        }
+
+        Ok(())
+    }
+
+    /// Validate Unix socket security settings
+    fn validate_unix_socket_security(&self) -> Result<(), String> {
+        let path = &self.unix_socket.path;
+
+        // Prevent directory traversal attacks
+        if path.contains("../") || path.contains("..\\") {
+            return Err(
+                "Unix socket path contains directory traversal sequences (../). This is not allowed for security reasons.".to_string()
+            );
+        }
+
+        // Warn about world-writable permissions
+        if self.unix_socket.permission_mode & 0o002 != 0 {
+            warn!(
+                "Unix socket permission mode ({:o}) allows world write access. This may be a security risk. Consider using more restrictive permissions like 0o660 or 0o750.",
+                self.unix_socket.permission_mode
+            );
+        }
+
+        // Warn about overly permissive permissions for others
+        if self.unix_socket.permission_mode & 0o007 > 0o005 {
+            warn!(
+                "Unix socket permission mode ({:o}) grants write permissions to others. Consider using more restrictive permissions.",
+                self.unix_socket.permission_mode
+            );
+        }
+
+        // Warn about /tmp usage in production
+        if self.mode == "production" && path.starts_with("/tmp/") {
+            warn!(
+                "Unix socket path '{}' is in /tmp directory. In production, consider using a more permanent location like /var/run/sockudo/ for better security and persistence.",
+                path
+            );
+        }
+
+        // Validate path is absolute
+        if !path.starts_with('/') {
+            return Err(
+                "Unix socket path must be absolute (start with /) for security and reliability.".to_string()
+            );
         }
 
         Ok(())
