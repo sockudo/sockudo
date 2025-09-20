@@ -935,6 +935,16 @@ impl SockudoServer {
             return self.start_unix_socket_server(http_router).await;
         }
 
+        // Fail fast if Unix socket is requested on non-Unix platform
+        #[cfg(not(unix))]
+        if self.config.unix_socket.enabled {
+            error!("Unix socket support is only available on Unix-like systems (Linux, macOS, BSD).");
+            error!("Please disable unix_socket.enabled in your configuration to use HTTP/HTTPS instead.");
+            return Err(Error::Configuration(
+                "Unix sockets are not supported on this platform (Windows). Please set unix_socket.enabled to false.".to_string()
+            ));
+        }
+
         // If Unix socket is not enabled (or not on Unix), start HTTP/HTTPS server
         self.start_http_server(http_router).await
     }
