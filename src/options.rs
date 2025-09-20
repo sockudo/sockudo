@@ -8,62 +8,36 @@ use tracing::{info, warn};
 use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
 use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
 
-// Custom deserializer for octal permission mode
+// Custom deserializer for octal permission mode (string format only, like chmod)
 fn deserialize_octal_permission<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::{self, Visitor};
-    use std::fmt;
+    use serde::de::{self};
 
-    struct OctalVisitor;
+    let s = String::deserialize(deserializer)?;
 
-    impl<'de> Visitor<'de> for OctalVisitor {
-        type Value = u32;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("an octal permission mode as string (e.g., \"755\") or number")
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            u32::from_str_radix(value, 8)
-                .map_err(|_| E::custom(format!("invalid octal permission mode: {}", value)))
-        }
-
-        fn visit_u32<E>(self, value: u32) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            // If it's a number, try to parse it as octal if it looks like octal (all digits 0-7)
-            let value_str = value.to_string();
-            if value_str.chars().all(|c| c.is_digit(8)) && value <= 777 {
-                u32::from_str_radix(&value_str, 8)
-                    .map_err(|_| E::custom(format!("invalid octal permission mode: {}", value)))
-            } else {
-                // If it's not a valid octal range, treat as decimal but validate it's within octal range
-                if value > 0o777 {
-                    Err(E::custom(format!(
-                        "permission mode {} exceeds maximum octal value 777",
-                        value
-                    )))
-                } else {
-                    Ok(value)
-                }
-            }
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            self.visit_u32(value as u32)
-        }
+    // Validate that the string contains only octal digits
+    if !s.chars().all(|c| c.is_digit(8)) {
+        return Err(de::Error::custom(format!(
+            "invalid octal permission mode '{}': must contain only digits 0-7",
+            s
+        )));
     }
 
-    deserializer.deserialize_any(OctalVisitor)
+    // Parse as octal
+    let mode = u32::from_str_radix(&s, 8)
+        .map_err(|_| de::Error::custom(format!("invalid octal permission mode: {}", s)))?;
+
+    // Validate it's within valid Unix permission range
+    if mode > 0o777 {
+        return Err(de::Error::custom(format!(
+            "permission mode '{}' exceeds maximum value 777",
+            s
+        )));
+    }
+
+    Ok(mode)
 }
 
 // Helper function to parse driver enums with fallback behavior (matches main.rs)
@@ -1033,7 +1007,7 @@ impl Default for UnixSocketConfig {
         Self {
             enabled: false,
             path: "/tmp/sockudo.sock".to_string(),
-            permission_mode: 0o770,
+            permission_mode: 0o660, // rw-rw---- (most restrictive reasonable default)
         }
     }
 }
@@ -1238,11 +1212,26 @@ impl ServerOptions {
             self.unix_socket.path = path;
         }
         if let Ok(mode_str) = std::env::var("UNIX_SOCKET_PERMISSION_MODE") {
-            if let Ok(mode) = u32::from_str_radix(&mode_str, 8) {
-                self.unix_socket.permission_mode = mode;
+            // Only accept octal string format (like chmod)
+            if mode_str.chars().all(|c| c.is_digit(8)) {
+                if let Ok(mode) = u32::from_str_radix(&mode_str, 8) {
+                    if mode <= 0o777 {
+                        self.unix_socket.permission_mode = mode;
+                    } else {
+                        warn!(
+                            "UNIX_SOCKET_PERMISSION_MODE '{}' exceeds maximum value 777. Using default: {:o}",
+                            mode_str, self.unix_socket.permission_mode
+                        );
+                    }
+                } else {
+                    warn!(
+                        "Failed to parse UNIX_SOCKET_PERMISSION_MODE '{}' as octal. Using default: {:o}",
+                        mode_str, self.unix_socket.permission_mode
+                    );
+                }
             } else {
                 warn!(
-                    "Failed to parse UNIX_SOCKET_PERMISSION_MODE '{}' as an octal value. Using current value: {:o}",
+                    "UNIX_SOCKET_PERMISSION_MODE '{}' must contain only octal digits (0-7). Using default: {:o}",
                     mode_str, self.unix_socket.permission_mode
                 );
             }
