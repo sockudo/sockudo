@@ -20,6 +20,18 @@ chmod 755 /var/run/sockudo
 # Clean up any existing socket file
 rm -f /var/run/sockudo/sockudo.sock
 
+# Start a background process to fix socket permissions after creation
+(
+    while true; do
+        if [ -S /var/run/sockudo/sockudo.sock ]; then
+            chmod 777 /var/run/sockudo/sockudo.sock
+            echo "Unix socket permissions updated to 777"
+            break
+        fi
+        sleep 0.1
+    done
+) &
+
 # Start supervisor to manage both processes
 echo "Starting Supervisor to manage Nginx and Sockudo..."
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

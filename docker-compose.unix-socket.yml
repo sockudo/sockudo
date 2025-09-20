@@ -16,7 +16,7 @@ services:
       - DEBUG=true
       - UNIX_SOCKET_ENABLED=true
       - UNIX_SOCKET_PATH=/var/run/sockudo/sockudo.sock
-      - UNIX_SOCKET_PERMISSION_MODE=755
+      - UNIX_SOCKET_PERMISSION_MODE=777
       - PORT=6001
       - HOST=127.0.0.1
       - METRICS_ENABLED=true

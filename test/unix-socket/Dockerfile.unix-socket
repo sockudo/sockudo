@@ -5,12 +5,12 @@ FROM ubuntu:24.04
 RUN apt update && apt install -y nginx supervisor curl openssl && \
     rm -rf /var/lib/apt/lists/*
 
+# Create nginx user (Ubuntu uses www-data by default, but we'll create nginx for compatibility)
+RUN useradd -r -d /var/cache/nginx -s /sbin/nologin -U nginx || true
+
 # Create directory for sockudo unix socket
 RUN mkdir -p /var/run/sockudo && \
     chmod 755 /var/run/sockudo
-
-# Create nginx user if it doesn't exist
-RUN id -u nginx &>/dev/null || useradd -r -d /var/cache/nginx -s /sbin/nologin nginx
 
 # Copy nginx configuration
 COPY test/unix-socket/nginx-unix-socket.conf /etc/nginx/nginx.conf
