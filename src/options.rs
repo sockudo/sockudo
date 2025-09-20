@@ -1553,9 +1553,7 @@ impl ServerOptions {
             }
 
             // Security validation: Check for dangerous socket paths
-            if let Err(e) = self.validate_unix_socket_security() {
-                return Err(e);
-            }
+            self.validate_unix_socket_security()?;
 
             // Warn about potential conflicts with SSL when Unix socket is enabled
             if self.ssl.enabled {
@@ -1620,7 +1618,8 @@ impl ServerOptions {
         // Validate path is absolute
         if !path.starts_with('/') {
             return Err(
-                "Unix socket path must be absolute (start with /) for security and reliability.".to_string()
+                "Unix socket path must be absolute (start with /) for security and reliability."
+                    .to_string(),
             );
         }
 

@@ -110,23 +110,34 @@ struct UdsConnectInfo {
 #[cfg(unix)]
 /// Convert octal permission mode to human-readable string (e.g., 0o755 -> "rwxr-xr-x")
 fn format_permission_string(mode: u32) -> String {
-    let owner = [(mode & 0o400) != 0, (mode & 0o200) != 0, (mode & 0o100) != 0];
-    let group = [(mode & 0o040) != 0, (mode & 0o020) != 0, (mode & 0o010) != 0];
-    let other = [(mode & 0o004) != 0, (mode & 0o002) != 0, (mode & 0o001) != 0];
+    let owner = [
+        (mode & 0o400) != 0,
+        (mode & 0o200) != 0,
+        (mode & 0o100) != 0,
+    ];
+    let group = [
+        (mode & 0o040) != 0,
+        (mode & 0o020) != 0,
+        (mode & 0o010) != 0,
+    ];
+    let other = [
+        (mode & 0o004) != 0,
+        (mode & 0o002) != 0,
+        (mode & 0o001) != 0,
+    ];
 
-    let perm_chars = [owner, group, other]
+    [owner, group, other]
         .iter()
         .map(|perms| {
-            format!("{}{}{}",
+            format!(
+                "{}{}{}",
                 if perms[0] { 'r' } else { '-' },
                 if perms[1] { 'w' } else { '-' },
                 if perms[2] { 'x' } else { '-' }
             )
         })
         .collect::<Vec<_>>()
-        .join("");
-
-    perm_chars
+        .join("")
 }
 
 #[cfg(unix)]
@@ -952,8 +963,12 @@ impl SockudoServer {
         // Fail fast if Unix socket is requested on non-Unix platform
         #[cfg(not(unix))]
         if self.config.unix_socket.enabled {
-            error!("Unix socket support is only available on Unix-like systems (Linux, macOS, BSD).");
-            error!("Please disable unix_socket.enabled in your configuration to use HTTP/HTTPS instead.");
+            error!(
+                "Unix socket support is only available on Unix-like systems (Linux, macOS, BSD)."
+            );
+            error!(
+                "Please disable unix_socket.enabled in your configuration to use HTTP/HTTPS instead."
+            );
             return Err(Error::Configuration(
                 "Unix sockets are not supported on this platform (Windows). Please set unix_socket.enabled to false.".to_string()
             ));
@@ -999,13 +1014,17 @@ impl SockudoServer {
             }
 
             // Set secure permissions on parent directory (0o755 - rwxr-xr-x)
-            if let Err(e) = std::fs::set_permissions(
-                parent,
-                std::fs::Permissions::from_mode(0o755),
-            ) {
-                warn!("Failed to set secure permissions on Unix socket parent directory: {}", e);
+            if let Err(e) = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755))
+            {
+                warn!(
+                    "Failed to set secure permissions on Unix socket parent directory: {}",
+                    e
+                );
             } else {
-                info!("Set secure permissions (755) on Unix socket parent directory: {}", parent.display());
+                info!(
+                    "Set secure permissions (755) on Unix socket parent directory: {}",
+                    parent.display()
+                );
             }
         }
 
