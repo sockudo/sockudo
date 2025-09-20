@@ -149,7 +149,7 @@ Key variables (see `.env.example` for complete list):
 - `REDIS_URL` - Override all Redis configurations with single URL
 - `SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS` - Comma-separated list of allowed origins for default app
 - `UNIX_SOCKET_ENABLED` - Enable Unix socket server (true|false, default: false)
-- `UNIX_SOCKET_PATH` - Unix socket file path (default: /tmp/sockudo.sock)
+- `UNIX_SOCKET_PATH` - Unix socket file path (default: /var/run/sockudo/sockudo.sock)
 - `UNIX_SOCKET_PERMISSION_MODE` - Unix socket file permissions in octal (default: 755)
 
 #### Logging Configuration
@@ -219,7 +219,7 @@ Sockudo supports Unix domain sockets for communication when deployed behind a re
 # Enable Unix socket server
 UNIX_SOCKET_ENABLED=true
 
-# Custom socket path (optional, default: /tmp/sockudo.sock)
+# Custom socket path (optional, default: /var/run/sockudo/sockudo.sock)
 UNIX_SOCKET_PATH=/var/run/sockudo/sockudo.sock
 
 # Socket file permissions in octal (optional, default: 755)

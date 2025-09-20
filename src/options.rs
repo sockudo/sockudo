@@ -1006,7 +1006,7 @@ impl Default for UnixSocketConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            path: "/tmp/sockudo.sock".to_string(),
+            path: "/var/run/sockudo/sockudo.sock".to_string(),
             permission_mode: 0o660, // rw-rw---- (most restrictive reasonable default)
         }
     }

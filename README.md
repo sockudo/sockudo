@@ -287,7 +287,7 @@ SSL_ENABLED=false # Set to true for production and provide paths
 
 # Unix Socket (Alternative to HTTP/HTTPS - useful for reverse proxy setups)
 UNIX_SOCKET_ENABLED=false # Set to true to use Unix socket instead of HTTP
-# UNIX_SOCKET_PATH=/tmp/sockudo.sock # Path to Unix socket file
+# UNIX_SOCKET_PATH=/var/run/sockudo/sockudo.sock # Path to Unix socket file
 # UNIX_SOCKET_PERMISSION_MODE=755 # Socket file permissions in octal
 
 # Application Defaults (if not using a persistent AppManager or for fallback)
@@ -383,7 +383,7 @@ Provides detailed control over all aspects. Below is a snippet; refer to your up
   },
   "unix_socket": {
     "enabled": false, // Set to true to use Unix socket instead of HTTP/HTTPS
-    "path": "/tmp/sockudo.sock", // Path to Unix socket file
+    "path": "/var/run/sockudo/sockudo.sock", // Path to Unix socket file
     "permission_mode": "755" // Socket file permissions in octal (preferred)
   }
   // ... many other options available, see src/options.rs
