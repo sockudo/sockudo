@@ -15,6 +15,9 @@ RUN mkdir -p /var/run/sockudo && \
 # Copy nginx configuration
 COPY test/unix-socket/nginx-unix-socket.conf /etc/nginx/nginx.conf
 
+# Copy the multinode client HTML file to be served by nginx
+COPY test/multinode/client/index.html /usr/share/nginx/html/index.html
+
 # Copy supervisor configuration
 COPY test/unix-socket/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 

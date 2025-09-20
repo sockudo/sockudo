@@ -177,8 +177,9 @@ unix-socket-up: ## Start Unix socket test environment with Nginx proxy
 	@echo "$(BLUE)Starting Unix socket test environment...$(RESET)"
 	@docker-compose -f docker-compose.unix-socket.yml up -d --build
 	@echo "$(GREEN)Unix socket test environment started!$(RESET)"
-	@echo "$(YELLOW)Nginx HTTP proxy: http://localhost:8080$(RESET)"
-	@echo "$(YELLOW)Nginx HTTPS proxy: https://localhost:8443$(RESET)"
+	@echo "$(YELLOW)Nginx HTTP proxy: http://localhost:82$(RESET)"
+	@echo "$(YELLOW)Nginx HTTPS proxy: https://localhost:444$(RESET)"
+	@echo "$(YELLOW)Client interface: http://localhost:82/client$(RESET)"
 	@echo "$(YELLOW)Direct metrics: http://localhost:9601/metrics$(RESET)"
 
 .PHONY: unix-socket-down
@@ -194,11 +195,11 @@ unix-socket-logs: ## Show logs from Unix socket test environment
 unix-socket-test: ## Test Unix socket connectivity through Nginx
 	@echo "$(BLUE)Testing Unix socket connectivity...$(RESET)"
 	@echo "$(YELLOW)Testing HTTP proxy health endpoint...$(RESET)"
-	@curl -f http://localhost:8080/health || echo "$(RED)Nginx health check failed$(RESET)"
+	@curl -f http://localhost:82/health || echo "$(RED)Nginx health check failed$(RESET)"
 	@echo "$(YELLOW)Testing Sockudo through Unix socket (HTTP)...$(RESET)"
-	@curl -f http://localhost:8080/up/test-app || echo "$(RED)Unix socket HTTP test failed$(RESET)"
+	@curl -f http://localhost:82/up/test-app || echo "$(RED)Unix socket HTTP test failed$(RESET)"
 	@echo "$(YELLOW)Testing Sockudo through Unix socket (HTTPS)...$(RESET)"
-	@curl -kf https://localhost:8443/up/test-app || echo "$(RED)Unix socket HTTPS test failed$(RESET)"
+	@curl -kf https://localhost:444/up/test-app || echo "$(RED)Unix socket HTTPS test failed$(RESET)"
 	@echo "$(YELLOW)Testing direct metrics endpoint...$(RESET)"
 	@curl -f http://localhost:9601/metrics || echo "$(RED)Direct metrics test failed$(RESET)"
 

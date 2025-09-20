@@ -37,8 +37,8 @@ services:
       - LOG_COLORS_ENABLED=true
       - LOG_INCLUDE_TARGET=true
     ports:
-      - "8080:80"      # Nginx HTTP
-      - "8443:443"     # Nginx HTTPS
+      - "82:80"        # Nginx HTTP (match multinode node1 port)
+      - "444:443"      # Nginx HTTPS (match multinode node1 port)
       - "9601:9601"    # Sockudo metrics (direct access for debugging)
     networks:
       - sockudo-unix-test
