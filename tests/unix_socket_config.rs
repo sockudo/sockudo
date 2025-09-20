@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod unix_socket_config_tests {
-    use serde_json;
+
     use sockudo::options::{ServerOptions, UnixSocketConfig};
     use std::env;
 
@@ -39,7 +39,12 @@ mod unix_socket_config_tests {
 
         let result: Result<UnixSocketConfig, _> = serde_json::from_str(json);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must contain only digits 0-7"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must contain only digits 0-7")
+        );
     }
 
     #[test]
@@ -53,7 +58,12 @@ mod unix_socket_config_tests {
 
         let result: Result<UnixSocketConfig, _> = serde_json::from_str(json);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds maximum value 777"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds maximum value 777")
+        );
     }
 
     #[test]
@@ -67,7 +77,12 @@ mod unix_socket_config_tests {
 
         let result: Result<UnixSocketConfig, _> = serde_json::from_str(json);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must contain only digits 0-7"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must contain only digits 0-7")
+        );
     }
 
     #[test]
@@ -82,14 +97,21 @@ mod unix_socket_config_tests {
         ];
 
         for (perm_str, expected) in test_cases {
-            let json = format!(r#"{{
+            let json = format!(
+                r#"{{
                 "enabled": true,
                 "path": "/tmp/test.sock",
                 "permission_mode": "{}"
-            }}"#, perm_str);
+            }}"#,
+                perm_str
+            );
 
             let config: UnixSocketConfig = serde_json::from_str(&json).unwrap();
-            assert_eq!(config.permission_mode, expected, "Failed for permission {}", perm_str);
+            assert_eq!(
+                config.permission_mode, expected,
+                "Failed for permission {}",
+                perm_str
+            );
         }
     }
 
@@ -194,7 +216,11 @@ mod unix_socket_config_tests {
 
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unix socket path cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Unix socket path cannot be empty")
+        );
     }
 
     #[test]
@@ -225,7 +251,11 @@ mod unix_socket_config_tests {
             config.unix_socket.path = path.to_string();
             let result = config.validate();
             assert!(result.is_err(), "Should reject dangerous path: {}", path);
-            assert!(result.unwrap_err().contains("directory traversal"), "Path: {}", path);
+            assert!(
+                result.unwrap_err().contains("directory traversal"),
+                "Path: {}",
+                path
+            );
         }
     }
 
@@ -245,7 +275,11 @@ mod unix_socket_config_tests {
             config.unix_socket.path = path.to_string();
             let result = config.validate();
             assert!(result.is_err(), "Should reject relative path: {}", path);
-            assert!(result.unwrap_err().contains("must be absolute"), "Path: {}", path);
+            assert!(
+                result.unwrap_err().contains("must be absolute"),
+                "Path: {}",
+                path
+            );
         }
     }
 
@@ -265,7 +299,12 @@ mod unix_socket_config_tests {
         for path in safe_paths {
             config.unix_socket.path = path.to_string();
             let result = config.validate();
-            assert!(result.is_ok(), "Should accept safe path: {} - Error: {:?}", path, result);
+            assert!(
+                result.is_ok(),
+                "Should accept safe path: {} - Error: {:?}",
+                path,
+                result
+            );
         }
     }
 
@@ -277,7 +316,10 @@ mod unix_socket_config_tests {
 
         // Should pass validation when disabled
         let result = config.validate();
-        assert!(result.is_ok(), "Disabled Unix socket should ignore dangerous paths");
+        assert!(
+            result.is_ok(),
+            "Disabled Unix socket should ignore dangerous paths"
+        );
     }
 
     #[test]
@@ -310,6 +352,9 @@ mod unix_socket_config_tests {
 
         // Should pass validation but would log a warning (we can't easily test logging in unit tests)
         let result = config.validate();
-        assert!(result.is_ok(), "Unix socket + SSL should be valid but unusual");
+        assert!(
+            result.is_ok(),
+            "Unix socket + SSL should be valid but unusual"
+        );
     }
 }
