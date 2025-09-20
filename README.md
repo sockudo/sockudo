@@ -288,7 +288,7 @@ SSL_ENABLED=false # Set to true for production and provide paths
 # Unix Socket (Alternative to HTTP/HTTPS - useful for reverse proxy setups)
 UNIX_SOCKET_ENABLED=false # Set to true to use Unix socket instead of HTTP
 # UNIX_SOCKET_PATH=/var/run/sockudo/sockudo.sock # Path to Unix socket file
-# UNIX_SOCKET_PERMISSION_MODE=755 # Socket file permissions in octal
+# UNIX_SOCKET_PERMISSION_MODE=660 # Socket file permissions in octal
 
 # Application Defaults (if not using a persistent AppManager or for fallback)
 SOCKUDO_DEFAULT_APP_ID=demo-app
@@ -584,7 +584,7 @@ Sockudo supports Unix domain sockets as an alternative to HTTP/HTTPS servers, pr
 # Enable Unix socket (disables HTTP/HTTPS)
 UNIX_SOCKET_ENABLED=true
 UNIX_SOCKET_PATH=/var/run/sockudo/sockudo.sock
-UNIX_SOCKET_PERMISSION_MODE=755  # Octal permissions
+UNIX_SOCKET_PERMISSION_MODE=660  # Octal permissions
 ```
 
 #### Configuration File
