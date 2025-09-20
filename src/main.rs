@@ -914,21 +914,11 @@ impl SockudoServer {
     async fn start(&self) -> Result<()> {
         info!("Starting Sockudo server services (after init)...");
 
-        let http_router = self.configure_http_routes();
-
-        let middleware = tower::util::MapRequestLayer::new(rewrite_request_uri);
-        let router_with_middleware = middleware.layer(http_router.clone());
-
-        let middleware_ssl = tower::util::MapRequestLayer::new(rewrite_request_uri_ssl);
-        let router_with_middleware_ssl = middleware_ssl.layer(http_router.clone());
-
-        let metrics_router = self.configure_metrics_routes();
-
-        let http_addr = self.get_http_addr().await;
-        let metrics_addr = self.get_metrics_addr().await;
-
         // Start metrics server (always runs independently)
         if self.config.metrics.enabled {
+            let metrics_router = self.configure_metrics_routes();
+            let metrics_addr = self.get_metrics_addr().await;
+
             match TcpListener::bind(metrics_addr).await {
                 Ok(metrics_listener) => {
                     info!("Metrics server listening on http://{}", metrics_addr);
@@ -950,6 +940,8 @@ impl SockudoServer {
                 }
             }
         }
+
+        let http_router = self.configure_http_routes();
 
         // Choose between Unix socket OR HTTP/HTTPS for main server
         #[cfg(unix)]
