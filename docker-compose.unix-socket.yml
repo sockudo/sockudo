@@ -45,11 +45,6 @@ services:
     command: ${SOCKUDO_COMMAND:-/usr/local/bin/start.sh}
     stdin_open: true
     tty: true
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/up/test-app"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
 
 networks:
   sockudo-unix-test:
