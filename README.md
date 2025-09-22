@@ -161,9 +161,8 @@ Licensed under the [MIT License](LICENSE).
 ## Support
 
 - **Issues**: [GitHub Issues](https://github.com/Sockudo/sockudo/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/Sockudo/sockudo/discussions)
-- **Documentation**: [docs/](docs/)
-
----
-
-**Sockudo** is part of the [Sockudo](https://Sockudo.app) ecosystem.
+- **Discussions**: [GitHub Discussions](https://github.com/RustNSparks/sockudo/discussions)
+- **Documentation**: [sockudo.app](https://sockudo.app)
+- **Discord**: [Join our Discord](https://discord.gg/ySfNxfh2gZ)
+- **X**: [@sockudorealtime](https://x.com/sockudorealtime)
+- **Email**: [sockudorealtime](mailto:sockudorealtime@gmail.com)
