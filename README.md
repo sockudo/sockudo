@@ -53,15 +53,15 @@ Connect using any Pusher-compatible client:
 import Pusher from 'pusher-js';
 
 const pusher = new Pusher('app-key', {
-    wsHost: 'localhost',
-    wsPort: 6001,
-    cluster: '',
-    forceTLS: false
+  wsHost: 'localhost',
+  wsPort: 6001,
+  cluster: '',
+  forceTLS: false
 });
 
 const channel = pusher.subscribe('my-channel');
 channel.bind('my-event', (data) => {
-    console.log('Received:', data);
+  console.log('Received:', data);
 });
 ```
 
