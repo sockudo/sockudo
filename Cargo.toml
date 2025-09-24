@@ -48,6 +48,7 @@ reqwest = { version = "0.12.15", default-features = false, features = ["json", "
 aws-sdk-sqs = "1.65.0"
 async-nats = "0.42.0"
 aws-sdk-lambda = "1.76.0"
+pulsar = { version = "6.3.0", default-features = false, features = ["tokio-runtime"], optional = true }
 num_cpus = "1.16.0"
 bytes = "1.10"
 url = { version = "2.3.1", features = ["serde"] }
@@ -72,6 +73,10 @@ features = [
     "fast-rng",          # Use a faster (but still sufficiently random) RNG
     "macro-diagnostics", # Enable better diagnostics for compile-time UUIDs
 ]
+
+[features]
+default = []
+with-pulsar = ["pulsar"]
 
 [profile.release]
 codegen-units = 1

@@ -40,6 +40,7 @@ pub enum AdapterDriver {
     #[serde(rename = "redis-cluster")]
     RedisCluster,
     Nats,
+    Pulsar,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +76,7 @@ impl FromStr for AdapterDriver {
             "redis" => Ok(AdapterDriver::Redis),
             "redis-cluster" => Ok(AdapterDriver::RedisCluster),
             "nats" => Ok(AdapterDriver::Nats),
+            "pulsar" => Ok(AdapterDriver::Pulsar),
             _ => Err(format!("Unknown adapter driver: {s}")),
         }
     }
@@ -286,6 +288,7 @@ pub struct AdapterConfig {
     pub redis: RedisAdapterConfig,
     pub cluster: RedisClusterAdapterConfig,
     pub nats: NatsAdapterConfig,
+    pub pulsar: PulsarAdapterConfig,
     #[serde(default = "default_buffer_multiplier_per_cpu")]
     pub buffer_multiplier_per_cpu: usize,
     pub cluster_health: ClusterHealthConfig,
@@ -302,6 +305,7 @@ impl Default for AdapterConfig {
             redis: RedisAdapterConfig::default(),
             cluster: RedisClusterAdapterConfig::default(),
             nats: NatsAdapterConfig::default(),
+            pulsar: PulsarAdapterConfig::default(),
             buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
             cluster_health: ClusterHealthConfig::default(),
         }
@@ -337,6 +341,25 @@ pub struct NatsAdapterConfig {
     pub password: Option<String>,
     pub token: Option<String>,
     pub connection_timeout_ms: u64,
+    pub nodes_number: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PulsarAdapterConfig {
+    pub service_url: String,
+    pub tenant: String,
+    pub namespace: String,
+    pub prefix: String,
+    pub request_timeout_ms: u64,
+    pub connection_timeout_ms: u64,
+    pub oauth2_issuer_url: Option<String>,
+    pub oauth2_client_id: Option<String>,
+    pub oauth2_client_secret: Option<String>,
+    pub oauth2_audience: Option<String>,
+    pub tls_trust_certs_file_path: Option<String>,
+    pub auth_name: Option<String>,
+    pub auth_params: Option<String>,
     pub nodes_number: Option<u32>,
 }
 
@@ -678,6 +701,27 @@ impl Default for NatsAdapterConfig {
             password: None,
             token: None,
             connection_timeout_ms: 5000,
+            nodes_number: None,
+        }
+    }
+}
+
+impl Default for PulsarAdapterConfig {
+    fn default() -> Self {
+        Self {
+            service_url: "pulsar://localhost:6650".to_string(),
+            tenant: "public".to_string(),
+            namespace: "default".to_string(),
+            prefix: "sockudo".to_string(),
+            request_timeout_ms: 5000,
+            connection_timeout_ms: 5000,
+            oauth2_issuer_url: None,
+            oauth2_client_id: None,
+            oauth2_client_secret: None,
+            oauth2_audience: None,
+            tls_trust_certs_file_path: None,
+            auth_name: None,
+            auth_params: None,
             nodes_number: None,
         }
     }

@@ -4,13 +4,17 @@ use tokio::sync::Mutex;
 use crate::adapter::ConnectionManager;
 use crate::adapter::local_adapter::LocalAdapter;
 use crate::adapter::nats_adapter::NatsAdapter;
+#[cfg(feature = "with-pulsar")]
+use crate::adapter::pulsar_adapter::PulsarAdapter;
 use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
 use crate::adapter::redis_cluster_adapter::RedisClusterAdapter;
 use crate::error::Result;
 
 use crate::options::{
     AdapterConfig, AdapterDriver, DatabaseConfig, NatsAdapterConfig, RedisClusterAdapterConfig,
-}; // Import AdapterDriver, RedisConnection
+};
+#[cfg(feature = "with-pulsar")]
+use crate::options::PulsarAdapterConfig;
 use tracing::{info, warn};
 
 pub struct AdapterFactory;
@@ -147,6 +151,52 @@ impl AdapterFactory {
                         )))
                     }
                 }
+            }
+            #[cfg(feature = "with-pulsar")]
+            AdapterDriver::Pulsar => {
+                let pulsar_cfg = PulsarAdapterConfig {
+                    service_url: config.pulsar.service_url.clone(),
+                    tenant: config.pulsar.tenant.clone(),
+                    namespace: config.pulsar.namespace.clone(),
+                    prefix: config.pulsar.prefix.clone(),
+                    request_timeout_ms: config.pulsar.request_timeout_ms,
+                    connection_timeout_ms: config.pulsar.connection_timeout_ms,
+                    oauth2_issuer_url: config.pulsar.oauth2_issuer_url.clone(),
+                    oauth2_client_id: config.pulsar.oauth2_client_id.clone(),
+                    oauth2_client_secret: config.pulsar.oauth2_client_secret.clone(),
+                    oauth2_audience: config.pulsar.oauth2_audience.clone(),
+                    tls_trust_certs_file_path: config.pulsar.tls_trust_certs_file_path.clone(),
+                    auth_name: config.pulsar.auth_name.clone(),
+                    auth_params: config.pulsar.auth_params.clone(),
+                    nodes_number: config.pulsar.nodes_number,
+                };
+                match PulsarAdapter::new(pulsar_cfg).await {
+                    Ok(mut adapter) => {
+                        adapter.set_cluster_health(&config.cluster_health).await?;
+                        Ok(Arc::new(Mutex::new(adapter)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize Pulsar adapter: {}, falling back to local adapter",
+                                e
+                            )
+                        );
+                        Ok(Arc::new(Mutex::new(
+                            LocalAdapter::new_with_buffer_multiplier(
+                                config.buffer_multiplier_per_cpu,
+                            ),
+                        )))
+                    }
+                }
+            }
+            #[cfg(not(feature = "with-pulsar"))]
+            AdapterDriver::Pulsar => {
+                warn!("{}", "Pulsar adapter requested but feature 'with-pulsar' not enabled. Falling back to local adapter.".to_string());
+                Ok(Arc::new(Mutex::new(
+                    LocalAdapter::new_with_buffer_multiplier(config.buffer_multiplier_per_cpu),
+                )))
             }
             AdapterDriver::Local => {
                 // Handle unknown as Local or make it an error

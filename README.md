@@ -6,10 +6,6 @@ A high-performance, scalable WebSocket server implementing the Pusher protocol i
 [![Build Status](https://img.shields.io/github/actions/workflow/status/rustnsparks/sockudo/ci.yml?branch=main)](https://github.com/rustnsparks/sockudo/actions)
 [![License](https://img.shields.io/github/license/rustnsparks/sockudo)](LICENSE)
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=rustnsparks/sockudo&type=Date)](https://star-history.com/#Sockudo/sockudo&Date)
-
 ## Features
 
 - **🚀 High Performance** - Handle 100K+ concurrent connections
@@ -161,9 +157,8 @@ Licensed under the [MIT License](LICENSE).
 ## Support
 
 - **Issues**: [GitHub Issues](https://github.com/Sockudo/sockudo/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/Sockudo/sockudo/discussions)
-- **Documentation**: [docs/](docs/)
-
----
-
-**Sockudo** is part of the [Sockudo](https://Sockudo.app) ecosystem.
+- **Discussions**: [GitHub Discussions](https://github.com/RustNSparks/sockudo/discussions)
+- **Documentation**: [sockudo.app](https://sockudo.app)
+- **Discord**: [Join our Discord](https://discord.gg/ySfNxfh2gZ)
+- **X**: [@sockudorealtime](https://x.com/sockudorealtime)
+- **Email**: [sockudorealtime](mailto:sockudorealtime@gmail.com)
