@@ -558,6 +558,22 @@ impl SockudoServer {
                         warn!("Failed to downcast to RedisClusterAdapter for metrics setup");
                     }
                 }
+                #[cfg(feature = "with-pulsar")]
+                AdapterDriver::Pulsar => {
+                    if let Some(adapter_mut) = adapter_as_any.downcast_mut::<crate::adapter::pulsar_adapter::PulsarAdapter>() {
+                        adapter_mut
+                            .set_metrics(metrics_instance_arc.clone())
+                            .await
+                            .ok();
+                        info!("Set metrics for PulsarAdapter");
+                    } else {
+                        warn!("Failed to downcast to PulsarAdapter for metrics setup");
+                    }
+                }
+                #[cfg(not(feature = "with-pulsar"))]
+                AdapterDriver::Pulsar => {
+                    warn!("Pulsar adapter requested but feature 'with-pulsar' not enabled");
+                }
                 AdapterDriver::Local => {
                     // Assuming LocalAdapter might have a set_metrics method
                     if let Some(adapter_mut) = adapter_as_any.downcast_mut::<LocalAdapter>() {

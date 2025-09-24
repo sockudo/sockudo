@@ -9,7 +9,10 @@
   "user_authentication_timeout": 3600,
   "activity_timeout": 120,
   "adapter": {
-    "driver": "local",
+    "driver": "pulsar",
+    "pulsar": {
+      "service_url": "pulsar://localhost:6650"
+    },
     "redis": {
       "requests_timeout": 5000,
       "prefix": "sockudo_adapter:",
@@ -205,7 +208,7 @@
   "http_api": {
     "request_limit_in_mb": 10,
     "accept_traffic": {
-      "memory_threshold": 0.90
+      "memory_threshold": 0.9
     }
   },
 
