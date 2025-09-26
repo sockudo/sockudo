@@ -1,8 +1,8 @@
 // src/adapter/handler/core_methods.rs
 use super::ConnectionHandler;
-use crate::channel::ChannelManager;
 use crate::adapter::horizontal_adapter::DeadNodeEvent;
 use crate::app::config::App;
+use crate::channel::ChannelManager;
 use crate::cleanup::{AuthInfo, ConnectionCleanupInfo, DisconnectTask};
 use crate::error::{Error, Result};
 use crate::presence::PresenceManager;

@@ -6,12 +6,12 @@ use crate::error::Error;
 use crate::protocol::messages::{MessageData, PusherMessage};
 use crate::token::{Token, secure_compare};
 use crate::websocket::SocketId;
+use ahash::{HashMap, HashMapExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use ahash::{HashMap, HashMapExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceMember {
@@ -53,7 +53,6 @@ static CHANNEL_TYPE_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, 
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::with_capacity(256)));
 
 impl ChannelManager {
-
     fn get_channel_type(channel_name: &str) -> ChannelType {
         let mut cache = CHANNEL_TYPE_CACHE.lock().unwrap();
 
@@ -155,7 +154,10 @@ impl ChannelManager {
                 .len()
         };
 
-        Ok(Self::create_success_join_response(total_connections, member))
+        Ok(Self::create_success_join_response(
+            total_connections,
+            member,
+        ))
     }
 
     pub async fn unsubscribe(
@@ -172,9 +174,7 @@ impl ChannelManager {
         let member = if channel_type == ChannelType::Presence {
             if let Some(user_id) = user_id {
                 let mut conn_mgr = connection_manager.lock().await;
-                let members = conn_mgr
-                    .get_channel_members(app_id, channel_name)
-                    .await?;
+                let members = conn_mgr.get_channel_members(app_id, channel_name).await?;
                 drop(conn_mgr); // Release lock immediately
 
                 members.get(user_id).map(|member| PresenceMember {
@@ -204,15 +204,17 @@ impl ChannelManager {
 
             // Clean up empty channels
             if remaining == 0 {
-                conn_mgr
-                    .remove_channel(app_id, channel_name)
-                    .await;
+                conn_mgr.remove_channel(app_id, channel_name).await;
             }
 
             (socket_removed, remaining)
         };
 
-        Ok(Self::create_leave_response(socket_removed, remaining_connections, member))
+        Ok(Self::create_leave_response(
+            socket_removed,
+            remaining_connections,
+            member,
+        ))
     }
 
     fn parse_presence_data(data: &Option<MessageData>) -> Result<PresenceMember, Error> {
@@ -243,7 +245,6 @@ impl ChannelManager {
         }
     }
 
-
     fn extract_presence_member_optimized(
         data: &Value,
         extra: &StdHashMap<String, Value>,
@@ -265,9 +266,7 @@ impl ChannelManager {
                 .cloned()
                 .unwrap_or_else(|| json!({}));
 
-            let socket_id = extra
-                .get("socket_id")
-                .and_then(|v| v.as_str());
+            let socket_id = extra.get("socket_id").and_then(|v| v.as_str());
 
             Ok(PresenceMember {
                 user_id: user_id.to_string().into_boxed_str(),
@@ -281,14 +280,9 @@ impl ChannelManager {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| Error::Channel("Missing user_id in presence data".into()))?;
 
-            let user_info = data
-                .get("user_info")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
+            let user_info = data.get("user_info").cloned().unwrap_or_else(|| json!({}));
 
-            let socket_id = extra
-                .get("socket_id")
-                .and_then(|v| v.as_str());
+            let socket_id = extra.get("socket_id").and_then(|v| v.as_str());
 
             Ok(PresenceMember {
                 user_id: user_id.to_string().into_boxed_str(),
@@ -340,7 +334,9 @@ impl ChannelManager {
 
                 if is_presence && !channel_data.is_empty() {
                     // Pre-allocate with known capacity: socket_id + ":" + channel + ":" + channel_data
-                    let mut result = String::with_capacity(socket_id_len + 2 + channel.len() + channel_data.len());
+                    let mut result = String::with_capacity(
+                        socket_id_len + 2 + channel.len() + channel_data.len(),
+                    );
                     result.push_str(&socket_id_str);
                     result.push(':');
                     result.push_str(&channel);
@@ -357,10 +353,7 @@ impl ChannelManager {
                 }
             }
             MessageData::Json(data) => {
-                let channel = data
-                    .get("channel")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let channel = data.get("channel").and_then(|v| v.as_str()).unwrap_or("");
                 let channel_data = data
                     .get("channel_data")
                     .and_then(|v| v.as_str())
@@ -368,7 +361,9 @@ impl ChannelManager {
                 let is_presence = channel.starts_with("presence-");
 
                 if is_presence && !channel_data.is_empty() {
-                    let mut result = String::with_capacity(socket_id_len + 2 + channel.len() + channel_data.len());
+                    let mut result = String::with_capacity(
+                        socket_id_len + 2 + channel.len() + channel_data.len(),
+                    );
                     result.push_str(&socket_id_str);
                     result.push(':');
                     result.push_str(channel);
@@ -396,7 +391,9 @@ impl ChannelManager {
                 let is_presence = channel.starts_with("presence-");
 
                 if is_presence && !channel_data.is_empty() {
-                    let mut result = String::with_capacity(socket_id_len + 2 + channel.len() + channel_data.len());
+                    let mut result = String::with_capacity(
+                        socket_id_len + 2 + channel.len() + channel_data.len(),
+                    );
                     result.push_str(&socket_id_str);
                     result.push(':');
                     result.push_str(channel);
@@ -420,9 +417,7 @@ impl ChannelManager {
         channel: &str,
     ) -> Result<StdHashMap<String, PresenceMemberInfo>, Error> {
         let mut conn_mgr = connection_manager.lock().await;
-        conn_mgr
-            .get_channel_members(app_id, channel)
-            .await
+        conn_mgr.get_channel_members(app_id, channel).await
     }
 
     /// Batch subscribe operation - single lock acquisition for multiple operations
@@ -455,7 +450,10 @@ impl ChannelManager {
                 }
                 Ok(false) => {
                     // Add to channel
-                    match conn_mgr.add_to_channel(&app_id, &channel_name, &socket_id_owned).await {
+                    match conn_mgr
+                        .add_to_channel(&app_id, &channel_name, &socket_id_owned)
+                        .await
+                    {
                         Ok(_) => {
                             // Get updated count
                             match conn_mgr.get_channel_sockets(&app_id, &channel_name).await {
@@ -490,7 +488,10 @@ impl ChannelManager {
             let socket_id_owned = SocketId(socket_id);
 
             // Remove from channel
-            match conn_mgr.remove_from_channel(&app_id, &channel_name, &socket_id_owned).await {
+            match conn_mgr
+                .remove_from_channel(&app_id, &channel_name, &socket_id_owned)
+                .await
+            {
                 Ok(was_removed) => {
                     // Get remaining count
                     match conn_mgr.get_channel_sockets(&app_id, &channel_name).await {
