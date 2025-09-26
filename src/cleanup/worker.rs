@@ -8,13 +8,12 @@ use crate::websocket::SocketId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 pub struct CleanupWorker {
     connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
-    channel_manager: Arc<RwLock<ChannelManager>>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     config: CleanupConfig,
@@ -23,14 +22,12 @@ pub struct CleanupWorker {
 impl CleanupWorker {
     pub fn new(
         connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
-        channel_manager: Arc<RwLock<ChannelManager>>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
         config: CleanupConfig,
     ) -> Self {
         Self {
             connection_manager,
-            channel_manager,
             app_manager,
             webhook_integration,
             config,
@@ -158,24 +155,26 @@ impl CleanupWorker {
         for ((app_id, channel), socket_ids) in channel_operations {
             for socket_id in socket_ids {
                 // Each operation gets exactly 1 lock, held for ~1ms, then released
+                match ChannelManager::unsubscribe(
+                    &self.connection_manager,
+                    &socket_id.0,
+                    &channel,
+                    &app_id,
+                    None,
+                )
+                .await
                 {
-                    let channel_manager = self.channel_manager.read().await;
-                    match channel_manager
-                        .unsubscribe(&socket_id.0, &channel, &app_id, None)
-                        .await
-                    {
-                        Ok(_) => {
-                            total_success += 1;
-                        }
-                        Err(e) => {
-                            total_errors += 1;
-                            warn!(
-                                "Failed to remove socket {} from channel {}/{}: {}",
-                                socket_id, app_id, channel, e
-                            );
-                        }
+                    Ok(_) => {
+                        total_success += 1;
                     }
-                } // Lock released here automatically between each operation
+                    Err(e) => {
+                        total_errors += 1;
+                        warn!(
+                            "Failed to remove socket {} from channel {}/{}: {}",
+                            socket_id, app_id, channel, e
+                        );
+                    }
+                }
             }
         }
 
