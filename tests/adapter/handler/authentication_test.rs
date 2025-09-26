@@ -67,7 +67,6 @@ async fn test_verify_channel_authentication_private_channel_with_auth() {
         user_id: None,
     };
 
-
     let request = SubscriptionRequest {
         channel,
         auth: Some(auth),
@@ -106,7 +105,6 @@ async fn test_verify_channel_authentication_presence_channel() {
         name: None,
         user_id: None,
     };
-
 
     let request = SubscriptionRequest {
         channel,
