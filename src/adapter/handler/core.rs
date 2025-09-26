@@ -1,5 +1,6 @@
 // src/adapter/handler/core_methods.rs
 use super::ConnectionHandler;
+use crate::channel::ChannelManager;
 use crate::adapter::horizontal_adapter::DeadNodeEvent;
 use crate::app::config::App;
 use crate::cleanup::{AuthInfo, ConnectionCleanupInfo, DisconnectTask};
@@ -56,17 +57,14 @@ impl ConnectionHandler {
         let user_id = self.get_user_id_for_socket(socket_id, app_config).await?;
 
         // Perform unsubscription through channel manager
-        {
-            let channel_manager = self.channel_manager.read().await;
-            channel_manager
-                .unsubscribe(
-                    socket_id.as_ref(),
-                    &channel_name,
-                    &app_config.id,
-                    user_id.as_deref(),
-                )
-                .await?;
-        }
+        ChannelManager::unsubscribe(
+            &self.connection_manager,
+            socket_id.as_ref(),
+            &channel_name,
+            &app_config.id,
+            user_id.as_deref(),
+        )
+        .await?;
 
         // Update connection state
         self.update_connection_unsubscribe_state(socket_id, app_config, &channel_name)
@@ -508,22 +506,20 @@ impl ConnectionHandler {
         subscribed_channels: &HashSet<String>,
         user_id: &Option<String>,
     ) -> Result<()> {
-        let channel_manager = self.channel_manager.read().await;
-
         for channel_str in subscribed_channels {
             debug!(
                 "Processing channel {} for disconnect of socket {}",
                 channel_str, socket_id
             );
 
-            match channel_manager
-                .unsubscribe(
-                    socket_id.as_ref(),
-                    channel_str,
-                    &app_config.id,
-                    user_id.as_deref(),
-                )
-                .await
+            match ChannelManager::unsubscribe(
+                &self.connection_manager,
+                socket_id.as_ref(),
+                channel_str,
+                &app_config.id,
+                user_id.as_deref(),
+            )
+            .await
             {
                 Ok(_) => {
                     let current_sub_count = self
