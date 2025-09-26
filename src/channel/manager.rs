@@ -420,57 +420,6 @@ impl ChannelManager {
         conn_mgr.get_channel_members(app_id, channel).await
     }
 
-    /// Batch subscribe operation - single lock acquisition for multiple operations
-    pub async fn batch_subscribe(
-        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
-        operations: Vec<(String, String, String)>, // (socket_id, channel_name, app_id)
-    ) -> Result<Vec<Result<usize, Error>>, Error> {
-        if operations.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut results = Vec::with_capacity(operations.len());
-        let mut conn_mgr = connection_manager.lock().await;
-
-        for (socket_id, channel_name, app_id) in operations {
-            let socket_id_owned = SocketId(socket_id);
-
-            // Check if already subscribed
-            let is_subscribed = conn_mgr
-                .is_in_channel(&app_id, &channel_name, &socket_id_owned)
-                .await;
-
-            match is_subscribed {
-                Ok(true) => {
-                    // Already subscribed, get current count
-                    match conn_mgr.get_channel_sockets(&app_id, &channel_name).await {
-                        Ok(sockets) => results.push(Ok(sockets.len())),
-                        Err(e) => results.push(Err(e)),
-                    }
-                }
-                Ok(false) => {
-                    // Add to channel
-                    match conn_mgr
-                        .add_to_channel(&app_id, &channel_name, &socket_id_owned)
-                        .await
-                    {
-                        Ok(_) => {
-                            // Get updated count
-                            match conn_mgr.get_channel_sockets(&app_id, &channel_name).await {
-                                Ok(sockets) => results.push(Ok(sockets.len())),
-                                Err(e) => results.push(Err(e)),
-                            }
-                        }
-                        Err(e) => results.push(Err(e)),
-                    }
-                }
-                Err(e) => results.push(Err(e)),
-            }
-        }
-
-        Ok(results)
-    }
-
     /// Batch unsubscribe operation - single lock acquisition for multiple operations
     pub async fn batch_unsubscribe(
         connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
