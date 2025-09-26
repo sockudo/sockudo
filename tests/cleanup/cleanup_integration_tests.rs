@@ -154,8 +154,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_actually_removes_socket_from_channel() {
         // TEST: Verify that the cleanup worker actually removes sockets from channels
-        let (cleanup_system, adapter, _app_manager) =
-            create_real_cleanup_system().await;
+        let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
         let socket_id = SocketId("socket-123".to_string());
@@ -229,8 +228,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_handles_multiple_channels_per_socket() {
         // TEST: Verify cleanup removes socket from ALL subscribed channels
-        let (cleanup_system, adapter, _app_manager) =
-            create_real_cleanup_system().await;
+        let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
         let socket_id = SocketId("multi-socket".to_string());
@@ -298,8 +296,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_preserves_other_sockets_in_same_channel() {
         // TEST: Verify cleanup only removes the target socket, not others in same channel
-        let (cleanup_system, adapter, _app_manager) =
-            create_real_cleanup_system().await;
+        let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
         let target_socket = SocketId("target-socket".to_string());
@@ -378,8 +375,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_batch_processing() {
         // TEST: Verify that batch processing actually works for multiple sockets
-        let (cleanup_system, adapter, _app_manager) =
-            create_real_cleanup_system().await;
+        let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
         let channel = "batch-channel";
@@ -449,8 +445,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_with_presence_channels() {
         // TEST: Verify cleanup handles presence channels with user info
-        let (cleanup_system, adapter, _app_manager) =
-            create_real_cleanup_system().await;
+        let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
         let socket_id = SocketId("presence-socket".to_string());
