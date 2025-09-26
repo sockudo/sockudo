@@ -151,29 +151,45 @@ impl CleanupWorker {
         let mut total_success = 0;
         let mut total_errors = 0;
 
-        // Process each operation individually with atomic locks (1 lock per operation)
+        // Group operations by app_id for batch processing
+        let mut operations_by_app: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+
         for ((app_id, channel), socket_ids) in channel_operations {
             for socket_id in socket_ids {
-                // Each operation gets exactly 1 lock, held for ~1ms, then released
-                match ChannelManager::unsubscribe(
-                    &self.connection_manager,
-                    &socket_id.0,
-                    &channel,
-                    &app_id,
-                    None,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        total_success += 1;
+                operations_by_app.entry(app_id.clone()).or_default().push((
+                    socket_id.0.clone(),
+                    channel.clone(),
+                    app_id.clone(),
+                ));
+            }
+        }
+
+        // Process batch operations per app to minimize lock contention
+        for (app_id, operations) in operations_by_app {
+            debug!(
+                "Processing batch unsubscribe for app {} with {} operations",
+                app_id,
+                operations.len()
+            );
+
+            match ChannelManager::batch_unsubscribe(&self.connection_manager, operations).await {
+                Ok(results) => {
+                    for result in results {
+                        match result {
+                            Ok(_) => total_success += 1,
+                            Err(e) => {
+                                total_errors += 1;
+                                warn!(
+                                    "Batch unsubscribe operation failed for app {}: {}",
+                                    app_id, e
+                                );
+                            }
+                        }
                     }
-                    Err(e) => {
-                        total_errors += 1;
-                        warn!(
-                            "Failed to remove socket {} from channel {}/{}: {}",
-                            socket_id, app_id, channel, e
-                        );
-                    }
+                }
+                Err(e) => {
+                    warn!("Batch unsubscribe failed for app {}: {}", app_id, e);
+                    total_errors += 1;
                 }
             }
         }
