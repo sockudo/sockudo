@@ -1,8 +1,8 @@
 // src/adapter/handler/subscription_management.rs
 use super::ConnectionHandler;
 use super::types::*;
-use crate::channel::ChannelManager;
 use crate::app::config::App;
+use crate::channel::ChannelManager;
 use crate::channel::{ChannelType, PresenceMemberInfo};
 use crate::error::Result;
 use crate::presence::PresenceManager;

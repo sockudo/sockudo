@@ -181,12 +181,8 @@ mod tests {
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
-        let multi_system = MultiWorkerCleanupSystem::new(
-            connection_manager.clone(),
-            app_manager,
-            None,
-            config,
-        );
+        let multi_system =
+            MultiWorkerCleanupSystem::new(connection_manager.clone(), app_manager, None, config);
 
         (multi_system, local_adapter)
     }

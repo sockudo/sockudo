@@ -712,7 +712,7 @@ pub async fn channel(
             let members_map = ChannelManager::get_channel_members(
                 &handler.connection_manager,
                 &app_id,
-                &channel_name
+                &channel_name,
             )
             .await?;
             Some(members_map.len() as u64)
@@ -803,7 +803,7 @@ pub async fn channels(
                 let members_map = ChannelManager::get_channel_members(
                     &handler.connection_manager,
                     &app_id,
-                    channel_name_str
+                    channel_name_str,
                 )
                 .await?;
                 current_channel_info_map.insert("user_count".to_string(), json!(members_map.len()));
@@ -851,12 +851,9 @@ pub async fn channel_users(
         ));
     }
 
-    let channel_members_map = ChannelManager::get_channel_members(
-        &handler.connection_manager,
-        &app_id,
-        &channel_name
-    )
-    .await?;
+    let channel_members_map =
+        ChannelManager::get_channel_members(&handler.connection_manager, &app_id, &channel_name)
+            .await?;
     let users_vec = channel_members_map
         .keys()
         .map(|user_id_str| json!({ "id": user_id_str }))

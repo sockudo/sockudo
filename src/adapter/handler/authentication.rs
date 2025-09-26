@@ -1,9 +1,9 @@
 // src/adapter/handler/authentication.rs
 use super::ConnectionHandler;
 use super::types::*;
-use crate::channel::ChannelManager;
 use crate::app::auth::AuthValidator;
 use crate::app::config::App;
+use crate::channel::ChannelManager;
 use crate::error::{Error, Result};
 use crate::websocket::SocketId;
 
