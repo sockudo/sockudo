@@ -236,16 +236,14 @@ impl ChannelManager {
                 let parsed: serde_json::Value = serde_json::from_str(channel_data_str)
                     .map_err(|_| Error::Channel("Invalid JSON in channel_data".into()))?;
 
-                Self::extract_presence_member_optimized(&parsed, extra)
+                Self::extract_presence_member(&parsed, extra)
             }
-            MessageData::Json(data) => {
-                Self::extract_presence_member_optimized(data, &Default::default())
-            }
+            MessageData::Json(data) => Self::extract_presence_member(data, &Default::default()),
             _ => Err(Error::Channel("Invalid presence data format".into())),
         }
     }
 
-    fn extract_presence_member_optimized(
+    fn extract_presence_member(
         data: &Value,
         extra: &StdHashMap<String, Value>,
     ) -> Result<PresenceMember, Error> {
