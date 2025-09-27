@@ -83,9 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Get current timestamp in milliseconds
         let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
             .duration_since(UNIX_EPOCH)?
-            .as_millis() as u64;
             .as_millis() as u64;
 
         // Send message
