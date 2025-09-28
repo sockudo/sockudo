@@ -1,10 +1,11 @@
 use super::{CleanupConfig, DisconnectTask, worker::CleanupWorker};
 use crate::adapter::connection_manager::ConnectionManager;
 use crate::app::manager::AppManager;
+use crate::channel::manager::ChannelManager;
 use crate::webhook::integration::WebhookIntegration;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{error, info, warn};
 
 /// Multi-worker cleanup system that distributes work across multiple worker threads
@@ -18,6 +19,7 @@ pub struct MultiWorkerCleanupSystem {
 impl MultiWorkerCleanupSystem {
     pub fn new(
         connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        channel_manager: Arc<RwLock<ChannelManager>>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
         config: CleanupConfig,
@@ -41,6 +43,7 @@ impl MultiWorkerCleanupSystem {
 
             let worker = CleanupWorker::new(
                 connection_manager.clone(),
+                channel_manager.clone(),
                 app_manager.clone(),
                 webhook_integration.clone(),
                 worker_config.clone(),
