@@ -9,6 +9,7 @@ use sockudo::adapter::handler::ConnectionHandler;
 use sockudo::app::config::App;
 use sockudo::app::manager::AppManager;
 use sockudo::cache::manager::CacheManager;
+use sockudo::channel::ChannelManager;
 use sockudo::channel::PresenceMemberInfo;
 use sockudo::error::Result;
 use sockudo::metrics::MetricsInterface;
@@ -23,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::WriteHalf;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 pub struct MockAdapter {
     signature_valid: AtomicBool,
@@ -512,11 +513,15 @@ impl RateLimiter for MockRateLimiter {
 }
 
 // Helper function to create a test ConnectionHandler with configurable mocks
-pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
+pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager, MockChannelManager) {
     let app_manager = MockAppManager::new();
+    let channel_manager = MockChannelManager::new();
 
     let handler = ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
+        Arc::new(RwLock::new(ChannelManager::new(Arc::new(Mutex::new(
+            MockAdapter::new(),
+        ))))),
         Arc::new(Mutex::new(MockAdapter::new())),
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
@@ -525,7 +530,7 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
         None,
     );
 
-    (handler, app_manager)
+    (handler, app_manager, channel_manager)
 }
 
 pub fn create_test_connection_handler_with_app_manager(
@@ -533,6 +538,9 @@ pub fn create_test_connection_handler_with_app_manager(
 ) -> ConnectionHandler {
     ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
+        Arc::new(RwLock::new(ChannelManager::new(Arc::new(Mutex::new(
+            MockAdapter::new(),
+        ))))),
         Arc::new(Mutex::new(MockAdapter::new())),
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
