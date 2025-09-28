@@ -377,7 +377,7 @@ impl ChannelManager {
                 }
             }
             MessageData::String(data) => {
-                let parsed_data = serde_json::to_value(&data).unwrap();
+                let parsed_data: Value = serde_json::from_str(&data).unwrap_or_default();
                 let channel = parsed_data
                     .get("channel")
                     .and_then(|v| v.as_str())
