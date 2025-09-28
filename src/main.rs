@@ -45,12 +45,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 // Updated factory imports
 use crate::adapter::factory::AdapterFactory;
 use crate::app::factory::AppManagerFactory;
 use crate::cache::factory::CacheManagerFactory;
+use crate::channel::ChannelManager;
 use crate::cleanup::{CleanupConfig, CleanupSender};
 use crate::error::Result;
 use crate::http_handler::{
@@ -94,6 +95,7 @@ use crate::websocket::WebSocketRef;
 /// Server state containing all managers
 struct ServerState {
     app_manager: Arc<dyn AppManager + Send + Sync>,
+    channel_manager: Arc<RwLock<ChannelManager>>,
     connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
     auth_validator: Arc<AuthValidator>,
     cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
@@ -240,6 +242,8 @@ impl SockudoServer {
             config.cache.driver
         );
 
+        let channel_manager =
+            Arc::new(RwLock::new(ChannelManager::new(connection_manager.clone())));
         let auth_validator = Arc::new(AuthValidator::new(app_manager.clone()));
 
         let metrics = if config.metrics.enabled {
@@ -447,6 +451,7 @@ impl SockudoServer {
         let (cleanup_queue, cleanup_worker_handles) = if cleanup_config.async_enabled {
             let multi_worker_system = MultiWorkerCleanupSystem::new(
                 connection_manager.clone(),
+                channel_manager.clone(),
                 app_manager.clone(),
                 Some(webhook_integration.clone()),
                 cleanup_config.clone(),
@@ -472,6 +477,7 @@ impl SockudoServer {
 
         let state = ServerState {
             app_manager: app_manager.clone(),
+            channel_manager: channel_manager.clone(),
             connection_manager: connection_manager.clone(),
             auth_validator,
             cache_manager,
@@ -488,6 +494,7 @@ impl SockudoServer {
 
         let handler = Arc::new(ConnectionHandler::new(
             state.app_manager.clone(),
+            state.channel_manager.clone(),
             state.connection_manager.clone(),
             state.cache_manager.clone(),
             state.metrics.clone(),

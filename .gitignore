@@ -5,4 +5,3 @@
 .DS_Store
 benchmark/vendor
 .idea/
-.claude/settings.local.json

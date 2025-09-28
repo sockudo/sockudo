@@ -63,6 +63,11 @@ async fn test_up_general_health_check_with_apps() {
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
             as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+        Arc::new(tokio::sync::RwLock::new(
+            sockudo::channel::ChannelManager::new(Arc::new(tokio::sync::Mutex::new(
+                crate::mocks::connection_handler_mock::MockAdapter::new(),
+            ))),
+        )),
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockAdapter::new(),
         )),
@@ -198,6 +203,11 @@ impl sockudo::app::manager::AppManager for ErrorMockAppManager {
 async fn test_up_general_health_check_app_manager_error() {
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(ErrorMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+        Arc::new(tokio::sync::RwLock::new(
+            sockudo::channel::ChannelManager::new(Arc::new(tokio::sync::Mutex::new(
+                crate::mocks::connection_handler_mock::MockAdapter::new(),
+            ))),
+        )),
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockAdapter::new(),
         )),
@@ -226,6 +236,11 @@ async fn test_up_general_health_check_app_manager_error() {
 async fn test_up_specific_app_manager_error() {
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(ErrorMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+        Arc::new(tokio::sync::RwLock::new(
+            sockudo::channel::ChannelManager::new(Arc::new(tokio::sync::Mutex::new(
+                crate::mocks::connection_handler_mock::MockAdapter::new(),
+            ))),
+        )),
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockAdapter::new(),
         )),
@@ -289,6 +304,11 @@ impl sockudo::app::manager::AppManager for TimeoutMockAppManager {
 async fn test_up_general_health_check_timeout() {
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(TimeoutMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+        Arc::new(tokio::sync::RwLock::new(
+            sockudo::channel::ChannelManager::new(Arc::new(tokio::sync::Mutex::new(
+                crate::mocks::connection_handler_mock::MockAdapter::new(),
+            ))),
+        )),
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockAdapter::new(),
         )),
@@ -317,6 +337,11 @@ async fn test_up_general_health_check_timeout() {
 async fn test_up_specific_app_timeout() {
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(TimeoutMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+        Arc::new(tokio::sync::RwLock::new(
+            sockudo::channel::ChannelManager::new(Arc::new(tokio::sync::Mutex::new(
+                crate::mocks::connection_handler_mock::MockAdapter::new(),
+            ))),
+        )),
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockAdapter::new(),
         )),
@@ -579,8 +604,15 @@ async fn test_up_adapter_health_check_failure() {
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
             as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+        Arc::new(tokio::sync::RwLock::new(
+            sockudo::channel::ChannelManager::new(Arc::new(tokio::sync::Mutex::new(
+                FailingAdapter,
+            ))),
+        )),
         Arc::new(tokio::sync::Mutex::new(FailingAdapter)),
-        Arc::new(tokio::sync::Mutex::new(FailingCacheManager)),
+        Arc::new(tokio::sync::Mutex::new(
+            crate::mocks::connection_handler_mock::MockCacheManager::new(),
+        )),
         Some(Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
         ))),
@@ -608,6 +640,11 @@ async fn test_up_cache_health_check_failure() {
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
             as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+        Arc::new(tokio::sync::RwLock::new(
+            sockudo::channel::ChannelManager::new(Arc::new(tokio::sync::Mutex::new(
+                crate::mocks::connection_handler_mock::MockAdapter::new(),
+            ))),
+        )),
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockAdapter::new(),
         )),
