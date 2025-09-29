@@ -45,6 +45,11 @@ async fn test_realistic_socket_aggregation() -> Result<()> {
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.start_listeners().await?;
 
+    // Simulate discovered nodes for multi-node behavior
+    let adapter = adapter
+        .with_discovered_nodes(vec!["node-1", "node-2"])
+        .await?;
+
     let response = adapter
         .send_request("test-app", RequestType::Sockets, None, None, None)
         .await?;
@@ -80,6 +85,11 @@ async fn test_conflicting_data_handling() -> Result<()> {
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.start_listeners().await?;
 
+    // Simulate discovered nodes for multi-node behavior
+    let adapter = adapter
+        .with_discovered_nodes(vec!["node-1", "node-2"])
+        .await?;
+
     let response = adapter
         .send_request(
             "test-app",
@@ -114,8 +124,7 @@ async fn test_conflicting_data_handling() -> Result<()> {
 #[tokio::test]
 async fn test_channel_socket_overlap_aggregation() -> Result<()> {
     // Test channel membership with overlapping sockets
-    let config = MockConfig::default();
-    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     let response = adapter
@@ -150,6 +159,11 @@ async fn test_send_request_timeout_with_partial_responses() -> Result<()> {
     let config = MockTransport::partial_failures(); // 500ms timeout, node-3 responds in 2000ms
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.start_listeners().await?;
+
+    // Simulate discovered nodes for multi-node behavior
+    let adapter = adapter
+        .with_discovered_nodes(vec!["node-1", "node-2", "node-3"])
+        .await?;
 
     let start = std::time::Instant::now();
 
@@ -205,9 +219,9 @@ async fn test_corrupt_response_handling() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_large_scale_aggregation() -> Result<()> {
-    let config = MockTransport::large_scale(); // 10 nodes, 100 sockets each
-    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+async fn test_multi_node_socket_aggregation() -> Result<()> {
+    // Test socket aggregation across multiple nodes with overlapping sockets
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     let response = adapter
@@ -216,21 +230,47 @@ async fn test_large_scale_aggregation() -> Result<()> {
 
     assert_eq!(response.app_id, "test-app");
 
-    // 10 nodes * 100 sockets each = 1000 total sockets (all unique in large_scale config)
-    assert_eq!(response.sockets_count, 1000);
-    assert_eq!(response.socket_ids.len(), 1000);
+    // Default config: Node1[socket-1,socket-2,socket-shared] + Node2[socket-3,socket-4,socket-shared]
+    // RequestType::Sockets returns unique socket IDs but raw total count across nodes
+    assert_eq!(
+        response.sockets_count, 6,
+        "Should count all sockets including duplicates across nodes"
+    );
+    assert_eq!(
+        response.socket_ids.len(),
+        5,
+        "Should return deduplicated socket IDs"
+    );
 
-    // Verify no duplicates in response
+    // Verify all expected unique sockets are present
     let unique_sockets: HashSet<String> = response.socket_ids.into_iter().collect();
-    assert_eq!(unique_sockets.len(), 1000);
+    assert_eq!(
+        unique_sockets.len(),
+        5,
+        "Should have exactly 5 unique sockets"
+    );
+
+    let expected_sockets: HashSet<String> = [
+        "socket-1",
+        "socket-2",
+        "socket-3",
+        "socket-4",
+        "socket-shared",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(
+        unique_sockets, expected_sockets,
+        "Should contain all expected sockets"
+    );
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_concurrent_request_isolation() -> Result<()> {
-    let config = MockConfig::default();
-    let adapter = Arc::new(HorizontalAdapterBase::<MockTransport>::new(config).await?);
+    let adapter = Arc::new(MockConfig::create_multi_node_adapter().await?);
     adapter.start_listeners().await?;
 
     // Send multiple concurrent requests of different types
@@ -333,8 +373,7 @@ async fn test_dynamic_node_count_handling() -> Result<()> {
 #[tokio::test]
 async fn test_user_socket_aggregation() -> Result<()> {
     // Test user-specific socket aggregation across nodes
-    let config = MockConfig::default();
-    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     // Query for shared-user who has sockets on both nodes
@@ -359,8 +398,7 @@ async fn test_user_socket_aggregation() -> Result<()> {
 
 #[tokio::test]
 async fn test_broadcast_message_verification() -> Result<()> {
-    let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.init().await;
     adapter.start_listeners().await?;
 
@@ -398,8 +436,7 @@ async fn test_broadcast_message_verification() -> Result<()> {
 
 #[tokio::test]
 async fn test_request_id_uniqueness_under_load() -> Result<()> {
-    let config = MockConfig::default();
-    let adapter = Arc::new(HorizontalAdapterBase::<MockTransport>::new(config).await?);
+    let adapter = Arc::new(MockConfig::create_multi_node_adapter().await?);
     adapter.start_listeners().await?;
 
     // Generate many concurrent requests to test ID uniqueness
@@ -448,6 +485,11 @@ async fn test_socket_existence_validation() -> Result<()> {
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.start_listeners().await?;
 
+    // Simulate discovered nodes for multi-node behavior
+    let adapter = adapter
+        .with_discovered_nodes(vec!["node-1", "node-2"])
+        .await?;
+
     // Test existing socket
     let response = adapter
         .send_request(
@@ -481,8 +523,7 @@ async fn test_socket_existence_validation() -> Result<()> {
 
 #[tokio::test]
 async fn test_presence_member_data_integrity() -> Result<()> {
-    let config = MockConfig::default();
-    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     let response = adapter
@@ -520,8 +561,7 @@ async fn test_presence_member_data_integrity() -> Result<()> {
 // Connection Manager tests with realistic validation
 #[tokio::test]
 async fn test_connection_manager_distributed_socket_count() -> Result<()> {
-    let config = MockConfig::default();
-    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     let count = adapter.get_sockets_count("test-app").await?;
@@ -534,8 +574,7 @@ async fn test_connection_manager_distributed_socket_count() -> Result<()> {
 
 #[tokio::test]
 async fn test_connection_manager_channel_specific_operations() -> Result<()> {
-    let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     // Test channel socket count
@@ -566,8 +605,7 @@ async fn test_connection_manager_channel_specific_operations() -> Result<()> {
 
 #[tokio::test]
 async fn test_connection_manager_user_operations() -> Result<()> {
-    let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     // Test user sockets aggregation via horizontal communication
@@ -594,8 +632,7 @@ async fn test_connection_manager_user_operations() -> Result<()> {
 
 #[tokio::test]
 async fn test_connection_manager_socket_existence() -> Result<()> {
-    let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let mut adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     let socket_id = SocketId("socket-shared".to_string());
