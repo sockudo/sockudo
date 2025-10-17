@@ -11,11 +11,11 @@ use crate::adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
 use crate::adapter::redis_cluster_adapter::RedisClusterAdapter;
 use crate::error::Result;
 
-use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig};
 #[cfg(feature = "nats")]
 use crate::options::NatsAdapterConfig;
 #[cfg(feature = "redis-cluster")]
 use crate::options::RedisClusterAdapterConfig; // Import AdapterDriver, RedisConnection
+use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig};
 use tracing::{info, warn};
 
 pub struct AdapterFactory;
@@ -166,7 +166,11 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "redis"))]
             AdapterDriver::Redis => {
-                warn!("{}", "Redis adapter requested but not compiled in. Falling back to local adapter.".to_string());
+                warn!(
+                    "{}",
+                    "Redis adapter requested but not compiled in. Falling back to local adapter."
+                        .to_string()
+                );
                 Ok(Arc::new(Mutex::new(
                     LocalAdapter::new_with_buffer_multiplier(config.buffer_multiplier_per_cpu),
                 )))
@@ -180,7 +184,11 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "nats"))]
             AdapterDriver::Nats => {
-                warn!("{}", "NATS adapter requested but not compiled in. Falling back to local adapter.".to_string());
+                warn!(
+                    "{}",
+                    "NATS adapter requested but not compiled in. Falling back to local adapter."
+                        .to_string()
+                );
                 Ok(Arc::new(Mutex::new(
                     LocalAdapter::new_with_buffer_multiplier(config.buffer_multiplier_per_cpu),
                 )))
