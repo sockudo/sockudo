@@ -7,16 +7,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(feature = "redis")]
-use sockudo::adapter::transports::RedisTransport;
 #[cfg(feature = "nats")]
 use sockudo::adapter::transports::NatsTransport;
+#[cfg(feature = "redis")]
+use sockudo::adapter::transports::RedisTransport;
 
 // Import test helpers from the transports tests
-#[cfg(feature = "redis")]
-use super::transports::test_helpers::get_redis_config;
 #[cfg(feature = "nats")]
 use super::transports::test_helpers::get_nats_config;
+#[cfg(feature = "redis")]
+use super::transports::test_helpers::get_redis_config;
 
 #[tokio::test]
 #[cfg(feature = "redis")]

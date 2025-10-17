@@ -16,9 +16,9 @@ use crate::error::{Error, Result};
 use crate::options::{CacheConfig, CacheDriver, MemoryCacheOptions, RedisConnection};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::info;
 #[cfg(any(feature = "redis", feature = "redis-cluster"))]
 use tracing::error;
+use tracing::info;
 
 pub struct CacheManagerFactory;
 

@@ -4,9 +4,9 @@
 use crate::error::Result;
 use crate::rate_limiter::RateLimiter;
 use std::sync::Arc;
-use tracing::{info, warn};
 #[cfg(any(feature = "redis", feature = "redis-cluster"))]
 use tracing::error;
+use tracing::{info, warn};
 
 use crate::options::{CacheDriver, RateLimiterConfig, RedisConnection};
 use crate::rate_limiter::memory_limiter::MemoryRateLimiter;
@@ -51,12 +51,16 @@ impl RateLimiterFactory {
             }
             #[cfg(not(feature = "redis"))]
             CacheDriver::Redis => {
-                warn!("Redis rate limiter requested but not compiled in. Falling back to memory limiter.");
+                warn!(
+                    "Redis rate limiter requested but not compiled in. Falling back to memory limiter."
+                );
                 Self::create_memory_limiter(config)
             }
             #[cfg(not(feature = "redis-cluster"))]
             CacheDriver::RedisCluster => {
-                warn!("Redis Cluster rate limiter requested but not compiled in. Falling back to memory limiter.");
+                warn!(
+                    "Redis Cluster rate limiter requested but not compiled in. Falling back to memory limiter."
+                );
                 Self::create_memory_limiter(config)
             }
         }

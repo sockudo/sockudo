@@ -1,13 +1,13 @@
+#[cfg(feature = "nats")]
+use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
+#[cfg(feature = "redis-cluster")]
+use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
 use crate::app::config::App;
 use crate::utils::{parse_bool_env, parse_env, parse_env_optional};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
 use tracing::{info, warn};
-#[cfg(feature = "nats")]
-use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
-#[cfg(feature = "redis-cluster")]
-use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
 
 // Custom deserializer for octal permission mode (string format only, like chmod)
 fn deserialize_octal_permission<'de, D>(deserializer: D) -> Result<u32, D::Error>

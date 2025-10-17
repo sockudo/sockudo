@@ -729,41 +729,41 @@ mod tests {
         // Create manager
         let manager = MySQLAppManager::new(config).await.unwrap();
 
-            // Test registering an app
-            let test_app = create_test_app("test1");
-            manager.create_app(test_app.clone()).await.unwrap();
+        // Test registering an app
+        let test_app = create_test_app("test1");
+        manager.create_app(test_app.clone()).await.unwrap();
 
-            // Test getting an app
-            let app = manager.find_by_id("test1").await.unwrap().unwrap();
-            assert_eq!(app.id, "test1");
-            assert_eq!(app.key, "test1_key");
+        // Test getting an app
+        let app = manager.find_by_id("test1").await.unwrap().unwrap();
+        assert_eq!(app.id, "test1");
+        assert_eq!(app.key, "test1_key");
 
-            // Test getting an app by key
-            let app = manager.find_by_key("test1_key").await.unwrap().unwrap();
-            assert_eq!(app.id, "test1");
+        // Test getting an app by key
+        let app = manager.find_by_key("test1_key").await.unwrap().unwrap();
+        assert_eq!(app.id, "test1");
 
-            // Test updating an app
-            let mut updated_app = test_app.clone();
-            updated_app.max_connections = 200;
-            manager.update_app(updated_app).await.unwrap();
+        // Test updating an app
+        let mut updated_app = test_app.clone();
+        updated_app.max_connections = 200;
+        manager.update_app(updated_app).await.unwrap();
 
-            let app = manager.find_by_id("test1").await.unwrap().unwrap();
-            assert_eq!(app.max_connections, 200);
+        let app = manager.find_by_id("test1").await.unwrap().unwrap();
+        assert_eq!(app.max_connections, 200);
 
-            // Test cache expiration
-            tokio::time::sleep(Duration::from_secs(6)).await;
+        // Test cache expiration
+        tokio::time::sleep(Duration::from_secs(6)).await;
 
-            // Add another app
-            let test_app2 = create_test_app("test2");
-            manager.create_app(test_app2).await.unwrap();
+        // Add another app
+        let test_app2 = create_test_app("test2");
+        manager.create_app(test_app2).await.unwrap();
 
-            // Get all apps
-            let apps = manager.get_apps().await.unwrap();
-            assert_eq!(apps.len(), 2);
+        // Get all apps
+        let apps = manager.get_apps().await.unwrap();
+        assert_eq!(apps.len(), 2);
 
-            // Test removing an app
-            manager.delete_app("test1").await.unwrap();
-            assert!(manager.find_by_id("test1").await.unwrap().is_none());
+        // Test removing an app
+        manager.delete_app("test1").await.unwrap();
+        assert!(manager.find_by_id("test1").await.unwrap().is_none());
 
         // Cleanup
         manager.delete_app("test2").await.unwrap();
