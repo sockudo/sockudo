@@ -14,7 +14,7 @@ use crate::webhook::types::JobData;
 #[cfg(any(feature = "redis", feature = "redis-cluster"))]
 use tracing::debug;
 use tracing::info;
-#[cfg(any(not(feature = "redis"), not(feature = "redis-cluster")))]
+#[cfg(all(not(feature = "redis"), not(feature = "redis-cluster")))]
 use tracing::warn;
 
 /// General Queue Manager interface wrapper
