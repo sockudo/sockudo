@@ -95,7 +95,7 @@ impl AppManagerFactory {
             }
             #[cfg(not(feature = "mysql"))]
             AppManagerDriver::Mysql => {
-                warn!("{}", "MySQL app manager requested but not compiled in. Falling back to memory manager.".to_string());
+                warn!("{}", "MySQL app manager requested but not compiled in. Falling back to memory manager.");
                 Ok(Arc::new(MemoryAppManager::new()))
             }
             #[cfg(not(feature = "dynamodb"))]
