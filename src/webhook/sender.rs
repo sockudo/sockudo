@@ -11,7 +11,7 @@ use crate::webhook::lambda_sender::LambdaWebhookSender;
 use crate::token::Token; // For HMAC SHA256 signing
 use crate::webhook::types::{JobData, PusherWebhookPayload, Webhook};
 use reqwest::{Client, header};
-use serde_json::Value; // Keep Value
+use serde_json::Value;
 #[cfg(feature = "lambda")]
 use serde_json::json; // json! macro only used in lambda feature
 use std::collections::HashMap;
