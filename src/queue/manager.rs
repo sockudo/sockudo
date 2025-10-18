@@ -79,14 +79,18 @@ impl QueueManagerFactory {
             }
             #[cfg(not(feature = "redis"))]
             "redis" => {
-                warn!("Redis queue manager requested but not compiled in. Falling back to memory queue.");
+                warn!(
+                    "Redis queue manager requested but not compiled in. Falling back to memory queue."
+                );
                 let manager = MemoryQueueManager::new();
                 manager.start_processing();
                 Ok(Box::new(manager))
             }
             #[cfg(not(feature = "redis-cluster"))]
             "redis-cluster" => {
-                warn!("Redis Cluster queue manager requested but not compiled in. Falling back to memory queue.");
+                warn!(
+                    "Redis Cluster queue manager requested but not compiled in. Falling back to memory queue."
+                );
                 let manager = MemoryQueueManager::new();
                 manager.start_processing();
                 Ok(Box::new(manager))
