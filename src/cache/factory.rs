@@ -143,14 +143,19 @@ impl CacheManagerFactory {
             }
             #[cfg(not(feature = "redis"))]
             CacheDriver::Redis => {
-                info!("{}", "Redis cache manager requested but not compiled in. Falling back to memory cache.");
+                info!(
+                    "{}",
+                    "Redis cache manager requested but not compiled in. Falling back to memory cache."
+                );
                 let manager =
                     MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone());
                 Ok(Arc::new(Mutex::new(manager)))
             }
             #[cfg(not(feature = "redis-cluster"))]
             CacheDriver::RedisCluster => {
-                info!("Redis Cluster cache manager requested but not compiled in. Falling back to memory cache.");
+                info!(
+                    "Redis Cluster cache manager requested but not compiled in. Falling back to memory cache."
+                );
                 let manager =
                     MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone());
                 Ok(Arc::new(Mutex::new(manager)))

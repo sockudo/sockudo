@@ -95,17 +95,26 @@ impl AppManagerFactory {
             }
             #[cfg(not(feature = "mysql"))]
             AppManagerDriver::Mysql => {
-                warn!("{}", "MySQL app manager requested but not compiled in. Falling back to memory manager.");
+                warn!(
+                    "{}",
+                    "MySQL app manager requested but not compiled in. Falling back to memory manager."
+                );
                 Ok(Arc::new(MemoryAppManager::new()))
             }
             #[cfg(not(feature = "dynamodb"))]
             AppManagerDriver::Dynamodb => {
-                warn!("{}", "DynamoDB app manager requested but not compiled in. Falling back to memory manager.");
+                warn!(
+                    "{}",
+                    "DynamoDB app manager requested but not compiled in. Falling back to memory manager."
+                );
                 Ok(Arc::new(MemoryAppManager::new()))
             }
             #[cfg(not(feature = "postgres"))]
             AppManagerDriver::PgSql => {
-                warn!("{}", "PostgreSQL app manager requested but not compiled in. Falling back to memory manager.");
+                warn!(
+                    "{}",
+                    "PostgreSQL app manager requested but not compiled in. Falling back to memory manager."
+                );
                 Ok(Arc::new(MemoryAppManager::new()))
             }
         }
