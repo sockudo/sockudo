@@ -105,7 +105,7 @@ impl AppManagerFactory {
             }
             #[cfg(not(feature = "postgres"))]
             AppManagerDriver::PgSql => {
-                warn!("{}", "PostgreSQL app manager requested but not compiled in. Falling back to memory manager.".to_string());
+                warn!("{}", "PostgreSQL app manager requested but not compiled in. Falling back to memory manager.");
                 Ok(Arc::new(MemoryAppManager::new()))
             }
         }
