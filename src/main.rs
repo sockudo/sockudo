@@ -271,7 +271,12 @@ impl SockudoServer {
             debug_enabled
         );
 
-        let app_manager = AppManagerFactory::create(&config.app_manager, &config.database).await?;
+        let app_manager = AppManagerFactory::create(
+            &config.app_manager,
+            &config.database,
+            &config.database_pooling,
+        )
+        .await?;
         info!(
             "AppManager initialized with driver: {:?}",
             config.app_manager.driver
