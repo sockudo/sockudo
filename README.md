@@ -102,6 +102,46 @@ CLEANUP_WORKER_THREADS=auto
 ADAPTER_BUFFER_MULTIPLIER_PER_CPU=128
 ```
 
+### Database Pooling
+
+- Global defaults (apply to all SQL DBs unless overridden):
+
+```bash
+DATABASE_POOLING_ENABLED=true
+DATABASE_POOL_MIN=2
+DATABASE_POOL_MAX=10
+# Legacy cap if pooling disabled
+DATABASE_CONNECTION_POOL_SIZE=10
+```
+
+- Per‑database overrides (take precedence over global when set):
+
+```bash
+# MySQL
+DATABASE_MYSQL_POOL_MIN=4
+DATABASE_MYSQL_POOL_MAX=32
+
+# PostgreSQL
+DATABASE_POSTGRES_POOL_MIN=2
+DATABASE_POSTGRES_POOL_MAX=16
+```
+
+- config/config.json keys:
+
+```json
+{
+  "database_pooling": { "enabled": true, "min": 2, "max": 10 },
+  "database": {
+    "mysql": { "pool_min": 2, "pool_max": 10, "connection_pool_size": 10 },
+    "postgres": { "pool_min": 2, "pool_max": 10, "connection_pool_size": 10 }
+  }
+}
+```
+
+Behavior:
+- When `database_pooling.enabled` is true, managers use per‑DB `pool_min/pool_max` if provided; otherwise they fall back to the global `database_pooling.min/max`.
+- When disabled, managers use `connection_pool_size` as the max connections for backward compatibility.
+
 ## Deployment Scenarios
 
 | Scenario | CPU/RAM | Adapter | Cache | Queue | Max Connections |

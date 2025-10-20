@@ -1,7 +1,7 @@
 use super::config::App;
 use crate::app::manager::AppManager;
 use crate::error::{Error, Result};
-use crate::options::DatabaseConnection;
+use crate::options::{DatabaseConnection, DatabasePooling};
 use crate::token::Token;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
@@ -21,7 +21,7 @@ pub struct PgSQLAppManager {
 
 impl PgSQLAppManager {
     /// Create a new PostgreSQL-based AppManager with the provided configuration
-    pub async fn new(config: DatabaseConnection) -> Result<Self> {
+    pub async fn new(config: DatabaseConnection, pooling: DatabasePooling) -> Result<Self> {
         info!(
             "Initializing PostgreSQL AppManager with database {}",
             config.database
@@ -34,9 +34,17 @@ impl PgSQLAppManager {
             config.username, password, config.host, config.port, config.database
         );
 
-        // Create connection pool with improved options
-        let pool = PgPoolOptions::new()
-            .max_connections(config.connection_pool_size)
+        // Create connection pool with options from config/env
+        let mut opts = PgPoolOptions::new();
+        opts = if pooling.enabled {
+            let min = config.pool_min.unwrap_or(pooling.min);
+            let max = config.pool_max.unwrap_or(pooling.max);
+            opts.min_connections(min).max_connections(max)
+        } else {
+            // Backward-compat: only max via per-DB connection_pool_size
+            opts.max_connections(config.connection_pool_size)
+        };
+        let pool = opts
             .acquire_timeout(Duration::from_secs(5))
             .idle_timeout(Duration::from_secs(180))
             .connect(&connection_string)
@@ -638,7 +646,9 @@ mod tests {
         };
 
         // Create manager
-        let manager = PgSQLAppManager::new(config).await.unwrap();
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
 
         // Test registering an app
         let test_app = create_test_app("test1");
