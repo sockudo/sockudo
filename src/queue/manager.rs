@@ -11,11 +11,7 @@ use crate::queue::redis_cluster_queue_manager::RedisClusterQueueManager;
 use crate::queue::redis_queue_manager::RedisQueueManager;
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
-#[cfg(any(feature = "redis", feature = "redis-cluster"))]
-use tracing::debug;
-use tracing::info;
-#[cfg(all(not(feature = "redis"), not(feature = "redis-cluster")))]
-use tracing::warn;
+use tracing::*;
 
 /// General Queue Manager interface wrapper
 pub struct QueueManagerFactory;
