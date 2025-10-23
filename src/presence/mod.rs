@@ -82,7 +82,7 @@ impl PresenceManager {
 
         // Always broadcast presence join to all nodes for cluster replication (for every connection)
         if let Some(excluding_socket) = excluding_socket
-            && let Some(horizontal_adapter) = Arc::clone(&connection_manager)
+            && let Some(horizontal_adapter) =
                 connection_manager.lock().await.as_horizontal_adapter()
         {
             horizontal_adapter
