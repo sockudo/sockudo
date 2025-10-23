@@ -84,8 +84,6 @@ impl PresenceManager {
         if let Some(excluding_socket) = excluding_socket
             && let Some(horizontal_adapter) = Arc::clone(&connection_manager)
                 connection_manager.lock().await.as_horizontal_adapter()
-                .await
-                .as_horizontal_adapter()
         {
             horizontal_adapter
                 .broadcast_presence_join(
