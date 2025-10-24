@@ -712,7 +712,7 @@ mod tests {
             ..Default::default()
         };
 
-        MySQLAppManager::new(config).await.is_ok()
+        MySQLAppManager::new(config, DatabasePooling::default()).await.is_ok()
     }
 
     #[tokio::test]
