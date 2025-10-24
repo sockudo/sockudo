@@ -44,6 +44,23 @@ SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS=https://app.example.com,*.staging.example.co
 
 ### 3. MySQL Database Configuration
 
+Database pooling can be tuned globally or per‑database.
+
+- Global (applies to all SQL managers unless overridden):
+
+```
+DATABASE_POOLING_ENABLED=true
+DATABASE_POOL_MIN=2
+DATABASE_POOL_MAX=10
+```
+
+- MySQL‑specific overrides (take precedence when set):
+
+```
+DATABASE_MYSQL_POOL_MIN=4
+DATABASE_MYSQL_POOL_MAX=32
+```
+
 Store apps in MySQL with the `allowed_origins` JSON column:
 
 ```sql
@@ -65,6 +82,19 @@ mysql -u username -p database_name < migrations/mysql/001_add_allowed_origins.sq
 ```
 
 ### 4. PostgreSQL Database Configuration
+
+Use global pooling envs above or Postgres‑specific overrides:
+
+```
+DATABASE_POSTGRES_POOL_MIN=2
+DATABASE_POSTGRES_POOL_MAX=16
+```
+
+If pooling is disabled (`DATABASE_POOLING_ENABLED=false`), the legacy
+`DATABASE_CONNECTION_POOL_SIZE` is used as the maximum connections.
+
+Note: DynamoDB uses the AWS SDK client which manages its own
+connection behavior; `pool_min`/`pool_max` do not apply to DynamoDB.
 
 Store apps in PostgreSQL with the `allowed_origins` JSONB column:
 
