@@ -62,6 +62,15 @@ where
     }
 }
 
+fn override_db_pool_settings(db_conn: &mut DatabaseConnection, prefix: &str) {
+    if let Some(min) = parse_env_optional::<u32>(&format!("{}_POOL_MIN", prefix)) {
+        db_conn.pool_min = Some(min);
+    }
+    if let Some(max) = parse_env_optional::<u32>(&format!("{}_POOL_MAX", prefix)) {
+        db_conn.pool_max = Some(max);
+    }
+}
+
 // --- Enums for Driver Types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -455,6 +464,9 @@ pub struct DatabaseConnection {
     pub database: String,
     pub table_name: String,
     pub connection_pool_size: u32,
+    // Optional per-DB pooling overrides; fall back to ServerOptions.database_pooling
+    pub pool_min: Option<u32>,
+    pub pool_max: Option<u32>,
     pub cache_ttl: u64,
     pub cache_cleanup_interval: u64,
     pub cache_max_capacity: u64,
@@ -801,6 +813,8 @@ impl Default for DatabaseConnection {
             database: "sockudo".to_string(),
             table_name: "applications".to_string(),
             connection_pool_size: 10,
+            pool_min: None,
+            pool_max: None,
             cache_ttl: 300,
             cache_cleanup_interval: 60,
             cache_max_capacity: 100,
@@ -1153,6 +1167,7 @@ impl ServerOptions {
         if let Ok(table) = std::env::var("DATABASE_MYSQL_TABLE_NAME") {
             self.database.mysql.table_name = table;
         }
+        override_db_pool_settings(&mut self.database.mysql, "DATABASE_MYSQL");
 
         // --- Database: PostgreSQL ---
         if let Ok(host) = std::env::var("DATABASE_POSTGRES_HOST") {
@@ -1169,6 +1184,7 @@ impl ServerOptions {
         if let Ok(db) = std::env::var("DATABASE_POSTGRES_DATABASE") {
             self.database.postgres.database = db;
         }
+        override_db_pool_settings(&mut self.database.postgres, "DATABASE_POSTGRES");
 
         // --- Database: DynamoDB ---
         if let Ok(region) = std::env::var("DATABASE_DYNAMODB_REGION") {
@@ -1354,6 +1370,16 @@ impl ServerOptions {
         self.cors.credentials = parse_bool_env("CORS_CREDENTIALS", self.cors.credentials);
 
         // --- Performance Tuning ---
+        // Global DB pooling controls
+        self.database_pooling.enabled =
+            parse_bool_env("DATABASE_POOLING_ENABLED", self.database_pooling.enabled);
+        if let Some(min) = parse_env_optional::<u32>("DATABASE_POOL_MIN") {
+            self.database_pooling.min = min;
+        }
+        if let Some(max) = parse_env_optional::<u32>("DATABASE_POOL_MAX") {
+            self.database_pooling.max = max;
+        }
+
         if let Some(pool_size) = parse_env_optional::<u32>("DATABASE_CONNECTION_POOL_SIZE") {
             self.database.mysql.connection_pool_size = pool_size;
             self.database.postgres.connection_pool_size = pool_size;
