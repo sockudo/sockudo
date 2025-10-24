@@ -61,6 +61,15 @@ where
     }
 }
 
+fn override_db_pool_settings(db_conn: &mut DatabaseConnection, prefix: &str) {
+    if let Some(min) = parse_env_optional::<u32>(&format!("{}_POOL_MIN", prefix)) {
+        db_conn.pool_min = Some(min);
+    }
+    if let Some(max) = parse_env_optional::<u32>(&format!("{}_POOL_MAX", prefix)) {
+        db_conn.pool_max = Some(max);
+    }
+}
+
 // --- Enums for Driver Types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1151,12 +1160,7 @@ impl ServerOptions {
         if let Ok(table) = std::env::var("DATABASE_MYSQL_TABLE_NAME") {
             self.database.mysql.table_name = table;
         }
-        if let Some(min) = parse_env_optional::<u32>("DATABASE_MYSQL_POOL_MIN") {
-            self.database.mysql.pool_min = Some(min);
-        }
-        if let Some(max) = parse_env_optional::<u32>("DATABASE_MYSQL_POOL_MAX") {
-            self.database.mysql.pool_max = Some(max);
-        }
+        override_db_pool_settings(&mut self.database.mysql, "DATABASE_MYSQL");
 
         // --- Database: PostgreSQL ---
         if let Ok(host) = std::env::var("DATABASE_POSTGRES_HOST") {
@@ -1173,12 +1177,7 @@ impl ServerOptions {
         if let Ok(db) = std::env::var("DATABASE_POSTGRES_DATABASE") {
             self.database.postgres.database = db;
         }
-        if let Some(min) = parse_env_optional::<u32>("DATABASE_POSTGRES_POOL_MIN") {
-            self.database.postgres.pool_min = Some(min);
-        }
-        if let Some(max) = parse_env_optional::<u32>("DATABASE_POSTGRES_POOL_MAX") {
-            self.database.postgres.pool_max = Some(max);
-        }
+        override_db_pool_settings(&mut self.database.postgres, "DATABASE_POSTGRES");
 
         // --- Database: DynamoDB ---
         if let Ok(region) = std::env::var("DATABASE_DYNAMODB_REGION") {
