@@ -139,6 +139,36 @@ pub trait TransportConfig: Send + Sync + Clone {
 }
 ```
 
+### Database Pooling
+
+Sockudo’s AppManager for SQL databases (MySQL/PostgreSQL) uses pooled connections.
+
+- Global defaults (apply to all SQL DBs unless overridden):
+
+```
+DATABASE_POOLING_ENABLED=true
+DATABASE_POOL_MIN=2
+DATABASE_POOL_MAX=10
+```
+
+- Per‑database overrides:
+
+```
+# MySQL
+DATABASE_MYSQL_POOL_MIN=4
+DATABASE_MYSQL_POOL_MAX=32
+
+# PostgreSQL
+DATABASE_POSTGRES_POOL_MIN=2
+DATABASE_POSTGRES_POOL_MAX=16
+```
+
+If pooling is disabled (`DATABASE_POOLING_ENABLED=false`), the legacy
+`DATABASE_CONNECTION_POOL_SIZE` is used as the maximum connections.
+
+Note: DynamoDB uses the AWS SDK client which manages its own connection
+behavior; SQL pooling settings do not apply to DynamoDB.
+
 ### Example Configurations
 
 #### Redis Transport

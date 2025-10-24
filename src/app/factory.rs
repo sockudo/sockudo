@@ -9,7 +9,7 @@ use crate::error::Result;
 
 #[cfg(feature = "postgres")]
 use crate::app::pg_app_manager::PgSQLAppManager;
-use crate::options::{AppManagerConfig, AppManagerDriver, DatabaseConfig}; // Import AppManagerDriver
+use crate::options::{AppManagerConfig, AppManagerDriver, DatabaseConfig, DatabasePooling}; // Import AppManagerDriver
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -20,6 +20,7 @@ impl AppManagerFactory {
     pub async fn create(
         config: &AppManagerConfig,
         db_config: &DatabaseConfig,
+        pooling: &DatabasePooling,
     ) -> Result<Arc<dyn AppManager + Send + Sync>> {
         info!(
             "{}",
@@ -30,7 +31,7 @@ impl AppManagerFactory {
             #[cfg(feature = "mysql")]
             AppManagerDriver::Mysql => {
                 let mysql_db_config = db_config.mysql.clone();
-                match MySQLAppManager::new(mysql_db_config).await {
+                match MySQLAppManager::new(mysql_db_config, pooling.clone()).await {
                     Ok(manager) => Ok(Arc::new(manager)),
                     Err(e) => {
                         warn!(
@@ -74,7 +75,7 @@ impl AppManagerFactory {
             #[cfg(feature = "postgres")]
             AppManagerDriver::PgSql => {
                 let pgsql_db_config = db_config.postgres.clone();
-                match PgSQLAppManager::new(pgsql_db_config).await {
+                match PgSQLAppManager::new(pgsql_db_config, pooling.clone()).await {
                     Ok(manager) => Ok(Arc::new(manager)),
                     Err(e) => {
                         warn!(
