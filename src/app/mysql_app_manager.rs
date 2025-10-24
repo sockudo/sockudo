@@ -734,10 +734,10 @@ mod tests {
             ..Default::default()
         };
 
-            // Create manager
-            let manager = MySQLAppManager::new(config, DatabasePooling::default())
-                .await
-                .unwrap();
+        // Create manager
+        let manager = MySQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
 
         // Test registering an app
         let test_app = create_test_app("test1");
