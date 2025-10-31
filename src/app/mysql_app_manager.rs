@@ -636,9 +636,9 @@ struct AppRow {
     max_event_batch_size: Option<u32>,
     enable_user_authentication: Option<bool>,
     enable_watchlist_events: Option<bool>,
-    #[sqlx(json)]
+    #[sqlx(json(nullable))]
     webhooks: Option<Vec<Webhook>>,
-    #[sqlx(json)]
+    #[sqlx(json(nullable))]
     allowed_origins: Option<Vec<String>>,
 }
 
