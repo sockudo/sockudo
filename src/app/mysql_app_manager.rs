@@ -75,6 +75,56 @@ impl MySQLAppManager {
         Ok(manager)
     }
 
+    /// Helper function to add a column if it doesn't exist
+    /// Returns Result to properly propagate database errors
+    async fn add_column_if_not_exists(&self, column_name: &str, column_type: &str) -> Result<()> {
+        // Check if column exists
+        let check_query = format!(
+            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = '{}'
+               AND COLUMN_NAME = '{}'"#,
+            self.config.table_name, column_name
+        );
+
+        let column_exists: Option<(String,)> = sqlx::query_as(&check_query)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to check if column '{}' exists: {}",
+                    column_name, e
+                ))
+            })?;
+
+        // Add column if it doesn't exist
+        if column_exists.is_none() {
+            let add_column_query = format!(
+                r#"ALTER TABLE `{}` ADD COLUMN {} {}"#,
+                self.config.table_name, column_name, column_type
+            );
+
+            if let Err(e) = sqlx::query(&add_column_query).execute(&self.pool).await {
+                // Only warn if error is "duplicate column" (error 1060), otherwise propagate
+                if e.to_string().contains("1060") || e.to_string().contains("Duplicate column") {
+                    warn!("Column '{}' already exists (race condition)", column_name);
+                } else {
+                    return Err(Error::Internal(format!(
+                        "Failed to add column '{}': {}",
+                        column_name, e
+                    )));
+                }
+            } else {
+                info!(
+                    "Added column '{}' to table '{}'",
+                    column_name, self.config.table_name
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Create the applications table if it doesn't exist
     async fn ensure_table_exists(&self) -> Result<()> {
         // Use a constant query (avoid format!) for security
@@ -117,86 +167,17 @@ impl MySQLAppManager {
             .await
             .map_err(|e| Error::Internal(format!("Failed to create MySQL table: {e}")))?;
 
-        // Add migration for allowed_origins column if it doesn't exist
+        // Add migrations for new columns if they don't exist
         // MySQL doesn't support IF NOT EXISTS for columns, so we need to check first
-        let check_column_query = format!(
-            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-               WHERE TABLE_SCHEMA = DATABASE() 
-               AND TABLE_NAME = '{}' 
-               AND COLUMN_NAME = 'allowed_origins'"#,
-            self.config.table_name
-        );
+        let columns_to_add = vec![
+            ("allowed_origins", "JSON NULL"),
+            ("enable_watchlist_events", "BOOLEAN NULL"),
+            ("webhooks", "JSON NULL"),
+        ];
 
-        let column_exists: Option<(String,)> = sqlx::query_as(&check_column_query)
-            .fetch_optional(&self.pool)
-            .await
-            .unwrap_or(None);
-
-        if column_exists.is_none() {
-            let add_column_query = format!(
-                r#"ALTER TABLE `{}` ADD COLUMN allowed_origins JSON NULL"#,
-                self.config.table_name
-            );
-
-            if let Err(e) = sqlx::query(&add_column_query).execute(&self.pool).await {
-                warn!(
-                    "Could not add allowed_origins column (may already exist): {}",
-                    e
-                );
-            }
-        }
-
-        // Add migration for enable_watchlist_events column if it doesn't exist
-        let check_watchlist_query = format!(
-            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-               WHERE TABLE_SCHEMA = DATABASE()
-               AND TABLE_NAME = '{}'
-               AND COLUMN_NAME = 'enable_watchlist_events'"#,
-            self.config.table_name
-        );
-
-        let watchlist_exists: Option<(String,)> = sqlx::query_as(&check_watchlist_query)
-            .fetch_optional(&self.pool)
-            .await
-            .unwrap_or(None);
-
-        if watchlist_exists.is_none() {
-            let add_watchlist_query = format!(
-                r#"ALTER TABLE `{}` ADD COLUMN enable_watchlist_events BOOLEAN NULL"#,
-                self.config.table_name
-            );
-
-            if let Err(e) = sqlx::query(&add_watchlist_query).execute(&self.pool).await {
-                warn!(
-                    "Could not add enable_watchlist_events column (may already exist): {}",
-                    e
-                );
-            }
-        }
-
-        // Add migration for webhooks column if it doesn't exist
-        let check_webhooks_query = format!(
-            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-               WHERE TABLE_SCHEMA = DATABASE()
-               AND TABLE_NAME = '{}'
-               AND COLUMN_NAME = 'webhooks'"#,
-            self.config.table_name
-        );
-
-        let webhooks_exists: Option<(String,)> = sqlx::query_as(&check_webhooks_query)
-            .fetch_optional(&self.pool)
-            .await
-            .unwrap_or(None);
-
-        if webhooks_exists.is_none() {
-            let add_webhooks_query = format!(
-                r#"ALTER TABLE `{}` ADD COLUMN webhooks JSON NULL"#,
-                self.config.table_name
-            );
-
-            if let Err(e) = sqlx::query(&add_webhooks_query).execute(&self.pool).await {
-                warn!("Could not add webhooks column (may already exist): {}", e);
-            }
+        for (column_name, column_type) in columns_to_add {
+            self.add_column_if_not_exists(column_name, column_type)
+                .await?;
         }
 
         info!(
