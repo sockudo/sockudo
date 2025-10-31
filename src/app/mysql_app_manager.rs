@@ -106,7 +106,11 @@ impl MySQLAppManager {
 
             if let Err(e) = sqlx::query(&add_column_query).execute(&self.pool).await {
                 // Only warn if error is "duplicate column" (error 1060), otherwise propagate
-                if e.to_string().contains("1060") || e.to_string().contains("Duplicate column") {
+                let is_duplicate_column_error = e.as_database_error()
+                    .and_then(|db_err| db_err.downcast_ref::<sqlx::mysql::MySqlDatabaseError>())
+                    .map_or(false, |mysql_err| mysql_err.number() == 1060);
+
+                if is_duplicate_column_error {
                     warn!("Column '{}' already exists (race condition)", column_name);
                 } else {
                     return Err(Error::Internal(format!(
