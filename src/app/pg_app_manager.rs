@@ -248,8 +248,8 @@ impl PgSQLAppManager {
                 max_presence_member_size_in_kb, max_channel_name_length,
                 max_event_channels_at_once, max_event_name_length,
                 max_event_payload_in_kb, max_event_batch_size, enable_user_authentication,
-                enable_watchlist_events
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)"#,
+                enable_watchlist_events, webhooks, allowed_origins
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)"#,
             self.config.table_name
         );
 
@@ -272,6 +272,8 @@ impl PgSQLAppManager {
             .bind(app.max_event_batch_size.map(|v| v as i32))
             .bind(app.enable_user_authentication)
             .bind(app.enable_watchlist_events)
+            .bind(sqlx::types::Json(&app.webhooks))
+            .bind(sqlx::types::Json(&app.allowed_origins))
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -297,10 +299,11 @@ impl PgSQLAppManager {
                 max_read_requests_per_second = $8, max_presence_members_per_channel = $9,
                 max_presence_member_size_in_kb = $10, max_channel_name_length = $11,
                 max_event_channels_at_once = $12, max_event_name_length = $13,
-                max_event_payload_in_kb = $14, max_event_batch_size = $15, 
+                max_event_payload_in_kb = $14, max_event_batch_size = $15,
                 enable_user_authentication = $16, enable_watchlist_events = $17,
+                webhooks = $18, allowed_origins = $19,
                 updated_at = CURRENT_TIMESTAMP
-                WHERE id = $18"#,
+                WHERE id = $20"#,
             self.config.table_name
         );
 
@@ -322,6 +325,8 @@ impl PgSQLAppManager {
             .bind(app.max_event_batch_size.map(|v| v as i32))
             .bind(app.enable_user_authentication)
             .bind(app.enable_watchlist_events)
+            .bind(sqlx::types::Json(&app.webhooks))
+            .bind(sqlx::types::Json(&app.allowed_origins))
             .bind(&app.id)
             .execute(&self.pool)
             .await

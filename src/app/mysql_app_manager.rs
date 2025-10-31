@@ -315,8 +315,9 @@ impl MySQLAppManager {
                 max_read_requests_per_second, max_presence_members_per_channel,
                 max_presence_member_size_in_kb, max_channel_name_length,
                 max_event_channels_at_once, max_event_name_length,
-                max_event_payload_in_kb, max_event_batch_size, enable_user_authentication
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                max_event_payload_in_kb, max_event_batch_size, enable_user_authentication,
+                enable_watchlist_events, webhooks, allowed_origins
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             self.config.table_name
         );
 
@@ -338,6 +339,9 @@ impl MySQLAppManager {
             .bind(app.max_event_payload_in_kb)
             .bind(app.max_event_batch_size)
             .bind(app.enable_user_authentication)
+            .bind(app.enable_watchlist_events)
+            .bind(sqlx::types::Json(&app.webhooks))
+            .bind(sqlx::types::Json(&app.allowed_origins))
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -366,7 +370,8 @@ impl MySQLAppManager {
                 max_read_requests_per_second = ?, max_presence_members_per_channel = ?,
                 max_presence_member_size_in_kb = ?, max_channel_name_length = ?,
                 max_event_channels_at_once = ?, max_event_name_length = ?,
-                max_event_payload_in_kb = ?, max_event_batch_size = ?, enable_user_authentication = ?
+                max_event_payload_in_kb = ?, max_event_batch_size = ?, enable_user_authentication = ?,
+                enable_watchlist_events = ?, webhooks = ?, allowed_origins = ?
                 WHERE id = ?"#,
             self.config.table_name
         );
@@ -388,6 +393,9 @@ impl MySQLAppManager {
             .bind(app.max_event_payload_in_kb)
             .bind(app.max_event_batch_size)
             .bind(app.enable_user_authentication)
+            .bind(app.enable_watchlist_events)
+            .bind(sqlx::types::Json(&app.webhooks))
+            .bind(sqlx::types::Json(&app.allowed_origins))
             .bind(&app.id)
             .execute(&self.pool)
             .await
