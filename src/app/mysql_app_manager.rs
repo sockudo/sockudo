@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 
 use crate::options::{DatabaseConnection, DatabasePooling};
 use crate::token::Token;
+use crate::webhook::types::Webhook;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
@@ -96,6 +97,8 @@ impl MySQLAppManager {
                 max_event_payload_in_kb INT UNSIGNED NULL,
                 max_event_batch_size INT UNSIGNED NULL,
                 enable_user_authentication BOOLEAN NULL,
+                enable_watchlist_events BOOLEAN NULL,
+                webhooks JSON NULL,
                 allowed_origins JSON NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -143,6 +146,62 @@ impl MySQLAppManager {
             }
         }
 
+        // Add migration for enable_watchlist_events column if it doesn't exist
+        let check_watchlist_query = format!(
+            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = '{}'
+               AND COLUMN_NAME = 'enable_watchlist_events'"#,
+            self.config.table_name
+        );
+
+        let watchlist_exists: Option<(String,)> = sqlx::query_as(&check_watchlist_query)
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap_or(None);
+
+        if watchlist_exists.is_none() {
+            let add_watchlist_query = format!(
+                r#"ALTER TABLE `{}` ADD COLUMN enable_watchlist_events BOOLEAN NULL"#,
+                self.config.table_name
+            );
+
+            if let Err(e) = sqlx::query(&add_watchlist_query).execute(&self.pool).await {
+                warn!(
+                    "Could not add enable_watchlist_events column (may already exist): {}",
+                    e
+                );
+            }
+        }
+
+        // Add migration for webhooks column if it doesn't exist
+        let check_webhooks_query = format!(
+            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = '{}'
+               AND COLUMN_NAME = 'webhooks'"#,
+            self.config.table_name
+        );
+
+        let webhooks_exists: Option<(String,)> = sqlx::query_as(&check_webhooks_query)
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap_or(None);
+
+        if webhooks_exists.is_none() {
+            let add_webhooks_query = format!(
+                r#"ALTER TABLE `{}` ADD COLUMN webhooks JSON NULL"#,
+                self.config.table_name
+            );
+
+            if let Err(e) = sqlx::query(&add_webhooks_query).execute(&self.pool).await {
+                warn!(
+                    "Could not add webhooks column (may already exist): {}",
+                    e
+                );
+            }
+        }
+
         info!(
             "{}",
             format!("Ensured table '{}' exists", self.config.table_name)
@@ -177,6 +236,8 @@ impl MySQLAppManager {
                 max_event_payload_in_kb,
                 max_event_batch_size,
                 enable_user_authentication,
+                enable_watchlist_events,
+                webhooks,
                 allowed_origins
             FROM `{}` WHERE id = ?"#,
             self.config.table_name
@@ -232,6 +293,8 @@ impl MySQLAppManager {
                 max_event_payload_in_kb,
                 max_event_batch_size,
                 enable_user_authentication,
+                enable_watchlist_events,
+                webhooks,
                 allowed_origins
             FROM `{}` WHERE `key` = ?"#,
             self.config.table_name
@@ -416,6 +479,8 @@ impl MySQLAppManager {
             max_event_payload_in_kb,
             max_event_batch_size,
             enable_user_authentication,
+            enable_watchlist_events,
+            webhooks,
             allowed_origins
         FROM `{}`"#,
             self.config.table_name // Ensure config.table_name is safely handled
@@ -573,7 +638,11 @@ struct AppRow {
     max_event_payload_in_kb: Option<u32>,
     max_event_batch_size: Option<u32>,
     enable_user_authentication: Option<bool>,
-    allowed_origins: Option<serde_json::Value>,
+    enable_watchlist_events: Option<bool>,
+    #[sqlx(json)]
+    webhooks: Option<Vec<Webhook>>,
+    #[sqlx(json)]
+    allowed_origins: Option<Vec<String>>,
 }
 
 impl AppRow {
@@ -597,11 +666,9 @@ impl AppRow {
             max_event_payload_in_kb: self.max_event_payload_in_kb,
             max_event_batch_size: self.max_event_batch_size,
             enable_user_authentication: self.enable_user_authentication,
-            webhooks: None, // Assuming webhooks are not part of the App struct
-            enable_watchlist_events: None, // Assuming this is not part of the App struct
-            allowed_origins: self
-                .allowed_origins
-                .and_then(|json| serde_json::from_value::<Vec<String>>(json).ok()),
+            webhooks: self.webhooks,
+            enable_watchlist_events: self.enable_watchlist_events,
+            allowed_origins: self.allowed_origins,
         }
     }
 }
