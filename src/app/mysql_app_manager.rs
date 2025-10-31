@@ -195,10 +195,7 @@ impl MySQLAppManager {
             );
 
             if let Err(e) = sqlx::query(&add_webhooks_query).execute(&self.pool).await {
-                warn!(
-                    "Could not add webhooks column (may already exist): {}",
-                    e
-                );
+                warn!("Could not add webhooks column (may already exist): {}", e);
             }
         }
 
