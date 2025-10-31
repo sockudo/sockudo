@@ -3,6 +3,7 @@ use crate::app::manager::AppManager;
 use crate::error::{Error, Result};
 use crate::options::{DatabaseConnection, DatabasePooling};
 use crate::token::Token;
+use crate::webhook::types::Webhook;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
@@ -92,6 +93,7 @@ impl PgSQLAppManager {
                 max_event_batch_size INTEGER,
                 enable_user_authentication BOOLEAN,
                 enable_watchlist_events BOOLEAN,
+                webhooks JSONB,
                 allowed_origins JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -106,14 +108,27 @@ impl PgSQLAppManager {
             .map_err(|e| Error::Internal(format!("Failed to create PostgreSQL table: {e}")))?;
 
         // Add migration for allowed_origins column if it doesn't exist
-        let add_column_query = format!(
+        let add_allowed_origins_query = format!(
             r#"ALTER TABLE {} ADD COLUMN IF NOT EXISTS allowed_origins JSONB"#,
             self.config.table_name
         );
 
-        if let Err(e) = sqlx::query(&add_column_query).execute(&self.pool).await {
+        if let Err(e) = sqlx::query(&add_allowed_origins_query).execute(&self.pool).await {
             warn!(
                 "Could not add allowed_origins column (may already exist): {}",
+                e
+            );
+        }
+
+        // Add migration for webhooks column if it doesn't exist
+        let add_webhooks_query = format!(
+            r#"ALTER TABLE {} ADD COLUMN IF NOT EXISTS webhooks JSONB"#,
+            self.config.table_name
+        );
+
+        if let Err(e) = sqlx::query(&add_webhooks_query).execute(&self.pool).await {
+            warn!(
+                "Could not add webhooks column (may already exist): {}",
                 e
             );
         }
@@ -149,6 +164,7 @@ impl PgSQLAppManager {
                 max_event_batch_size,
                 enable_user_authentication,
                 enable_watchlist_events,
+                webhooks,
                 allowed_origins
             FROM {} WHERE id = $1"#,
             self.config.table_name
@@ -197,6 +213,7 @@ impl PgSQLAppManager {
                 max_event_batch_size,
                 enable_user_authentication,
                 enable_watchlist_events,
+                webhooks,
                 allowed_origins
             FROM {} WHERE key = $1"#,
             self.config.table_name
@@ -374,6 +391,7 @@ impl PgSQLAppManager {
             max_event_batch_size,
             enable_user_authentication,
             enable_watchlist_events,
+            webhooks,
             allowed_origins
         FROM {}"#,
             self.config.table_name
@@ -514,7 +532,10 @@ struct AppRow {
     max_event_batch_size: Option<i32>,
     enable_user_authentication: Option<bool>,
     enable_watchlist_events: Option<bool>,
-    allowed_origins: Option<serde_json::Value>,
+    #[sqlx(json)]
+    webhooks: Option<Vec<Webhook>>,
+    #[sqlx(json)]
+    allowed_origins: Option<Vec<String>>,
 }
 
 impl AppRow {
@@ -540,11 +561,9 @@ impl AppRow {
             max_event_payload_in_kb: self.max_event_payload_in_kb.map(|v| v as u32),
             max_event_batch_size: self.max_event_batch_size.map(|v| v as u32),
             enable_user_authentication: self.enable_user_authentication,
-            webhooks: None,
+            webhooks: self.webhooks,
             enable_watchlist_events: self.enable_watchlist_events,
-            allowed_origins: self
-                .allowed_origins
-                .and_then(|json| serde_json::from_value::<Vec<String>>(json).ok()),
+            allowed_origins: self.allowed_origins,
         }
     }
 }
