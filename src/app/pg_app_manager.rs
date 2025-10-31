@@ -107,30 +107,25 @@ impl PgSQLAppManager {
             .await
             .map_err(|e| Error::Internal(format!("Failed to create PostgreSQL table: {e}")))?;
 
-        // Add migration for allowed_origins column if it doesn't exist
-        let add_allowed_origins_query = format!(
-            r#"ALTER TABLE {} ADD COLUMN IF NOT EXISTS allowed_origins JSONB"#,
-            self.config.table_name
-        );
+        // Add migrations for columns that may not exist
+        // PostgreSQL supports ADD COLUMN IF NOT EXISTS
+        let columns_to_add = vec![("allowed_origins", "JSONB"), ("webhooks", "JSONB")];
 
-        if let Err(e) = sqlx::query(&add_allowed_origins_query)
-            .execute(&self.pool)
-            .await
-        {
-            warn!(
-                "Could not add allowed_origins column (may already exist): {}",
-                e
+        for (column_name, column_type) in columns_to_add {
+            let add_column_query = format!(
+                r#"ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}"#,
+                self.config.table_name, column_name, column_type
             );
-        }
 
-        // Add migration for webhooks column if it doesn't exist
-        let add_webhooks_query = format!(
-            r#"ALTER TABLE {} ADD COLUMN IF NOT EXISTS webhooks JSONB"#,
-            self.config.table_name
-        );
-
-        if let Err(e) = sqlx::query(&add_webhooks_query).execute(&self.pool).await {
-            warn!("Could not add webhooks column (may already exist): {}", e);
+            sqlx::query(&add_column_query)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to add column '{}' to table '{}': {}",
+                        column_name, self.config.table_name, e
+                    ))
+                })?;
         }
 
         info!("Ensured table '{}' exists", self.config.table_name);
@@ -627,6 +622,27 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    // Helper to create test database config
+    fn get_test_db_config(table_name: &str) -> DatabaseConnection {
+        DatabaseConnection {
+            host: std::env::var("DATABASE_POSTGRES_HOST")
+                .unwrap_or_else(|_| "localhost".to_string()),
+            port: std::env::var("DATABASE_POSTGRES_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(15432),
+            username: std::env::var("DATABASE_POSTGRES_USER")
+                .unwrap_or_else(|_| "postgres".to_string()),
+            password: std::env::var("DATABASE_POSTGRES_PASSWORD")
+                .unwrap_or_else(|_| "postgres123".to_string()),
+            database: std::env::var("DATABASE_POSTGRES_DATABASE")
+                .unwrap_or_else(|_| "sockudo_test".to_string()),
+            table_name: table_name.to_string(),
+            cache_ttl: 5, // Short TTL for testing
+            ..Default::default()
+        }
+    }
+
     // Helper to create a test app
     fn create_test_app(id: &str) -> App {
         App {
@@ -654,15 +670,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_pgsql_app_manager() {
         // Setup test database
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_test".to_string(),
-            cache_ttl: 5, // Short TTL for testing
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_test");
 
         // Create manager
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
@@ -710,14 +720,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_webhooks_serialization() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_webhooks_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -754,14 +758,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_multiple_webhooks() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_multi_webhooks_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_multi_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -805,14 +803,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_watchlist_events() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_watchlist_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_watchlist_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -856,14 +848,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_allowed_origins() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_origins_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_origins_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -891,14 +877,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_update_webhooks() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_update_webhooks_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_update_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -938,14 +918,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_cache_behavior() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_cache_test".to_string(),
-            cache_ttl: 2, // 2 seconds for quick testing
-            ..Default::default()
-        };
+        let mut config = get_test_db_config("apps_cache_test");
+        config.cache_ttl = 2; // 2 seconds for quick testing
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -975,14 +950,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_find_by_key_with_webhooks() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_key_webhooks_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_key_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1013,14 +982,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_get_all_apps_with_webhooks() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_all_webhooks_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_all_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1067,14 +1030,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_health_check() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_health_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_health_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1086,14 +1043,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_delete_nonexistent_app() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_delete_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_delete_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1105,14 +1056,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_update_nonexistent_app() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_update_fail_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_update_fail_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1125,14 +1070,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_null_values() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_null_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_null_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1161,14 +1100,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_empty_webhooks_array() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_empty_webhooks_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_empty_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1189,14 +1122,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL database
     async fn test_webhook_with_lambda_config() {
-        let config = DatabaseConnection {
-            database: "sockudo_test".to_string(),
-            table_name: "apps_lambda_test".to_string(),
-            cache_ttl: 5,
-            ..Default::default()
-        };
+        let config = get_test_db_config("apps_lambda_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
