@@ -113,7 +113,10 @@ impl PgSQLAppManager {
             self.config.table_name
         );
 
-        if let Err(e) = sqlx::query(&add_allowed_origins_query).execute(&self.pool).await {
+        if let Err(e) = sqlx::query(&add_allowed_origins_query)
+            .execute(&self.pool)
+            .await
+        {
             warn!(
                 "Could not add allowed_origins column (may already exist): {}",
                 e
@@ -127,10 +130,7 @@ impl PgSQLAppManager {
         );
 
         if let Err(e) = sqlx::query(&add_webhooks_query).execute(&self.pool).await {
-            warn!(
-                "Could not add webhooks column (may already exist): {}",
-                e
-            );
+            warn!("Could not add webhooks column (may already exist): {}", e);
         }
 
         info!("Ensured table '{}' exists", self.config.table_name);
