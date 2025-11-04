@@ -5,9 +5,9 @@ use crate::webhook::types::Webhook;
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use moka::future::Cache;
-use scylla::{DeserializeRow, SerializeRow};
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
+use scylla::{DeserializeRow, SerializeRow};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info};
@@ -65,9 +65,10 @@ impl ScyllaDbAppManager {
             builder = builder.user(username, password);
         }
 
-        let session = builder.build().await.map_err(|e| {
-            Error::Internal(format!("Failed to connect to ScyllaDB cluster: {e}"))
-        })?;
+        let session = builder
+            .build()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to connect to ScyllaDB cluster: {e}")))?;
 
         let session = Arc::new(session);
 
@@ -94,9 +95,7 @@ impl ScyllaDbAppManager {
         let create_keyspace_query = format!(
             r#"CREATE KEYSPACE IF NOT EXISTS {}
                WITH replication = {{'class': '{}', 'replication_factor': {}}}"#,
-            self.config.keyspace,
-            self.config.replication_class,
-            self.config.replication_factor
+            self.config.keyspace, self.config.replication_class, self.config.replication_factor
         );
 
         self.session
@@ -158,7 +157,6 @@ impl ScyllaDbAppManager {
 
         Ok(())
     }
-
 }
 
 /// Struct for ScyllaDB app row (both serialization and deserialization)
@@ -222,7 +220,9 @@ impl UpdateRow {
             max_backend_events_per_second: app.max_backend_events_per_second.map(|v| v as i32),
             max_client_events_per_second: app.max_client_events_per_second as i32,
             max_read_requests_per_second: app.max_read_requests_per_second.map(|v| v as i32),
-            max_presence_members_per_channel: app.max_presence_members_per_channel.map(|v| v as i32),
+            max_presence_members_per_channel: app
+                .max_presence_members_per_channel
+                .map(|v| v as i32),
             max_presence_member_size_in_kb: app.max_presence_member_size_in_kb.map(|v| v as i32),
             max_channel_name_length: app.max_channel_name_length.map(|v| v as i32),
             max_event_channels_at_once: app.max_event_channels_at_once.map(|v| v as i32),
@@ -231,12 +231,14 @@ impl UpdateRow {
             max_event_batch_size: app.max_event_batch_size.map(|v| v as i32),
             enable_user_authentication: app.enable_user_authentication,
             enable_watchlist_events: app.enable_watchlist_events,
-            webhooks: app.webhooks.as_ref().map(|w|
-                serde_json::to_string(w).expect("Failed to serialize webhooks to JSON. This indicates a bug.")
-            ),
-            allowed_origins: app.allowed_origins.as_ref().map(|o|
-                serde_json::to_string(o).expect("Failed to serialize allowed_origins to JSON. This indicates a bug.")
-            ),
+            webhooks: app.webhooks.as_ref().map(|w| {
+                serde_json::to_string(w)
+                    .expect("Failed to serialize webhooks to JSON. This indicates a bug.")
+            }),
+            allowed_origins: app.allowed_origins.as_ref().map(|o| {
+                serde_json::to_string(o)
+                    .expect("Failed to serialize allowed_origins to JSON. This indicates a bug.")
+            }),
             id: app.id.clone(),
         }
     }
@@ -254,7 +256,9 @@ impl AppRow {
             max_backend_events_per_second: app.max_backend_events_per_second.map(|v| v as i32),
             max_client_events_per_second: app.max_client_events_per_second as i32,
             max_read_requests_per_second: app.max_read_requests_per_second.map(|v| v as i32),
-            max_presence_members_per_channel: app.max_presence_members_per_channel.map(|v| v as i32),
+            max_presence_members_per_channel: app
+                .max_presence_members_per_channel
+                .map(|v| v as i32),
             max_presence_member_size_in_kb: app.max_presence_member_size_in_kb.map(|v| v as i32),
             max_channel_name_length: app.max_channel_name_length.map(|v| v as i32),
             max_event_channels_at_once: app.max_event_channels_at_once.map(|v| v as i32),
@@ -263,12 +267,14 @@ impl AppRow {
             max_event_batch_size: app.max_event_batch_size.map(|v| v as i32),
             enable_user_authentication: app.enable_user_authentication,
             enable_watchlist_events: app.enable_watchlist_events,
-            webhooks: app.webhooks.as_ref().map(|w|
-                serde_json::to_string(w).expect("Failed to serialize webhooks to JSON. This indicates a bug.")
-            ),
-            allowed_origins: app.allowed_origins.as_ref().map(|o|
-                serde_json::to_string(o).expect("Failed to serialize allowed_origins to JSON. This indicates a bug.")
-            ),
+            webhooks: app.webhooks.as_ref().map(|w| {
+                serde_json::to_string(w)
+                    .expect("Failed to serialize webhooks to JSON. This indicates a bug.")
+            }),
+            allowed_origins: app.allowed_origins.as_ref().map(|o| {
+                serde_json::to_string(o)
+                    .expect("Failed to serialize allowed_origins to JSON. This indicates a bug.")
+            }),
         }
     }
 
@@ -283,7 +289,9 @@ impl AppRow {
             max_backend_events_per_second: self.max_backend_events_per_second.map(|v| v as u32),
             max_client_events_per_second: self.max_client_events_per_second as u32,
             max_read_requests_per_second: self.max_read_requests_per_second.map(|v| v as u32),
-            max_presence_members_per_channel: self.max_presence_members_per_channel.map(|v| v as u32),
+            max_presence_members_per_channel: self
+                .max_presence_members_per_channel
+                .map(|v| v as u32),
             max_presence_member_size_in_kb: self.max_presence_member_size_in_kb.map(|v| v as u32),
             max_channel_name_length: self.max_channel_name_length.map(|v| v as u32),
             max_event_channels_at_once: self.max_event_channels_at_once.map(|v| v as u32),
@@ -292,9 +300,11 @@ impl AppRow {
             max_event_batch_size: self.max_event_batch_size.map(|v| v as u32),
             enable_user_authentication: self.enable_user_authentication,
             enable_watchlist_events: self.enable_watchlist_events,
-            webhooks: self.webhooks
+            webhooks: self
+                .webhooks
                 .and_then(|json| serde_json::from_str::<Vec<Webhook>>(&json).ok()),
-            allowed_origins: self.allowed_origins
+            allowed_origins: self
+                .allowed_origins
                 .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok()),
         }
     }
@@ -324,9 +334,11 @@ impl AppManager for ScyllaDbAppManager {
         );
 
         let values = AppRow::from_app(&app);
-        let prepared = self.session.prepare(query).await.map_err(|e| {
-            Error::Internal(format!("Failed to prepare insert statement: {e}"))
-        })?;
+        let prepared = self
+            .session
+            .prepare(query)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare insert statement: {e}")))?;
 
         self.session
             .execute_unpaged(&prepared, values)
@@ -359,9 +371,11 @@ impl AppManager for ScyllaDbAppManager {
         );
 
         let values = UpdateRow::from_app(&app);
-        let prepared = self.session.prepare(query).await.map_err(|e| {
-            Error::Internal(format!("Failed to prepare update statement: {e}"))
-        })?;
+        let prepared = self
+            .session
+            .prepare(query)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare update statement: {e}")))?;
 
         self.session
             .execute_unpaged(&prepared, values)
@@ -383,9 +397,11 @@ impl AppManager for ScyllaDbAppManager {
             self.config.keyspace, self.config.table_name
         );
 
-        let prepared = self.session.prepare(query).await.map_err(|e| {
-            Error::Internal(format!("Failed to prepare delete statement: {e}"))
-        })?;
+        let prepared = self
+            .session
+            .prepare(query)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare delete statement: {e}")))?;
 
         self.session
             .execute_unpaged(&prepared, (app_id,))
@@ -424,9 +440,11 @@ impl AppManager for ScyllaDbAppManager {
             .rows_stream::<AppRow>()
             .map_err(|e| Error::Internal(format!("Failed to create rows stream: {e}")))?;
 
-        while let Some(app_row) = rows_stream.try_next().await.map_err(|e| {
-            Error::Internal(format!("Failed to fetch app row: {e}"))
-        })? {
+        while let Some(app_row) = rows_stream
+            .try_next()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to fetch app row: {e}")))?
+        {
             apps.push(app_row.into_app());
         }
 
@@ -460,9 +478,11 @@ impl AppManager for ScyllaDbAppManager {
             .rows_stream::<AppRow>()
             .map_err(|e| Error::Internal(format!("Failed to create rows stream: {e}")))?;
 
-        if let Some(app_row) = rows_stream.try_next().await.map_err(|e| {
-            Error::Internal(format!("Failed to fetch app row: {e}"))
-        })? {
+        if let Some(app_row) = rows_stream
+            .try_next()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to fetch app row: {e}")))?
+        {
             let app = app_row.into_app();
             // Update cache
             self.app_cache.insert(app.id.clone(), app.clone()).await;
@@ -504,9 +524,11 @@ impl AppManager for ScyllaDbAppManager {
             .rows_stream::<AppRow>()
             .map_err(|e| Error::Internal(format!("Failed to create rows stream: {e}")))?;
 
-        if let Some(app_row) = rows_stream.try_next().await.map_err(|e| {
-            Error::Internal(format!("Failed to fetch app row: {e}"))
-        })? {
+        if let Some(app_row) = rows_stream
+            .try_next()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to fetch app row: {e}")))?
+        {
             let app = app_row.into_app();
             // Update cache
             self.app_cache.insert(app_id.to_string(), app.clone()).await;
@@ -522,9 +544,7 @@ impl AppManager for ScyllaDbAppManager {
         self.session
             .query_unpaged(query, &[])
             .await
-            .map_err(|e| {
-                Error::Internal(format!("App manager ScyllaDB connection failed: {e}"))
-            })?;
+            .map_err(|e| Error::Internal(format!("App manager ScyllaDB connection failed: {e}")))?;
         Ok(())
     }
 }
@@ -541,11 +561,10 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
 
-        let keyspace = env::var("SCYLLADB_KEYSPACE")
-            .unwrap_or_else(|_| "sockudo_test".to_string());
+        let keyspace = env::var("SCYLLADB_KEYSPACE").unwrap_or_else(|_| "sockudo_test".to_string());
 
-        let replication_class = env::var("SCYLLADB_REPLICATION_CLASS")
-            .unwrap_or_else(|_| "SimpleStrategy".to_string());
+        let replication_class =
+            env::var("SCYLLADB_REPLICATION_CLASS").unwrap_or_else(|_| "SimpleStrategy".to_string());
 
         let replication_factor = env::var("SCYLLADB_REPLICATION_FACTOR")
             .ok()
@@ -591,8 +610,8 @@ mod tests {
     }
 
     fn create_test_app_with_webhooks(id: &str) -> App {
-        use url::Url;
         use crate::webhook::types::WebhookFilter;
+        use url::Url;
 
         let webhooks = vec![
             Webhook {
@@ -679,9 +698,15 @@ mod tests {
         assert!(found_app.webhooks.is_some());
         let webhooks = found_app.webhooks.unwrap();
         assert_eq!(webhooks.len(), 2);
-        assert_eq!(webhooks[0].url.as_ref().unwrap().as_str(), "https://example.com/webhook1");
+        assert_eq!(
+            webhooks[0].url.as_ref().unwrap().as_str(),
+            "https://example.com/webhook1"
+        );
         assert_eq!(webhooks[0].event_types.len(), 1);
-        assert_eq!(webhooks[1].url.as_ref().unwrap().as_str(), "https://example.com/webhook2");
+        assert_eq!(
+            webhooks[1].url.as_ref().unwrap().as_str(),
+            "https://example.com/webhook2"
+        );
         assert_eq!(webhooks[1].event_types.len(), 2);
 
         // Verify enable_watchlist_events
@@ -709,16 +734,14 @@ mod tests {
         use url::Url;
 
         app.max_connections = 200;
-        app.webhooks = Some(vec![
-            Webhook {
-                url: Some(Url::parse("https://updated.com/webhook").unwrap()),
-                lambda_function: None,
-                lambda: None,
-                event_types: vec!["channel_occupied".to_string()],
-                filter: None,
-                headers: None,
-            },
-        ]);
+        app.webhooks = Some(vec![Webhook {
+            url: Some(Url::parse("https://updated.com/webhook").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        }]);
         app.enable_watchlist_events = Some(true);
 
         manager.update_app(app.clone()).await.unwrap();
@@ -729,7 +752,14 @@ mod tests {
         let found_app = found.unwrap();
         assert_eq!(found_app.max_connections, 200);
         assert!(found_app.webhooks.is_some());
-        assert_eq!(found_app.webhooks.unwrap()[0].url.as_ref().unwrap().as_str(), "https://updated.com/webhook");
+        assert_eq!(
+            found_app.webhooks.unwrap()[0]
+                .url
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "https://updated.com/webhook"
+        );
         assert_eq!(found_app.enable_watchlist_events, Some(true));
 
         manager.delete_app("test_app_update").await.unwrap();
@@ -770,7 +800,8 @@ mod tests {
         let apps = manager.get_apps().await.unwrap();
 
         // Should have at least our 3 test apps
-        let test_apps: Vec<_> = apps.iter()
+        let test_apps: Vec<_> = apps
+            .iter()
             .filter(|a| a.id.starts_with("test_get_apps_"))
             .collect();
         assert!(test_apps.len() >= 3);
