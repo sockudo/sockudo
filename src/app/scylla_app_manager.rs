@@ -7,6 +7,7 @@ use futures::TryStreamExt;
 use moka::future::Cache;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
+use scylla::statement::prepared::PreparedStatement;
 use scylla::{DeserializeRow, SerializeRow};
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,6 +48,9 @@ pub struct ScyllaDbAppManager {
     config: ScyllaDbConfig,
     session: Arc<Session>,
     app_cache: Cache<String, App>,
+    insert_stmt: Arc<PreparedStatement>,
+    update_stmt: Arc<PreparedStatement>,
+    delete_stmt: Arc<PreparedStatement>,
 }
 
 impl ScyllaDbAppManager {
@@ -78,32 +82,88 @@ impl ScyllaDbAppManager {
             .max_capacity(config.cache_max_capacity)
             .build();
 
-        let manager = Self {
+        // Ensure keyspace and table exist before preparing statements
+        Self::ensure_keyspace_and_table(&session, &config).await?;
+
+        // Prepare statements once for reuse
+        let insert_query = format!(
+            r#"INSERT INTO {}.{} (
+                id, key, secret, max_connections, enable_client_messages, enabled,
+                max_backend_events_per_second, max_client_events_per_second,
+                max_read_requests_per_second, max_presence_members_per_channel,
+                max_presence_member_size_in_kb, max_channel_name_length,
+                max_event_channels_at_once, max_event_name_length,
+                max_event_payload_in_kb, max_event_batch_size,
+                enable_user_authentication, enable_watchlist_events,
+                webhooks, allowed_origins,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, toTimestamp(now()), toTimestamp(now()))"#,
+            config.keyspace, config.table_name
+        );
+
+        let update_query = format!(
+            r#"UPDATE {}.{} SET
+                key = ?, secret = ?, max_connections = ?, enable_client_messages = ?, enabled = ?,
+                max_backend_events_per_second = ?, max_client_events_per_second = ?,
+                max_read_requests_per_second = ?, max_presence_members_per_channel = ?,
+                max_presence_member_size_in_kb = ?, max_channel_name_length = ?,
+                max_event_channels_at_once = ?, max_event_name_length = ?,
+                max_event_payload_in_kb = ?, max_event_batch_size = ?,
+                enable_user_authentication = ?, enable_watchlist_events = ?,
+                webhooks = ?, allowed_origins = ?,
+                updated_at = toTimestamp(now())
+            WHERE id = ?"#,
+            config.keyspace, config.table_name
+        );
+
+        let delete_query = format!(
+            r#"DELETE FROM {}.{} WHERE id = ?"#,
+            config.keyspace, config.table_name
+        );
+
+        let insert_stmt = session
+            .prepare(insert_query)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare insert statement: {e}")))?;
+
+        let update_stmt = session
+            .prepare(update_query)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare update statement: {e}")))?;
+
+        let delete_stmt = session
+            .prepare(delete_query)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare delete statement: {e}")))?;
+
+        Ok(Self {
             config,
             session,
             app_cache,
-        };
-
-        manager.ensure_keyspace_and_table_exist().await?;
-
-        Ok(manager)
+            insert_stmt: Arc::new(insert_stmt),
+            update_stmt: Arc::new(update_stmt),
+            delete_stmt: Arc::new(delete_stmt),
+        })
     }
 
     /// Create the keyspace and applications table if they don't exist
-    async fn ensure_keyspace_and_table_exist(&self) -> Result<()> {
+    async fn ensure_keyspace_and_table(
+        session: &Arc<Session>,
+        config: &ScyllaDbConfig,
+    ) -> Result<()> {
         // Create keyspace if it doesn't exist
         let create_keyspace_query = format!(
             r#"CREATE KEYSPACE IF NOT EXISTS {}
                WITH replication = {{'class': '{}', 'replication_factor': {}}}"#,
-            self.config.keyspace, self.config.replication_class, self.config.replication_factor
+            config.keyspace, config.replication_class, config.replication_factor
         );
 
-        self.session
+        session
             .query_unpaged(create_keyspace_query, &[])
             .await
             .map_err(|e| Error::Internal(format!("Failed to create keyspace: {e}")))?;
 
-        info!("Ensured keyspace '{}' exists", self.config.keyspace);
+        info!("Ensured keyspace '{}' exists", config.keyspace);
 
         // Create table if it doesn't exist
         let create_table_query = format!(
@@ -131,26 +191,26 @@ impl ScyllaDbAppManager {
                 created_at timestamp,
                 updated_at timestamp
             )"#,
-            self.config.keyspace, self.config.table_name
+            config.keyspace, config.table_name
         );
 
-        self.session
+        session
             .query_unpaged(create_table_query, &[])
             .await
             .map_err(|e| Error::Internal(format!("Failed to create table: {e}")))?;
 
         info!(
             "Ensured table '{}.{}' exists",
-            self.config.keyspace, self.config.table_name
+            config.keyspace, config.table_name
         );
 
         // Create secondary index on key for lookups
         let create_index_query = format!(
             r#"CREATE INDEX IF NOT EXISTS ON {}.{} (key)"#,
-            self.config.keyspace, self.config.table_name
+            config.keyspace, config.table_name
         );
 
-        self.session
+        session
             .query_unpaged(create_index_query, &[])
             .await
             .map_err(|e| Error::Internal(format!("Failed to create index on key: {e}")))?;
@@ -210,8 +270,27 @@ struct UpdateRow {
 }
 
 impl UpdateRow {
-    fn from_app(app: &App) -> Self {
-        Self {
+    fn from_app(app: &App) -> Result<Self> {
+        let webhooks = app
+            .webhooks
+            .as_ref()
+            .map(|w| {
+                serde_json::to_string(w)
+                    .map_err(|e| Error::Internal(format!("Failed to serialize webhooks: {}", e)))
+            })
+            .transpose()?;
+
+        let allowed_origins = app
+            .allowed_origins
+            .as_ref()
+            .map(|o| {
+                serde_json::to_string(o).map_err(|e| {
+                    Error::Internal(format!("Failed to serialize allowed_origins: {}", e))
+                })
+            })
+            .transpose()?;
+
+        Ok(Self {
             key: app.key.clone(),
             secret: app.secret.clone(),
             max_connections: app.max_connections as i32,
@@ -231,22 +310,35 @@ impl UpdateRow {
             max_event_batch_size: app.max_event_batch_size.map(|v| v as i32),
             enable_user_authentication: app.enable_user_authentication,
             enable_watchlist_events: app.enable_watchlist_events,
-            webhooks: app.webhooks.as_ref().map(|w| {
-                serde_json::to_string(w)
-                    .expect("Failed to serialize webhooks to JSON. This indicates a bug.")
-            }),
-            allowed_origins: app.allowed_origins.as_ref().map(|o| {
-                serde_json::to_string(o)
-                    .expect("Failed to serialize allowed_origins to JSON. This indicates a bug.")
-            }),
+            webhooks,
+            allowed_origins,
             id: app.id.clone(),
-        }
+        })
     }
 }
 
 impl AppRow {
-    fn from_app(app: &App) -> Self {
-        Self {
+    fn from_app(app: &App) -> Result<Self> {
+        let webhooks = app
+            .webhooks
+            .as_ref()
+            .map(|w| {
+                serde_json::to_string(w)
+                    .map_err(|e| Error::Internal(format!("Failed to serialize webhooks: {}", e)))
+            })
+            .transpose()?;
+
+        let allowed_origins = app
+            .allowed_origins
+            .as_ref()
+            .map(|o| {
+                serde_json::to_string(o).map_err(|e| {
+                    Error::Internal(format!("Failed to serialize allowed_origins: {}", e))
+                })
+            })
+            .transpose()?;
+
+        Ok(Self {
             id: app.id.clone(),
             key: app.key.clone(),
             secret: app.secret.clone(),
@@ -267,20 +359,14 @@ impl AppRow {
             max_event_batch_size: app.max_event_batch_size.map(|v| v as i32),
             enable_user_authentication: app.enable_user_authentication,
             enable_watchlist_events: app.enable_watchlist_events,
-            webhooks: app.webhooks.as_ref().map(|w| {
-                serde_json::to_string(w)
-                    .expect("Failed to serialize webhooks to JSON. This indicates a bug.")
-            }),
-            allowed_origins: app.allowed_origins.as_ref().map(|o| {
-                serde_json::to_string(o)
-                    .expect("Failed to serialize allowed_origins to JSON. This indicates a bug.")
-            }),
-        }
+            webhooks,
+            allowed_origins,
+        })
     }
 
     fn into_app(self) -> App {
         App {
-            id: self.id,
+            id: self.id.clone(),
             key: self.key,
             secret: self.secret,
             max_connections: self.max_connections as u32,
@@ -300,12 +386,23 @@ impl AppRow {
             max_event_batch_size: self.max_event_batch_size.map(|v| v as u32),
             enable_user_authentication: self.enable_user_authentication,
             enable_watchlist_events: self.enable_watchlist_events,
-            webhooks: self
-                .webhooks
-                .and_then(|json| serde_json::from_str::<Vec<Webhook>>(&json).ok()),
-            allowed_origins: self
-                .allowed_origins
-                .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok()),
+            webhooks: self.webhooks.and_then(|json| {
+                serde_json::from_str::<Vec<Webhook>>(&json)
+                    .map_err(|e| {
+                        error!("Failed to deserialize webhooks for app {}: {}", self.id, e)
+                    })
+                    .ok()
+            }),
+            allowed_origins: self.allowed_origins.and_then(|json| {
+                serde_json::from_str::<Vec<String>>(&json)
+                    .map_err(|e| {
+                        error!(
+                            "Failed to deserialize allowed_origins for app {}: {}",
+                            self.id, e
+                        )
+                    })
+                    .ok()
+            }),
         }
     }
 }
@@ -318,30 +415,10 @@ impl AppManager for ScyllaDbAppManager {
     }
 
     async fn create_app(&self, app: App) -> Result<()> {
-        let query = format!(
-            r#"INSERT INTO {}.{} (
-                id, key, secret, max_connections, enable_client_messages, enabled,
-                max_backend_events_per_second, max_client_events_per_second,
-                max_read_requests_per_second, max_presence_members_per_channel,
-                max_presence_member_size_in_kb, max_channel_name_length,
-                max_event_channels_at_once, max_event_name_length,
-                max_event_payload_in_kb, max_event_batch_size,
-                enable_user_authentication, enable_watchlist_events,
-                webhooks, allowed_origins,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, toTimestamp(now()), toTimestamp(now()))"#,
-            self.config.keyspace, self.config.table_name
-        );
-
-        let values = AppRow::from_app(&app);
-        let prepared = self
-            .session
-            .prepare(query)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to prepare insert statement: {e}")))?;
+        let values = AppRow::from_app(&app)?;
 
         self.session
-            .execute_unpaged(&prepared, values)
+            .execute_unpaged(&self.insert_stmt, values)
             .await
             .map_err(|e| {
                 error!("Database error creating app {}: {}", app.id, e);
@@ -355,30 +432,10 @@ impl AppManager for ScyllaDbAppManager {
     }
 
     async fn update_app(&self, app: App) -> Result<()> {
-        let query = format!(
-            r#"UPDATE {}.{} SET
-                key = ?, secret = ?, max_connections = ?, enable_client_messages = ?, enabled = ?,
-                max_backend_events_per_second = ?, max_client_events_per_second = ?,
-                max_read_requests_per_second = ?, max_presence_members_per_channel = ?,
-                max_presence_member_size_in_kb = ?, max_channel_name_length = ?,
-                max_event_channels_at_once = ?, max_event_name_length = ?,
-                max_event_payload_in_kb = ?, max_event_batch_size = ?,
-                enable_user_authentication = ?, enable_watchlist_events = ?,
-                webhooks = ?, allowed_origins = ?,
-                updated_at = toTimestamp(now())
-            WHERE id = ?"#,
-            self.config.keyspace, self.config.table_name
-        );
-
-        let values = UpdateRow::from_app(&app);
-        let prepared = self
-            .session
-            .prepare(query)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to prepare update statement: {e}")))?;
+        let values = UpdateRow::from_app(&app)?;
 
         self.session
-            .execute_unpaged(&prepared, values)
+            .execute_unpaged(&self.update_stmt, values)
             .await
             .map_err(|e| {
                 error!("Database error updating app {}: {}", app.id, e);
@@ -392,19 +449,8 @@ impl AppManager for ScyllaDbAppManager {
     }
 
     async fn delete_app(&self, app_id: &str) -> Result<()> {
-        let query = format!(
-            r#"DELETE FROM {}.{} WHERE id = ?"#,
-            self.config.keyspace, self.config.table_name
-        );
-
-        let prepared = self
-            .session
-            .prepare(query)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to prepare delete statement: {e}")))?;
-
         self.session
-            .execute_unpaged(&prepared, (app_id,))
+            .execute_unpaged(&self.delete_stmt, (app_id,))
             .await
             .map_err(|e| {
                 error!("Database error deleting app {}: {}", app_id, e);
@@ -454,6 +500,7 @@ impl AppManager for ScyllaDbAppManager {
     async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
         debug!("Fetching app by key {} from ScyllaDB", key);
 
+        // The secondary index on the key column allows efficient lookup without ALLOW FILTERING
         let query = format!(
             r#"SELECT id, key, secret, max_connections, enable_client_messages, enabled,
                 max_backend_events_per_second, max_client_events_per_second,
@@ -463,7 +510,7 @@ impl AppManager for ScyllaDbAppManager {
                 max_event_payload_in_kb, max_event_batch_size,
                 enable_user_authentication, enable_watchlist_events,
                 webhooks, allowed_origins
-            FROM {}.{} WHERE key = ? ALLOW FILTERING"#,
+            FROM {}.{} WHERE key = ?"#,
             self.config.keyspace, self.config.table_name
         );
 
