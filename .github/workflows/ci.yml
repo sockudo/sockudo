@@ -125,6 +125,16 @@ jobs:
             sleep 2
           done
 
+          # Wait for ScyllaDB test instance
+          for i in {1..120}; do
+            if docker exec $(docker ps -q -f "name=scylladb-test") nodetool status | grep -q "UN"; then
+              echo "ScyllaDB test is ready!"
+              break
+            fi
+            echo "Waiting for ScyllaDB test... ($i/120)"
+            sleep 2
+          done
+
       - name: Show running services
         run: |
           echo "=== Running Docker containers ==="
@@ -135,6 +145,7 @@ jobs:
           docker port $(docker ps -q -f "name=nats-1") || true
           docker port $(docker ps -q -f "name=nats-2") || true
           docker port $(docker ps -q -f "name=mysql-test") || true
+          docker port $(docker ps -q -f "name=scylladb-test") || true
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -151,19 +162,23 @@ jobs:
           # Redis configurations (matching docker-compose.test.yml)
           DATABASE_REDIS_HOST: localhost
           DATABASE_REDIS_PORT: 16379
-          
+
           # Redis Cluster configuration (matching docker-compose.test.yml)
           REDIS_CLUSTER_NODES: localhost:7001,localhost:7002,localhost:7003
-          
+
           # NATS configuration (matching docker-compose.test.yml)
           NATS_SERVERS: nats://localhost:14222,nats://localhost:14223
-          
-          # MySQL configurations (matching docker-compose.test.yml) 
+
+          # MySQL configurations (matching docker-compose.test.yml)
           DATABASE_MYSQL_HOST: localhost
           DATABASE_MYSQL_PORT: 13306
           DATABASE_MYSQL_USER: root
           DATABASE_MYSQL_PASSWORD: root123
           DATABASE_MYSQL_DATABASE: sockudo
+
+          # ScyllaDB configurations (matching docker-compose.test.yml)
+          SCYLLADB_NODES: localhost:19042
+          SCYLLADB_KEYSPACE: sockudo_test
 
       - name: Cleanup test services
         if: always()
