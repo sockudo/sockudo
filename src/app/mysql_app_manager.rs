@@ -108,9 +108,10 @@ impl MySQLAppManager {
                 // Only warn if error is "duplicate column" (error 1060), otherwise propagate
                 let mut is_duplicate_column_error = false;
                 if let Some(db_err) = e.as_database_error() {
-                    let mysql_err: &sqlx::mysql::MySqlDatabaseError =
-                        db_err.downcast_ref::<sqlx::mysql::MySqlDatabaseError>();
-                    is_duplicate_column_error = mysql_err.number() == 1060;
+                    // MySQL error 1060 is "Duplicate column name"
+                    if db_err.code() == Some(std::borrow::Cow::from("1060")) {
+                        is_duplicate_column_error = true;
+                    }
                 }
 
                 if is_duplicate_column_error {

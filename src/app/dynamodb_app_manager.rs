@@ -296,17 +296,12 @@ impl DynamoDbAppManager {
         }
 
         if let Some(webhooks) = &app.webhooks {
-            match serde_json::to_string(webhooks) {
-                Ok(json_str) => {
-                    item.insert(
-                        "webhooks".to_string(),
-                        aws_sdk_dynamodb::types::AttributeValue::S(json_str),
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to serialize webhooks to JSON: {}", e);
-                }
-            }
+            let json_str = serde_json::to_string(webhooks)
+                .expect("Failed to serialize webhooks to JSON. This indicates a bug.");
+            item.insert(
+                "webhooks".to_string(),
+                aws_sdk_dynamodb::types::AttributeValue::S(json_str),
+            );
         }
 
         if let Some(origins) = &app.allowed_origins {
