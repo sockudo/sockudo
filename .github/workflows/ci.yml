@@ -66,7 +66,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake mysql-client
+          sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake mysql-client postgresql-client
 
       - name: Start test services with docker-compose
         run: |
@@ -125,6 +125,16 @@ jobs:
             sleep 2
           done
 
+          # Wait for PostgreSQL test instance
+          for i in {1..60}; do
+            if PGPASSWORD=postgres123 psql -h 127.0.0.1 -p 15432 -U postgres -d sockudo_test -c "SELECT 1" &> /dev/null; then
+              echo "PostgreSQL test is ready!"
+              break
+            fi
+            echo "Waiting for PostgreSQL test... ($i/60)"
+            sleep 2
+          done
+
       - name: Show running services
         run: |
           echo "=== Running Docker containers ==="
@@ -135,6 +145,7 @@ jobs:
           docker port $(docker ps -q -f "name=nats-1") || true
           docker port $(docker ps -q -f "name=nats-2") || true
           docker port $(docker ps -q -f "name=mysql-test") || true
+          docker port $(docker ps -q -f "name=postgres-test") || true
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -151,19 +162,26 @@ jobs:
           # Redis configurations (matching docker-compose.test.yml)
           DATABASE_REDIS_HOST: localhost
           DATABASE_REDIS_PORT: 16379
-          
+
           # Redis Cluster configuration (matching docker-compose.test.yml)
           REDIS_CLUSTER_NODES: localhost:7001,localhost:7002,localhost:7003
-          
+
           # NATS configuration (matching docker-compose.test.yml)
           NATS_SERVERS: nats://localhost:14222,nats://localhost:14223
-          
-          # MySQL configurations (matching docker-compose.test.yml) 
+
+          # MySQL configurations (matching docker-compose.test.yml)
           DATABASE_MYSQL_HOST: localhost
           DATABASE_MYSQL_PORT: 13306
           DATABASE_MYSQL_USER: root
           DATABASE_MYSQL_PASSWORD: root123
           DATABASE_MYSQL_DATABASE: sockudo
+
+          # PostgreSQL configurations (matching docker-compose.test.yml)
+          DATABASE_POSTGRES_HOST: localhost
+          DATABASE_POSTGRES_PORT: 15432
+          DATABASE_POSTGRES_USER: postgres
+          DATABASE_POSTGRES_PASSWORD: postgres123
+          DATABASE_POSTGRES_DATABASE: sockudo_test
 
       - name: Cleanup test services
         if: always()
