@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 
 use crate::options::{DatabaseConnection, DatabasePooling};
 use crate::token::Token;
+use crate::webhook::types::Webhook;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
@@ -74,6 +75,64 @@ impl MySQLAppManager {
         Ok(manager)
     }
 
+    /// Helper function to add a column if it doesn't exist
+    /// Returns Result to properly propagate database errors
+    async fn add_column_if_not_exists(&self, column_name: &str, column_type: &str) -> Result<()> {
+        // Check if column exists
+        let check_query = format!(
+            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = '{}'
+               AND COLUMN_NAME = '{}'"#,
+            self.config.table_name, column_name
+        );
+
+        let column_exists: Option<(String,)> = sqlx::query_as(&check_query)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to check if column '{}' exists: {}",
+                    column_name, e
+                ))
+            })?;
+
+        // Add column if it doesn't exist
+        if column_exists.is_none() {
+            let add_column_query = format!(
+                r#"ALTER TABLE `{}` ADD COLUMN {} {}"#,
+                self.config.table_name, column_name, column_type
+            );
+
+            if let Err(e) = sqlx::query(&add_column_query).execute(&self.pool).await {
+                // Only warn if error is "duplicate column" (error 1060), otherwise propagate
+                let mut is_duplicate_column_error = false;
+                if let Some(db_err) = e.as_database_error() {
+                    // MySQL error 1060 is "Duplicate column name"
+                    if db_err.code() == Some(std::borrow::Cow::from("1060")) {
+                        is_duplicate_column_error = true;
+                    }
+                }
+
+                if is_duplicate_column_error {
+                    warn!("Column '{}' already exists (race condition)", column_name);
+                } else {
+                    return Err(Error::Internal(format!(
+                        "Failed to add column '{}': {}",
+                        column_name, e
+                    )));
+                }
+            } else {
+                info!(
+                    "Added column '{}' to table '{}'",
+                    column_name, self.config.table_name
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Create the applications table if it doesn't exist
     async fn ensure_table_exists(&self) -> Result<()> {
         // Use a constant query (avoid format!) for security
@@ -96,6 +155,8 @@ impl MySQLAppManager {
                 max_event_payload_in_kb INT UNSIGNED NULL,
                 max_event_batch_size INT UNSIGNED NULL,
                 enable_user_authentication BOOLEAN NULL,
+                enable_watchlist_events BOOLEAN NULL,
+                webhooks JSON NULL,
                 allowed_origins JSON NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -114,33 +175,17 @@ impl MySQLAppManager {
             .await
             .map_err(|e| Error::Internal(format!("Failed to create MySQL table: {e}")))?;
 
-        // Add migration for allowed_origins column if it doesn't exist
+        // Add migrations for new columns if they don't exist
         // MySQL doesn't support IF NOT EXISTS for columns, so we need to check first
-        let check_column_query = format!(
-            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-               WHERE TABLE_SCHEMA = DATABASE() 
-               AND TABLE_NAME = '{}' 
-               AND COLUMN_NAME = 'allowed_origins'"#,
-            self.config.table_name
-        );
+        let columns_to_add = vec![
+            ("allowed_origins", "JSON NULL"),
+            ("enable_watchlist_events", "BOOLEAN NULL"),
+            ("webhooks", "JSON NULL"),
+        ];
 
-        let column_exists: Option<(String,)> = sqlx::query_as(&check_column_query)
-            .fetch_optional(&self.pool)
-            .await
-            .unwrap_or(None);
-
-        if column_exists.is_none() {
-            let add_column_query = format!(
-                r#"ALTER TABLE `{}` ADD COLUMN allowed_origins JSON NULL"#,
-                self.config.table_name
-            );
-
-            if let Err(e) = sqlx::query(&add_column_query).execute(&self.pool).await {
-                warn!(
-                    "Could not add allowed_origins column (may already exist): {}",
-                    e
-                );
-            }
+        for (column_name, column_type) in columns_to_add {
+            self.add_column_if_not_exists(column_name, column_type)
+                .await?;
         }
 
         info!(
@@ -177,6 +222,8 @@ impl MySQLAppManager {
                 max_event_payload_in_kb,
                 max_event_batch_size,
                 enable_user_authentication,
+                enable_watchlist_events,
+                webhooks,
                 allowed_origins
             FROM `{}` WHERE id = ?"#,
             self.config.table_name
@@ -232,6 +279,8 @@ impl MySQLAppManager {
                 max_event_payload_in_kb,
                 max_event_batch_size,
                 enable_user_authentication,
+                enable_watchlist_events,
+                webhooks,
                 allowed_origins
             FROM `{}` WHERE `key` = ?"#,
             self.config.table_name
@@ -274,8 +323,9 @@ impl MySQLAppManager {
                 max_read_requests_per_second, max_presence_members_per_channel,
                 max_presence_member_size_in_kb, max_channel_name_length,
                 max_event_channels_at_once, max_event_name_length,
-                max_event_payload_in_kb, max_event_batch_size, enable_user_authentication
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                max_event_payload_in_kb, max_event_batch_size, enable_user_authentication,
+                enable_watchlist_events, webhooks, allowed_origins
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             self.config.table_name
         );
 
@@ -297,6 +347,9 @@ impl MySQLAppManager {
             .bind(app.max_event_payload_in_kb)
             .bind(app.max_event_batch_size)
             .bind(app.enable_user_authentication)
+            .bind(app.enable_watchlist_events)
+            .bind(sqlx::types::Json(&app.webhooks))
+            .bind(sqlx::types::Json(&app.allowed_origins))
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -325,7 +378,8 @@ impl MySQLAppManager {
                 max_read_requests_per_second = ?, max_presence_members_per_channel = ?,
                 max_presence_member_size_in_kb = ?, max_channel_name_length = ?,
                 max_event_channels_at_once = ?, max_event_name_length = ?,
-                max_event_payload_in_kb = ?, max_event_batch_size = ?, enable_user_authentication = ?
+                max_event_payload_in_kb = ?, max_event_batch_size = ?, enable_user_authentication = ?,
+                enable_watchlist_events = ?, webhooks = ?, allowed_origins = ?
                 WHERE id = ?"#,
             self.config.table_name
         );
@@ -347,6 +401,9 @@ impl MySQLAppManager {
             .bind(app.max_event_payload_in_kb)
             .bind(app.max_event_batch_size)
             .bind(app.enable_user_authentication)
+            .bind(app.enable_watchlist_events)
+            .bind(sqlx::types::Json(&app.webhooks))
+            .bind(sqlx::types::Json(&app.allowed_origins))
             .bind(&app.id)
             .execute(&self.pool)
             .await
@@ -416,6 +473,8 @@ impl MySQLAppManager {
             max_event_payload_in_kb,
             max_event_batch_size,
             enable_user_authentication,
+            enable_watchlist_events,
+            webhooks,
             allowed_origins
         FROM `{}`"#,
             self.config.table_name // Ensure config.table_name is safely handled
@@ -573,7 +632,11 @@ struct AppRow {
     max_event_payload_in_kb: Option<u32>,
     max_event_batch_size: Option<u32>,
     enable_user_authentication: Option<bool>,
-    allowed_origins: Option<serde_json::Value>,
+    enable_watchlist_events: Option<bool>,
+    #[sqlx(json(nullable))]
+    webhooks: Option<Vec<Webhook>>,
+    #[sqlx(json(nullable))]
+    allowed_origins: Option<Vec<String>>,
 }
 
 impl AppRow {
@@ -597,11 +660,9 @@ impl AppRow {
             max_event_payload_in_kb: self.max_event_payload_in_kb,
             max_event_batch_size: self.max_event_batch_size,
             enable_user_authentication: self.enable_user_authentication,
-            webhooks: None, // Assuming webhooks are not part of the App struct
-            enable_watchlist_events: None, // Assuming this is not part of the App struct
-            allowed_origins: self
-                .allowed_origins
-                .and_then(|json| serde_json::from_value::<Vec<String>>(json).ok()),
+            webhooks: self.webhooks,
+            enable_watchlist_events: self.enable_watchlist_events,
+            allowed_origins: self.allowed_origins,
         }
     }
 }
