@@ -232,7 +232,7 @@ Licensed under the [MIT License](LICENSE).
 
 - **Issues**: [GitHub Issues](https://github.com/sockudo/sockudo/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/sockudo/sockudo/discussions)
-- **Documentation**: [sockudo.app](https://sockudo.app)
+- **Documentation**: [sockudo.io](https://sockudo.io)
 - **Discord**: [Join our Discord](https://discord.gg/ySfNxfh2gZ)
 - **X**: [@sockudorealtime](https://x.com/sockudorealtime)
-- **Email**: [sockudorealtime](mailto:sockudorealtime@gmail.com)
+- **Email**: [sockudorealtime](mailto:office@sockudo.io)
