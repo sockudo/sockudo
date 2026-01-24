@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
 // src/cache/factory.rs
+use crate::cache::fallback_cache_manager::FallbackCacheManager;
 use crate::cache::manager::CacheManager;
-use crate::cache::memory_cache_manager::MemoryCacheManager; // Assuming MemoryCacheConfig is from options
+use crate::cache::memory_cache_manager::MemoryCacheManager;
 #[cfg(feature = "redis")]
 use crate::cache::redis_cache_manager::{
     RedisCacheConfig as StandaloneRedisCacheConfig, RedisCacheManager,
@@ -35,66 +36,72 @@ impl CacheManagerFactory {
         );
 
         match config.driver {
+            #[cfg(all(feature = "redis", feature = "redis-cluster"))]
+            CacheDriver::Redis if config.redis.cluster_mode => {
+                info!("Cache: Using Redis Cluster driver with in-memory fallback.");
+                if global_redis_conn_details.cluster_nodes.is_empty() {
+                    error!(
+                        "Cache: Redis cluster mode enabled, but no cluster_nodes configured in database.redis section."
+                    );
+                    return Err(Error::Cache(
+                        "Cache: Redis cluster nodes not configured.".to_string(),
+                    ));
+                }
+                let nodes: Vec<String> = global_redis_conn_details
+                    .cluster_nodes
+                    .iter()
+                    .map(|node| node.to_url())
+                    .collect();
+
+                let prefix = config
+                    .redis
+                    .prefix
+                    .clone()
+                    .unwrap_or_else(|| global_redis_conn_details.key_prefix.clone() + "cache:");
+
+                let cluster_cache_config = RedisClusterCacheConfig {
+                    nodes,
+                    prefix,
+                    ..Default::default()
+                };
+                let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
+                let fallback_manager =
+                    FallbackCacheManager::new(Box::new(manager), config.memory.clone());
+                Ok(Arc::new(Mutex::new(fallback_manager)))
+            }
             #[cfg(feature = "redis")]
             CacheDriver::Redis => {
-                if config.redis.cluster_mode {
-                    info!("{}", "Cache: Using Redis Cluster driver.".to_string());
-                    if global_redis_conn_details.cluster_nodes.is_empty() {
-                        error!("{}", "Cache: Redis cluster mode enabled, but no cluster_nodes configured in database.redis section.".to_string());
-                        return Err(Error::Cache(
-                            "Cache: Redis cluster nodes not configured.".to_string(),
-                        ));
-                    }
-                    let nodes: Vec<String> = global_redis_conn_details
-                        .cluster_nodes
-                        .iter()
-                        .map(|node| node.to_url())
-                        .collect();
+                info!("Cache: Using standalone Redis driver with in-memory fallback.");
+                let redis_url = config.redis.url_override.clone().unwrap_or_else(|| {
+                    format!(
+                        "redis://{}:{}",
+                        global_redis_conn_details.host, global_redis_conn_details.port
+                    )
+                });
 
-                    let prefix =
-                        config.redis.prefix.clone().unwrap_or_else(|| {
-                            global_redis_conn_details.key_prefix.clone() + "cache:"
-                        });
+                let prefix = config
+                    .redis
+                    .prefix
+                    .clone()
+                    .unwrap_or_else(|| global_redis_conn_details.key_prefix.clone() + "cache:");
 
-                    let cluster_cache_config = RedisClusterCacheConfig {
-                        nodes,
-                        prefix,
-                        ..Default::default()
-                    };
-                    let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
-                    // Directly create Arc<Mutex<ConcreteType>> which coerces to Arc<Mutex<dyn Trait>>
-                    Ok(Arc::new(Mutex::new(manager)))
-                } else {
-                    info!("{}", "Cache: Using standalone Redis driver.".to_string());
-                    let redis_url = config.redis.url_override.clone().unwrap_or_else(|| {
-                        format!(
-                            "redis://{}:{}",
-                            global_redis_conn_details.host, global_redis_conn_details.port
-                        )
-                    });
-
-                    let prefix =
-                        config.redis.prefix.clone().unwrap_or_else(|| {
-                            global_redis_conn_details.key_prefix.clone() + "cache:"
-                        });
-
-                    let standalone_redis_cache_config = StandaloneRedisCacheConfig {
-                        url: redis_url,
-                        prefix,
-                        ..Default::default()
-                    };
-                    let manager = RedisCacheManager::new(standalone_redis_cache_config).await?;
-                    Ok(Arc::new(Mutex::new(manager)))
-                }
+                let standalone_redis_cache_config = StandaloneRedisCacheConfig {
+                    url: redis_url,
+                    prefix,
+                    ..Default::default()
+                };
+                let manager = RedisCacheManager::new(standalone_redis_cache_config).await?;
+                let fallback_manager =
+                    FallbackCacheManager::new(Box::new(manager), config.memory.clone());
+                Ok(Arc::new(Mutex::new(fallback_manager)))
             }
             #[cfg(feature = "redis-cluster")]
             CacheDriver::RedisCluster => {
-                info!(
-                    "{}",
-                    "Cache: Using Redis Cluster driver (explicitly selected).".to_string()
-                );
+                info!("Cache: Using Redis Cluster driver with in-memory fallback.");
                 if global_redis_conn_details.cluster_nodes.is_empty() {
-                    error!("{}", "Cache: Redis cluster driver selected, but no cluster_nodes configured in database.redis section.".to_string());
+                    error!(
+                        "Cache: Redis cluster driver selected, but no cluster_nodes configured in database.redis section."
+                    );
                     return Err(Error::Cache(
                         "Cache: Redis cluster nodes not configured for explicit cluster driver."
                             .to_string(),
@@ -118,7 +125,9 @@ impl CacheManagerFactory {
                     ..Default::default()
                 };
                 let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
-                Ok(Arc::new(Mutex::new(manager)))
+                let fallback_manager =
+                    FallbackCacheManager::new(Box::new(manager), config.memory.clone());
+                Ok(Arc::new(Mutex::new(fallback_manager)))
             }
             CacheDriver::Memory => {
                 info!("{}", "Using memory cache manager.".to_string());
