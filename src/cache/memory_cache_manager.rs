@@ -156,7 +156,7 @@ impl MemoryCacheManager {
 
     /// Get all entries from the cache as (key, value, ttl) tuples.
     /// Returns entries without the prefix.
-    /// 
+    ///
     /// Note: Moka doesn't support per-entry TTL tracking, so this returns the
     /// cache's default TTL for all entries. When syncing to another cache system,
     /// this means all entries will get the same TTL, not their remaining time.
