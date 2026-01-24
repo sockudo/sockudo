@@ -184,10 +184,6 @@ impl CacheManager for FallbackCacheManager {
     }
 
     async fn check_health(&self) -> Result<()> {
-        if self.is_using_fallback() {
-            return Ok(());
-        }
-
         let primary = self.primary.lock().await;
         primary.check_health().await
     }
