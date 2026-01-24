@@ -249,3 +249,105 @@ impl CacheManager for FallbackCacheManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Error;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+    // Mock cache manager that can simulate failures
+    struct MockCacheManager {
+        healthy: Arc<AtomicBool>,
+    }
+
+    impl MockCacheManager {
+        fn new(healthy: bool) -> Self {
+            Self {
+                healthy: Arc::new(AtomicBool::new(healthy)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl CacheManager for MockCacheManager {
+        async fn has(&mut self, _key: &str) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn get(&mut self, _key: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+
+        async fn set(&mut self, _key: &str, _value: &str, _ttl_seconds: u64) -> Result<()> {
+            Ok(())
+        }
+
+        async fn remove(&mut self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn check_health(&self) -> Result<()> {
+            if self.healthy.load(AtomicOrdering::SeqCst) {
+                Ok(())
+            } else {
+                Err(Error::Cache("Mock cache is unhealthy".to_string()))
+            }
+        }
+
+        async fn ttl(&mut self, _key: &str) -> Result<Option<Duration>> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_with_health_check_healthy_primary() {
+        let primary = Box::new(MockCacheManager::new(true));
+        let options = MemoryCacheOptions {
+            ttl: 60,
+            cleanup_interval: 30,
+            max_capacity: 1000,
+        };
+
+        let manager = FallbackCacheManager::new_with_health_check(primary, options).await;
+
+        // Should not be in fallback mode since primary is healthy
+        assert!(!manager.is_using_fallback());
+    }
+
+    #[tokio::test]
+    async fn test_new_with_health_check_unhealthy_primary() {
+        let primary = Box::new(MockCacheManager::new(false));
+        let options = MemoryCacheOptions {
+            ttl: 60,
+            cleanup_interval: 30,
+            max_capacity: 1000,
+        };
+
+        let manager = FallbackCacheManager::new_with_health_check(primary, options).await;
+
+        // Should be in fallback mode since primary is unhealthy
+        assert!(manager.is_using_fallback());
+    }
+
+    #[tokio::test]
+    async fn test_new_without_health_check() {
+        let primary = Box::new(MockCacheManager::new(false));
+        let options = MemoryCacheOptions {
+            ttl: 60,
+            cleanup_interval: 30,
+            max_capacity: 1000,
+        };
+
+        let manager = FallbackCacheManager::new(primary, options);
+
+        // Should not be in fallback mode initially (health check not performed)
+        assert!(!manager.is_using_fallback());
+    }
+}
