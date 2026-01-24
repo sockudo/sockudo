@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 // src/cache/factory.rs
+#[cfg(any(feature = "redis", feature = "redis-cluster"))]
 use crate::cache::fallback_cache_manager::FallbackCacheManager;
 use crate::cache::manager::CacheManager;
 use crate::cache::memory_cache_manager::MemoryCacheManager;
