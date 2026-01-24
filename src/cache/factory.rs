@@ -34,10 +34,10 @@ impl CacheManagerFactory {
         
         if global_redis_conn_details.cluster_nodes.is_empty() {
             error!(
-                "Cache: Redis cluster mode enabled, but no cluster_nodes configured in database.redis section."
+                "Cache: Redis cluster driver selected, but no cluster_nodes configured in database.redis section."
             );
             return Err(Error::Cache(
-                "Cache: Redis cluster nodes not configured.".to_string(),
+                "Cache: Redis cluster nodes not configured for explicit cluster driver.".to_string(),
             ));
         }
         
