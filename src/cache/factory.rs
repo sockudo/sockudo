@@ -67,7 +67,7 @@ impl CacheManagerFactory {
                 };
                 let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
                 let fallback_manager =
-                    FallbackCacheManager::new(Box::new(manager), config.memory.clone());
+                    FallbackCacheManager::new_with_health_check(Box::new(manager), config.memory.clone()).await;
                 Ok(Arc::new(Mutex::new(fallback_manager)))
             }
             #[cfg(feature = "redis")]
@@ -93,7 +93,7 @@ impl CacheManagerFactory {
                 };
                 let manager = RedisCacheManager::new(standalone_redis_cache_config).await?;
                 let fallback_manager =
-                    FallbackCacheManager::new(Box::new(manager), config.memory.clone());
+                    FallbackCacheManager::new_with_health_check(Box::new(manager), config.memory.clone()).await;
                 Ok(Arc::new(Mutex::new(fallback_manager)))
             }
             #[cfg(feature = "redis-cluster")]
@@ -127,7 +127,7 @@ impl CacheManagerFactory {
                 };
                 let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
                 let fallback_manager =
-                    FallbackCacheManager::new(Box::new(manager), config.memory.clone());
+                    FallbackCacheManager::new_with_health_check(Box::new(manager), config.memory.clone()).await;
                 Ok(Arc::new(Mutex::new(fallback_manager)))
             }
             CacheDriver::Memory => {
