@@ -153,6 +153,29 @@ impl MemoryCacheManager {
         }
         Ok(())
     }
+
+    /// Get all entries from the cache as (key, value, ttl) tuples.
+    /// Returns entries without the prefix.
+    pub async fn get_all_entries(&self) -> Vec<(String, String, Option<Duration>)> {
+        let mut entries = Vec::new();
+        let prefix_len = self.prefix.len() + 1; // +1 for the colon separator
+
+        // Iterate over all cached entries
+        for (key, value) in self.cache.iter() {
+            // Remove prefix from key
+            if key.starts_with(&format!("{}:", self.prefix)) {
+                let unprefixed_key = key[prefix_len..].to_string();
+                let ttl = if self.options.ttl > 0 {
+                    Some(Duration::from_secs(self.options.ttl))
+                } else {
+                    None
+                };
+                entries.push((unprefixed_key, value.clone(), ttl));
+            }
+        }
+
+        entries
+    }
 }
 
 // No Drop implementation needed as Moka's Cache handles its own resource cleanup.
