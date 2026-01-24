@@ -166,9 +166,21 @@ impl CacheManager for FallbackCacheManager {
     }
 
     async fn disconnect(&mut self) -> Result<()> {
-        let _ = self.primary.lock().await.disconnect().await;
-        let _ = self.fallback.lock().await.disconnect().await;
-        Ok(())
+        let primary_result = self.primary.lock().await.disconnect().await;
+        if let Err(ref e) = primary_result {
+            warn!(error = ?e, "Failed to disconnect primary cache");
+        }
+
+        let fallback_result = self.fallback.lock().await.disconnect().await;
+        if let Err(ref e) = fallback_result {
+            warn!(error = ?e, "Failed to disconnect fallback cache");
+        }
+
+        match (primary_result, fallback_result) {
+            (Ok(_), Ok(_)) => Ok(()),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
     }
 
     async fn check_health(&self) -> Result<()> {
