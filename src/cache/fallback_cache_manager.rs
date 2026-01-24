@@ -64,11 +64,19 @@ impl FallbackCacheManager {
             }
         };
 
+        // Set last_failure_time to current time if starting in fallback mode
+        // to ensure proper recovery timing
+        let last_failure_time = if using_fallback {
+            start_time.elapsed().as_secs()
+        } else {
+            0
+        };
+
         Self {
             primary: Mutex::new(primary),
             fallback: Mutex::new(fallback),
             using_fallback: AtomicBool::new(using_fallback),
-            last_failure_time: AtomicU64::new(if using_fallback { 0 } else { 0 }),
+            last_failure_time: AtomicU64::new(last_failure_time),
             start_time,
         }
     }
