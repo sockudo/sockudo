@@ -170,9 +170,6 @@ impl CacheManager for FallbackCacheManager {
         match primary.has(key).await {
             Ok(result) => Ok(result),
             Err(e) => {
-                // Release locks before switching to fallback
-                drop(primary);
-                drop(_guard);
                 self.switch_to_fallback(&e.to_string());
                 self.fallback.lock().await.has(key).await
             }
@@ -193,9 +190,6 @@ impl CacheManager for FallbackCacheManager {
         match primary.get(key).await {
             Ok(result) => Ok(result),
             Err(e) => {
-                // Release locks before switching to fallback
-                drop(primary);
-                drop(_guard);
                 self.switch_to_fallback(&e.to_string());
                 self.fallback.lock().await.get(key).await
             }
@@ -221,9 +215,6 @@ impl CacheManager for FallbackCacheManager {
         match primary.set(key, value, ttl_seconds).await {
             Ok(()) => Ok(()),
             Err(e) => {
-                // Release locks before switching to fallback
-                drop(primary);
-                drop(_guard);
                 self.switch_to_fallback(&e.to_string());
                 self.fallback
                     .lock()
@@ -248,9 +239,6 @@ impl CacheManager for FallbackCacheManager {
         match primary.remove(key).await {
             Ok(()) => Ok(()),
             Err(e) => {
-                // Release locks before switching to fallback
-                drop(primary);
-                drop(_guard);
                 self.switch_to_fallback(&e.to_string());
                 self.fallback.lock().await.remove(key).await
             }
@@ -277,7 +265,9 @@ impl CacheManager for FallbackCacheManager {
 
     async fn check_health(&self) -> Result<()> {
         if self.is_using_fallback() {
-            return Ok(());
+            // Check fallback cache health when in fallback mode
+            let fallback = self.fallback.lock().await;
+            return fallback.check_health().await;
         }
 
         let primary = self.primary.lock().await;
@@ -298,9 +288,6 @@ impl CacheManager for FallbackCacheManager {
         match primary.ttl(key).await {
             Ok(result) => Ok(result),
             Err(e) => {
-                // Release locks before switching to fallback
-                drop(primary);
-                drop(_guard);
                 self.switch_to_fallback(&e.to_string());
                 self.fallback.lock().await.ttl(key).await
             }
