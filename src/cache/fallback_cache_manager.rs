@@ -21,6 +21,9 @@ pub struct FallbackCacheManager {
 }
 
 impl FallbackCacheManager {
+    /// Creates a new FallbackCacheManager without performing an initial health check.
+    /// If Redis is unavailable at startup, the first cache operation will experience
+    /// higher latency due to the failed attempt and retry.
     pub fn new(
         primary: Box<dyn CacheManager + Send + Sync>,
         fallback_options: MemoryCacheOptions,
@@ -33,6 +36,40 @@ impl FallbackCacheManager {
             using_fallback: AtomicBool::new(false),
             last_failure_time: AtomicU64::new(0),
             start_time: Instant::now(),
+        }
+    }
+
+    /// Creates a new FallbackCacheManager and performs an initial health check on the
+    /// primary cache. If the primary cache is unavailable at startup, immediately switches
+    /// to fallback mode, avoiding initial latency on the first cache operation.
+    pub async fn new_with_health_check(
+        primary: Box<dyn CacheManager + Send + Sync>,
+        fallback_options: MemoryCacheOptions,
+    ) -> Self {
+        let fallback = MemoryCacheManager::new("fallback_cache".to_string(), fallback_options);
+        let start_time = Instant::now();
+        
+        // Perform initial health check
+        let using_fallback = match primary.check_health().await {
+            Ok(()) => {
+                debug!("Primary cache is healthy at startup");
+                false
+            }
+            Err(e) => {
+                warn!(
+                    "Primary cache unavailable at startup, starting in fallback mode. Error: {}",
+                    e
+                );
+                true
+            }
+        };
+
+        Self {
+            primary: Mutex::new(primary),
+            fallback: Mutex::new(fallback),
+            using_fallback: AtomicBool::new(using_fallback),
+            last_failure_time: AtomicU64::new(if using_fallback { 0 } else { 0 }),
+            start_time,
         }
     }
 
