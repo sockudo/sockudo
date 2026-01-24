@@ -909,9 +909,9 @@ pub async fn terminate_user_connections(
 ///
 /// Critical components (WebSocket functionality fails without these):
 /// - Adapter: Core WebSocket connection handling
-/// - Cache Manager: Required for cache channels, subscription failures propagate errors
 ///
-/// Non-critical components (WebSocket works, but optional features don't):
+/// Non-critical components (WebSocket works, but optional features may be degraded):
+/// - Cache Manager: Falls back to in-memory cache when Redis is unavailable
 /// - Queue System: Only affects webhook delivery
 async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
     let mut critical_issues = Vec::new();
@@ -936,7 +936,9 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
         }
     }
 
-    // CRITICAL CHECK 2: Cache manager health - required for cache channels
+    // NON-CRITICAL CHECK: Cache manager health
+    // With FallbackCacheManager, Redis failures automatically fall back to memory cache,
+    // so cache issues don't cause service unavailability - just degraded performance
     if handler.server_options().cache.driver != crate::options::CacheDriver::None {
         let cache_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
             let cache_manager = handler.cache_manager.lock().await;
@@ -949,10 +951,11 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
                 // Cache manager is healthy
             }
             Ok(Err(e)) => {
-                critical_issues.push(format!("Cache: {e}"));
+                non_critical_issues.push(format!("Cache: {e} (using in-memory fallback)"));
             }
             Err(_) => {
-                critical_issues.push("Cache health check timeout".to_string());
+                non_critical_issues
+                    .push("Cache health check timeout (using in-memory fallback)".to_string());
             }
         }
     }

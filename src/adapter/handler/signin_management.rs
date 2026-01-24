@@ -74,11 +74,13 @@ impl ConnectionHandler {
         let mut watchlist_events = Vec::new();
         let mut watchers_to_notify = Vec::new();
 
-        if app_config.enable_watchlist_events.unwrap_or(false) && user_info.watchlist.is_some() {
+        if app_config.enable_watchlist_events.unwrap_or(false)
+            && let Some(watchlist) = &user_info.watchlist
+        {
             info!(
                 "Processing watchlist for user {} with {} watched users",
                 user_info.id,
-                user_info.watchlist.as_ref().unwrap().len()
+                watchlist.len()
             );
 
             // Add user to watchlist manager and get initial status events

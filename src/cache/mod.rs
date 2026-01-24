@@ -1,4 +1,5 @@
 pub(crate) mod factory;
+pub mod fallback_cache_manager;
 pub mod manager;
 pub mod memory_cache_manager;
 #[cfg(feature = "redis")]
