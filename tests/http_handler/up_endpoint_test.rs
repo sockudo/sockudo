@@ -621,13 +621,16 @@ async fn test_up_cache_health_check_failure() {
     );
     let handler_arc = Arc::new(handler);
 
-    // Call the up endpoint - cache failure should return ERROR (critical component)
+    // Call the up endpoint - cache failure should return DEGRADED (non-critical component)
     let result = up(None, State(handler_arc)).await;
 
     assert!(result.is_ok());
     let response = result.unwrap().into_response();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.headers().get("X-Health-Check").unwrap(), "ERROR");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("X-Health-Check").unwrap(),
+        "DEGRADED"
+    );
 }
 
 // Test that metrics are recorded (non-blocking)
