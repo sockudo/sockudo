@@ -26,6 +26,9 @@ pub struct FallbackCacheManager {
 }
 
 impl FallbackCacheManager {
+    /// Creates a new FallbackCacheManager without performing an initial health check.
+    /// If Redis is unavailable at startup, the first cache operation will experience
+    /// higher latency due to the failed attempt and retry.
     pub fn new(
         primary: Box<dyn CacheManager + Send + Sync>,
         fallback_options: MemoryCacheOptions,
@@ -38,6 +41,49 @@ impl FallbackCacheManager {
             using_fallback: AtomicBool::new(false),
             last_failure_time: AtomicU64::new(0),
             start_time: Instant::now(),
+            recovery_lock: RwLock::new(()),
+        }
+    }
+
+    /// Creates a new FallbackCacheManager and performs an initial health check on the
+    /// primary cache. If the primary cache is unavailable at startup, immediately switches
+    /// to fallback mode, avoiding initial latency on the first cache operation.
+    pub async fn new_with_health_check(
+        primary: Box<dyn CacheManager + Send + Sync>,
+        fallback_options: MemoryCacheOptions,
+    ) -> Self {
+        let fallback = MemoryCacheManager::new("fallback_cache".to_string(), fallback_options);
+        let start_time = Instant::now();
+
+        // Perform initial health check
+        let using_fallback = match primary.check_health().await {
+            Ok(()) => {
+                debug!("Primary cache is healthy at startup");
+                false
+            }
+            Err(e) => {
+                warn!(
+                    "Primary cache unavailable at startup, starting in fallback mode. Error: {}",
+                    e
+                );
+                true
+            }
+        };
+
+        // Set last_failure_time to current time if starting in fallback mode
+        // to ensure proper recovery timing
+        let last_failure_time = if using_fallback {
+            start_time.elapsed().as_secs()
+        } else {
+            0
+        };
+
+        Self {
+            primary: Mutex::new(primary),
+            fallback: Mutex::new(fallback),
+            using_fallback: AtomicBool::new(using_fallback),
+            last_failure_time: AtomicU64::new(last_failure_time),
+            start_time,
             recovery_lock: RwLock::new(()),
         }
     }
@@ -545,5 +591,56 @@ mod tests {
             }
             assert_eq!(ttl, Some(Duration::from_secs(60)));
         }
+    }
+
+    #[tokio::test]
+    async fn test_new_with_health_check_healthy_primary() {
+        let mock = MockCache::new();
+        let options = MemoryCacheOptions {
+            ttl: 60,
+            cleanup_interval: 60,
+            max_capacity: 100,
+        };
+
+        let manager = FallbackCacheManager::new_with_health_check(Box::new(mock), options).await;
+
+        // Should not be in fallback mode since primary is healthy
+        assert!(!manager.is_using_fallback());
+    }
+
+    #[tokio::test]
+    async fn test_new_with_health_check_unhealthy_primary() {
+        let mock = MockCache::new();
+        let should_fail = mock.should_fail.clone();
+        *should_fail.lock().await = true;
+
+        let options = MemoryCacheOptions {
+            ttl: 60,
+            cleanup_interval: 60,
+            max_capacity: 100,
+        };
+
+        let manager = FallbackCacheManager::new_with_health_check(Box::new(mock), options).await;
+
+        // Should be in fallback mode since primary is unhealthy
+        assert!(manager.is_using_fallback());
+    }
+
+    #[tokio::test]
+    async fn test_new_without_health_check() {
+        let mock = MockCache::new();
+        let should_fail = mock.should_fail.clone();
+        *should_fail.lock().await = true;
+
+        let options = MemoryCacheOptions {
+            ttl: 60,
+            cleanup_interval: 60,
+            max_capacity: 100,
+        };
+
+        let manager = FallbackCacheManager::new(Box::new(mock), options);
+
+        // Should not be in fallback mode initially (health check not performed)
+        assert!(!manager.is_using_fallback());
     }
 }
