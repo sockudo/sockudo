@@ -69,7 +69,14 @@ impl FallbackCacheManager {
 
         debug!("Attempting to recover Redis cache connection...");
 
-        let primary = self.primary.lock().await;
+        let primary = match self.primary.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                debug!("Primary cache is busy, skipping recovery attempt");
+                return false;
+            }
+        };
+
         match primary.check_health().await {
             Ok(()) => {
                 self.using_fallback.store(false, Ordering::SeqCst);
