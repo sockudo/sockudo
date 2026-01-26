@@ -83,8 +83,12 @@
       "host": "redis",
       "port": 6379,
       "db": 0,
+      "username": null,
+      "password": null,
       "key_prefix": "sockudo:",
       "sentinels": [],
+      "sentinel_password": null,
+      "name": "mymaster",
       "cluster_nodes": []
     },
     "mysql": {
