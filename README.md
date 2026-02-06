@@ -116,6 +116,44 @@ CACHE_DRIVER=redis           # memory, redis, redis-cluster, none
 QUEUE_DRIVER=redis           # memory, redis, redis-cluster, sqs, none
 ```
 
+### Redis Cluster (Unified Configuration)
+
+Use `database.redis.cluster` as the canonical Redis Cluster configuration for all cluster-backed components.
+This configuration is shared by:
+- `adapter.driver=redis-cluster` (when `adapter.cluster.nodes` is not explicitly set)
+- `cache.driver=redis-cluster` (or `cache.driver=redis` with `cache.redis.cluster_mode=true`)
+- `queue.driver=redis-cluster` (when `queue.redis_cluster.nodes` is not explicitly set)
+- `rate_limiter.driver=redis-cluster`
+
+```json
+{
+  "database": {
+    "redis": {
+      "cluster": {
+        "nodes": [
+          { "host": "node1.secure-cluster.com", "port": 7000 },
+          { "host": "node2.secure-cluster.com", "port": 7001 },
+          { "host": "node3.secure-cluster.com", "port": 7002 }
+        ],
+        "username": null,
+        "password": "your-password",
+        "use_tls": true
+      }
+    }
+  }
+}
+```
+
+Notes:
+- `use_tls=true` applies `rediss://` to nodes that do not already specify a protocol.
+- If a node already uses `redis://` or `rediss://`, that node-level protocol is preserved.
+- Node URLs containing inline credentials keep their own credentials.
+
+Backward compatibility:
+- Legacy `database.redis.cluster_nodes` is still supported.
+- `REDIS_CLUSTER_NODES` remains supported; it now also feeds the shared `database.redis.cluster.nodes`.
+- Existing `adapter.cluster.nodes` and `queue.redis_cluster.nodes` overrides remain supported.
+
 ### Performance Tuning
 
 ```bash

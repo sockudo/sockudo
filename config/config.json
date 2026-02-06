@@ -85,6 +85,12 @@
       "db": 0,
       "key_prefix": "sockudo:",
       "sentinels": [],
+      "cluster": {
+        "nodes": [],
+        "username": null,
+        "password": null,
+        "use_tls": false
+      },
       "cluster_nodes": []
     },
     "mysql": {
