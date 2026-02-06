@@ -78,14 +78,11 @@ impl AdapterFactory {
             AdapterDriver::RedisCluster => {
                 // Use nodes from the specific RedisClusterAdapterConfig if available, else from DatabaseConfig.redis
                 let nodes = if !config.cluster.nodes.is_empty() {
-                    config.cluster.nodes.clone()
-                } else {
                     db_config
                         .redis
-                        .cluster_nodes
-                        .iter()
-                        .map(|node| node.to_url())
-                        .collect()
+                        .normalize_cluster_seed_urls(&config.cluster.nodes)
+                } else {
+                    db_config.redis.cluster_node_urls()
                 };
 
                 if nodes.is_empty() {
