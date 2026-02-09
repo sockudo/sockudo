@@ -525,7 +525,7 @@ pub struct RedisSentinel {
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RedisClusterConnection {
     pub nodes: Vec<ClusterNode>,
@@ -1696,17 +1696,6 @@ impl Default for RedisSentinel {
         Self {
             host: "localhost".to_string(),
             port: 26379,
-        }
-    }
-}
-
-impl Default for RedisClusterConnection {
-    fn default() -> Self {
-        Self {
-            nodes: Vec::new(),
-            username: None,
-            password: None,
-            use_tls: false,
         }
     }
 }

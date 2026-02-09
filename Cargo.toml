@@ -49,6 +49,7 @@ futures = "0.3.18"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 regex = "1.11.1"
+cmake = "0.1.57"
 hmac = "0.13.0-pre.4"
 sha2 = "0.11.0-pre.4"
 hex = "0.4.3"
