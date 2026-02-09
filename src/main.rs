@@ -444,16 +444,21 @@ impl SockudoServer {
                             )
                         }
                         QueueDriver::RedisCluster => {
-                            // For Redis cluster, use nodes from configuration
-                            let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
-                                // Fallback to default cluster nodes
+                            // For Redis cluster, prefer queue-specific nodes, then shared database.redis.cluster config.
+                            let cluster_nodes = if !config.queue.redis_cluster.nodes.is_empty() {
+                                config
+                                    .database
+                                    .redis
+                                    .normalize_cluster_seed_urls(&config.queue.redis_cluster.nodes)
+                            } else if config.database.redis.has_cluster_nodes() {
+                                config.database.redis.cluster_node_urls()
+                            } else {
+                                // Final fallback to local development defaults.
                                 vec![
                                     "redis://127.0.0.1:7000".to_string(),
                                     "redis://127.0.0.1:7001".to_string(),
                                     "redis://127.0.0.1:7002".to_string(),
                                 ]
-                            } else {
-                                config.queue.redis_cluster.nodes.clone()
                             };
 
                             // Join nodes with comma for the factory

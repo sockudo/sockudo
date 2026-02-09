@@ -40,19 +40,15 @@ impl CacheManagerFactory {
             #[cfg(all(feature = "redis", feature = "redis-cluster"))]
             CacheDriver::Redis if config.redis.cluster_mode => {
                 info!("Cache: Using Redis Cluster driver with in-memory fallback.");
-                if global_redis_conn_details.cluster_nodes.is_empty() {
+                if !global_redis_conn_details.has_cluster_nodes() {
                     error!(
-                        "Cache: Redis cluster mode enabled, but no cluster_nodes configured in database.redis section."
+                        "Cache: Redis cluster mode enabled, but no cluster nodes configured in database.redis.cluster.nodes (or legacy database.redis.cluster_nodes)."
                     );
                     return Err(Error::Cache(
                         "Cache: Redis cluster nodes not configured.".to_string(),
                     ));
                 }
-                let nodes: Vec<String> = global_redis_conn_details
-                    .cluster_nodes
-                    .iter()
-                    .map(|node| node.to_url())
-                    .collect();
+                let nodes: Vec<String> = global_redis_conn_details.cluster_node_urls();
 
                 let prefix = config
                     .redis
@@ -104,20 +100,16 @@ impl CacheManagerFactory {
             #[cfg(feature = "redis-cluster")]
             CacheDriver::RedisCluster => {
                 info!("Cache: Using Redis Cluster driver with in-memory fallback.");
-                if global_redis_conn_details.cluster_nodes.is_empty() {
+                if !global_redis_conn_details.has_cluster_nodes() {
                     error!(
-                        "Cache: Redis cluster driver selected, but no cluster_nodes configured in database.redis section."
+                        "Cache: Redis cluster driver selected, but no cluster nodes configured in database.redis.cluster.nodes (or legacy database.redis.cluster_nodes)."
                     );
                     return Err(Error::Cache(
                         "Cache: Redis cluster nodes not configured for explicit cluster driver."
                             .to_string(),
                     ));
                 }
-                let nodes: Vec<String> = global_redis_conn_details
-                    .cluster_nodes
-                    .iter()
-                    .map(|node| node.to_url())
-                    .collect();
+                let nodes: Vec<String> = global_redis_conn_details.cluster_node_urls();
 
                 let prefix = config
                     .redis

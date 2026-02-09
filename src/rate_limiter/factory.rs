@@ -109,18 +109,14 @@ impl RateLimiterFactory {
     ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
         info!("RateLimiter: Using Redis Cluster backend.");
 
-        if global_redis_conn_details.cluster_nodes.is_empty() {
-            error!("RateLimiter: Redis cluster driver selected, but no cluster_nodes configured.");
+        if !global_redis_conn_details.has_cluster_nodes() {
+            error!("RateLimiter: Redis cluster driver selected, but no cluster nodes configured.");
             return Err(crate::error::Error::Configuration(
                 "RateLimiter: Redis cluster nodes not configured.".to_string(),
             ));
         }
 
-        let nodes: Vec<String> = global_redis_conn_details
-            .cluster_nodes
-            .iter()
-            .map(|node| format!("redis://{}:{}", node.host, node.port))
-            .collect();
+        let nodes: Vec<String> = global_redis_conn_details.cluster_node_urls();
 
         let prefix = config
             .redis
