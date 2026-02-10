@@ -792,8 +792,7 @@ pub async fn channels(
     }
 
     let mut channels_info_response_map = HashMap::new();
-    for entry in channels_map.iter() {
-        let channel_name_str = entry.key();
+    for (channel_name_str, _socket_count) in channels_map.iter() {
         if !channel_name_str.starts_with(filter_prefix_str) {
             continue;
         }

@@ -18,9 +18,9 @@ use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 use crate::options::ClusterHealthConfig;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
 use async_trait::async_trait;
-use dashmap::{DashMap, DashSet};
+
 use fastwebsockets::WebSocketWrite;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
@@ -34,7 +34,7 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub horizontal: Arc<Mutex<HorizontalAdapter>>,
     pub transport: T,
     pub config: T::Config,
-    pub event_bus: Option<tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>>,
+    pub event_bus: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>>>,
     pub node_id: String,
     pub cluster_health_enabled: bool,
     pub heartbeat_interval_ms: u64,
@@ -85,7 +85,7 @@ where
             horizontal: Arc::new(Mutex::new(horizontal)),
             transport,
             config,
-            event_bus: None,
+            event_bus: std::sync::Mutex::new(None),
             node_id,
             cluster_health_enabled: cluster_health_defaults.enabled,
             heartbeat_interval_ms: cluster_health_defaults.heartbeat_interval_ms,
@@ -103,11 +103,9 @@ where
         Ok(())
     }
 
-    pub fn set_event_bus(
-        &mut self,
-        event_sender: tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>,
-    ) {
-        self.event_bus = Some(event_sender);
+    pub fn set_event_bus(&self, event_sender: tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>) {
+        let mut guard = self.event_bus.lock().unwrap();
+        *guard = Some(event_sender);
     }
 
     /// Configure this adapter with discovered nodes for testing
@@ -547,7 +545,7 @@ where
     async fn start_dead_node_detection(&self) {
         let transport = self.transport.clone();
         let horizontal = self.horizontal.clone();
-        let event_bus = self.event_bus.clone();
+        let event_bus = self.event_bus.lock().unwrap().clone();
         let node_id = self.node_id.clone();
         let cleanup_interval_ms = self.cleanup_interval_ms;
         let node_timeout_ms = self.node_timeout_ms;
@@ -702,9 +700,9 @@ impl<T: HorizontalTransport + 'static> ConnectionManager for HorizontalAdapterBa
 where
     T::Config: TransportConfig,
 {
-    async fn init(&mut self) {
+    async fn init(&self) {
         {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             horizontal.local_adapter.init().await;
         }
 
@@ -713,35 +711,36 @@ where
         }
     }
 
-    async fn get_namespace(&mut self, app_id: &str) -> Option<Arc<Namespace>> {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn get_namespace(&self, app_id: &str) -> Option<Arc<Namespace>> {
+        let horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.get_namespace(app_id).await
     }
 
     async fn add_socket(
-        &mut self,
+        &self,
         socket_id: SocketId,
         socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
         app_id: &str,
         app_manager: Arc<dyn AppManager + Send + Sync>,
+        buffer_config: WebSocketBufferConfig,
     ) -> Result<()> {
-        let mut horizontal = self.horizontal.lock().await;
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
-            .add_socket(socket_id, socket, app_id, app_manager)
+            .add_socket(socket_id, socket, app_id, app_manager, buffer_config)
             .await
     }
 
-    async fn get_connection(&mut self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn get_connection(&self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .get_connection(socket_id, app_id)
             .await
     }
 
-    async fn remove_connection(&mut self, socket_id: &SocketId, app_id: &str) -> Result<()> {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn remove_connection(&self, socket_id: &SocketId, app_id: &str) -> Result<()> {
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .remove_connection(socket_id, app_id)
@@ -749,12 +748,12 @@ where
     }
 
     async fn send_message(
-        &mut self,
+        &self,
         app_id: &str,
         socket_id: &SocketId,
         message: PusherMessage,
     ) -> Result<()> {
-        let mut horizontal = self.horizontal.lock().await;
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .send_message(app_id, socket_id, message)
@@ -762,7 +761,7 @@ where
     }
 
     async fn send(
-        &mut self,
+        &self,
         channel: &str,
         message: PusherMessage,
         except: Option<&SocketId>,
@@ -773,7 +772,7 @@ where
 
         // Send locally first (tracked in connection manager for metrics)
         let (node_id, local_result) = {
-            let mut horizontal_lock = self.horizontal.lock().await;
+            let horizontal_lock = self.horizontal.lock().await;
 
             let result = horizontal_lock
                 .local_adapter
@@ -814,13 +813,13 @@ where
     }
 
     async fn get_channel_members(
-        &mut self,
+        &self,
         app_id: &str,
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>> {
         // Get local members
         let mut members = {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter
                 .get_channel_members(app_id, channel)
@@ -842,24 +841,18 @@ where
         Ok(members)
     }
 
-    async fn get_channel_sockets(
-        &mut self,
-        app_id: &str,
-        channel: &str,
-    ) -> Result<DashSet<SocketId>> {
-        let all_socket_ids = DashSet::new();
+    async fn get_channel_sockets(&self, app_id: &str, channel: &str) -> Result<Vec<SocketId>> {
+        let mut all_socket_ids = Vec::new();
 
         // Get local sockets
         {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             let sockets = horizontal
                 .local_adapter
                 .get_channel_sockets(app_id, channel)
                 .await?;
 
-            for entry in sockets.iter() {
-                all_socket_ids.insert(entry.key().clone());
-            }
+            all_socket_ids.extend(sockets);
         }
 
         // Get remote sockets
@@ -875,14 +868,14 @@ where
 
         for socket_id in response.socket_ids {
             all_socket_ids
-                .insert(SocketId::from_string(&socket_id).unwrap_or_else(|_| SocketId::new()));
+                .push(SocketId::from_string(&socket_id).unwrap_or_else(|_| SocketId::new()));
         }
 
         Ok(all_socket_ids)
     }
 
-    async fn remove_channel(&mut self, app_id: &str, channel: &str) {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn remove_channel(&self, app_id: &str, channel: &str) {
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .remove_channel(app_id, channel)
@@ -890,14 +883,14 @@ where
     }
 
     async fn is_in_channel(
-        &mut self,
+        &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
         // Check locally first
         let local_result = {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter
                 .is_in_channel(app_id, channel, socket_id)
@@ -922,30 +915,26 @@ where
         Ok(response.exists)
     }
 
-    async fn get_user_sockets(
-        &mut self,
-        user_id: &str,
-        app_id: &str,
-    ) -> Result<DashSet<WebSocketRef>> {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn get_user_sockets(&self, user_id: &str, app_id: &str) -> Result<Vec<WebSocketRef>> {
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .get_user_sockets(user_id, app_id)
             .await
     }
 
-    async fn cleanup_connection(&mut self, app_id: &str, ws: WebSocketRef) {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn cleanup_connection(&self, app_id: &str, ws: WebSocketRef) {
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .cleanup_connection(app_id, ws)
             .await
     }
 
-    async fn terminate_connection(&mut self, app_id: &str, user_id: &str) -> Result<()> {
+    async fn terminate_connection(&self, app_id: &str, user_id: &str) -> Result<()> {
         // Terminate locally
         {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter
                 .terminate_connection(app_id, user_id)
@@ -966,18 +955,18 @@ where
         Ok(())
     }
 
-    async fn add_channel_to_sockets(&mut self, app_id: &str, channel: &str, socket_id: &SocketId) {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn add_channel_to_sockets(&self, app_id: &str, channel: &str, socket_id: &SocketId) {
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .add_channel_to_sockets(app_id, channel, socket_id)
             .await
     }
 
-    async fn get_channel_socket_count(&mut self, app_id: &str, channel: &str) -> usize {
+    async fn get_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
         // Get local count
         let local_count = {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter
                 .get_channel_socket_count(app_id, channel)
@@ -1004,12 +993,12 @@ where
     }
 
     async fn add_to_channel(
-        &mut self,
+        &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
-        let mut horizontal = self.horizontal.lock().await;
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .add_to_channel(app_id, channel, socket_id)
@@ -1017,12 +1006,12 @@ where
     }
 
     async fn remove_from_channel(
-        &mut self,
+        &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
-        let mut horizontal = self.horizontal.lock().await;
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .remove_from_channel(app_id, channel, socket_id)
@@ -1030,39 +1019,39 @@ where
     }
 
     async fn get_presence_member(
-        &mut self,
+        &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
     ) -> Option<PresenceMemberInfo> {
-        let mut horizontal = self.horizontal.lock().await;
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .get_presence_member(app_id, channel, socket_id)
             .await
     }
 
-    async fn terminate_user_connections(&mut self, app_id: &str, user_id: &str) -> Result<()> {
+    async fn terminate_user_connections(&self, app_id: &str, user_id: &str) -> Result<()> {
         self.terminate_connection(app_id, user_id).await
     }
 
-    async fn add_user(&mut self, ws: WebSocketRef) -> Result<()> {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn add_user(&self, ws: WebSocketRef) -> Result<()> {
+        let horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.add_user(ws).await
     }
 
-    async fn remove_user(&mut self, ws: WebSocketRef) -> Result<()> {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn remove_user(&self, ws: WebSocketRef) -> Result<()> {
+        let horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.remove_user(ws).await
     }
 
     async fn remove_user_socket(
-        &mut self,
+        &self,
         user_id: &str,
         socket_id: &SocketId,
         app_id: &str,
     ) -> Result<()> {
-        let mut horizontal = self.horizontal.lock().await;
+        let horizontal = self.horizontal.lock().await;
         horizontal
             .local_adapter
             .remove_user_socket(user_id, socket_id, app_id)
@@ -1070,7 +1059,7 @@ where
     }
 
     async fn count_user_connections_in_channel(
-        &mut self,
+        &self,
         user_id: &str,
         app_id: &str,
         channel: &str,
@@ -1078,7 +1067,7 @@ where
     ) -> Result<usize> {
         // Get local count (with excluding_socket filter)
         let local_count = {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter
                 .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
@@ -1104,13 +1093,10 @@ where
         }
     }
 
-    async fn get_channels_with_socket_count(
-        &mut self,
-        app_id: &str,
-    ) -> Result<DashMap<String, usize>> {
+    async fn get_channels_with_socket_count(&self, app_id: &str) -> Result<HashMap<String, usize>> {
         // Get local channels
-        let channels = {
-            let mut horizontal = self.horizontal.lock().await;
+        let mut channels = {
+            let horizontal = self.horizontal.lock().await;
             horizontal
                 .local_adapter
                 .get_channels_with_socket_count(app_id)
@@ -1161,8 +1147,8 @@ where
         }
     }
 
-    async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {
-        let mut horizontal = self.horizontal.lock().await;
+    async fn get_namespaces(&self) -> Result<Vec<(String, Arc<Namespace>)>> {
+        let horizontal = self.horizontal.lock().await;
         horizontal.local_adapter.get_namespaces().await
     }
 
@@ -1183,7 +1169,7 @@ where
     }
 
     fn configure_dead_node_events(
-        &mut self,
+        &self,
     ) -> Option<tokio::sync::mpsc::UnboundedReceiver<DeadNodeEvent>> {
         let (event_sender, event_receiver) = tokio::sync::mpsc::unbounded_channel();
         self.set_event_bus(event_sender);

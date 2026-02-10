@@ -257,6 +257,7 @@ impl ConnectionHandler {
                     socket_tx,
                     &app_config.id,
                     Arc::clone(&self.app_manager),
+                    crate::websocket::WebSocketBufferConfig::default(),
                 )
                 .await?;
         } // Lock released - atomic operation complete
@@ -616,9 +617,8 @@ impl ConnectionHandler {
         // Count active channels of the specified type
         // This processing happens AFTER the connection_manager lock is released
         let mut count = 0i64;
-        for channel_entry in channels_map.iter() {
-            let channel_name = channel_entry.key();
-            let socket_count = *channel_entry.value();
+        for (channel_name, socket_count) in channels_map.iter() {
+            let socket_count = *socket_count;
 
             // Only count channels that have active connections
             if socket_count > 0 {
