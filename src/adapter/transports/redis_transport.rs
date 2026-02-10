@@ -60,9 +60,8 @@ impl HorizontalTransport for RedisTransport {
         // Use ConnectionManager consistently for auto-reconnection
         let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
             .set_number_of_retries(5)
-            .set_exponent_base(2)
-            .set_factor(500)
-            .set_max_delay(5000);
+            .set_exponent_base(2.0)
+            .set_max_delay(std::time::Duration::from_millis(5000));
 
         let connection = client
             .get_connection_manager_with_config(connection_manager_config.clone())
