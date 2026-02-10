@@ -9,7 +9,6 @@ use sockudo::websocket::SocketId;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 /// Helper to check if Redis is available
@@ -342,8 +341,8 @@ async fn test_redis_adapter_multiple_apps_isolation() {
 
     // Verify app isolation - presence broadcasts don't interfere with channel operations
     // Test that local channel operations work correctly regardless of presence broadcasts
-    let socket_app1 = SocketId("local-socket1".to_string());
-    let socket_app2 = SocketId("local-socket2".to_string());
+    let socket_app1 = SocketId::from_string("local-socket1").unwrap();
+    let socket_app2 = SocketId::from_string("local-socket2").unwrap();
 
     adapter1
         .add_to_channel("app1", "channel1", &socket_app1)
@@ -470,14 +469,9 @@ async fn test_redis_adapter_concurrent_presence_operations() {
         cleanup_interval_ms: 200,
     };
 
-    let adapter = Arc::new(Mutex::new(
-        create_redis_adapter("node1", &cluster_config).await,
-    ));
+    let adapter = Arc::new(create_redis_adapter("node1", &cluster_config).await);
 
-    {
-        let mut adapter_guard = adapter.lock().await;
-        adapter_guard.init().await;
-    }
+    adapter.init().await;
 
     let app_id = "test-app";
     let channel = "presence-concurrent";
@@ -488,11 +482,10 @@ async fn test_redis_adapter_concurrent_presence_operations() {
     for i in 0..10 {
         let adapter_clone = adapter.clone();
         let handle = tokio::spawn(async move {
-            let adapter_guard = adapter_clone.lock().await;
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);
 
-            adapter_guard
+            adapter_clone
                 .broadcast_presence_join(app_id, channel, &user_id, &socket_id, None)
                 .await
                 .unwrap();

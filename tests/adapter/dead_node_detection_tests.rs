@@ -317,7 +317,7 @@ async fn test_dead_node_event_structure_contains_required_data() {
         };
 
         // Send through the adapter's event bus
-        if let Some(event_bus) = &adapter.event_bus {
+        if let Some(event_bus) = adapter.event_bus.lock().unwrap().as_ref() {
             event_bus.send(event).unwrap();
         }
     }

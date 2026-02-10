@@ -359,9 +359,9 @@ async fn test_redis_cluster_concurrent_multi_node_operations() {
     for i in 0..9 {
         let adapters_clone = adapters.clone();
         let handle = tokio::spawn(async move {
-            let mut adapters_guard = adapters_clone.lock().await;
+            let adapters_guard = adapters_clone.lock().await;
             let adapter_index = i % 3; // Round-robin across adapters
-            let adapter = &mut adapters_guard[adapter_index];
+            let adapter = &adapters_guard[adapter_index];
 
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);

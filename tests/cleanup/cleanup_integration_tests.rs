@@ -13,12 +13,10 @@ mod tests {
     use sockudo::websocket::SocketId;
     use std::sync::Arc;
     use std::time::Instant;
-    use tokio::sync::Mutex;
-
     /// Helper to create a real cleanup system with all components
     async fn create_real_cleanup_system() -> (
         MultiWorkerCleanupSystem,
-        Arc<Mutex<LocalAdapter>>,
+        Arc<LocalAdapter>,
         Arc<MemoryAppManager>,
     ) {
         let config = CleanupConfig {
@@ -31,8 +29,8 @@ mod tests {
             fallback_to_sync: true,
         };
 
-        let local_adapter = Arc::new(Mutex::new(LocalAdapter::new()));
-        let connection_manager = local_adapter.clone();
+        let local_adapter = Arc::new(LocalAdapter::new());
+        let connection_manager = local_adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>;
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
@@ -62,12 +60,8 @@ mod tests {
 
         app_manager.create_app(test_app).await.unwrap();
 
-        let cleanup_system = MultiWorkerCleanupSystem::new(
-            connection_manager.clone(),
-            app_manager.clone(),
-            None,
-            config,
-        );
+        let cleanup_system =
+            MultiWorkerCleanupSystem::new(connection_manager, app_manager.clone(), None, config);
 
         (cleanup_system, local_adapter, app_manager)
     }
@@ -75,7 +69,7 @@ mod tests {
     /// Helper to create a cleanup system with webhook app configuration
     async fn create_cleanup_system_with_webhook_app() -> (
         MultiWorkerCleanupSystem,
-        Arc<Mutex<LocalAdapter>>,
+        Arc<LocalAdapter>,
         Arc<MemoryAppManager>,
     ) {
         let config = CleanupConfig {
@@ -88,8 +82,8 @@ mod tests {
             fallback_to_sync: true,
         };
 
-        let local_adapter = Arc::new(Mutex::new(LocalAdapter::new()));
-        let connection_manager = local_adapter.clone();
+        let local_adapter = Arc::new(LocalAdapter::new());
+        let connection_manager = local_adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>;
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
@@ -129,12 +123,8 @@ mod tests {
         app_manager.create_app(test_app).await.unwrap();
 
         // Create cleanup system WITHOUT webhook integration
-        let cleanup_system = MultiWorkerCleanupSystem::new(
-            connection_manager.clone(),
-            app_manager.clone(),
-            None,
-            config,
-        );
+        let cleanup_system =
+            MultiWorkerCleanupSystem::new(connection_manager, app_manager.clone(), None, config);
 
         (cleanup_system, local_adapter, app_manager)
     }
@@ -162,28 +152,21 @@ mod tests {
 
         // SETUP: Add socket to channel
         {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", channel, &socket_id)
                 .await
                 .unwrap();
         }
 
         // VERIFY SETUP: Socket should be in channel
-        let initial_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let initial_count = { adapter.get_channel_socket_count("test-app", channel).await };
         assert_eq!(
             initial_count, 1,
             "Setup failed: socket should be in channel"
         );
 
         let is_in_channel_before = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .is_in_channel("test-app", channel, &socket_id)
                 .await
                 .unwrap()
@@ -201,20 +184,14 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // VERIFY: Socket should be removed from channel
-        let final_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let final_count = { adapter.get_channel_socket_count("test-app", channel).await };
         assert_eq!(
             final_count, 0,
             "CLEANUP FAILED: Socket was not removed from channel"
         );
 
         let is_in_channel_after = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .is_in_channel("test-app", channel, &socket_id)
                 .await
                 .unwrap()
@@ -236,8 +213,7 @@ mod tests {
 
         // SETUP: Add socket to multiple channels
         for channel in &channels {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", channel, &socket_id)
                 .await
                 .unwrap();
@@ -245,12 +221,7 @@ mod tests {
 
         // VERIFY SETUP: Socket should be in all channels
         for channel in &channels {
-            let count = {
-                let mut adapter_locked = adapter.lock().await;
-                adapter_locked
-                    .get_channel_socket_count("test-app", channel)
-                    .await
-            };
+            let count = { adapter.get_channel_socket_count("test-app", channel).await };
             assert_eq!(count, 1, "Setup failed for channel {}", channel);
         }
 
@@ -266,12 +237,7 @@ mod tests {
 
         // VERIFY: Socket should be removed from ALL channels
         for channel in &channels {
-            let count = {
-                let mut adapter_locked = adapter.lock().await;
-                adapter_locked
-                    .get_channel_socket_count("test-app", channel)
-                    .await
-            };
+            let count = { adapter.get_channel_socket_count("test-app", channel).await };
             assert_eq!(
                 count, 0,
                 "CLEANUP FAILED: Socket not removed from channel {}",
@@ -279,8 +245,7 @@ mod tests {
             );
 
             let is_in_channel = {
-                let mut adapter_locked = adapter.lock().await;
-                adapter_locked
+                adapter
                     .is_in_channel("test-app", channel, &socket_id)
                     .await
                     .unwrap()
@@ -305,24 +270,18 @@ mod tests {
 
         // SETUP: Add both sockets to same channel
         {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", channel, &target_socket)
                 .await
                 .unwrap();
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", channel, &other_socket)
                 .await
                 .unwrap();
         }
 
         // VERIFY SETUP: Both sockets should be in channel
-        let initial_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let initial_count = { adapter.get_channel_socket_count("test-app", channel).await };
         assert_eq!(
             initial_count, 2,
             "Setup failed: both sockets should be in channel"
@@ -336,20 +295,14 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // VERIFY: Only target socket removed, other socket preserved
-        let final_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let final_count = { adapter.get_channel_socket_count("test-app", channel).await };
         assert_eq!(
             final_count, 1,
             "CLEANUP FAILED: Should have exactly 1 socket remaining"
         );
 
         let target_in_channel = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .is_in_channel("test-app", channel, &target_socket)
                 .await
                 .unwrap()
@@ -360,8 +313,7 @@ mod tests {
         );
 
         let other_in_channel = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .is_in_channel("test-app", channel, &other_socket)
                 .await
                 .unwrap()
@@ -384,20 +336,14 @@ mod tests {
         // SETUP: Add all sockets to channel
         for socket_id in &sockets {
             let socket = SocketId::from_string(socket_id).unwrap();
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", channel, &socket)
                 .await
                 .unwrap();
         }
 
         // VERIFY SETUP: All sockets in channel
-        let initial_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let initial_count = { adapter.get_channel_socket_count("test-app", channel).await };
         assert_eq!(
             initial_count, 3,
             "Setup failed: all sockets should be in channel"
@@ -413,12 +359,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
         // VERIFY: All sockets cleaned up via batching
-        let final_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let final_count = { adapter.get_channel_socket_count("test-app", channel).await };
         assert_eq!(
             final_count, 0,
             "BATCH CLEANUP FAILED: All sockets should be removed"
@@ -428,8 +369,7 @@ mod tests {
         for socket_id in &sockets {
             let socket = SocketId::from_string(socket_id).unwrap();
             let is_in_channel = {
-                let mut adapter_locked = adapter.lock().await;
-                adapter_locked
+                adapter
                     .is_in_channel("test-app", channel, &socket)
                     .await
                     .unwrap()
@@ -454,8 +394,7 @@ mod tests {
 
         // SETUP: Add socket to presence channel
         {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", presence_channel, &socket_id)
                 .await
                 .unwrap();
@@ -463,8 +402,7 @@ mod tests {
 
         // VERIFY SETUP
         let initial_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .get_channel_socket_count("test-app", presence_channel)
                 .await
         };
@@ -495,8 +433,7 @@ mod tests {
 
         // VERIFY: Presence channel cleanup worked
         let final_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .get_channel_socket_count("test-app", presence_channel)
                 .await
         };
@@ -506,8 +443,7 @@ mod tests {
         );
 
         let is_in_channel = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .is_in_channel("test-app", presence_channel, &socket_id)
                 .await
                 .unwrap()
@@ -531,8 +467,8 @@ mod tests {
             fallback_to_sync: true,
         };
 
-        let local_adapter = Arc::new(Mutex::new(LocalAdapter::new()));
-        let connection_manager = local_adapter.clone();
+        let local_adapter = Arc::new(LocalAdapter::new());
+        let connection_manager = local_adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>;
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
@@ -561,12 +497,8 @@ mod tests {
         };
         app_manager.create_app(test_app).await.unwrap();
 
-        let cleanup_system = MultiWorkerCleanupSystem::new(
-            connection_manager.clone(),
-            app_manager.clone(),
-            None,
-            config,
-        );
+        let cleanup_system =
+            MultiWorkerCleanupSystem::new(connection_manager, app_manager.clone(), None, config);
 
         let cleanup_sender = cleanup_system.get_sender();
         let channel = "queue-channel";
@@ -575,8 +507,7 @@ mod tests {
         let sockets = vec!["queue-1", "queue-2", "queue-3"];
         for socket_id in &sockets {
             let socket = SocketId::from_string(socket_id).unwrap();
-            let mut adapter_locked = local_adapter.lock().await;
-            adapter_locked
+            local_adapter
                 .add_to_channel("test-app", channel, &socket)
                 .await
                 .unwrap();
@@ -584,8 +515,7 @@ mod tests {
 
         // VERIFY SETUP
         let initial_count = {
-            let mut adapter_locked = local_adapter.lock().await;
-            adapter_locked
+            local_adapter
                 .get_channel_socket_count("test-app", channel)
                 .await
         };
@@ -607,8 +537,7 @@ mod tests {
 
         // VERIFY: All 3 sockets should be cleaned up
         let final_count = {
-            let mut adapter_locked = local_adapter.lock().await;
-            adapter_locked
+            local_adapter
                 .get_channel_socket_count("test-app", channel)
                 .await
         };
@@ -622,8 +551,7 @@ mod tests {
         for socket_id in &sockets {
             let socket = SocketId::from_string(socket_id).unwrap();
             let is_in_channel = {
-                let mut adapter_locked = local_adapter.lock().await;
-                adapter_locked
+                local_adapter
                     .is_in_channel("test-app", channel, &socket)
                     .await
                     .unwrap()
@@ -650,8 +578,7 @@ mod tests {
 
         // SETUP: Add socket to presence channel
         {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", presence_channel, &socket_id)
                 .await
                 .unwrap();
@@ -659,8 +586,7 @@ mod tests {
 
         // VERIFY SETUP
         let initial_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .get_channel_socket_count("test-app", presence_channel)
                 .await
         };
@@ -691,8 +617,7 @@ mod tests {
 
         // VERIFY: Socket should be removed from presence channel
         let final_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .get_channel_socket_count("test-app", presence_channel)
                 .await
         };
@@ -702,8 +627,7 @@ mod tests {
         );
 
         let is_in_channel = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .is_in_channel("test-app", presence_channel, &socket_id)
                 .await
                 .unwrap()
@@ -730,20 +654,14 @@ mod tests {
 
         // SETUP: Add single socket to channel (so cleanup will make it empty)
         {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", channel, &socket_id)
                 .await
                 .unwrap();
         }
 
         // VERIFY SETUP
-        let initial_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let initial_count = { adapter.get_channel_socket_count("test-app", channel).await };
         assert_eq!(
             initial_count, 1,
             "Setup failed: socket should be in channel"
@@ -757,20 +675,14 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // VERIFY: Channel should be empty (socket removed)
-        let final_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let final_count = { adapter.get_channel_socket_count("test-app", channel).await };
         assert_eq!(
             final_count, 0,
             "CLEANUP FAILED: Channel should be empty after removing last socket"
         );
 
         let is_in_channel = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .is_in_channel("test-app", channel, &socket_id)
                 .await
                 .unwrap()
@@ -798,12 +710,11 @@ mod tests {
 
         // SETUP: Add socket to both presence and regular channels
         {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", presence_channel, &socket_id)
                 .await
                 .unwrap();
-            adapter_locked
+            adapter
                 .add_to_channel("test-app", regular_channel, &socket_id)
                 .await
                 .unwrap();
@@ -811,14 +722,12 @@ mod tests {
 
         // VERIFY SETUP: Socket should be in both channels
         let presence_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .get_channel_socket_count("test-app", presence_channel)
                 .await
         };
         let regular_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .get_channel_socket_count("test-app", regular_channel)
                 .await
         };
@@ -853,14 +762,12 @@ mod tests {
 
         // VERIFY: Socket should be removed from BOTH channels
         let final_presence_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .get_channel_socket_count("test-app", presence_channel)
                 .await
         };
         let final_regular_count = {
-            let mut adapter_locked = adapter.lock().await;
-            adapter_locked
+            adapter
                 .get_channel_socket_count("test-app", regular_channel)
                 .await
         };

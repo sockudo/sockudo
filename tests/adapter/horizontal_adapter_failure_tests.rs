@@ -422,7 +422,7 @@ async fn test_channel_operation_edge_cases() -> Result<()> {
     adapter.init().await;
     adapter.start_listeners().await?;
 
-    let socket_id = SocketId("edge-case-socket".to_string());
+    let socket_id = SocketId::from_string("edge-case-socket").unwrap();
 
     // Test operations on empty/non-existent channels
     let empty_members = adapter

@@ -635,7 +635,7 @@ async fn test_connection_manager_socket_existence() -> Result<()> {
     let mut adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
-    let socket_id = SocketId("socket-shared".to_string());
+    let socket_id = SocketId::from_string("socket-shared").unwrap();
 
     // Test socket exists in channel
     let exists = adapter
@@ -658,7 +658,7 @@ async fn test_connection_manager_error_propagation() -> Result<()> {
     let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.init().await;
 
-    let socket_id = SocketId("test-socket".to_string());
+    let socket_id = SocketId::from_string("test-socket").unwrap();
     let message = PusherMessage {
         channel: None,
         name: None,

@@ -3,7 +3,6 @@ use sockudo::adapter::local_adapter::LocalAdapter;
 use sockudo::options::ClusterHealthConfig;
 use sockudo::websocket::SocketId;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Test that LocalAdapter gracefully handles cluster health configuration
 #[tokio::test]
@@ -238,12 +237,9 @@ async fn test_local_adapter_app_isolation() {
 /// Test LocalAdapter concurrent operations
 #[tokio::test]
 async fn test_local_adapter_concurrent_operations() {
-    let adapter = Arc::new(Mutex::new(LocalAdapter::new()));
+    let adapter = Arc::new(LocalAdapter::new());
 
-    {
-        let mut adapter_guard = adapter.lock().await;
-        adapter_guard.init().await;
-    }
+    adapter.init().await;
 
     let app_id = "concurrent-app";
     let channel = "concurrent-channel";
@@ -256,24 +252,23 @@ async fn test_local_adapter_concurrent_operations() {
         let socket_id = format!("socket-{}", i);
 
         let handle = tokio::spawn(async move {
-            let mut adapter_guard = adapter_clone.lock().await;
             let socket = SocketId::from_string(&socket_id).unwrap();
 
             // Add to channel
-            adapter_guard
+            adapter_clone
                 .add_to_channel(app_id, channel, &socket)
                 .await
                 .unwrap();
 
             // Check if exists
-            let exists = adapter_guard
+            let exists = adapter_clone
                 .is_in_channel(app_id, channel, &socket)
                 .await
                 .unwrap();
             assert!(exists);
 
             // Remove from channel
-            adapter_guard
+            adapter_clone
                 .remove_from_channel(app_id, channel, &socket)
                 .await
                 .unwrap();
@@ -287,12 +282,7 @@ async fn test_local_adapter_concurrent_operations() {
     }
 
     // Final count should be 0
-    let final_count = {
-        let mut adapter_guard = adapter.lock().await;
-        adapter_guard
-            .get_channel_socket_count(app_id, channel)
-            .await
-    };
+    let final_count = adapter.get_channel_socket_count(app_id, channel).await;
 
     assert_eq!(
         final_count, 0,
@@ -477,8 +467,7 @@ async fn test_local_adapter_large_scale() {
         num_channels
     );
 
-    for item in channels_with_counts.iter() {
-        let count = item.value();
+    for (_channel_name, count) in channels_with_counts.iter() {
         assert_eq!(
             *count, sockets_per_channel,
             "Each channel should have {} sockets",
