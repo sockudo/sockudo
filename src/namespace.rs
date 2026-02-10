@@ -3,7 +3,7 @@ use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result}; // Error should be in scope
 
-use crate::websocket::{SocketId, WebSocket, WebSocketRef};
+use crate::websocket::{SocketId, WebSocket, WebSocketBufferConfig, WebSocketRef};
 use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
 use futures::future::join_all;
@@ -43,6 +43,7 @@ impl Namespace {
         socket_id: SocketId,
         socket_writer: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
+        buffer_config: WebSocketBufferConfig,
     ) -> Result<WebSocketRef> {
         // Fetch the application configuration first
         let app_config = match app_manager.find_by_id(&self.app_id).await {
@@ -65,8 +66,9 @@ impl Namespace {
             }
         };
 
-        // Create the WebSocket using new structure
-        let mut websocket = WebSocket::new(socket_id.clone(), socket_writer);
+        // Create the WebSocket with buffer configuration
+        let mut websocket =
+            WebSocket::with_buffer_config(socket_id.clone(), socket_writer, buffer_config);
 
         // Set the app configuration
         websocket.state.app = Some(app_config);

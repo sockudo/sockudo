@@ -2026,7 +2026,6 @@ mod tests {
         let msg = br#"{"event":"e","channel":"test","data":"{\"item_id\":\"abc123\",\"price\":100}"}"#;
         assert_eq!(manager.extract_conflation_key(msg), "abc123");
 
-        // Another token address
         let msg2 = br#"{"event":"e","channel":"test","data":"{\"item_id\":\"xyz789\",\"audit\":{\"holders\":5}}"}"#;
         assert_eq!(manager.extract_conflation_key(msg2), "xyz789");
 
