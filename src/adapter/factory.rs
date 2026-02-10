@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use tokio::sync::Mutex;
 // src/adapter/factory.rs
 use crate::adapter::ConnectionManager;
 use crate::adapter::local_adapter::LocalAdapter;
@@ -25,7 +24,7 @@ impl AdapterFactory {
     pub async fn create(
         config: &AdapterConfig,
         db_config: &DatabaseConfig,
-    ) -> Result<Arc<Mutex<dyn ConnectionManager + Send + Sync>>> {
+    ) -> Result<Arc<dyn ConnectionManager + Send + Sync>> {
         info!(
             "{}",
             format!(
@@ -56,7 +55,7 @@ impl AdapterFactory {
                 match RedisAdapter::new(adapter_options).await {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
-                        Ok(Arc::new(Mutex::new(adapter)))
+                        Ok(Arc::new(adapter))
                     }
                     Err(e) => {
                         warn!(
@@ -66,10 +65,8 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(Mutex::new(
-                            LocalAdapter::new_with_buffer_multiplier(
-                                config.buffer_multiplier_per_cpu,
-                            ),
+                        Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
                         )))
                     }
                 }
@@ -90,8 +87,8 @@ impl AdapterFactory {
 
                 if nodes.is_empty() {
                     warn!("{}", "Redis Cluster Adapter selected, but no nodes configured. Falling back to local adapter.".to_string());
-                    return Ok(Arc::new(Mutex::new(
-                        LocalAdapter::new_with_buffer_multiplier(config.buffer_multiplier_per_cpu),
+                    return Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                        config.buffer_multiplier_per_cpu,
                     )));
                 }
 
@@ -105,7 +102,7 @@ impl AdapterFactory {
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
-                        Ok(Arc::new(Mutex::new(adapter)))
+                        Ok(Arc::new(adapter))
                     }
                     Err(e) => {
                         warn!(
@@ -115,10 +112,8 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(Mutex::new(
-                            LocalAdapter::new_with_buffer_multiplier(
-                                config.buffer_multiplier_per_cpu,
-                            ),
+                        Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
                         )))
                     }
                 }
@@ -139,7 +134,7 @@ impl AdapterFactory {
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
-                        Ok(Arc::new(Mutex::new(adapter)))
+                        Ok(Arc::new(adapter))
                     }
                     Err(e) => {
                         warn!(
@@ -149,10 +144,8 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(Mutex::new(
-                            LocalAdapter::new_with_buffer_multiplier(
-                                config.buffer_multiplier_per_cpu,
-                            ),
+                        Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
                         )))
                     }
                 }
@@ -160,8 +153,8 @@ impl AdapterFactory {
             AdapterDriver::Local => {
                 // Handle unknown as Local or make it an error
                 info!("{}", "Using local adapter.".to_string());
-                Ok(Arc::new(Mutex::new(
-                    LocalAdapter::new_with_buffer_multiplier(config.buffer_multiplier_per_cpu),
+                Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
                 )))
             }
             #[cfg(not(feature = "redis"))]
@@ -171,15 +164,15 @@ impl AdapterFactory {
                     "Redis adapter requested but not compiled in. Falling back to local adapter."
                         .to_string()
                 );
-                Ok(Arc::new(Mutex::new(
-                    LocalAdapter::new_with_buffer_multiplier(config.buffer_multiplier_per_cpu),
+                Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
                 )))
             }
             #[cfg(not(feature = "redis-cluster"))]
             AdapterDriver::RedisCluster => {
                 warn!("{}", "Redis Cluster adapter requested but not compiled in. Falling back to local adapter.".to_string());
-                Ok(Arc::new(Mutex::new(
-                    LocalAdapter::new_with_buffer_multiplier(config.buffer_multiplier_per_cpu),
+                Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
                 )))
             }
             #[cfg(not(feature = "nats"))]
@@ -189,8 +182,8 @@ impl AdapterFactory {
                     "NATS adapter requested but not compiled in. Falling back to local adapter."
                         .to_string()
                 );
-                Ok(Arc::new(Mutex::new(
-                    LocalAdapter::new_with_buffer_multiplier(config.buffer_multiplier_per_cpu),
+                Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
                 )))
             }
         }

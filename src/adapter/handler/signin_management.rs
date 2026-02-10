@@ -48,8 +48,8 @@ impl ConnectionHandler {
             .await?;
 
         // Update connection state
-        let mut connection_manager = self.connection_manager.lock().await;
-        let connection_arc = connection_manager
+        let connection_arc = self
+            .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
             .ok_or_else(|| Error::ConnectionNotFound)?;
@@ -60,7 +60,9 @@ impl ConnectionHandler {
         }
 
         // Re-add user to adapter's tracking (this updates user associations)
-        connection_manager.add_user(connection_arc.clone()).await?;
+        self.connection_manager
+            .add_user(connection_arc.clone())
+            .await?;
 
         Ok(())
     }
@@ -112,8 +114,6 @@ impl ConnectionHandler {
             for event in &watchlist_events {
                 if let Err(e) = self
                     .connection_manager
-                    .lock()
-                    .await
                     .send_message(&app_config.id, socket_id, event.clone())
                     .await
                 {
@@ -132,8 +132,6 @@ impl ConnectionHandler {
                 for watcher_socket_id in watchers_to_notify {
                     if let Err(e) = self
                         .connection_manager
-                        .lock()
-                        .await
                         .send_message(&app_config.id, &watcher_socket_id, online_event.clone())
                         .await
                     {
@@ -158,8 +156,6 @@ impl ConnectionHandler {
         let success_message = PusherMessage::signin_success(request.user_data.clone());
 
         self.connection_manager
-            .lock()
-            .await
             .send_message(&app_config.id, socket_id, success_message)
             .await
     }
@@ -178,9 +174,9 @@ impl ConnectionHandler {
             .await?;
 
         // For each watcher, get their active socket IDs
-        let mut connection_manager = self.connection_manager.lock().await;
         for watcher_user_id in watchers {
-            let user_sockets = connection_manager
+            let user_sockets = self
+                .connection_manager
                 .get_user_sockets(&watcher_user_id, app_id)
                 .await?;
 

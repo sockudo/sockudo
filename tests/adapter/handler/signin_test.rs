@@ -170,7 +170,7 @@ async fn test_verify_signin_authentication_with_prefix() {
     let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
 
     let user_data = json!({"id": "user-123"}).to_string();
-    let string_to_sign = format!("{}::user::{}", socket_id.0, user_data);
+    let string_to_sign = format!("{}::user::{}", socket_id.to_string(), user_data);
     let token = Token::new("test-app-key".to_string(), "test-app-secret".to_string());
     let signature = token.sign(&string_to_sign);
 
@@ -199,7 +199,7 @@ async fn test_verify_signin_authentication_without_prefix() {
     let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
 
     let user_data = json!({"id": "user-123"}).to_string();
-    let string_to_sign = format!("{}::user::{}", socket_id.0, user_data);
+    let string_to_sign = format!("{}::user::{}", socket_id.to_string(), user_data);
     let token = Token::new("test-app-key".to_string(), "test-app-secret".to_string());
     let signature = token.sign(&string_to_sign);
 
@@ -272,7 +272,7 @@ async fn test_auth_validator_with_different_user_data() {
     let user_data2 = json!({"id": "user-2"}).to_string();
 
     // Generate valid signature for user_data1
-    let string_to_sign = format!("{}::user::{}", socket_id.0, user_data1);
+    let string_to_sign = format!("{}::user::{}", socket_id.to_string(), user_data1);
     let token = Token::new("test-app-key".to_string(), "test-app-secret".to_string());
     let signature = token.sign(&string_to_sign);
 

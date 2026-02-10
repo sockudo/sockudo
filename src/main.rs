@@ -167,7 +167,7 @@ impl connect_info::Connected<IncomingStream<'_, UnixListener>> for UdsConnectInf
 /// Server state containing all managers
 struct ServerState {
     app_manager: Arc<dyn AppManager + Send + Sync>,
-    connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+    connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     auth_validator: Arc<AuthValidator>,
     cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     queue_manager: Option<Arc<QueueManager>>,
@@ -308,7 +308,8 @@ impl SockudoServer {
             config.app_manager.driver, config.app_manager.cache.enabled
         );
 
-        let connection_manager = AdapterFactory::create(&config.adapter, &config.database).await?;
+        let mut connection_manager =
+            AdapterFactory::create(&config.adapter, &config.database).await?;
 
         info!(
             "Adapter initialized with driver: {:?}",
@@ -317,8 +318,7 @@ impl SockudoServer {
 
         // Set up dead node cleanup event bus for horizontal adapters (only if cluster health is enabled)
         let dead_node_event_receiver = if config.adapter.cluster_health.enabled {
-            let mut connection_manager_guard = connection_manager.lock().await;
-            let receiver_opt = connection_manager_guard.configure_dead_node_events();
+            let receiver_opt = connection_manager.configure_dead_node_events();
 
             if receiver_opt.is_some() {
                 info!(
@@ -365,6 +365,77 @@ impl SockudoServer {
             info!("Metrics are disabled in configuration");
             None
         };
+
+        // Set metrics for adapters (must happen before connection_manager is cloned)
+        if let Some(metrics_instance_arc) = &metrics {
+            if let Some(adapter_ref) = Arc::get_mut(&mut connection_manager) {
+                let adapter_as_any: &mut dyn std::any::Any = adapter_ref.as_any_mut();
+
+                match config.adapter.driver {
+                    #[cfg(feature = "redis")]
+                    AdapterDriver::Redis => {
+                        if let Some(adapter_mut) = adapter_as_any.downcast_mut::<RedisAdapter>() {
+                            adapter_mut
+                                .set_metrics(metrics_instance_arc.clone())
+                                .await
+                                .ok();
+                            info!("Set metrics for RedisAdapter");
+                        } else {
+                            warn!("Failed to downcast to RedisAdapter for metrics setup");
+                        }
+                    }
+                    #[cfg(feature = "nats")]
+                    AdapterDriver::Nats => {
+                        if let Some(adapter_mut) = adapter_as_any.downcast_mut::<NatsAdapter>() {
+                            adapter_mut
+                                .set_metrics(metrics_instance_arc.clone())
+                                .await
+                                .ok();
+                            info!("Set metrics for NatsAdapter");
+                        } else {
+                            warn!("Failed to downcast to NatsAdapter for metrics setup");
+                        }
+                    }
+                    #[cfg(feature = "redis-cluster")]
+                    AdapterDriver::RedisCluster => {
+                        if let Some(adapter_mut) =
+                            adapter_as_any.downcast_mut::<RedisClusterAdapter>()
+                        {
+                            info!(
+                                "Metrics setup for RedisClusterAdapter (call set_metrics if available)"
+                            );
+                        } else {
+                            warn!("Failed to downcast to RedisClusterAdapter for metrics setup");
+                        }
+                    }
+                    AdapterDriver::Local => {
+                        if let Some(adapter_mut) = adapter_as_any.downcast_mut::<LocalAdapter>() {
+                            info!(
+                                "Metrics setup for LocalAdapter (call set_metrics if applicable)"
+                            );
+                        } else {
+                            warn!("Failed to downcast to LocalAdapter for metrics setup");
+                        }
+                    }
+                    #[cfg(not(feature = "redis"))]
+                    AdapterDriver::Redis => {
+                        warn!("Redis adapter requested but not compiled in");
+                    }
+                    #[cfg(not(feature = "nats"))]
+                    AdapterDriver::Nats => {
+                        warn!("NATS adapter requested but not compiled in");
+                    }
+                    #[cfg(not(feature = "redis-cluster"))]
+                    AdapterDriver::RedisCluster => {
+                        warn!("Redis Cluster adapter requested but not compiled in");
+                    }
+                }
+            } else {
+                warn!(
+                    "Could not get mutable reference to connection_manager for metrics setup (Arc has multiple owners)"
+                );
+            }
+        }
 
         let http_api_rate_limiter_instance = if config.rate_limiter.enabled {
             RateLimiterFactory::create(
@@ -626,73 +697,6 @@ impl SockudoServer {
             });
         }
 
-        // Set metrics for adapters
-        if let Some(metrics_instance_arc) = &metrics {
-            let mut connection_manager_guard = state.connection_manager.lock().await;
-            // Get a mutable reference to the trait object inside the MutexGuard
-            let adapter_as_any: &mut dyn std::any::Any = connection_manager_guard.as_any_mut();
-
-            match config.adapter.driver {
-                #[cfg(feature = "redis")]
-                AdapterDriver::Redis => {
-                    if let Some(adapter_mut) = adapter_as_any.downcast_mut::<RedisAdapter>() {
-                        adapter_mut
-                            .set_metrics(metrics_instance_arc.clone())
-                            .await
-                            .ok(); // .ok() converts Result to Option, ignoring error
-                        info!("Set metrics for RedisAdapter");
-                    } else {
-                        warn!("Failed to downcast to RedisAdapter for metrics setup");
-                    }
-                }
-                #[cfg(feature = "nats")]
-                AdapterDriver::Nats => {
-                    if let Some(adapter_mut) = adapter_as_any.downcast_mut::<NatsAdapter>() {
-                        adapter_mut
-                            .set_metrics(metrics_instance_arc.clone())
-                            .await
-                            .ok();
-                        info!("Set metrics for NatsAdapter");
-                    } else {
-                        warn!("Failed to downcast to NatsAdapter for metrics setup");
-                    }
-                }
-                #[cfg(feature = "redis-cluster")]
-                AdapterDriver::RedisCluster => {
-                    // Assuming RedisClusterAdapter also has a set_metrics method
-                    if let Some(adapter_mut) = adapter_as_any.downcast_mut::<RedisClusterAdapter>()
-                    {
-                        // adapter_mut.set_metrics(metrics_instance_arc.clone()).await.ok(); // Uncomment if method exists
-                        info!(
-                            "Metrics setup for RedisClusterAdapter (call set_metrics if available)"
-                        );
-                    } else {
-                        warn!("Failed to downcast to RedisClusterAdapter for metrics setup");
-                    }
-                }
-                AdapterDriver::Local => {
-                    // Assuming LocalAdapter might have a set_metrics method
-                    if let Some(adapter_mut) = adapter_as_any.downcast_mut::<LocalAdapter>() {
-                        // adapter_mut.set_metrics(metrics_instance_arc.clone()).await.ok(); // Uncomment if method exists
-                        info!("Metrics setup for LocalAdapter (call set_metrics if applicable)");
-                    } else {
-                        warn!("Failed to downcast to LocalAdapter for metrics setup");
-                    }
-                }
-                #[cfg(not(feature = "redis"))]
-                AdapterDriver::Redis => {
-                    warn!("Redis adapter requested but not compiled in");
-                }
-                #[cfg(not(feature = "nats"))]
-                AdapterDriver::Nats => {
-                    warn!("NATS adapter requested but not compiled in");
-                }
-                #[cfg(not(feature = "redis-cluster"))]
-                AdapterDriver::RedisCluster => {
-                    warn!("Redis Cluster adapter requested but not compiled in");
-                }
-            }
-        }
         Ok(Self {
             config,
             state,
@@ -706,11 +710,7 @@ impl SockudoServer {
         self.state.app_manager.init().await?; // Assuming AppManager has an init method
 
         // Initialize ConnectionManager (Adapter)
-        {
-            // Scope for MutexGuard
-            let mut connection_manager = self.state.connection_manager.lock().await;
-            connection_manager.init().await; // Assuming Adapter has an init method
-        }
+        self.state.connection_manager.init().await;
 
         // Register apps from configuration
         if !self.config.app_manager.array.apps.is_empty() {
@@ -1265,42 +1265,25 @@ impl SockudoServer {
         let mut connections_to_cleanup: Vec<(String, WebSocketRef)> = Vec::new();
 
         // --- Step 1: Collect all connection identifiers ---
-        // Scope for the initial lock to quickly gather connection details.
-        {
-            let mut connection_manager_guard = self.state.connection_manager.lock().await;
-            match connection_manager_guard.get_namespaces().await {
-                Ok(namespaces_vec) => {
-                    // Assuming get_namespaces returns an iterable collection
-                    for (app_id, namespace_obj) in namespaces_vec {
-                        // The '?' operator implies this function returns a Result.
-                        // Handle the Result from get_sockets appropriately.
-                        match namespace_obj.get_sockets().await {
-                            Ok(sockets_vec) => {
-                                // Assuming get_sockets returns an iterable collection
-                                for (_socket_id, ws_raw_obj) in sockets_vec {
-                                    // Ensure ws_raw_obj (your 'ws') is Clone.
-                                    connections_to_cleanup
-                                        .push((app_id.clone(), ws_raw_obj.clone()));
-                                }
+        match self.state.connection_manager.get_namespaces().await {
+            Ok(namespaces_vec) => {
+                for (app_id, namespace_obj) in namespaces_vec {
+                    match namespace_obj.get_sockets().await {
+                        Ok(sockets_vec) => {
+                            for (_socket_id, ws_raw_obj) in sockets_vec {
+                                connections_to_cleanup.push((app_id.clone(), ws_raw_obj.clone()));
                             }
-                            Err(e) => {
-                                // Decide how to handle errors for individual namespaces.
-                                // Propagate, log, or collect errors. Here, just warning.
-                                warn!(%app_id, "Failed to get sockets for namespace during shutdown: {}", e);
-                                // If you used `?` here as in original, it would exit the whole function.
-                                // Depending on desired behavior, you might want to collect errors or continue.
-                                // For shutdown, often best-effort cleanup is preferred.
-                            }
+                        }
+                        Err(e) => {
+                            warn!(%app_id, "Failed to get sockets for namespace during shutdown: {}", e);
                         }
                     }
                 }
-                Err(e) => {
-                    warn!("Failed to get namespaces during shutdown: {}", e);
-                    // If get_namespaces fails, connections_to_cleanup will be empty.
-                    // Consider if this error should be propagated.
-                }
             }
-        } // connection_manager_guard is dropped here, releasing the main lock.
+            Err(e) => {
+                warn!("Failed to get namespaces during shutdown: {}", e);
+            }
+        }
 
         info!(
             "Collected {} connections to cleanup.",
