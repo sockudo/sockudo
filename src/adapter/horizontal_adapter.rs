@@ -273,7 +273,7 @@ impl HorizontalAdapter {
                         .await?;
                     response.socket_ids = channel_set
                         .iter()
-                        .map(|socket_id| socket_id.0.clone())
+                        .map(|socket_id| socket_id.to_string())
                         .collect();
                 }
             }
@@ -289,7 +289,8 @@ impl HorizontalAdapter {
             RequestType::SocketExistsInChannel => {
                 if let (Some(channel), Some(socket_id)) = (&request.channel, &request.socket_id) {
                     // Check if socket exists in channel
-                    let socket_id = SocketId(socket_id.clone());
+                    let socket_id =
+                        SocketId::from_string(socket_id).unwrap_or_else(|_| SocketId::new());
                     response.exists = self
                         .local_adapter
                         .is_in_channel(&request.app_id, channel, &socket_id)
@@ -325,7 +326,7 @@ impl HorizontalAdapter {
                     .await;
                 response.socket_ids = connections
                     .iter()
-                    .map(|entry| entry.key().0.clone())
+                    .map(|entry| entry.key().to_string())
                     .collect();
                 response.sockets_count = connections.len();
             }

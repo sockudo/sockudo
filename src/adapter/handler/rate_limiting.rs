@@ -38,7 +38,7 @@ impl ConnectionHandler {
             }
 
             let limiter = limiter_arc.value();
-            let limit_result = limiter.increment(socket_id.as_ref()).await?;
+            let limit_result = limiter.increment(&socket_id.to_string()).await?;
 
             if !limit_result.allowed {
                 // Track rate limit trigger

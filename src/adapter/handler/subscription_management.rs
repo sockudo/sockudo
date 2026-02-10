@@ -49,7 +49,7 @@ impl ConnectionHandler {
 
         let subscription_result = ChannelManager::subscribe(
             &self.connection_manager,
-            socket_id.as_ref(),
+            &socket_id.to_string(),
             &temp_message,
             &request.channel,
             is_authenticated,

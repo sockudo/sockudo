@@ -3,7 +3,11 @@ pub mod app;
 pub mod cache;
 pub mod channel;
 pub mod cleanup;
+#[cfg(feature = "delta-compression")]
+pub mod delta_compression;
 pub mod error;
+#[cfg(feature = "tag-filtering")]
+pub mod filter;
 pub mod http_handler;
 pub mod metrics;
 pub mod namespace;

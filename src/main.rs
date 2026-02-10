@@ -7,7 +7,11 @@ mod app;
 mod cache;
 mod channel;
 pub mod cleanup;
+#[cfg(feature = "delta-compression")]
+mod delta_compression;
 mod error;
+#[cfg(feature = "tag-filtering")]
+mod filter;
 mod http_handler;
 mod metrics;
 mod middleware;

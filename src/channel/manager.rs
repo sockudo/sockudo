@@ -110,7 +110,7 @@ impl ChannelManager {
             return Err(Error::Auth("Channel requires authentication".into()));
         }
 
-        let socket_id_owned = SocketId(socket_id.to_string());
+        let socket_id_owned = SocketId::from_string(socket_id).unwrap_or_else(|_| SocketId::new());
 
         // Parse presence data early to fail fast before any locking
         let member = if channel_type == ChannelType::Presence {
@@ -155,7 +155,7 @@ impl ChannelManager {
         app_id: &str,
         user_id: Option<&str>,
     ) -> Result<LeaveResponse, Error> {
-        let socket_id_owned = SocketId(socket_id.to_string());
+        let socket_id_owned = SocketId::from_string(socket_id).unwrap_or_else(|_| SocketId::new());
         let channel_type = Self::get_channel_type(channel_name).await;
 
         // Get presence member info before removal if needed (separate lock scope)
@@ -421,7 +421,8 @@ impl ChannelManager {
         let mut channels_to_cleanup = Vec::new();
 
         for (socket_id, channel_name, app_id) in operations {
-            let socket_id_owned = SocketId(socket_id);
+            let socket_id_owned =
+                SocketId::from_string(&socket_id).unwrap_or_else(|_| SocketId::new());
 
             // Remove from channel
             match conn_mgr

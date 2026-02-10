@@ -41,7 +41,7 @@ impl ConnectionHandler {
                     &request.channel,
                     &request.event,
                     request.data.clone(),
-                    Some(socket_id.as_ref()),
+                    Some(&socket_id.to_string()),
                     user_id.as_deref(), // Convert Option<String> to Option<&str>
                 )
                 .await

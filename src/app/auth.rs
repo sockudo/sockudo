@@ -45,7 +45,7 @@ impl AuthValidator {
             return Err(Error::InvalidAppKey);
         }
         let is_valid =
-            self.sign_in_token_is_valid(socket_id.0.as_str(), user_data, auth, app.unwrap());
+            self.sign_in_token_is_valid(&socket_id.to_string(), user_data, auth, app.unwrap());
         Ok(is_valid)
     }
 
