@@ -8,7 +8,6 @@ use sockudo::options::{ClusterHealthConfig, NatsAdapterConfig};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 /// Helper to check if NATS is available
@@ -289,14 +288,9 @@ async fn test_nats_concurrent_operations() {
         cleanup_interval_ms: 200,
     };
 
-    let adapter = Arc::new(Mutex::new(
-        create_nats_adapter("nats_node1", &cluster_config).await,
-    ));
+    let adapter = Arc::new(create_nats_adapter("nats_node1", &cluster_config).await);
 
-    {
-        let mut adapter_guard = adapter.lock().await;
-        adapter_guard.init().await;
-    }
+    adapter.init().await;
 
     let app_id = "test-app";
     let channel = "presence-concurrent";
@@ -307,12 +301,11 @@ async fn test_nats_concurrent_operations() {
     for i in 0..20 {
         let adapter_clone = adapter.clone();
         let handle = tokio::spawn(async move {
-            let adapter_guard = adapter_clone.lock().await;
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);
 
             if i % 2 == 0 {
-                adapter_guard
+                adapter_clone
                     .broadcast_presence_join(
                         app_id,
                         channel,
@@ -324,12 +317,12 @@ async fn test_nats_concurrent_operations() {
                     .unwrap();
             } else {
                 // Join then leave to test both operations
-                adapter_guard
+                adapter_clone
                     .broadcast_presence_join(app_id, channel, &user_id, &socket_id, None)
                     .await
                     .unwrap();
 
-                adapter_guard
+                adapter_clone
                     .broadcast_presence_leave(app_id, channel, &user_id, &socket_id)
                     .await
                     .unwrap();

@@ -157,14 +157,14 @@ mod tests {
         buffer_size: usize,
     ) -> (
         sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem,
-        std::sync::Arc<tokio::sync::Mutex<sockudo::adapter::local_adapter::LocalAdapter>>,
+        std::sync::Arc<sockudo::adapter::local_adapter::LocalAdapter>,
     ) {
+        use sockudo::adapter::connection_manager::ConnectionManager;
         use sockudo::adapter::local_adapter::LocalAdapter;
         use sockudo::app::memory_app_manager::MemoryAppManager;
         use sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem;
         use sockudo::cleanup::{CleanupConfig, WorkerThreadsConfig};
         use std::sync::Arc;
-        use tokio::sync::Mutex;
 
         let config = CleanupConfig {
             queue_buffer_size: buffer_size,
@@ -176,13 +176,13 @@ mod tests {
             fallback_to_sync: true,
         };
 
-        let local_adapter = Arc::new(Mutex::new(LocalAdapter::new()));
-        let connection_manager = local_adapter.clone();
+        let local_adapter = Arc::new(LocalAdapter::new());
+        let connection_manager = local_adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>;
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
         let multi_system =
-            MultiWorkerCleanupSystem::new(connection_manager.clone(), app_manager, None, config);
+            MultiWorkerCleanupSystem::new(connection_manager, app_manager, None, config);
 
         (multi_system, local_adapter)
     }
