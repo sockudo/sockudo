@@ -162,7 +162,7 @@ impl ConnectionHandler {
                         &request.channel,
                         &request.event,
                         request.data.clone(),
-                        Some(socket_id.as_ref()),
+                        Some(&socket_id.to_string()),
                         None, // Skip user_id for async webhooks to avoid lock dependencies
                     )
                     .await

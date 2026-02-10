@@ -90,7 +90,7 @@ impl PresenceManager {
                     &app_config.id,
                     channel,
                     user_id,
-                    excluding_socket.as_ref(),
+                    &excluding_socket.to_string(),
                     user_info.cloned(),
                 )
                 .await
@@ -177,7 +177,7 @@ impl PresenceManager {
                     &app_config.id,
                     channel,
                     user_id,
-                    excluding_socket.as_ref(),
+                    &excluding_socket.to_string(),
                 )
                 .await
                 .map_err(|e| {
