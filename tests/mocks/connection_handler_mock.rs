@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use dashmap::{DashMap, DashSet};
 use fastwebsockets::WebSocketWrite;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
@@ -15,7 +14,7 @@ use sockudo::metrics::MetricsInterface;
 use sockudo::namespace::Namespace;
 use sockudo::options::ServerOptions;
 use sockudo::protocol::messages::PusherMessage;
-use sockudo::websocket::{SocketId, WebSocketRef};
+use sockudo::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,31 +38,28 @@ impl MockAdapter {
 
 #[async_trait]
 impl ConnectionManager for MockAdapter {
-    async fn init(&mut self) {}
-    async fn get_namespace(&mut self, _app_id: &str) -> Option<Arc<Namespace>> {
+    async fn init(&self) {}
+    async fn get_namespace(&self, _app_id: &str) -> Option<Arc<Namespace>> {
         None
     }
     async fn add_socket(
-        &mut self,
+        &self,
         _socket_id: SocketId,
         _socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
         _app_id: &str,
         _app_manager: Arc<dyn AppManager + Send + Sync>,
+        _buffer_config: WebSocketBufferConfig,
     ) -> Result<()> {
         Ok(())
     }
-    async fn get_connection(
-        &mut self,
-        _socket_id: &SocketId,
-        _app_id: &str,
-    ) -> Option<WebSocketRef> {
+    async fn get_connection(&self, _socket_id: &SocketId, _app_id: &str) -> Option<WebSocketRef> {
         None
     }
-    async fn remove_connection(&mut self, _socket_id: &SocketId, _app_id: &str) -> Result<()> {
+    async fn remove_connection(&self, _socket_id: &SocketId, _app_id: &str) -> Result<()> {
         Ok(())
     }
     async fn send_message(
-        &mut self,
+        &self,
         _app_id: &str,
         _socket_id: &SocketId,
         _message: PusherMessage,
@@ -71,7 +67,7 @@ impl ConnectionManager for MockAdapter {
         Ok(())
     }
     async fn send(
-        &mut self,
+        &self,
         _channel: &str,
         _message: PusherMessage,
         _except: Option<&SocketId>,
@@ -81,51 +77,37 @@ impl ConnectionManager for MockAdapter {
         Ok(())
     }
     async fn get_channel_members(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>> {
         Ok(HashMap::new())
     }
-    async fn get_channel_sockets(
-        &mut self,
-        _app_id: &str,
-        _channel: &str,
-    ) -> Result<DashSet<SocketId>> {
-        Ok(DashSet::new())
+    async fn get_channel_sockets(&self, _app_id: &str, _channel: &str) -> Result<Vec<SocketId>> {
+        Ok(Vec::new())
     }
-    async fn remove_channel(&mut self, _app_id: &str, _channel: &str) {}
+    async fn remove_channel(&self, _app_id: &str, _channel: &str) {}
     async fn is_in_channel(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &SocketId,
     ) -> Result<bool> {
         Ok(false)
     }
-    async fn get_user_sockets(
-        &mut self,
-        _user_id: &str,
-        _app_id: &str,
-    ) -> Result<DashSet<WebSocketRef>> {
-        Ok(DashSet::new())
+    async fn get_user_sockets(&self, _user_id: &str, _app_id: &str) -> Result<Vec<WebSocketRef>> {
+        Ok(Vec::new())
     }
-    async fn cleanup_connection(&mut self, _app_id: &str, _ws: WebSocketRef) {}
-    async fn terminate_connection(&mut self, _app_id: &str, _user_id: &str) -> Result<()> {
+    async fn cleanup_connection(&self, _app_id: &str, _ws: WebSocketRef) {}
+    async fn terminate_connection(&self, _app_id: &str, _user_id: &str) -> Result<()> {
         Ok(())
     }
-    async fn add_channel_to_sockets(
-        &mut self,
-        _app_id: &str,
-        _channel: &str,
-        _socket_id: &SocketId,
-    ) {
-    }
-    async fn get_channel_socket_count(&mut self, _app_id: &str, _channel: &str) -> usize {
+    async fn add_channel_to_sockets(&self, _app_id: &str, _channel: &str, _socket_id: &SocketId) {}
+    async fn get_channel_socket_count(&self, _app_id: &str, _channel: &str) -> usize {
         0
     }
     async fn add_to_channel(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &SocketId,
@@ -133,7 +115,7 @@ impl ConnectionManager for MockAdapter {
         Ok(false)
     }
     async fn remove_from_channel(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &SocketId,
@@ -141,40 +123,40 @@ impl ConnectionManager for MockAdapter {
         Ok(false)
     }
     async fn get_presence_member(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &SocketId,
     ) -> Option<PresenceMemberInfo> {
         None
     }
-    async fn terminate_user_connections(&mut self, _app_id: &str, _user_id: &str) -> Result<()> {
+    async fn terminate_user_connections(&self, _app_id: &str, _user_id: &str) -> Result<()> {
         Ok(())
     }
-    async fn add_user(&mut self, _ws: WebSocketRef) -> Result<()> {
+    async fn add_user(&self, _ws: WebSocketRef) -> Result<()> {
         Ok(())
     }
-    async fn remove_user(&mut self, _ws: WebSocketRef) -> Result<()> {
+    async fn remove_user(&self, _ws: WebSocketRef) -> Result<()> {
         Ok(())
     }
     async fn get_channels_with_socket_count(
-        &mut self,
+        &self,
         _app_id: &str,
-    ) -> Result<DashMap<String, usize>> {
-        Ok(DashMap::new())
+    ) -> Result<HashMap<String, usize>> {
+        Ok(HashMap::new())
     }
     async fn get_sockets_count(&self, _app_id: &str) -> Result<usize> {
         Ok(0)
     }
-    async fn get_namespaces(&mut self) -> Result<DashMap<String, Arc<Namespace>>> {
-        Ok(DashMap::new())
+    async fn get_namespaces(&self) -> Result<Vec<(String, Arc<Namespace>)>> {
+        Ok(Vec::new())
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
     async fn remove_user_socket(
-        &mut self,
+        &self,
         _user_id: &str,
         _socket_id: &SocketId,
         _app_id: &str,
@@ -183,7 +165,7 @@ impl ConnectionManager for MockAdapter {
     }
 
     async fn count_user_connections_in_channel(
-        &mut self,
+        &self,
         _user_id: &str,
         _app_id: &str,
         _channel: &str,

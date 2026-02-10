@@ -82,7 +82,7 @@ async fn test_validate_channel_auth_valid() {
 
     // Generate a valid signature
     let user_data = "private-channel";
-    let string_to_sign = format!("{}::user::{}", socket_id.0, user_data);
+    let string_to_sign = format!("{}::user::{}", socket_id.to_string(), user_data);
     let token = Token::new("test-app-key".to_string(), "test-app-secret".to_string());
     let valid_auth = token.sign(&string_to_sign);
 
@@ -131,7 +131,7 @@ async fn test_validate_channel_auth_with_app_key_prefix() {
 
     // Generate a valid signature with app-key prefix (as sent by real clients)
     let user_data = r#"{"id":"test-user","user_info":{"name":"Test User"}}"#;
-    let string_to_sign = format!("{}::user::{}", socket_id.0, user_data);
+    let string_to_sign = format!("{}::user::{}", socket_id.to_string(), user_data);
     let token = Token::new("test-app-key".to_string(), "test-app-secret".to_string());
     let signature = token.sign(&string_to_sign);
 

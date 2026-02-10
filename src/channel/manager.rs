@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceMember {
@@ -97,7 +96,7 @@ impl ChannelManager {
     }
 
     pub async fn subscribe(
-        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         socket_id: &str,
         data: &PusherMessage,
         channel_name: &str,
@@ -121,22 +120,17 @@ impl ChannelManager {
 
         // Use add_to_channel's idempotent behavior to atomically handle subscription
         // This eliminates the race condition by combining check and add operations
-        let (was_newly_added, total_connections) = {
-            let mut conn_mgr = connection_manager.lock().await;
+        let newly_added = connection_manager
+            .add_to_channel(app_id, channel_name, &socket_id_owned)
+            .await?;
 
-            // add_to_channel returns true if newly added, false if already existed
-            let newly_added = conn_mgr
-                .add_to_channel(app_id, channel_name, &socket_id_owned)
-                .await?;
+        // Get the total connection count
+        let total_connections = connection_manager
+            .get_channel_sockets(app_id, channel_name)
+            .await?
+            .len();
 
-            // Get the total connection count
-            let total = conn_mgr
-                .get_channel_sockets(app_id, channel_name)
-                .await?
-                .len();
-
-            (newly_added, total)
-        };
+        let was_newly_added = newly_added;
 
         // If socket was already subscribed, return without the member data
         // (member data is only sent on initial subscription)
@@ -149,7 +143,7 @@ impl ChannelManager {
     }
 
     pub async fn unsubscribe(
-        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         socket_id: &str,
         channel_name: &str,
         app_id: &str,
@@ -158,12 +152,12 @@ impl ChannelManager {
         let socket_id_owned = SocketId::from_string(socket_id).unwrap_or_else(|_| SocketId::new());
         let channel_type = Self::get_channel_type(channel_name).await;
 
-        // Get presence member info before removal if needed (separate lock scope)
+        // Get presence member info before removal if needed
         let member = if channel_type == ChannelType::Presence {
             if let Some(user_id) = user_id {
-                let mut conn_mgr = connection_manager.lock().await;
-                let members = conn_mgr.get_channel_members(app_id, channel_name).await?;
-                drop(conn_mgr); // Release lock immediately
+                let members = connection_manager
+                    .get_channel_members(app_id, channel_name)
+                    .await?;
 
                 members.get(user_id).map(|member| PresenceMember {
                     user_id: member.user_id.clone().into_boxed_str(),
@@ -177,26 +171,22 @@ impl ChannelManager {
             None
         };
 
-        // Remove socket and handle cleanup atomically
-        let (socket_removed, remaining_connections) = {
-            let mut conn_mgr = connection_manager.lock().await;
+        // Remove socket and handle cleanup
+        let socket_removed = connection_manager
+            .remove_from_channel(app_id, channel_name, &socket_id_owned)
+            .await?;
 
-            let socket_removed = conn_mgr
-                .remove_from_channel(app_id, channel_name, &socket_id_owned)
-                .await?;
+        let remaining_connections = connection_manager
+            .get_channel_sockets(app_id, channel_name)
+            .await?
+            .len();
 
-            let remaining = conn_mgr
-                .get_channel_sockets(app_id, channel_name)
-                .await?
-                .len();
-
-            // Clean up empty channels
-            if remaining == 0 {
-                conn_mgr.remove_channel(app_id, channel_name).await;
-            }
-
-            (socket_removed, remaining)
-        };
+        // Clean up empty channels
+        if remaining_connections == 0 {
+            connection_manager
+                .remove_channel(app_id, channel_name)
+                .await;
+        }
 
         Ok(Self::create_leave_response(
             socket_removed,
@@ -398,18 +388,19 @@ impl ChannelManager {
     }
 
     pub async fn get_channel_members(
-        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         app_id: &str,
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>, Error> {
-        let mut conn_mgr = connection_manager.lock().await;
-        conn_mgr.get_channel_members(app_id, channel).await
+        connection_manager
+            .get_channel_members(app_id, channel)
+            .await
     }
 
     /// Batch unsubscribe operation - single lock acquisition for multiple operations
     /// Returns results with channel names for explicit correlation
     pub async fn batch_unsubscribe(
-        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         operations: Vec<(String, String, String)>, // (socket_id, channel_name, app_id)
     ) -> Result<Vec<(String, Result<(bool, usize), Error>)>, Error> {
         if operations.is_empty() {
@@ -417,7 +408,6 @@ impl ChannelManager {
         }
 
         let mut results = Vec::with_capacity(operations.len());
-        let mut conn_mgr = connection_manager.lock().await;
         let mut channels_to_cleanup = Vec::new();
 
         for (socket_id, channel_name, app_id) in operations {
@@ -425,13 +415,16 @@ impl ChannelManager {
                 SocketId::from_string(&socket_id).unwrap_or_else(|_| SocketId::new());
 
             // Remove from channel
-            match conn_mgr
+            match connection_manager
                 .remove_from_channel(&app_id, &channel_name, &socket_id_owned)
                 .await
             {
                 Ok(was_removed) => {
                     // Get remaining count
-                    match conn_mgr.get_channel_sockets(&app_id, &channel_name).await {
+                    match connection_manager
+                        .get_channel_sockets(&app_id, &channel_name)
+                        .await
+                    {
                         Ok(sockets) => {
                             let remaining = sockets.len();
                             results.push((channel_name.clone(), Ok((was_removed, remaining))));
@@ -450,7 +443,9 @@ impl ChannelManager {
 
         // Clean up empty channels
         for (app_id, channel_name) in channels_to_cleanup {
-            conn_mgr.remove_channel(&app_id, &channel_name).await;
+            connection_manager
+                .remove_channel(&app_id, &channel_name)
+                .await;
         }
 
         Ok(results)

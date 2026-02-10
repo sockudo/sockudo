@@ -7,7 +7,7 @@ mod tests {
 
     fn create_test_task(socket_id: &str) -> DisconnectTask {
         DisconnectTask {
-            socket_id: SocketId(socket_id.to_string()),
+            socket_id: SocketId::from_string(socket_id).unwrap(),
             app_id: "test-app".to_string(),
             subscribed_channels: vec!["channel1".to_string(), "channel2".to_string()],
             user_id: Some("user123".to_string()),
@@ -30,7 +30,7 @@ mod tests {
 
         // Verify task was received
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.socket_id.0, task_clone.socket_id.0);
+        assert_eq!(received.socket_id, task_clone.socket_id);
         assert_eq!(received.app_id, task_clone.app_id);
     }
 
@@ -72,7 +72,7 @@ mod tests {
             Ok(()) => {
                 // Verify task was received
                 let received = rx.recv().await.unwrap();
-                assert_eq!(received.socket_id.0, task_clone.socket_id.0);
+                assert_eq!(received.socket_id, task_clone.socket_id);
             }
             Err(_) => panic!("Expected successful send"),
         }
@@ -127,7 +127,7 @@ mod tests {
         let err = result.unwrap_err();
         match err.as_ref() {
             mpsc::error::TrySendError::Full(returned_task) => {
-                assert_eq!(returned_task.socket_id.0, task2.socket_id.0);
+                assert_eq!(returned_task.socket_id, task2.socket_id);
                 assert_eq!(returned_task.app_id, task2.app_id);
             }
             other => panic!("Expected Full error, got: {:?}", other),
@@ -144,7 +144,7 @@ mod tests {
         let err = result.unwrap_err();
         match err.as_ref() {
             mpsc::error::TrySendError::Closed(returned_task) => {
-                assert_eq!(returned_task.socket_id.0, task3.socket_id.0);
+                assert_eq!(returned_task.socket_id, task3.socket_id);
                 assert_eq!(returned_task.app_id, task3.app_id);
             }
             other => panic!("Expected Closed error, got: {:?}", other),

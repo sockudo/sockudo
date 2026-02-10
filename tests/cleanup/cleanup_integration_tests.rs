@@ -142,7 +142,7 @@ mod tests {
     /// Helper to create a disconnect task
     fn create_disconnect_task(socket_id: &str, channels: Vec<String>) -> DisconnectTask {
         DisconnectTask {
-            socket_id: SocketId(socket_id.to_string()),
+            socket_id: SocketId::from_string(socket_id).unwrap(),
             app_id: "test-app".to_string(),
             subscribed_channels: channels,
             user_id: None,
@@ -157,7 +157,7 @@ mod tests {
         let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
-        let socket_id = SocketId("socket-123".to_string());
+        let socket_id = SocketId::from_string("socket-123").unwrap();
         let channel = "test-channel";
 
         // SETUP: Add socket to channel
@@ -231,7 +231,7 @@ mod tests {
         let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
-        let socket_id = SocketId("multi-socket".to_string());
+        let socket_id = SocketId::from_string("multi-socket").unwrap();
         let channels = vec!["channel-1", "channel-2", "channel-3"];
 
         // SETUP: Add socket to multiple channels
@@ -299,8 +299,8 @@ mod tests {
         let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
-        let target_socket = SocketId("target-socket".to_string());
-        let other_socket = SocketId("other-socket".to_string());
+        let target_socket = SocketId::from_string("target-socket").unwrap();
+        let other_socket = SocketId::from_string("other-socket").unwrap();
         let channel = "shared-channel";
 
         // SETUP: Add both sockets to same channel
@@ -383,7 +383,7 @@ mod tests {
 
         // SETUP: Add all sockets to channel
         for socket_id in &sockets {
-            let socket = SocketId(socket_id.to_string());
+            let socket = SocketId::from_string(socket_id).unwrap();
             let mut adapter_locked = adapter.lock().await;
             adapter_locked
                 .add_to_channel("test-app", channel, &socket)
@@ -426,7 +426,7 @@ mod tests {
 
         // Verify individual sockets
         for socket_id in &sockets {
-            let socket = SocketId(socket_id.to_string());
+            let socket = SocketId::from_string(socket_id).unwrap();
             let is_in_channel = {
                 let mut adapter_locked = adapter.lock().await;
                 adapter_locked
@@ -448,7 +448,7 @@ mod tests {
         let (cleanup_system, adapter, _app_manager) = create_real_cleanup_system().await;
         let cleanup_sender = cleanup_system.get_sender();
 
-        let socket_id = SocketId("presence-socket".to_string());
+        let socket_id = SocketId::from_string("presence-socket").unwrap();
         let presence_channel = "presence-room1";
         let user_id = "user123";
 
@@ -475,7 +475,7 @@ mod tests {
 
         // ACTION: Send cleanup task with presence info
         let cleanup_task = DisconnectTask {
-            socket_id: SocketId("presence-socket".to_string()),
+            socket_id: SocketId::from_string("presence-socket").unwrap(),
             app_id: "test-app".to_string(),
             subscribed_channels: vec![presence_channel.to_string()],
             user_id: Some(user_id.to_string()),
@@ -574,7 +574,7 @@ mod tests {
         // SETUP: Add exactly 3 sockets to channel
         let sockets = vec!["queue-1", "queue-2", "queue-3"];
         for socket_id in &sockets {
-            let socket = SocketId(socket_id.to_string());
+            let socket = SocketId::from_string(socket_id).unwrap();
             let mut adapter_locked = local_adapter.lock().await;
             adapter_locked
                 .add_to_channel("test-app", channel, &socket)
@@ -620,7 +620,7 @@ mod tests {
 
         // Verify each socket individually
         for socket_id in &sockets {
-            let socket = SocketId(socket_id.to_string());
+            let socket = SocketId::from_string(socket_id).unwrap();
             let is_in_channel = {
                 let mut adapter_locked = local_adapter.lock().await;
                 adapter_locked
@@ -644,7 +644,7 @@ mod tests {
             create_cleanup_system_with_webhook_app().await;
         let cleanup_sender = cleanup_system.get_sender();
 
-        let socket_id = SocketId("presence-user-socket".to_string());
+        let socket_id = SocketId::from_string("presence-user-socket").unwrap();
         let presence_channel = "presence-test-room";
         let user_id = "test-user-123";
 
@@ -671,7 +671,7 @@ mod tests {
 
         // ACTION: Send cleanup task with presence info (tests webhook preparation code path)
         let cleanup_task = DisconnectTask {
-            socket_id: SocketId("presence-user-socket".to_string()),
+            socket_id: SocketId::from_string("presence-user-socket").unwrap(),
             app_id: "test-app".to_string(),
             subscribed_channels: vec![presence_channel.to_string()],
             user_id: Some(user_id.to_string()),
@@ -725,7 +725,7 @@ mod tests {
             create_cleanup_system_with_webhook_app().await;
         let cleanup_sender = cleanup_system.get_sender();
 
-        let socket_id = SocketId("last-socket".to_string());
+        let socket_id = SocketId::from_string("last-socket").unwrap();
         let channel = "test-channel-to-vacate";
 
         // SETUP: Add single socket to channel (so cleanup will make it empty)
@@ -791,7 +791,7 @@ mod tests {
             create_cleanup_system_with_webhook_app().await;
         let cleanup_sender = cleanup_system.get_sender();
 
-        let socket_id = SocketId("multi-channel-socket".to_string());
+        let socket_id = SocketId::from_string("multi-channel-socket").unwrap();
         let presence_channel = "presence-test-room";
         let regular_channel = "regular-channel";
         let user_id = "mixed-user";
@@ -833,7 +833,7 @@ mod tests {
 
         // ACTION: Send cleanup task with both channel types
         let cleanup_task = DisconnectTask {
-            socket_id: SocketId("multi-channel-socket".to_string()),
+            socket_id: SocketId::from_string("multi-channel-socket").unwrap(),
             app_id: "test-app".to_string(),
             subscribed_channels: vec![presence_channel.to_string(), regular_channel.to_string()],
             user_id: Some(user_id.to_string()),
