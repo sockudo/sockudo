@@ -5,7 +5,6 @@ use crate::protocol::messages::PusherMessage;
 use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::SocketId;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, error};
 
 /// Centralized presence channel management functionality
@@ -17,7 +16,7 @@ impl PresenceManager {
     /// Handles presence member addition including both webhook and broadcast
     /// Only sends events if this is the user's FIRST connection to the presence channel
     pub async fn handle_member_added(
-        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         webhook_integration: Option<&Arc<WebhookIntegration>>,
         app_config: &App,
         channel: &str,
@@ -82,8 +81,7 @@ impl PresenceManager {
 
         // Always broadcast presence join to all nodes for cluster replication (for every connection)
         if let Some(excluding_socket) = excluding_socket
-            && let Some(horizontal_adapter) =
-                connection_manager.lock().await.as_horizontal_adapter()
+            && let Some(horizontal_adapter) = connection_manager.as_horizontal_adapter()
         {
             horizontal_adapter
                 .broadcast_presence_join(
@@ -108,7 +106,7 @@ impl PresenceManager {
     /// This centralizes the logic that was duplicated across sync cleanup,
     /// async cleanup, and direct unsubscribe paths
     pub async fn handle_member_removed(
-        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         webhook_integration: Option<&Arc<WebhookIntegration>>,
         app_config: &App,
         channel: &str,
@@ -169,8 +167,7 @@ impl PresenceManager {
 
         // Always broadcast presence leave to all nodes for cluster replication (for every disconnection)
         if let Some(excluding_socket) = excluding_socket
-            && let Some(horizontal_adapter) =
-                connection_manager.lock().await.as_horizontal_adapter()
+            && let Some(horizontal_adapter) = connection_manager.as_horizontal_adapter()
         {
             horizontal_adapter
                 .broadcast_presence_leave(
@@ -194,14 +191,13 @@ impl PresenceManager {
     /// Uses the same logic as the original working implementation:
     /// Get all user's sockets and check if any are still subscribed to this channel (excluding specified socket)
     async fn user_has_other_connections_in_presence_channel(
-        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         app_id: &str,
         channel: &str,
         user_id: &str,
         excluding_socket: Option<&SocketId>,
     ) -> Result<bool> {
         // Use cluster-wide connection check for multi-node support
-        let mut connection_manager = connection_manager.lock().await;
         let subscribed_count = connection_manager
             .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
             .await?;
@@ -213,13 +209,12 @@ impl PresenceManager {
 
     /// Broadcast a message to all clients in a channel, optionally excluding one socket
     async fn broadcast_to_channel(
-        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         app_id: &str,
         channel: &str,
         message: PusherMessage,
         excluding_socket: Option<&SocketId>,
     ) -> Result<()> {
-        let mut connection_manager = connection_manager.lock().await;
         connection_manager
             .send(channel, message, excluding_socket, app_id, None)
             .await

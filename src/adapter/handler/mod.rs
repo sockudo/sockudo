@@ -40,7 +40,7 @@ use tracing::{debug, error, warn};
 
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
-    pub(crate) connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+    pub(crate) connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     pub(crate) cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     pub(crate) metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -56,7 +56,7 @@ impl ConnectionHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         app_manager: Arc<dyn AppManager + Send + Sync>,
-        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -217,12 +217,11 @@ impl ConnectionHandler {
         socket_tx: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
         app_config: &App,
     ) -> Result<()> {
-        // True atomic operation: quota check and socket addition under single lock
-        // This is the only way to prevent race conditions
+        // Check quota and add socket
         {
-            let mut connection_manager = self.connection_manager.lock().await;
+            let connection_manager = &self.connection_manager;
 
-            // Check quota first - this must be atomic with add_socket
+            // Check quota first
             if app_config.max_connections > 0 {
                 let current_count = connection_manager
                     .get_sockets_count(&app_config.id)
@@ -250,7 +249,7 @@ impl ConnectionHandler {
                     .await;
             }
 
-            // Add the new socket - this must be in the same critical section as quota check
+            // Add the new socket
             connection_manager
                 .add_socket(
                     socket_id.clone(),
@@ -260,7 +259,7 @@ impl ConnectionHandler {
                     crate::websocket::WebSocketBufferConfig::default(),
                 )
                 .await?;
-        } // Lock released - atomic operation complete
+        }
 
         // Update metrics after lock is released to prevent deadlock
         if let Some(ref metrics) = self.metrics {
@@ -603,9 +602,11 @@ impl ConnectionHandler {
     async fn get_active_channel_count_for_type(&self, app_id: &str, channel_type: &str) -> i64 {
         // Get all channels with their socket counts
         let channels_map = {
-            // Acquire lock in a scoped block to ensure it's released immediately after use
-            let mut conn_manager = self.connection_manager.lock().await;
-            match conn_manager.get_channels_with_socket_count(app_id).await {
+            match self
+                .connection_manager
+                .get_channels_with_socket_count(app_id)
+                .await
+            {
                 Ok(map) => map,
                 Err(e) => {
                     error!("Failed to get channels for metrics update: {}", e);
