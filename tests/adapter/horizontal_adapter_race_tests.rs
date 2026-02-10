@@ -478,13 +478,13 @@ async fn test_concurrent_connection_manager_operations() -> Result<()> {
                     .await
                     .map(|r| format!("members-{}", r.members.len())),
                 4 => {
-                    let socket = SocketId(format!("socket-{}", i));
+                    let socket = SocketId::from_string(&format!("socket-{}", i)).unwrap();
                     adapter
                         .send_request(
                             "concurrent-app",
                             RequestType::SocketExistsInChannel,
                             Some("concurrent-channel"),
-                            Some(&socket.0),
+                            Some(&socket.to_string()),
                             None,
                         )
                         .await
