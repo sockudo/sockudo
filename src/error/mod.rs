@@ -37,6 +37,9 @@ pub enum Error {
     #[error("Over capacity")]
     OverCapacity,
 
+    #[error("Buffer full: {0}")]
+    BufferFull(String),
+
     // 4200-4299: Reconnect immediately errors
     #[error("Generic reconnect immediately")]
     ReconnectImmediately,
@@ -184,6 +187,7 @@ impl Error {
 
             // 4100-4199: Reconnect with backoff
             Error::OverCapacity => 4100,
+            Error::BufferFull(_) => 4100,
 
             // 4200-4299: Reconnect immediately
             Error::ReconnectImmediately => 4200,

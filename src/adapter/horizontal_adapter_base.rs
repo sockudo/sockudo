@@ -373,10 +373,9 @@ where
                     }
 
                     if let Ok(message) = serde_json::from_str(&broadcast.message) {
-                        let except_id = broadcast
-                            .except_socket_id
-                            .as_ref()
-                            .map(|id| SocketId(id.clone()));
+                        let except_id = broadcast.except_socket_id.as_ref().map(|id| {
+                            SocketId::from_string(id).unwrap_or_else(|_| SocketId::new())
+                        });
 
                         // Send the message first and count local recipients
                         let mut horizontal_lock = horizontal_clone.lock().await;
@@ -794,7 +793,7 @@ where
             app_id: app_id.to_string(),
             channel: channel.to_string(),
             message: message_json,
-            except_socket_id: except.map(|id| id.0.clone()),
+            except_socket_id: except.map(|id| id.to_string()),
             timestamp_ms: start_time_ms.or_else(|| {
                 Some(
                     std::time::SystemTime::now()
@@ -875,7 +874,8 @@ where
             .await?;
 
         for socket_id in response.socket_ids {
-            all_socket_ids.insert(SocketId(socket_id));
+            all_socket_ids
+                .insert(SocketId::from_string(&socket_id).unwrap_or_else(|_| SocketId::new()));
         }
 
         Ok(all_socket_ids)
@@ -914,7 +914,7 @@ where
                 app_id,
                 RequestType::SocketExistsInChannel,
                 Some(channel),
-                Some(&socket_id.0),
+                Some(&socket_id.to_string()),
                 None,
             )
             .await?;
