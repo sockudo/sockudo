@@ -73,8 +73,6 @@ impl ConnectionHandler {
         // Get current subscription count after unsubscribe
         let current_sub_count = self
             .connection_manager
-            .lock()
-            .await
             .get_channel_socket_count(&app_config.id, &channel_name)
             .await;
 
@@ -247,8 +245,10 @@ impl ConnectionHandler {
 
         // Step 1: Quick connection state capture (< 1ms)
         let disconnect_info = {
-            let mut connection_manager = self.connection_manager.lock().await;
-            let connection = connection_manager.get_connection(socket_id, app_id).await;
+            let connection = self
+                .connection_manager
+                .get_connection(socket_id, app_id)
+                .await;
 
             if let Some(conn_ref) = connection {
                 // Atomic check-and-set for disconnecting flag to ensure idempotency
@@ -328,9 +328,10 @@ impl ConnectionHandler {
                 // Reset the disconnecting flag since we're going to fall back to sync
                 // This ensures the sync cleanup can proceed properly
                 {
-                    let mut connection_manager = self.connection_manager.lock().await;
-                    if let Some(conn_ref) =
-                        connection_manager.get_connection(socket_id, app_id).await
+                    if let Some(conn_ref) = self
+                        .connection_manager
+                        .get_connection(socket_id, app_id)
+                        .await
                         && let Ok(mut conn_locked) = conn_ref.inner.try_lock()
                     {
                         conn_locked.state.disconnecting = false;
@@ -363,10 +364,10 @@ impl ConnectionHandler {
 
         // This is the original synchronous implementation
         // Check if already disconnecting and set flag atomically
-        let conn = {
-            let mut connection_manager = self.connection_manager.lock().await;
-            connection_manager.get_connection(socket_id, app_id).await
-        };
+        let conn = self
+            .connection_manager
+            .get_connection(socket_id, app_id)
+            .await;
 
         let already_disconnecting = if let Some(conn) = conn {
             if let Ok(mut conn_locked) = conn.inner.try_lock() {
@@ -466,8 +467,8 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
     ) -> Result<(HashSet<String>, Option<String>, Option<Vec<String>>)> {
-        let mut connection_manager = self.connection_manager.lock().await;
-        match connection_manager
+        match self
+            .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
         {
@@ -664,17 +665,19 @@ impl ConnectionHandler {
     }
 
     async fn cleanup_connection_from_manager(&self, socket_id: &SocketId, app_id: &str) {
-        let mut connection_manager = self.connection_manager.lock().await;
-
         // Cleanup connection resources
-        if let Some(conn_to_cleanup) = connection_manager.get_connection(socket_id, app_id).await {
-            connection_manager
+        if let Some(conn_to_cleanup) = self
+            .connection_manager
+            .get_connection(socket_id, app_id)
+            .await
+        {
+            self.connection_manager
                 .cleanup_connection(app_id, conn_to_cleanup)
                 .await;
         }
 
         // Remove connection from primary tracking
-        connection_manager
+        self.connection_manager
             .remove_connection(socket_id, app_id)
             .await
             .ok();
@@ -708,8 +711,8 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
     ) -> Result<Option<String>> {
-        let mut connection_manager = self.connection_manager.lock().await;
-        if let Some(conn) = connection_manager
+        if let Some(conn) = self
+            .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
         {
@@ -726,8 +729,8 @@ impl ConnectionHandler {
         app_config: &App,
         channel_name: &str,
     ) -> Result<()> {
-        let mut connection_manager = self.connection_manager.lock().await;
-        if let Some(conn_arc) = connection_manager
+        if let Some(conn_arc) = self
+            .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
         {
@@ -750,8 +753,10 @@ impl ConnectionHandler {
         channel_name: &str,
         user_id: &str,
     ) -> Result<bool> {
-        let mut connection_manager = self.connection_manager.lock().await;
-        let user_sockets = connection_manager.get_user_sockets(user_id, app_id).await?;
+        let user_sockets = self
+            .connection_manager
+            .get_user_sockets(user_id, app_id)
+            .await?;
 
         for ws_ref in user_sockets.iter() {
             let socket_state_guard = ws_ref.inner.lock().await;

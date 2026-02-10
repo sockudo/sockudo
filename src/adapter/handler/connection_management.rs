@@ -23,11 +23,10 @@ impl ConnectionHandler {
         let message_size = serde_json::to_string(&message).unwrap_or_default().len();
 
         // Send the message
-        let mut conn_manager = self.connection_manager.lock().await;
-        let result = conn_manager.send_message(app_id, socket_id, message).await;
-
-        // Release the lock before metrics
-        drop(conn_manager);
+        let result = self
+            .connection_manager
+            .send_message(app_id, socket_id, message)
+            .await;
 
         // Track metrics if message was sent successfully
         if result.is_ok()
@@ -65,32 +64,28 @@ impl ConnectionHandler {
         let message_size = serde_json::to_string(&message).unwrap_or_default().len();
 
         // Get the number of sockets in the channel before sending and send the message
-        let (result, target_socket_count) = {
-            let mut conn_manager = self.connection_manager.lock().await;
+        let socket_count = self
+            .connection_manager
+            .get_channel_socket_count(&app_config.id, channel)
+            .await;
 
-            let socket_count = conn_manager
-                .get_channel_socket_count(&app_config.id, channel)
-                .await;
-
-            // Adjust for excluded socket
-            let target_socket_count = if exclude_socket.is_some() && socket_count > 0 {
-                socket_count - 1
-            } else {
-                socket_count
-            };
-
-            let result = conn_manager
-                .send(
-                    channel,
-                    message,
-                    exclude_socket,
-                    &app_config.id,
-                    start_time_ms,
-                )
-                .await;
-
-            (result, target_socket_count)
+        // Adjust for excluded socket
+        let target_socket_count = if exclude_socket.is_some() && socket_count > 0 {
+            socket_count - 1
+        } else {
+            socket_count
         };
+
+        let result = self
+            .connection_manager
+            .send(
+                channel,
+                message,
+                exclude_socket,
+                &app_config.id,
+                start_time_ms,
+            )
+            .await;
 
         // Track metrics if message was sent successfully
         if result.is_ok()
@@ -133,8 +128,11 @@ impl ConnectionHandler {
         code: u16,
         reason: &str,
     ) -> Result<()> {
-        let mut conn_manager = self.connection_manager.lock().await;
-        if let Some(conn) = conn_manager.get_connection(socket_id, &app_config.id).await {
+        if let Some(conn) = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        {
             let mut conn_locked = conn.inner.lock().await;
             conn_locked
                 .close(code, reason.to_string())
@@ -148,8 +146,6 @@ impl ConnectionHandler {
 
     pub async fn get_channel_member_count(&self, app_config: &App, channel: &str) -> Result<usize> {
         self.connection_manager
-            .lock()
-            .await
             .get_channel_members(&app_config.id, channel)
             .await
             .map(|members| members.len())
@@ -163,8 +159,6 @@ impl ConnectionHandler {
     ) -> Result<()> {
         let is_subscribed = self
             .connection_manager
-            .lock()
-            .await
             .is_in_channel(&app_config.id, channel, socket_id)
             .await?;
 

@@ -170,8 +170,6 @@ impl ConnectionHandler {
         {
             let current_count = self
                 .connection_manager
-                .lock()
-                .await
                 .get_channel_socket_count(&app_config.id, &request.channel)
                 .await;
 
@@ -197,8 +195,8 @@ impl ConnectionHandler {
         request: &SubscriptionRequest,
         subscription_result: &SubscriptionResult,
     ) -> Result<()> {
-        let mut connection_manager = self.connection_manager.lock().await;
-        if let Some(conn_arc) = connection_manager
+        if let Some(conn_arc) = self
+            .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
         {
@@ -218,18 +216,9 @@ impl ConnectionHandler {
 
                 // Release the connection lock before calling add_user
                 drop(conn_locked);
-                drop(connection_manager);
 
                 // Add user to the user-socket mapping so get_user_sockets() can find it
-                self.connection_manager
-                    .lock()
-                    .await
-                    .add_user(conn_arc.clone())
-                    .await?;
-            } else {
-                // Release locks when not needed
-                drop(conn_locked);
-                drop(connection_manager);
+                self.connection_manager.add_user(conn_arc.clone()).await?;
             }
         }
 
@@ -259,8 +248,6 @@ impl ConnectionHandler {
             // Get current members and send presence data to new member
             let members_map = self
                 .connection_manager
-                .lock()
-                .await
                 .get_channel_members(&app_config.id, &request.channel)
                 .await?;
 
@@ -294,8 +281,6 @@ impl ConnectionHandler {
     ) -> Result<()> {
         let response_msg = PusherMessage::subscription_succeeded(channel.to_string(), data);
         self.connection_manager
-            .lock()
-            .await
             .send_message(&app_config.id, socket_id, response_msg)
             .await
     }

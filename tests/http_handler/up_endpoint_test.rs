@@ -346,37 +346,38 @@ struct FailingAdapter;
 
 #[async_trait::async_trait]
 impl sockudo::adapter::ConnectionManager for FailingAdapter {
-    async fn init(&mut self) {}
-    async fn get_namespace(&mut self, _app_id: &str) -> Option<Arc<sockudo::namespace::Namespace>> {
+    async fn init(&self) {}
+    async fn get_namespace(&self, _app_id: &str) -> Option<Arc<sockudo::namespace::Namespace>> {
         None
     }
     async fn add_socket(
-        &mut self,
+        &self,
         _socket_id: sockudo::websocket::SocketId,
         _socket: fastwebsockets::WebSocketWrite<
             tokio::io::WriteHalf<hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>>,
         >,
         _app_id: &str,
         _app_manager: Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+        _buffer_config: sockudo::websocket::WebSocketBufferConfig,
     ) -> sockudo::error::Result<()> {
         Ok(())
     }
     async fn get_connection(
-        &mut self,
+        &self,
         _socket_id: &sockudo::websocket::SocketId,
         _app_id: &str,
     ) -> Option<sockudo::websocket::WebSocketRef> {
         None
     }
     async fn remove_connection(
-        &mut self,
+        &self,
         _socket_id: &sockudo::websocket::SocketId,
         _app_id: &str,
     ) -> sockudo::error::Result<()> {
         Ok(())
     }
     async fn send_message(
-        &mut self,
+        &self,
         _app_id: &str,
         _socket_id: &sockudo::websocket::SocketId,
         _message: sockudo::protocol::messages::PusherMessage,
@@ -384,7 +385,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         Ok(())
     }
     async fn send(
-        &mut self,
+        &self,
         _channel: &str,
         _message: sockudo::protocol::messages::PusherMessage,
         _except: Option<&sockudo::websocket::SocketId>,
@@ -394,7 +395,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         Ok(())
     }
     async fn get_channel_members(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
     ) -> sockudo::error::Result<
@@ -403,15 +404,15 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         Ok(std::collections::HashMap::new())
     }
     async fn get_channel_sockets(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
-    ) -> sockudo::error::Result<dashmap::DashSet<sockudo::websocket::SocketId>> {
-        Ok(dashmap::DashSet::new())
+    ) -> sockudo::error::Result<Vec<sockudo::websocket::SocketId>> {
+        Ok(Vec::new())
     }
-    async fn remove_channel(&mut self, _app_id: &str, _channel: &str) {}
+    async fn remove_channel(&self, _app_id: &str, _channel: &str) {}
     async fn is_in_channel(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &sockudo::websocket::SocketId,
@@ -419,32 +420,32 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         Ok(false)
     }
     async fn get_user_sockets(
-        &mut self,
+        &self,
         _user_id: &str,
         _app_id: &str,
-    ) -> sockudo::error::Result<dashmap::DashSet<sockudo::websocket::WebSocketRef>> {
-        Ok(dashmap::DashSet::new())
+    ) -> sockudo::error::Result<Vec<sockudo::websocket::WebSocketRef>> {
+        Ok(Vec::new())
     }
-    async fn cleanup_connection(&mut self, _app_id: &str, _ws: sockudo::websocket::WebSocketRef) {}
+    async fn cleanup_connection(&self, _app_id: &str, _ws: sockudo::websocket::WebSocketRef) {}
     async fn terminate_connection(
-        &mut self,
+        &self,
         _app_id: &str,
         _user_id: &str,
     ) -> sockudo::error::Result<()> {
         Ok(())
     }
     async fn add_channel_to_sockets(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &sockudo::websocket::SocketId,
     ) {
     }
-    async fn get_channel_socket_count(&mut self, _app_id: &str, _channel: &str) -> usize {
+    async fn get_channel_socket_count(&self, _app_id: &str, _channel: &str) -> usize {
         0
     }
     async fn add_to_channel(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &sockudo::websocket::SocketId,
@@ -452,7 +453,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         Ok(false)
     }
     async fn remove_from_channel(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &sockudo::websocket::SocketId,
@@ -460,7 +461,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         Ok(false)
     }
     async fn get_presence_member(
-        &mut self,
+        &self,
         _app_id: &str,
         _channel: &str,
         _socket_id: &sockudo::websocket::SocketId,
@@ -468,44 +469,41 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         None
     }
     async fn terminate_user_connections(
-        &mut self,
+        &self,
         _app_id: &str,
         _user_id: &str,
     ) -> sockudo::error::Result<()> {
         Ok(())
     }
-    async fn add_user(
-        &mut self,
-        _ws: sockudo::websocket::WebSocketRef,
-    ) -> sockudo::error::Result<()> {
+    async fn add_user(&self, _ws: sockudo::websocket::WebSocketRef) -> sockudo::error::Result<()> {
         Ok(())
     }
     async fn remove_user(
-        &mut self,
+        &self,
         _ws: sockudo::websocket::WebSocketRef,
     ) -> sockudo::error::Result<()> {
         Ok(())
     }
     async fn get_channels_with_socket_count(
-        &mut self,
+        &self,
         _app_id: &str,
-    ) -> sockudo::error::Result<dashmap::DashMap<String, usize>> {
-        Ok(dashmap::DashMap::new())
+    ) -> sockudo::error::Result<std::collections::HashMap<String, usize>> {
+        Ok(std::collections::HashMap::new())
     }
     async fn get_sockets_count(&self, _app_id: &str) -> sockudo::error::Result<usize> {
         Ok(0)
     }
     async fn get_namespaces(
-        &mut self,
-    ) -> sockudo::error::Result<dashmap::DashMap<String, Arc<sockudo::namespace::Namespace>>> {
-        Ok(dashmap::DashMap::new())
+        &self,
+    ) -> sockudo::error::Result<Vec<(String, Arc<sockudo::namespace::Namespace>)>> {
+        Ok(Vec::new())
     }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 
     async fn remove_user_socket(
-        &mut self,
+        &self,
         _user_id: &str,
         _socket_id: &sockudo::websocket::SocketId,
         _app_id: &str,
@@ -514,7 +512,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
     }
 
     async fn count_user_connections_in_channel(
-        &mut self,
+        &self,
         _user_id: &str,
         _app_id: &str,
         _channel: &str,
