@@ -181,9 +181,9 @@ async fn test_distributed_socket_count_redis() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add sockets to both adapters to simulate distributed state
-    let socket1 = sockudo::websocket::SocketId("test-socket-1".to_string());
-    let socket2 = sockudo::websocket::SocketId("test-socket-2".to_string());
-    let shared_socket = sockudo::websocket::SocketId("shared-socket".to_string());
+    let socket1 = sockudo::websocket::SocketId::from_string("test-socket-1").unwrap();
+    let socket2 = sockudo::websocket::SocketId::from_string("test-socket-2").unwrap();
+    let shared_socket = sockudo::websocket::SocketId::from_string("shared-socket").unwrap();
 
     // Add different sockets to each adapter
     let _ = adapter1
@@ -246,9 +246,9 @@ async fn test_distributed_socket_count_nats() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add sockets to both adapters to simulate distributed state
-    let socket1 = sockudo::websocket::SocketId("nats-socket-1".to_string());
-    let socket2 = sockudo::websocket::SocketId("nats-socket-2".to_string());
-    let shared_socket = sockudo::websocket::SocketId("nats-shared-socket".to_string());
+    let socket1 = sockudo::websocket::SocketId::from_string("nats-socket-1").unwrap();
+    let socket2 = sockudo::websocket::SocketId::from_string("nats-socket-2").unwrap();
+    let shared_socket = sockudo::websocket::SocketId::from_string("nats-shared-socket").unwrap();
 
     // Add different sockets to each adapter
     let _ = adapter1

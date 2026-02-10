@@ -374,7 +374,7 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
 
     let handler = ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
-        Arc::new(Mutex::new(MockAdapter::new())),
+        Arc::new(MockAdapter::new()),
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
         None,
@@ -390,7 +390,7 @@ pub fn create_test_connection_handler_with_app_manager(
 ) -> ConnectionHandler {
     ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
-        Arc::new(Mutex::new(MockAdapter::new())),
+        Arc::new(MockAdapter::new()),
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
         None,
