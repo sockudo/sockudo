@@ -332,6 +332,14 @@ pub struct ServerOptions {
     pub activity_timeout: u64,
     pub cluster_health: ClusterHealthConfig,
     pub unix_socket: UnixSocketConfig,
+    #[cfg(feature = "delta-compression")]
+    #[serde(default)]
+    pub delta_compression: DeltaCompressionOptions,
+    #[cfg(feature = "tag-filtering")]
+    #[serde(default)]
+    pub tag_filtering: TagFilteringConfig,
+    #[serde(default)]
+    pub websocket: WebSocketOptions,
 }
 
 // --- Configuration Sub-Structs ---
@@ -845,6 +853,96 @@ pub struct UnixSocketConfig {
     pub permission_mode: u32, // Octal file permissions (e.g., "755" string, 755 number, or 0o755 literal)
 }
 
+// --- Delta Compression, Tag Filtering, and WebSocket Buffer Config ---
+
+/// Configuration for delta compression (feature-gated behind `delta-compression`)
+#[cfg(feature = "delta-compression")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeltaCompressionOptions {
+    pub enabled: bool,
+    pub algorithm: String,
+    pub full_message_interval: u32,
+    pub min_message_size: usize,
+    pub max_state_age_secs: u64,
+    pub max_channel_states_per_socket: usize,
+    pub max_conflation_states_per_channel: Option<usize>,
+    pub conflation_key_path: Option<String>,
+    pub cluster_coordination: bool,
+    pub omit_delta_algorithm: bool,
+}
+
+#[cfg(feature = "delta-compression")]
+impl Default for DeltaCompressionOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            algorithm: "fossil".to_string(),
+            full_message_interval: 10,
+            min_message_size: 100,
+            max_state_age_secs: 300,
+            max_channel_states_per_socket: 10,
+            max_conflation_states_per_channel: Some(10),
+            conflation_key_path: None,
+            cluster_coordination: false,
+            omit_delta_algorithm: false,
+        }
+    }
+}
+
+/// Configuration for tag-based publication filtering (feature-gated behind `tag-filtering`)
+#[cfg(feature = "tag-filtering")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TagFilteringConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tag_enable_tags")]
+    pub enable_tags: bool,
+}
+
+#[cfg(feature = "tag-filtering")]
+fn default_tag_enable_tags() -> bool {
+    true
+}
+
+/// Configuration for WebSocket connection buffers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebSocketOptions {
+    pub max_messages: Option<usize>,
+    pub max_bytes: Option<usize>,
+    pub disconnect_on_buffer_full: bool,
+}
+
+impl Default for WebSocketOptions {
+    fn default() -> Self {
+        Self {
+            max_messages: Some(1000),
+            max_bytes: None,
+            disconnect_on_buffer_full: true,
+        }
+    }
+}
+
+impl WebSocketOptions {
+    pub fn to_buffer_config(&self) -> crate::websocket::WebSocketBufferConfig {
+        use crate::websocket::{BufferLimit, WebSocketBufferConfig};
+
+        let limit = match (self.max_messages, self.max_bytes) {
+            (Some(messages), Some(bytes)) => BufferLimit::Both { messages, bytes },
+            (Some(messages), None) => BufferLimit::Messages(messages),
+            (None, Some(bytes)) => BufferLimit::Bytes(bytes),
+            (None, None) => BufferLimit::Unlimited,
+        };
+
+        WebSocketBufferConfig {
+            limit,
+            disconnect_on_full: self.disconnect_on_buffer_full,
+        }
+    }
+}
+
 // --- Default Implementations ---
 
 impl Default for ServerOptions {
@@ -879,6 +977,11 @@ impl Default for ServerOptions {
             activity_timeout: 120,
             cluster_health: ClusterHealthConfig::default(),
             unix_socket: UnixSocketConfig::default(),
+            #[cfg(feature = "delta-compression")]
+            delta_compression: DeltaCompressionOptions::default(),
+            #[cfg(feature = "tag-filtering")]
+            tag_filtering: TagFilteringConfig::default(),
+            websocket: WebSocketOptions::default(),
         }
     }
 }
@@ -1765,6 +1868,33 @@ impl ServerOptions {
         self.cluster_health.cleanup_interval_ms = parse_env::<u64>(
             "CLUSTER_HEALTH_CLEANUP_INTERVAL",
             self.cluster_health.cleanup_interval_ms,
+        );
+
+        // Tag filtering configuration
+        #[cfg(feature = "tag-filtering")]
+        {
+            self.tag_filtering.enabled =
+                parse_bool_env("TAG_FILTERING_ENABLED", self.tag_filtering.enabled);
+        }
+
+        // WebSocket buffer configuration
+        if let Ok(val) = std::env::var("WEBSOCKET_MAX_MESSAGES") {
+            if val.to_lowercase() == "none" || val == "0" {
+                self.websocket.max_messages = None;
+            } else if let Ok(n) = val.parse::<usize>() {
+                self.websocket.max_messages = Some(n);
+            }
+        }
+        if let Ok(val) = std::env::var("WEBSOCKET_MAX_BYTES") {
+            if val.to_lowercase() == "none" || val == "0" {
+                self.websocket.max_bytes = None;
+            } else if let Ok(n) = val.parse::<usize>() {
+                self.websocket.max_bytes = Some(n);
+            }
+        }
+        self.websocket.disconnect_on_buffer_full = parse_bool_env(
+            "WEBSOCKET_DISCONNECT_ON_BUFFER_FULL",
+            self.websocket.disconnect_on_buffer_full,
         );
 
         Ok(())
