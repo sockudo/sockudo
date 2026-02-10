@@ -312,10 +312,8 @@ impl HorizontalAdapter {
                     .local_adapter
                     .get_channels_with_socket_count(&request.app_id)
                     .await?;
-                response.channels_with_sockets_count = channels
-                    .iter()
-                    .map(|entry| (entry.key().clone(), *entry.value()))
-                    .collect();
+                response.channels_with_sockets_count =
+                    channels.iter().map(|(k, v)| (k.clone(), *v)).collect();
             }
             // New request types
             RequestType::Sockets => {
@@ -336,7 +334,7 @@ impl HorizontalAdapter {
                     .local_adapter
                     .get_channels_with_socket_count(&request.app_id)
                     .await?;
-                response.channels = channels.iter().map(|entry| entry.key().clone()).collect();
+                response.channels = channels.iter().map(|(k, _)| k.clone()).collect();
             }
             RequestType::SocketsCount => {
                 // Get count of all sockets
