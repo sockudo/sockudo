@@ -157,7 +157,7 @@ impl CleanupWorker {
         for ((app_id, channel), socket_ids) in channel_operations {
             for socket_id in socket_ids {
                 operations_by_app.entry(app_id.clone()).or_default().push((
-                    socket_id.0.clone(),
+                    socket_id.to_string(),
                     channel.clone(),
                     app_id.clone(),
                 ));
@@ -257,7 +257,7 @@ impl CleanupWorker {
                     user_id: Some(user_id.clone()),
                     data: serde_json::json!({
                         "user_id": user_id,
-                        "socket_id": task.socket_id.0
+                        "socket_id": task.socket_id.to_string()
                     }),
                 });
             }

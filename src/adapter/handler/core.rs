@@ -21,7 +21,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
     ) -> Result<()> {
         let connection_message = PusherMessage::connection_established(
-            socket_id.as_ref().to_string(),
+            socket_id.to_string(),
             self.server_options.activity_timeout,
         );
         self.send_message_to_socket(app_id, socket_id, connection_message)
@@ -59,7 +59,7 @@ impl ConnectionHandler {
         // Perform unsubscription through channel manager
         ChannelManager::unsubscribe(
             &self.connection_manager,
-            socket_id.as_ref(),
+            &socket_id.to_string(),
             &channel_name,
             &app_config.id,
             user_id.as_deref(),
@@ -265,7 +265,7 @@ impl ConnectionHandler {
                 let channels: Vec<String> = conn_locked
                     .state
                     .subscribed_channels
-                    .iter()
+                    .keys()
                     .cloned()
                     .collect();
                 let user_id = conn_locked.state.user_id.clone();
@@ -484,7 +484,12 @@ impl ConnectionHandler {
                     .and_then(|ui| ui.watchlist.clone());
 
                 Ok((
-                    conn_locked.state.subscribed_channels.clone(),
+                    conn_locked
+                        .state
+                        .subscribed_channels
+                        .keys()
+                        .cloned()
+                        .collect(),
                     conn_locked.state.user_id.clone(),
                     watchlist,
                 ))
@@ -519,7 +524,13 @@ impl ConnectionHandler {
         // Prepare batch operations for all channels
         let operations: Vec<(String, String, String)> = subscribed_channels
             .iter()
-            .map(|channel| (socket_id.0.clone(), channel.clone(), app_config.id.clone()))
+            .map(|channel| {
+                (
+                    socket_id.to_string(),
+                    channel.clone(),
+                    app_config.id.clone(),
+                )
+            })
             .collect();
 
         match ChannelManager::batch_unsubscribe(&self.connection_manager, operations).await {

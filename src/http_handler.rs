@@ -291,7 +291,8 @@ async fn process_single_event_parallel(
     }
 
     // Map the original socket ID string to SocketId type
-    let mapped_socket_id: Option<SocketId> = original_socket_id_str.map(SocketId);
+    let mapped_socket_id: Option<SocketId> = original_socket_id_str
+        .map(|s| SocketId::from_string(&s).unwrap_or_else(|_| SocketId::new()));
 
     // Determine the list of target channels for this event
     let target_channels: Vec<String> = match channels {
