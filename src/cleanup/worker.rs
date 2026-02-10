@@ -8,12 +8,12 @@ use crate::websocket::SocketId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 pub struct CleanupWorker {
-    connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+    connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     config: CleanupConfig,
@@ -21,7 +21,7 @@ pub struct CleanupWorker {
 
 impl CleanupWorker {
     pub fn new(
-        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
         config: CleanupConfig,
@@ -207,30 +207,26 @@ impl CleanupWorker {
 
         debug!("Removing {} connections", connections.len());
 
-        // Process each connection removal with minimal lock duration
+        // Process each connection removal
         for (socket_id, app_id, user_id) in connections {
-            // Acquire lock for each individual removal to minimize contention
-            let result = {
-                let mut connection_manager = self.connection_manager.lock().await;
-                // First remove the connection
-                let remove_result = connection_manager
-                    .remove_connection(&socket_id, &app_id)
-                    .await;
+            // First remove the connection
+            let result = self
+                .connection_manager
+                .remove_connection(&socket_id, &app_id)
+                .await;
 
-                // Then remove from user mapping if user_id exists
-                if let Some(ref uid) = user_id
-                    && let Err(e) = connection_manager
-                        .remove_user_socket(uid, &socket_id, &app_id)
-                        .await
-                {
-                    warn!(
-                        "Failed to remove user socket mapping for {}: {}",
-                        socket_id, e
-                    );
-                }
-
-                remove_result
-            }; // Lock released here after each removal
+            // Then remove from user mapping if user_id exists
+            if let Some(ref uid) = user_id
+                && let Err(e) = self
+                    .connection_manager
+                    .remove_user_socket(uid, &socket_id, &app_id)
+                    .await
+            {
+                warn!(
+                    "Failed to remove user socket mapping for {}: {}",
+                    socket_id, e
+                );
+            }
 
             if let Err(e) = result {
                 warn!("Failed to remove connection {}: {}", socket_id, e);
@@ -264,15 +260,11 @@ impl CleanupWorker {
         }
 
         // Check if channels are now empty for channel_vacated events
-        // IMPORTANT: Acquire and release lock for each channel to minimize lock contention
         for channel in &task.subscribed_channels {
-            // Acquire lock for minimal duration - just for this single channel check
-            let socket_count = {
-                let mut connection_manager = self.connection_manager.lock().await;
-                connection_manager
-                    .get_channel_socket_count(&task.app_id, channel)
-                    .await
-            }; // Lock released here immediately after getting the count
+            let socket_count = self
+                .connection_manager
+                .get_channel_socket_count(&task.app_id, channel)
+                .await;
 
             if socket_count == 0 {
                 events.push(WebhookEvent {
@@ -353,7 +345,7 @@ impl CleanupWorker {
     }
 
     async fn send_webhook_event(
-        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         webhook_integration: &Arc<WebhookIntegration>,
         app_config: &crate::app::config::App,
         event: &WebhookEvent,

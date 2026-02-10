@@ -7,7 +7,7 @@ mod tests {
 
     fn create_disconnect_task_with_presence(socket_id: &str) -> DisconnectTask {
         DisconnectTask {
-            socket_id: SocketId(socket_id.to_string()),
+            socket_id: SocketId::from_string(socket_id).unwrap(),
             app_id: "test-app".to_string(),
             subscribed_channels: vec!["presence-room1".to_string(), "public-channel".to_string()],
             user_id: Some("user123".to_string()),
@@ -46,7 +46,7 @@ mod tests {
                         returned_task
                     );
                     // Note: returned_task is now a reference, so you might need to clone or dereference
-                    assert_eq!(returned_task.socket_id.0, task2.socket_id.0);
+                    assert_eq!(returned_task.socket_id, task2.socket_id);
                     assert_eq!(returned_task.app_id, task2.app_id);
                 }
                 _ => panic!("Expected Full error for fallback trigger"),
@@ -56,7 +56,10 @@ mod tests {
 
         // Verify first task is still in queue
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.socket_id.0, "socket1");
+        assert_eq!(
+            received.socket_id,
+            SocketId::from_string("socket1").unwrap()
+        );
     }
 
     #[tokio::test]

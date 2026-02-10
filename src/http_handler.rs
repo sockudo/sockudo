@@ -403,8 +403,6 @@ async fn process_single_event_parallel(
                 {
                     let count = handler_clone
                         .connection_manager
-                        .lock()
-                        .await
                         .get_channel_socket_count(&app.id, &target_channel_str)
                         .await;
                     current_channel_info_map.insert("subscription_count".to_string(), json!(count));
@@ -700,13 +698,10 @@ pub async fn channel(
     let wants_user_count = info_query_str.wants_user_count();
     let wants_cache_data = info_query_str.wants_cache();
 
-    let socket_count_val;
-    {
-        let mut connection_manager_locked = handler.connection_manager.lock().await;
-        socket_count_val = connection_manager_locked
-            .get_channel_socket_count(&app_id, &channel_name)
-            .await;
-    }
+    let socket_count_val = handler
+        .connection_manager
+        .get_channel_socket_count(&app_id, &channel_name)
+        .await;
 
     let user_count_val = if wants_user_count {
         if channel_name.starts_with("presence-") {
@@ -783,13 +778,10 @@ pub async fn channels(
         .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
-    let channels_map;
-    {
-        let mut connection_manager_locked = handler.connection_manager.lock().await;
-        channels_map = connection_manager_locked
-            .get_channels_with_socket_count(&app_id)
-            .await?;
-    }
+    let channels_map = handler
+        .connection_manager
+        .get_channels_with_socket_count(&app_id)
+        .await?;
 
     let mut channels_info_response_map = HashMap::new();
     for (channel_name_str, _socket_count) in channels_map.iter() {
@@ -884,10 +876,8 @@ pub async fn terminate_user_connections(
         user_id
     );
 
-    let connection_manager_arc = handler.connection_manager.clone();
-    connection_manager_arc
-        .lock()
-        .await
+    handler
+        .connection_manager
         .terminate_connection(&app_id, &user_id)
         .await?;
 
@@ -919,8 +909,7 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
 
     // CRITICAL CHECK 1: Adapter health - core WebSocket functionality
     let adapter_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
-        let conn_mgr = handler.connection_manager.lock().await;
-        conn_mgr.check_health().await
+        handler.connection_manager.check_health().await
     })
     .await;
 
