@@ -30,7 +30,7 @@ impl ConnectionHandler {
     }
 
     pub async fn set_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
-        let socket_id_clone = socket_id.clone();
+        let socket_id_clone = *socket_id;
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
         let activity_timeout = self.server_options.activity_timeout;
@@ -178,7 +178,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         timeout_seconds: u64,
     ) -> Result<()> {
-        let socket_id_clone = socket_id.clone();
+        let socket_id_clone = *socket_id;
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
 

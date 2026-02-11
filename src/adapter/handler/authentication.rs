@@ -69,7 +69,7 @@ impl ConnectionHandler {
 
         let is_valid = auth_validator
             .validate_channel_auth(
-                socket_id.clone(),
+                *socket_id,
                 &app_config.key,
                 &request.user_data,
                 signature,

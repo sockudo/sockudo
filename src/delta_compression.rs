@@ -367,11 +367,10 @@ impl ChannelState {
         self.conflation_groups.insert(conflation_key, state);
 
         // Enforce limit immediately on insert
-        if let Some(max) = max_states {
-            if self.conflation_groups.len() > max {
+        if let Some(max) = max_states
+            && self.conflation_groups.len() > max {
                 self.evict_oldest_states(max).await;
             }
-        }
     }
 
     async fn evict_oldest_states(&self, max_states: usize) {
@@ -690,8 +689,8 @@ impl DeltaCompressionManager {
         channel: &str,
         conflation_key: &str,
     ) -> Result<(bool, u32)> {
-        if let Some(coordinator) = &self.cluster_coordinator {
-            if self.config.cluster_coordination {
+        if let Some(coordinator) = &self.cluster_coordinator
+            && self.config.cluster_coordination {
                 return coordinator
                     .increment_and_check(
                         app_id,
@@ -701,7 +700,6 @@ impl DeltaCompressionManager {
                     )
                     .await;
             }
-        }
         // Fallback: no coordination, use node-local (return false to use node-local logic)
         Ok((false, 0))
     }
@@ -756,11 +754,10 @@ impl DeltaCompressionManager {
                     // check inside the "data" object commonly used by Pusher payloads.
                     if parts.len() == 1 {
                         // Direct object payload
-                        if let Some(data_obj) = json_value.get("data").and_then(|v| v.as_object()) {
-                            if let Some(v) = data_obj.get(part) {
+                        if let Some(data_obj) = json_value.get("data").and_then(|v| v.as_object())
+                            && let Some(v) = data_obj.get(part) {
                                 return to_string(v);
                             }
-                        }
                         // Stringified JSON payload
                         if let Some(data_str_val) = json_value.get("data")
                             && let Some(data_str) = data_str_val.as_str()
@@ -799,7 +796,7 @@ impl DeltaCompressionManager {
     /// Enable delta compression for a specific socket
     pub fn enable_for_socket(&self, socket_id: &SocketId) {
         self.socket_states.insert(
-            socket_id.clone(),
+            *socket_id,
             Arc::new(SocketDeltaState {
                 enabled: true,
                 channel_states: DashMap::new(),
@@ -821,7 +818,7 @@ impl DeltaCompressionManager {
         // (per-channel subscription implies opt-in)
         let socket_state = self
             .socket_states
-            .entry(socket_id.clone())
+            .entry(*socket_id)
             .or_insert_with(|| {
                 Arc::new(SocketDeltaState {
                     enabled: true, // Enable globally when per-channel is requested
@@ -1471,7 +1468,7 @@ impl DeltaCompressionManager {
         let entries: Vec<(SocketId, Arc<SocketDeltaState>)> = self
             .socket_states
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .map(|entry| (*entry.key(), entry.value().clone()))
             .collect();
 
         let mut cleaned_sockets = 0;

@@ -64,7 +64,7 @@ impl Namespace {
 
         // Create the WebSocket using new structure with buffer config
         let mut websocket =
-            WebSocket::with_buffer_config(socket_id.clone(), socket_writer, buffer_config);
+            WebSocket::with_buffer_config(socket_id, socket_writer, buffer_config);
 
         // Set the app configuration
         websocket.state.app = Some(app_config);
@@ -74,7 +74,7 @@ impl Namespace {
 
         // Store the connection in the central map
         self.sockets
-            .insert(socket_id.clone(), websocket_ref.clone());
+            .insert(socket_id, websocket_ref.clone());
 
         debug!(socket_id = %socket_id, "WebSocket connection added successfully");
 
@@ -139,7 +139,7 @@ impl Namespace {
         if let Some(channel_sockets_ref) = self.channels.get(channel) {
             channel_sockets_ref
                 .iter()
-                .map(|entry| entry.key().clone())
+                .map(|entry| *entry.key())
                 .collect()
         } else {
             debug!(
@@ -168,7 +168,7 @@ impl Namespace {
                     if except == Some(socket_id) {
                         None // Skip excluded socket
                     } else {
-                        Some(socket_id.clone())
+                        Some(*socket_id)
                     }
                 })
                 .collect();
@@ -302,7 +302,7 @@ impl Namespace {
             .channels
             .entry(channel.to_string())
             .or_default()
-            .insert(socket_id.clone());
+            .insert(*socket_id);
         let t_after_entry = t_start.elapsed().as_nanos();
 
         tracing::debug!(
@@ -512,7 +512,7 @@ impl Namespace {
         Ok(self
             .sockets
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .map(|entry| (*entry.key(), entry.value().clone()))
             .collect())
     }
 }

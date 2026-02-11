@@ -466,8 +466,7 @@ where
                         let except_id = broadcast
                             .except_socket_id
                             .as_ref()
-                            .map(|id| SocketId::from_string(id).ok())
-                            .flatten();
+                            .and_then(|id| SocketId::from_string(id).ok());
 
                         let horizontal_lock = horizontal_clone.read().await;
 
@@ -574,8 +573,8 @@ where
                         };
 
                         // Track delta compression metrics if compression was used
-                        if compression_used {
-                            if let Some(ref metrics) = horizontal_lock.metrics {
+                        if compression_used
+                            && let Some(ref metrics) = horizontal_lock.metrics {
                                 let metrics_lock = metrics.lock().await;
                                 metrics_lock.track_horizontal_delta_compression(
                                     &broadcast.app_id,
@@ -583,7 +582,6 @@ where
                                     true,
                                 );
                             }
-                        }
 
                         // Track broadcast latency metrics using helper function
                         let metrics_ref = horizontal_lock.metrics.clone();

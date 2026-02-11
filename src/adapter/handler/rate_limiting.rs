@@ -15,7 +15,7 @@ impl ConnectionHandler {
                 1, // Per second
             ));
             self.client_event_limiters
-                .insert(socket_id.clone(), limiter);
+                .insert(*socket_id, limiter);
             debug!(
                 "Initialized client event rate limiter for socket {}: {} events/sec",
                 socket_id, app_config.max_client_events_per_second

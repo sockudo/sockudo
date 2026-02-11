@@ -299,7 +299,7 @@ impl ConnectionHandler {
                     .collect();
 
                 Some(DisconnectTask {
-                    socket_id: socket_id.clone(),
+                    socket_id: *socket_id,
                     app_id: app_id.to_string(),
                     subscribed_channels: channels,
                     user_id: user_id.clone(),

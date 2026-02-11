@@ -9,7 +9,6 @@ use crate::webhook::types::{JobData, JobPayload};
 use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 use sonic_rs::{Value, json};
-use sonic_rs::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

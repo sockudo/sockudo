@@ -369,7 +369,7 @@ async fn process_single_event_parallel(
         // This is safe as `join_all` awaits futures within `app`'s lifetime.
         let name_for_task = name.clone(); // Option<String>
         let payload_for_task = event_payload_data.clone(); // Option<ApiMessageData>
-        let socket_id_for_task = mapped_socket_id.clone(); // Option<SocketId>
+        let socket_id_for_task = mapped_socket_id; // Option<SocketId>
         let info_for_task = info.clone(); // Option<String>
         let event_name_for_task = event_name_str.to_string(); // String
         // Convert HashMap to BTreeMap for deterministic serialization order
