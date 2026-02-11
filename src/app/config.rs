@@ -1,4 +1,5 @@
 use crate::webhook::types::Webhook;
+use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -38,6 +39,9 @@ pub struct App {
     pub enable_watchlist_events: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_and_validate_origins")]
     pub allowed_origins: Option<Vec<String>>,
+    #[serde(default)]
+    pub channel_delta_compression:
+        Option<AHashMap<String, crate::delta_compression::ChannelDeltaConfig>>,
 }
 
 // Helper functions to deserialize numbers from strings or numbers

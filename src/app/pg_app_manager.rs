@@ -6,15 +6,18 @@ use crate::token::Token;
 use crate::webhook::types::Webhook;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
+use futures_util::{StreamExt, stream};
+use moka::future::Cache;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// PostgreSQL-based implementation of the AppManager
 pub struct PgSQLAppManager {
     config: DatabaseConnection,
     pool: PgPool,
+    app_cache: Cache<String, App>, // App ID -> App
 }
 
 impl PgSQLAppManager {
@@ -49,7 +52,17 @@ impl PgSQLAppManager {
             .await
             .map_err(|e| Error::Internal(format!("Failed to connect to PostgreSQL: {e}")))?;
 
-        let manager = Self { config, pool };
+        // Initialize cache
+        let app_cache = Cache::builder()
+            .time_to_live(Duration::from_secs(config.cache_ttl))
+            .max_capacity(config.cache_max_capacity)
+            .build();
+
+        let manager = Self {
+            config,
+            pool,
+            app_cache,
+        };
 
         manager.ensure_table_exists().await?;
 
@@ -96,7 +109,11 @@ impl PgSQLAppManager {
 
         // Add migrations for columns that may not exist
         // PostgreSQL supports ADD COLUMN IF NOT EXISTS
-        let columns_to_add = vec![("allowed_origins", "JSONB"), ("webhooks", "JSONB")];
+        let columns_to_add = vec![
+            ("allowed_origins", "JSONB"),
+            ("webhooks", "JSONB"),
+            ("channel_delta_compression", "JSONB"),
+        ];
 
         for (column_name, column_type) in columns_to_add {
             let add_column_query = format!(
@@ -119,9 +136,15 @@ impl PgSQLAppManager {
         Ok(())
     }
 
-    /// Get an app by ID from database
+    /// Get an app by ID from cache or database
     pub async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
-        debug!("Fetching app {} from database", app_id);
+        // Try to get from cache first
+        if let Some(app) = self.app_cache.get(app_id).await {
+            return Ok(Some(app));
+        }
+
+        // Not in cache or expired, fetch from database
+        debug!("Cache miss for app {}, fetching from database", app_id);
 
         // Create the query with the correct table name
         let query = format!(
@@ -155,10 +178,20 @@ impl PgSQLAppManager {
                 Error::Internal(format!("Failed to fetch app from PostgreSQL: {e}"))
             })?;
 
-        Ok(app_result.map(|row| row.into_app()))
+        if let Some(app_row) = app_result {
+            // Convert to App
+            let app = app_row.into_app();
+
+            // Update cache
+            self.app_cache.insert(app_id.to_string(), app.clone()).await;
+
+            Ok(Some(app))
+        } else {
+            Ok(None)
+        }
     }
 
-    /// Get an app by key from database
+    /// Get an app by key from cache or database
     pub async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
         // For PostgreSQL, we need to query by key since cache is by ID
         debug!("Fetching app by key {} from database", key);
@@ -194,7 +227,16 @@ impl PgSQLAppManager {
                 Error::Internal(format!("Failed to fetch app from PostgreSQL: {e}"))
             })?;
 
-        Ok(app_result.map(|row| row.into_app()))
+        if let Some(app_row) = app_result {
+            let app = app_row.into_app();
+
+            // Update cache with this app using ID as key
+            self.app_cache.insert(app.id.clone(), app.clone()).await;
+
+            Ok(Some(app))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Register a new app in the database
@@ -242,6 +284,9 @@ impl PgSQLAppManager {
                 error!("Database error registering app {}: {}", app.id, e);
                 Error::Internal(format!("Failed to insert app into PostgreSQL: {e}"))
             })?;
+
+        // Update cache
+        self.app_cache.insert(app.id.clone(), app).await;
 
         Ok(())
     }
@@ -298,6 +343,9 @@ impl PgSQLAppManager {
             return Err(Error::InvalidAppKey);
         }
 
+        // Update cache
+        self.app_cache.insert(app.id.clone(), app).await;
+
         Ok(())
     }
 
@@ -320,6 +368,9 @@ impl PgSQLAppManager {
         if result.rows_affected() == 0 {
             return Err(Error::InvalidAppKey);
         }
+
+        // Remove from cache
+        self.app_cache.remove(app_id).await;
 
         Ok(())
     }
@@ -359,9 +410,21 @@ impl PgSQLAppManager {
                 Error::Internal(format!("Failed to fetch apps from PostgreSQL: {e}"))
             })?;
 
-        let apps: Vec<App> = app_rows.into_iter().map(|row| row.into_app()).collect();
+        warn!("Fetched {} app rows from database.", app_rows.len());
 
-        debug!("Fetched {} apps from database", apps.len());
+        // Process rows concurrently using streams
+        let apps = stream::iter(app_rows)
+            .map(|row| async {
+                let app = row.into_app();
+                // Insert into cache
+                self.app_cache.insert(app.id.clone(), app.clone()).await;
+                app
+            })
+            .buffer_unordered(self.config.connection_pool_size as usize)
+            .collect::<Vec<App>>()
+            .await;
+
+        info!("Finished processing and caching {} apps.", apps.len());
 
         Ok(apps)
     }
@@ -505,6 +568,7 @@ impl AppRow {
             webhooks: self.webhooks,
             enable_watchlist_events: self.enable_watchlist_events,
             allowed_origins: self.allowed_origins,
+            channel_delta_compression: None, // Delta compression config not stored in DB
         }
     }
 }
@@ -558,6 +622,7 @@ impl Clone for PgSQLAppManager {
         Self {
             config: self.config.clone(),
             pool: self.pool.clone(),
+            app_cache: self.app_cache.clone(),
         }
     }
 }
@@ -565,18 +630,27 @@ impl Clone for PgSQLAppManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    // Helper to create test database config using centralized config system
-    async fn get_test_db_config(table_name: &str) -> DatabaseConnection {
-        let mut config = crate::options::ServerOptions::default();
-        config
-            .override_from_env()
-            .await
-            .expect("Failed to load config from env");
-
-        let mut db_config = config.database.postgres.clone();
-        db_config.table_name = table_name.to_string();
-        db_config
+    // Helper to create test database config
+    fn get_test_db_config(table_name: &str) -> DatabaseConnection {
+        DatabaseConnection {
+            host: std::env::var("DATABASE_POSTGRES_HOST")
+                .unwrap_or_else(|_| "localhost".to_string()),
+            port: std::env::var("DATABASE_POSTGRES_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(15432),
+            username: std::env::var("DATABASE_POSTGRES_USER")
+                .unwrap_or_else(|_| "postgres".to_string()),
+            password: std::env::var("DATABASE_POSTGRES_PASSWORD")
+                .unwrap_or_else(|_| "postgres123".to_string()),
+            database: std::env::var("DATABASE_POSTGRES_DATABASE")
+                .unwrap_or_else(|_| "sockudo_test".to_string()),
+            table_name: table_name.to_string(),
+            cache_ttl: 5, // Short TTL for testing
+            ..Default::default()
+        }
     }
 
     // Helper to create a test app
@@ -602,13 +676,14 @@ mod tests {
             webhooks: None,
             enable_watchlist_events: None,
             allowed_origins: None,
+            channel_delta_compression: None,
         }
     }
 
     #[tokio::test]
     async fn test_pgsql_app_manager() {
         // Setup test database
-        let config = get_test_db_config("apps_test").await;
+        let config = get_test_db_config("apps_test");
 
         // Create manager
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
@@ -636,6 +711,9 @@ mod tests {
         let app = manager.find_by_id("test1").await.unwrap().unwrap();
         assert_eq!(app.max_connections, 200);
 
+        // Test cache expiration
+        tokio::time::sleep(Duration::from_secs(6)).await;
+
         // Add another app
         let test_app2 = create_test_app("test2");
         manager.create_app(test_app2).await.unwrap();
@@ -654,7 +732,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhooks_serialization() {
-        let config = get_test_db_config("apps_webhooks_test").await;
+        let config = get_test_db_config("apps_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -692,7 +770,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_webhooks() {
-        let config = get_test_db_config("apps_multi_webhooks_test").await;
+        let config = get_test_db_config("apps_multi_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -737,7 +815,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_watchlist_events() {
-        let config = get_test_db_config("apps_watchlist_test").await;
+        let config = get_test_db_config("apps_watchlist_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -782,7 +860,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_allowed_origins() {
-        let config = get_test_db_config("apps_origins_test").await;
+        let config = get_test_db_config("apps_origins_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -811,7 +889,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_webhooks() {
-        let config = get_test_db_config("apps_update_webhooks_test").await;
+        let config = get_test_db_config("apps_update_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -851,8 +929,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cache_behavior() {
+        let mut config = get_test_db_config("apps_cache_test");
+        config.cache_ttl = 2; // 2 seconds for quick testing
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create an app
+        let app = create_test_app("cache_test");
+        manager.create_app(app).await.unwrap();
+
+        // First retrieval - should hit database
+        let retrieved1 = manager.find_by_id("cache_test").await.unwrap().unwrap();
+        assert_eq!(retrieved1.id, "cache_test");
+
+        // Second retrieval - should hit cache
+        let retrieved2 = manager.find_by_id("cache_test").await.unwrap().unwrap();
+        assert_eq!(retrieved2.id, "cache_test");
+
+        // Wait for cache to expire
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // Third retrieval - should hit database again
+        let retrieved3 = manager.find_by_id("cache_test").await.unwrap().unwrap();
+        assert_eq!(retrieved3.id, "cache_test");
+
+        // Cleanup
+        manager.delete_app("cache_test").await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_find_by_key_with_webhooks() {
-        let config = get_test_db_config("apps_key_webhooks_test").await;
+        let config = get_test_db_config("apps_key_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -884,7 +994,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_all_apps_with_webhooks() {
-        let config = get_test_db_config("apps_all_webhooks_test").await;
+        let config = get_test_db_config("apps_all_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -932,7 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check() {
-        let config = get_test_db_config("apps_health_test").await;
+        let config = get_test_db_config("apps_health_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -945,7 +1055,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_nonexistent_app() {
-        let config = get_test_db_config("apps_delete_test").await;
+        let config = get_test_db_config("apps_delete_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -958,7 +1068,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_nonexistent_app() {
-        let config = get_test_db_config("apps_update_fail_test").await;
+        let config = get_test_db_config("apps_update_fail_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -972,7 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_null_values() {
-        let config = get_test_db_config("apps_null_test").await;
+        let config = get_test_db_config("apps_null_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1002,7 +1112,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_webhooks_array() {
-        let config = get_test_db_config("apps_empty_webhooks_test").await;
+        let config = get_test_db_config("apps_empty_webhooks_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await
@@ -1024,7 +1134,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_with_lambda_config() {
-        let config = get_test_db_config("apps_lambda_test").await;
+        let config = get_test_db_config("apps_lambda_test");
 
         let manager = PgSQLAppManager::new(config, DatabasePooling::default())
             .await

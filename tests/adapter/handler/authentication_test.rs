@@ -16,6 +16,8 @@ async fn test_verify_channel_authentication_public_channel() {
         channel: "public-channel".to_string(),
         auth: None,
         channel_data: None,
+        tags_filter: None,
+        delta: None,
     };
 
     let result = handler
@@ -35,6 +37,8 @@ async fn test_verify_channel_authentication_private_channel_no_auth() {
         channel: "private-channel".to_string(),
         auth: None,
         channel_data: None,
+        tags_filter: None,
+        delta: None,
     };
 
     let result = handler
@@ -65,12 +69,17 @@ async fn test_verify_channel_authentication_private_channel_with_auth() {
         }))),
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let request = SubscriptionRequest {
         channel,
         auth: Some(auth),
         channel_data: None,
+        tags_filter: None,
+        delta: None,
     };
 
     let result = handler
@@ -104,12 +113,17 @@ async fn test_verify_channel_authentication_presence_channel() {
         }))),
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let request = SubscriptionRequest {
         channel,
         auth: Some(auth),
         channel_data: Some(channel_data),
+        tags_filter: None,
+        delta: None,
     };
 
     let result = handler

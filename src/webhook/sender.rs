@@ -10,11 +10,11 @@ use crate::webhook::lambda_sender::LambdaWebhookSender;
 // PusherWebhookPayload is the structure for the final POST body
 use crate::token::Token; // For HMAC SHA256 signing
 use crate::webhook::types::{JobData, PusherWebhookPayload, Webhook};
+use ahash::AHashMap;
 use reqwest::{Client, header};
 use serde_json::Value;
 #[cfg(feature = "lambda")]
 use serde_json::json; // json! macro only used in lambda feature
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -97,8 +97,8 @@ impl WebhookSender {
         &self,
         events: &[Value],
         webhook_configs: &'a [Webhook],
-    ) -> HashMap<String, &'a Webhook> {
-        let mut relevant_configs = HashMap::new();
+    ) -> AHashMap<String, &'a Webhook> {
+        let mut relevant_configs = AHashMap::new();
 
         for event_value in events {
             if let Some(event_name) = event_value.get("name").and_then(Value::as_str) {
@@ -314,7 +314,7 @@ async fn send_pusher_webhook(
     app_key: &str,
     signature: &str,
     json_body: String, // Expects already serialized JSON string
-    custom_headers_config: HashMap<String, String>,
+    custom_headers_config: AHashMap<String, String>,
 ) -> Result<()> {
     debug!("Sending Pusher webhook to URL: {}", url);
 

@@ -13,6 +13,7 @@ mod tests {
     use sockudo::websocket::SocketId;
     use std::sync::Arc;
     use std::time::Instant;
+
     /// Helper to create a real cleanup system with all components
     async fn create_real_cleanup_system() -> (
         MultiWorkerCleanupSystem,
@@ -30,7 +31,7 @@ mod tests {
         };
 
         let local_adapter = Arc::new(LocalAdapter::new());
-        let connection_manager = local_adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>;
+        let connection_manager: Arc<dyn ConnectionManager + Send + Sync> = local_adapter.clone();
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
@@ -56,12 +57,17 @@ mod tests {
             webhooks: Some(vec![]),
             enable_watchlist_events: None,
             allowed_origins: None,
+            channel_delta_compression: None,
         };
 
         app_manager.create_app(test_app).await.unwrap();
 
-        let cleanup_system =
-            MultiWorkerCleanupSystem::new(connection_manager, app_manager.clone(), None, config);
+        let cleanup_system = MultiWorkerCleanupSystem::new(
+            connection_manager.clone(),
+            app_manager.clone(),
+            None,
+            config,
+        );
 
         (cleanup_system, local_adapter, app_manager)
     }
@@ -83,7 +89,7 @@ mod tests {
         };
 
         let local_adapter = Arc::new(LocalAdapter::new());
-        let connection_manager = local_adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>;
+        let connection_manager: Arc<dyn ConnectionManager + Send + Sync> = local_adapter.clone();
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
@@ -118,13 +124,18 @@ mod tests {
             webhooks: Some(vec![webhook_config]),
             enable_watchlist_events: None,
             allowed_origins: None,
+            channel_delta_compression: None,
         };
 
         app_manager.create_app(test_app).await.unwrap();
 
         // Create cleanup system WITHOUT webhook integration
-        let cleanup_system =
-            MultiWorkerCleanupSystem::new(connection_manager, app_manager.clone(), None, config);
+        let cleanup_system = MultiWorkerCleanupSystem::new(
+            connection_manager.clone(),
+            app_manager.clone(),
+            None,
+            config,
+        );
 
         (cleanup_system, local_adapter, app_manager)
     }
@@ -151,26 +162,22 @@ mod tests {
         let channel = "test-channel";
 
         // SETUP: Add socket to channel
-        {
-            adapter
-                .add_to_channel("test-app", channel, &socket_id)
-                .await
-                .unwrap();
-        }
+        adapter
+            .add_to_channel("test-app", channel, &socket_id)
+            .await
+            .unwrap();
 
         // VERIFY SETUP: Socket should be in channel
-        let initial_count = { adapter.get_channel_socket_count("test-app", channel).await };
+        let initial_count = adapter.get_channel_socket_count("test-app", channel).await;
         assert_eq!(
             initial_count, 1,
             "Setup failed: socket should be in channel"
         );
 
-        let is_in_channel_before = {
-            adapter
-                .is_in_channel("test-app", channel, &socket_id)
-                .await
-                .unwrap()
-        };
+        let is_in_channel_before = adapter
+            .is_in_channel("test-app", channel, &socket_id)
+            .await
+            .unwrap();
         assert!(
             is_in_channel_before,
             "Setup failed: socket should be detectable in channel"
@@ -184,18 +191,16 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // VERIFY: Socket should be removed from channel
-        let final_count = { adapter.get_channel_socket_count("test-app", channel).await };
+        let final_count = adapter.get_channel_socket_count("test-app", channel).await;
         assert_eq!(
             final_count, 0,
             "CLEANUP FAILED: Socket was not removed from channel"
         );
 
-        let is_in_channel_after = {
-            adapter
-                .is_in_channel("test-app", channel, &socket_id)
-                .await
-                .unwrap()
-        };
+        let is_in_channel_after = adapter
+            .is_in_channel("test-app", channel, &socket_id)
+            .await
+            .unwrap();
         assert!(
             !is_in_channel_after,
             "CLEANUP FAILED: Socket is still detectable in channel"
@@ -221,7 +226,7 @@ mod tests {
 
         // VERIFY SETUP: Socket should be in all channels
         for channel in &channels {
-            let count = { adapter.get_channel_socket_count("test-app", channel).await };
+            let count = adapter.get_channel_socket_count("test-app", channel).await;
             assert_eq!(count, 1, "Setup failed for channel {}", channel);
         }
 
@@ -336,6 +341,7 @@ mod tests {
         // SETUP: Add all sockets to channel
         for socket_id in &sockets {
             let socket = SocketId::from_string(socket_id).unwrap();
+
             adapter
                 .add_to_channel("test-app", channel, &socket)
                 .await
@@ -468,7 +474,7 @@ mod tests {
         };
 
         let local_adapter = Arc::new(LocalAdapter::new());
-        let connection_manager = local_adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>;
+        let connection_manager: Arc<dyn ConnectionManager + Send + Sync> = local_adapter.clone();
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
@@ -494,11 +500,16 @@ mod tests {
             webhooks: Some(vec![]),
             enable_watchlist_events: None,
             allowed_origins: None,
+            channel_delta_compression: None,
         };
         app_manager.create_app(test_app).await.unwrap();
 
-        let cleanup_system =
-            MultiWorkerCleanupSystem::new(connection_manager, app_manager.clone(), None, config);
+        let cleanup_system = MultiWorkerCleanupSystem::new(
+            connection_manager.clone(),
+            app_manager.clone(),
+            None,
+            config,
+        );
 
         let cleanup_sender = cleanup_system.get_sender();
         let channel = "queue-channel";
@@ -514,11 +525,9 @@ mod tests {
         }
 
         // VERIFY SETUP
-        let initial_count = {
-            local_adapter
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let initial_count = local_adapter
+            .get_channel_socket_count("test-app", channel)
+            .await;
         assert_eq!(
             initial_count, 3,
             "Setup failed: exactly 3 sockets should be in channel"
@@ -536,11 +545,9 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // VERIFY: All 3 sockets should be cleaned up
-        let final_count = {
-            local_adapter
-                .get_channel_socket_count("test-app", channel)
-                .await
-        };
+        let final_count = local_adapter
+            .get_channel_socket_count("test-app", channel)
+            .await;
 
         assert_eq!(
             final_count, 0,
@@ -550,12 +557,10 @@ mod tests {
         // Verify each socket individually
         for socket_id in &sockets {
             let socket = SocketId::from_string(socket_id).unwrap();
-            let is_in_channel = {
-                local_adapter
-                    .is_in_channel("test-app", channel, &socket)
-                    .await
-                    .unwrap()
-            };
+            let is_in_channel = local_adapter
+                .is_in_channel("test-app", channel, &socket)
+                .await
+                .unwrap();
             assert!(
                 !is_in_channel,
                 "CLEANUP FAILED: Socket {} should be removed",

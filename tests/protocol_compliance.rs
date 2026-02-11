@@ -159,10 +159,10 @@ fn test_pong_format() {
 fn test_subscription_succeeded_format() {
     // According to spec: data should be a String (JSON-encoded object)
     // For presence channels, it contains presence data
+    use ahash::AHashMap;
     use sockudo::protocol::messages::PresenceData;
-    use std::collections::HashMap;
 
-    let mut hash = HashMap::new();
+    let mut hash = AHashMap::new();
     hash.insert("user1".to_string(), Some(json!({"name": "Alice"})));
     hash.insert("user2".to_string(), Some(json!({"name": "Bob"})));
 
@@ -397,6 +397,9 @@ fn test_channel_event_with_user_id() {
         data: Some(MessageData::String(event_data.to_string())),
         name: None,
         user_id: Some("user123".to_string()),
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
     let json = message_to_json(&message);
 
@@ -491,6 +494,9 @@ fn test_client_event_accepts_string() {
         data: Some(MessageData::String("user is typing...".to_string())),
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let json = message_to_json(&message);
@@ -524,6 +530,9 @@ fn test_client_event_accepts_json() {
         )),
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let json = message_to_json(&message);

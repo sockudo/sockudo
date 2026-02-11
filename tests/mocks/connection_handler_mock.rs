@@ -1,7 +1,5 @@
+use ahash::AHashMap;
 use async_trait::async_trait;
-use fastwebsockets::WebSocketWrite;
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use sockudo::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
 use sockudo::adapter::handler::ConnectionHandler;
@@ -14,12 +12,11 @@ use sockudo::metrics::MetricsInterface;
 use sockudo::namespace::Namespace;
 use sockudo::options::ServerOptions;
 use sockudo::protocol::messages::PusherMessage;
-use sockudo::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
+use sockudo::websocket::{SocketId, WebSocketRef};
+use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
 
 pub struct MockAdapter;
@@ -45,10 +42,10 @@ impl ConnectionManager for MockAdapter {
     async fn add_socket(
         &self,
         _socket_id: SocketId,
-        _socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
+        _socket: WebSocketWriter,
         _app_id: &str,
         _app_manager: Arc<dyn AppManager + Send + Sync>,
-        _buffer_config: WebSocketBufferConfig,
+        _buffer_config: sockudo::websocket::WebSocketBufferConfig,
     ) -> Result<()> {
         Ok(())
     }
@@ -80,8 +77,8 @@ impl ConnectionManager for MockAdapter {
         &self,
         _app_id: &str,
         _channel: &str,
-    ) -> Result<HashMap<String, PresenceMemberInfo>> {
-        Ok(HashMap::new())
+    ) -> Result<AHashMap<String, PresenceMemberInfo>> {
+        Ok(AHashMap::new())
     }
     async fn get_channel_sockets(&self, _app_id: &str, _channel: &str) -> Result<Vec<SocketId>> {
         Ok(Vec::new())
@@ -142,8 +139,8 @@ impl ConnectionManager for MockAdapter {
     async fn get_channels_with_socket_count(
         &self,
         _app_id: &str,
-    ) -> Result<HashMap<String, usize>> {
-        Ok(HashMap::new())
+    ) -> Result<AHashMap<String, usize>> {
+        Ok(AHashMap::new())
     }
     async fn get_sockets_count(&self, _app_id: &str) -> Result<usize> {
         Ok(0)
@@ -358,6 +355,23 @@ impl MetricsInterface for MockMetricsInterface {
         _latency_ms: f64,
     ) {
     }
+    fn track_horizontal_delta_compression(
+        &self,
+        _app_id: &str,
+        _channel_name: &str,
+        _success: bool,
+    ) {
+    }
+    fn track_delta_compression_bandwidth(
+        &self,
+        _app_id: &str,
+        _channel_name: &str,
+        _original_size: usize,
+        _compressed_size: usize,
+    ) {
+    }
+    fn track_delta_compression_full_message(&self, _app_id: &str, _channel_name: &str) {}
+    fn track_delta_compression_delta_message(&self, _app_id: &str, _channel_name: &str) {}
     async fn get_metrics_as_plaintext(&self) -> String {
         String::new()
     }
@@ -371,15 +385,20 @@ impl MetricsInterface for MockMetricsInterface {
 #[allow(dead_code)]
 pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
     let app_manager = MockAppManager::new();
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
 
     let handler = ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
-        Arc::new(MockAdapter::new()),
+        Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
+        None, // local_adapter
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
         None,
         ServerOptions::default(),
         None,
+        delta_manager,
     );
 
     (handler, app_manager)
@@ -388,13 +407,19 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
 pub fn create_test_connection_handler_with_app_manager(
     app_manager: MockAppManager,
 ) -> ConnectionHandler {
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
+
     ConnectionHandler::new(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
-        Arc::new(MockAdapter::new()),
+        Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
+        None, // local_adapter
         Arc::new(Mutex::new(MockCacheManager::new())),
         Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
         None,
         ServerOptions::default(),
         None,
+        delta_manager,
     )
 }

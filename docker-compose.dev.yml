@@ -29,15 +29,15 @@ services:
 
     # Development port mapping
     ports:
-      - "6001:6001"  # Main server
-      - "6002:6002"  # Cluster port
-      - "9601:9601"  # Metrics
+      - "6001:6001" # Main server
+      - "6002:6002" # Cluster port
+      - "9601:9601" # Metrics
 
     # Development volumes (with hot reload support)
     volumes:
       - ./config:/app/config
       - ./logs:/app/logs
-      - ./src:/app/src:ro  # Mount source for reference
+      - ./src:/app/src:ro # Mount source for reference
       - ./.env:/app/.env:ro
 
     # Relaxed resource limits for development
@@ -45,7 +45,7 @@ services:
       resources:
         limits:
           memory: 256M
-          cpus: '0.5'
+          cpus: "0.5"
 
     # Development health check (more frequent)
     healthcheck:
@@ -60,9 +60,9 @@ services:
     # Development Redis configuration
     command: >
       sh -c "
-        redis-server 
+        redis-server
         --appendonly no
-        --maxmemory 128mb 
+        --maxmemory 128mb
         --maxmemory-policy allkeys-lru
         --loglevel debug
         --save ''
@@ -77,7 +77,7 @@ services:
       resources:
         limits:
           memory: 128M
-          cpus: '0.25'
+          cpus: "0.25"
 
     # Relaxed health check
     healthcheck:
@@ -122,7 +122,7 @@ services:
       resources:
         limits:
           memory: 256M
-          cpus: '0.5'
+          cpus: "0.5"
 
     networks:
       - sockudo-network
@@ -192,8 +192,8 @@ services:
     restart: unless-stopped
 
     ports:
-      - "1025:1025"  # SMTP
-      - "8025:8025"  # Web UI
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
 
     networks:
       - sockudo-network
@@ -201,3 +201,7 @@ services:
 volumes:
   mysql-dev-data:
     driver: local
+
+networks:
+  sockudo-network:
+    driver: bridge

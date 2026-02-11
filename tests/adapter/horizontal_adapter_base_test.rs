@@ -70,7 +70,7 @@ async fn test_realistic_socket_aggregation() -> Result<()> {
         "socket-shared",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(|s| SocketId::from_string(s).unwrap().to_string())
     .collect();
     let actual_sockets: HashSet<String> = response.socket_ids.into_iter().collect();
     assert_eq!(actual_sockets, expected_sockets);
@@ -146,7 +146,7 @@ async fn test_channel_socket_overlap_aggregation() -> Result<()> {
 
     let expected_sockets: HashSet<String> = ["socket-1", "socket-3", "socket-shared"]
         .iter()
-        .map(|s| s.to_string())
+        .map(|s| SocketId::from_string(s).unwrap().to_string())
         .collect();
     let actual_sockets: HashSet<String> = response.socket_ids.into_iter().collect();
     assert_eq!(actual_sockets, expected_sockets);
@@ -189,7 +189,10 @@ async fn test_send_request_timeout_with_partial_responses() -> Result<()> {
     // Only node-1 should respond in time: ["socket-1"] from test-channel
     // node-2 won't respond, node-3 responds too late
     assert_eq!(response.sockets_count, 1);
-    assert_eq!(response.socket_ids, vec!["socket-1"]);
+    assert_eq!(
+        response.socket_ids,
+        vec![SocketId::from_string("socket-1").unwrap().to_string()]
+    );
 
     Ok(())
 }
@@ -258,7 +261,7 @@ async fn test_multi_node_socket_aggregation() -> Result<()> {
         "socket-shared",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(|s| SocketId::from_string(s).unwrap().to_string())
     .collect();
     assert_eq!(
         unique_sockets, expected_sockets,
@@ -398,7 +401,7 @@ async fn test_user_socket_aggregation() -> Result<()> {
 
 #[tokio::test]
 async fn test_broadcast_message_verification() -> Result<()> {
-    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.init().await;
     adapter.start_listeners().await?;
 
@@ -408,6 +411,9 @@ async fn test_broadcast_message_verification() -> Result<()> {
         event: Some("test-event".to_string()),
         data: Some(MessageData::String("test message content".to_string())),
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     // Send broadcast
@@ -496,7 +502,7 @@ async fn test_socket_existence_validation() -> Result<()> {
             "test-app",
             RequestType::SocketExistsInChannel,
             Some("channel-1"),
-            Some("socket-shared"),
+            Some(&SocketId::from_string("socket-shared").unwrap().to_string()),
             None,
         )
         .await?;
@@ -510,7 +516,11 @@ async fn test_socket_existence_validation() -> Result<()> {
             "test-app",
             RequestType::SocketExistsInChannel,
             Some("channel-1"),
-            Some("non-existent-socket"),
+            Some(
+                &SocketId::from_string("non-existent-socket")
+                    .unwrap()
+                    .to_string(),
+            ),
             None,
         )
         .await?;
@@ -574,7 +584,7 @@ async fn test_connection_manager_distributed_socket_count() -> Result<()> {
 
 #[tokio::test]
 async fn test_connection_manager_channel_specific_operations() -> Result<()> {
-    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     // Test channel socket count
@@ -595,7 +605,7 @@ async fn test_connection_manager_channel_specific_operations() -> Result<()> {
     let sockets = adapter.get_channel_sockets("test-app", "channel-1").await?;
     let expected_sockets: HashSet<String> = ["socket-1", "socket-3", "socket-shared"]
         .iter()
-        .map(|s| s.to_string())
+        .map(|s| SocketId::from_string(s).unwrap().to_string())
         .collect();
     let actual_sockets: HashSet<String> = sockets.into_iter().map(|s| s.to_string()).collect();
     assert_eq!(actual_sockets, expected_sockets);
@@ -605,7 +615,7 @@ async fn test_connection_manager_channel_specific_operations() -> Result<()> {
 
 #[tokio::test]
 async fn test_connection_manager_user_operations() -> Result<()> {
-    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     // Test user sockets aggregation via horizontal communication
@@ -632,7 +642,7 @@ async fn test_connection_manager_user_operations() -> Result<()> {
 
 #[tokio::test]
 async fn test_connection_manager_socket_existence() -> Result<()> {
-    let mut adapter = MockConfig::create_multi_node_adapter().await?;
+    let adapter = MockConfig::create_multi_node_adapter().await?;
     adapter.start_listeners().await?;
 
     let socket_id = SocketId::from_string("socket-shared").unwrap();
@@ -655,7 +665,7 @@ async fn test_connection_manager_socket_existence() -> Result<()> {
 #[tokio::test]
 async fn test_connection_manager_error_propagation() -> Result<()> {
     let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.init().await;
 
     let socket_id = SocketId::from_string("test-socket").unwrap();
@@ -665,6 +675,9 @@ async fn test_connection_manager_error_propagation() -> Result<()> {
         event: Some("test-event".to_string()),
         data: Some(MessageData::String("test message".to_string())),
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     // These operations should complete without error (may succeed or fail gracefully)

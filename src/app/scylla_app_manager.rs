@@ -389,6 +389,7 @@ impl AppRow {
                     })
                     .ok()
             }),
+            channel_delta_compression: None,
         }
     }
 }
@@ -619,6 +620,7 @@ mod tests {
             webhooks: None,
             enable_watchlist_events: None,
             allowed_origins: None,
+            channel_delta_compression: None,
         }
     }
 
@@ -673,6 +675,7 @@ mod tests {
                 "https://example.com".to_string(),
                 "https://app.example.com".to_string(),
             ]),
+            channel_delta_compression: None,
         }
     }
 

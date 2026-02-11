@@ -7,10 +7,8 @@ mod app;
 mod cache;
 mod channel;
 pub mod cleanup;
-#[cfg(feature = "delta-compression")]
 mod delta_compression;
 mod error;
-#[cfg(feature = "tag-filtering")]
 mod filter;
 mod http_handler;
 mod metrics;
@@ -71,7 +69,9 @@ use crate::http_handler::{
 };
 
 use crate::metrics::MetricsFactory;
-use crate::options::{AdapterDriver, QueueDriver, ServerOptions};
+#[cfg(any(feature = "redis", feature = "nats"))]
+use crate::options::AdapterDriver;
+use crate::options::{QueueDriver, ServerOptions};
 use crate::queue::manager::{QueueManager, QueueManagerFactory};
 use crate::rate_limiter::RateLimiter;
 use crate::rate_limiter::factory::RateLimiterFactory;
@@ -87,13 +87,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, reload, util::Sub
 // Import concrete adapter types for downcasting if set_metrics is specific
 use crate::adapter::ConnectionHandler;
 use crate::adapter::ConnectionManager;
-use crate::adapter::local_adapter::LocalAdapter;
-#[cfg(feature = "nats")]
-use crate::adapter::nats_adapter::NatsAdapter;
-#[cfg(feature = "redis")]
-use crate::adapter::redis_adapter::RedisAdapter;
-#[cfg(feature = "redis-cluster")]
-use crate::adapter::redis_cluster_adapter::RedisClusterAdapter;
+
 use crate::app::auth::AuthValidator;
 // AppManager trait and concrete types
 use crate::app::manager::AppManager;
@@ -168,6 +162,7 @@ impl connect_info::Connected<IncomingStream<'_, UnixListener>> for UdsConnectInf
 struct ServerState {
     app_manager: Arc<dyn AppManager + Send + Sync>,
     connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
+    local_adapter: Option<Arc<crate::adapter::local_adapter::LocalAdapter>>,
     auth_validator: Arc<AuthValidator>,
     cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     queue_manager: Option<Arc<QueueManager>>,
@@ -179,6 +174,9 @@ struct ServerState {
     cleanup_queue: Option<CleanupSender>,
     cleanup_worker_handles: Option<Vec<tokio::task::JoinHandle<()>>>,
     cleanup_config: CleanupConfig,
+    delta_compression: Arc<delta_compression::DeltaCompressionManager>,
+    /// Typed adapter for configuration and runtime type inspection
+    typed_adapter: crate::adapter::factory::TypedAdapter,
 }
 
 /// Main server struct
@@ -250,6 +248,30 @@ fn rewrite_request_uri(req: Request<axum::body::Body>) -> Request<axum::body::Bo
     normalize_request_uri(req)
 }
 
+/// Request URI rewriter for HTTP connections with axum_server (uses hyper::body::Incoming)
+fn rewrite_request_uri_http(req: Request<hyper::body::Incoming>) -> Request<hyper::body::Incoming> {
+    let (mut parts, body) = req.into_parts();
+    let normalized_path = normalize_uri_path(parts.uri.path());
+
+    if normalized_path != parts.uri.path()
+        && let Some(path_and_query) = &parts.uri.path_and_query()
+    {
+        let query = path_and_query
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+        let new_path_and_query = format!("{normalized_path}{query}");
+        if let Ok(new_pq) = new_path_and_query.parse() {
+            let mut uri_parts = parts.uri.clone().into_parts();
+            uri_parts.path_and_query = Some(new_pq);
+            if let Ok(new_uri) = Uri::from_parts(uri_parts) {
+                parts.uri = new_uri;
+            }
+        }
+    }
+    Request::from_parts(parts, body)
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -278,38 +300,20 @@ impl SockudoServer {
             debug_enabled
         );
 
-        let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
-            .await
-            .unwrap_or_else(|e| {
-                warn!(
-                    "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
-                    e
-                );
-                let fallback_cache_options = config.cache.memory.clone();
-                Arc::new(Mutex::new(MemoryCacheManager::new(
-                    "fallback_cache".to_string(),
-                    fallback_cache_options,
-                )))
-            });
-        info!(
-            "CacheManager initialized with driver: {:?}",
-            config.cache.driver
-        );
-
         let app_manager = AppManagerFactory::create(
             &config.app_manager,
             &config.database,
             &config.database_pooling,
-            cache_manager.clone(),
         )
         .await?;
         info!(
-            "AppManager initialized with driver: {:?} (cache: {})",
-            config.app_manager.driver, config.app_manager.cache.enabled
+            "AppManager initialized with driver: {:?}",
+            config.app_manager.driver
         );
 
-        let mut connection_manager =
-            AdapterFactory::create(&config.adapter, &config.database).await?;
+        let (connection_manager, typed_adapter) =
+            AdapterFactory::create_with_typed(&config.adapter, &config.database).await?;
+        let local_adapter = Some(typed_adapter.local_adapter());
 
         info!(
             "Adapter initialized with driver: {:?}",
@@ -338,6 +342,24 @@ impl SockudoServer {
             None
         };
 
+        let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(
+                    "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
+                    e
+                );
+                let fallback_cache_options = config.cache.memory.clone();
+                Arc::new(Mutex::new(MemoryCacheManager::new(
+                    "fallback_cache".to_string(),
+                    fallback_cache_options,
+                )))
+            });
+        info!(
+            "CacheManager initialized with driver: {:?}",
+            config.cache.driver
+        );
+
         let auth_validator = Arc::new(AuthValidator::new(app_manager.clone()));
 
         let metrics = if config.metrics.enabled {
@@ -365,77 +387,6 @@ impl SockudoServer {
             info!("Metrics are disabled in configuration");
             None
         };
-
-        // Set metrics for adapters (must happen before connection_manager is cloned)
-        if let Some(metrics_instance_arc) = &metrics {
-            if let Some(adapter_ref) = Arc::get_mut(&mut connection_manager) {
-                let adapter_as_any: &mut dyn std::any::Any = adapter_ref.as_any_mut();
-
-                match config.adapter.driver {
-                    #[cfg(feature = "redis")]
-                    AdapterDriver::Redis => {
-                        if let Some(adapter_mut) = adapter_as_any.downcast_mut::<RedisAdapter>() {
-                            adapter_mut
-                                .set_metrics(metrics_instance_arc.clone())
-                                .await
-                                .ok();
-                            info!("Set metrics for RedisAdapter");
-                        } else {
-                            warn!("Failed to downcast to RedisAdapter for metrics setup");
-                        }
-                    }
-                    #[cfg(feature = "nats")]
-                    AdapterDriver::Nats => {
-                        if let Some(adapter_mut) = adapter_as_any.downcast_mut::<NatsAdapter>() {
-                            adapter_mut
-                                .set_metrics(metrics_instance_arc.clone())
-                                .await
-                                .ok();
-                            info!("Set metrics for NatsAdapter");
-                        } else {
-                            warn!("Failed to downcast to NatsAdapter for metrics setup");
-                        }
-                    }
-                    #[cfg(feature = "redis-cluster")]
-                    AdapterDriver::RedisCluster => {
-                        if let Some(adapter_mut) =
-                            adapter_as_any.downcast_mut::<RedisClusterAdapter>()
-                        {
-                            info!(
-                                "Metrics setup for RedisClusterAdapter (call set_metrics if available)"
-                            );
-                        } else {
-                            warn!("Failed to downcast to RedisClusterAdapter for metrics setup");
-                        }
-                    }
-                    AdapterDriver::Local => {
-                        if let Some(adapter_mut) = adapter_as_any.downcast_mut::<LocalAdapter>() {
-                            info!(
-                                "Metrics setup for LocalAdapter (call set_metrics if applicable)"
-                            );
-                        } else {
-                            warn!("Failed to downcast to LocalAdapter for metrics setup");
-                        }
-                    }
-                    #[cfg(not(feature = "redis"))]
-                    AdapterDriver::Redis => {
-                        warn!("Redis adapter requested but not compiled in");
-                    }
-                    #[cfg(not(feature = "nats"))]
-                    AdapterDriver::Nats => {
-                        warn!("NATS adapter requested but not compiled in");
-                    }
-                    #[cfg(not(feature = "redis-cluster"))]
-                    AdapterDriver::RedisCluster => {
-                        warn!("Redis Cluster adapter requested but not compiled in");
-                    }
-                }
-            } else {
-                warn!(
-                    "Could not get mutable reference to connection_manager for metrics setup (Arc has multiple owners)"
-                );
-            }
-        }
 
         let http_api_rate_limiter_instance = if config.rate_limiter.enabled {
             RateLimiterFactory::create(
@@ -473,108 +424,90 @@ impl SockudoServer {
 
         // In the SockudoServer::new method, replace the queue manager initialization:
 
-        let queue_manager_opt = match config.queue.driver {
-            QueueDriver::Sqs => {
-                match QueueManagerFactory::create_sqs(config.queue.sqs.clone()).await {
-                    Ok(queue_driver_impl) => {
-                        info!("Queue manager initialized with SQS driver");
-                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
+        let queue_manager_opt = if config.queue.driver != QueueDriver::None {
+            let (queue_redis_url_or_nodes, queue_prefix, queue_concurrency) =
+                match config.queue.driver {
+                    QueueDriver::Redis => {
+                        let owned_default_queue_redis_url: String;
+                        let queue_redis_url_arg: Option<&str>;
+
+                        if let Some(url_override) = config.queue.redis.url_override.as_ref() {
+                            queue_redis_url_arg = Some(url_override.as_str());
+                        } else {
+                            owned_default_queue_redis_url = format!(
+                                "redis://{}:{}",
+                                config.database.redis.host, config.database.redis.port
+                            );
+                            queue_redis_url_arg = Some(&owned_default_queue_redis_url);
+                        }
+
+                        (
+                            queue_redis_url_arg.map(|s| s.to_string()),
+                            config
+                                .queue
+                                .redis
+                                .prefix
+                                .as_deref()
+                                .unwrap_or("sockudo_queue:"),
+                            config.queue.redis.concurrency as usize,
+                        )
                     }
-                    Err(e) => {
-                        warn!(
-                            "Failed to initialize SQS queue manager: {}, queues will be disabled",
-                            e
-                        );
-                        None
+                    QueueDriver::RedisCluster => {
+                        // For Redis cluster, use nodes from configuration
+                        let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
+                            // Fallback to default cluster nodes
+                            vec![
+                                "redis://127.0.0.1:7000".to_string(),
+                                "redis://127.0.0.1:7001".to_string(),
+                                "redis://127.0.0.1:7002".to_string(),
+                            ]
+                        } else {
+                            config.queue.redis_cluster.nodes.clone()
+                        };
+
+                        // Join nodes with comma for the factory
+                        let nodes_str = cluster_nodes.join(",");
+
+                        (
+                            Some(nodes_str),
+                            config
+                                .queue
+                                .redis_cluster
+                                .prefix
+                                .as_deref()
+                                .unwrap_or("sockudo_queue:"),
+                            config.queue.redis_cluster.concurrency as usize,
+                        )
                     }
+                    _ => (None, "sockudo_queue:", 5), // Default fallback
+                };
+
+            match QueueManagerFactory::create(
+                config.queue.driver.as_ref(),
+                queue_redis_url_or_nodes.as_deref(),
+                Some(queue_prefix),
+                Some(queue_concurrency),
+            )
+            .await
+            {
+                Ok(queue_driver_impl) => {
+                    info!(
+                        "Queue manager initialized with driver: {:?}",
+                        config.queue.driver
+                    );
+                    Some(Arc::new(QueueManager::new(queue_driver_impl)))
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to initialize queue manager with driver '{:?}': {}, queues will be disabled",
+                        config.queue.driver, e
+                    );
+                    None
                 }
             }
-            QueueDriver::None => {
-                info!("Queue driver set to None, queue manager will be disabled.");
-                None
-            }
-            QueueDriver::Redis | QueueDriver::RedisCluster | QueueDriver::Memory => {
-                let (queue_redis_url_or_nodes, queue_prefix, queue_concurrency) =
-                    match config.queue.driver {
-                        QueueDriver::Redis => {
-                            let owned_default_queue_redis_url: String;
-                            let queue_redis_url_arg: Option<&str>;
-
-                            if let Some(url_override) = config.queue.redis.url_override.as_ref() {
-                                queue_redis_url_arg = Some(url_override.as_str());
-                            } else {
-                                owned_default_queue_redis_url = format!(
-                                    "redis://{}:{}",
-                                    config.database.redis.host, config.database.redis.port
-                                );
-                                queue_redis_url_arg = Some(&owned_default_queue_redis_url);
-                            }
-
-                            (
-                                queue_redis_url_arg.map(|s| s.to_string()),
-                                config
-                                    .queue
-                                    .redis
-                                    .prefix
-                                    .as_deref()
-                                    .unwrap_or("sockudo_queue:"),
-                                config.queue.redis.concurrency as usize,
-                            )
-                        }
-                        QueueDriver::RedisCluster => {
-                            // For Redis cluster, use nodes from configuration
-                            let cluster_nodes = if config.queue.redis_cluster.nodes.is_empty() {
-                                // Fallback to default cluster nodes
-                                vec![
-                                    "redis://127.0.0.1:7000".to_string(),
-                                    "redis://127.0.0.1:7001".to_string(),
-                                    "redis://127.0.0.1:7002".to_string(),
-                                ]
-                            } else {
-                                config.queue.redis_cluster.nodes.clone()
-                            };
-
-                            // Join nodes with comma for the factory
-                            let nodes_str = cluster_nodes.join(",");
-
-                            (
-                                Some(nodes_str),
-                                config
-                                    .queue
-                                    .redis_cluster
-                                    .prefix
-                                    .as_deref()
-                                    .unwrap_or("sockudo_queue:"),
-                                config.queue.redis_cluster.concurrency as usize,
-                            )
-                        }
-                        _ => (None, "sockudo_queue:", 5), // Default fallback
-                    };
-
-                match QueueManagerFactory::create(
-                    config.queue.driver.as_ref(),
-                    queue_redis_url_or_nodes.as_deref(),
-                    Some(queue_prefix),
-                    Some(queue_concurrency),
-                )
-                .await
-                {
-                    Ok(queue_driver_impl) => {
-                        info!(
-                            "Queue manager initialized with driver: {:?}",
-                            config.queue.driver
-                        );
-                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to initialize queue manager with driver '{:?}': {}, queues will be disabled",
-                            config.queue.driver, e
-                        );
-                        None
-                    }
-                }
-            }
+        } else {
+            info!("Queue driver set to None, queue manager will be disabled.");
+            None
         };
 
         let webhook_config_for_integration = WebhookConfig {
@@ -657,9 +590,105 @@ impl SockudoServer {
             (None, None)
         };
 
+        // Initialize delta compression manager
+        // Parse algorithm from config string
+        let algorithm = match config.delta_compression.algorithm.as_str() {
+            "xdelta3" => delta_compression::DeltaAlgorithm::Xdelta3,
+            _ => delta_compression::DeltaAlgorithm::Fossil, // Default to fossil
+        };
+
+        let delta_config = delta_compression::DeltaCompressionConfig {
+            enabled: config.delta_compression.enabled,
+            algorithm,
+            full_message_interval: config.delta_compression.full_message_interval,
+            min_message_size: config.delta_compression.min_message_size,
+            max_state_age: Duration::from_secs(config.delta_compression.max_state_age_secs),
+            max_channel_states_per_socket: config.delta_compression.max_channel_states_per_socket,
+            min_compression_ratio: 0.9, // Delta must be <90% of original to be used
+            max_conflation_states_per_channel: config
+                .delta_compression
+                .max_conflation_states_per_channel,
+            conflation_key_path: config.delta_compression.conflation_key_path.clone(),
+            cluster_coordination: config.delta_compression.cluster_coordination,
+            omit_delta_algorithm: config.delta_compression.omit_delta_algorithm,
+        };
+        let delta_compression_manager =
+            delta_compression::DeltaCompressionManager::new(delta_config);
+
+        // Setup cluster coordination if enabled and adapter supports it
+        let delta_compression_manager = {
+            #[allow(unused_mut)]
+            let mut manager = delta_compression_manager;
+
+            if config.delta_compression.cluster_coordination {
+                // Redis / Redis Cluster coordination
+                #[cfg(feature = "redis")]
+                if matches!(
+                    config.adapter.driver,
+                    AdapterDriver::Redis | AdapterDriver::RedisCluster
+                ) {
+                    let redis_url = format!(
+                        "redis://{}:{}/{}",
+                        config.database.redis.host,
+                        config.database.redis.port,
+                        config.database.redis.db
+                    );
+
+                    match delta_compression::RedisClusterCoordinator::new(
+                        &redis_url,
+                        Some(&config.database.redis.key_prefix),
+                    )
+                    .await
+                    {
+                        Ok(coordinator) => {
+                            info!("Delta compression cluster coordination enabled via Redis");
+                            manager.set_cluster_coordinator(Arc::new(coordinator));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to setup Redis cluster coordination, falling back to node-local: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
+                // NATS coordination
+                #[cfg(feature = "nats")]
+                if config.adapter.driver == AdapterDriver::Nats {
+                    let nats_servers = config.adapter.nats.servers.clone();
+
+                    match delta_compression::NatsClusterCoordinator::new(
+                        nats_servers,
+                        Some(&config.adapter.nats.prefix),
+                    )
+                    .await
+                    {
+                        Ok(coordinator) => {
+                            info!("Delta compression cluster coordination enabled via NATS");
+                            manager.set_cluster_coordinator(Arc::new(coordinator));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to setup NATS cluster coordination, falling back to node-local: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
+            Arc::new(manager)
+        };
+
+        // Start background cleanup task for delta compression state management
+        // This uses the manager's built-in cleanup task which has proper shutdown handling
+        delta_compression_manager.start_cleanup_task().await;
+
         let state = ServerState {
             app_manager: app_manager.clone(),
             connection_manager: connection_manager.clone(),
+            local_adapter: local_adapter.clone(),
             auth_validator,
             cache_manager,
             queue_manager: queue_manager_opt,
@@ -671,16 +700,20 @@ impl SockudoServer {
             cleanup_queue,
             cleanup_worker_handles,
             cleanup_config,
+            delta_compression: delta_compression_manager.clone(),
+            typed_adapter: typed_adapter.clone(),
         };
 
         let handler = Arc::new(ConnectionHandler::new(
             state.app_manager.clone(),
             state.connection_manager.clone(),
+            state.local_adapter.clone(),
             state.cache_manager.clone(),
             state.metrics.clone(),
             Some(webhook_integration), // Pass the (potentially disabled) webhook_integration
             config.clone(),
             state.cleanup_queue.clone(),
+            delta_compression_manager.clone(),
         ));
 
         // Start dead node cleanup event processing loop (only runs if cluster health is enabled)
@@ -696,6 +729,46 @@ impl SockudoServer {
                 info!("Dead node cleanup event processing loop ended");
             });
         }
+
+        // Set metrics for adapters using TypedAdapter (lock-free configuration)
+        if let Some(metrics_instance_arc) = &metrics {
+            if let Err(e) = typed_adapter
+                .set_metrics(metrics_instance_arc.clone())
+                .await
+            {
+                warn!("Failed to set metrics for adapter: {}", e);
+            } else {
+                info!(
+                    "Metrics configured for adapter: {:?}",
+                    config.adapter.driver
+                );
+            }
+        }
+
+        // Set delta compression for adapters using TypedAdapter (lock-free configuration)
+        typed_adapter
+            .set_delta_compression(delta_compression_manager.clone(), app_manager.clone())
+            .await;
+        info!(
+            "Delta compression initialized for adapter: {:?}",
+            config.adapter.driver
+        );
+
+        // Set tag filtering enabled flag using TypedAdapter
+        typed_adapter.set_tag_filtering_enabled(config.tag_filtering.enabled);
+        if config.tag_filtering.enabled {
+            info!(
+                "Tag filtering enabled for adapter: {:?}",
+                config.adapter.driver
+            );
+        }
+
+        // Set global enable_tags flag using TypedAdapter
+        typed_adapter.set_enable_tags_globally(config.tag_filtering.enable_tags);
+        info!(
+            "Global enable_tags setting: {}",
+            config.tag_filtering.enable_tags
+        );
 
         Ok(Self {
             config,
@@ -1116,7 +1189,10 @@ impl SockudoServer {
         let router_with_middleware = middleware.layer(http_router.clone());
 
         let middleware_ssl = tower::util::MapRequestLayer::new(rewrite_request_uri_ssl);
-        let router_with_middleware_ssl = middleware_ssl.layer(http_router);
+        let router_with_middleware_ssl = middleware_ssl.layer(http_router.clone());
+
+        let middleware_http = tower::util::MapRequestLayer::new(rewrite_request_uri_http);
+        let router_with_middleware_http = middleware_http.layer(http_router);
 
         if self.config.ssl.enabled
             && !self.config.ssl.cert_path.is_empty()
@@ -1173,7 +1249,8 @@ impl SockudoServer {
             // Main HTTPS server
             info!("HTTPS server listening on https://{}", http_addr);
             let running = &self.state.running;
-            let server = axum_server::bind_rustls(http_addr, tls_config);
+            let server = axum_server::bind_rustls(http_addr, tls_config)
+                .acceptor(axum_server::accept::NoDelayAcceptor::new());
 
             tokio::select! {
                 result = server.serve(router_with_middleware_ssl.into_make_service_with_connect_info::<SocketAddr>()) => {
@@ -1189,14 +1266,14 @@ impl SockudoServer {
         } else {
             // HTTP only mode
             info!("SSL is not enabled, starting HTTP server");
-            let http_listener = TcpListener::bind(http_addr).await?;
             info!("HTTP server listening on http://{}", http_addr);
 
             let running = &self.state.running;
-            let http_server = axum::serve(
-                http_listener,
-                router_with_middleware.into_make_service_with_connect_info::<SocketAddr>(),
-            );
+            let http_server = axum_server::bind(http_addr)
+                .acceptor(axum_server::accept::NoDelayAcceptor::new())
+                .serve(
+                    router_with_middleware_http.into_make_service_with_connect_info::<SocketAddr>(),
+                );
 
             tokio::select! {
                 res = http_server => {
@@ -1265,25 +1342,41 @@ impl SockudoServer {
         let mut connections_to_cleanup: Vec<(String, WebSocketRef)> = Vec::new();
 
         // --- Step 1: Collect all connection identifiers ---
-        match self.state.connection_manager.get_namespaces().await {
-            Ok(namespaces_vec) => {
-                for (app_id, namespace_obj) in namespaces_vec {
-                    match namespace_obj.get_sockets().await {
-                        Ok(sockets_vec) => {
-                            for (_socket_id, ws_raw_obj) in sockets_vec {
-                                connections_to_cleanup.push((app_id.clone(), ws_raw_obj.clone()));
+        // Scope for the initial lock to quickly gather connection details.
+        {
+            match self.state.connection_manager.get_namespaces().await {
+                Ok(namespaces_vec) => {
+                    // Assuming get_namespaces returns an iterable collection
+                    for (app_id, namespace_obj) in namespaces_vec {
+                        // The '?' operator implies this function returns a Result.
+                        // Handle the Result from get_sockets appropriately.
+                        match namespace_obj.get_sockets().await {
+                            Ok(sockets_vec) => {
+                                // Assuming get_sockets returns an iterable collection
+                                for (_socket_id, ws_raw_obj) in sockets_vec {
+                                    // Ensure ws_raw_obj (your 'ws') is Clone.
+                                    connections_to_cleanup
+                                        .push((app_id.clone(), ws_raw_obj.clone()));
+                                }
                             }
-                        }
-                        Err(e) => {
-                            warn!(%app_id, "Failed to get sockets for namespace during shutdown: {}", e);
+                            Err(e) => {
+                                // Decide how to handle errors for individual namespaces.
+                                // Propagate, log, or collect errors. Here, just warning.
+                                warn!(%app_id, "Failed to get sockets for namespace during shutdown: {}", e);
+                                // If you used `?` here as in original, it would exit the whole function.
+                                // Depending on desired behavior, you might want to collect errors or continue.
+                                // For shutdown, often best-effort cleanup is preferred.
+                            }
                         }
                     }
                 }
+                Err(e) => {
+                    warn!("Failed to get namespaces during shutdown: {}", e);
+                    // If get_namespaces fails, connections_to_cleanup will be empty.
+                    // Consider if this error should be propagated.
+                }
             }
-            Err(e) => {
-                warn!("Failed to get namespaces during shutdown: {}", e);
-            }
-        }
+        } // connection_manager_guard is dropped here, releasing the main lock.
 
         info!(
             "Collected {} connections to cleanup.",
@@ -1299,7 +1392,9 @@ impl SockudoServer {
                     .map(|(_app_id, ws_raw_obj)| {
                         async move {
                             let mut ws = ws_raw_obj.inner.lock().await; // Lock the WebSocketRef
-                            if let Err(e) = ws.close(4200, "Server shutting down".to_string()).await
+                            if let Err(e) = ws
+                                .close(4009, "You got disconnected by the app.".to_string())
+                                .await
                             {
                                 error!("Failed to close WebSocket: {:?}", e);
                             }
@@ -1318,6 +1413,9 @@ impl SockudoServer {
         if self.state.cleanup_worker_handles.is_some() {
             info!("Cleanup system will shutdown when server process ends");
         }
+
+        // Stop delta compression cleanup task gracefully
+        self.state.delta_compression.stop_cleanup_task().await;
 
         // Disconnect from backend services
         {

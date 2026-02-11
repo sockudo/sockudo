@@ -8,6 +8,7 @@ use sockudo::options::{ClusterHealthConfig, NatsAdapterConfig};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 /// Helper to check if NATS is available
@@ -56,8 +57,8 @@ async fn test_nats_adapter_heartbeat_system() {
     };
 
     // Create two NATS adapters simulating two nodes
-    let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -85,9 +86,9 @@ async fn test_nats_presence_broadcast_and_sync() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
-    let mut adapter3 = create_nats_adapter("nats_node3", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
+    let adapter3 = create_nats_adapter("nats_node3", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -162,8 +163,8 @@ async fn test_nats_dead_node_detection_and_cleanup() {
         cleanup_interval_ms: 150,
     };
 
-    let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -211,8 +212,8 @@ async fn test_nats_pub_sub_pattern_isolation() {
     };
 
     // Create adapters with different prefixes
-    let mut adapter1 = create_nats_adapter("nats_cluster_a_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_cluster_b_node1", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_cluster_a_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_cluster_b_node1", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -250,7 +251,7 @@ async fn test_nats_wildcard_subscriptions() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter = create_nats_adapter("nats_node1", &cluster_config).await;
     adapter.init().await;
 
     // Test presence across multiple apps and channels
@@ -288,9 +289,14 @@ async fn test_nats_concurrent_operations() {
         cleanup_interval_ms: 200,
     };
 
-    let adapter = Arc::new(create_nats_adapter("nats_node1", &cluster_config).await);
+    let adapter = Arc::new(Mutex::new(
+        create_nats_adapter("nats_node1", &cluster_config).await,
+    ));
 
-    adapter.init().await;
+    {
+        let adapter_guard = adapter.lock().await;
+        adapter_guard.init().await;
+    }
 
     let app_id = "test-app";
     let channel = "presence-concurrent";
@@ -301,11 +307,12 @@ async fn test_nats_concurrent_operations() {
     for i in 0..20 {
         let adapter_clone = adapter.clone();
         let handle = tokio::spawn(async move {
+            let adapter_guard = adapter_clone.lock().await;
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);
 
             if i % 2 == 0 {
-                adapter_clone
+                adapter_guard
                     .broadcast_presence_join(
                         app_id,
                         channel,
@@ -317,12 +324,12 @@ async fn test_nats_concurrent_operations() {
                     .unwrap();
             } else {
                 // Join then leave to test both operations
-                adapter_clone
+                adapter_guard
                     .broadcast_presence_join(app_id, channel, &user_id, &socket_id, None)
                     .await
                     .unwrap();
 
-                adapter_clone
+                adapter_guard
                     .broadcast_presence_leave(app_id, channel, &user_id, &socket_id)
                     .await
                     .unwrap();
@@ -353,7 +360,7 @@ async fn test_nats_reconnection_handling() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter = create_nats_adapter("nats_node1", &cluster_config).await;
     adapter.init().await;
 
     // Add initial presence
@@ -402,7 +409,7 @@ async fn test_nats_cluster_health_disabled() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter = create_nats_adapter("nats_node1", &cluster_config).await;
     adapter.init().await;
 
     // Presence operations should work without health monitoring
@@ -436,8 +443,8 @@ async fn test_nats_message_ordering() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;

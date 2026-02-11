@@ -2,16 +2,12 @@
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result}; // Error should be in scope
-
 use crate::websocket::{SocketId, WebSocket, WebSocketBufferConfig, WebSocketRef};
+use ahash::AHashMap as HashMap;
 use dashmap::{DashMap, DashSet};
-use fastwebsockets::WebSocketWrite;
 use futures::future::join_all;
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
-use std::collections::HashMap;
+use sockudo_ws::axum_integration::WebSocketWriter;
 use std::sync::Arc;
-use tokio::io::WriteHalf;
 use tracing::{debug, error, info, warn};
 
 // Represents a namespace, typically tied to a specific application ID.
@@ -41,7 +37,7 @@ impl Namespace {
     pub async fn add_socket(
         &self,
         socket_id: SocketId,
-        socket_writer: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
+        socket_writer: WebSocketWriter,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         buffer_config: WebSocketBufferConfig,
     ) -> Result<WebSocketRef> {
@@ -66,7 +62,7 @@ impl Namespace {
             }
         };
 
-        // Create the WebSocket with buffer configuration
+        // Create the WebSocket using new structure with buffer config
         let mut websocket =
             WebSocket::with_buffer_config(socket_id.clone(), socket_writer, buffer_config);
 
@@ -128,22 +124,30 @@ impl Namespace {
         Ok(presence_members)
     }
 
+    // Fast count of sockets in a channel without cloning
+    pub fn get_channel_socket_count(&self, channel: &str) -> usize {
+        self.channels
+            .get(channel)
+            .map(|set_ref| set_ref.len())
+            .unwrap_or(0)
+    }
+
     // Retrieves all socket IDs for sockets subscribed to a specific channel.
-    pub fn get_channel_sockets(&self, channel: &str) -> DashSet<SocketId> {
-        let sockets_in_channel = DashSet::<SocketId>::new();
+    // Returns Vec for efficient iteration (avoids DashSet allocation overhead)
+    #[inline]
+    pub fn get_channel_sockets(&self, channel: &str) -> Vec<SocketId> {
         if let Some(channel_sockets_ref) = self.channels.get(channel) {
-            let channel_sockets = channel_sockets_ref.value().clone();
-            for socket_id in channel_sockets.iter() {
-                sockets_in_channel.insert(socket_id.clone());
-            }
+            channel_sockets_ref
+                .iter()
+                .map(|entry| entry.key().clone())
+                .collect()
         } else {
             debug!(
                 "get_channel_sockets called on non-existent channel: {}",
                 channel
             );
+            Vec::new()
         }
-
-        sockets_in_channel
     }
 
     // Get socket references for a channel with optional exclusion, minimizing lock contention
@@ -189,24 +193,45 @@ impl Namespace {
     }
 
     // Retrieves references to WebSockets associated with a specific user ID.
-    pub async fn get_user_sockets(&self, user_id: &str) -> Result<DashSet<WebSocketRef>> {
+    // Returns Vec for efficient iteration (avoids DashSet allocation overhead)
+    #[inline]
+    pub async fn get_user_sockets(&self, user_id: &str) -> Result<Vec<WebSocketRef>> {
         match self.users.get(user_id) {
-            Some(user_sockets_ref) => {
-                let user_sockets = user_sockets_ref.clone();
-                Ok(user_sockets)
-            }
-            None => Ok(DashSet::new()),
+            Some(user_sockets_ref) => Ok(user_sockets_ref.iter().map(|r| r.clone()).collect()),
+            None => Ok(Vec::new()),
         }
     }
 
     // Cleans up a WebSocket connection: sends disconnect messages and removes from internal state.
     pub async fn cleanup_connection(&self, ws_ref: WebSocketRef) {
         let socket_id = ws_ref.get_socket_id().await;
-        // Remove socket from all channels it was subscribed to.
-        self.channels.retain(|_channel_name, socket_set| {
-            socket_set.remove(&socket_id);
-            !socket_set.is_empty() // Keep the channel entry if other sockets remain.
-        });
+
+        // FIX: Use a two-phase approach to avoid race with add_channel_to_socket:
+        // 1. First, collect channels that need cleanup
+        // 2. Then, remove socket from each channel individually using get_mut
+        // This avoids the race where retain() removes a channel that add_channel_to_socket()
+        // is about to recreate, potentially causing the socket to be orphaned.
+
+        // Collect channels this socket might be in
+        let channels_to_check: Vec<String> = self
+            .channels
+            .iter()
+            .filter(|entry| entry.value().contains(&socket_id))
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        // Remove socket from each channel individually
+        for channel_name in channels_to_check {
+            if let Some(socket_set) = self.channels.get(&channel_name) {
+                socket_set.remove(&socket_id);
+                // Check if empty and remove, but re-check in case another socket was added
+                if socket_set.is_empty() {
+                    // Use remove_if to atomically check and remove only if still empty
+                    self.channels
+                        .remove_if(&channel_name, |_, set| set.is_empty());
+                }
+            }
+        }
 
         // Remove socket reference from user tracking.
         let user_id_option = ws_ref.get_user_id().await;
@@ -244,7 +269,7 @@ impl Namespace {
                 .iter()
                 .map(|ws_ref| async move {
                     if let Err(e) = ws_ref
-                        .close(4009, "User terminated by app.".to_string())
+                        .close(4009, "You got disconnected by the app.".to_string())
                         .await
                     {
                         warn!("Failed to close connection: {}", e);
@@ -259,21 +284,56 @@ impl Namespace {
     }
 
     // Subscribes a socket to a channel. Returns true if the socket was newly added.
+    // FIX: Always use entry() API for atomic get-or-create to avoid race with cleanup_connection
     pub fn add_channel_to_socket(&self, channel: &str, socket_id: &SocketId) -> bool {
-        self.channels
+        let t_start = std::time::Instant::now();
+
+        // FIX: Use entry() API exclusively to ensure atomic get-or-create behavior.
+        // The previous "fast path" using get() could race with cleanup_connection():
+        // 1. cleanup_connection() checks channel is empty, prepares to remove
+        // 2. add_channel_to_socket() calls get(), sees channel exists
+        // 3. cleanup_connection() removes the channel
+        // 4. add_channel_to_socket() tries to insert into removed channel (fails silently or panics)
+        //
+        // With entry(), DashMap guarantees atomicity: the channel is either found or created,
+        // and the reference remains valid for the duration of the entry guard.
+        let t_before_entry = t_start.elapsed().as_nanos();
+        let result = self
+            .channels
             .entry(channel.to_string())
             .or_default()
-            .insert(socket_id.clone())
+            .insert(socket_id.clone());
+        let t_after_entry = t_start.elapsed().as_nanos();
+
+        tracing::debug!(
+            "PERF[NS_ADD_CHAN] channel={} socket={} entry_op={}ns inserted={}",
+            channel,
+            socket_id,
+            t_after_entry - t_before_entry,
+            result
+        );
+
+        result
     }
 
     // Unsubscribes a socket from a channel.
+    // FIX: Use atomic remove_if to avoid race condition with add_channel_to_socket
     pub fn remove_channel_from_socket(&self, channel: &str, socket_id: &SocketId) -> bool {
-        if let Some(channel_sockets_ref) = self.channels.get_mut(channel) {
+        if let Some(channel_sockets_ref) = self.channels.get(channel) {
             let removed = channel_sockets_ref.remove(socket_id);
-            let is_empty = channel_sockets_ref.is_empty();
+            // FIX: Don't hold reference while checking empty and removing
+            // Use remove_if for atomic check-and-remove to avoid race where:
+            // 1. We see channel is empty
+            // 2. Another thread adds a socket to the channel
+            // 3. We remove the channel, orphaning the newly added socket
             drop(channel_sockets_ref);
-            if is_empty {
-                self.channels.remove(channel);
+
+            // Atomic check-and-remove: only removes if channel is still empty
+            if self
+                .channels
+                .remove_if(channel, |_, set| set.is_empty())
+                .is_some()
+            {
                 debug!("Removed empty channel entry: {}", channel);
             }
             return removed.is_some();
@@ -435,8 +495,9 @@ impl Namespace {
     }
 
     // Retrieves a map of channel names to their current subscriber counts.
-    pub async fn get_channels_with_socket_count(&self) -> Result<DashMap<String, usize>> {
-        let channels_with_count: DashMap<String, usize> = DashMap::new();
+    // Returns HashMap for efficient iteration (avoids DashMap allocation overhead)
+    pub async fn get_channels_with_socket_count(&self) -> Result<HashMap<String, usize>> {
+        let mut channels_with_count: HashMap<String, usize> = HashMap::new();
         for channel_ref in self.channels.iter() {
             let channel_name = channel_ref.key().clone();
             let socket_count = channel_ref.value().len();
@@ -445,9 +506,13 @@ impl Namespace {
         Ok(channels_with_count)
     }
 
-    // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
-    pub async fn get_sockets(&self) -> Result<DashMap<SocketId, WebSocketRef>> {
-        let sockets = self.sockets.clone();
-        Ok(sockets)
+    // Returns Vec for efficient iteration (avoids DashMap clone overhead)
+    #[inline]
+    pub async fn get_sockets(&self) -> Result<Vec<(SocketId, WebSocketRef)>> {
+        Ok(self
+            .sockets
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect())
     }
 }

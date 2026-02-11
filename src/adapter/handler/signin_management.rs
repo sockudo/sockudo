@@ -47,7 +47,6 @@ impl ConnectionHandler {
         self.clear_user_authentication_timeout(&app_config.id, socket_id)
             .await?;
 
-        // Update connection state
         let connection_arc = self
             .connection_manager
             .get_connection(socket_id, &app_config.id)
@@ -76,13 +75,11 @@ impl ConnectionHandler {
         let mut watchlist_events = Vec::new();
         let mut watchers_to_notify = Vec::new();
 
-        if app_config.enable_watchlist_events.unwrap_or(false)
-            && let Some(watchlist) = &user_info.watchlist
-        {
+        if app_config.enable_watchlist_events.unwrap_or(false) && user_info.watchlist.is_some() {
             info!(
                 "Processing watchlist for user {} with {} watched users",
                 user_info.id,
-                watchlist.len()
+                user_info.watchlist.as_ref().unwrap().len()
             );
 
             // Add user to watchlist manager and get initial status events
@@ -174,9 +171,9 @@ impl ConnectionHandler {
             .await?;
 
         // For each watcher, get their active socket IDs
+        let connection_manager = &self.connection_manager;
         for watcher_user_id in watchers {
-            let user_sockets = self
-                .connection_manager
+            let user_sockets = connection_manager
                 .get_user_sockets(&watcher_user_id, app_id)
                 .await?;
 

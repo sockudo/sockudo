@@ -1,0 +1,35 @@
+{
+  "name": "sockudo-interactive-test",
+  "version": "1.0.0",
+  "description": "Interactive test dashboard for Sockudo WebSocket server with delta compression",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "bun build ./public/bundle-entry.js --outfile ./public/dist/bundle.js --minify",
+    "dev": "bun build ./public/bundle-entry.js --outfile ./public/dist/bundle.js --watch",
+    "install-all": "bun install",
+    "test": "bun test test-all.test.js --bail",
+    "test:verbose": "bun test test-all.test.js --verbose",
+    "test:only": "bun test test-all.test.js"
+  },
+  "dependencies": {
+    "@ably/vcdiff-decoder": "^1.0.4",
+    "body-parser": "^1.20.2",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "fossil-delta": "^2.0.0",
+    "pusher": "^5.1.3",
+    "pusher-js": "file:./sockudo-js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "keywords": [
+    "websocket",
+    "pusher",
+    "delta-compression",
+    "testing"
+  ],
+  "author": "",
+  "license": "MIT"
+}

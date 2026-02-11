@@ -37,9 +37,6 @@ pub enum Error {
     #[error("Over capacity")]
     OverCapacity,
 
-    #[error("Buffer full: {0}")]
-    BufferFull(String),
-
     // 4200-4299: Reconnect immediately errors
     #[error("Generic reconnect immediately")]
     ReconnectImmediately,
@@ -77,6 +74,9 @@ pub enum Error {
     #[error("Invalid signature")]
     InvalidSignature,
 
+    #[error("Invalid key")]
+    InvalidKey,
+
     // Connection errors
     #[error("Connection error: {0}")]
     Connection(String),
@@ -90,6 +90,9 @@ pub enum Error {
     #[error("Connection closed: {0}")]
     ConnectionClosed(String),
 
+    #[error("Buffer full: {0}")]
+    BufferFull(String),
+
     // Protocol errors
     #[error("Protocol error: {0}")]
     Protocol(String),
@@ -102,7 +105,7 @@ pub enum Error {
 
     // WebSocket errors
     #[error("WebSocket error: {0}")]
-    WebSocket(#[from] fastwebsockets::WebSocketError),
+    WebSocket(#[from] sockudo_ws::Error),
 
     // Internal errors
     #[error("Internal server error: {0}")]
@@ -187,7 +190,6 @@ impl Error {
 
             // 4100-4199: Reconnect with backoff
             Error::OverCapacity => 4100,
-            Error::BufferFull(_) => 4100,
 
             // 4200-4299: Reconnect immediately
             Error::ReconnectImmediately => 4200,
@@ -208,11 +210,12 @@ impl Error {
 
             Error::ClientEvent(_) => 4301,
 
-            Error::Auth(_) | Error::InvalidSignature => 4009,
-
-            Error::InvalidAppKey => 4001,
+            Error::Auth(_) | Error::InvalidSignature | Error::InvalidKey => 4009,
 
             Error::Connection(_) | Error::ConnectionExists | Error::ConnectionNotFound => 4000,
+
+            // Buffer full - client is too slow, disconnect
+            Error::BufferFull(_) => 4100,
 
             _ => 4000, // Default to don't reconnect for unknown errors
         }
@@ -230,10 +233,6 @@ impl Error {
                 | Error::UnsupportedProtocolVersion(_)
                 | Error::NoProtocolVersion
                 | Error::Unauthorized
-                | Error::OriginNotAllowed
-                | Error::Auth(_)
-                | Error::InvalidSignature
-                | Error::InvalidAppKey
         )
     }
 

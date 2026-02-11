@@ -53,6 +53,7 @@ async fn create_redis_cluster_adapter(
         prefix: format!("test_cluster_health_{}", node_id),
         request_timeout_ms: 5000,
         use_connection_manager: true,
+        use_sharded_pubsub: false,
     };
 
     let mut adapter = RedisClusterAdapter::new(config).await.unwrap();
@@ -75,8 +76,8 @@ async fn test_redis_cluster_adapter_heartbeat() {
     };
 
     // Create two adapters simulating two Sockudo nodes
-    let mut adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
-    let mut adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
+    let adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -104,9 +105,9 @@ async fn test_redis_cluster_presence_synchronization() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
-    let mut adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
-    let mut adapter3 = create_redis_cluster_adapter("cluster_node3", &cluster_config).await;
+    let adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
+    let adapter3 = create_redis_cluster_adapter("cluster_node3", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -206,8 +207,8 @@ async fn test_redis_cluster_dead_node_cleanup() {
         cleanup_interval_ms: 150,
     };
 
-    let mut adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
-    let mut adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
+    let adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -254,7 +255,7 @@ async fn test_redis_cluster_sharding_consistency() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
     adapter.init().await;
 
     // Test presence across different shards (different channel names will hash to different slots)
@@ -297,7 +298,7 @@ async fn test_redis_cluster_failover_handling() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
     adapter.init().await;
 
     // Add presence data
@@ -344,7 +345,7 @@ async fn test_redis_cluster_concurrent_multi_node_operations() {
     let adapters = Arc::new(Mutex::new(Vec::new()));
 
     for i in 0..3 {
-        let mut adapter =
+        let adapter =
             create_redis_cluster_adapter(&format!("cluster_node_{}", i), &cluster_config).await;
         adapter.init().await;
         adapters.lock().await.push(adapter);
@@ -359,9 +360,9 @@ async fn test_redis_cluster_concurrent_multi_node_operations() {
     for i in 0..9 {
         let adapters_clone = adapters.clone();
         let handle = tokio::spawn(async move {
-            let adapters_guard = adapters_clone.lock().await;
+            let mut adapters_guard = adapters_clone.lock().await;
             let adapter_index = i % 3; // Round-robin across adapters
-            let adapter = &adapters_guard[adapter_index];
+            let adapter = &mut adapters_guard[adapter_index];
 
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);
@@ -404,7 +405,7 @@ async fn test_redis_cluster_large_presence_data() {
         cleanup_interval_ms: 400,
     };
 
-    let mut adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
     adapter.init().await;
 
     // Create large user info object (near 2KB limit)
@@ -446,7 +447,7 @@ async fn test_redis_cluster_disabled_health_monitoring() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
     adapter.init().await;
 
     // Should still handle presence operations without health monitoring

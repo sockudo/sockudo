@@ -1,9 +1,9 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
+use ahash::AHashMap;
 use serde_json::json;
 use sockudo::adapter::horizontal_adapter::{RequestBody, RequestType};
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo::options::ClusterHealthConfig;
-use std::collections::HashMap;
 
 /// Test sequence number conflict resolution during presence updates
 /// This adds value beyond existing tests by testing the conflict resolution logic
@@ -28,7 +28,7 @@ async fn test_sequence_number_conflict_resolution() {
     let socket_id = "socket-conflict";
 
     // Get access to horizontal adapter
-    let horizontal = adapter.horizontal.lock().await;
+    let horizontal = adapter.horizontal.read().await;
 
     // Create two presence entries with different sequence numbers
     let entry1 = sockudo::adapter::horizontal_adapter::PresenceEntry {
@@ -55,16 +55,16 @@ async fn test_sequence_number_conflict_resolution() {
 
         registry
             .entry("node-1".to_string())
-            .or_insert_with(HashMap::new)
+            .or_insert_with(AHashMap::new)
             .entry(channel.to_string())
-            .or_insert_with(HashMap::new)
+            .or_insert_with(AHashMap::new)
             .insert(socket_id.to_string(), entry1);
 
         registry
             .entry("node-2".to_string())
-            .or_insert_with(HashMap::new)
+            .or_insert_with(AHashMap::new)
             .entry(channel.to_string())
-            .or_insert_with(HashMap::new)
+            .or_insert_with(AHashMap::new)
             .insert(socket_id.to_string(), entry2.clone());
     }
 
@@ -128,7 +128,7 @@ async fn test_presence_state_with_clock_skew() {
 
     // Process requests (late one first to test handling)
     {
-        let mut horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.write().await;
         let _ = horizontal.process_request(request_late).await;
         let _ = horizontal.process_request(request_early).await;
     }
@@ -160,7 +160,7 @@ async fn test_bulk_presence_cleanup() {
 
     // Populate with bulk data to test scale
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         let mut registry = horizontal.cluster_presence_registry.write().await;
 
         for c in 0..channels {
@@ -180,9 +180,9 @@ async fn test_bulk_presence_cleanup() {
 
                 registry
                     .entry("bulk-node".to_string())
-                    .or_insert_with(HashMap::new)
+                    .or_insert_with(AHashMap::new)
                     .entry(channel)
-                    .or_insert_with(HashMap::new)
+                    .or_insert_with(AHashMap::new)
                     .insert(socket_id, entry);
             }
         }
@@ -190,7 +190,7 @@ async fn test_bulk_presence_cleanup() {
 
     // Test bulk cleanup performance and correctness
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         let cleanup_tasks = horizontal
             .handle_dead_node_cleanup("bulk-node")
             .await

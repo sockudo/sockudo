@@ -1,12 +1,13 @@
+use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceData {
     pub ids: Vec<String>,
-    pub hash: HashMap<String, Option<Value>>,
+    pub hash: AHashMap<String, Option<Value>>,
     pub count: usize,
 }
 
@@ -22,7 +23,7 @@ pub enum MessageData {
         #[serde(skip_serializing_if = "Option::is_none")]
         user_data: Option<String>,
         #[serde(flatten)]
-        extra: HashMap<String, Value>,
+        extra: AHashMap<String, Value>,
     },
     Json(Value),
 }
@@ -36,15 +37,25 @@ pub struct ErrorData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PusherMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<MessageData>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+    /// Tags for filtering - uses BTreeMap for deterministic serialization order
+    /// which is required for delta compression to work correctly
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<BTreeMap<String, String>>,
+    /// Delta compression sequence number for full messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+    /// Delta compression conflation key for message grouping
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflation_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +72,14 @@ pub struct PusherApiMessage {
     pub socket_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<AHashMap<String, String>>,
+    /// Per-publish delta compression control.
+    /// - `Some(true)`: Force delta compression for this message (if client supports it)
+    /// - `Some(false)`: Force full message (skip delta compression)
+    /// - `None`: Use default behavior based on channel/global configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +154,9 @@ impl PusherMessage {
             channel: None,
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
     pub fn subscription_succeeded(channel: String, presence_data: Option<PresenceData>) -> Self {
@@ -156,6 +178,9 @@ impl PusherMessage {
             data: Some(MessageData::String(data_obj.to_string())),
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -169,6 +194,9 @@ impl PusherMessage {
             channel,
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -179,6 +207,9 @@ impl PusherMessage {
             channel: None,
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
     pub fn channel_event<S: Into<String>>(event: S, channel: S, data: Value) -> Self {
@@ -188,6 +219,9 @@ impl PusherMessage {
             data: Some(MessageData::String(data.to_string())),
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -205,6 +239,9 @@ impl PusherMessage {
             )),
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -221,6 +258,9 @@ impl PusherMessage {
             )),
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -232,6 +272,9 @@ impl PusherMessage {
             channel: None,
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -265,7 +308,7 @@ impl PusherMessage {
     }
 
     // Helper for creating channels list response
-    pub fn channels_list(channels_info: HashMap<String, Value>) -> Value {
+    pub fn channels_list(channels_info: AHashMap<String, Value>) -> Value {
         json!({
             "channels": channels_info
         })
@@ -300,6 +343,9 @@ impl PusherMessage {
                 "user_ids": user_ids
             }))),
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -312,6 +358,9 @@ impl PusherMessage {
                 "user_ids": user_ids
             }))),
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -322,6 +371,9 @@ impl PusherMessage {
             data: Some(MessageData::String("{}".to_string())),
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 
@@ -334,6 +386,69 @@ impl PusherMessage {
             channel: None,
             name: None,
             user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
+        }
+    }
+
+    /// Create a delta-compressed message
+    pub fn delta_message(
+        channel: String,
+        event: String,
+        delta_base64: String,
+        base_sequence: u32,
+        target_sequence: u32,
+        algorithm: &str,
+    ) -> Self {
+        Self {
+            event: Some("pusher:delta".to_string()),
+            channel: Some(channel.clone()),
+            data: Some(MessageData::String(
+                json!({
+                    "channel": channel,
+                    "event": event,
+                    "delta": delta_base64,
+                    "base_seq": base_sequence,
+                    "target_seq": target_sequence,
+                    "algorithm": algorithm,
+                })
+                .to_string(),
+            )),
+            name: None,
+            user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
+        }
+    }
+
+    /// Add base sequence marker to a full message for delta tracking
+    pub fn add_base_sequence(mut self, base_sequence: u32) -> Self {
+        if let Some(MessageData::String(ref data_str)) = self.data
+            && let Ok(mut data_obj) = serde_json::from_str::<Value>(data_str)
+            && let Some(obj) = data_obj.as_object_mut()
+        {
+            obj.insert("__delta_base_seq".to_string(), json!(base_sequence));
+            self.data = Some(MessageData::String(data_obj.to_string()));
+        }
+        self
+    }
+
+    /// Create delta compression enabled confirmation
+    pub fn delta_compression_enabled(default_algorithm: &str) -> Self {
+        Self {
+            event: Some("pusher:delta_compression_enabled".to_string()),
+            data: Some(MessageData::Json(json!({
+                "enabled": true,
+                "default_algorithm": default_algorithm,
+            }))),
+            channel: None,
+            name: None,
+            user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
         }
     }
 }

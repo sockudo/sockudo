@@ -1,8 +1,8 @@
 [package]
 name = "sockudo"
-version = "2.9.2"
+version = "3.0.0"
 edition = "2024"
-repository = "https://github.com/sockudo/sockudo"
+repository = "https://github.com/RustNSparks/sockudo"
 license-file = "LICENSE"
 description = "A simple, fast, and secure WebSocket server for real-time applications."
 
@@ -10,12 +10,18 @@ description = "A simple, fast, and secure WebSocket server for real-time applica
 default = ["local"]
 
 # Meta features for common configurations
-local = []  # Local/memory-only (no external dependencies)
-full = ["redis", "redis-cluster", "nats", "mysql", "postgres", "dynamodb", "scylladb", "sqs", "lambda", "delta-compression", "tag-filtering"]
-
-# Compression and filtering features
-delta-compression = ["dep:fossil-delta", "dep:xdelta3", "dep:base64", "dep:serde_json_path"]
-tag-filtering = ["dep:rayon", "dep:memchr"]
+local = [] # Local/memory-only (no external dependencies)
+full = [
+    "redis",
+    "redis-cluster",
+    "nats",
+    "mysql",
+    "postgres",
+    "dynamodb",
+    "scylladb",
+    "sqs",
+    "lambda",
+]
 
 # Adapter features
 redis = ["dep:redis"]
@@ -35,24 +41,22 @@ sqs = ["dep:aws-config", "dep:aws-sdk-sqs"]
 lambda = ["dep:aws-config", "dep:aws-sdk-lambda"]
 
 [dependencies]
-cmake = "0.1.57"
+cmake = "0.1.56"
 axum = { version = "^0.8", features = ["ws"] }
 tokio = { version = "^1", features = ["full", "tracing"] }
 tower-http = { version = "^0.6.6", features = ["cors"] }
-fastwebsockets = { version = "0.10.0", features = [
-    "upgrade",
-    "with_axum",
-    "unstable-split",
-    "hyper-util",
-    "hyper",
-] }
+sockudo-ws = { version = "1.7.4", features = ["axum-integration"] }
 serde = { version = "^1", features = ["derive"] }
 serde_json = { version = "^1", features = ["preserve_order"] }
 thiserror = "^2.0.17"
 dashmap = "^6.1.0"
 futures = "0.3.31"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = [
+    "fmt",
+    "env-filter",
+    "json",
+] }
 regex = "1.12.2"
 hmac = "0.13.0-rc.3"
 sha2 = "0.11.0-rc.3"
@@ -117,17 +121,14 @@ rustls = { version = "0.23.35", default-features = false, features = [
 ] }
 tower = "0.5.2"
 mimalloc = { version = "0.1.48", features = ["v3"] }
-tokio-util = "0.7"
-
-# Delta compression dependencies (feature-gated)
-fossil-delta = { version = "0.2.0", optional = true }
-base64 = { version = "0.22", optional = true }
-xdelta3 = { git = "https://github.com/radu-cendars/xdelta3-rs", rev = "7f5972327c3ed7995ed697282a490687b2bb1f40", optional = true }
-serde_json_path = { version = "0.7.2", optional = true }
-
-# Tag filtering dependencies (feature-gated)
-rayon = { version = "1.10", optional = true }
-memchr = { version = "2.7", optional = true }
+fossil-delta = "0.2.0"
+base64 = "0.22"
+oxidelta = "0.1.4"
+serde_json_path = "0.7.2"
+rayon = "1.10" # Parallel iterators for filter evaluation
+tokio-util = "0.7" # CancellationToken for graceful shutdown
+memchr = "2.7" # SIMD-accelerated string searching
+libc = "0.2" # For process metrics on macOS/Linux
 
 
 [dependencies.uuid]
@@ -156,7 +157,7 @@ path = "benchmarks/filter_bench.rs"
 harness = false
 
 [package.metadata.binstall]
-pkg-url = "https://github.com/sockudo/sockudo/releases/download/v{version}/sockudo-v{version}-{target}{archive-suffix}"
+pkg-url = "https://github.com/RustNSparks/sockudo/releases/download/v{version}/sockudo-v{version}-{target}{archive-suffix}"
 pkg-fmt = "tgz"
 supported-targets = [
     "x86_64-unknown-linux-gnu",
@@ -165,7 +166,7 @@ supported-targets = [
     "aarch64-unknown-linux-musl",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc"
+    "x86_64-pc-windows-msvc",
 ]
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]

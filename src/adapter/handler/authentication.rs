@@ -37,6 +37,9 @@ impl ConnectionHandler {
             )),
             name: None,
             user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
         };
 
         let is_valid = ChannelManager::signature_is_valid(

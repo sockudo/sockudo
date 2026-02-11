@@ -75,9 +75,28 @@ pub async fn validate_channel_name(app: &App, channel: &str) -> crate::error::Re
             || c == ':'
             || c == '#'
     }) {
-        return Err(Error::Channel(
-            "Channel name contains invalid characters".to_string(),
-        ));
+        let invalid_chars: Vec<char> = channel
+            .chars()
+            .filter(|c| {
+                !c.is_ascii_alphanumeric()
+                    && *c != '-'
+                    && *c != '_'
+                    && *c != '='
+                    && *c != '@'
+                    && *c != '.'
+                    && *c != ':'
+                    && *c != '#'
+            })
+            .collect();
+        tracing::warn!(
+            channel_name = %channel,
+            invalid_chars = ?invalid_chars,
+            "Channel name contains invalid characters"
+        );
+        return Err(Error::Channel(format!(
+            "Channel name contains invalid characters: '{}' (invalid chars: {:?})",
+            channel, invalid_chars
+        )));
     }
 
     Ok(())

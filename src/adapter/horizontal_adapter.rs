@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
+use ahash::AHashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -74,8 +75,8 @@ pub struct ResponseBody {
     pub request_id: String,
     pub node_id: String,
     pub app_id: String,
-    pub members: HashMap<String, PresenceMemberInfo>,
-    pub channels_with_sockets_count: HashMap<String, usize>,
+    pub members: AHashMap<String, PresenceMemberInfo>,
+    pub channels_with_sockets_count: AHashMap<String, usize>,
     pub socket_ids: Vec<String>,
     pub sockets_count: usize,
     pub exists: bool,
@@ -93,6 +94,23 @@ pub struct BroadcastMessage {
     pub except_socket_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp_ms: Option<f64>, // Timestamp when broadcast was initiated (milliseconds since epoch with microsecond precision)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compression_metadata: Option<CompressionMetadata>,
+}
+
+/// Metadata for delta compression in broadcasts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionMetadata {
+    pub conflation_key: Option<String>,
+    pub enabled: bool,
+    /// Sequence number for this message in the delta chain
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u32>,
+    /// Whether this is a full message (not a delta)
+    pub is_full_message: bool,
+    /// Event name for tracking delta chains
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_name: Option<String>,
 }
 
 /// Request tracking struct
@@ -116,8 +134,9 @@ pub struct PresenceEntry {
 }
 
 /// Type alias for the cluster presence registry structure
-/// HashMap<node_id, HashMap<channel, HashMap<socket_id, PresenceEntry>>>
-pub type ClusterPresenceRegistry = HashMap<String, HashMap<String, HashMap<String, PresenceEntry>>>;
+///AHashMap<node_id,AHashMap<channel,AHashMap<socket_id, PresenceEntry>>>
+pub type ClusterPresenceRegistry =
+    AHashMap<String, AHashMap<String, AHashMap<String, PresenceEntry>>>;
 
 /// Event emitted when a node dies and orphaned presence members need cleanup
 #[derive(Debug, Clone)]
@@ -140,8 +159,8 @@ pub struct HorizontalAdapter {
     /// Unique node ID
     pub node_id: String,
 
-    /// Local adapter for handling local connections
-    pub local_adapter: LocalAdapter,
+    /// Local adapter for handling local connections (Arc for sharing across components)
+    pub local_adapter: Arc<LocalAdapter>,
 
     /// Pending requests map - Use DashMap for thread-safe access
     pub pending_requests: DashMap<String, PendingRequest>,
@@ -152,11 +171,11 @@ pub struct HorizontalAdapter {
     pub metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
 
     /// Complete cluster-wide presence registry (node-first structure for efficient cleanup)
-    /// HashMap<node_id, HashMap<channel, HashMap<socket_id, PresenceEntry>>>
+    ///AHashMap<node_id,AHashMap<channel,AHashMap<socket_id, PresenceEntry>>>
     pub cluster_presence_registry: Arc<RwLock<ClusterPresenceRegistry>>,
 
-    /// Track node heartbeats: HashMap<node_id, last_heartbeat_received_time>
-    pub node_heartbeats: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Track node heartbeats:AHashMap<node_id, last_heartbeat_received_time>
+    pub node_heartbeats: Arc<RwLock<AHashMap<String, Instant>>>,
 
     /// Sequence counter for conflict resolution
     pub sequence_counter: Arc<AtomicU64>,
@@ -173,18 +192,18 @@ impl HorizontalAdapter {
     pub fn new() -> Self {
         Self {
             node_id: Uuid::new_v4().to_string(),
-            local_adapter: LocalAdapter::new(),
+            local_adapter: Arc::new(LocalAdapter::new()),
             pending_requests: DashMap::new(),
             requests_timeout: 5000, // Default 5 seconds
             metrics: None,
-            cluster_presence_registry: Arc::new(RwLock::new(HashMap::new())),
-            node_heartbeats: Arc::new(RwLock::new(HashMap::new())),
+            cluster_presence_registry: Arc::new(RwLock::new(AHashMap::new())),
+            node_heartbeats: Arc::new(RwLock::new(AHashMap::new())),
             sequence_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Start the request cleanup task
-    pub fn start_request_cleanup(&mut self) {
+    pub fn start_request_cleanup(&self) {
         // Clone data needed for the task
         // let node_id = self.node_id.clone();
         let timeout = self.requests_timeout;
@@ -218,7 +237,7 @@ impl HorizontalAdapter {
     }
 
     /// Process a received request from another node
-    pub async fn process_request(&mut self, request: RequestBody) -> Result<ResponseBody> {
+    pub async fn process_request(&self, request: RequestBody) -> Result<ResponseBody> {
         debug!(
             "{}",
             format!(
@@ -243,10 +262,10 @@ impl HorizontalAdapter {
             request_id: request.request_id.clone(),
             node_id: self.node_id.clone(),
             app_id: request.app_id.clone(),
-            members: HashMap::new(),
+            members: AHashMap::new(),
             socket_ids: Vec::new(),
             sockets_count: 0,
-            channels_with_sockets_count: HashMap::new(),
+            channels_with_sockets_count: AHashMap::new(),
             exists: false,
             channels: HashSet::new(),
             members_count: 0,
@@ -266,13 +285,13 @@ impl HorizontalAdapter {
             }
             RequestType::ChannelSockets => {
                 if let Some(channel) = &request.channel {
-                    // Get channel sockets from local adapter
-                    let channel_set = self
+                    // Get channel sockets from local adapter (returns Vec now)
+                    let channel_sockets = self
                         .local_adapter
                         .get_channel_sockets(&request.app_id, channel)
                         .await?;
-                    response.socket_ids = channel_set
-                        .iter()
+                    response.socket_ids = channel_sockets
+                        .into_iter()
                         .map(|socket_id| socket_id.to_string())
                         .collect();
                 }
@@ -289,8 +308,8 @@ impl HorizontalAdapter {
             RequestType::SocketExistsInChannel => {
                 if let (Some(channel), Some(socket_id)) = (&request.channel, &request.socket_id) {
                     // Check if socket exists in channel
-                    let socket_id =
-                        SocketId::from_string(socket_id).unwrap_or_else(|_| SocketId::new());
+                    let socket_id = SocketId::from_string(socket_id)
+                        .map_err(|e| Error::InvalidMessageFormat(e))?;
                     response.exists = self
                         .local_adapter
                         .is_in_channel(&request.app_id, channel, &socket_id)
@@ -307,13 +326,12 @@ impl HorizontalAdapter {
                 }
             }
             RequestType::ChannelsWithSocketsCount => {
-                // Get channels with socket count from local adapter
+                // Get channels with socket count from local adapter (returns HashMap now)
                 let channels = self
                     .local_adapter
                     .get_channels_with_socket_count(&request.app_id)
                     .await?;
-                response.channels_with_sockets_count =
-                    channels.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                response.channels_with_sockets_count = channels.into_iter().collect();
             }
             // New request types
             RequestType::Sockets => {
@@ -329,12 +347,12 @@ impl HorizontalAdapter {
                 response.sockets_count = connections.len();
             }
             RequestType::Channels => {
-                // Get all channels for the app
+                // Get all channels for the app (returns HashMap now)
                 let channels = self
                     .local_adapter
                     .get_channels_with_socket_count(&request.app_id)
                     .await?;
-                response.channels = channels.iter().map(|(k, _)| k.clone()).collect();
+                response.channels = channels.into_keys().collect();
             }
             RequestType::SocketsCount => {
                 // Get count of all sockets
@@ -440,7 +458,7 @@ impl HorizontalAdapter {
             RequestType::PresenceStateSync => {
                 if let Some(presence_data) = request.user_info {
                     // Deserialize the bulk presence data
-                    match serde_json::from_value::<HashMap<String, HashMap<String, PresenceEntry>>>(
+                    match serde_json::from_value::<AHashMap<String, AHashMap<String, PresenceEntry>>>(
                         presence_data,
                     ) {
                         Ok(incoming_node_data) => {
@@ -450,13 +468,13 @@ impl HorizontalAdapter {
                             // Each node sends its own data, so different nodes update different keys
                             let node_registry = registry
                                 .entry(request.node_id.clone())
-                                .or_insert_with(HashMap::new);
+                                .or_insert_with(AHashMap::new);
 
                             // Merge channel data
                             for (channel, incoming_sockets) in incoming_node_data {
                                 let channel_registry = node_registry
                                     .entry(channel.clone())
-                                    .or_insert_with(HashMap::new);
+                                    .or_insert_with(AHashMap::new);
 
                                 // Merge socket entries, preferring newer data
                                 for (socket_id, incoming_entry) in incoming_sockets {
@@ -590,10 +608,10 @@ impl HorizontalAdapter {
                 request_id: request_id.clone(),
                 node_id: self.node_id.clone(),
                 app_id: app_id.to_string(),
-                members: HashMap::new(),
+                members: AHashMap::new(),
                 socket_ids: Vec::new(),
                 sockets_count: 0,
-                channels_with_sockets_count: HashMap::new(),
+                channels_with_sockets_count: AHashMap::new(),
                 exists: false,
                 channels: HashSet::new(),
                 members_count: 0,
@@ -702,10 +720,10 @@ impl HorizontalAdapter {
             request_id,
             node_id,
             app_id,
-            members: HashMap::new(),
+            members: AHashMap::new(),
             socket_ids: Vec::new(),
             sockets_count: 0,
-            channels_with_sockets_count: HashMap::new(),
+            channels_with_sockets_count: AHashMap::new(),
             exists: false,
             channels: HashSet::new(),
             members_count: 0,
@@ -891,7 +909,7 @@ impl HorizontalAdapter {
 
     /// Helper function to calculate local recipient count for broadcasting
     pub async fn get_local_recipient_count(
-        &mut self,
+        &self,
         app_id: &str,
         channel: &str,
         except: Option<&SocketId>,
@@ -978,10 +996,8 @@ impl HorizontalAdapter {
         // O(1) lookup and removal of entire node's data
         if let Some(dead_node_data) = registry.remove(dead_node_id) {
             // Group sockets by (app_id, channel, user_id) to avoid duplicate cleanup calls for same user
-            let mut unique_members = std::collections::HashMap::<
-                (String, String, String),
-                Option<serde_json::Value>,
-            >::new();
+            let mut unique_members =
+                ahash::AHashMap::<(String, String, String), Option<serde_json::Value>>::new();
 
             for (channel, sockets) in dead_node_data {
                 for (_socket_id, entry) in sockets {
@@ -1026,9 +1042,9 @@ impl HorizontalAdapter {
         let mut registry = self.cluster_presence_registry.write().await;
         registry
             .entry(node_id.to_string())
-            .or_insert_with(HashMap::new)
+            .or_insert_with(AHashMap::new)
             .entry(channel.to_string())
-            .or_insert_with(HashMap::new)
+            .or_insert_with(AHashMap::new)
             .insert(
                 socket_id.to_string(),
                 PresenceEntry {

@@ -6,9 +6,9 @@ use crate::error::{Error, Result};
 use crate::queue::manager::QueueManager;
 use crate::webhook::sender::WebhookSender;
 use crate::webhook::types::{JobData, JobPayload};
+use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -60,7 +60,7 @@ pub type JobProcessorFnAsync = Box<
 /// Webhook integration for processing events
 pub struct WebhookIntegration {
     config: WebhookConfig,
-    batched_webhooks: Arc<Mutex<HashMap<String, Vec<JobData>>>>,
+    batched_webhooks: Arc<Mutex<AHashMap<String, Vec<JobData>>>>,
     queue_manager: Option<Arc<QueueManager>>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
 }
@@ -73,7 +73,7 @@ impl WebhookIntegration {
     ) -> Result<Self> {
         let mut integration = Self {
             config,
-            batched_webhooks: Arc::new(Mutex::new(HashMap::new())),
+            batched_webhooks: Arc::new(Mutex::new(AHashMap::new())),
             queue_manager: None,
             app_manager,
         };
@@ -130,7 +130,7 @@ impl WebhookIntegration {
             let mut interval = interval(Duration::from_millis(batch_duration));
             loop {
                 interval.tick().await;
-                let webhooks_to_process: HashMap<String, Vec<JobData>> = {
+                let webhooks_to_process: AHashMap<String, Vec<JobData>> = {
                     let mut batched = batched_webhooks_clone.lock().await;
                     std::mem::take(&mut *batched)
                 };

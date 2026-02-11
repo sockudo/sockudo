@@ -172,7 +172,7 @@ async fn test_request_response_matching_under_load() -> Result<()> {
 #[tokio::test]
 async fn test_broadcast_during_listener_changes() -> Result<()> {
     let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.init().await;
 
     // Start broadcasts while listeners might be starting/stopping
@@ -193,6 +193,9 @@ async fn test_broadcast_during_listener_changes() -> Result<()> {
                 event: Some(format!("race-event-{}", i)),
                 data: Some(MessageData::String(format!("race data {}", i))),
                 user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
             };
 
             tokio::time::sleep(Duration::from_millis(i * 10)).await;
@@ -333,6 +336,9 @@ async fn test_transport_state_consistency_under_load() -> Result<()> {
                         event: Some("consistency-event".to_string()),
                         data: Some(MessageData::String("test".to_string())),
                         user_id: None,
+                        tags: None,
+                        sequence: None,
+                        conflation_key: None,
                     };
 
                     adapter

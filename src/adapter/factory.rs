@@ -17,14 +17,102 @@ use crate::options::RedisClusterAdapterConfig; // Import AdapterDriver, RedisCon
 use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig};
 use tracing::{info, warn};
 
+/// Typed adapter enum for direct configuration without downcasting
+/// This allows configuring adapters without going through the trait object
+#[derive(Clone)]
+pub enum TypedAdapter {
+    Local(Arc<LocalAdapter>),
+    #[cfg(feature = "redis")]
+    Redis(Arc<RedisAdapter>),
+    #[cfg(feature = "redis-cluster")]
+    RedisCluster(Arc<RedisClusterAdapter>),
+    #[cfg(feature = "nats")]
+    Nats(Arc<NatsAdapter>),
+}
+
+impl TypedAdapter {
+    /// Get the local adapter reference (available for all adapter types)
+    pub fn local_adapter(&self) -> Arc<LocalAdapter> {
+        match self {
+            TypedAdapter::Local(adapter) => adapter.clone(),
+            #[cfg(feature = "redis")]
+            TypedAdapter::Redis(adapter) => adapter.local_adapter.clone(),
+            #[cfg(feature = "redis-cluster")]
+            TypedAdapter::RedisCluster(adapter) => adapter.local_adapter.clone(),
+            #[cfg(feature = "nats")]
+            TypedAdapter::Nats(adapter) => adapter.local_adapter.clone(),
+        }
+    }
+
+    /// Set delta compression on the adapter
+    /// For horizontal adapters, this delegates to the internal LocalAdapter (which uses OnceLock)
+    pub async fn set_delta_compression(
+        &self,
+        delta_compression: Arc<crate::delta_compression::DeltaCompressionManager>,
+        app_manager: Arc<dyn crate::app::manager::AppManager + Send + Sync>,
+    ) {
+        // All adapters delegate to their internal LocalAdapter which uses OnceLock for thread-safe set-once
+        self.local_adapter()
+            .set_delta_compression(delta_compression, app_manager)
+            .await;
+    }
+
+    /// Set tag filtering enabled flag
+    pub fn set_tag_filtering_enabled(&self, enabled: bool) {
+        self.local_adapter().set_tag_filtering_enabled(enabled);
+    }
+
+    /// Set global enable_tags flag
+    pub fn set_enable_tags_globally(&self, enabled: bool) {
+        self.local_adapter().set_enable_tags_globally(enabled);
+    }
+
+    /// Set metrics on the adapter (only applicable to horizontal adapters)
+    /// Note: This uses interior mutability through the adapter's internal RwLock
+    #[allow(unused_variables)]
+    pub async fn set_metrics(
+        &self,
+        metrics: Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>,
+    ) -> Result<()> {
+        match self {
+            TypedAdapter::Local(_) => {
+                // LocalAdapter doesn't have set_metrics
+                Ok(())
+            }
+            #[cfg(feature = "redis")]
+            TypedAdapter::Redis(adapter) => adapter.set_metrics(metrics).await,
+            #[cfg(feature = "redis-cluster")]
+            TypedAdapter::RedisCluster(adapter) => adapter.set_metrics(metrics).await,
+            #[cfg(feature = "nats")]
+            TypedAdapter::Nats(adapter) => adapter.set_metrics(metrics).await,
+        }
+    }
+}
+
 pub struct AdapterFactory;
 
 impl AdapterFactory {
+    /// Create a connection manager without the Mutex wrapper
+    /// Use this for lock-free runtime access (all trait methods are &self)
     #[allow(unused_variables)]
     pub async fn create(
         config: &AdapterConfig,
         db_config: &DatabaseConfig,
     ) -> Result<Arc<dyn ConnectionManager + Send + Sync>> {
+        Self::create_with_typed(config, db_config)
+            .await
+            .map(|(adapter, _)| adapter)
+    }
+
+    /// Create a connection manager with typed adapter for configuration
+    /// Returns:
+    /// - Arc<dyn ConnectionManager> for runtime use (lock-free, all methods are &self)
+    /// - TypedAdapter for configuration (set_metrics, set_delta_compression, etc.)
+    #[allow(unused_variables)]
+    pub async fn create_with_typed(
+        config: &AdapterConfig,
+        db_config: &DatabaseConfig,
+    ) -> Result<(Arc<dyn ConnectionManager + Send + Sync>, TypedAdapter)> {
         info!(
             "{}",
             format!(
@@ -55,7 +143,10 @@ impl AdapterFactory {
                 match RedisAdapter::new(adapter_options).await {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
-                        Ok(Arc::new(adapter))
+                        adapter.set_socket_counting(config.enable_socket_counting);
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::Redis(adapter.clone());
+                        Ok((adapter, typed))
                     }
                     Err(e) => {
                         warn!(
@@ -65,9 +156,11 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
-                        )))
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
                     }
                 }
             }
@@ -87,9 +180,11 @@ impl AdapterFactory {
 
                 if nodes.is_empty() {
                     warn!("{}", "Redis Cluster Adapter selected, but no nodes configured. Falling back to local adapter.".to_string());
-                    return Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                         config.buffer_multiplier_per_cpu,
-                    )));
+                    ));
+                    let typed = TypedAdapter::Local(local_adapter.clone());
+                    return Ok((local_adapter, typed));
                 }
 
                 let cluster_adapter_config = RedisClusterAdapterConfig {
@@ -98,11 +193,15 @@ impl AdapterFactory {
                     prefix: config.cluster.prefix.clone(),
                     request_timeout_ms: config.cluster.request_timeout_ms,
                     use_connection_manager: config.cluster.use_connection_manager,
+                    use_sharded_pubsub: config.cluster.use_sharded_pubsub,
                 };
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
-                        Ok(Arc::new(adapter))
+                        adapter.set_socket_counting(config.enable_socket_counting);
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::RedisCluster(adapter.clone());
+                        Ok((adapter, typed))
                     }
                     Err(e) => {
                         warn!(
@@ -112,9 +211,11 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
-                        )))
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
                     }
                 }
             }
@@ -134,7 +235,10 @@ impl AdapterFactory {
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
-                        Ok(Arc::new(adapter))
+                        adapter.set_socket_counting(config.enable_socket_counting);
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::Nats(adapter.clone());
+                        Ok((adapter, typed))
                     }
                     Err(e) => {
                         warn!(
@@ -144,18 +248,21 @@ impl AdapterFactory {
                                 e
                             )
                         );
-                        Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
-                        )))
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
                     }
                 }
             }
             AdapterDriver::Local => {
-                // Handle unknown as Local or make it an error
                 info!("{}", "Using local adapter.".to_string());
-                Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
-                )))
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
             }
             #[cfg(not(feature = "redis"))]
             AdapterDriver::Redis => {
@@ -164,16 +271,20 @@ impl AdapterFactory {
                     "Redis adapter requested but not compiled in. Falling back to local adapter."
                         .to_string()
                 );
-                Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
-                )))
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
             }
             #[cfg(not(feature = "redis-cluster"))]
             AdapterDriver::RedisCluster => {
                 warn!("{}", "Redis Cluster adapter requested but not compiled in. Falling back to local adapter.".to_string());
-                Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
-                )))
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
             }
             #[cfg(not(feature = "nats"))]
             AdapterDriver::Nats => {
@@ -182,9 +293,11 @@ impl AdapterFactory {
                     "NATS adapter requested but not compiled in. Falling back to local adapter."
                         .to_string()
                 );
-                Ok(Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
-                )))
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
             }
         }
     }

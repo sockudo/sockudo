@@ -9,6 +9,7 @@ use crate::protocol::messages::{
 };
 use crate::utils::{self, validate_channel_name};
 use crate::websocket::SocketId;
+use ahash::AHashMap;
 use axum::{
     Json,
     extract::{Path, Query, RawQuery, State}, // Added RawQuery
@@ -257,6 +258,8 @@ async fn process_single_event_parallel(
         channel,
         socket_id: original_socket_id_str, // Option<String>
         info,                              // Option<String>
+        tags,                              // Option<HashMap<String, String>>
+        delta: delta_flag,                 // Option<bool> - per-publish delta control
     } = event_data;
 
     // Validate and get the event name
@@ -292,7 +295,8 @@ async fn process_single_event_parallel(
 
     // Map the original socket ID string to SocketId type
     let mapped_socket_id: Option<SocketId> = original_socket_id_str
-        .map(|s| SocketId::from_string(&s).unwrap_or_else(|_| SocketId::new()));
+        .as_ref()
+        .and_then(|s| SocketId::from_string(s).ok());
 
     // Determine the list of target channels for this event
     let target_channels: Vec<String> = match channels {
@@ -334,6 +338,13 @@ async fn process_single_event_parallel(
         let socket_id_for_task = mapped_socket_id.clone(); // Option<SocketId>
         let info_for_task = info.clone(); // Option<String>
         let event_name_for_task = event_name_str.to_string(); // String
+        // Convert HashMap to BTreeMap for deterministic serialization order
+        // This is required for delta compression to work correctly
+        let tags_for_task: Option<std::collections::BTreeMap<String, String>> = tags
+            .clone()
+            .map(|h| h.into_iter().collect());
+        // Per-publish delta compression control
+        let delta_flag_for_task = delta_flag;
 
         async move {
             // This block processes a single channel.
@@ -344,9 +355,18 @@ async fn process_single_event_parallel(
             validate_channel_name(app, &target_channel_str).await?;
 
             // Construct the message to be sent to this specific channel.
+            // Pusher protocol requires data to be a STRING (containing JSON), not a nested object.
+            // This is critical for delta compression to work correctly - the client stores raw
+            // messages and computes deltas against them, so the wire format must be consistent.
             let message_data = match payload_for_task {
-                Some(ApiMessageData::String(s)) => MessageData::String(s),
-                Some(ApiMessageData::Json(j_val)) => MessageData::String(j_val.to_string()),
+                Some(ApiMessageData::String(s)) => {
+                    // Keep string data as-is - Pusher protocol expects data to be a string
+                    MessageData::String(s)
+                },
+                Some(ApiMessageData::Json(j_val)) => {
+                    // JSON objects must be stringified to match Pusher protocol
+                    MessageData::String(j_val.to_string())
+                },
                 None => MessageData::String("null".to_string()), // Default to "null" string if no data
             };
             let _message_to_send = PusherMessage {
@@ -355,17 +375,49 @@ async fn process_single_event_parallel(
                 event: name_for_task,
                 data: Some(message_data.clone()),
                 user_id: None,
+                tags: tags_for_task.clone(),
+                sequence: None,
+                conflation_key: None,
             };
             // Use the provided timestamp directly
             let timestamp_ms = start_time_ms;
-            handler_clone.broadcast_to_channel_with_timing(
-                app,
-                &target_channel_str,
-                _message_to_send,
-                socket_id_for_task.as_ref(),
-                timestamp_ms,
-            )
-                .await?;
+
+            // Use the appropriate broadcast method based on delta flag
+            match delta_flag_for_task {
+                Some(true) => {
+                    // Force delta compression for this message
+                    handler_clone.broadcast_to_channel_with_timing(
+                        app,
+                        &target_channel_str,
+                        _message_to_send,
+                        socket_id_for_task.as_ref(),
+                        timestamp_ms,
+                    )
+                    .await?;
+                }
+                Some(false) => {
+                    // Force full message (skip delta compression)
+                    handler_clone.broadcast_to_channel_force_full(
+                        app,
+                        &target_channel_str,
+                        _message_to_send,
+                        socket_id_for_task.as_ref(),
+                        timestamp_ms,
+                    )
+                    .await?;
+                }
+                None => {
+                    // Default behavior - use channel/global configuration
+                    handler_clone.broadcast_to_channel_with_timing(
+                        app,
+                        &target_channel_str,
+                        _message_to_send,
+                        socket_id_for_task.as_ref(),
+                        timestamp_ms,
+                    )
+                    .await?;
+                }
+            }
 
 
             // If info collection is requested, gather details for this channel.
@@ -566,6 +618,11 @@ pub async fn batch_events(
     tracing::Span::current().record("batch_len", batch_len);
     debug!("Received batch events request with {} events", batch_len);
 
+    // DEBUG: Check if tags are being sent
+    for (i, event) in batch_events_vec.iter().enumerate().take(3) {
+        debug!("Batch event #{}: tags={:?}", i, event.tags);
+    }
+
     // Fetch app configuration once.
     let app_config = handler
         .app_manager
@@ -597,40 +654,28 @@ pub async fn batch_events(
         }
     }
 
-    // Create a collection of futures for processing each event in the batch.
-    let event_processing_futures = batch_events_vec.into_iter().map(|single_event_message| {
-        // Clone Arcs and capture references/owned data for the async task.
-        let handler_clone = Arc::clone(&handler);
-        let app_config_ref = &app_config; // Reference to app_config owned by batch_events
-        // single_event_message is moved into this closure, then cloned for process_single_event_parallel
+    // Process events SEQUENTIALLY to ensure proper delta compression state management.
+    // When multiple events in a batch target the same channel, concurrent processing would
+    // cause race conditions where all events compute deltas against the same base message,
+    // corrupting the delta chain. Sequential processing ensures each message's delta state
+    // is properly updated before the next message is processed.
+    let mut processed_event_data = Vec::with_capacity(batch_len);
 
-        async move {
-            let should_collect_info_for_this_event = single_event_message.info.is_some();
-            let channel_info_map = process_single_event_parallel(
-                &handler_clone,
-                app_config_ref,
-                single_event_message.clone(), // Clone for process_single_event_parallel
-                should_collect_info_for_this_event,
-                Some(start_time_ms),
-            )
-            .await?;
-            // Return the original message (for constructing response) and the processed info map
-            Ok((single_event_message, channel_info_map))
-        }
-    });
-
-    // Execute all event processing futures concurrently.
-    type EventResult = Result<(PusherApiMessage, HashMap<String, Value>), AppError>;
-
-    let results: Vec<EventResult> = join_all(event_processing_futures).await;
+    for single_event_message in batch_events_vec {
+        let should_collect_info_for_this_event = single_event_message.info.is_some();
+        let channel_info_map = process_single_event_parallel(
+            &handler,
+            &app_config,
+            single_event_message.clone(),
+            should_collect_info_for_this_event,
+            Some(start_time_ms),
+        )
+        .await?;
+        processed_event_data.push((single_event_message, channel_info_map));
+    }
 
     // Aggregate results and construct the batch response.
     let mut batch_response_info_vec = Vec::with_capacity(batch_len);
-    let mut processed_event_data = Vec::with_capacity(batch_len);
-
-    for result_item in results {
-        processed_event_data.push(result_item?); // Propagate the first error encountered.
-    }
 
     // Now, construct the response based on the successfully processed events.
     if any_message_requests_info {
@@ -783,8 +828,8 @@ pub async fn channels(
         .get_channels_with_socket_count(&app_id)
         .await?;
 
-    let mut channels_info_response_map = HashMap::new();
-    for (channel_name_str, _socket_count) in channels_map.iter() {
+    let mut channels_info_response_map = AHashMap::new();
+    for (channel_name_str, _socket_count) in &channels_map {
         if !channel_name_str.starts_with(filter_prefix_str) {
             continue;
         }
@@ -899,18 +944,19 @@ pub async fn terminate_user_connections(
 ///
 /// Critical components (WebSocket functionality fails without these):
 /// - Adapter: Core WebSocket connection handling
+/// - Cache Manager: Required for cache channels, subscription failures propagate errors
 ///
-/// Non-critical components (WebSocket works, but optional features may be degraded):
-/// - Cache Manager: Falls back to in-memory cache when Redis is unavailable
+/// Non-critical components (WebSocket works, but optional features don't):
 /// - Queue System: Only affects webhook delivery
 async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
     let mut critical_issues = Vec::new();
     let mut non_critical_issues = Vec::new();
 
     // CRITICAL CHECK 1: Adapter health - core WebSocket functionality
-    let adapter_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
-        handler.connection_manager.check_health().await
-    })
+    let adapter_check = timeout(
+        Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
+        handler.connection_manager.check_health(),
+    )
     .await;
 
     match adapter_check {
@@ -925,9 +971,7 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
         }
     }
 
-    // NON-CRITICAL CHECK: Cache manager health
-    // With FallbackCacheManager, Redis failures automatically fall back to memory cache,
-    // so cache issues don't cause service unavailability - just degraded performance
+    // CRITICAL CHECK 2: Cache manager health - required for cache channels
     if handler.server_options().cache.driver != crate::options::CacheDriver::None {
         let cache_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
             let cache_manager = handler.cache_manager.lock().await;
@@ -940,11 +984,10 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
                 // Cache manager is healthy
             }
             Ok(Err(e)) => {
-                non_critical_issues.push(format!("Cache: {e} (using in-memory fallback)"));
+                critical_issues.push(format!("Cache: {e}"));
             }
             Err(_) => {
-                non_critical_issues
-                    .push("Cache health check timeout (using in-memory fallback)".to_string());
+                critical_issues.push("Cache health check timeout".to_string());
             }
         }
     }

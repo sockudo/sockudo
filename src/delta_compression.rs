@@ -137,9 +137,9 @@ impl Default for DeltaCompressionConfig {
             full_message_interval: 10,
             min_message_size: 100,
             max_state_age: Duration::from_secs(300), // 5 minutes
-            max_channel_states_per_socket: 10,       // Reduced from 100 to prevent memory leaks
+            max_channel_states_per_socket: 100,
             min_compression_ratio: 0.9,
-            max_conflation_states_per_channel: Some(10), // Reduced from 100 to prevent memory leaks
+            max_conflation_states_per_channel: Some(100),
             conflation_key_path: None,
             cluster_coordination: false, // Disabled by default (opt-in)
             omit_delta_algorithm: false,
@@ -456,18 +456,73 @@ impl ChannelState {
     }
 }
 
+/// Per-channel delta settings for a socket (from subscription negotiation)
+#[derive(Debug, Clone)]
+pub struct PerChannelDeltaSettings {
+    /// Whether delta compression is enabled for this channel subscription
+    pub enabled: bool,
+    /// Algorithm to use for this channel (overrides global default)
+    pub algorithm: Option<DeltaAlgorithm>,
+}
+
+impl Default for PerChannelDeltaSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            algorithm: None,
+        }
+    }
+}
+
 /// Per-socket delta compression state
 #[derive(Debug)]
 struct SocketDeltaState {
-    /// Whether this socket supports delta compression
+    /// Whether this socket supports delta compression (global opt-in)
     enabled: bool,
     /// Per-channel state tracking
     channel_states: DashMap<String, Arc<ChannelState>>,
+    /// Per-channel delta settings from subscription negotiation
+    /// Key: channel name, Value: delta settings for that channel
+    channel_delta_settings: DashMap<String, PerChannelDeltaSettings>,
 }
 
 impl SocketDeltaState {
     fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Check if delta compression is enabled for a specific channel
+    /// This considers both global socket state and per-channel settings
+    fn is_enabled_for_channel(&self, channel: &str) -> bool {
+        if !self.enabled {
+            return false;
+        }
+
+        // Check per-channel settings if present
+        if let Some(settings) = self.channel_delta_settings.get(channel) {
+            return settings.enabled;
+        }
+
+        // Default to global socket state
+        true
+    }
+
+    /// Get the algorithm to use for a specific channel
+    fn get_algorithm_for_channel(&self, channel: &str, default: DeltaAlgorithm) -> DeltaAlgorithm {
+        self.channel_delta_settings
+            .get(channel)
+            .and_then(|s| s.algorithm)
+            .unwrap_or(default)
+    }
+
+    /// Set per-channel delta settings from subscription negotiation
+    fn set_channel_delta_settings(&self, channel: String, settings: PerChannelDeltaSettings) {
+        self.channel_delta_settings.insert(channel, settings);
+    }
+
+    /// Remove per-channel delta settings when unsubscribing
+    fn remove_channel_delta_settings(&self, channel: &str) {
+        self.channel_delta_settings.remove(channel);
     }
 
     fn get_channel_state(&self, channel: &str) -> Option<Arc<ChannelState>> {
@@ -580,26 +635,15 @@ impl DeltaCompressionManager {
                 // Run cleanup on all socket states
                 manager.cleanup().await;
 
-                // Log stats periodically for monitoring - use INFO level for visibility
+                // Log stats periodically for monitoring
                 let stats = manager.get_stats();
                 if stats.total_sockets > 0 {
-                    let memory_mb = stats.estimated_memory_bytes as f64 / (1024.0 * 1024.0);
-                    tracing::info!(
-                        "Delta compression stats: sockets={} (enabled={}), channels={}, conflation_groups={}, est_memory={:.2}MB",
+                    tracing::debug!(
+                        "Delta compression cleanup: {} total sockets, {} enabled, {} channel states",
                         stats.total_sockets,
                         stats.enabled_sockets,
-                        stats.total_channel_states,
-                        stats.total_conflation_groups,
-                        memory_mb
+                        stats.total_channel_states
                     );
-
-                    // Warn if memory usage is high (>100MB)
-                    if stats.estimated_memory_bytes > 100 * 1024 * 1024 {
-                        tracing::warn!(
-                            "Delta compression memory usage is high: {:.2}MB. Consider reducing max_channel_states_per_socket or max_conflation_states_per_channel",
-                            memory_mb
-                        );
-                    }
                 }
             }
         });
@@ -755,37 +799,92 @@ impl DeltaCompressionManager {
             Arc::new(SocketDeltaState {
                 enabled: true,
                 channel_states: DashMap::new(),
+                channel_delta_settings: DashMap::new(),
             }),
         );
     }
 
-    /// Check if delta compression is globally enabled (config level)
-    /// This is separate from per-socket enablement
-    pub fn is_globally_enabled(&self) -> bool {
-        self.config.enabled
+    /// Set per-channel delta settings for a socket (from subscription negotiation)
+    /// This allows clients to negotiate delta compression on a per-channel basis
+    pub fn set_channel_delta_settings(
+        &self,
+        socket_id: &SocketId,
+        channel: &str,
+        enabled: Option<bool>,
+        algorithm: Option<DeltaAlgorithm>,
+    ) {
+        // If socket doesn't have delta enabled globally, enable it now
+        // (per-channel subscription implies opt-in)
+        let socket_state = self
+            .socket_states
+            .entry(socket_id.clone())
+            .or_insert_with(|| {
+                Arc::new(SocketDeltaState {
+                    enabled: true, // Enable globally when per-channel is requested
+                    channel_states: DashMap::new(),
+                    channel_delta_settings: DashMap::new(),
+                })
+            });
+
+        let settings = PerChannelDeltaSettings {
+            enabled: enabled.unwrap_or(true),
+            algorithm,
+        };
+
+        socket_state.set_channel_delta_settings(channel.to_string(), settings);
+
+        tracing::debug!(
+            "Set per-channel delta settings for socket {} channel {}: enabled={:?}, algorithm={:?}",
+            socket_id,
+            channel,
+            enabled,
+            algorithm
+        );
+    }
+
+    /// Check if a specific channel has per-subscription delta settings
+    pub fn has_channel_delta_settings(&self, socket_id: &SocketId, channel: &str) -> bool {
+        self.socket_states
+            .get(socket_id)
+            .map(|s| s.channel_delta_settings.contains_key(channel))
+            .unwrap_or(false)
+    }
+
+    /// Get the algorithm to use for a specific socket and channel
+    pub fn get_algorithm_for_channel(&self, socket_id: &SocketId, channel: &str) -> DeltaAlgorithm {
+        self.socket_states
+            .get(socket_id)
+            .map(|s| s.get_algorithm_for_channel(channel, self.config.algorithm))
+            .unwrap_or(self.config.algorithm)
     }
 
     /// Check if a socket has delta compression enabled
-    /// If channel_override is true, allows delta compression even if global is disabled
     pub fn is_enabled_for_socket(&self, socket_id: &SocketId) -> bool {
-        self.is_enabled_for_socket_with_override(socket_id, false)
-    }
-
-    /// Check if a socket has delta compression enabled, with optional channel override
-    /// When channel_override is true, skips the global enabled check (for channel-specific settings)
-    pub fn is_enabled_for_socket_with_override(
-        &self,
-        socket_id: &SocketId,
-        channel_override: bool,
-    ) -> bool {
-        // If no channel override, check global config first
-        if !channel_override && !self.config.enabled {
+        if !self.config.enabled {
             return false;
         }
 
         self.socket_states
             .get(socket_id)
             .map(|state| state.is_enabled())
+            .unwrap_or(false)
+    }
+
+    /// Check if delta compression is enabled for a specific socket and channel
+    /// This considers both global socket state and per-channel subscription settings
+    pub fn is_enabled_for_socket_channel(&self, socket_id: &SocketId, channel: &str) -> bool {
+        if !self.config.enabled {
+            return false;
+        }
+
+        // Skip encrypted channels entirely
+        if Self::is_encrypted_channel(channel) {
+            return false;
+        }
+
+        self.socket_states
+            .get(socket_id)
+            .map(|state| state.is_enabled_for_channel(channel))
             .unwrap_or(false)
     }
 
@@ -807,6 +906,8 @@ impl DeltaCompressionManager {
         if let Some(socket_state) = self.socket_states.get(socket_id) {
             let had_state = socket_state.channel_states.contains_key(channel);
             socket_state.channel_states.remove(channel);
+            // Also clear per-channel delta settings
+            socket_state.remove_channel_delta_settings(channel);
             tracing::debug!(
                 "clear_channel_state: socket={}, channel={}, had_state={}",
                 socket_id,
@@ -979,8 +1080,9 @@ impl DeltaCompressionManager {
         message_bytes: &[u8],
         channel_settings: Option<&ChannelDeltaSettings>,
     ) -> Result<CompressionResult> {
-        // Check if compression is enabled for this socket
-        if !self.is_enabled_for_socket(socket_id) {
+        // Check if compression is enabled for this socket and channel
+        // This considers both global socket state and per-channel subscription settings
+        if !self.is_enabled_for_socket_channel(socket_id, channel) {
             return Ok(CompressionResult::Uncompressed);
         }
 
@@ -1115,8 +1217,11 @@ impl DeltaCompressionManager {
                     }
                 };
 
-                // Compute delta using the configured algorithm
-                let delta = match self.config.algorithm {
+                // Get the algorithm to use (per-channel override or global default)
+                let algorithm = self.get_algorithm_for_channel(socket_id, channel);
+
+                // Compute delta using the selected algorithm
+                let delta = match algorithm {
                     DeltaAlgorithm::Fossil => self.compute_fossil_delta(&last_msg, message_bytes),
                     DeltaAlgorithm::Xdelta3 => self.compute_xdelta3_delta(&last_msg, message_bytes),
                 };
@@ -1149,7 +1254,7 @@ impl DeltaCompressionManager {
                 Ok(CompressionResult::Delta {
                     delta,
                     sequence,
-                    algorithm: self.config.algorithm,
+                    algorithm,
                     conflation_key: conflation_key_opt,
                     base_index,
                 })
@@ -1307,6 +1412,17 @@ impl DeltaCompressionManager {
         Ok(())
     }
 
+    /// Check if a channel is an encrypted channel (private-encrypted-*)
+    ///
+    /// Encrypted channels use end-to-end encryption where each message payload
+    /// is encrypted with a unique nonce. This means consecutive messages have
+    /// completely different byte sequences even if the plaintext is similar,
+    /// making delta compression ineffective and wasteful.
+    #[inline]
+    pub fn is_encrypted_channel(channel: &str) -> bool {
+        channel.starts_with("private-encrypted-")
+    }
+
     /// Compute delta using Fossil algorithm
     ///
     /// Note: The fossil_delta Rust crate's `delta(a, b)` produces a delta that when applied
@@ -1331,8 +1447,15 @@ impl DeltaCompressionManager {
 
     /// Compute delta using Xdelta3 algorithm
     fn compute_xdelta3_delta(&self, old_message: &[u8], new_message: &[u8]) -> Result<Vec<u8>> {
-        xdelta3::encode(old_message, new_message)
-            .ok_or_else(|| crate::error::Error::Internal("Xdelta3 encoding failed".to_string()))
+        let mut delta = Vec::new();
+        oxidelta::compress::encoder::encode_all(
+            &mut delta,
+            old_message,
+            new_message,
+            oxidelta::compress::encoder::CompressOptions::default(),
+        )
+        .map_err(|e| crate::error::Error::Internal(format!("Xdelta3 encoding failed: {e}")))?;
+        Ok(delta)
     }
 
     /// Cleanup old states periodically
@@ -1369,7 +1492,7 @@ impl DeltaCompressionManager {
         }
 
         if cleaned_sockets > 0 || cleaned_channels > 0 {
-            tracing::info!(
+            tracing::debug!(
                 "Delta compression cleanup: removed {} socket states, {} channel states",
                 cleaned_sockets,
                 cleaned_channels
@@ -1513,25 +1636,17 @@ impl DeltaCompressionManager {
             })
             .sum();
 
-        // Estimate memory usage:
-        // - Each conflation group has a CachedMessage with ~5KB average content
-        // - Plus overhead for Arc, RwLock, DashMap entries (~200 bytes per entry)
-        // This is a rough estimate - actual usage depends on message sizes
-        let estimated_memory_bytes = total_conflation_groups * (5 * 1024 + 200)  // ~5KB per cached message + overhead
-            + total_channel_states * 500  // DashMap overhead per channel
-            + total_sockets * 200; // DashMap overhead per socket
-
         DeltaCompressionStats {
             total_sockets,
             enabled_sockets,
             total_channel_states,
             total_conflation_groups,
-            estimated_memory_bytes,
         }
     }
 }
 
 /// Result of compression attempt
+#[derive(Debug)]
 pub enum CompressionResult {
     /// No compression applied
     Uncompressed,
@@ -1557,8 +1672,6 @@ pub struct DeltaCompressionStats {
     pub enabled_sockets: usize,
     pub total_channel_states: usize,
     pub total_conflation_groups: usize,
-    /// Estimated memory usage in bytes (rough calculation)
-    pub estimated_memory_bytes: usize,
 }
 
 /// Create a delta-compressed Pusher protocol message with conflation support
@@ -2698,5 +2811,492 @@ impl Clone for NatsClusterCoordinator {
             prefix: self.prefix.clone(),
             ttl_seconds: self.ttl_seconds,
         }
+    }
+}
+
+#[cfg(test)]
+mod enhanced_tests {
+    use super::*;
+
+    // =========================================================================
+    // ENCRYPTED CHANNEL DETECTION TESTS
+    // =========================================================================
+
+    #[test]
+    fn test_is_encrypted_channel() {
+        // Positive cases - encrypted channels
+        assert!(DeltaCompressionManager::is_encrypted_channel(
+            "private-encrypted-chat"
+        ));
+        assert!(DeltaCompressionManager::is_encrypted_channel(
+            "private-encrypted-"
+        ));
+        assert!(DeltaCompressionManager::is_encrypted_channel(
+            "private-encrypted-my-channel"
+        ));
+        assert!(DeltaCompressionManager::is_encrypted_channel(
+            "private-encrypted-123"
+        ));
+
+        // Negative cases - not encrypted channels
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "private-chat"
+        ));
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "presence-room"
+        ));
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "public-channel"
+        ));
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "encrypted-private"
+        )); // wrong prefix order
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "privateencrypted-chat"
+        )); // no dash
+        assert!(!DeltaCompressionManager::is_encrypted_channel(""));
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_channel_skips_compression() {
+        let config = DeltaCompressionConfig {
+            min_message_size: 10,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Large message that would normally be compressed
+        let message = b"{\"encrypted_data\":\"very_long_encrypted_payload_that_is_definitely_over_100_bytes_to_trigger_compression_normally\"}";
+
+        // For encrypted channel, should return Uncompressed
+        let result = manager
+            .compress_message(
+                &socket_id,
+                "private-encrypted-chat",
+                "message",
+                message,
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            CompressionResult::Uncompressed => {
+                // Expected - encrypted channels should skip compression
+            }
+            _ => panic!(
+                "Expected Uncompressed for encrypted channel, got: {:?}",
+                result
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_enabled_for_socket_channel_respects_encrypted() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Regular channels should be enabled
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "private-chat"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "presence-room"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "public-channel"));
+
+        // Encrypted channels should always return false
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "private-encrypted-chat"));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "private-encrypted-secret"));
+    }
+
+    // =========================================================================
+    // PER-SUBSCRIPTION DELTA SETTINGS TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_per_channel_delta_settings_enable_disable() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        // Enable globally first
+        manager.enable_for_socket(&socket_id);
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-b"));
+
+        // Disable for specific channel
+        manager.set_channel_delta_settings(&socket_id, "channel-a", Some(false), None);
+
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-b")); // unaffected
+    }
+
+    #[tokio::test]
+    async fn test_per_channel_delta_settings_without_global_enable() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        // Socket is NOT globally enabled
+        assert!(!manager.is_enabled_for_socket(&socket_id));
+
+        // Set per-channel settings - this should auto-enable the socket
+        manager.set_channel_delta_settings(&socket_id, "channel-a", Some(true), None);
+
+        // Now the channel should be enabled (and global socket state too)
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+    }
+
+    #[tokio::test]
+    async fn test_per_channel_algorithm_override() {
+        let config = DeltaCompressionConfig {
+            algorithm: DeltaAlgorithm::Fossil, // Global default
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Default algorithm
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-a"),
+            DeltaAlgorithm::Fossil
+        );
+
+        // Override for specific channel
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "channel-a",
+            Some(true),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        // Channel A uses Xdelta3
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-a"),
+            DeltaAlgorithm::Xdelta3
+        );
+
+        // Channel B still uses global default
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-b"),
+            DeltaAlgorithm::Fossil
+        );
+    }
+
+    #[tokio::test]
+    async fn test_has_channel_delta_settings() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // No per-channel settings yet
+        assert!(!manager.has_channel_delta_settings(&socket_id, "channel-a"));
+
+        // Set per-channel settings
+        manager.set_channel_delta_settings(&socket_id, "channel-a", Some(true), None);
+
+        // Now it has settings
+        assert!(manager.has_channel_delta_settings(&socket_id, "channel-a"));
+        assert!(!manager.has_channel_delta_settings(&socket_id, "channel-b"));
+    }
+
+    #[tokio::test]
+    async fn test_clear_channel_state_clears_delta_settings() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Set per-channel settings
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "channel-a",
+            Some(false),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        assert!(manager.has_channel_delta_settings(&socket_id, "channel-a"));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+
+        // Clear channel state (simulates unsubscribe)
+        manager.clear_channel_state(&socket_id, "channel-a");
+
+        // Per-channel settings should be cleared
+        assert!(!manager.has_channel_delta_settings(&socket_id, "channel-a"));
+
+        // Should now fall back to global (enabled)
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+    }
+
+    #[tokio::test]
+    async fn test_per_channel_settings_ignored_for_encrypted_channels() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Try to enable delta for encrypted channel
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "private-encrypted-chat",
+            Some(true),
+            Some(DeltaAlgorithm::Fossil),
+        );
+
+        // Should still be disabled because is_enabled_for_socket_channel checks encrypted
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "private-encrypted-chat"));
+    }
+
+    // =========================================================================
+    // PER-CHANNEL DELTA SETTINGS STRUCT TESTS
+    // =========================================================================
+
+    #[test]
+    fn test_per_channel_delta_settings_default() {
+        let settings = PerChannelDeltaSettings::default();
+        assert!(settings.enabled);
+        assert!(settings.algorithm.is_none());
+    }
+
+    // =========================================================================
+    // COMPRESSION WITH PER-CHANNEL ALGORITHM TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_compression_uses_per_channel_algorithm() {
+        let config = DeltaCompressionConfig {
+            algorithm: DeltaAlgorithm::Fossil, // Global default
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Set Xdelta3 for this channel
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "test-channel",
+            Some(true),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        // First message (full)
+        let message1 = b"{\"test\":\"data\",\"value\":123,\"extra\":\"content_to_make_longer\"}";
+        let result1 = manager
+            .compress_message(&socket_id, "test-channel", "event", message1, None)
+            .await
+            .unwrap();
+
+        match result1 {
+            CompressionResult::FullMessage { .. } => {}
+            _ => panic!("Expected full message for first message"),
+        }
+
+        // Store the message
+        manager
+            .store_sent_message(
+                &socket_id,
+                "test-channel",
+                "event",
+                message1.to_vec(),
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Second message (should be delta with Xdelta3)
+        let message2 = b"{\"test\":\"data\",\"value\":456,\"extra\":\"content_to_make_longer\"}";
+        let result2 = manager
+            .compress_message(&socket_id, "test-channel", "event", message2, None)
+            .await
+            .unwrap();
+
+        match result2 {
+            CompressionResult::Delta { algorithm, .. } => {
+                assert_eq!(algorithm, DeltaAlgorithm::Xdelta3);
+            }
+            CompressionResult::FullMessage { .. } => {
+                // Acceptable if delta wasn't beneficial
+            }
+            _ => panic!("Expected delta or full message"),
+        }
+    }
+
+    // =========================================================================
+    // SOCKET STATE MANAGEMENT TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_socket_delta_state_channel_enabled_check() {
+        let state = SocketDeltaState {
+            enabled: true,
+            channel_states: DashMap::new(),
+            channel_delta_settings: DashMap::new(),
+        };
+
+        // Default: follows global enabled state
+        assert!(state.is_enabled_for_channel("any-channel"));
+
+        // Explicitly disable a channel
+        state.set_channel_delta_settings(
+            "disabled-channel".to_string(),
+            PerChannelDeltaSettings {
+                enabled: false,
+                algorithm: None,
+            },
+        );
+
+        assert!(!state.is_enabled_for_channel("disabled-channel"));
+        assert!(state.is_enabled_for_channel("other-channel"));
+    }
+
+    #[tokio::test]
+    async fn test_socket_delta_state_algorithm_selection() {
+        let state = SocketDeltaState {
+            enabled: true,
+            channel_states: DashMap::new(),
+            channel_delta_settings: DashMap::new(),
+        };
+
+        let default_algo = DeltaAlgorithm::Fossil;
+
+        // Default algorithm when no per-channel settings
+        assert_eq!(
+            state.get_algorithm_for_channel("channel", default_algo),
+            DeltaAlgorithm::Fossil
+        );
+
+        // Set per-channel algorithm
+        state.set_channel_delta_settings(
+            "xdelta-channel".to_string(),
+            PerChannelDeltaSettings {
+                enabled: true,
+                algorithm: Some(DeltaAlgorithm::Xdelta3),
+            },
+        );
+
+        assert_eq!(
+            state.get_algorithm_for_channel("xdelta-channel", default_algo),
+            DeltaAlgorithm::Xdelta3
+        );
+        assert_eq!(
+            state.get_algorithm_for_channel("other-channel", default_algo),
+            DeltaAlgorithm::Fossil
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_channel_delta_settings() {
+        let state = SocketDeltaState {
+            enabled: true,
+            channel_states: DashMap::new(),
+            channel_delta_settings: DashMap::new(),
+        };
+
+        state.set_channel_delta_settings(
+            "channel".to_string(),
+            PerChannelDeltaSettings {
+                enabled: false,
+                algorithm: Some(DeltaAlgorithm::Xdelta3),
+            },
+        );
+
+        assert!(!state.is_enabled_for_channel("channel"));
+
+        state.remove_channel_delta_settings("channel");
+
+        // Back to default (enabled follows global)
+        assert!(state.is_enabled_for_channel("channel"));
+    }
+
+    // =========================================================================
+    // GLOBAL DISABLED TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_global_disabled_ignores_per_channel() {
+        let config = DeltaCompressionConfig {
+            enabled: false, // Globally disabled
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        // Even with per-socket enabled
+        manager.enable_for_socket(&socket_id);
+
+        // And per-channel enabled
+        manager.set_channel_delta_settings(&socket_id, "channel", Some(true), None);
+
+        // Should still be disabled because global config is disabled
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel"));
+    }
+
+    // =========================================================================
+    // INTEGRATION TEST - FULL FLOW
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_full_per_subscription_flow() {
+        let config = DeltaCompressionConfig {
+            algorithm: DeltaAlgorithm::Fossil,
+            min_message_size: 20,
+            full_message_interval: 5,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        // Step 1: Socket connects (no global enable yet)
+        assert!(!manager.is_enabled_for_socket(&socket_id));
+
+        // Step 2: Client subscribes to channel-a with delta: { enabled: true, algorithm: 'xdelta3' }
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "channel-a",
+            Some(true),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        // Socket should now be enabled (auto-enabled by per-channel request)
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-a"),
+            DeltaAlgorithm::Xdelta3
+        );
+
+        // Step 3: Client subscribes to channel-b with delta: false
+        manager.set_channel_delta_settings(&socket_id, "channel-b", Some(false), None);
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-b"));
+
+        // Step 4: Client subscribes to channel-c without delta settings (uses global)
+        // No set_channel_delta_settings call needed
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-c"));
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-c"),
+            DeltaAlgorithm::Fossil // Global default
+        );
+
+        // Step 5: Client unsubscribes from channel-a
+        manager.clear_channel_state(&socket_id, "channel-a");
+        assert!(!manager.has_channel_delta_settings(&socket_id, "channel-a"));
+        // Falls back to global enabled
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+
+        // Step 6: Client disconnects
+        manager.remove_socket(&socket_id);
+        assert!(!manager.is_enabled_for_socket(&socket_id));
     }
 }

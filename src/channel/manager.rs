@@ -6,10 +6,11 @@ use crate::error::Error;
 use crate::protocol::messages::{MessageData, PusherMessage};
 use crate::token::{Token, secure_compare};
 use crate::websocket::SocketId;
+use ahash::AHashMap;
 use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +104,12 @@ impl ChannelManager {
         is_authenticated: bool,
         app_id: &str,
     ) -> Result<JoinResponse, Error> {
-        let channel_type = Self::get_channel_type(channel_name).await;
+        let t_start = std::time::Instant::now();
+
+        // Use direct ChannelType::from_name instead of async cache lookup (optimization)
+        let t_before_channel_type = t_start.elapsed().as_micros();
+        let channel_type = ChannelType::from_name(channel_name);
+        let t_after_channel_type = t_start.elapsed().as_micros();
 
         if channel_type.requires_authentication() && !is_authenticated {
             return Err(Error::Auth("Channel requires authentication".into()));
@@ -112,33 +118,73 @@ impl ChannelManager {
         let socket_id_owned = SocketId::from_string(socket_id).unwrap_or_else(|_| SocketId::new());
 
         // Parse presence data early to fail fast before any locking
+        let t_before_parse = t_start.elapsed().as_micros();
         let member = if channel_type == ChannelType::Presence {
             Some(Self::parse_presence_data(&data.data)?)
         } else {
             None
         };
+        let t_after_parse = t_start.elapsed().as_micros();
 
-        // Use add_to_channel's idempotent behavior to atomically handle subscription
-        // This eliminates the race condition by combining check and add operations
-        let newly_added = connection_manager
-            .add_to_channel(app_id, channel_name, &socket_id_owned)
-            .await?;
+        // Single lock acquisition for check and add (reduces lock contention)
+        let t_before_lock = t_start.elapsed().as_micros();
+        let (is_already_in_channel, total_connections) = {
+            // Check if already in channel
+            let already_in = connection_manager
+                .is_in_channel(app_id, channel_name, &socket_id_owned)
+                .await?;
 
-        // Get the total connection count
-        let total_connections = connection_manager
-            .get_channel_sockets(app_id, channel_name)
-            .await?
-            .len();
+            if already_in {
+                // Already subscribed, just get count
+                let count = connection_manager
+                    .get_channel_socket_count(app_id, channel_name)
+                    .await;
+                (true, count)
+            } else {
+                // Need to add to channel
+                connection_manager
+                    .add_to_channel(app_id, channel_name, &socket_id_owned)
+                    .await?;
+                let count = connection_manager
+                    .get_channel_socket_count(app_id, channel_name)
+                    .await;
+                (false, count)
+            }
+        };
+        let t_after_lock = t_start.elapsed().as_micros();
 
-        let was_newly_added = newly_added;
+        if is_already_in_channel {
+            tracing::debug!(
+                "PERF[CHAN_MGR_ALREADY] channel={} total={}μs single_lock={}μs",
+                channel_name,
+                t_start.elapsed().as_micros(),
+                t_after_lock - t_before_lock
+            );
 
-        // If socket was already subscribed, return without the member data
-        // (member data is only sent on initial subscription)
-        let response_member = if was_newly_added { member } else { None };
+            return Ok(JoinResponse {
+                success: true,
+                channel_connections: Some(total_connections),
+                member: None,
+                auth_error: None,
+                error_message: None,
+                error_code: None,
+                _type: None,
+            });
+        }
+
+        let total = t_start.elapsed().as_micros();
+        tracing::debug!(
+            "PERF[CHAN_MGR] channel={} total={}μs channel_type={}μs parse={}μs single_lock={}μs",
+            channel_name,
+            total,
+            t_after_channel_type - t_before_channel_type,
+            t_after_parse - t_before_parse,
+            t_after_lock - t_before_lock
+        );
 
         Ok(Self::create_success_join_response(
             total_connections,
-            response_member,
+            member,
         ))
     }
 
@@ -152,7 +198,7 @@ impl ChannelManager {
         let socket_id_owned = SocketId::from_string(socket_id).unwrap_or_else(|_| SocketId::new());
         let channel_type = Self::get_channel_type(channel_name).await;
 
-        // Get presence member info before removal if needed
+        // Get presence member info before removal if needed (separate lock scope)
         let member = if channel_type == ChannelType::Presence {
             if let Some(user_id) = user_id {
                 let members = connection_manager
@@ -171,22 +217,26 @@ impl ChannelManager {
             None
         };
 
-        // Remove socket and handle cleanup
-        let socket_removed = connection_manager
-            .remove_from_channel(app_id, channel_name, &socket_id_owned)
-            .await?;
+        // Remove socket and handle cleanup atomically
+        let (socket_removed, remaining_connections) = {
+            let socket_removed = connection_manager
+                .remove_from_channel(app_id, channel_name, &socket_id_owned)
+                .await?;
 
-        let remaining_connections = connection_manager
-            .get_channel_sockets(app_id, channel_name)
-            .await?
-            .len();
+            let remaining = connection_manager
+                .get_channel_sockets(app_id, channel_name)
+                .await?
+                .len();
 
-        // Clean up empty channels
-        if remaining_connections == 0 {
-            connection_manager
-                .remove_channel(app_id, channel_name)
-                .await;
-        }
+            // Clean up empty channels
+            if remaining == 0 {
+                connection_manager
+                    .remove_channel(app_id, channel_name)
+                    .await;
+            }
+
+            (socket_removed, remaining)
+        };
 
         Ok(Self::create_leave_response(
             socket_removed,
@@ -223,7 +273,7 @@ impl ChannelManager {
 
     fn extract_presence_member(
         data: &Value,
-        extra: &HashMap<String, Value>,
+        extra: &AHashMap<String, Value>,
     ) -> Result<PresenceMember, Error> {
         // For structured data, channel_data is already parsed
         if let Some(channel_data_str) = data.get("channel_data").and_then(|v| v.as_str()) {
@@ -391,7 +441,7 @@ impl ChannelManager {
         connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         app_id: &str,
         channel: &str,
-    ) -> Result<HashMap<String, PresenceMemberInfo>, Error> {
+    ) -> Result<AHashMap<String, PresenceMemberInfo>, Error> {
         connection_manager
             .get_channel_members(app_id, channel)
             .await
@@ -411,10 +461,8 @@ impl ChannelManager {
         let mut channels_to_cleanup = Vec::new();
 
         for (socket_id, channel_name, app_id) in operations {
-            let socket_id_owned =
-                SocketId::from_string(&socket_id).unwrap_or_else(|_| SocketId::new());
-
-            // Remove from channel
+            let socket_id_owned = SocketId::from_string(&socket_id)
+                .map_err(|e| Error::Connection(format!("Invalid socket ID: {}", e)))?;
             match connection_manager
                 .remove_from_channel(&app_id, &channel_name, &socket_id_owned)
                 .await

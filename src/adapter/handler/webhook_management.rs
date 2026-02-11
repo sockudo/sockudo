@@ -16,8 +16,8 @@ impl ConnectionHandler {
         if let Some(webhook_integration) = &self.webhook_integration {
             // Get user_id for presence channels - clone the string to avoid lifetime issues
             let user_id = if request.channel.starts_with("presence-") {
-                if let Some(conn_arc) = self
-                    .connection_manager
+                let connection_manager = &self.connection_manager;
+                if let Some(conn_arc) = connection_manager
                     .get_connection(socket_id, &app_config.id)
                     .await
                 {

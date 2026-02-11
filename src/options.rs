@@ -4,8 +4,8 @@ use crate::adapter::nats_adapter::DEFAULT_PREFIX as NATS_DEFAULT_PREFIX;
 use crate::adapter::redis_cluster_adapter::DEFAULT_PREFIX as REDIS_CLUSTER_DEFAULT_PREFIX;
 use crate::app::config::App;
 use crate::utils::{parse_bool_env, parse_env, parse_env_optional};
+use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::str::FromStr;
 use tracing::{info, warn};
 
@@ -93,6 +93,7 @@ pub struct DynamoDbSettings {
     pub aws_access_key_id: Option<String>,
     pub aws_secret_access_key: Option<String>,
     pub aws_profile_name: Option<String>,
+    // cache_ttl for app_manager is already in AppManagerConfig.cache.ttl
 }
 
 impl Default for DynamoDbSettings {
@@ -154,7 +155,7 @@ pub enum AppManagerDriver {
     Memory,
     Mysql,
     Dynamodb,
-    PgSql,
+    PgSql, // Added PostgreSQL as a potential driver
     ScyllaDb,
 }
 impl FromStr for AppManagerDriver {
@@ -332,14 +333,9 @@ pub struct ServerOptions {
     pub activity_timeout: u64,
     pub cluster_health: ClusterHealthConfig,
     pub unix_socket: UnixSocketConfig,
-    #[cfg(feature = "delta-compression")]
-    #[serde(default)]
-    pub delta_compression: DeltaCompressionOptions,
-    #[cfg(feature = "tag-filtering")]
-    #[serde(default)]
+    pub delta_compression: DeltaCompressionConfig,
     pub tag_filtering: TagFilteringConfig,
-    #[serde(default)]
-    pub websocket: WebSocketOptions,
+    pub websocket: WebSocketConfig,
 }
 
 // --- Configuration Sub-Structs ---
@@ -368,6 +364,12 @@ pub struct AdapterConfig {
     #[serde(default = "default_buffer_multiplier_per_cpu")]
     pub buffer_multiplier_per_cpu: usize,
     pub cluster_health: ClusterHealthConfig,
+    #[serde(default = "default_enable_socket_counting")]
+    pub enable_socket_counting: bool,
+}
+
+fn default_enable_socket_counting() -> bool {
+    true // Enable socket counting by default
 }
 
 fn default_buffer_multiplier_per_cpu() -> usize {
@@ -383,6 +385,7 @@ impl Default for AdapterConfig {
             nats: NatsAdapterConfig::default(),
             buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
             cluster_health: ClusterHealthConfig::default(),
+            enable_socket_counting: default_enable_socket_counting(),
         }
     }
 }
@@ -392,8 +395,8 @@ impl Default for AdapterConfig {
 pub struct RedisAdapterConfig {
     pub requests_timeout: u64,
     pub prefix: String,
-    pub redis_pub_options: HashMap<String, serde_json::Value>,
-    pub redis_sub_options: HashMap<String, serde_json::Value>,
+    pub redis_pub_options: AHashMap<String, serde_json::Value>,
+    pub redis_sub_options: AHashMap<String, serde_json::Value>,
     pub cluster_mode: bool,
 }
 
@@ -404,6 +407,11 @@ pub struct RedisClusterAdapterConfig {
     pub prefix: String,
     pub request_timeout_ms: u64,
     pub use_connection_manager: bool,
+    /// Use sharded pub/sub (SSUBSCRIBE/SPUBLISH) for Redis 7.0+
+    /// This routes messages to specific nodes instead of broadcasting to all
+    /// Significantly improves performance in large clusters (10x+ faster)
+    #[serde(default)]
+    pub use_sharded_pubsub: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,6 +433,7 @@ pub struct AppManagerConfig {
     pub driver: AppManagerDriver,
     pub array: ArrayConfig,
     pub cache: CacheSettings,
+    pub scylladb: ScyllaDbSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -772,6 +781,126 @@ pub struct PresenceConfig {
     pub max_member_size_in_kb: u32,
 }
 
+/// WebSocket connection buffer configuration
+/// Controls backpressure handling for slow consumers
+///
+/// Supports three limit modes:
+/// 1. Message count only (default, fastest) - set `max_messages`
+/// 2. Byte size only - set `max_bytes`
+/// 3. Both limits (whichever triggers first) - set both
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebSocketConfig {
+    /// Maximum number of messages that can be buffered per connection
+    /// When exceeded, the connection will be closed if disconnect_on_buffer_full is true
+    /// Default: 1000 messages. Set to None to disable message count limit.
+    pub max_messages: Option<usize>,
+    /// Maximum bytes that can be buffered per connection
+    /// When exceeded, the connection will be closed if disconnect_on_buffer_full is true
+    /// Default: None (disabled). Set to enable byte-based limiting (e.g., 1048576 for 1MB)
+    pub max_bytes: Option<usize>,
+    /// Whether to disconnect slow clients when buffer is full
+    /// If false, messages will be dropped instead of disconnecting
+    /// Default: true
+    pub disconnect_on_buffer_full: bool,
+    /// Native sockudo-ws max message size in bytes.
+    /// Defaults to 64MB.
+    pub max_message_size: usize,
+    /// Native sockudo-ws max frame size in bytes.
+    /// Defaults to 16MB.
+    pub max_frame_size: usize,
+    /// Native sockudo-ws write buffer size in bytes.
+    /// Defaults to 16KB.
+    pub write_buffer_size: usize,
+    /// Native sockudo-ws max backpressure in bytes before closing.
+    /// Defaults to 1MB.
+    pub max_backpressure: usize,
+    /// Native sockudo-ws automatic ping enablement.
+    pub auto_ping: bool,
+    /// Native sockudo-ws ping interval in seconds.
+    pub ping_interval: u32,
+    /// Native sockudo-ws idle timeout in seconds (0 disables).
+    pub idle_timeout: u32,
+    /// Native sockudo-ws compression mode.
+    /// Supported: disabled, dedicated, shared, window256b, window1kb, window2kb, window4kb, window8kb, window16kb, window32kb
+    pub compression: String,
+}
+
+impl Default for WebSocketConfig {
+    fn default() -> Self {
+        Self {
+            max_messages: Some(1000),
+            max_bytes: None,
+            disconnect_on_buffer_full: true,
+            max_message_size: 64 * 1024 * 1024,
+            max_frame_size: 16 * 1024 * 1024,
+            write_buffer_size: 16 * 1024,
+            max_backpressure: 1024 * 1024,
+            auto_ping: true,
+            ping_interval: 30,
+            idle_timeout: 120,
+            compression: "disabled".to_string(),
+        }
+    }
+}
+
+impl WebSocketConfig {
+    /// Convert to WebSocketBufferConfig for runtime use
+    pub fn to_buffer_config(&self) -> crate::websocket::WebSocketBufferConfig {
+        use crate::websocket::{BufferLimit, WebSocketBufferConfig};
+
+        let limit = match (self.max_messages, self.max_bytes) {
+            (Some(messages), Some(bytes)) => BufferLimit::Both { messages, bytes },
+            (Some(messages), None) => BufferLimit::Messages(messages),
+            (None, Some(bytes)) => BufferLimit::Bytes(bytes),
+            // If both are None, use default message limit
+            (None, None) => BufferLimit::Messages(1000),
+        };
+
+        WebSocketBufferConfig {
+            limit,
+            disconnect_on_full: self.disconnect_on_buffer_full,
+        }
+    }
+
+    /// Convert to native sockudo-ws runtime configuration.
+    pub fn to_sockudo_ws_config(
+        &self,
+        websocket_max_payload_kb: u32,
+        activity_timeout: u64,
+    ) -> sockudo_ws::Config {
+        use sockudo_ws::Compression;
+
+        let compression = match self.compression.to_lowercase().as_str() {
+            "dedicated" => Compression::Dedicated,
+            "shared" => Compression::Shared,
+            "window256b" => Compression::Window256B,
+            "window1kb" => Compression::Window1KB,
+            "window2kb" => Compression::Window2KB,
+            "window4kb" => Compression::Window4KB,
+            "window8kb" => Compression::Window8KB,
+            "window16kb" => Compression::Window16KB,
+            "window32kb" => Compression::Window32KB,
+            _ => Compression::Disabled,
+        };
+
+        sockudo_ws::Config::builder()
+            .max_payload_length(
+                self.max_bytes
+                    .unwrap_or(websocket_max_payload_kb as usize * 1024),
+            )
+            .max_message_size(self.max_message_size)
+            .max_frame_size(self.max_frame_size)
+            .write_buffer_size(self.write_buffer_size)
+            .max_backpressure(self.max_backpressure)
+            .idle_timeout(self.idle_timeout)
+            .auto_ping(self.auto_ping)
+            .ping_interval(self.ping_interval.max((activity_timeout / 2).max(5) as u32))
+            .compression(compression)
+            .build()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct QueueConfig {
@@ -853,94 +982,19 @@ pub struct UnixSocketConfig {
     pub permission_mode: u32, // Octal file permissions (e.g., "755" string, 755 number, or 0o755 literal)
 }
 
-// --- Delta Compression, Tag Filtering, and WebSocket Buffer Config ---
-
-/// Configuration for delta compression (feature-gated behind `delta-compression`)
-#[cfg(feature = "delta-compression")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct DeltaCompressionOptions {
+pub struct DeltaCompressionConfig {
     pub enabled: bool,
-    pub algorithm: String,
+    pub algorithm: String, // "fossil" or "xdelta3"
     pub full_message_interval: u32,
     pub min_message_size: usize,
     pub max_state_age_secs: u64,
     pub max_channel_states_per_socket: usize,
-    pub max_conflation_states_per_channel: Option<usize>,
-    pub conflation_key_path: Option<String>,
-    pub cluster_coordination: bool,
-    pub omit_delta_algorithm: bool,
-}
-
-#[cfg(feature = "delta-compression")]
-impl Default for DeltaCompressionOptions {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            algorithm: "fossil".to_string(),
-            full_message_interval: 10,
-            min_message_size: 100,
-            max_state_age_secs: 300,
-            max_channel_states_per_socket: 10,
-            max_conflation_states_per_channel: Some(10),
-            conflation_key_path: None,
-            cluster_coordination: false,
-            omit_delta_algorithm: false,
-        }
-    }
-}
-
-/// Configuration for tag-based publication filtering (feature-gated behind `tag-filtering`)
-#[cfg(feature = "tag-filtering")]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct TagFilteringConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_tag_enable_tags")]
-    pub enable_tags: bool,
-}
-
-#[cfg(feature = "tag-filtering")]
-fn default_tag_enable_tags() -> bool {
-    true
-}
-
-/// Configuration for WebSocket connection buffers
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WebSocketOptions {
-    pub max_messages: Option<usize>,
-    pub max_bytes: Option<usize>,
-    pub disconnect_on_buffer_full: bool,
-}
-
-impl Default for WebSocketOptions {
-    fn default() -> Self {
-        Self {
-            max_messages: Some(1000),
-            max_bytes: None,
-            disconnect_on_buffer_full: true,
-        }
-    }
-}
-
-impl WebSocketOptions {
-    pub fn to_buffer_config(&self) -> crate::websocket::WebSocketBufferConfig {
-        use crate::websocket::{BufferLimit, WebSocketBufferConfig};
-
-        let limit = match (self.max_messages, self.max_bytes) {
-            (Some(messages), Some(bytes)) => BufferLimit::Both { messages, bytes },
-            (Some(messages), None) => BufferLimit::Messages(messages),
-            (None, Some(bytes)) => BufferLimit::Bytes(bytes),
-            (None, None) => BufferLimit::Unlimited,
-        };
-
-        WebSocketBufferConfig {
-            limit,
-            disconnect_on_full: self.disconnect_on_buffer_full,
-        }
-    }
+    pub max_conflation_states_per_channel: Option<usize>, // Max conflation groups per channel
+    pub conflation_key_path: Option<String>, // JSON path to extract conflation key (e.g., "$.asset" or "$.data.symbol")
+    pub cluster_coordination: bool, // Enable cluster-wide delta interval coordination (requires Redis/NATS adapter)
+    pub omit_delta_algorithm: bool, // Omit the 'algorithm' field from delta messages
 }
 
 // --- Default Implementations ---
@@ -956,6 +1010,7 @@ impl Default for ServerOptions {
             database: DatabaseConfig::default(),
             database_pooling: DatabasePooling::default(),
             debug: false,
+            tag_filtering: TagFilteringConfig::default(),
             event_limits: EventLimits::default(),
             host: "0.0.0.0".to_string(),
             http_api: HttpApiConfig::default(),
@@ -977,13 +1032,23 @@ impl Default for ServerOptions {
             activity_timeout: 120,
             cluster_health: ClusterHealthConfig::default(),
             unix_socket: UnixSocketConfig::default(),
-            #[cfg(feature = "delta-compression")]
-            delta_compression: DeltaCompressionOptions::default(),
-            #[cfg(feature = "tag-filtering")]
-            tag_filtering: TagFilteringConfig::default(),
-            websocket: WebSocketOptions::default(),
+            delta_compression: DeltaCompressionConfig::default(),
+            websocket: WebSocketConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TagFilteringConfig {
+    #[serde(default)]
+    pub enabled: bool, // Disabled by default for backward compatibility
+    #[serde(default = "default_true")]
+    pub enable_tags: bool, // Include tags in messages (can be disabled globally to save bandwidth)
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for SqsQueueConfig {
@@ -1007,8 +1072,8 @@ impl Default for RedisAdapterConfig {
         Self {
             requests_timeout: 5000,
             prefix: "sockudo_adapter:".to_string(),
-            redis_pub_options: HashMap::new(),
-            redis_sub_options: HashMap::new(),
+            redis_pub_options: AHashMap::new(),
+            redis_sub_options: AHashMap::new(),
             cluster_mode: false,
         }
     }
@@ -1022,8 +1087,13 @@ impl Default for RedisClusterAdapterConfig {
             prefix: REDIS_CLUSTER_DEFAULT_PREFIX.to_string(),
             #[cfg(not(feature = "redis-cluster"))]
             prefix: "sockudo_adapter:".to_string(),
-            request_timeout_ms: 5000,
+            // Reduced from 5000ms to 1000ms for faster subscriptions in multi-node clusters
+            // Most responses come back in <100ms, waiting 5s was excessive
+            request_timeout_ms: 1000,
             use_connection_manager: true,
+            // Sharded pub/sub is disabled by default for compatibility
+            // Enable for Redis 7.0+ clusters for better performance
+            use_sharded_pubsub: false,
         }
     }
 }
@@ -1334,6 +1404,23 @@ impl Default for UnixSocketConfig {
     }
 }
 
+impl Default for DeltaCompressionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            algorithm: "fossil".to_string(),
+            full_message_interval: 10,
+            min_message_size: 100,
+            max_state_age_secs: 300, // 5 minutes
+            max_channel_states_per_socket: 100,
+            max_conflation_states_per_channel: Some(100), // Limit conflation groups
+            conflation_key_path: None,                    // Disabled by default
+            cluster_coordination: false,                  // Disabled by default (opt-in)
+            omit_delta_algorithm: false,                  // Disabled by default
+        }
+    }
+}
+
 impl ClusterHealthConfig {
     /// Validate cluster health configuration and return helpful error messages
     pub fn validate(&self) -> Result<(), String> {
@@ -1416,6 +1503,10 @@ impl ServerOptions {
         self.adapter.buffer_multiplier_per_cpu = parse_env::<usize>(
             "ADAPTER_BUFFER_MULTIPLIER_PER_CPU",
             self.adapter.buffer_multiplier_per_cpu,
+        );
+        self.adapter.enable_socket_counting = parse_env::<bool>(
+            "ADAPTER_ENABLE_SOCKET_COUNTING",
+            self.adapter.enable_socket_counting,
         );
         if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
             self.cache.driver = parse_driver_enum(driver_str, self.cache.driver.clone(), "Cache");
@@ -1684,19 +1775,21 @@ impl ServerOptions {
             self.database.mysql.connection_pool_size = pool_size;
             self.database.postgres.connection_pool_size = pool_size;
         }
-        self.app_manager.cache.enabled =
-            parse_bool_env("APP_MANAGER_CACHE_ENABLED", self.app_manager.cache.enabled);
-        self.app_manager.cache.ttl =
-            parse_env::<u64>("APP_MANAGER_CACHE_TTL", self.app_manager.cache.ttl);
-
         if let Some(cache_ttl) = parse_env_optional::<u64>("CACHE_TTL_SECONDS") {
             self.app_manager.cache.ttl = cache_ttl;
+            self.channel_limits.cache_ttl = cache_ttl;
+            self.database.mysql.cache_ttl = cache_ttl;
+            self.database.postgres.cache_ttl = cache_ttl;
             self.cache.memory.ttl = cache_ttl;
         }
         if let Some(cleanup_interval) = parse_env_optional::<u64>("CACHE_CLEANUP_INTERVAL") {
+            self.database.mysql.cache_cleanup_interval = cleanup_interval;
+            self.database.postgres.cache_cleanup_interval = cleanup_interval;
             self.cache.memory.cleanup_interval = cleanup_interval;
         }
         if let Some(max_capacity) = parse_env_optional::<u64>("CACHE_MAX_CAPACITY") {
+            self.database.mysql.cache_max_capacity = max_capacity;
+            self.database.postgres.cache_max_capacity = max_capacity;
             self.cache.memory.max_capacity = max_capacity;
         }
 
@@ -1781,6 +1874,7 @@ impl ServerOptions {
                         None
                     }
                 },
+                channel_delta_compression: None, // No per-channel config by default
             };
 
             self.app_manager.array.apps.push(default_app);
@@ -1871,11 +1965,8 @@ impl ServerOptions {
         );
 
         // Tag filtering configuration
-        #[cfg(feature = "tag-filtering")]
-        {
-            self.tag_filtering.enabled =
-                parse_bool_env("TAG_FILTERING_ENABLED", self.tag_filtering.enabled);
-        }
+        self.tag_filtering.enabled =
+            parse_bool_env("TAG_FILTERING_ENABLED", self.tag_filtering.enabled);
 
         // WebSocket buffer configuration
         if let Ok(val) = std::env::var("WEBSOCKET_MAX_MESSAGES") {
@@ -1896,6 +1987,28 @@ impl ServerOptions {
             "WEBSOCKET_DISCONNECT_ON_BUFFER_FULL",
             self.websocket.disconnect_on_buffer_full,
         );
+        self.websocket.max_message_size = parse_env::<usize>(
+            "WEBSOCKET_MAX_MESSAGE_SIZE",
+            self.websocket.max_message_size,
+        );
+        self.websocket.max_frame_size =
+            parse_env::<usize>("WEBSOCKET_MAX_FRAME_SIZE", self.websocket.max_frame_size);
+        self.websocket.write_buffer_size = parse_env::<usize>(
+            "WEBSOCKET_WRITE_BUFFER_SIZE",
+            self.websocket.write_buffer_size,
+        );
+        self.websocket.max_backpressure = parse_env::<usize>(
+            "WEBSOCKET_MAX_BACKPRESSURE",
+            self.websocket.max_backpressure,
+        );
+        self.websocket.auto_ping = parse_bool_env("WEBSOCKET_AUTO_PING", self.websocket.auto_ping);
+        self.websocket.ping_interval =
+            parse_env::<u32>("WEBSOCKET_PING_INTERVAL", self.websocket.ping_interval);
+        self.websocket.idle_timeout =
+            parse_env::<u32>("WEBSOCKET_IDLE_TIMEOUT", self.websocket.idle_timeout);
+        if let Ok(mode) = std::env::var("WEBSOCKET_COMPRESSION") {
+            self.websocket.compression = mode;
+        }
 
         Ok(())
     }

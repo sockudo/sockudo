@@ -1,0 +1,246 @@
+name: Soak Test - Memory Leak Detection
+
+on:
+  # Run on schedule (daily at 2 AM UTC)
+  schedule:
+    - cron: '0 2 * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Test duration (e.g., 10m, 30m, 1h)'
+        required: false
+        default: '30m'
+      vus:
+        description: 'Number of virtual users'
+        required: false
+        default: '500'
+      message_rate:
+        description: 'Messages per second from sender'
+        required: false
+        default: '1000'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  soak-test:
+    name: Soak Test (${{ github.event.inputs.duration || '30m' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "soak-test"
+
+      - name: Build Sockudo (release)
+        run: cargo build --release
+
+      - name: Build Sender (release)
+        run: cargo build --release --manifest-path benchmarks/sender/Cargo.toml
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Create test config
+        run: |
+          cat > config/soak-test-config.json << 'EOF'
+          {
+            "debug": false,
+            "port": 6001,
+            "metrics": {
+              "enabled": true,
+              "port": 9601
+            },
+            "app_manager": {
+              "driver": "memory",
+              "memory": {
+                "apps": [
+                  {
+                    "id": "soak-test-app",
+                    "key": "app-key",
+                    "secret": "app-secret",
+                    "max_connections": 10000,
+                    "enable_client_messages": true,
+                    "max_client_events_per_second": 1000
+                  }
+                ]
+              }
+            },
+            "websocket": {
+              "max_message_size": 65536
+            },
+            "rate_limiter": {
+              "enabled": false
+            }
+          }
+          EOF
+
+      - name: Start Sockudo
+        run: |
+          ./target/release/sockudo --config config/soak-test-config.json &
+          echo $! > sockudo.pid
+          sleep 5
+
+          # Verify Sockudo is running
+          curl -f http://localhost:6001/up/soak-test-app || (cat sockudo.pid && exit 1)
+          echo "Sockudo started successfully"
+
+          # Verify metrics endpoint
+          curl -f http://localhost:9601/metrics | head -20
+          echo "Metrics endpoint working"
+
+      - name: Start message sender
+        run: |
+          cd benchmarks/sender
+          ../../target/release/sender \
+            --host 127.0.0.1 \
+            --port 6001 \
+            --app-id soak-test-app \
+            --app-key app-key \
+            --app-secret app-secret \
+            --channel price:* \
+            --interval 0.001 \
+            --token-messages &
+          echo $! > ../../sender.pid
+          sleep 2
+          echo "Sender started"
+
+      - name: Run soak test
+        id: soak_test
+        run: |
+          DURATION="${{ github.event.inputs.duration || '30m' }}"
+          VUS="${{ github.event.inputs.vus || '500' }}"
+
+          echo "Running soak test: $VUS VUs for $DURATION"
+
+          # Run k6 soak test
+          VUS=$VUS \
+          SOAK_DURATION=$DURATION \
+          RAMP_UP=2m \
+          RAMP_DOWN=2m \
+          APP_KEY=app-key \
+          APP_ID=soak-test-app \
+          METRICS_URL=http://localhost:9601/metrics \
+          THRESHOLD_MEMORY_GROWTH_MB=300 \
+          THRESHOLD_WS_ERRORS=1000 \
+          k6 run benchmarks/k6-soak-test.js \
+            --summary-export=soak-test-results.json \
+            2>&1 | tee soak-test-output.log
+
+          # Capture exit code
+          K6_EXIT_CODE=${PIPESTATUS[0]}
+          echo "k6_exit_code=$K6_EXIT_CODE" >> $GITHUB_OUTPUT
+
+          # Extract memory growth for summary
+          MEMORY_GROWTH=$(cat soak-test-results.json | jq -r '.summary.server_memory.growth_mb // "N/A"')
+          echo "memory_growth=$MEMORY_GROWTH" >> $GITHUB_OUTPUT
+
+          LEAK_DETECTED=$(cat soak-test-results.json | jq -r '.summary.server_memory.leak_detected // false')
+          echo "leak_detected=$LEAK_DETECTED" >> $GITHUB_OUTPUT
+
+          exit $K6_EXIT_CODE
+
+      - name: Stop services
+        if: always()
+        run: |
+          # Stop sender
+          if [ -f sender.pid ]; then
+            kill $(cat sender.pid) 2>/dev/null || true
+          fi
+
+          # Stop Sockudo
+          if [ -f sockudo.pid ]; then
+            kill $(cat sockudo.pid) 2>/dev/null || true
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-test-results-${{ github.run_id }}
+          path: |
+            soak-test-results.json
+            soak-test-output.log
+          retention-days: 30
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## Soak Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f soak-test-results.json ]; then
+            echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+            echo "- **Duration:** ${{ github.event.inputs.duration || '30m' }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Virtual Users:** ${{ github.event.inputs.vus || '500' }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            echo "### Memory Analysis" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| First Sample | $(jq -r '.summary.server_memory.first_sample_mb // "N/A"' soak-test-results.json) MB |" >> $GITHUB_STEP_SUMMARY
+            echo "| Last Sample | $(jq -r '.summary.server_memory.last_sample_mb // "N/A"' soak-test-results.json) MB |" >> $GITHUB_STEP_SUMMARY
+            echo "| Growth | $(jq -r '.summary.server_memory.growth_mb // "N/A"' soak-test-results.json) MB |" >> $GITHUB_STEP_SUMMARY
+            echo "| Leak Detected | $(jq -r '.summary.server_memory.leak_detected // "N/A"' soak-test-results.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            echo "### Connection Metrics" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Connections | $(jq -r '.summary.connection_metrics.total_connections // "N/A"' soak-test-results.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Success Rate | $(jq -r '.summary.connection_metrics.success_rate // "N/A"' soak-test-results.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Messages Received | $(jq -r '.summary.message_metrics.total_received // "N/A"' soak-test-results.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            echo "### Error Metrics" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| WS Errors | $(jq -r '.summary.error_metrics.ws_errors // "N/A"' soak-test-results.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Timeouts | $(jq -r '.summary.error_metrics.ws_timeouts // "N/A"' soak-test-results.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Unexpected Closes | $(jq -r '.summary.error_metrics.unexpected_closes // "N/A"' soak-test-results.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Check for indicators
+            INDICATORS=$(jq -r '.indicators[]?' soak-test-results.json)
+            if [ -n "$INDICATORS" ]; then
+              echo "### ⚠️ Indicators" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "$INDICATORS" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### ✅ No Issues Detected" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ No results file found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check for memory leak
+        if: always()
+        run: |
+          if [ "${{ steps.soak_test.outputs.leak_detected }}" == "true" ]; then
+            echo "::error::Memory leak detected! Growth: ${{ steps.soak_test.outputs.memory_growth }} MB"
+            exit 1
+          fi
+
+          # Also fail if k6 thresholds failed
+          if [ "${{ steps.soak_test.outputs.k6_exit_code }}" != "0" ]; then
+            echo "::warning::K6 thresholds failed, but no memory leak detected"
+          fi

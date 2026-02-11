@@ -3,11 +3,12 @@ use sockudo::adapter::local_adapter::LocalAdapter;
 use sockudo::options::ClusterHealthConfig;
 use sockudo::websocket::SocketId;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Test that LocalAdapter gracefully handles cluster health configuration
 #[tokio::test]
 async fn test_local_adapter_cluster_health_disabled() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
 
     // LocalAdapter should not support cluster health, but should not panic
     // when these methods are called (they should be no-ops or return appropriate errors)
@@ -63,7 +64,7 @@ async fn test_local_adapter_no_horizontal_interface() {
     // adapter.broadcast_presence_leave("app", "channel", "user", "socket").await;
 
     // Instead, LocalAdapter should work purely locally
-    let mut local_adapter = adapter;
+    let local_adapter = adapter;
     local_adapter.init().await;
 
     // Local operations should work fine
@@ -76,7 +77,7 @@ async fn test_local_adapter_no_horizontal_interface() {
 /// Test LocalAdapter with presence operations
 #[tokio::test]
 async fn test_local_adapter_presence_operations() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app_id = "test-app";
@@ -146,7 +147,7 @@ async fn test_local_adapter_fallback_from_failed_distributed_adapter() {
     };
 
     // Create local adapter as fallback
-    let mut fallback_adapter = LocalAdapter::new();
+    let fallback_adapter = LocalAdapter::new();
     fallback_adapter.init().await;
 
     // Local adapter should work even when cluster health config is available
@@ -181,7 +182,7 @@ async fn test_local_adapter_fallback_from_failed_distributed_adapter() {
 /// Test LocalAdapter multi-app isolation
 #[tokio::test]
 async fn test_local_adapter_app_isolation() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app1 = "app-1";
@@ -237,9 +238,12 @@ async fn test_local_adapter_app_isolation() {
 /// Test LocalAdapter concurrent operations
 #[tokio::test]
 async fn test_local_adapter_concurrent_operations() {
-    let adapter = Arc::new(LocalAdapter::new());
+    let adapter = Arc::new(Mutex::new(LocalAdapter::new()));
 
-    adapter.init().await;
+    {
+        let adapter_guard = adapter.lock().await;
+        adapter_guard.init().await;
+    }
 
     let app_id = "concurrent-app";
     let channel = "concurrent-channel";
@@ -252,23 +256,24 @@ async fn test_local_adapter_concurrent_operations() {
         let socket_id = format!("socket-{}", i);
 
         let handle = tokio::spawn(async move {
+            let adapter_guard = adapter_clone.lock().await;
             let socket = SocketId::from_string(&socket_id).unwrap();
 
             // Add to channel
-            adapter_clone
+            adapter_guard
                 .add_to_channel(app_id, channel, &socket)
                 .await
                 .unwrap();
 
             // Check if exists
-            let exists = adapter_clone
+            let exists = adapter_guard
                 .is_in_channel(app_id, channel, &socket)
                 .await
                 .unwrap();
             assert!(exists);
 
             // Remove from channel
-            adapter_clone
+            adapter_guard
                 .remove_from_channel(app_id, channel, &socket)
                 .await
                 .unwrap();
@@ -282,7 +287,12 @@ async fn test_local_adapter_concurrent_operations() {
     }
 
     // Final count should be 0
-    let final_count = adapter.get_channel_socket_count(app_id, channel).await;
+    let final_count = {
+        let adapter_guard = adapter.lock().await;
+        adapter_guard
+            .get_channel_socket_count(app_id, channel)
+            .await
+    };
 
     assert_eq!(
         final_count, 0,
@@ -293,7 +303,7 @@ async fn test_local_adapter_concurrent_operations() {
 /// Test LocalAdapter memory cleanup
 #[tokio::test]
 async fn test_local_adapter_memory_cleanup() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app_id = "cleanup-app";
@@ -350,7 +360,7 @@ async fn test_local_adapter_with_custom_buffer() {
     // Adapter should be created successfully with custom buffer
     // The buffer size affects internal capacity but doesn't change the API behavior
 
-    let mut local_adapter = adapter;
+    let local_adapter = adapter;
     local_adapter.init().await;
 
     // Should work the same as default adapter
@@ -373,7 +383,7 @@ async fn test_local_adapter_with_custom_buffer() {
 /// Test LocalAdapter error handling
 #[tokio::test]
 async fn test_local_adapter_error_handling() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app_id = "error-test-app";
@@ -424,7 +434,7 @@ async fn test_local_adapter_error_handling() {
 /// Test LocalAdapter large scale operations
 #[tokio::test]
 async fn test_local_adapter_large_scale() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app_id = "scale-test-app";
@@ -467,7 +477,7 @@ async fn test_local_adapter_large_scale() {
         num_channels
     );
 
-    for (_channel_name, count) in channels_with_counts.iter() {
+    for (_channel_name, count) in &channels_with_counts {
         assert_eq!(
             *count, sockets_per_channel,
             "Each channel should have {} sockets",

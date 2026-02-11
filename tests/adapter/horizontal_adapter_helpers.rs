@@ -1,3 +1,4 @@
+use ahash::AHashMap;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use sockudo::adapter::horizontal_adapter::{
@@ -9,7 +10,8 @@ use sockudo::adapter::horizontal_transport::{
 };
 use sockudo::channel::PresenceMemberInfo;
 use sockudo::error::{Error, Result};
-use std::collections::{HashMap, HashSet};
+use sockudo::websocket::SocketId;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -19,9 +21,9 @@ use tokio::sync::Mutex;
 pub struct MockNodeState {
     pub node_id: String,
     pub sockets: Vec<String>,
-    pub channels: HashMap<String, Vec<String>>, // channel -> socket_ids
-    pub presence_members: HashMap<String, HashMap<String, Value>>, // channel -> user_id -> user_info
-    pub user_sockets: HashMap<String, Vec<String>>,                // user_id -> socket_ids
+    pub channels: AHashMap<String, Vec<String>>, // channel -> socket_ids
+    pub presence_members: AHashMap<String, AHashMap<String, Value>>, // channel -> user_id -> user_info
+    pub user_sockets: AHashMap<String, Vec<String>>,                 // user_id -> socket_ids
     pub response_delay_ms: u64,
     pub will_respond: bool,
     pub corrupt_responses: bool,
@@ -32,9 +34,9 @@ impl MockNodeState {
         Self {
             node_id: node_id.to_string(),
             sockets: Vec::new(),
-            channels: HashMap::new(),
-            presence_members: HashMap::new(),
-            user_sockets: HashMap::new(),
+            channels: AHashMap::new(),
+            presence_members: AHashMap::new(),
+            user_sockets: AHashMap::new(),
             response_delay_ms: 10,
             will_respond: true,
             corrupt_responses: false,
@@ -42,14 +44,20 @@ impl MockNodeState {
     }
 
     pub fn with_sockets(mut self, sockets: Vec<&str>) -> Self {
-        self.sockets = sockets.into_iter().map(|s| s.to_string()).collect();
+        self.sockets = sockets
+            .into_iter()
+            .map(|s| SocketId::from_string(s).unwrap().to_string())
+            .collect();
         self
     }
 
     pub fn with_channel(mut self, channel: &str, sockets: Vec<&str>) -> Self {
         self.channels.insert(
             channel.to_string(),
-            sockets.into_iter().map(|s| s.to_string()).collect(),
+            sockets
+                .into_iter()
+                .map(|s| SocketId::from_string(s).unwrap().to_string())
+                .collect(),
         );
         self
     }
@@ -65,7 +73,10 @@ impl MockNodeState {
     pub fn with_user_sockets(mut self, user_id: &str, sockets: Vec<&str>) -> Self {
         self.user_sockets.insert(
             user_id.to_string(),
-            sockets.into_iter().map(|s| s.to_string()).collect(),
+            sockets
+                .into_iter()
+                .map(|s| SocketId::from_string(s).unwrap().to_string())
+                .collect(),
         );
         self
     }
@@ -153,7 +164,7 @@ impl MockTransport {
     /// Create a new MockTransport with shared state for multi-node simulation
     pub fn new_with_shared_state(
         config: MockConfig,
-        _shared_state: Arc<Mutex<HashMap<String, MockNodeState>>>,
+        _shared_state: Arc<Mutex<AHashMap<String, MockNodeState>>>,
     ) -> Self {
         Self {
             config,
@@ -331,10 +342,10 @@ impl MockTransport {
                 request_id: request.request_id.clone(),
                 node_id: node_state.node_id.clone(),
                 app_id: request.app_id.clone(),
-                members: HashMap::new(),
+                members: AHashMap::new(),
                 socket_ids: vec!["CORRUPTED_DATA_💀".to_string()],
                 sockets_count: 999_999_999, // Large but safe value to test corruption handling
-                channels_with_sockets_count: HashMap::new(),
+                channels_with_sockets_count: AHashMap::new(),
                 exists: true,
                 channels: HashSet::new(),
                 members_count: 999_999_999,
@@ -345,10 +356,10 @@ impl MockTransport {
             request_id: request.request_id.clone(),
             node_id: node_state.node_id.clone(),
             app_id: request.app_id.clone(),
-            members: HashMap::new(),
+            members: AHashMap::new(),
             socket_ids: Vec::new(),
             sockets_count: 0,
-            channels_with_sockets_count: HashMap::new(),
+            channels_with_sockets_count: AHashMap::new(),
             exists: false,
             channels: HashSet::new(),
             members_count: 0,
@@ -364,7 +375,7 @@ impl MockTransport {
                     && let Some(members) = node_state.presence_members.get(channel)
                 {
                     // Convert Value members to PresenceMemberInfo
-                    let presence_members: HashMap<String, PresenceMemberInfo> = members
+                    let presence_members: AHashMap<String, PresenceMemberInfo> = members
                         .iter()
                         .map(|(user_id, user_info)| {
                             let member_info = PresenceMemberInfo {

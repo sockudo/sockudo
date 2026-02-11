@@ -9,6 +9,7 @@ use sockudo::websocket::SocketId;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 /// Helper to check if Redis is available
@@ -59,8 +60,8 @@ async fn test_redis_adapter_heartbeat_propagation() {
     };
 
     // Create two Redis adapters simulating two nodes
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     // Initialize both adapters
     adapter1.init().await;
@@ -105,8 +106,8 @@ async fn test_redis_adapter_presence_join_broadcast() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -168,8 +169,8 @@ async fn test_redis_adapter_presence_leave_broadcast() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -237,8 +238,8 @@ async fn test_redis_adapter_dead_node_detection() {
         cleanup_interval_ms: 150,
     };
 
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -320,8 +321,8 @@ async fn test_redis_adapter_multiple_apps_isolation() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -378,7 +379,7 @@ async fn test_redis_adapter_reconnection_after_failure() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_redis_adapter("node1", &cluster_config).await;
+    let adapter = create_redis_adapter("node1", &cluster_config).await;
     adapter.init().await;
 
     // Add some presence data
@@ -434,7 +435,7 @@ async fn test_redis_adapter_cluster_health_disabled() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_redis_adapter("node1", &cluster_config).await;
+    let adapter = create_redis_adapter("node1", &cluster_config).await;
     adapter.init().await;
 
     // With cluster health disabled, presence operations should still work
@@ -469,9 +470,14 @@ async fn test_redis_adapter_concurrent_presence_operations() {
         cleanup_interval_ms: 200,
     };
 
-    let adapter = Arc::new(create_redis_adapter("node1", &cluster_config).await);
+    let adapter = Arc::new(Mutex::new(
+        create_redis_adapter("node1", &cluster_config).await,
+    ));
 
-    adapter.init().await;
+    {
+        let adapter_guard = adapter.lock().await;
+        adapter_guard.init().await;
+    }
 
     let app_id = "test-app";
     let channel = "presence-concurrent";
@@ -482,10 +488,11 @@ async fn test_redis_adapter_concurrent_presence_operations() {
     for i in 0..10 {
         let adapter_clone = adapter.clone();
         let handle = tokio::spawn(async move {
+            let adapter_guard = adapter_clone.lock().await;
             let user_id = format!("user-{}", i);
             let socket_id = format!("socket-{}", i);
 
-            adapter_clone
+            adapter_guard
                 .broadcast_presence_join(app_id, channel, &user_id, &socket_id, None)
                 .await
                 .unwrap();

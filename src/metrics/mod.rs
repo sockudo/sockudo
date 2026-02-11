@@ -97,6 +97,24 @@ pub trait MetricsInterface: Send + Sync {
         latency_ms: f64,
     );
 
+    /// Track delta compression usage in horizontal broadcasts
+    fn track_horizontal_delta_compression(&self, app_id: &str, channel_name: &str, enabled: bool);
+
+    /// Track bandwidth savings from delta compression
+    fn track_delta_compression_bandwidth(
+        &self,
+        app_id: &str,
+        channel_name: &str,
+        original_bytes: usize,
+        compressed_bytes: usize,
+    );
+
+    /// Track delta compression full message sends
+    fn track_delta_compression_full_message(&self, app_id: &str, channel_name: &str);
+
+    /// Track delta compression delta message sends
+    fn track_delta_compression_delta_message(&self, app_id: &str, channel_name: &str);
+
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;
 

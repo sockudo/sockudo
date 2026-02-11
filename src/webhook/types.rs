@@ -1,3 +1,4 @@
+use ahash::AHashMap;
 // src/webhook/types.rs
 // No SdkConfig needed here, it's for AWS SDK interaction in lambda_sender.
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,7 @@ pub struct WebhookFilter {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebhookHeaders {
     #[serde(flatten)]
-    pub headers: std::collections::HashMap<String, String>,
+    pub headers: AHashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

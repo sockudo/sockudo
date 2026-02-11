@@ -1,6 +1,8 @@
+use ahash::AHashMap as HashMap;
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
@@ -11,6 +13,7 @@ use crate::adapter::horizontal_adapter::{
 use crate::adapter::horizontal_transport::{
     HorizontalTransport, TransportConfig, TransportHandlers,
 };
+use crate::adapter::local_adapter::LocalAdapter;
 use crate::app::manager::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
@@ -18,28 +21,30 @@ use crate::metrics::MetricsInterface;
 use crate::namespace::Namespace;
 use crate::options::ClusterHealthConfig;
 use crate::protocol::messages::PusherMessage;
-use crate::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
+use crate::websocket::{SocketId, WebSocketRef};
 use async_trait::async_trait;
-
-use fastwebsockets::WebSocketWrite;
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
-use tokio::io::WriteHalf;
-use tokio::sync::{Mutex, Notify};
+use sockudo_ws::axum_integration::WebSocketWriter;
+use tokio::sync::{Mutex, Notify, RwLock};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Generic base adapter that handles all common horizontal scaling logic
 pub struct HorizontalAdapterBase<T: HorizontalTransport> {
-    pub horizontal: Arc<Mutex<HorizontalAdapter>>,
+    pub horizontal: Arc<RwLock<HorizontalAdapter>>,
+    pub local_adapter: Arc<LocalAdapter>,
     pub transport: T,
     pub config: T::Config,
-    pub event_bus: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>>>,
+    pub event_bus: Arc<OnceLock<tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>>>,
     pub node_id: String,
     pub cluster_health_enabled: bool,
     pub heartbeat_interval_ms: u64,
     pub node_timeout_ms: u64,
     pub cleanup_interval_ms: u64,
+    pub enable_socket_counting: bool,
+    // Delta compression manager for bandwidth optimization
+    delta_compression: Option<Arc<crate::delta_compression::DeltaCompressionManager>>,
+    // App manager for getting channel-specific delta settings
+    app_manager: Option<Arc<dyn AppManager + Send + Sync>>,
 }
 
 /// Check if we should skip horizontal communication (single node optimization)
@@ -47,13 +52,13 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
 /// if the effective node count is 1 or less.
 async fn should_skip_horizontal_communication_impl(
     cluster_health_enabled: bool,
-    horizontal: &Arc<Mutex<HorizontalAdapter>>,
+    horizontal: &Arc<RwLock<HorizontalAdapter>>,
 ) -> bool {
     // Don't skip sending if cluster health is disabled, we have no way of knowing other nodes
     if !cluster_health_enabled {
         return false;
     }
-    let horizontal_guard = horizontal.lock().await;
+    let horizontal_guard = horizontal.read().await;
     let effective_node_count = horizontal_guard.get_effective_node_count().await;
     effective_node_count <= 1
 }
@@ -77,41 +82,66 @@ where
         horizontal.requests_timeout = config.request_timeout_ms();
         let node_id = horizontal.node_id.clone();
 
+        // Get the Arc reference to the same LocalAdapter that HorizontalAdapter uses
+        let local_adapter = horizontal.local_adapter.clone();
+
         let transport = T::new(config.clone()).await?;
 
         let cluster_health_defaults = ClusterHealthConfig::default();
 
         Ok(Self {
-            horizontal: Arc::new(Mutex::new(horizontal)),
+            horizontal: Arc::new(RwLock::new(horizontal)),
+            local_adapter,
             transport,
             config,
-            event_bus: std::sync::Mutex::new(None),
+            event_bus: Arc::new(OnceLock::new()),
             node_id,
             cluster_health_enabled: cluster_health_defaults.enabled,
             heartbeat_interval_ms: cluster_health_defaults.heartbeat_interval_ms,
             node_timeout_ms: cluster_health_defaults.node_timeout_ms,
             cleanup_interval_ms: cluster_health_defaults.cleanup_interval_ms,
+            enable_socket_counting: true, // Default to enabled
+            delta_compression: None,
+            app_manager: None,
         })
     }
 
-    pub async fn set_metrics(
+    /// Set delta compression manager and app manager for delta compression support
+    pub async fn set_delta_compression(
         &mut self,
+        delta_compression: Arc<crate::delta_compression::DeltaCompressionManager>,
+        app_manager: Arc<dyn AppManager + Send + Sync>,
+    ) {
+        // Set on the horizontal adapter base
+        self.delta_compression = Some(delta_compression.clone());
+        self.app_manager = Some(app_manager.clone());
+
+        // Also set on the internal LocalAdapter
+        let horizontal = self.horizontal.read().await;
+        horizontal
+            .local_adapter
+            .set_delta_compression(delta_compression, app_manager)
+            .await;
+    }
+
+    pub async fn set_metrics(
+        &self,
         metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
     ) -> Result<()> {
-        let mut horizontal = self.horizontal.lock().await;
+        let mut horizontal = self.horizontal.write().await;
         horizontal.metrics = Some(metrics);
         Ok(())
     }
 
     pub fn set_event_bus(&self, event_sender: tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>) {
-        let mut guard = self.event_bus.lock().unwrap();
-        *guard = Some(event_sender);
+        // OnceLock::set returns Err if already set, which we ignore (first-write-wins)
+        let _ = self.event_bus.set(event_sender);
     }
 
     /// Configure this adapter with discovered nodes for testing
     /// This simulates that node discovery has already happened and sets up multi-node behavior
     pub async fn with_discovered_nodes(self, node_ids: Vec<&str>) -> Result<Self> {
-        let horizontal = self.horizontal.lock().await;
+        let horizontal = self.horizontal.read().await;
         for node_id in node_ids {
             let node_id_string = node_id.to_string();
             if node_id_string != self.node_id {
@@ -152,6 +182,11 @@ where
         Ok(())
     }
 
+    /// Set socket counting configuration
+    pub fn set_socket_counting(&mut self, enable: bool) {
+        self.enable_socket_counting = enable;
+    }
+
     /// Enhanced send_request that properly integrates with HorizontalAdapter
     pub async fn send_request(
         &self,
@@ -166,7 +201,7 @@ where
         // Create the request
         let request_id = Uuid::new_v4().to_string();
         let node_id = {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             horizontal.node_id.clone()
         };
 
@@ -187,7 +222,7 @@ where
 
         // Add to pending requests
         {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             horizontal.pending_requests.insert(
                 request_id.clone(),
                 PendingRequest {
@@ -209,13 +244,37 @@ where
             self.transport.publish_request(&request).await?;
         }
 
-        // Wait for responses
-        let timeout_duration = Duration::from_millis(self.config.request_timeout_ms());
+        // Wait for responses with adaptive timeout based on request type and node count
+        let base_timeout = self.config.request_timeout_ms();
+
+        // Adaptive timeout: For simple queries (socket checks, counts), use shorter timeout
+        // For presence queries that need member data, use full timeout
+        let timeout_duration = match request_type {
+            RequestType::SocketExistsInChannel
+            | RequestType::ChannelSocketsCount
+            | RequestType::SocketsCount
+            | RequestType::Channels
+            | RequestType::Sockets => {
+                // Fast queries: 50ms per node, min 200ms (or base_timeout if lower), max base_timeout
+                let min_timeout = std::cmp::min(200, base_timeout);
+                let adaptive = (50 * node_count as u64).clamp(min_timeout, base_timeout);
+                Duration::from_millis(adaptive)
+            }
+            RequestType::ChannelMembers | RequestType::ChannelMembersCount => {
+                // Presence queries need more time for data aggregation
+                Duration::from_millis(base_timeout)
+            }
+            _ => {
+                // All other queries use base timeout
+                Duration::from_millis(base_timeout)
+            }
+        };
+
         let max_expected_responses = node_count.saturating_sub(1);
 
         if max_expected_responses == 0 {
             self.horizontal
-                .lock()
+                .read()
                 .await
                 .pending_requests
                 .remove(&request_id);
@@ -235,8 +294,9 @@ where
 
         // Wait for responses using event-driven approach
         let start = Instant::now();
+        let deadline = start + timeout_duration;
         let notify = {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             horizontal
                 .pending_requests
                 .get(&request_id)
@@ -252,17 +312,40 @@ where
             // Wait for notification or timeout
             let result = tokio::select! {
                 _ = notify.notified() => {
-                    // Check if we have enough responses
-                    let horizontal = self.horizontal.lock().await;
+                    // Check if we have enough responses OR can return early
+                    let horizontal = self.horizontal.read().await;
                     if let Some(pending_request) = horizontal.pending_requests.get(&request_id) {
-                        if pending_request.responses.len() >= max_expected_responses {
-                            debug!(
-                                "Request {} completed with {}/{} responses in {}ms",
-                                request_id,
-                                pending_request.responses.len(),
-                                max_expected_responses,
-                                start.elapsed().as_millis()
-                            );
+                        let response_count = pending_request.responses.len();
+
+                        // Early return optimization: Return immediately when we find a positive result
+                        // This dramatically improves latency for existence checks in large clusters
+                        // Note: ChannelSockets must wait for all responses to get complete socket list
+                        let can_early_return = match request_type {
+                            RequestType::SocketExistsInChannel if response_count > 0 => {
+                                // Check if any response is positive
+                                pending_request.responses.iter().any(|r| r.exists)
+                            }
+                            _ => false,
+                        };
+
+                        if response_count >= max_expected_responses || can_early_return {
+                            if can_early_return {
+                                debug!(
+                                    "Request {} early return with {}/{} responses in {}ms (found positive result)",
+                                    request_id,
+                                    response_count,
+                                    max_expected_responses,
+                                    start.elapsed().as_millis()
+                                );
+                            } else {
+                                debug!(
+                                    "Request {} completed with {}/{} responses in {}ms",
+                                    request_id,
+                                    response_count,
+                                    max_expected_responses,
+                                    start.elapsed().as_millis()
+                                );
+                            }
                             // Extract responses without removing the entry yet to avoid race condition
                             let responses = pending_request.responses.clone();
                             Some(responses)
@@ -275,14 +358,14 @@ where
                         )));
                     }
                 }
-                _ = tokio::time::sleep(timeout_duration) => {
+                _ = tokio::time::sleep_until(deadline.into()) => {
                     // Timeout occurred
                     warn!(
                         "Request {} timed out after {}ms",
                         request_id,
                         start.elapsed().as_millis()
                     );
-                    let horizontal = self.horizontal.lock().await;
+                    let horizontal = self.horizontal.read().await;
                     let responses = if let Some(pending_request) = horizontal.pending_requests.get(&request_id) {
                         pending_request.responses.clone()
                     } else {
@@ -300,7 +383,7 @@ where
 
         // Aggregate responses first, then clean up to prevent race condition
         let combined_response = {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             horizontal.aggregate_responses(
                 request_id.clone(),
                 request.node_id,
@@ -312,13 +395,13 @@ where
 
         // Clean up the pending request after aggregation is complete
         {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             horizontal.pending_requests.remove(&request_id);
         }
 
         // Track metrics
         {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             if let Some(metrics_ref) = &horizontal.metrics {
                 let metrics = metrics_ref.lock().await;
                 let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
@@ -340,7 +423,7 @@ where
 
     pub async fn start_listeners(&self) -> Result<()> {
         {
-            let mut horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             horizontal.start_request_cleanup();
         }
 
@@ -362,7 +445,7 @@ where
                 let horizontal_clone = broadcast_horizontal.clone();
                 Box::pin(async move {
                     let node_id = {
-                        let horizontal = horizontal_clone.lock().await;
+                        let horizontal = horizontal_clone.read().await;
                         horizontal.node_id.clone()
                     };
 
@@ -370,13 +453,31 @@ where
                         return;
                     }
 
-                    if let Ok(message) = serde_json::from_str(&broadcast.message) {
-                        let except_id = broadcast.except_socket_id.as_ref().map(|id| {
-                            SocketId::from_string(id).unwrap_or_else(|_| SocketId::new())
-                        });
+                    if let Ok(message) = serde_json::from_str::<PusherMessage>(&broadcast.message) {
+                        // Debug log for tag filtering diagnostics
+                        tracing::debug!(
+                            "Received broadcast from node {}: channel={}, event={:?}, tags={:?}",
+                            broadcast.node_id,
+                            broadcast.channel,
+                            message.event,
+                            message.tags
+                        );
 
-                        // Send the message first and count local recipients
-                        let mut horizontal_lock = horizontal_clone.lock().await;
+                        let except_id = broadcast
+                            .except_socket_id
+                            .as_ref()
+                            .map(|id| SocketId::from_string(id).ok())
+                            .flatten();
+
+                        let horizontal_lock = horizontal_clone.read().await;
+
+                        // Log tag filtering status
+                        let tag_filtering_enabled =
+                            horizontal_lock.local_adapter.is_tag_filtering_enabled();
+                        tracing::debug!(
+                            "Tag filtering enabled on this node: {}",
+                            tag_filtering_enabled
+                        );
 
                         // Count local recipients for this node (adjusts for excluded socket)
                         let local_recipient_count = horizontal_lock
@@ -387,17 +488,102 @@ where
                             )
                             .await;
 
-                        // Use the timestamp from the broadcast message for end-to-end tracking
-                        let send_result = horizontal_lock
-                            .local_adapter
-                            .send(
-                                &broadcast.channel,
-                                message,
-                                except_id.as_ref(),
-                                &broadcast.app_id,
-                                broadcast.timestamp_ms, // Pass through the original timestamp
-                            )
-                            .await;
+                        // Check if compression metadata is present and delta compression is enabled
+                        let (send_result, compression_used) = if let Some(ref compression_meta) =
+                            broadcast.compression_metadata
+                            && compression_meta.enabled
+                        {
+                            // Try to get delta compression manager and app manager (lock-free via OnceLock)
+                            let delta_compression_opt =
+                                horizontal_lock.local_adapter.get_delta_compression();
+                            let app_manager_opt = horizontal_lock.local_adapter.get_app_manager();
+
+                            // Only proceed with compression if both are available
+                            if let (Some(delta_compression), Some(app_manager)) =
+                                (delta_compression_opt.cloned(), app_manager_opt.cloned())
+                            {
+                                // Try to get channel-specific settings
+                                let channel_settings = if let Ok(Some(app)) =
+                                    app_manager.find_by_id(&broadcast.app_id).await
+                                {
+                                    app.channel_delta_compression
+                                        .as_ref()
+                                        .and_then(|map| map.get(&broadcast.channel))
+                                        .and_then(|config| {
+                                            use crate::delta_compression::ChannelDeltaConfig;
+                                            match config {
+                                                ChannelDeltaConfig::Full(settings) => {
+                                                    // Use the conflation key from compression metadata
+                                                    let mut settings = settings.clone();
+                                                    if compression_meta.conflation_key.is_some() {
+                                                        settings.conflation_key =
+                                                            compression_meta.conflation_key.clone();
+                                                    }
+                                                    Some(settings)
+                                                }
+                                                _ => None,
+                                            }
+                                        })
+                                } else {
+                                    None
+                                };
+
+                                // Use compression-aware sending
+                                let result = horizontal_lock
+                                    .local_adapter
+                                    .send_with_compression(
+                                        &broadcast.channel,
+                                        message,
+                                        except_id.as_ref(),
+                                        &broadcast.app_id,
+                                        broadcast.timestamp_ms,
+                                        crate::adapter::connection_manager::CompressionParams {
+                                            delta_compression,
+                                            channel_settings: channel_settings.as_ref(),
+                                        },
+                                    )
+                                    .await;
+                                (result, true)
+                            } else {
+                                // Delta compression not available, use regular send
+                                let result = horizontal_lock
+                                    .local_adapter
+                                    .send(
+                                        &broadcast.channel,
+                                        message,
+                                        except_id.as_ref(),
+                                        &broadcast.app_id,
+                                        broadcast.timestamp_ms,
+                                    )
+                                    .await;
+                                (result, false)
+                            }
+                        } else {
+                            // No compression metadata or compression not enabled, use regular send
+                            let result = horizontal_lock
+                                .local_adapter
+                                .send(
+                                    &broadcast.channel,
+                                    message,
+                                    except_id.as_ref(),
+                                    &broadcast.app_id,
+                                    broadcast.timestamp_ms,
+                                )
+                                .await;
+                            (result, false)
+                        };
+
+                        // Track delta compression metrics if compression was used
+                        if compression_used {
+                            if let Some(ref metrics) = horizontal_lock.metrics {
+                                let metrics_lock = metrics.lock().await;
+                                metrics_lock.track_horizontal_delta_compression(
+                                    &broadcast.app_id,
+                                    &broadcast.channel,
+                                    true,
+                                );
+                            }
+                        }
 
                         // Track broadcast latency metrics using helper function
                         let metrics_ref = horizontal_lock.metrics.clone();
@@ -420,7 +606,7 @@ where
                 let transport_clone = transport_for_request.clone();
                 Box::pin(async move {
                     let node_id = {
-                        let horizontal = horizontal_clone.lock().await;
+                        let horizontal = horizontal_clone.read().await;
                         horizontal.node_id.clone()
                     };
 
@@ -436,7 +622,7 @@ where
                         return Err(Error::RequestNotForThisNode);
                     }
 
-                    let mut horizontal_lock = horizontal_clone.lock().await;
+                    let horizontal_lock = horizontal_clone.read().await;
                     let response = horizontal_lock.process_request(request.clone()).await?;
 
                     // Check if this was a heartbeat that detected a new node
@@ -473,7 +659,7 @@ where
                 let horizontal_clone = response_horizontal.clone();
                 Box::pin(async move {
                     let node_id = {
-                        let horizontal = horizontal_clone.lock().await;
+                        let horizontal = horizontal_clone.read().await;
                         horizontal.node_id.clone()
                     };
 
@@ -481,7 +667,7 @@ where
                         return;
                     }
 
-                    let horizontal_lock = horizontal_clone.lock().await;
+                    let horizontal_lock = horizontal_clone.read().await;
                     let _ = horizontal_lock.process_response(response).await;
                 })
             }),
@@ -545,7 +731,7 @@ where
     async fn start_dead_node_detection(&self) {
         let transport = self.transport.clone();
         let horizontal = self.horizontal.clone();
-        let event_bus = self.event_bus.lock().unwrap().clone();
+        let event_bus = self.event_bus.clone();
         let node_id = self.node_id.clone();
         let cleanup_interval_ms = self.cleanup_interval_ms;
         let node_timeout_ms = self.node_timeout_ms;
@@ -558,14 +744,14 @@ where
                 interval.tick().await;
 
                 let dead_nodes = {
-                    let horizontal_guard = horizontal.lock().await;
+                    let horizontal_guard = horizontal.read().await;
                     horizontal_guard.get_dead_nodes(node_timeout_ms).await
                 };
 
                 if !dead_nodes.is_empty() {
                     // Single leader election for entire cleanup round
                     let is_leader = {
-                        let horizontal_guard = horizontal.lock().await;
+                        let horizontal_guard = horizontal.read().await;
                         horizontal_guard.is_cleanup_leader(&dead_nodes).await
                     };
 
@@ -582,13 +768,13 @@ where
 
                             // 1. Remove from local heartbeat tracking
                             {
-                                let horizontal_guard = horizontal.lock().await;
+                                let horizontal_guard = horizontal.read().await;
                                 horizontal_guard.remove_dead_node(&dead_node_id).await;
                             }
 
                             // 2. Get orphaned members and clean up local registry
                             let cleanup_tasks = {
-                                let horizontal_guard = horizontal.lock().await;
+                                let horizontal_guard = horizontal.read().await;
                                 match horizontal_guard
                                     .handle_dead_node_cleanup(&dead_node_id)
                                     .await
@@ -621,8 +807,8 @@ where
                                     orphaned_members: orphaned_members.clone(),
                                 };
 
-                                // Emit event for processing by ConnectionHandler
-                                if let Some(event_sender) = &event_bus {
+                                // Emit event for processing by ConnectionHandler (lock-free read via OnceLock)
+                                if let Some(event_sender) = event_bus.get() {
                                     if let Err(e) = event_sender.send(event) {
                                         error!("Failed to send dead node event: {}", e);
                                     }
@@ -680,16 +866,14 @@ where
     pub async fn get_cluster_presence_registry(
         &self,
     ) -> crate::adapter::horizontal_adapter::ClusterPresenceRegistry {
-        let horizontal = self.horizontal.lock().await;
+        let horizontal = self.horizontal.read().await;
         let registry = horizontal.cluster_presence_registry.read().await;
         registry.clone()
     }
 
     /// Get a snapshot of node heartbeat tracking
-    pub async fn get_node_heartbeats(
-        &self,
-    ) -> std::collections::HashMap<String, std::time::Instant> {
-        let horizontal = self.horizontal.lock().await;
+    pub async fn get_node_heartbeats(&self) -> HashMap<String, Instant> {
+        let horizontal = self.horizontal.read().await;
         let heartbeats = horizontal.node_heartbeats.read().await;
         heartbeats.clone()
     }
@@ -701,10 +885,7 @@ where
     T::Config: TransportConfig,
 {
     async fn init(&self) {
-        {
-            let horizontal = self.horizontal.lock().await;
-            horizontal.local_adapter.init().await;
-        }
+        self.local_adapter.init().await;
 
         if let Err(e) = self.start_listeners().await {
             error!("Failed to start transport listeners: {}", e);
@@ -712,37 +893,28 @@ where
     }
 
     async fn get_namespace(&self, app_id: &str) -> Option<Arc<Namespace>> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal.local_adapter.get_namespace(app_id).await
+        self.local_adapter.get_namespace(app_id).await
     }
 
     async fn add_socket(
         &self,
         socket_id: SocketId,
-        socket: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
+        socket: WebSocketWriter,
         app_id: &str,
         app_manager: Arc<dyn AppManager + Send + Sync>,
-        buffer_config: WebSocketBufferConfig,
+        buffer_config: crate::websocket::WebSocketBufferConfig,
     ) -> Result<()> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
+        self.local_adapter
             .add_socket(socket_id, socket, app_id, app_manager, buffer_config)
             .await
     }
 
     async fn get_connection(&self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
-            .get_connection(socket_id, app_id)
-            .await
+        self.local_adapter.get_connection(socket_id, app_id).await
     }
 
     async fn remove_connection(&self, socket_id: &SocketId, app_id: &str) -> Result<()> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
+        self.local_adapter
             .remove_connection(socket_id, app_id)
             .await
     }
@@ -753,9 +925,7 @@ where
         socket_id: &SocketId,
         message: PusherMessage,
     ) -> Result<()> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
+        self.local_adapter
             .send_message(app_id, socket_id, message)
             .await
     }
@@ -768,18 +938,59 @@ where
         app_id: &str,
         start_time_ms: Option<f64>,
     ) -> Result<()> {
-        // BroadcastMessage is already imported at the top
+        // Check if delta compression is available and configured for this channel
+        if let (Some(delta_compression), Some(app_manager)) =
+            (&self.delta_compression, &self.app_manager)
+        {
+            // Get app config to check for channel-specific delta settings
+            if let Ok(Some(app)) = app_manager.find_by_id(app_id).await {
+                // Get channel-specific delta compression settings
+                let channel_settings = app
+                    .channel_delta_compression
+                    .as_ref()
+                    .and_then(|map| map.get(channel))
+                    .and_then(|config| {
+                        use crate::delta_compression::ChannelDeltaConfig;
+                        match config {
+                            ChannelDeltaConfig::Full(settings) => Some(settings.clone()),
+                            _ => None,
+                        }
+                    });
 
+                // Use compression-aware sending if we have settings with conflation key
+                if channel_settings
+                    .as_ref()
+                    .and_then(|s| s.conflation_key.as_ref())
+                    .is_some()
+                {
+                    return self
+                        .send_with_compression(
+                            channel,
+                            message,
+                            except,
+                            app_id,
+                            start_time_ms,
+                            crate::adapter::connection_manager::CompressionParams {
+                                delta_compression: Arc::clone(delta_compression),
+                                channel_settings: channel_settings.as_ref(),
+                            },
+                        )
+                        .await;
+                }
+            }
+        }
+
+        // Fall back to regular sending without delta compression
         // Send locally first (tracked in connection manager for metrics)
-        let (node_id, local_result) = {
-            let horizontal_lock = self.horizontal.lock().await;
-
-            let result = horizontal_lock
-                .local_adapter
-                .send(channel, message.clone(), except, app_id, start_time_ms)
-                .await;
-            (horizontal_lock.node_id.clone(), result)
+        let node_id = {
+            let horizontal_lock = self.horizontal.read().await;
+            horizontal_lock.node_id.clone()
         };
+
+        let local_result = self
+            .local_adapter
+            .send(channel, message.clone(), except, app_id, start_time_ms)
+            .await;
 
         if let Err(e) = local_result {
             warn!("Local send failed for channel {}: {}", channel, e);
@@ -802,6 +1013,127 @@ where
                         / 1_000_000.0, // Convert to milliseconds with microsecond precision
                 )
             }),
+            compression_metadata: None,
+        };
+
+        // Skip broadcasting to other nodes if we're in single-node mode
+        if !self.should_skip_horizontal_communication().await {
+            self.transport.publish_broadcast(&broadcast).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_with_compression(
+        &self,
+        channel: &str,
+        message: PusherMessage,
+        except: Option<&SocketId>,
+        app_id: &str,
+        start_time_ms: Option<f64>,
+        compression: crate::adapter::connection_manager::CompressionParams<'_>,
+    ) -> Result<()> {
+        // Send locally first with delta compression support
+        let (node_id, local_result) = {
+            let horizontal_lock = self.horizontal.read().await;
+
+            let result = horizontal_lock
+                .local_adapter
+                .send_with_compression(
+                    channel,
+                    message.clone(),
+                    except,
+                    app_id,
+                    start_time_ms,
+                    crate::adapter::connection_manager::CompressionParams {
+                        delta_compression: compression.delta_compression.clone(),
+                        channel_settings: compression.channel_settings,
+                    },
+                )
+                .await;
+            (horizontal_lock.node_id.clone(), result)
+        };
+
+        if let Err(e) = local_result {
+            warn!(
+                "Local send with compression failed for channel {}: {}",
+                channel, e
+            );
+        }
+
+        // Broadcast to other nodes with compression metadata
+        // Other nodes will apply their own delta compression using this metadata
+        let message_json = serde_json::to_string(&message)?;
+
+        // Extract conflation key from channel settings
+        let conflation_key = compression
+            .channel_settings
+            .and_then(|s| s.conflation_key.clone());
+
+        // Extract event name from message for tracking
+        let event_name = message.event.as_deref().map(|s| s.to_string());
+
+        // Check cluster coordination for synchronized full message intervals
+        let (cluster_should_send_full, cluster_delta_count) = if compression
+            .delta_compression
+            .has_cluster_coordination()
+        {
+            if let Some(ck) = conflation_key.as_ref() {
+                // Use cluster coordination to determine if we should send full message
+                match compression
+                    .delta_compression
+                    .check_cluster_interval(app_id, channel, ck)
+                    .await
+                {
+                    Ok((should_send_full, count)) => {
+                        debug!(
+                            "Cluster coordination: should_send_full={}, count={} for app={}, channel={}, key={}",
+                            should_send_full, count, app_id, channel, ck
+                        );
+                        (Some(should_send_full), Some(count))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Cluster coordination failed: {}, falling back to node-local",
+                            e
+                        );
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
+        // For horizontal broadcasts, we send full messages and let each node
+        // decide whether to apply delta compression based on its local state.
+        // If cluster coordination is enabled, we use the cluster-wide decision.
+        let is_full_message = cluster_should_send_full.unwrap_or(true);
+
+        let broadcast = BroadcastMessage {
+            node_id,
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            message: message_json,
+            except_socket_id: except.map(|id| id.to_string()),
+            timestamp_ms: start_time_ms.or_else(|| {
+                Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as f64
+                        / 1_000_000.0,
+                )
+            }),
+            compression_metadata: Some(crate::adapter::horizontal_adapter::CompressionMetadata {
+                conflation_key,
+                enabled: true,
+                sequence: cluster_delta_count, // Cluster-wide sequence if coordination enabled
+                is_full_message, // Determined by cluster coordination or defaults to true
+                event_name,
+            }),
         };
 
         // Skip broadcasting to other nodes if we're in single-node mode
@@ -818,13 +1150,10 @@ where
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>> {
         // Get local members
-        let mut members = {
-            let horizontal = self.horizontal.lock().await;
-            horizontal
-                .local_adapter
-                .get_channel_members(app_id, channel)
-                .await?
-        };
+        let mut members = self
+            .local_adapter
+            .get_channel_members(app_id, channel)
+            .await?;
 
         // Get distributed members
         let response = self
@@ -842,18 +1171,11 @@ where
     }
 
     async fn get_channel_sockets(&self, app_id: &str, channel: &str) -> Result<Vec<SocketId>> {
-        let mut all_socket_ids = Vec::new();
-
         // Get local sockets
-        {
-            let horizontal = self.horizontal.lock().await;
-            let sockets = horizontal
-                .local_adapter
-                .get_channel_sockets(app_id, channel)
-                .await?;
-
-            all_socket_ids.extend(sockets);
-        }
+        let mut all_socket_ids = self
+            .local_adapter
+            .get_channel_sockets(app_id, channel)
+            .await?;
 
         // Get remote sockets
         let response = self
@@ -867,19 +1189,16 @@ where
             .await?;
 
         for socket_id in response.socket_ids {
-            all_socket_ids
-                .push(SocketId::from_string(&socket_id).unwrap_or_else(|_| SocketId::new()));
+            if let Ok(sid) = SocketId::from_string(&socket_id) {
+                all_socket_ids.push(sid);
+            }
         }
 
         Ok(all_socket_ids)
     }
 
     async fn remove_channel(&self, app_id: &str, channel: &str) {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
-            .remove_channel(app_id, channel)
-            .await
+        self.local_adapter.remove_channel(app_id, channel).await;
     }
 
     async fn is_in_channel(
@@ -889,13 +1208,10 @@ where
         socket_id: &SocketId,
     ) -> Result<bool> {
         // Check locally first
-        let local_result = {
-            let horizontal = self.horizontal.lock().await;
-            horizontal
-                .local_adapter
-                .is_in_channel(app_id, channel, socket_id)
-                .await?
-        };
+        let local_result = self
+            .local_adapter
+            .is_in_channel(app_id, channel, socket_id)
+            .await?;
 
         if local_result {
             return Ok(true);
@@ -916,30 +1232,18 @@ where
     }
 
     async fn get_user_sockets(&self, user_id: &str, app_id: &str) -> Result<Vec<WebSocketRef>> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
-            .get_user_sockets(user_id, app_id)
-            .await
+        self.local_adapter.get_user_sockets(user_id, app_id).await
     }
 
     async fn cleanup_connection(&self, app_id: &str, ws: WebSocketRef) {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
-            .cleanup_connection(app_id, ws)
-            .await
+        self.local_adapter.cleanup_connection(app_id, ws).await;
     }
 
     async fn terminate_connection(&self, app_id: &str, user_id: &str) -> Result<()> {
         // Terminate locally
-        {
-            let horizontal = self.horizontal.lock().await;
-            horizontal
-                .local_adapter
-                .terminate_connection(app_id, user_id)
-                .await?;
-        }
+        self.local_adapter
+            .terminate_user_connections(app_id, user_id)
+            .await?;
 
         // Broadcast termination to other nodes
         let _response = self
@@ -956,22 +1260,17 @@ where
     }
 
     async fn add_channel_to_sockets(&self, app_id: &str, channel: &str, socket_id: &SocketId) {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
+        self.local_adapter
             .add_channel_to_sockets(app_id, channel, socket_id)
-            .await
+            .await;
     }
 
     async fn get_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
         // Get local count
-        let local_count = {
-            let horizontal = self.horizontal.lock().await;
-            horizontal
-                .local_adapter
-                .get_channel_socket_count(app_id, channel)
-                .await
-        };
+        let local_count = self
+            .local_adapter
+            .get_channel_socket_count(app_id, channel)
+            .await;
 
         // Get distributed count
         match self
@@ -998,9 +1297,8 @@ where
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
+        // Fast path: direct local adapter access without locking horizontal
+        self.local_adapter
             .add_to_channel(app_id, channel, socket_id)
             .await
     }
@@ -1011,9 +1309,8 @@ where
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
+        // Fast path: direct local adapter access without locking horizontal
+        self.local_adapter
             .remove_from_channel(app_id, channel, socket_id)
             .await
     }
@@ -1024,9 +1321,7 @@ where
         channel: &str,
         socket_id: &SocketId,
     ) -> Option<PresenceMemberInfo> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
+        self.local_adapter
             .get_presence_member(app_id, channel, socket_id)
             .await
     }
@@ -1035,14 +1330,12 @@ where
         self.terminate_connection(app_id, user_id).await
     }
 
-    async fn add_user(&self, ws: WebSocketRef) -> Result<()> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal.local_adapter.add_user(ws).await
+    async fn add_user(&self, ws_ref: WebSocketRef) -> Result<()> {
+        self.local_adapter.add_user(ws_ref).await
     }
 
-    async fn remove_user(&self, ws: WebSocketRef) -> Result<()> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal.local_adapter.remove_user(ws).await
+    async fn remove_user(&self, ws_ref: WebSocketRef) -> Result<()> {
+        self.local_adapter.remove_user(ws_ref).await
     }
 
     async fn remove_user_socket(
@@ -1051,9 +1344,7 @@ where
         socket_id: &SocketId,
         app_id: &str,
     ) -> Result<()> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal
-            .local_adapter
+        self.local_adapter
             .remove_user_socket(user_id, socket_id, app_id)
             .await
     }
@@ -1066,13 +1357,10 @@ where
         excluding_socket: Option<&SocketId>,
     ) -> Result<usize> {
         // Get local count (with excluding_socket filter)
-        let local_count = {
-            let horizontal = self.horizontal.lock().await;
-            horizontal
-                .local_adapter
-                .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
-                .await?
-        };
+        let local_count = self
+            .local_adapter
+            .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+            .await?;
 
         // Get remote count (no excluding_socket since it's local-only)
         match self
@@ -1095,13 +1383,10 @@ where
 
     async fn get_channels_with_socket_count(&self, app_id: &str) -> Result<HashMap<String, usize>> {
         // Get local channels
-        let mut channels = {
-            let horizontal = self.horizontal.lock().await;
-            horizontal
-                .local_adapter
-                .get_channels_with_socket_count(app_id)
-                .await?
-        };
+        let mut channels = self
+            .local_adapter
+            .get_channels_with_socket_count(app_id)
+            .await?;
 
         // Get distributed channels
         match self
@@ -1128,11 +1413,13 @@ where
     }
 
     async fn get_sockets_count(&self, app_id: &str) -> Result<usize> {
+        // Check if socket counting is enabled
+        if !self.enable_socket_counting {
+            return Ok(0);
+        }
+
         // Get local count
-        let local_count = {
-            let horizontal = self.horizontal.lock().await;
-            horizontal.local_adapter.get_sockets_count(app_id).await?
-        };
+        let local_count = self.local_adapter.get_sockets_count(app_id).await?;
 
         // Get distributed count
         match self
@@ -1148,8 +1435,7 @@ where
     }
 
     async fn get_namespaces(&self) -> Result<Vec<(String, Arc<Namespace>)>> {
-        let horizontal = self.horizontal.lock().await;
-        horizontal.local_adapter.get_namespaces().await
+        self.local_adapter.get_namespaces().await
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -1190,7 +1476,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
     ) -> Result<()> {
         // Store in our own registry first with a single lock acquisition
         {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             horizontal
                 .add_presence_entry(
                     &self.node_id,
@@ -1241,7 +1527,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
     ) -> Result<()> {
         // Remove from our own registry first with a single lock acquisition
         {
-            let horizontal = self.horizontal.lock().await;
+            let horizontal = self.horizontal.read().await;
             horizontal
                 .remove_presence_entry(&self.node_id, channel, socket_id)
                 .await;
@@ -1278,13 +1564,13 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
 
 /// Helper function to send presence state to a new node
 async fn send_presence_state_to_node<T: HorizontalTransport>(
-    horizontal: &Arc<tokio::sync::Mutex<HorizontalAdapter>>,
+    horizontal: &Arc<tokio::sync::RwLock<HorizontalAdapter>>,
     transport: &T,
     target_node_id: &str,
 ) -> Result<()> {
     // Get our presence data
     let (our_node_id, data_to_send) = {
-        let horizontal_lock = horizontal.lock().await;
+        let horizontal_lock = horizontal.read().await;
         let registry = horizontal_lock.cluster_presence_registry.read().await;
 
         // Get only our node's data

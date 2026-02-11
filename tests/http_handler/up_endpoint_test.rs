@@ -60,10 +60,15 @@ impl sockudo::app::manager::AppManager for AppsAvailableMockAppManager {
 
 #[tokio::test]
 async fn test_up_general_health_check_with_apps() {
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
+
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
             as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
+        None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockCacheManager::new(),
         )),
@@ -73,6 +78,7 @@ async fn test_up_general_health_check_with_apps() {
         None,
         sockudo::options::ServerOptions::default(),
         None,
+        delta_manager,
     );
     let handler_arc = Arc::new(handler);
 
@@ -194,9 +200,14 @@ impl sockudo::app::manager::AppManager for ErrorMockAppManager {
 
 #[tokio::test]
 async fn test_up_general_health_check_app_manager_error() {
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
+
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(ErrorMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
+        None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockCacheManager::new(),
         )),
@@ -206,6 +217,7 @@ async fn test_up_general_health_check_app_manager_error() {
         None,
         sockudo::options::ServerOptions::default(),
         None,
+        delta_manager,
     );
     let handler_arc = Arc::new(handler);
 
@@ -220,9 +232,15 @@ async fn test_up_general_health_check_app_manager_error() {
 
 #[tokio::test]
 async fn test_up_specific_app_manager_error() {
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
+
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(ErrorMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
-        Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
+        Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
+            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+        None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockCacheManager::new(),
         )),
@@ -232,6 +250,7 @@ async fn test_up_specific_app_manager_error() {
         None,
         sockudo::options::ServerOptions::default(),
         None,
+        delta_manager,
     );
     let handler_arc = Arc::new(handler);
 
@@ -281,9 +300,15 @@ impl sockudo::app::manager::AppManager for TimeoutMockAppManager {
 
 #[tokio::test]
 async fn test_up_general_health_check_timeout() {
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
+
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(TimeoutMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
-        Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
+        Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
+            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+        None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockCacheManager::new(),
         )),
@@ -293,6 +318,7 @@ async fn test_up_general_health_check_timeout() {
         None,
         sockudo::options::ServerOptions::default(),
         None,
+        delta_manager,
     );
     let handler_arc = Arc::new(handler);
 
@@ -307,9 +333,15 @@ async fn test_up_general_health_check_timeout() {
 
 #[tokio::test]
 async fn test_up_specific_app_timeout() {
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
+
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(TimeoutMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
-        Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
+        Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
+            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+        None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockCacheManager::new(),
         )),
@@ -319,6 +351,7 @@ async fn test_up_specific_app_timeout() {
         None,
         sockudo::options::ServerOptions::default(),
         None,
+        delta_manager,
     );
     let handler_arc = Arc::new(handler);
 
@@ -343,9 +376,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
     async fn add_socket(
         &self,
         _socket_id: sockudo::websocket::SocketId,
-        _socket: fastwebsockets::WebSocketWrite<
-            tokio::io::WriteHalf<hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>>,
-        >,
+        _socket: sockudo_ws::axum_integration::WebSocketWriter,
         _app_id: &str,
         _app_manager: Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
         _buffer_config: sockudo::websocket::WebSocketBufferConfig,
@@ -388,10 +419,8 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         &self,
         _app_id: &str,
         _channel: &str,
-    ) -> sockudo::error::Result<
-        std::collections::HashMap<String, sockudo::channel::PresenceMemberInfo>,
-    > {
-        Ok(std::collections::HashMap::new())
+    ) -> sockudo::error::Result<ahash::AHashMap<String, sockudo::channel::PresenceMemberInfo>> {
+        Ok(ahash::AHashMap::new())
     }
     async fn get_channel_sockets(
         &self,
@@ -477,8 +506,8 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
     async fn get_channels_with_socket_count(
         &self,
         _app_id: &str,
-    ) -> sockudo::error::Result<std::collections::HashMap<String, usize>> {
-        Ok(std::collections::HashMap::new())
+    ) -> sockudo::error::Result<ahash::AHashMap<String, usize>> {
+        Ok(ahash::AHashMap::new())
     }
     async fn get_sockets_count(&self, _app_id: &str) -> sockudo::error::Result<usize> {
         Ok(0)
@@ -564,10 +593,16 @@ impl sockudo::cache::manager::CacheManager for FailingCacheManager {
 
 #[tokio::test]
 async fn test_up_adapter_health_check_failure() {
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
+
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
             as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
-        Arc::new(FailingAdapter),
+        Arc::new(FailingAdapter)
+            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+        None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(FailingCacheManager)),
         Some(Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
@@ -575,6 +610,7 @@ async fn test_up_adapter_health_check_failure() {
         None,
         sockudo::options::ServerOptions::default(),
         None,
+        delta_manager,
     );
     let handler_arc = Arc::new(handler);
 
@@ -593,10 +629,16 @@ async fn test_up_cache_health_check_failure() {
     let mut server_options = sockudo::options::ServerOptions::default();
     server_options.cache.driver = sockudo::options::CacheDriver::Memory;
 
+    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
+        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    ));
+
     let handler = sockudo::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
             as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
-        Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
+        Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
+            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+        None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(FailingCacheManager)),
         Some(Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
@@ -604,19 +646,17 @@ async fn test_up_cache_health_check_failure() {
         None,
         server_options,
         None,
+        delta_manager,
     );
     let handler_arc = Arc::new(handler);
 
-    // Call the up endpoint - cache failure should return DEGRADED (non-critical component)
+    // Call the up endpoint - cache failure should return ERROR (critical component)
     let result = up(None, State(handler_arc)).await;
 
     assert!(result.is_ok());
     let response = result.unwrap().into_response();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("X-Health-Check").unwrap(),
-        "DEGRADED"
-    );
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers().get("X-Health-Check").unwrap(), "ERROR");
 }
 
 // Test that metrics are recorded (non-blocking)
