@@ -292,7 +292,7 @@ impl ConnectionHandler {
 
         // Send webhook asynchronously (non-blocking for client)
         if let Some(webhook_integration) = self.webhook_integration.clone() {
-            let socket_id = socket_id.clone();
+            let socket_id = *socket_id;
             let app_config = app_config.clone();
             let request = request.clone();
             tokio::spawn(async move {

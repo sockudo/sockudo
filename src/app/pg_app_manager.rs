@@ -444,7 +444,7 @@ impl PgSQLAppManager {
         let app = self
             .find_by_id(app_id)
             .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
+            .ok_or(Error::InvalidAppKey)?;
 
         let token = Token::new(app.key.clone(), app.secret.clone());
         let expected = token.sign(body);
@@ -457,7 +457,7 @@ impl PgSQLAppManager {
         let app = self
             .find_by_id(app_id)
             .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
+            .ok_or(Error::InvalidAppKey)?;
 
         let max_length = app.max_channel_name_length.unwrap_or(200);
         if channel.len() > max_length as usize {
@@ -502,7 +502,7 @@ impl PgSQLAppManager {
         let app = self
             .find_by_key(app_key)
             .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
+            .ok_or(Error::InvalidAppKey)?;
 
         // Create string to sign: socket_id
         let string_to_sign = format!("{socket_id}::user::{signature}");

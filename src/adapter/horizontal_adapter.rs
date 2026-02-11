@@ -309,7 +309,7 @@ impl HorizontalAdapter {
                 if let (Some(channel), Some(socket_id)) = (&request.channel, &request.socket_id) {
                     // Check if socket exists in channel
                     let socket_id = SocketId::from_string(socket_id)
-                        .map_err(|e| Error::InvalidMessageFormat(e))?;
+                        .map_err(Error::InvalidMessageFormat)?;
                     response.exists = self
                         .local_adapter
                         .is_in_channel(&request.app_id, channel, &socket_id)

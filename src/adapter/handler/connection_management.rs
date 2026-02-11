@@ -247,11 +247,10 @@ impl ConnectionHandler {
     async fn send_error_frame(ws_tx: &mut WebSocketWriter, error: &Error) {
         let error_message = PusherMessage::error(error.close_code(), error.to_string(), None);
 
-        if let Ok(payload) = sonic_rs::to_string(&error_message) {
-            if let Err(e) = ws_tx.send(Message::text(payload)).await {
+        if let Ok(payload) = sonic_rs::to_string(&error_message)
+            && let Err(e) = ws_tx.send(Message::text(payload)).await {
                 warn!("Failed to send error frame: {e}");
             }
-        }
 
         if let Err(e) = ws_tx.close(error.close_code(), &error.to_string()).await {
             warn!("Failed to send close frame: {}", e);

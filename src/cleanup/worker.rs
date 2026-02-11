@@ -136,12 +136,12 @@ impl CleanupWorker {
                 channel_operations
                     .entry((task.app_id.clone(), channel.clone()))
                     .or_default()
-                    .push(task.socket_id.clone());
+                    .push(task.socket_id);
             }
 
             // Prepare connection removal with user_id for user socket cleanup
             connections_to_remove.push((
-                task.socket_id.clone(),
+                task.socket_id,
                 task.app_id.clone(),
                 task.user_id.clone(),
             ));

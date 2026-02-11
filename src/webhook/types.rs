@@ -3,7 +3,6 @@ use ahash::AHashMap;
 // No SdkConfig needed here, it's for AWS SDK interaction in lambda_sender.
 use serde::{Deserialize, Serialize};
 use sonic_rs::Value; // Keep this for Value type
-use sonic_rs::prelude::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Webhook {
