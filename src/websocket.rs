@@ -11,7 +11,8 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::fmt::Debug;
@@ -677,7 +678,7 @@ impl MessageSender {
     }
 
     pub fn send_json<T: serde::Serialize>(&self, message: &T) -> Result<()> {
-        let payload = serde_json::to_string(message)
+        let payload = sonic_rs::to_string(message)
             .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
 
         self.send(Message::text(payload))

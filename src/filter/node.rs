@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 
 use super::ops::{CompareOp, LogicalOp};
 
@@ -9,11 +10,16 @@ where
     D: Deserializer<'de>,
 {
     let value: Option<Value> = Option::deserialize(deserializer)?;
-    Ok(value.map(|v| match v {
-        Value::String(s) => s,
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        _ => v.to_string(),
+    Ok(value.map(|v| {
+        if let Some(s) = v.as_str() {
+            s.to_string()
+        } else if let Some(n) = v.as_number() {
+            n.to_string()
+        } else if let Some(b) = v.as_bool() {
+            b.to_string()
+        } else {
+            v.to_string()
+        }
     }))
 }
 
@@ -25,11 +31,16 @@ where
     let values: Vec<Value> = Vec::deserialize(deserializer)?;
     Ok(values
         .into_iter()
-        .map(|v| match v {
-            Value::String(s) => s,
-            Value::Number(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            _ => v.to_string(),
+        .map(|v| {
+            if let Some(s) = v.as_str() {
+                s.to_string()
+            } else if let Some(n) = v.as_number() {
+                n.to_string()
+            } else if let Some(b) = v.as_bool() {
+                b.to_string()
+            } else {
+                v.to_string()
+            }
         })
         .collect())
 }
@@ -385,8 +396,8 @@ mod tests {
     #[test]
     fn test_serialize_simple_filter() {
         let filter = FilterNodeBuilder::eq("event_type", "goal");
-        let json = serde_json::to_string(&filter).unwrap();
-        let parsed: FilterNode = serde_json::from_str(&json).unwrap();
+        let json = sonic_rs::to_string(&filter).unwrap();
+        let parsed: FilterNode = sonic_rs::from_str(&json).unwrap();
         assert_eq!(filter, parsed);
     }
 
@@ -400,8 +411,8 @@ mod tests {
             ]),
         ]);
 
-        let json = serde_json::to_string(&filter).unwrap();
-        let parsed: FilterNode = serde_json::from_str(&json).unwrap();
+        let json = sonic_rs::to_string(&filter).unwrap();
+        let parsed: FilterNode = sonic_rs::from_str(&json).unwrap();
         assert_eq!(filter, parsed);
     }
 
@@ -517,7 +528,7 @@ mod tests {
     fn test_deserialize_numeric_val() {
         // Test that numeric values in JSON are properly converted to strings
         let json = r#"{"key":"category_id","cmp":"eq","val":501}"#;
-        let filter: FilterNode = serde_json::from_str(json).unwrap();
+        let filter: FilterNode = sonic_rs::from_str(json).unwrap();
         assert_eq!(filter.key, Some("category_id".to_string()));
         assert_eq!(filter.cmp, Some("eq".to_string()));
         assert_eq!(filter.val, Some("501".to_string()));
@@ -527,7 +538,7 @@ mod tests {
     fn test_deserialize_numeric_vals() {
         // Test that numeric values in vals array are properly converted to strings
         let json = r#"{"key":"category_id","cmp":"in","vals":[501,1,56]}"#;
-        let filter: FilterNode = serde_json::from_str(json).unwrap();
+        let filter: FilterNode = sonic_rs::from_str(json).unwrap();
         assert_eq!(filter.key, Some("category_id".to_string()));
         assert_eq!(filter.cmp, Some("in".to_string()));
         assert_eq!(filter.vals, vec!["501", "1", "56"]);
@@ -551,7 +562,7 @@ mod tests {
                 }
             ]
         }"#;
-        let filter: FilterNode = serde_json::from_str(json).unwrap();
+        let filter: FilterNode = sonic_rs::from_str(json).unwrap();
 
         // Validate structure
         assert_eq!(filter.op, Some("and".to_string()));
@@ -578,7 +589,7 @@ mod tests {
     fn test_deserialize_mixed_types() {
         // Test that booleans and other types are also converted
         let json = r#"{"key":"active","cmp":"eq","val":true}"#;
-        let filter: FilterNode = serde_json::from_str(json).unwrap();
+        let filter: FilterNode = sonic_rs::from_str(json).unwrap();
         assert_eq!(filter.val, Some("true".to_string()));
     }
 }

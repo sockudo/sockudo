@@ -1,9 +1,9 @@
-use serde_json::json;
 use sockudo::adapter::handler::types::SignInRequest;
 use sockudo::app::auth::AuthValidator;
 use sockudo::app::config::App;
 use sockudo::token::Token;
 use sockudo::websocket::SocketId;
+use sonic_rs::json;
 use std::sync::Arc;
 
 use crate::mocks::connection_handler_mock::{
@@ -47,8 +47,8 @@ async fn test_signin_request_from_message_json_format() {
 #[tokio::test]
 async fn test_signin_request_from_message_structured_format() {
     use ahash::AHashMap;
-    use serde_json::Value;
     use sockudo::protocol::messages::{MessageData, PusherMessage};
+    use sonic_rs::Value;
 
     let user_data = json!({
         "id": "test-user-456",
@@ -59,10 +59,7 @@ async fn test_signin_request_from_message_structured_format() {
     .to_string();
 
     let mut extra = AHashMap::new();
-    extra.insert(
-        "auth".to_string(),
-        Value::String("app-key:another_signature".to_string()),
-    );
+    extra.insert("auth".to_string(), Value::from("app-key:another_signature"));
 
     let message = PusherMessage {
         event: Some("pusher:signin".to_string()),

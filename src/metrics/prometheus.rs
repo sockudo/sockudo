@@ -11,7 +11,8 @@ use prometheus::{
     CounterVec, Gauge, GaugeVec, HistogramVec, Opts, TextEncoder, histogram_opts,
     register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec,
 };
-use serde_json::{Value, json};
+use sonic_rs::prelude::*;
+use sonic_rs::{Value, json};
 use tracing::{debug, error};
 
 // Histogram buckets for internal operations (in milliseconds)
@@ -963,7 +964,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
                 if labels.is_empty() {
                     json_metrics[name] = value;
                 } else {
-                    if !json_metrics.as_object().unwrap().contains_key(name) {
+                    if !json_metrics.as_object().unwrap().contains_key(&name) {
                         json_metrics[name] = json!([]);
                     }
                     let mut metric_with_labels = label_json;

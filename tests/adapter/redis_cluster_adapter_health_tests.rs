@@ -1,6 +1,6 @@
 #![cfg(feature = "redis-cluster")]
 
-use serde_json::json;
+use sonic_rs::json;
 use sockudo::adapter::ConnectionManager;
 use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
 use sockudo::adapter::redis_cluster_adapter::RedisClusterAdapter;

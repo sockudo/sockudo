@@ -17,8 +17,10 @@ use axum::{
     response::{IntoResponse, Response as AxumResponse},
 };
 use futures_util::future::join_all;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use sonic_rs::prelude::*;
+use sonic_rs::{Value, json};
 use std::{
     collections::HashMap, // Added BTreeMap
     sync::Arc,
@@ -46,7 +48,7 @@ pub enum AppError {
     #[error("Internal Server Error: {0}")]
     InternalError(String),
     #[error("Serialization Error: {0}")]
-    SerializationError(#[from] serde_json::Error),
+    SerializationError(#[from] sonic_rs::Error),
     #[error("HTTP Header Build Error: {0}")]
     HeaderBuildError(#[from] axum::http::Error),
     #[error("Limit exceeded: {0}")]
@@ -130,24 +132,56 @@ pub struct EventQuery {
     pub auth_signature: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug)]
 pub struct ChannelQuery {
-    #[serde(default)]
     pub info: Option<String>,
-    // EventQuery fields are flattened here for GET requests that also need specific endpoint params
-    #[serde(flatten)]
     pub auth_params: EventQuery,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug)]
 pub struct ChannelsQuery {
-    #[serde(default)]
     pub filter_by_prefix: Option<String>,
-    #[serde(default)]
     pub info: Option<String>,
-    // EventQuery fields are flattened here
-    #[serde(flatten)]
     pub auth_params: EventQuery,
+}
+
+impl<'de> Deserialize<'de> for ChannelQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Flatten workaround for sonic-rs issue #114.
+        let mut obj = sonic_rs::Object::deserialize(deserializer)?;
+        let info = obj
+            .remove(&"info")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+        let auth_params: EventQuery = sonic_rs::from_value(&obj.into_value())
+            .map_err(|e| D::Error::custom(format!("invalid auth query params: {e}")))?;
+        Ok(Self { info, auth_params })
+    }
+}
+
+impl<'de> Deserialize<'de> for ChannelsQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Flatten workaround for sonic-rs issue #114.
+        let mut obj = sonic_rs::Object::deserialize(deserializer)?;
+        let filter_by_prefix = obj
+            .remove(&"filter_by_prefix")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+        let info = obj
+            .remove(&"info")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+        let auth_params: EventQuery = sonic_rs::from_value(&obj.into_value())
+            .map_err(|e| D::Error::custom(format!("invalid auth query params: {e}")))?;
+        Ok(Self {
+            filter_by_prefix,
+            info,
+            auth_params,
+        })
+    }
 }
 
 // --- Response Structs ---
@@ -172,8 +206,8 @@ fn build_cache_payload(
     event_name: &str,
     event_data: &Value,
     channel: &str,
-) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&json!({
+) -> Result<String, sonic_rs::Error> {
+    sonic_rs::to_string(&json!({
         "event": event_name,
         "channel": channel,
         "data": event_data,
@@ -424,7 +458,7 @@ async fn process_single_event_parallel(
             let mut collected_channel_specific_info: Option<(String, Value)> = None;
             if collect_info {
                 let is_presence = target_channel_str.starts_with("presence-");
-                let mut current_channel_info_map = serde_json::Map::new();
+                let mut current_channel_info_map = sonic_rs::Object::new();
 
                 // Get user count for presence channels if requested.
                 if is_presence && info_for_task.as_deref().is_some_and(|s| s.contains("user_count")) {
@@ -437,7 +471,7 @@ async fn process_single_event_parallel(
                     {
                         Ok(members_map) => {
                             current_channel_info_map
-                                .insert("user_count".to_string(), json!(members_map.len()));
+                                .insert("user_count", json!(members_map.len()));
                         }
                         Err(e) => {
                             warn!(
@@ -457,13 +491,13 @@ async fn process_single_event_parallel(
                         .connection_manager
                         .get_channel_socket_count(&app.id, &target_channel_str)
                         .await;
-                    current_channel_info_map.insert("subscription_count".to_string(), json!(count));
+                    current_channel_info_map.insert("subscription_count", json!(count));
                 }
 
                 if !current_channel_info_map.is_empty() {
                     collected_channel_specific_info = Some((
                         target_channel_str.clone(),
-                        Value::Object(current_channel_info_map),
+                        current_channel_info_map.into_value(),
                     ));
                 }
             }
@@ -476,7 +510,7 @@ async fn process_single_event_parallel(
                 //     Some(ApiMessageData::Json(j_val)) => j_val, // Already a Value
                 //     None => json!(null),
                 // };
-                let message_data = serde_json::to_value(&message_data)
+                let message_data = sonic_rs::to_value(&message_data)
                     .map_err(AppError::SerializationError)?;
                 // Attempt to build the cache payload string.
                 match build_cache_payload(&event_name_for_task, &message_data, &target_channel_str) {
@@ -555,7 +589,7 @@ pub async fn events(
         / 1_000_000.0;
 
     // Calculate request size for metrics
-    let incoming_request_size_bytes = serde_json::to_vec(&event_payload)?.len();
+    let incoming_request_size_bytes = sonic_rs::to_vec(&event_payload)?.len();
 
     let app = handler
         .app_manager
@@ -583,7 +617,7 @@ pub async fn events(
     };
 
     // Calculate response size for metrics and record metrics
-    let outgoing_response_size_bytes = serde_json::to_vec(&response_payload)?.len();
+    let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
     record_api_metrics(
         &handler,
         &app_id,
@@ -612,7 +646,7 @@ pub async fn batch_events(
         .as_nanos() as f64
         / 1_000_000.0;
 
-    let body_bytes = serde_json::to_vec(&batch_message_payload)?;
+    let body_bytes = sonic_rs::to_vec(&batch_message_payload)?;
     let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
     tracing::Span::current().record("batch_len", batch_len);
@@ -708,7 +742,7 @@ pub async fn batch_events(
     };
 
     // Record metrics and return the response.
-    let outgoing_response_size_bytes_vec = serde_json::to_vec(&final_response_payload)?;
+    let outgoing_response_size_bytes_vec = sonic_rs::to_vec(&final_response_payload)?;
     record_api_metrics(
         &handler,
         &app_id,
@@ -795,7 +829,7 @@ pub async fn channel(
         user_count_val,
         cache_data_tuple,
     );
-    let response_json_bytes = serde_json::to_vec(&response_payload)?;
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     debug!("Channel info for '{}' retrieved successfully", channel_name);
     Ok((StatusCode::OK, Json(response_payload)))
@@ -834,7 +868,7 @@ pub async fn channels(
             continue;
         }
         validate_channel_name(&app, channel_name_str).await?;
-        let mut current_channel_info_map = serde_json::Map::new();
+        let mut current_channel_info_map = sonic_rs::Object::new();
         if wants_user_count {
             if channel_name_str.starts_with("presence-") {
                 let members_map = ChannelManager::get_channel_members(
@@ -843,7 +877,7 @@ pub async fn channels(
                     channel_name_str,
                 )
                 .await?;
-                current_channel_info_map.insert("user_count".to_string(), json!(members_map.len()));
+                current_channel_info_map.insert("user_count", json!(members_map.len()));
             } else if !filter_prefix_str.starts_with("presence-") {
                 return Err(AppError::InvalidInput(
                     "user_count is only available for presence channels. Use filter_by_prefix=presence-".to_string()
@@ -853,7 +887,7 @@ pub async fn channels(
         if !current_channel_info_map.is_empty() {
             channels_info_response_map.insert(
                 channel_name_str.clone(),
-                Value::Object(current_channel_info_map),
+                current_channel_info_map.into_value(),
             );
         } else if query_params_specific.info.is_none() {
             channels_info_response_map.insert(channel_name_str.clone(), json!({}));
@@ -861,7 +895,7 @@ pub async fn channels(
     }
 
     let response_payload = PusherMessage::channels_list(channels_info_response_map);
-    let response_json_bytes = serde_json::to_vec(&response_payload)?;
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     debug!("Channels list for app '{}' retrieved successfully", app_id);
     Ok((StatusCode::OK, Json(response_payload)))
@@ -896,7 +930,7 @@ pub async fn channel_users(
         .map(|user_id_str| json!({ "id": user_id_str }))
         .collect::<Vec<_>>();
     let response_payload_val = json!({ "users": users_vec });
-    let response_json_bytes = serde_json::to_vec(&response_payload_val)?;
+    let response_json_bytes = sonic_rs::to_vec(&response_payload_val)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     info!(
         user_count = users_vec.len(),
@@ -932,7 +966,7 @@ pub async fn terminate_user_connections(
     );
 
     let response_payload = json!({ "ok": true });
-    let response_size = serde_json::to_vec(&response_payload)?.len();
+    let response_size = sonic_rs::to_vec(&response_payload)?.len();
     record_api_metrics(&handler, &app_id, 0, response_size).await;
 
     Ok((StatusCode::OK, Json(response_payload)))

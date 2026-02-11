@@ -2,7 +2,8 @@ use ahash::AHashMap;
 // src/webhook/types.rs
 // No SdkConfig needed here, it's for AWS SDK interaction in lambda_sender.
 use serde::{Deserialize, Serialize};
-use serde_json::Value; // Keep this for Value type
+use sonic_rs::Value; // Keep this for Value type
+use sonic_rs::prelude::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Webhook {
@@ -33,10 +34,20 @@ pub struct WebhookFilter {
     pub channel_pattern: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WebhookHeaders {
-    #[serde(flatten)]
     pub headers: AHashMap<String, String>,
+}
+
+impl<'de> Deserialize<'de> for WebhookHeaders {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Flatten workaround for sonic-rs issue #114.
+        let headers = AHashMap::<String, String>::deserialize(deserializer)?;
+        Ok(Self { headers })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

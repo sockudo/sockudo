@@ -29,9 +29,10 @@ use crate::websocket::SocketId;
 
 use crate::adapter::handler::types::{ClientEventRequest, SignInRequest, SubscriptionRequest};
 use dashmap::DashMap;
-use serde_json::Value;
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::{WebSocket, WebSocketReader, WebSocketWriter};
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::sync::Mutex;
@@ -155,7 +156,7 @@ impl ConnectionHandler {
                     None,
                 );
 
-                if let Ok(payload_str) = serde_json::to_string(&error_message) {
+                if let Ok(payload_str) = sonic_rs::to_string(&error_message) {
                     if let Err(e) = socket_tx.send(Message::text(payload_str)).await {
                         warn!("Failed to send origin rejection message: {}", e);
                     }
@@ -456,7 +457,7 @@ impl ConnectionHandler {
             }
         };
 
-        serde_json::from_str(&payload)
+        sonic_rs::from_str(&payload)
             .map_err(|e| Error::InvalidMessageFormat(format!("Invalid JSON: {e}")))
     }
 
@@ -476,23 +477,18 @@ impl ConnectionHandler {
         let data = match &message.data {
             Some(MessageData::Json(data)) => data.clone(),
             Some(MessageData::String(s)) => {
-                serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.clone()))
+                sonic_rs::from_str(s).unwrap_or_else(|_| Value::from(s.as_str()))
             }
             Some(MessageData::Structured { extra, .. }) => {
                 // For client events, the data is in the extra fields
                 // Always convert the extra HashMap to a JSON object to preserve structure
                 if !extra.is_empty() {
-                    Value::Object(
-                        extra
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect::<serde_json::Map<String, Value>>(),
-                    )
+                    sonic_rs::to_value(extra).unwrap_or_else(|_| Value::new_object())
                 } else {
-                    Value::Null
+                    Value::new_null()
                 }
             }
-            None => Value::Null,
+            None => Value::new_null(),
         };
 
         Ok(ClientEventRequest {

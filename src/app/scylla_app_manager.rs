@@ -261,7 +261,7 @@ impl UpdateRow {
             .webhooks
             .as_ref()
             .map(|w| {
-                serde_json::to_string(w)
+                sonic_rs::to_string(w)
                     .map_err(|e| Error::Internal(format!("Failed to serialize webhooks: {}", e)))
             })
             .transpose()?;
@@ -270,7 +270,7 @@ impl UpdateRow {
             .allowed_origins
             .as_ref()
             .map(|o| {
-                serde_json::to_string(o).map_err(|e| {
+                sonic_rs::to_string(o).map_err(|e| {
                     Error::Internal(format!("Failed to serialize allowed_origins: {}", e))
                 })
             })
@@ -309,7 +309,7 @@ impl AppRow {
             .webhooks
             .as_ref()
             .map(|w| {
-                serde_json::to_string(w)
+                sonic_rs::to_string(w)
                     .map_err(|e| Error::Internal(format!("Failed to serialize webhooks: {}", e)))
             })
             .transpose()?;
@@ -318,7 +318,7 @@ impl AppRow {
             .allowed_origins
             .as_ref()
             .map(|o| {
-                serde_json::to_string(o).map_err(|e| {
+                sonic_rs::to_string(o).map_err(|e| {
                     Error::Internal(format!("Failed to serialize allowed_origins: {}", e))
                 })
             })
@@ -373,14 +373,14 @@ impl AppRow {
             enable_user_authentication: self.enable_user_authentication,
             enable_watchlist_events: self.enable_watchlist_events,
             webhooks: self.webhooks.and_then(|json| {
-                serde_json::from_str::<Vec<Webhook>>(&json)
+                sonic_rs::from_str::<Vec<Webhook>>(&json)
                     .map_err(|e| {
                         error!("Failed to deserialize webhooks for app {}: {}", self.id, e)
                     })
                     .ok()
             }),
             allowed_origins: self.allowed_origins.and_then(|json| {
-                serde_json::from_str::<Vec<String>>(&json)
+                sonic_rs::from_str::<Vec<String>>(&json)
                     .map_err(|e| {
                         error!(
                             "Failed to deserialize allowed_origins for app {}: {}",

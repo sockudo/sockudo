@@ -759,7 +759,7 @@ impl LocalAdapter {
                 };
 
                 // Create delta message data
-                let mut delta_data = serde_json::json!({
+                let mut delta_data = sonic_rs::json!({
                     "event": event_name,
                     "delta": base64::Engine::encode(
                         &base64::engine::general_purpose::STANDARD,
@@ -771,10 +771,10 @@ impl LocalAdapter {
 
                 // Add conflation key and base index if available
                 if let Some(key) = conflation_key.clone() {
-                    delta_data["conflation_key"] = serde_json::Value::String(key);
+                    delta_data["conflation_key"] = sonic_rs::Value::from(&key);
                 }
                 if let Some(idx) = base_index {
-                    delta_data["base_index"] = serde_json::Value::Number(idx.into());
+                    delta_data["base_index"] = sonic_rs::Value::from(idx as u64);
                 }
 
                 // Wrap in Pusher message format
@@ -789,7 +789,7 @@ impl LocalAdapter {
                     conflation_key: None,
                 };
 
-                let bytes = serde_json::to_vec(&pusher_msg).map_err(|e| {
+                let bytes = sonic_rs::to_vec(&pusher_msg).map_err(|e| {
                     Error::InvalidMessageFormat(format!("Serialization failed: {e}"))
                 })?;
 
@@ -909,7 +909,7 @@ impl LocalAdapter {
             let base_index = base_sequence as usize;
 
             // Create delta message data
-            let mut delta_data = serde_json::json!({
+            let mut delta_data = sonic_rs::json!({
                 "event": event_name,
                 "delta": base64::Engine::encode(
                     &base64::engine::general_purpose::STANDARD,
@@ -919,14 +919,14 @@ impl LocalAdapter {
             });
 
             if !omit_algorithm {
-                delta_data["algorithm"] = serde_json::json!(algorithm_str);
+                delta_data["algorithm"] = sonic_rs::json!(algorithm_str);
             }
 
             // Add conflation key and base index
             if !conflation_key.is_empty() {
-                delta_data["conflation_key"] = serde_json::Value::String(conflation_key.clone());
+                delta_data["conflation_key"] = sonic_rs::Value::from(&conflation_key);
             }
-            delta_data["base_index"] = serde_json::Value::Number(base_index.into());
+            delta_data["base_index"] = sonic_rs::Value::from(base_index as u64);
 
             // Wrap in Pusher message format
             let pusher_msg = PusherMessage {
@@ -940,7 +940,7 @@ impl LocalAdapter {
                 conflation_key: None,
             };
 
-            let bytes = serde_json::to_vec(&pusher_msg)
+            let bytes = sonic_rs::to_vec(&pusher_msg)
                 .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
 
             // CRITICAL: Store the NEW message WITHOUT metadata (base_message_bytes).
@@ -1261,7 +1261,7 @@ impl ConnectionManager for LocalAdapter {
         }
 
         // Fall back to regular sending without delta compression
-        let serialized_message = serde_json::to_vec(&message)
+        let serialized_message = sonic_rs::to_vec(&message)
             .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
         let message_bytes = Bytes::from(serialized_message);
 
@@ -1534,7 +1534,7 @@ impl ConnectionManager for LocalAdapter {
         let event_name = message.event.as_deref().unwrap_or("").to_string();
 
         // Serialize the base message once
-        let base_message_bytes = serde_json::to_vec(&message)
+        let base_message_bytes = sonic_rs::to_vec(&message)
             .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
 
         // Process each socket with potential delta compression (already filtered)

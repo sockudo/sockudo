@@ -195,7 +195,7 @@ async fn test_single_node_skips_presence_broadcasts() -> Result<()> {
             "presence-channel",
             "user123",
             "socket123",
-            Some(serde_json::json!({"name": "Alice"})),
+            Some(sonic_rs::json!({"name": "Alice"})),
         )
         .await?;
 
@@ -241,7 +241,7 @@ async fn test_multi_node_sends_presence_broadcasts() -> Result<()> {
             "presence-channel",
             "user123",
             "socket123",
-            Some(serde_json::json!({"name": "Alice"})),
+            Some(sonic_rs::json!({"name": "Alice"})),
         )
         .await?;
 

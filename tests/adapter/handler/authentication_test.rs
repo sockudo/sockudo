@@ -1,5 +1,5 @@
 use crate::mocks::connection_handler_mock::create_test_connection_handler;
-use serde_json::json;
+use sonic_rs::json;
 use sockudo::adapter::handler::types::SubscriptionRequest;
 use sockudo::app::config::App;
 use sockudo::error::Error;

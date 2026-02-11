@@ -291,7 +291,7 @@ impl CleanupWorker {
                     app_id: task.app_id.clone(),
                     channel: channel.clone(),
                     user_id: Some(user_id.clone()),
-                    data: serde_json::json!({
+                    data: sonic_rs::json!({
                         "user_id": user_id,
                         "socket_id": task.socket_id.to_string()
                     }),
@@ -314,7 +314,7 @@ impl CleanupWorker {
                     app_id: task.app_id.clone(),
                     channel: channel.clone(),
                     user_id: None,
-                    data: serde_json::json!({
+                    data: sonic_rs::json!({
                         "channel": channel
                     }),
                 });

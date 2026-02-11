@@ -256,7 +256,7 @@ Validation checks:
 Filters are fully JSON-compatible:
 
 ```rust
-use serde_json;
+use sonic_rs;
 
 let filter = FilterNodeBuilder::or(vec![
     FilterNodeBuilder::eq("event_type", "goal"),
@@ -264,10 +264,10 @@ let filter = FilterNodeBuilder::or(vec![
 ]);
 
 // Serialize
-let json = serde_json::to_string(&filter).unwrap();
+let json = sonic_rs::to_string(&filter).unwrap();
 
 // Deserialize
-let parsed: FilterNode = serde_json::from_str(&json).unwrap();
+let parsed: FilterNode = sonic_rs::from_str(&json).unwrap();
 
 assert_eq!(filter, parsed);
 ```

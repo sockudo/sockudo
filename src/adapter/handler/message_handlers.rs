@@ -5,6 +5,7 @@ use crate::app::config::App;
 use crate::error::{Error, Result};
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::SocketId;
+use sonic_rs::prelude::*;
 
 impl ConnectionHandler {
     pub async fn handle_ping(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
@@ -66,7 +67,7 @@ impl ConnectionHandler {
                 let confirmation = PusherMessage {
                     event: Some("pusher:delta_compression_enabled".to_string()),
                     data: Some(crate::protocol::messages::MessageData::Json(
-                        serde_json::json!({
+                        sonic_rs::json!({
                             "enabled": true,
                             "algorithm": algorithm_str
                         }),
@@ -106,7 +107,7 @@ impl ConnectionHandler {
         message: &PusherMessage,
     ) -> Result<()> {
         // Extract channel from the message data
-        let channel = match &message.data {
+        let channel: Option<String> = match &message.data {
             Some(crate::protocol::messages::MessageData::Structured { channel, .. }) => {
                 channel.clone()
             }
@@ -115,7 +116,7 @@ impl ConnectionHandler {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             Some(crate::protocol::messages::MessageData::String(s)) => {
-                serde_json::from_str::<serde_json::Value>(s)
+                sonic_rs::from_str::<sonic_rs::Value>(s)
                     .ok()
                     .and_then(|v| v.get("channel").and_then(|c| c.as_str()).map(String::from))
             }
