@@ -1,6 +1,6 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
 use ahash::AHashMap;
-use serde_json::json;
+use sonic_rs::json;
 use sockudo::adapter::horizontal_adapter::{RequestBody, RequestType};
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo::options::ClusterHealthConfig;

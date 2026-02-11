@@ -20,7 +20,8 @@ use ahash::AHashMap;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -725,15 +726,20 @@ impl DeltaCompressionManager {
     /// Returns empty string if extraction fails
     fn extract_conflation_key_with_path(&self, message_bytes: &[u8], key_path: &str) -> String {
         // Helper to stringify a JSON value consistently
-        let to_string = |v: &Value| match v {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            _ => format!("{}", v),
+        let to_string = |v: &Value| {
+            if let Some(s) = v.as_str() {
+                s.to_string()
+            } else if let Some(n) = v.as_number() {
+                n.to_string()
+            } else if let Some(b) = v.as_bool() {
+                b.to_string()
+            } else {
+                format!("{}", v)
+            }
         };
 
         // Parse JSON message
-        let json_value: Value = match serde_json::from_slice(message_bytes) {
+        let json_value: Value = match sonic_rs::from_slice(message_bytes) {
             Ok(v) => v,
             Err(_) => return String::new(), // Invalid JSON, use default key
         };
@@ -751,19 +757,17 @@ impl DeltaCompressionManager {
                     if parts.len() == 1 {
                         // Direct object payload
                         if let Some(data_obj) = json_value.get("data").and_then(|v| v.as_object()) {
-                            if let Some(v) = data_obj.get(*part) {
+                            if let Some(v) = data_obj.get(part) {
                                 return to_string(v);
                             }
                         }
                         // Stringified JSON payload
-                        if let Some(Value::String(data_str)) = json_value.get("data") {
-                            if let Ok(Value::Object(data_obj)) =
-                                serde_json::from_str::<Value>(data_str)
-                            {
-                                if let Some(v) = data_obj.get(*part) {
-                                    return to_string(v);
-                                }
-                            }
+                        if let Some(data_str_val) = json_value.get("data")
+                            && let Some(data_str) = data_str_val.as_str()
+                            && let Ok(data_obj) = sonic_rs::from_str::<sonic_rs::Object>(data_str)
+                            && let Some(v) = data_obj.get(part)
+                        {
+                            return to_string(v);
                         }
                     }
 
@@ -1686,7 +1690,7 @@ pub fn create_delta_message(
 ) -> Value {
     let delta_base64 = base64_encode(&delta);
 
-    let mut data = serde_json::json!({
+    let mut data = sonic_rs::json!({
         "event": event,
         "delta": delta_base64,
         "seq": sequence,
@@ -1697,18 +1701,18 @@ pub fn create_delta_message(
             DeltaAlgorithm::Fossil => "fossil",
             DeltaAlgorithm::Xdelta3 => "xdelta3",
         };
-        data["algorithm"] = serde_json::json!(algo_str);
+        data["algorithm"] = sonic_rs::json!(algo_str);
     }
 
     // Add conflation info if present
     if let Some(key) = conflation_key {
-        data["conflation_key"] = serde_json::json!(key);
+        data["conflation_key"] = sonic_rs::json!(key);
     }
     if let Some(idx) = base_index {
-        data["base_index"] = serde_json::json!(idx);
+        data["base_index"] = sonic_rs::json!(idx);
     }
 
-    serde_json::json!({
+    sonic_rs::json!({
         "event": "pusher:delta",
         "channel": channel,
         "data": data.to_string()
@@ -1726,7 +1730,7 @@ pub fn create_cache_sync_message(
     max_messages_per_key: usize,
     caches: Vec<(String, Vec<CachedMessage>)>,
 ) -> Value {
-    let mut states = serde_json::Map::new();
+    let mut states = sonic_rs::Object::new();
 
     for (key, messages) in caches {
         // Only send the most recent message per conflation key
@@ -1736,7 +1740,7 @@ pub fn create_cache_sync_message(
             .rev() // Start from most recent
             .take(1) // Only take the last message
             .map(|msg| {
-                serde_json::json!({
+                sonic_rs::json!({
                     "content": String::from_utf8_lossy(&msg.content),
                     "seq": msg.sequence
                 })
@@ -1752,20 +1756,20 @@ pub fn create_cache_sync_message(
             } else {
                 key
             };
-            states.insert(client_key, serde_json::json!(messages_json));
+            states.insert(&client_key, sonic_rs::json!(messages_json));
         }
     }
 
-    let mut data = serde_json::json!({
+    let mut data = sonic_rs::json!({
         "max_messages_per_key": max_messages_per_key,
         "states": states,
     });
 
     if let Some(key) = conflation_key {
-        data["conflation_key"] = serde_json::json!(key);
+        data["conflation_key"] = sonic_rs::json!(key);
     }
 
-    serde_json::json!({
+    sonic_rs::json!({
         "event": "pusher:delta_cache_sync",
         "channel": channel,
         "data": data.to_string()
@@ -1779,7 +1783,7 @@ pub fn create_full_message_with_seq(
     data: &str,
     sequence: u32,
 ) -> Value {
-    serde_json::json!({
+    sonic_rs::json!({
         "event": event,
         "channel": channel,
         "data": data,

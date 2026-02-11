@@ -487,7 +487,7 @@ mod tests {
             ]
         }"#;
 
-        let filter: FilterNode = serde_json::from_str(json).unwrap();
+        let filter: FilterNode = sonic_rs::from_str(json).unwrap();
 
         // Tags that should match both conditions
         let matching_tags = tags(&[("user_id", "12345"), ("status", "premium")]);
@@ -520,7 +520,7 @@ mod tests {
         // Fix: Custom deserializer converts numbers/bools to strings
 
         let json = r#"{"key":"count","cmp":"eq","val":100}"#;
-        let filter: FilterNode = serde_json::from_str(json).unwrap();
+        let filter: FilterNode = sonic_rs::from_str(json).unwrap();
 
         // Verify the numeric 100 was converted to string "100"
         assert_eq!(
@@ -538,7 +538,7 @@ mod tests {
 
         // Test with float
         let json_float = r#"{"key":"temperature","cmp":"eq","val":98.6}"#;
-        let filter_float: FilterNode = serde_json::from_str(json_float).unwrap();
+        let filter_float: FilterNode = sonic_rs::from_str(json_float).unwrap();
         assert_eq!(filter_float.val, Some("98.6".to_string()));
 
         let temp_tags = tags(&[("temperature", "98.6")]);

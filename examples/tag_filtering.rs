@@ -22,7 +22,7 @@ fn main() {
     println!("Filter: event_type == 'goal'");
     println!(
         "Filter JSON: {}\n",
-        serde_json::to_string_pretty(&filter).unwrap()
+        sonic_rs::to_string_pretty(&filter).unwrap()
     );
 
     // Simulate publications
@@ -61,7 +61,7 @@ fn main() {
     println!("Filter: (event_type == 'goal') OR (event_type == 'shot' AND xG >= 0.8)");
     println!(
         "Filter JSON: {}\n",
-        serde_json::to_string_pretty(&filter).unwrap()
+        sonic_rs::to_string_pretty(&filter).unwrap()
     );
 
     let publications_with_xg = vec![
@@ -93,7 +93,7 @@ fn main() {
     println!("Filter: event_type IN ['goal', 'penalty', 'red_card']");
     println!(
         "Filter JSON: {}\n",
-        serde_json::to_string_pretty(&filter).unwrap()
+        sonic_rs::to_string_pretty(&filter).unwrap()
     );
 
     let critical_events = vec![
@@ -146,7 +146,7 @@ fn main() {
 
     for (desc, filter) in &filters {
         println!("\nFilter: {}", desc);
-        println!("Filter JSON: {}", serde_json::to_string(&filter).unwrap());
+        println!("Filter JSON: {}", sonic_rs::to_string(&filter).unwrap());
         println!("Teams:");
 
         for (team, sw, ew, ct) in &teams {
@@ -187,7 +187,7 @@ fn main() {
     println!("Filter: xG > 0.7 AND distance < 20");
     println!(
         "Filter JSON: {}\n",
-        serde_json::to_string_pretty(&filter).unwrap()
+        sonic_rs::to_string_pretty(&filter).unwrap()
     );
 
     let shots = vec![
@@ -232,7 +232,7 @@ fn main() {
     println!("Filter: NOT (event_type IN ['pass', 'tackle', 'throw_in'])");
     println!(
         "Filter JSON: {}\n",
-        serde_json::to_string_pretty(&filter).unwrap()
+        sonic_rs::to_string_pretty(&filter).unwrap()
     );
 
     let all_events = vec![
@@ -255,8 +255,7 @@ fn main() {
 
     let valid_filter = FilterNodeBuilder::eq("event_type", "goal");
     // Create an invalid filter via JSON deserialization (missing key - invalid!)
-    let invalid_filter: FilterNode =
-        serde_json::from_str(r#"{"cmp": "eq", "val": "goal"}"#).unwrap();
+    let invalid_filter: FilterNode = sonic_rs::from_str(r#"{"cmp": "eq", "val": "goal"}"#).unwrap();
 
     println!("Valid filter:");
     match valid_filter.validate() {

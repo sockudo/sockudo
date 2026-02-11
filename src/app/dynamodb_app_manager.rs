@@ -137,7 +137,7 @@ impl DynamoDbAppManager {
                 webhooks: if let Some(aws_sdk_dynamodb::types::AttributeValue::S(json_str)) =
                     map.get("webhooks")
                 {
-                    serde_json::from_str::<Vec<Webhook>>(json_str)
+                    sonic_rs::from_str::<Vec<Webhook>>(json_str)
                         .map_err(|e| {
                             tracing::warn!("Failed to parse webhooks JSON: {}", e);
                             e
@@ -297,7 +297,7 @@ impl DynamoDbAppManager {
         }
 
         if let Some(webhooks) = &app.webhooks {
-            let json_str = serde_json::to_string(webhooks)
+            let json_str = sonic_rs::to_string(webhooks)
                 .expect("Failed to serialize webhooks to JSON. This indicates a bug.");
             item.insert(
                 "webhooks".to_string(),

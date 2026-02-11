@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod client_event_validation_tests {
     use crate::mocks::connection_handler_mock::create_test_connection_handler;
-    use serde_json::json;
+    use sonic_rs::json;
     use sockudo::adapter::handler::types::ClientEventRequest;
     use sockudo::app::config::App;
 

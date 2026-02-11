@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use sonic_rs::prelude::*;
+use sonic_rs::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ pub struct PresenceData {
     pub count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum MessageData {
     String(String),
@@ -26,6 +27,50 @@ pub enum MessageData {
         extra: AHashMap<String, Value>,
     },
     Json(Value),
+}
+
+impl<'de> Deserialize<'de> for MessageData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = Value::deserialize(deserializer)?;
+        if let Some(s) = v.as_str() {
+            return Ok(MessageData::String(s.to_string()));
+        }
+        if let Some(obj) = v.as_object() {
+            // Flatten workaround for sonic-rs issue #114:
+            // manually split known structured keys and keep remaining keys in `extra`.
+            let channel_data = obj
+                .get(&"channel_data")
+                .and_then(|x| x.as_str())
+                .map(ToString::to_string);
+            let channel = obj
+                .get(&"channel")
+                .and_then(|x| x.as_str())
+                .map(ToString::to_string);
+            let user_data = obj
+                .get(&"user_data")
+                .and_then(|x| x.as_str())
+                .map(ToString::to_string);
+
+            if channel_data.is_some() || channel.is_some() || user_data.is_some() {
+                let mut extra = AHashMap::new();
+                for (k, val) in obj.iter() {
+                    if k != "channel_data" && k != "channel" && k != "user_data" {
+                        extra.insert(k.to_string(), val.clone());
+                    }
+                }
+                return Ok(MessageData::Structured {
+                    channel_data,
+                    channel,
+                    user_data,
+                    extra,
+                });
+            }
+        }
+        Ok(MessageData::Json(v))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,10 +471,10 @@ impl PusherMessage {
     /// Add base sequence marker to a full message for delta tracking
     pub fn add_base_sequence(mut self, base_sequence: u32) -> Self {
         if let Some(MessageData::String(ref data_str)) = self.data
-            && let Ok(mut data_obj) = serde_json::from_str::<Value>(data_str)
+            && let Ok(mut data_obj) = sonic_rs::from_str::<Value>(data_str)
             && let Some(obj) = data_obj.as_object_mut()
         {
-            obj.insert("__delta_base_seq".to_string(), json!(base_sequence));
+            obj.insert("__delta_base_seq", json!(base_sequence));
             self.data = Some(MessageData::String(data_obj.to_string()));
         }
         self

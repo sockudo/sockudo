@@ -12,7 +12,8 @@ use crate::protocol::messages::{MessageData, PresenceData, PusherMessage};
 use crate::utils::is_cache_channel;
 use crate::websocket::SocketId;
 use ahash::AHashMap;
-use serde_json::Value;
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -43,7 +44,7 @@ impl ConnectionHandler {
         let temp_message = PusherMessage {
             channel: Some(request.channel.clone()),
             event: Some("pusher:subscribe".to_string()),
-            data: Some(MessageData::Json(serde_json::json!({
+            data: Some(MessageData::Json(sonic_rs::json!({
                 "channel": request.channel,
                 "auth": request.auth,
                 "channel_data": request.channel_data
@@ -531,7 +532,7 @@ impl ConnectionHandler {
                 event: Some("pusher:delta_compression_enabled".to_string()),
                 channel: Some(channel.to_string()),
                 data: Some(crate::protocol::messages::MessageData::Json(
-                    serde_json::json!({
+                    sonic_rs::json!({
                         "enabled": true,
                         "algorithm": algorithm_str,
                         "channel": channel

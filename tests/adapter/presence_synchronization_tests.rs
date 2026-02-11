@@ -1,5 +1,5 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
-use serde_json::json;
+use sonic_rs::json;
 use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo::options::ClusterHealthConfig;

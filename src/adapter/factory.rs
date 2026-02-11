@@ -15,6 +15,8 @@ use crate::options::NatsAdapterConfig;
 #[cfg(feature = "redis-cluster")]
 use crate::options::RedisClusterAdapterConfig; // Import AdapterDriver, RedisConnection
 use crate::options::{AdapterConfig, AdapterDriver, DatabaseConfig};
+#[cfg(feature = "redis")]
+use sonic_rs::prelude::*;
 use tracing::{info, warn};
 
 /// Typed adapter enum for direct configuration without downcasting

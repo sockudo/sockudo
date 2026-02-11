@@ -2,7 +2,8 @@ use crate::channel::ChannelType;
 use crate::delta_compression::DeltaAlgorithm;
 use crate::filter::FilterNode;
 use crate::protocol::messages::{MessageData, PusherMessage};
-use serde_json::Value;
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use std::option::Option;
 
 /// Per-subscription delta compression settings
@@ -24,44 +25,43 @@ impl SubscriptionDeltaSettings {
     /// Parse delta settings from subscription data
     pub fn from_value(value: &Value) -> Option<Self> {
         // Handle both object format and simple string format
-        match value {
+        if let Some(s) = value.as_str() {
             // Simple string format: "delta": "fossil" or "delta": "xdelta3"
-            Value::String(s) => {
-                let algorithm = match s.to_lowercase().as_str() {
+            let algorithm = match s.to_lowercase().as_str() {
+                "fossil" => Some(DeltaAlgorithm::Fossil),
+                "xdelta3" | "vcdiff" => Some(DeltaAlgorithm::Xdelta3),
+                "disabled" | "false" | "none" => {
+                    return Some(Self {
+                        enabled: Some(false),
+                        algorithm: None,
+                    });
+                }
+                _ => None,
+            };
+            Some(Self {
+                enabled: Some(true),
+                algorithm,
+            })
+        } else if let Some(b) = value.as_bool() {
+            // Boolean format: "delta": true or "delta": false
+            Some(Self {
+                enabled: Some(b),
+                algorithm: None,
+            })
+        } else if let Some(obj) = value.as_object() {
+            // Object format: "delta": { "enabled": true, "algorithm": "fossil" }
+            let enabled = obj.get(&"enabled").and_then(|v| v.as_bool());
+            let algorithm = obj
+                .get(&"algorithm")
+                .and_then(|v| v.as_str())
+                .and_then(|s| match s.to_lowercase().as_str() {
                     "fossil" => Some(DeltaAlgorithm::Fossil),
                     "xdelta3" | "vcdiff" => Some(DeltaAlgorithm::Xdelta3),
-                    "disabled" | "false" | "none" => {
-                        return Some(Self {
-                            enabled: Some(false),
-                            algorithm: None,
-                        });
-                    }
                     _ => None,
-                };
-                Some(Self {
-                    enabled: Some(true),
-                    algorithm,
-                })
-            }
-            // Boolean format: "delta": true or "delta": false
-            Value::Bool(b) => Some(Self {
-                enabled: Some(*b),
-                algorithm: None,
-            }),
-            // Object format: "delta": { "enabled": true, "algorithm": "fossil" }
-            Value::Object(obj) => {
-                let enabled = obj.get("enabled").and_then(Value::as_bool);
-                let algorithm = obj
-                    .get("algorithm")
-                    .and_then(Value::as_str)
-                    .and_then(|s| match s.to_lowercase().as_str() {
-                        "fossil" => Some(DeltaAlgorithm::Fossil),
-                        "xdelta3" | "vcdiff" => Some(DeltaAlgorithm::Xdelta3),
-                        _ => None,
-                    });
-                Some(Self { enabled, algorithm })
-            }
-            _ => None,
+                });
+            Some(Self { enabled, algorithm })
+        } else {
+            None
         }
     }
 
@@ -124,7 +124,7 @@ impl SubscriptionRequest {
                 let tags_filter: Option<FilterNode> = extra
                     .get("filter")
                     .or_else(|| extra.get("tags_filter"))
-                    .and_then(|v| serde_json::from_value::<FilterNode>(v.clone()).ok())
+                    .and_then(|v| sonic_rs::from_value::<FilterNode>(&v.clone()).ok())
                     .map(|mut filter| {
                         // PERFORMANCE: Pre-build HashSet caches for large IN/NIN operators
                         filter.optimize();
@@ -152,7 +152,7 @@ impl SubscriptionRequest {
                 let tags_filter = data
                     .get("filter")
                     .or_else(|| data.get("tags_filter"))
-                    .and_then(|v| serde_json::from_value::<FilterNode>(v.clone()).ok())
+                    .and_then(|v| sonic_rs::from_value::<FilterNode>(&v.clone()).ok())
                     .map(|mut filter| {
                         // PERFORMANCE: Pre-build HashSet caches for large IN/NIN operators
                         filter.optimize();
@@ -173,7 +173,7 @@ impl SubscriptionRequest {
                 });
             }
             Some(MessageData::String(s)) => {
-                let data: Value = serde_json::from_str(s).map_err(|_| {
+                let data: Value = sonic_rs::from_str(s).map_err(|_| {
                     crate::error::Error::InvalidMessageFormat(
                         "Failed to parse subscription data".into(),
                     )
@@ -193,7 +193,7 @@ impl SubscriptionRequest {
                 let tags_filter = data
                     .get("filter")
                     .or_else(|| data.get("tags_filter"))
-                    .and_then(|v| serde_json::from_value::<FilterNode>(v.clone()).ok())
+                    .and_then(|v| sonic_rs::from_value::<FilterNode>(&v.clone()).ok())
                     .map(|mut filter| {
                         // PERFORMANCE: Pre-build HashSet caches for large IN/NIN operators
                         filter.optimize();

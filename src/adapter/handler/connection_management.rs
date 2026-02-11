@@ -19,7 +19,7 @@ impl ConnectionHandler {
         message: PusherMessage,
     ) -> Result<()> {
         // Calculate message size for metrics
-        let message_size = serde_json::to_string(&message).unwrap_or_default().len();
+        let message_size = sonic_rs::to_string(&message).unwrap_or_default().len();
 
         // Send the message (lock-free - all ConnectionManager methods are &self)
         let result = self
@@ -105,7 +105,7 @@ impl ConnectionHandler {
         force_full_message: bool,
     ) -> Result<()> {
         // Calculate message size for metrics
-        let message_size = serde_json::to_string(&message).unwrap_or_default().len();
+        let message_size = sonic_rs::to_string(&message).unwrap_or_default().len();
 
         // Extract channel-specific delta compression settings
         // If force_full_message is true, we pass None to disable delta compression
@@ -247,7 +247,7 @@ impl ConnectionHandler {
     async fn send_error_frame(ws_tx: &mut WebSocketWriter, error: &Error) {
         let error_message = PusherMessage::error(error.close_code(), error.to_string(), None);
 
-        if let Ok(payload) = serde_json::to_string(&error_message) {
+        if let Ok(payload) = sonic_rs::to_string(&error_message) {
             if let Err(e) = ws_tx.send(Message::text(payload)).await {
                 warn!("Failed to send error frame: {e}");
             }

@@ -1,14 +1,21 @@
-// Example to understand external xdelta3 crate's output format
+// Example to understand oxidelta output format
 // Run with: cargo run --example xdelta_format_test
 
 fn main() {
-    println!("=== Testing External xdelta3 Format ===\n");
+    println!("=== Testing Oxidelta Format ===\n");
 
     // Test 1: Simple example
     let original = &[1, 2, 3, 4, 5, 6, 7];
     let modified = &[1, 2, 4, 4, 7, 6, 7];
 
-    let delta = xdelta3::encode(modified, original).unwrap();
+    let mut delta = Vec::new();
+    oxidelta::compress::encoder::encode_all(
+        &mut delta,
+        original,
+        modified,
+        oxidelta::compress::encoder::CompressOptions::default(),
+    )
+    .unwrap();
 
     println!("Simple test:");
     println!("Original: {:?}", original);
@@ -24,14 +31,21 @@ fn main() {
     );
     println!("Delta length: {}", delta.len());
 
-    let reconstructed = xdelta3::decode(&delta, original).unwrap();
+    let reconstructed = oxidelta::compress::decoder::decode_all(original, &delta).unwrap();
     println!("Reconstructed: {:?}", reconstructed);
     assert_eq!(reconstructed, modified);
     println!("✓ Decode successful\n");
 
     // Test 2: Identical files
     let data = b"Same data";
-    let delta = xdelta3::encode(data, data).unwrap();
+    let mut delta = Vec::new();
+    oxidelta::compress::encoder::encode_all(
+        &mut delta,
+        data,
+        data,
+        oxidelta::compress::encoder::CompressOptions::default(),
+    )
+    .unwrap();
 
     println!("Identical files:");
     println!("Data: {:?}", data);
@@ -46,7 +60,7 @@ fn main() {
     );
     println!("Delta length: {}", delta.len());
 
-    let reconstructed = xdelta3::decode(&delta, data).unwrap();
+    let reconstructed = oxidelta::compress::decoder::decode_all(data, &delta).unwrap();
     assert_eq!(reconstructed, data);
     println!("✓ Decode successful\n");
 
@@ -54,7 +68,14 @@ fn main() {
     let original = b"Hello, World!";
     let modified = b"Hello, Rust!";
 
-    let delta = xdelta3::encode(modified, original).unwrap();
+    let mut delta = Vec::new();
+    oxidelta::compress::encoder::encode_all(
+        &mut delta,
+        original,
+        modified,
+        oxidelta::compress::encoder::CompressOptions::default(),
+    )
+    .unwrap();
 
     println!("Hello World test:");
     println!("Original: {:?}", String::from_utf8_lossy(original));
@@ -70,7 +91,7 @@ fn main() {
     );
     println!("Delta length: {}", delta.len());
 
-    let reconstructed = xdelta3::decode(&delta, original).unwrap();
+    let reconstructed = oxidelta::compress::decoder::decode_all(original, &delta).unwrap();
     println!(
         "Reconstructed: {:?}",
         String::from_utf8_lossy(&reconstructed)

@@ -1,6 +1,6 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use sonic_rs::{Value, json};
 use sockudo::adapter::horizontal_adapter::{
     BroadcastMessage, RequestBody, RequestType, ResponseBody,
 };

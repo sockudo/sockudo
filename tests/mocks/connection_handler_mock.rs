@@ -1,6 +1,6 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use serde_json::Value;
+use sonic_rs::Value;
 use sockudo::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
 use sockudo::adapter::handler::ConnectionHandler;
 use sockudo::app::config::App;
@@ -376,7 +376,7 @@ impl MetricsInterface for MockMetricsInterface {
         String::new()
     }
     async fn get_metrics_as_json(&self) -> Value {
-        serde_json::json!({})
+        sonic_rs::json!({})
     }
     async fn clear(&self) {}
 }
