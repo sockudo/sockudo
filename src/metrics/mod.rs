@@ -8,7 +8,6 @@ use tokio::sync::Mutex;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
 use sonic_rs::Value;
-use sonic_rs::prelude::*;
 use std::sync::Arc;
 
 /// Metrics Interface trait that any metrics driver should implement

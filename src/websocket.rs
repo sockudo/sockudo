@@ -11,10 +11,9 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sonic_rs::Value;
-use sonic_rs::prelude::*;
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
+use sonic_rs::Value;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -247,10 +246,10 @@ impl std::str::FromStr for SocketId {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         // Try parsing as "high.low" first
         let parts: Vec<&str> = s.split('.').collect();
-        if parts.len() == 2 {
-            if let (Ok(high), Ok(low)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
-                return Ok(SocketId { high, low });
-            }
+        if parts.len() == 2
+            && let (Ok(high), Ok(low)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>())
+        {
+            return Ok(SocketId { high, low });
         }
 
         // Fallback: Hash the string to create a deterministic ID for backward compatibility
@@ -280,7 +279,9 @@ impl Default for SocketId {
 
 impl PartialEq<String> for SocketId {
     fn eq(&self, other: &String) -> bool {
-        self.to_string() == *other
+        other
+            .parse::<SocketId>()
+            .is_ok_and(|parsed| parsed == *self)
     }
 }
 
@@ -906,7 +907,7 @@ pub struct WebSocketRef {
 impl WebSocketRef {
     pub fn new(websocket: WebSocket) -> Self {
         let broadcast_tx = websocket.broadcast_tx.clone();
-        let socket_id = websocket.get_socket_id().clone();
+        let socket_id = *websocket.get_socket_id();
         let buffer_config = websocket.buffer_config;
         let byte_counter = websocket.byte_counter.clone();
 
@@ -935,12 +936,11 @@ impl WebSocketRef {
         let msg_size = bytes.len();
 
         // Check byte limit first (if enabled) - fast atomic check
-        if let Some(ref counter) = self.byte_counter {
-            if let Some(byte_limit) = self.buffer_config.limit.byte_limit() {
-                if counter.would_exceed(msg_size, byte_limit) {
-                    return self.handle_buffer_full("byte limit", byte_limit, Some(msg_size));
-                }
-            }
+        if let Some(ref counter) = self.byte_counter
+            && let Some(byte_limit) = self.buffer_config.limit.byte_limit()
+            && counter.would_exceed(msg_size, byte_limit)
+        {
+            return self.handle_buffer_full("byte limit", byte_limit, Some(msg_size));
         }
 
         // Create sized message for tracking
@@ -1019,7 +1019,7 @@ impl WebSocketRef {
 
     /// Async version for backward compatibility (now lock-free)
     pub async fn get_socket_id(&self) -> SocketId {
-        self.socket_id.clone()
+        self.socket_id
     }
 
     pub async fn is_subscribed_to(&self, channel: &str) -> bool {

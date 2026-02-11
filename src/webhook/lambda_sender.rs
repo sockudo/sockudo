@@ -11,7 +11,6 @@ use aws_sdk_lambda::operation::invoke::{InvokeError, InvokeOutput}; // Keep for 
 use aws_sdk_lambda::primitives::Blob;
 use aws_sdk_lambda::types::InvocationType;
 use sonic_rs::{Value, json};
-use sonic_rs::prelude::*;
 use std::time::Duration;
 use tracing::{error, info, warn};
 

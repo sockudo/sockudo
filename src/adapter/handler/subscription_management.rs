@@ -13,7 +13,6 @@ use crate::utils::is_cache_channel;
 use crate::websocket::SocketId;
 use ahash::AHashMap;
 use sonic_rs::Value;
-use sonic_rs::prelude::*;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

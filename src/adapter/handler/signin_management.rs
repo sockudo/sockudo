@@ -52,7 +52,7 @@ impl ConnectionHandler {
             .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
-            .ok_or_else(|| Error::ConnectionNotFound)?;
+            .ok_or(Error::ConnectionNotFound)?;
 
         {
             let mut conn_locked = connection_arc.inner.lock().await;
@@ -76,11 +76,13 @@ impl ConnectionHandler {
         let mut watchlist_events = Vec::new();
         let mut watchers_to_notify = Vec::new();
 
-        if app_config.enable_watchlist_events.unwrap_or(false) && user_info.watchlist.is_some() {
+        if app_config.enable_watchlist_events.unwrap_or(false)
+            && let Some(watchlist) = user_info.watchlist.as_ref()
+        {
             info!(
                 "Processing watchlist for user {} with {} watched users",
                 user_info.id,
-                user_info.watchlist.as_ref().unwrap().len()
+                watchlist.len()
             );
 
             // Add user to watchlist manager and get initial status events
@@ -89,7 +91,7 @@ impl ConnectionHandler {
                 .add_user_with_watchlist(
                     &app_config.id,
                     &user_info.id,
-                    socket_id.clone(),
+                    *socket_id,
                     user_info.watchlist.clone(),
                 )
                 .await?;
@@ -180,7 +182,7 @@ impl ConnectionHandler {
 
             for socket_ref in user_sockets {
                 let socket_guard = socket_ref.inner.lock().await;
-                watcher_sockets.push(socket_guard.state.socket_id.clone());
+                watcher_sockets.push(socket_guard.state.socket_id);
             }
         }
 

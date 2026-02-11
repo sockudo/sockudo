@@ -41,6 +41,7 @@ impl PresenceManager {
     /// Only sends events if this is the user's FIRST connection to the presence channel
     ///
     /// FIX: Uses atomic check-and-act pattern to prevent TOCTOU race conditions
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_member_added(
         &self,
         connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
@@ -87,16 +88,15 @@ impl PresenceManager {
             );
 
             // Send member_added webhook
-            if let Some(webhook_integration) = webhook_integration {
-                if let Err(e) = webhook_integration
+            if let Some(webhook_integration) = webhook_integration
+                && let Err(e) = webhook_integration
                     .send_member_added(app_config, channel, user_id)
                     .await
-                {
-                    warn!(
-                        "Failed to send member_added webhook for user {} in channel {}: {}",
-                        user_id, channel, e
-                    );
-                }
+            {
+                warn!(
+                    "Failed to send member_added webhook for user {} in channel {}: {}",
+                    user_id, channel, e
+                );
             }
 
             // Broadcast member_added event to existing clients in the channel
@@ -208,16 +208,15 @@ impl PresenceManager {
             );
 
             // Send member_removed webhook
-            if let Some(webhook_integration) = webhook_integration {
-                if let Err(e) = webhook_integration
+            if let Some(webhook_integration) = webhook_integration
+                && let Err(e) = webhook_integration
                     .send_member_removed(app_config, channel, user_id)
                     .await
-                {
-                    warn!(
-                        "Failed to send member_removed webhook for user {} in channel {}: {}",
-                        user_id, channel, e
-                    );
-                }
+            {
+                warn!(
+                    "Failed to send member_removed webhook for user {} in channel {}: {}",
+                    user_id, channel, e
+                );
             }
 
             // Broadcast member_removed event to remaining clients in the channel

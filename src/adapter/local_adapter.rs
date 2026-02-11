@@ -263,7 +263,7 @@ impl LocalAdapter {
             let socket_id = socket_ref.get_socket_id_sync();
 
             // Check if socket has delta enabled
-            if delta_compression.is_enabled_for_socket(&socket_id) {
+            if delta_compression.is_enabled_for_socket(socket_id) {
                 tracing::debug!(
                     "Socket {} has delta compression enabled for channel {}",
                     socket_id,
@@ -311,7 +311,7 @@ impl LocalAdapter {
                     event_name
                 );
                 let base_msg =
-                    delta_compression.get_last_message_for_socket(&socket_id, channel, &cache_key);
+                    delta_compression.get_last_message_for_socket(socket_id, channel, &cache_key);
                 let base_msg_opt = base_msg.await;
                 tracing::debug!(
                     "Base message lookup result: socket={}, found={}",
@@ -351,8 +351,8 @@ impl LocalAdapter {
 
         // Pre-compute deltas for each unique base message
         // Stores (delta_bytes, base_sequence) - base_sequence is needed to tell client which message to use as base
-        let mut precomputed_deltas: HashMap<(String, u64), Option<(Arc<Vec<u8>>, u32)>> =
-            HashMap::new();
+        type PrecomputedDelta = Option<(Arc<Vec<u8>>, u32)>;
+        let mut precomputed_deltas: HashMap<(String, u64), PrecomputedDelta> = HashMap::new();
 
         tracing::debug!(
             "Pre-computing deltas for {} socket groups ({} non-delta sockets)",
@@ -383,7 +383,7 @@ impl LocalAdapter {
 
                 // Check if we should send a full message due to interval
                 let should_send_full =
-                    delta_compression.should_send_full_message(&socket_id, channel, &cache_key);
+                    delta_compression.should_send_full_message(socket_id, channel, &cache_key);
 
                 if should_send_full {
                     tracing::debug!(
@@ -398,7 +398,7 @@ impl LocalAdapter {
 
                 // Use the new function that returns both message content AND sequence
                 if let Some((base_msg, base_sequence)) = delta_compression
-                    .get_last_message_with_sequence(&socket_id, channel, &cache_key)
+                    .get_last_message_with_sequence(socket_id, channel, &cache_key)
                     .await
                 {
                     // Compute delta ONCE for this group
@@ -626,7 +626,7 @@ impl LocalAdapter {
 
         // Only process delta compression if it's enabled for this socket
         let (compression_result, message_with_sequence) = if !delta_compression
-            .is_enabled_for_socket(&socket_id)
+            .is_enabled_for_socket(socket_id)
         {
             (CompressionResult::Uncompressed, base_message_bytes.clone())
         } else {
@@ -652,7 +652,7 @@ impl LocalAdapter {
             // Sequence changes every message and should not be part of delta base
             let result = delta_compression
                 .compress_message(
-                    &socket_id,
+                    socket_id,
                     channel,
                     event_name,
                     &base_message_bytes,
@@ -661,8 +661,7 @@ impl LocalAdapter {
                 .await?;
 
             // Get the sequence number that will be used for this message
-            let next_sequence =
-                delta_compression.get_next_sequence(&socket_id, channel, &cache_key);
+            let next_sequence = delta_compression.get_next_sequence(socket_id, channel, &cache_key);
 
             // Add sequence metadata to the message AFTER delta compression for sending to client
             // IMPORTANT: Use string manipulation instead of JSON parse/re-serialize
@@ -722,14 +721,19 @@ impl LocalAdapter {
                         &message_with_sequence[message_with_sequence.len().saturating_sub(100)..]
                     )
                 );
-                let _ = delta_compression.store_sent_message(
-                    &socket_id,
-                    channel,
-                    event_name,
-                    base_message_bytes.clone(),
-                    true,
-                    channel_settings,
-                );
+                if let Err(e) = delta_compression
+                    .store_sent_message(
+                        socket_id,
+                        channel,
+                        event_name,
+                        base_message_bytes.clone(),
+                        true,
+                        channel_settings,
+                    )
+                    .await
+                {
+                    warn!("Failed to store full message for delta state: {e}");
+                }
 
                 // Send the message with sequence metadata to client
                 socket_ref.send_broadcast(Bytes::from(message_with_sequence))
@@ -795,14 +799,19 @@ impl LocalAdapter {
 
                 // Store the ORIGINAL message bytes (without sequence/conflation_key metadata) for future delta computation
                 // The sequence changes every message, so it should not be part of the delta base
-                let _ = delta_compression.store_sent_message(
-                    &socket_id,
-                    channel,
-                    event_name,
-                    base_message_bytes.clone(),
-                    false,
-                    channel_settings,
-                );
+                if let Err(e) = delta_compression
+                    .store_sent_message(
+                        socket_id,
+                        channel,
+                        event_name,
+                        base_message_bytes.clone(),
+                        false,
+                        channel_settings,
+                    )
+                    .await
+                {
+                    warn!("Failed to store delta base message state: {e}");
+                }
 
                 socket_ref.send_broadcast(Bytes::from(bytes))
             }
@@ -843,7 +852,7 @@ impl LocalAdapter {
         };
 
         // Get the sequence number for this socket
-        let sequence = delta_compression.get_next_sequence(&socket_id, channel, &cache_key);
+        let sequence = delta_compression.get_next_sequence(socket_id, channel, &cache_key);
 
         // Check if we should send delta or full message
         // IMPORTANT: Even if we have a precomputed delta from other sockets, we must verify
@@ -861,7 +870,7 @@ impl LocalAdapter {
         // last message content hash matches the precomputed delta's base.
         let (can_use_precomputed, actual_base_sequence) = if let Some((socket_base, base_seq)) =
             delta_compression
-                .get_last_message_with_sequence(&socket_id, channel, &cache_key)
+                .get_last_message_with_sequence(socket_id, channel, &cache_key)
                 .await
         {
             // Verify this socket's base matches the group's base by hashing
@@ -880,7 +889,7 @@ impl LocalAdapter {
         if let Some((delta_bytes, _precomputed_base_seq)) = precomputed_delta.filter(|_| {
             sequence >= 2
                 && can_use_precomputed
-                && !delta_compression.should_send_full_message(&socket_id, channel, &cache_key)
+                && !delta_compression.should_send_full_message(socket_id, channel, &cache_key)
         }) {
             // Use the ACTUAL base message sequence from the stored message, not sequence - 1
             // This is critical for multi-node setups where sequences may not be contiguous
@@ -949,7 +958,7 @@ impl LocalAdapter {
             // base_message_bytes IS the new message - no reconstruction needed.
             let _ = delta_compression
                 .store_sent_message(
-                    &socket_id,
+                    socket_id,
                     channel,
                     event_name,
                     base_message_bytes.clone(),
@@ -1006,7 +1015,7 @@ impl LocalAdapter {
             // because the server's base had metadata but the client's base did not.
             match delta_compression
                 .store_sent_message(
-                    &socket_id,
+                    socket_id,
                     channel,
                     event_name,
                     base_message_bytes.clone(),
@@ -1152,7 +1161,7 @@ impl ConnectionManager for LocalAdapter {
             app_id
         );
         let namespace = self.get_or_create_namespace(app_id).await;
-        let socket_id_clone = socket_id.clone();
+        let socket_id_clone = socket_id;
         namespace
             .add_socket(socket_id, socket, app_manager, buffer_config)
             .await?;
@@ -1286,10 +1295,10 @@ impl ConnectionManager for LocalAdapter {
 
         // Apply tag filtering using O(1) filter index lookup
         let tag_filtering_enabled = self.tag_filtering_enabled.load(Ordering::Acquire);
-        let filtered_socket_refs = if tag_filtering_enabled && message.tags.is_some() {
+        let filtered_socket_refs = if tag_filtering_enabled
+            && let Some(tags) = message.tags.as_ref()
+        {
             // Use filter index for O(1) lookup instead of O(N) iteration
-            let tags = message.tags.as_ref().unwrap();
-
             // Convert HashMap to BTreeMap for lookup (required by FilterIndex)
             let tags_btree: std::collections::BTreeMap<String, String> =
                 tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -1344,7 +1353,7 @@ impl ConnectionManager for LocalAdapter {
                     let socket_ref = socket_ref.value().clone();
                     let channel_filter = socket_ref.get_channel_filter_sync(channel);
                     if let Some(filter) = channel_filter {
-                        if crate::filter::matches(&*filter, tags) {
+                        if crate::filter::matches(&filter, tags) {
                             result.push(socket_ref);
                         }
                     } else {
@@ -1368,7 +1377,7 @@ impl ConnectionManager for LocalAdapter {
             lookup_result
                 .no_filter
                 .into_iter()
-                .filter(|socket_id| except.map_or(true, |e| e != socket_id))
+                .filter(|socket_id| except != Some(socket_id))
                 .filter_map(|socket_id| {
                     namespace.sockets.get(&socket_id).map(|r| r.value().clone())
                 })
@@ -1438,81 +1447,80 @@ impl ConnectionManager for LocalAdapter {
 
         // Apply tag filtering using O(1) filter index lookup
         let tag_filtering_enabled = self.tag_filtering_enabled.load(Ordering::Acquire);
-        let filtered_socket_refs = if tag_filtering_enabled && message.tags.is_some() {
-            // Use filter index for O(1) lookup instead of O(N) iteration
-            let tags = message.tags.as_ref().unwrap();
+        let filtered_socket_refs =
+            if tag_filtering_enabled && let Some(tags) = message.tags.as_ref() {
+                // Use filter index for O(1) lookup instead of O(N) iteration
+                // Convert HashMap to BTreeMap for lookup (required by FilterIndex)
+                let tags_btree: std::collections::BTreeMap<String, String> =
+                    tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-            // Convert HashMap to BTreeMap for lookup (required by FilterIndex)
-            let tags_btree: std::collections::BTreeMap<String, String> =
-                tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let lookup_result = self.filter_index.lookup(channel, &tags_btree);
 
-            let lookup_result = self.filter_index.lookup(channel, &tags_btree);
+                // Combine results: indexed matches + no_filter sockets (they receive all)
+                let mut result = Vec::with_capacity(
+                    lookup_result.indexed_matches.len() + lookup_result.no_filter.len(),
+                );
 
-            // Combine results: indexed matches + no_filter sockets (they receive all)
-            let mut result = Vec::with_capacity(
-                lookup_result.indexed_matches.len() + lookup_result.no_filter.len(),
-            );
+                // Resolve SocketIds to WebSocketRefs using namespace's socket registry
+                // This is the key optimization: FilterIndex stores lightweight SocketId (16 bytes, Copy)
+                // instead of heavy WebSocketRef (Arc clone), reducing allocation pressure
 
-            // Resolve SocketIds to WebSocketRefs using namespace's socket registry
-            // This is the key optimization: FilterIndex stores lightweight SocketId (16 bytes, Copy)
-            // instead of heavy WebSocketRef (Arc clone), reducing allocation pressure
-
-            // Add indexed matches (sockets whose filters match the message tags)
-            for socket_id in lookup_result.indexed_matches {
-                if except.is_some_and(|e| *e == socket_id) {
-                    continue;
-                }
-                if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                    result.push(socket_ref.value().clone());
-                }
-            }
-
-            // Add sockets with no filter (they receive all messages)
-            for socket_id in lookup_result.no_filter {
-                if except.is_some_and(|e| *e == socket_id) {
-                    continue;
-                }
-                if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                    result.push(socket_ref.value().clone());
-                }
-            }
-
-            // Handle complex filters by evaluating them (rare case)
-            for socket_id in lookup_result.needs_evaluation {
-                if except.is_some_and(|e| *e == socket_id) {
-                    continue;
-                }
-                if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                    let socket_ref = socket_ref.value().clone();
-                    let channel_filter = socket_ref.get_channel_filter_sync(channel);
-                    if let Some(filter) = channel_filter {
-                        if crate::filter::matches(&*filter, tags) {
-                            result.push(socket_ref);
-                        }
-                    } else {
-                        result.push(socket_ref); // No filter = receive all
+                // Add indexed matches (sockets whose filters match the message tags)
+                for socket_id in lookup_result.indexed_matches {
+                    if except.is_some_and(|e| *e == socket_id) {
+                        continue;
+                    }
+                    if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
+                        result.push(socket_ref.value().clone());
                     }
                 }
-            }
 
-            result
-        } else if tag_filtering_enabled {
-            // Tag filtering enabled but message has no tags - only no_filter sockets receive it
-            let empty_tags = std::collections::BTreeMap::new();
-            let lookup_result = self.filter_index.lookup(channel, &empty_tags);
+                // Add sockets with no filter (they receive all messages)
+                for socket_id in lookup_result.no_filter {
+                    if except.is_some_and(|e| *e == socket_id) {
+                        continue;
+                    }
+                    if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
+                        result.push(socket_ref.value().clone());
+                    }
+                }
 
-            // Resolve SocketIds to WebSocketRefs
-            lookup_result
-                .no_filter
-                .into_iter()
-                .filter(|socket_id| except.map_or(true, |e| e != socket_id))
-                .filter_map(|socket_id| {
-                    namespace.sockets.get(&socket_id).map(|r| r.value().clone())
-                })
-                .collect()
-        } else {
-            target_socket_refs
-        };
+                // Handle complex filters by evaluating them (rare case)
+                for socket_id in lookup_result.needs_evaluation {
+                    if except.is_some_and(|e| *e == socket_id) {
+                        continue;
+                    }
+                    if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
+                        let socket_ref = socket_ref.value().clone();
+                        let channel_filter = socket_ref.get_channel_filter_sync(channel);
+                        if let Some(filter) = channel_filter {
+                            if crate::filter::matches(&filter, tags) {
+                                result.push(socket_ref);
+                            }
+                        } else {
+                            result.push(socket_ref); // No filter = receive all
+                        }
+                    }
+                }
+
+                result
+            } else if tag_filtering_enabled {
+                // Tag filtering enabled but message has no tags - only no_filter sockets receive it
+                let empty_tags = std::collections::BTreeMap::new();
+                let lookup_result = self.filter_index.lookup(channel, &empty_tags);
+
+                // Resolve SocketIds to WebSocketRefs
+                lookup_result
+                    .no_filter
+                    .into_iter()
+                    .filter(|socket_id| except != Some(socket_id))
+                    .filter_map(|socket_id| {
+                        namespace.sockets.get(&socket_id).map(|r| r.value().clone())
+                    })
+                    .collect()
+            } else {
+                target_socket_refs
+            };
 
         // Strip tags if disabled for this channel (bandwidth optimization)
         // We do this AFTER filtering logic (which needs tags) but BEFORE serialization

@@ -32,7 +32,6 @@ use dashmap::DashMap;
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::{WebSocket, WebSocketReader, WebSocketWriter};
 use sonic_rs::Value;
-use sonic_rs::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::sync::Mutex;
@@ -189,7 +188,7 @@ impl ConnectionHandler {
 
         // Initialize socket with atomic quota check
         let socket_id = SocketId::new();
-        self.initialize_socket_with_quota_check(socket_id.clone(), socket_tx, &app_config)
+        self.initialize_socket_with_quota_check(socket_id, socket_tx, &app_config)
             .await?;
 
         // Setup rate limiting if needed
@@ -258,7 +257,7 @@ impl ConnectionHandler {
 
             self.connection_manager
                 .add_socket(
-                    socket_id.clone(),
+                    socket_id,
                     socket_tx,
                     &app_config.id,
                     Arc::clone(&self.app_manager),
