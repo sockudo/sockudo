@@ -26,7 +26,7 @@ fn main() {
     );
 
     // Simulate publications
-    let publications = vec![
+    let publications = [
         create_publication("goal", "23:30", "Real Madrid", "Mbappe"),
         create_publication("shot", "24:10", "Bayern Munich", "Kane"),
         create_publication("goal", "45:12", "Real Madrid", "Bellingham"),
@@ -64,7 +64,7 @@ fn main() {
         sonic_rs::to_string_pretty(&filter).unwrap()
     );
 
-    let publications_with_xg = vec![
+    let publications_with_xg = [
         create_publication_with_xg("goal", "23:30", "Real Madrid", "Mbappe", "0.95"),
         create_publication_with_xg("shot", "24:10", "Bayern Munich", "Kane", "0.85"),
         create_publication_with_xg("shot", "25:45", "Bayern Munich", "Sane", "0.3"),
@@ -96,7 +96,7 @@ fn main() {
         sonic_rs::to_string_pretty(&filter).unwrap()
     );
 
-    let critical_events = vec![
+    let critical_events = [
         create_simple_event("goal", "23:30"),
         create_simple_event("shot", "24:10"),
         create_simple_event("penalty", "35:22"),
@@ -190,7 +190,7 @@ fn main() {
         sonic_rs::to_string_pretty(&filter).unwrap()
     );
 
-    let shots = vec![
+    let shots = [
         ("0.85", "15", true),
         ("0.45", "18", false),
         ("0.92", "12", true),

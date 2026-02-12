@@ -7,7 +7,7 @@ mod tests {
 
     fn create_test_task(socket_id: &str) -> DisconnectTask {
         DisconnectTask {
-            socket_id: SocketId::from_string(socket_id).unwrap_or(SocketId::new()),
+            socket_id: SocketId::from_string(socket_id).unwrap_or_default(),
             app_id: "test-app".to_string(),
             subscribed_channels: vec!["channel1".to_string(), "channel2".to_string()],
             user_id: Some("user123".to_string()),
