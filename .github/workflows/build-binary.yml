@@ -91,7 +91,7 @@ jobs:
       - name: Build musl binary (Linux ARM64)
         if: runner.os == 'Linux' && runner.arch == 'ARM64' && contains(inputs.target_triple, 'musl')
         run: |
-          docker run --rm \
+          docker run --rm --platform linux/arm64 \
             -v "$PWD":/src \
             -v "$HOME/.cargo/registry":/root/.cargo/registry \
             -v "$HOME/.cargo/git":/root/.cargo/git \
