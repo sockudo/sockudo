@@ -576,10 +576,7 @@ mod tests {
         // Validate second node (string value)
         assert_eq!(filter.nodes[1].key, Some("item_id".to_string()));
         assert_eq!(filter.nodes[1].cmp, Some("eq".to_string()));
-        assert_eq!(
-            filter.nodes[1].val,
-            Some("item-abc-001".to_string())
-        );
+        assert_eq!(filter.nodes[1].val, Some("item-abc-001".to_string()));
 
         // Validate the filter
         assert_eq!(filter.validate(), None);
