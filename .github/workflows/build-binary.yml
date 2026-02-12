@@ -77,8 +77,9 @@ jobs:
             sh -c "
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
-              rustup target add x86_64-unknown-linux-musl
-              cargo build --release --features full --target x86_64-unknown-linux-musl
+              export RUSTFLAGS='-C target-feature=-crt-static'
+              export CC=gcc
+              cargo build --release --features full
             "
 
       - name: Install system dependencies (Linux ARM64 GNU)
@@ -100,8 +101,9 @@ jobs:
             sh -c "
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
-              rustup target add aarch64-unknown-linux-musl
-              cargo build --release --features full --target aarch64-unknown-linux-musl
+              export RUSTFLAGS='-C target-feature=-crt-static'
+              export CC=gcc
+              cargo build --release --features full
             "
 
       - name: Cache cargo registry
@@ -128,7 +130,12 @@ jobs:
           ARCHIVE_EXT="${{ inputs.archive_ext }}"
           BINARY_NAME="${{ inputs.binary_name }}"
 
-          SOURCE_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
+          # For musl builds, binary is in ./target/release, otherwise ./target/${TARGET_TRIPLE}/release
+          if [[ "${{ contains(inputs.target_triple, 'musl') }}" == "true" ]]; then
+            SOURCE_PATH="./target/release/${BINARY_NAME}"
+          else
+            SOURCE_PATH="./target/${TARGET_TRIPLE}/release/${BINARY_NAME}"
+          fi
 
           # Use different naming for release vs manual builds
           if [[ "$VERSION" == "dev" ]]; then
