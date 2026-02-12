@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 // src/cache/factory.rs
+#[cfg(any(feature = "redis", feature = "redis-cluster"))]
+use crate::cache::fallback_cache_manager::FallbackCacheManager;
 use crate::cache::manager::CacheManager;
 use crate::cache::memory_cache_manager::MemoryCacheManager; // Assuming MemoryCacheConfig is from options
 #[cfg(feature = "redis")]
@@ -89,7 +91,12 @@ impl CacheManagerFactory {
                     ..Default::default()
                 };
                 let manager = RedisCacheManager::new(standalone_redis_cache_config).await?;
-                Ok(Arc::new(Mutex::new(manager)))
+                let fallback_manager = FallbackCacheManager::new_with_health_check(
+                    Box::new(manager),
+                    config.memory.clone(),
+                )
+                .await;
+                Ok(Arc::new(Mutex::new(fallback_manager)))
             }
             #[cfg(feature = "redis-cluster")]
             CacheDriver::RedisCluster => {
@@ -122,7 +129,12 @@ impl CacheManagerFactory {
                     ..Default::default()
                 };
                 let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
-                Ok(Arc::new(Mutex::new(manager)))
+                let fallback_manager = FallbackCacheManager::new_with_health_check(
+                    Box::new(manager),
+                    config.memory.clone(),
+                )
+                .await;
+                Ok(Arc::new(Mutex::new(fallback_manager)))
             }
             CacheDriver::Memory => {
                 info!("{}", "Using memory cache manager.".to_string());
