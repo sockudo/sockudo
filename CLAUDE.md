@@ -21,6 +21,7 @@ Sockudo uses Cargo feature flags to allow compiling only the backends you need, 
 - `redis-cluster` - Redis Cluster support (implies `redis`)
 - `nats` - NATS adapter for horizontal scaling
 - `mysql` - MySQL app manager
+- `scylla` - ScyllaDB app manager
 - `postgres` - PostgreSQL app manager
 - `dynamodb` - DynamoDB app manager
 - `sqs` - AWS SQS queue backend
@@ -223,7 +224,42 @@ Key variables (see `.env.example` for complete list):
 ### Redis/NATS Configuration
 - Redis: Set `DATABASE_REDIS_HOST`, `DATABASE_REDIS_PORT`, `DATABASE_REDIS_PASSWORD`
 - Redis Cluster: Set `REDIS_CLUSTER_NODES` as comma-separated list
+- Redis Sentinel: Configure via `database.redis.sentinels` array in config file (see below)
 - NATS: Set `NATS_SERVERS` as comma-separated list (e.g., "nats://localhost:4222")
+
+#### Redis Sentinel Configuration
+Redis Sentinel provides high availability for Redis. When sentinels are configured, Sockudo automatically uses the Sentinel protocol to discover the current master.
+
+**Configuration File Example:**
+```json
+{
+  "database": {
+    "redis": {
+      "sentinels": [
+        { "host": "sentinel1.example.com", "port": 26379 },
+        { "host": "sentinel2.example.com", "port": 26379 },
+        { "host": "sentinel3.example.com", "port": 26379 }
+      ],
+      "sentinel_password": "optional-sentinel-auth",
+      "name": "mymaster",
+      "password": "optional-redis-master-password",
+      "db": 0,
+      "key_prefix": "sockudo:"
+    }
+  }
+}
+```
+
+**Configuration Options:**
+- `sentinels` - Array of sentinel nodes with `host` and `port`
+- `sentinel_password` - Optional password for authenticating with sentinel nodes
+- `name` - The master name monitored by sentinels (default: "mymaster")
+- `password` - Optional password for the Redis master instance
+- `username` - Optional username for Redis ACL authentication
+- `db` - Database number to use (default: 0)
+
+When sentinels are configured, the connection URL is automatically built in the format:
+`redis+sentinel://[sentinelpass@]host1:port1,host2:port2/master-name/db[?password=masterpass]`
 
 ## Development Guidelines
 
