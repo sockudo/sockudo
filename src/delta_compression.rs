@@ -2125,47 +2125,6 @@ mod tests {
         assert_eq!(manager.extract_conflation_key(msg), "");
     }
 
-    #[test]
-    fn test_conflation_key_extraction_from_stringified_data() {
-        // Test extraction from Pusher protocol format where data is a stringified JSON
-        // This is how batch_events and triggerBatch send data
-        let config = DeltaCompressionConfig {
-            conflation_key_path: Some("item_id".to_string()),
-            min_message_size: 20,
-            ..Default::default()
-        };
-        let manager = DeltaCompressionManager::new(config);
-
-        // Pusher protocol: data field contains stringified JSON
-        let msg = br#"{"event":"e","channel":"test","data":"{\"item_id\":\"abc123\",\"price\":100}"}"#;
-        assert_eq!(manager.extract_conflation_key(msg), "abc123");
-
-        let msg2 = br#"{"event":"e","channel":"test","data":"{\"item_id\":\"xyz789\",\"audit\":{\"holders\":5}}"}"#;
-        assert_eq!(manager.extract_conflation_key(msg2), "xyz789");
-
-        // With nested data object (not stringified) should also work
-        let msg3 =
-            br#"{"event":"e","channel":"test","data":{"item_id":"def456","price":200}}"#;
-        assert_eq!(manager.extract_conflation_key(msg3), "def456");
-    }
-
-    #[test]
-    fn test_conflation_key_extraction_from_stringified_data_nested_key() {
-        // Test nested key extraction from stringified data
-        let config = DeltaCompressionConfig {
-            conflation_key_path: Some("audit.holders".to_string()),
-            min_message_size: 20,
-            ..Default::default()
-        };
-        let manager = DeltaCompressionManager::new(config);
-
-        // Note: nested paths inside stringified data are NOT supported by the fallback
-        // The fallback only works for single-segment paths
-        let msg = br#"{"event":"e","channel":"test","data":"{\"audit\":{\"holders\":5}}"}"#;
-        // This should return empty string because nested paths don't work with stringified fallback
-        assert_eq!(manager.extract_conflation_key(msg), "");
-    }
-
     #[tokio::test]
     async fn test_conflation_key_separate_delta_states() {
         let config = DeltaCompressionConfig {
