@@ -412,8 +412,7 @@ impl HorizontalTransport for RedisClusterTransport {
                     tokio::spawn(async move {
                         if channel == broadcast_channel_clone {
                             // Handle broadcast message
-                            if let Ok(broadcast) =
-                                sonic_rs::from_str::<BroadcastMessage>(&payload)
+                            if let Ok(broadcast) = sonic_rs::from_str::<BroadcastMessage>(&payload)
                             {
                                 broadcast_handler(broadcast).await;
                             }

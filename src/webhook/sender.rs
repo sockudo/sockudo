@@ -13,9 +13,9 @@ use crate::webhook::types::{JobData, PusherWebhookPayload, Webhook};
 use ahash::AHashMap;
 use reqwest::{Client, header};
 use sonic_rs::Value;
-use sonic_rs::prelude::*;
 #[cfg(feature = "lambda")]
 use sonic_rs::json; // json! macro only used in lambda feature
+use sonic_rs::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

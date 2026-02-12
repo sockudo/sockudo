@@ -192,9 +192,10 @@ impl FilterIndex {
         // Remove from eq_index based on filter (if provided)
         // This is the only index where we need to know the filter to find the right entries
         if let Some(filter_node) = filter
-            && let Some(indexable) = self.extract_indexable_filter(filter_node) {
-                self.remove_from_eq_index(channel, socket_id, &indexable);
-            }
+            && let Some(indexable) = self.extract_indexable_filter(filter_node)
+        {
+            self.remove_from_eq_index(channel, socket_id, &indexable);
+        }
 
         // ADDITIONAL SAFETY: If no filter was provided but socket might be in eq_index,
         // we can't efficiently remove it without knowing the key/values.

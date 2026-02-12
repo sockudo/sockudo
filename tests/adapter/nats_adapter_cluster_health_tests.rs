@@ -1,10 +1,10 @@
 #![cfg(feature = "nats")]
 
-use sonic_rs::json;
 use sockudo::adapter::ConnectionManager;
 use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
 use sockudo::adapter::nats_adapter::NatsAdapter;
 use sockudo::options::{ClusterHealthConfig, NatsAdapterConfig};
+use sonic_rs::json;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;

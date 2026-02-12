@@ -441,10 +441,7 @@ impl PgSQLAppManager {
         signature: &str,
         body: &str,
     ) -> Result<bool> {
-        let app = self
-            .find_by_id(app_id)
-            .await?
-            .ok_or(Error::InvalidAppKey)?;
+        let app = self.find_by_id(app_id).await?.ok_or(Error::InvalidAppKey)?;
 
         let token = Token::new(app.key.clone(), app.secret.clone());
         let expected = token.sign(body);
@@ -454,10 +451,7 @@ impl PgSQLAppManager {
 
     /// Validate if a channel name is valid for an app
     pub async fn validate_channel_name(&self, app_id: &str, channel: &str) -> Result<()> {
-        let app = self
-            .find_by_id(app_id)
-            .await?
-            .ok_or(Error::InvalidAppKey)?;
+        let app = self.find_by_id(app_id).await?.ok_or(Error::InvalidAppKey)?;
 
         let max_length = app.max_channel_name_length.unwrap_or(200);
         if channel.len() > max_length as usize {

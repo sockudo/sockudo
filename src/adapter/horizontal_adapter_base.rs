@@ -573,15 +573,14 @@ where
                         };
 
                         // Track delta compression metrics if compression was used
-                        if compression_used
-                            && let Some(ref metrics) = horizontal_lock.metrics {
-                                let metrics_lock = metrics.lock().await;
-                                metrics_lock.track_horizontal_delta_compression(
-                                    &broadcast.app_id,
-                                    &broadcast.channel,
-                                    true,
-                                );
-                            }
+                        if compression_used && let Some(ref metrics) = horizontal_lock.metrics {
+                            let metrics_lock = metrics.lock().await;
+                            metrics_lock.track_horizontal_delta_compression(
+                                &broadcast.app_id,
+                                &broadcast.channel,
+                                true,
+                            );
+                        }
 
                         // Track broadcast latency metrics using helper function
                         let metrics_ref = horizontal_lock.metrics.clone();

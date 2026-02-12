@@ -251,9 +251,8 @@ impl SqsQueueManager {
                             for message in messages {
                                 if let Some(body) = message.body() {
                                     // Process the message
-                                    match sonic_rs::from_str::<crate::webhook::types::JobData>(
-                                        body,
-                                    ) {
+                                    match sonic_rs::from_str::<crate::webhook::types::JobData>(body)
+                                    {
                                         Ok(job_data) => {
                                             // Call the processor
                                             match processor(job_data).await {

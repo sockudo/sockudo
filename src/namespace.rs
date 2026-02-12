@@ -63,8 +63,7 @@ impl Namespace {
         };
 
         // Create the WebSocket using new structure with buffer config
-        let mut websocket =
-            WebSocket::with_buffer_config(socket_id, socket_writer, buffer_config);
+        let mut websocket = WebSocket::with_buffer_config(socket_id, socket_writer, buffer_config);
 
         // Set the app configuration
         websocket.state.app = Some(app_config);
@@ -73,8 +72,7 @@ impl Namespace {
         let websocket_ref = WebSocketRef::new(websocket);
 
         // Store the connection in the central map
-        self.sockets
-            .insert(socket_id, websocket_ref.clone());
+        self.sockets.insert(socket_id, websocket_ref.clone());
 
         debug!(socket_id = %socket_id, "WebSocket connection added successfully");
 

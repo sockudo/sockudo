@@ -106,6 +106,7 @@ document.addEventListener("DOMContentLoaded", () => {
       try {
         return JSON.stringify(obj, null, 2);
       } catch (e) {
+        console.log(e);
         return String(obj);
       }
     },
@@ -1070,6 +1071,7 @@ document.addEventListener("DOMContentLoaded", () => {
         state.tagFiltering.currentFilter = null;
       }
     } catch (err) {
+      console.log(err);
       // Invalid JSON, ignore
     }
   });

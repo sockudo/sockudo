@@ -148,12 +148,12 @@ lto = true
 
 [[bench]]
 name = "delta_compression_bench"
-path = "benchmarks/delta_compression_bench.rs"
+path = "benches/delta_compression_bench.rs"
 harness = false
 
 [[bench]]
 name = "filter_bench"
-path = "benchmarks/filter_bench.rs"
+path = "benches/filter_bench.rs"
 harness = false
 
 [package.metadata.binstall]

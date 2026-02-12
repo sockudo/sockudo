@@ -1,6 +1,5 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use sonic_rs::{Value, json};
 use sockudo::adapter::horizontal_adapter::{
     BroadcastMessage, RequestBody, RequestType, ResponseBody,
 };
@@ -11,6 +10,7 @@ use sockudo::adapter::horizontal_transport::{
 use sockudo::channel::PresenceMemberInfo;
 use sockudo::error::{Error, Result};
 use sockudo::websocket::SocketId;
+use sonic_rs::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;

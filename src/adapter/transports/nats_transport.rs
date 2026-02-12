@@ -251,15 +251,15 @@ impl HorizontalTransport for NatsTransport {
 
                         if let Ok(response) = response_result
                             && let Ok(response_data) = sonic_rs::to_vec(&response)
-                                && let Err(e) = response_client
-                                    .publish(
-                                        Subject::from(response_subject.clone()),
-                                        response_data.into(),
-                                    )
-                                    .await
-                                {
-                                    warn!("Failed to publish response: {}", e);
-                                }
+                            && let Err(e) = response_client
+                                .publish(
+                                    Subject::from(response_subject.clone()),
+                                    response_data.into(),
+                                )
+                                .await
+                        {
+                            warn!("Failed to publish response: {}", e);
+                        }
                         metrics_request.record_processed();
                     }
                     Err(e) => {

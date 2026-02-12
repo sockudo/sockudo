@@ -261,8 +261,7 @@ impl HorizontalTransport for RedisTransport {
                                 }
                             } else if channel == response_channel_clone {
                                 // Handle response message
-                                if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload)
-                                {
+                                if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
                                     response_handler(response).await;
                                 } else {
                                     warn!("Failed to parse response message: {}", payload);

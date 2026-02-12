@@ -140,11 +140,7 @@ impl CleanupWorker {
             }
 
             // Prepare connection removal with user_id for user socket cleanup
-            connections_to_remove.push((
-                task.socket_id,
-                task.app_id.clone(),
-                task.user_id.clone(),
-            ));
+            connections_to_remove.push((task.socket_id, task.app_id.clone(), task.user_id.clone()));
         }
 
         // Execute batch operations

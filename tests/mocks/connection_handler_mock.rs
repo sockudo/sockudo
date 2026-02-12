@@ -1,6 +1,5 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use sonic_rs::Value;
 use sockudo::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
 use sockudo::adapter::handler::ConnectionHandler;
 use sockudo::app::config::App;
@@ -14,6 +13,7 @@ use sockudo::options::ServerOptions;
 use sockudo::protocol::messages::PusherMessage;
 use sockudo::websocket::{SocketId, WebSocketRef};
 use sockudo_ws::axum_integration::WebSocketWriter;
+use sonic_rs::Value;
 use std::any::Any;
 use std::sync::Arc;
 use std::time::Duration;
