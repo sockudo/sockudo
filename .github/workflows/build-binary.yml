@@ -74,17 +74,13 @@ jobs:
             -v "$HOME/.cargo/git":/root/.cargo/git \
             -w /src \
             rust:1.93-alpine \
-            sh -c "
+            sh -c '
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
               mkdir -p .cargo
-              cat > .cargo/config.toml << 'EOF'
-[target.x86_64-unknown-linux-musl]
-linker = \"gcc\"
-rustflags = [\"-C\", \"target-cpu=native\"]
-EOF
+              printf "[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\nrustflags = [\"-C\", \"target-cpu=native\"]\n" > .cargo/config.toml
               cargo build --release --features full --target x86_64-unknown-linux-musl
-            "
+            '
 
       - name: Install system dependencies (Linux ARM64 GNU)
         if: runner.os == 'Linux' && runner.arch == 'ARM64' && !contains(inputs.target_triple, 'musl')
@@ -102,17 +98,13 @@ EOF
             -v "$HOME/.cargo/git":/root/.cargo/git \
             -w /src \
             rust:1.93-alpine \
-            sh -c "
+            sh -c '
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
               mkdir -p .cargo
-              cat > .cargo/config.toml << 'EOF'
-[target.aarch64-unknown-linux-musl]
-linker = \"gcc\"
-rustflags = [\"-C\", \"target-cpu=native\"]
-EOF
+              printf "[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\nrustflags = [\"-C\", \"target-cpu=native\"]\n" > .cargo/config.toml
               cargo build --release --features full --target aarch64-unknown-linux-musl
-            "
+            '
 
       - name: Cache cargo registry
         uses: actions/cache@v4
