@@ -81,6 +81,7 @@ jobs:
               cat > .cargo/config.toml << 'EOF'
 [target.x86_64-unknown-linux-musl]
 linker = \"gcc\"
+rustflags = [\"-C\", \"target-cpu=native\"]
 EOF
               cargo build --release --features full --target x86_64-unknown-linux-musl
             "
@@ -108,6 +109,7 @@ EOF
               cat > .cargo/config.toml << 'EOF'
 [target.aarch64-unknown-linux-musl]
 linker = \"gcc\"
+rustflags = [\"-C\", \"target-cpu=native\"]
 EOF
               cargo build --release --features full --target aarch64-unknown-linux-musl
             "
@@ -125,7 +127,7 @@ EOF
         if: "!contains(inputs.target_triple, 'musl')"
         shell: bash
         run: |
-          cargo build --release --features full --target ${{ inputs.target_triple }}
+          RUSTFLAGS="-C target-cpu=native" cargo build --release --features full --target ${{ inputs.target_triple }}
 
       - name: Prepare binary and create archive
         id: prepare_artifact
