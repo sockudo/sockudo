@@ -3,6 +3,7 @@ use crate::error::{Error, Result};
 use crate::options::SqsQueueConfig; // Use the struct from options.rs
 use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
+use ahash::AHashMap;
 use async_trait::async_trait;
 use aws_sdk_sqs as sqs;
 use std::collections::HashMap;
@@ -21,9 +22,9 @@ pub struct SqsQueueManager {
 
     // todo -> change Mutex<Hashmap> to Dashmap
     /// Cache of queue URLs
-    queue_urls: Arc<Mutex<HashMap<String, String>>>,
+    queue_urls: Arc<Mutex<AHashMap<String, String>>>,
     /// Active workers
-    worker_handles: Arc<Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
+    worker_handles: Arc<Mutex<AHashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
     /// Flag to control worker shutdown
     shutdown: Arc<Mutex<bool>>,
 }
@@ -52,8 +53,8 @@ impl SqsQueueManager {
         Ok(Self {
             client,
             config,
-            queue_urls: Arc::new(Mutex::new(HashMap::new())),
-            worker_handles: Arc::new(Mutex::new(HashMap::new())),
+            queue_urls: Arc::new(Mutex::new(AHashMap::new())),
+            worker_handles: Arc::new(Mutex::new(AHashMap::new())),
             shutdown: Arc::new(Mutex::new(false)),
         })
     }
@@ -73,9 +74,9 @@ impl SqsQueueManager {
         // If custom prefix is provided, use that to construct queue URL
         if let Some(prefix) = &self.config.queue_url_prefix {
             let queue_url = if self.config.fifo {
-                format!("{prefix}{queue_name}.fifo")
+                format!("{prefix}/{queue_name}.fifo")
             } else {
-                format!("{prefix}{queue_name}")
+                format!("{prefix}/{queue_name}")
             };
 
             // Cache the URL
@@ -250,9 +251,8 @@ impl SqsQueueManager {
                             for message in messages {
                                 if let Some(body) = message.body() {
                                     // Process the message
-                                    match serde_json::from_str::<crate::webhook::types::JobData>(
-                                        body,
-                                    ) {
+                                    match sonic_rs::from_str::<crate::webhook::types::JobData>(body)
+                                    {
                                         Ok(job_data) => {
                                             // Call the processor
                                             match processor(job_data).await {
@@ -350,7 +350,7 @@ impl QueueInterface for SqsQueueManager {
         let queue_url = self.get_queue_url(queue_name).await?;
 
         // Serialize the job data
-        let data_json = serde_json::to_string(&data)
+        let data_json = sonic_rs::to_string(&data)
             .map_err(|e| Error::Queue(format!("Failed to serialize job data: {e}")))?;
 
         // Build send message request

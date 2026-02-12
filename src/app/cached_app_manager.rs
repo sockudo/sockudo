@@ -40,12 +40,12 @@ impl CachedAppManager {
     }
 
     fn serialize<T: serde::Serialize>(value: &T) -> Result<String> {
-        serde_json::to_string(value)
+        sonic_rs::to_string(value)
             .map_err(|e| Error::Internal(format!("Serialization failed: {}", e)))
     }
 
     fn deserialize<T: serde::de::DeserializeOwned>(json: &str) -> Result<T> {
-        serde_json::from_str(json)
+        sonic_rs::from_str(json)
             .map_err(|e| Error::Internal(format!("Deserialization failed: {}", e)))
     }
 

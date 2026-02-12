@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// Maximum number of jobs per queue to prevent unbounded memory growth
+const MAX_QUEUE_SIZE: usize = 100_000;
 
 /// Memory-based queue manager for simple deployments
 pub struct MemoryQueueManager {
@@ -95,11 +98,20 @@ impl MemoryQueueManager {
 #[async_trait]
 impl QueueInterface for MemoryQueueManager {
     async fn add_to_queue(&self, queue_name: &str, data: JobData) -> crate::error::Result<()> {
-        // Ensure queue Vec exists using entry API for atomicity
-        self.queues
-            .entry(queue_name.to_string())
-            .or_default()
-            .push(data);
+        // MEMORY LEAK FIX: Check queue size before adding to prevent unbounded growth
+        let mut queue = self.queues.entry(queue_name.to_string()).or_default();
+
+        if queue.len() >= MAX_QUEUE_SIZE {
+            // Drop oldest jobs to make room (FIFO eviction)
+            let to_remove = queue.len() - MAX_QUEUE_SIZE + 1;
+            warn!(
+                "Memory queue '{}' at capacity ({}), dropping {} oldest job(s)",
+                queue_name, MAX_QUEUE_SIZE, to_remove
+            );
+            queue.drain(0..to_remove);
+        }
+
+        queue.push(data);
         Ok(())
     }
 

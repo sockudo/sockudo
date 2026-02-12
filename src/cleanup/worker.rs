@@ -2,18 +2,19 @@ use super::{CleanupConfig, ConnectionCleanupInfo, DisconnectTask, WebhookEvent};
 use crate::adapter::connection_manager::ConnectionManager;
 use crate::app::manager::AppManager;
 use crate::channel::manager::ChannelManager;
-use crate::presence::PresenceManager;
+use crate::presence::global_presence_manager;
 use crate::webhook::integration::WebhookIntegration;
 use crate::websocket::SocketId;
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 pub struct CleanupWorker {
-    connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+    connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     config: CleanupConfig,
@@ -21,7 +22,7 @@ pub struct CleanupWorker {
 
 impl CleanupWorker {
     pub fn new(
-        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
         config: CleanupConfig,
@@ -38,7 +39,27 @@ impl CleanupWorker {
         &self.config
     }
 
-    pub async fn run(&self, mut receiver: mpsc::Receiver<DisconnectTask>) {
+    /// Run the cleanup worker with optional cancellation support.
+    ///
+    /// This is a backward-compatible wrapper that creates a never-cancelled token.
+    pub async fn run(&self, receiver: mpsc::Receiver<DisconnectTask>) {
+        // Create a token that never gets cancelled for backward compatibility
+        let cancel_token = CancellationToken::new();
+        self.run_with_cancellation(receiver, cancel_token).await;
+    }
+
+    /// Run the cleanup worker with explicit cancellation support.
+    ///
+    /// The worker will gracefully shutdown when:
+    /// 1. The receiver channel is closed (all senders dropped)
+    /// 2. The cancellation token is cancelled
+    ///
+    /// In both cases, any pending batch will be processed before exiting.
+    pub async fn run_with_cancellation(
+        &self,
+        mut receiver: mpsc::Receiver<DisconnectTask>,
+        cancel_token: CancellationToken,
+    ) {
         info!("Cleanup worker started with config: {:?}", self.config);
 
         let mut batch = Vec::with_capacity(self.config.batch_size);
@@ -46,6 +67,19 @@ impl CleanupWorker {
 
         loop {
             tokio::select! {
+                // Check for cancellation first (biased selection)
+                biased;
+
+                _ = cancel_token.cancelled() => {
+                    // Graceful shutdown requested
+                    if !batch.is_empty() {
+                        info!("Processing final batch of {} tasks before cancellation shutdown", batch.len());
+                        self.process_batch(&mut batch).await;
+                    }
+                    info!("Cleanup worker shutting down due to cancellation");
+                    break;
+                }
+
                 // Receive new disconnect tasks
                 task = receiver.recv() => {
                     match task {
@@ -66,7 +100,7 @@ impl CleanupWorker {
                                 info!("Processing final batch of {} tasks before shutdown", batch.len());
                                 self.process_batch(&mut batch).await;
                             }
-                            info!("Cleanup worker shutting down");
+                            info!("Cleanup worker shutting down (channel closed)");
                             break;
                         }
                     }
@@ -91,7 +125,7 @@ impl CleanupWorker {
         debug!("Processing cleanup batch of {} tasks", batch_size);
 
         // Group by channels for efficient cleanup
-        let mut channel_operations: HashMap<(String, String), Vec<SocketId>> = HashMap::new();
+        let mut channel_operations: AHashMap<(String, String), Vec<SocketId>> = AHashMap::new();
         let mut webhook_events = Vec::new();
         let mut connections_to_remove = Vec::new();
 
@@ -102,15 +136,11 @@ impl CleanupWorker {
                 channel_operations
                     .entry((task.app_id.clone(), channel.clone()))
                     .or_default()
-                    .push(task.socket_id.clone());
+                    .push(task.socket_id);
             }
 
             // Prepare connection removal with user_id for user socket cleanup
-            connections_to_remove.push((
-                task.socket_id.clone(),
-                task.app_id.clone(),
-                task.user_id.clone(),
-            ));
+            connections_to_remove.push((task.socket_id, task.app_id.clone(), task.user_id.clone()));
         }
 
         // Execute batch operations
@@ -137,7 +167,7 @@ impl CleanupWorker {
 
     async fn batch_channel_cleanup(
         &self,
-        channel_operations: HashMap<(String, String), Vec<SocketId>>,
+        channel_operations: AHashMap<(String, String), Vec<SocketId>>,
     ) {
         if channel_operations.is_empty() {
             return;
@@ -152,12 +182,13 @@ impl CleanupWorker {
         let mut total_errors = 0;
 
         // Group operations by app_id for batch processing
-        let mut operations_by_app: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+        let mut operations_by_app: AHashMap<String, Vec<(String, String, String)>> =
+            AHashMap::new();
 
         for ((app_id, channel), socket_ids) in channel_operations {
             for socket_id in socket_ids {
                 operations_by_app.entry(app_id.clone()).or_default().push((
-                    socket_id.0.clone(),
+                    socket_id.to_string(),
                     channel.clone(),
                     app_id.clone(),
                 ));
@@ -208,18 +239,19 @@ impl CleanupWorker {
         debug!("Removing {} connections", connections.len());
 
         // Process each connection removal with minimal lock duration
-        for (socket_id, app_id, user_id) in connections {
+        for (socket_id, app_id, user_id) in connections.into_iter() {
             // Acquire lock for each individual removal to minimize contention
             let result = {
-                let mut connection_manager = self.connection_manager.lock().await;
                 // First remove the connection
-                let remove_result = connection_manager
+                let remove_result = self
+                    .connection_manager
                     .remove_connection(&socket_id, &app_id)
                     .await;
 
                 // Then remove from user mapping if user_id exists
-                if let Some(ref uid) = user_id
-                    && let Err(e) = connection_manager
+                if let Some(uid) = &user_id
+                    && let Err(e) = self
+                        .connection_manager
                         .remove_user_socket(uid, &socket_id, &app_id)
                         .await
                 {
@@ -255,9 +287,9 @@ impl CleanupWorker {
                     app_id: task.app_id.clone(),
                     channel: channel.clone(),
                     user_id: Some(user_id.clone()),
-                    data: serde_json::json!({
+                    data: sonic_rs::json!({
                         "user_id": user_id,
-                        "socket_id": task.socket_id.0
+                        "socket_id": task.socket_id.to_string()
                     }),
                 });
             }
@@ -267,12 +299,10 @@ impl CleanupWorker {
         // IMPORTANT: Acquire and release lock for each channel to minimize lock contention
         for channel in &task.subscribed_channels {
             // Acquire lock for minimal duration - just for this single channel check
-            let socket_count = {
-                let mut connection_manager = self.connection_manager.lock().await;
-                connection_manager
-                    .get_channel_socket_count(&task.app_id, channel)
-                    .await
-            }; // Lock released here immediately after getting the count
+            let socket_count = self
+                .connection_manager
+                .get_channel_socket_count(&task.app_id, channel)
+                .await;
 
             if socket_count == 0 {
                 events.push(WebhookEvent {
@@ -280,7 +310,7 @@ impl CleanupWorker {
                     app_id: task.app_id.clone(),
                     channel: channel.clone(),
                     user_id: None,
-                    data: serde_json::json!({
+                    data: sonic_rs::json!({
                         "channel": channel
                     }),
                 });
@@ -295,7 +325,7 @@ impl CleanupWorker {
             debug!("Processing {} webhook events", webhook_events.len());
 
             // Group events by app_id to get app configs efficiently
-            let mut events_by_app: HashMap<String, Vec<WebhookEvent>> = HashMap::new();
+            let mut events_by_app: AHashMap<String, Vec<WebhookEvent>> = AHashMap::new();
             for event in webhook_events {
                 events_by_app
                     .entry(event.app_id.clone())
@@ -353,7 +383,7 @@ impl CleanupWorker {
     }
 
     async fn send_webhook_event(
-        connection_manager: &Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         webhook_integration: &Arc<WebhookIntegration>,
         app_config: &crate::app::config::App,
         event: &WebhookEvent,
@@ -366,16 +396,18 @@ impl CleanupWorker {
         match event.event_type.as_str() {
             "member_removed" => {
                 if let Some(user_id) = &event.user_id {
-                    // Use centralized presence member removal logic (handles both webhook and broadcast)
-                    PresenceManager::handle_member_removed(
-                        connection_manager,
-                        Some(webhook_integration),
-                        app_config,
-                        &event.channel,
-                        user_id,
-                        None, // No socket to exclude in cleanup (connection already gone)
-                    )
-                    .await?;
+                    // Use centralized presence member removal logic (instance method for race safety)
+                    // Using global_presence_manager() since CleanupWorker doesn't have access to ConnectionHandler
+                    global_presence_manager()
+                        .handle_member_removed(
+                            connection_manager,
+                            Some(webhook_integration),
+                            app_config,
+                            &event.channel,
+                            user_id,
+                            None, // No socket to exclude in cleanup (connection already gone)
+                        )
+                        .await?;
                     debug!(
                         "Processed centralized member_removed for user {} in channel {}",
                         user_id, event.channel

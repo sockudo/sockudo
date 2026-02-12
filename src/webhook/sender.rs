@@ -10,11 +10,12 @@ use crate::webhook::lambda_sender::LambdaWebhookSender;
 // PusherWebhookPayload is the structure for the final POST body
 use crate::token::Token; // For HMAC SHA256 signing
 use crate::webhook::types::{JobData, PusherWebhookPayload, Webhook};
+use ahash::AHashMap;
 use reqwest::{Client, header};
-use serde_json::Value;
+use sonic_rs::Value;
 #[cfg(feature = "lambda")]
-use serde_json::json; // json! macro only used in lambda feature
-use std::collections::HashMap;
+use sonic_rs::json; // json! macro only used in lambda feature
+use sonic_rs::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -85,7 +86,7 @@ impl WebhookSender {
             events: job.payload.events.clone(),
         };
 
-        let body_json_string = serde_json::to_string(&pusher_payload)
+        let body_json_string = sonic_rs::to_string(&pusher_payload)
             .map_err(|e| Error::Serialization(format!("Failed to serialize webhook body: {e}")))?;
 
         let _signature =
@@ -97,8 +98,8 @@ impl WebhookSender {
         &self,
         events: &[Value],
         webhook_configs: &'a [Webhook],
-    ) -> HashMap<String, &'a Webhook> {
-        let mut relevant_configs = HashMap::new();
+    ) -> AHashMap<String, &'a Webhook> {
+        let mut relevant_configs = AHashMap::new();
 
         for event_value in events {
             if let Some(event_name) = event_value.get("name").and_then(Value::as_str) {
@@ -279,7 +280,7 @@ impl WebhookSender {
     ) -> tokio::task::JoinHandle<()> {
         let lambda_sender = self.lambda_sender.clone();
         let webhook_clone = webhook_config.clone();
-        let payload_for_lambda: Value = serde_json::from_str(&body_to_send).unwrap_or(json!({}));
+        let payload_for_lambda: Value = sonic_rs::from_str(&body_to_send).unwrap_or(json!({}));
 
         tokio::spawn(async move {
             let _permit = permit;
@@ -314,7 +315,7 @@ async fn send_pusher_webhook(
     app_key: &str,
     signature: &str,
     json_body: String, // Expects already serialized JSON string
-    custom_headers_config: HashMap<String, String>,
+    custom_headers_config: AHashMap<String, String>,
 ) -> Result<()> {
     debug!("Sending Pusher webhook to URL: {}", url);
 
@@ -440,7 +441,7 @@ mod tests {
             app_secret: "test_secret".to_string(),
             payload: JobPayload {
                 time_ms: 1234567890,
-                events: vec![serde_json::json!({
+                events: vec![sonic_rs::json!({
                     "name": "channel_occupied",
                     "channel": "test-channel"
                 })],
@@ -497,7 +498,7 @@ mod tests {
                 app_secret: "test_secret".to_string(),
                 payload: JobPayload {
                     time_ms: 1234567890 + i,
-                    events: vec![serde_json::json!({
+                    events: vec![sonic_rs::json!({
                         "name": "channel_occupied",
                         "channel": format!("test-channel-{}", i)
                     })],

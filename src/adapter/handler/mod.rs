@@ -19,6 +19,7 @@ use crate::cache::manager::CacheManager;
 use crate::error::{Error, Result};
 use crate::metrics::MetricsInterface;
 use crate::options::ServerOptions;
+use crate::presence::PresenceManager;
 use crate::protocol::constants::CLIENT_EVENT_PREFIX;
 use crate::protocol::messages::{MessageData, PusherMessage};
 use crate::rate_limiter::RateLimiter;
@@ -28,19 +29,19 @@ use crate::websocket::SocketId;
 
 use crate::adapter::handler::types::{ClientEventRequest, SignInRequest, SubscriptionRequest};
 use dashmap::DashMap;
-use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, WebSocketWrite, upgrade};
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
-use serde_json::Value;
+use sockudo_ws::Message;
+use sockudo_ws::axum_integration::{WebSocket, WebSocketReader, WebSocketWriter};
+use sonic_rs::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
-use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
+#[derive(Clone)]
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
-    pub(crate) connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+    pub(crate) connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
+    pub(crate) local_adapter: Option<Arc<crate::adapter::local_adapter::LocalAdapter>>,
     pub(crate) cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     pub(crate) metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -50,22 +51,28 @@ pub struct ConnectionHandler {
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
     cleanup_consecutive_failures: Arc<AtomicUsize>,
     cleanup_circuit_breaker_opened_at: Arc<AtomicU64>,
+    delta_compression: Arc<crate::delta_compression::DeltaCompressionManager>,
+    /// Presence manager for race-safe presence channel operations
+    pub(crate) presence_manager: Arc<PresenceManager>,
 }
 
 impl ConnectionHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         app_manager: Arc<dyn AppManager + Send + Sync>,
-        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
+        local_adapter: Option<Arc<crate::adapter::local_adapter::LocalAdapter>>,
         cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
         metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
         server_options: ServerOptions,
         cleanup_queue: Option<crate::cleanup::CleanupSender>,
+        delta_compression: Arc<crate::delta_compression::DeltaCompressionManager>,
     ) -> Self {
         Self {
             app_manager,
             connection_manager,
+            local_adapter,
             cache_manager,
             metrics,
             webhook_integration,
@@ -75,7 +82,14 @@ impl ConnectionHandler {
             cleanup_queue,
             cleanup_consecutive_failures: Arc::new(AtomicUsize::new(0)),
             cleanup_circuit_breaker_opened_at: Arc::new(AtomicU64::new(0)),
+            delta_compression,
+            presence_manager: Arc::new(PresenceManager::new()),
         }
+    }
+
+    /// Get a reference to the presence manager
+    pub fn presence_manager(&self) -> &Arc<PresenceManager> {
+        &self.presence_manager
     }
 
     pub fn app_manager(&self) -> &Arc<dyn AppManager + Send + Sync> {
@@ -92,7 +106,7 @@ impl ConnectionHandler {
 
     pub async fn handle_socket(
         &self,
-        fut: upgrade::UpgradeFut,
+        socket: WebSocket,
         app_key: String,
         origin: Option<String>,
     ) -> Result<()> {
@@ -115,17 +129,7 @@ impl ConnectionHandler {
         };
 
         // Origin validation will happen after WebSocket upgrade to allow error message sending
-        let (socket_rx, mut socket_tx) = match self.upgrade_websocket(fut).await {
-            Ok(sockets) => sockets,
-            Err(e) => {
-                // Track WebSocket upgrade errors
-                if let Some(ref metrics) = self.metrics {
-                    let metrics_locked = metrics.lock().await;
-                    metrics_locked.mark_connection_error(&app_config.id, "websocket_upgrade_error");
-                }
-                return Err(e);
-            }
-        };
+        let (socket_rx, mut socket_tx) = socket.split();
 
         // Validate origin AFTER WebSocket establishment to allow error message sending
         if let Some(ref allowed_origins) = app_config.allowed_origins
@@ -144,8 +148,6 @@ impl ConnectionHandler {
                 }
 
                 // Send error message directly through the raw WebSocket before closing
-                use fastwebsockets::{Frame, Payload};
-
                 // Create and send the error message
                 let error_message = PusherMessage::error(
                     Error::OriginNotAllowed.close_code(),
@@ -153,9 +155,8 @@ impl ConnectionHandler {
                     None,
                 );
 
-                if let Ok(payload_str) = serde_json::to_string(&error_message) {
-                    let payload = Payload::from(payload_str.as_bytes());
-                    if let Err(e) = socket_tx.write_frame(Frame::text(payload)).await {
+                if let Ok(payload_str) = sonic_rs::to_string(&error_message) {
+                    if let Err(e) = socket_tx.send(Message::text(payload_str)).await {
                         warn!("Failed to send origin rejection message: {}", e);
                     }
                 } else {
@@ -164,10 +165,10 @@ impl ConnectionHandler {
 
                 // Send close frame
                 if let Err(e) = socket_tx
-                    .write_frame(Frame::close(
+                    .close(
                         Error::OriginNotAllowed.close_code(),
-                        Error::OriginNotAllowed.to_string().as_bytes(),
-                    ))
+                        &Error::OriginNotAllowed.to_string(),
+                    )
                     .await
                 {
                     warn!("Failed to send origin rejection close frame: {}", e);
@@ -187,7 +188,7 @@ impl ConnectionHandler {
 
         // Initialize socket with atomic quota check
         let socket_id = SocketId::new();
-        self.initialize_socket_with_quota_check(socket_id.clone(), socket_tx, &app_config)
+        self.initialize_socket_with_quota_check(socket_id, socket_tx, &app_config)
             .await?;
 
         // Setup rate limiting if needed
@@ -214,17 +215,16 @@ impl ConnectionHandler {
     async fn initialize_socket_with_quota_check(
         &self,
         socket_id: SocketId,
-        socket_tx: WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
+        socket_tx: WebSocketWriter,
         app_config: &App,
     ) -> Result<()> {
         // True atomic operation: quota check and socket addition under single lock
         // This is the only way to prevent race conditions
         {
-            let mut connection_manager = self.connection_manager.lock().await;
-
             // Check quota first - this must be atomic with add_socket
             if app_config.max_connections > 0 {
-                let current_count = connection_manager
+                let current_count = self
+                    .connection_manager
                     .get_sockets_count(&app_config.id)
                     .await
                     .map_err(|e| {
@@ -241,22 +241,27 @@ impl ConnectionHandler {
             }
 
             // Remove any existing connection with the same socket_id (should be rare)
-            if let Some(conn) = connection_manager
+            if let Some(conn) = self
+                .connection_manager
                 .get_connection(&socket_id, &app_config.id)
                 .await
             {
-                connection_manager
+                self.connection_manager
                     .cleanup_connection(&app_config.id, conn)
                     .await;
             }
 
             // Add the new socket - this must be in the same critical section as quota check
-            connection_manager
+            // Create buffer config from server options
+            let buffer_config = self.server_options.websocket.to_buffer_config();
+
+            self.connection_manager
                 .add_socket(
-                    socket_id.clone(),
+                    socket_id,
                     socket_tx,
                     &app_config.id,
                     Arc::clone(&self.app_manager),
+                    buffer_config,
                 )
                 .await?;
         } // Lock released - atomic operation complete
@@ -285,44 +290,26 @@ impl ConnectionHandler {
         }
     }
 
-    async fn upgrade_websocket(
-        &self,
-        fut: upgrade::UpgradeFut,
-    ) -> Result<(
-        FragmentCollectorRead<tokio::io::ReadHalf<TokioIo<Upgraded>>>,
-        WebSocketWrite<WriteHalf<TokioIo<Upgraded>>>,
-    )> {
-        // Perform upgrade. By default fastwebsockets enables auto_pong which
-        // automatically responds to Ping control frames and suppresses them
-        // from the consumer (returning Ok(None) for those frames). We need to
-        // handle Ping frames ourselves so we can update activity timeouts and
-        // drive our own application-level ping/pong semantics. Therefore we
-        // disable auto_pong before splitting so Ping frames are surfaced.
-        let mut ws = fut.await.map_err(Error::WebSocket)?;
-        ws.set_auto_pong(false);
-        let (rx, tx) = ws.split(tokio::io::split);
-        Ok((FragmentCollectorRead::new(rx), tx))
-    }
-
     async fn run_message_loop(
         &self,
-        mut fragment_collector: FragmentCollectorRead<tokio::io::ReadHalf<TokioIo<Upgraded>>>,
+        mut reader: WebSocketReader,
         socket_id: &SocketId,
         app_config: &App,
     ) -> Result<()> {
-        while let Ok(frame) = fragment_collector
-            .read_frame(&mut |_| async { Ok::<_, fastwebsockets::WebSocketError>(()) })
-            .await
-        {
-            match frame.opcode {
-                OpCode::Close => {
+        while let Some(next) = reader.next().await {
+            let message = match next {
+                Ok(m) => m,
+                Err(e) => return Err(Error::WebSocket(e)),
+            };
+            match message {
+                Message::Close(_) => {
                     debug!("Received Close frame from socket {}", socket_id);
                     self.handle_disconnect(&app_config.id, socket_id).await?;
                     break;
                 }
-                OpCode::Text | OpCode::Binary => {
+                Message::Text(_) | Message::Binary(_) => {
                     if let Err(e) = self
-                        .handle_message(frame, socket_id, app_config.clone())
+                        .handle_message(message, socket_id, app_config.clone())
                         .await
                     {
                         error!("Message handling error for socket {}: {}", socket_id, e);
@@ -342,12 +329,8 @@ impl ConnectionHandler {
                         }
                     }
                 }
-                OpCode::Ping => {
-                    self.handle_ping_frame(socket_id, app_config, frame.payload)
-                        .await?;
-                }
                 _ => {
-                    warn!("Unsupported opcode from {}: {:?}", socket_id, frame.opcode);
+                    warn!("Unsupported message type from {}", socket_id);
                 }
             }
         }
@@ -357,16 +340,18 @@ impl ConnectionHandler {
 
     async fn handle_message(
         &self,
-        frame: Frame<'static>,
+        message: Message,
         socket_id: &SocketId,
         app_config: App,
     ) -> Result<()> {
+        let t0 = std::time::Instant::now();
+
         // Update activity timeout
         self.update_activity_timeout(&app_config.id, socket_id)
             .await?;
 
         // Parse message
-        let message = match self.parse_message(&frame) {
+        let parsed = match self.parse_message(&message) {
             Ok(msg) => msg,
             Err(e) => {
                 // Track message parsing errors
@@ -382,7 +367,7 @@ impl ConnectionHandler {
             }
         };
 
-        let event_name = match message.event.as_deref() {
+        let event_name = match parsed.event.as_deref() {
             Some(name) => name,
             None => {
                 // Track missing event name errors
@@ -397,7 +382,11 @@ impl ConnectionHandler {
         // Track WebSocket message received metrics
         if let Some(ref metrics) = self.metrics {
             let metrics_locked = metrics.lock().await;
-            metrics_locked.mark_ws_message_received(&app_config.id, frame.payload.len());
+            let payload_size = match &message {
+                Message::Text(b) | Message::Binary(b) => b.len(),
+                _ => 0,
+            };
+            metrics_locked.mark_ws_message_received(&app_config.id, payload_size);
         }
 
         debug!(
@@ -415,22 +404,36 @@ impl ConnectionHandler {
         match event_name {
             "pusher:ping" => self.handle_ping(&app_config.id, socket_id).await,
             "pusher:subscribe" => {
-                let request = SubscriptionRequest::from_message(&message)?;
-                self.handle_subscribe_request(socket_id, &app_config, request)
-                    .await
+                let t1 = t0.elapsed().as_micros();
+                let request = SubscriptionRequest::from_message(&parsed)?;
+                let result = self
+                    .handle_subscribe_request(socket_id, &app_config, request)
+                    .await;
+                let total = t0.elapsed().as_micros();
+                debug!(
+                    "PERF: subscription total={}μs parse_to_handler={}μs handler={}μs",
+                    total,
+                    t1,
+                    total - t1
+                );
+                result
             }
             "pusher:unsubscribe" => {
-                self.handle_unsubscribe(socket_id, &message, &app_config)
+                self.handle_unsubscribe(socket_id, &parsed, &app_config)
                     .await
             }
             "pusher:signin" => {
-                let request = SignInRequest::from_message(&message)?;
+                let request = SignInRequest::from_message(&parsed)?;
                 self.handle_signin_request(socket_id, &app_config, request)
                     .await
             }
             "pusher:pong" => self.handle_pong(&app_config.id, socket_id).await,
+            crate::protocol::constants::EVENT_ENABLE_DELTA_COMPRESSION => {
+                self.handle_enable_delta_compression(socket_id).await
+            }
+            "pusher:delta_sync_error" => self.handle_delta_sync_error(socket_id, &parsed).await,
             _ if event_name.starts_with(CLIENT_EVENT_PREFIX) => {
-                let request = self.parse_client_event(&message)?;
+                let request = self.parse_client_event(&parsed)?;
                 self.handle_client_event_request(socket_id, &app_config, request)
                     .await
             }
@@ -441,11 +444,19 @@ impl ConnectionHandler {
         }
     }
 
-    fn parse_message(&self, frame: &Frame<'static>) -> Result<PusherMessage> {
-        let payload = String::from_utf8(frame.payload.to_vec())
-            .map_err(|e| Error::InvalidMessageFormat(format!("Invalid UTF-8: {e}")))?;
+    fn parse_message(&self, message: &Message) -> Result<PusherMessage> {
+        let payload = match message {
+            Message::Text(bytes) | Message::Binary(bytes) => std::str::from_utf8(bytes)
+                .map_err(|e| Error::InvalidMessageFormat(format!("Invalid UTF-8: {e}")))?
+                .to_string(),
+            _ => {
+                return Err(Error::InvalidMessageFormat(
+                    "Unsupported WebSocket message type".to_string(),
+                ));
+            }
+        };
 
-        serde_json::from_str(&payload)
+        sonic_rs::from_str(&payload)
             .map_err(|e| Error::InvalidMessageFormat(format!("Invalid JSON: {e}")))
     }
 
@@ -465,23 +476,18 @@ impl ConnectionHandler {
         let data = match &message.data {
             Some(MessageData::Json(data)) => data.clone(),
             Some(MessageData::String(s)) => {
-                serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.clone()))
+                sonic_rs::from_str(s).unwrap_or_else(|_| Value::from(s.as_str()))
             }
             Some(MessageData::Structured { extra, .. }) => {
                 // For client events, the data is in the extra fields
                 // Always convert the extra HashMap to a JSON object to preserve structure
                 if !extra.is_empty() {
-                    Value::Object(
-                        extra
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect::<serde_json::Map<String, Value>>(),
-                    )
+                    sonic_rs::to_value(extra).unwrap_or_else(|_| Value::new_object())
                 } else {
-                    Value::Null
+                    Value::new_null()
                 }
             }
-            None => Value::Null,
+            None => Value::new_null(),
         };
 
         Ok(ClientEventRequest {
@@ -522,6 +528,9 @@ impl ConnectionHandler {
     async fn cleanup_socket(&self, socket_id: &SocketId, app_config: &App) {
         // Remove rate limiter
         self.client_event_limiters.remove(socket_id);
+
+        // MEMORY LEAK FIX: Clean up delta compression state for this socket
+        self.delta_compression.remove_socket(socket_id);
 
         // Clear timeouts
         if let Err(e) = self.clear_activity_timeout(&app_config.id, socket_id).await {
@@ -602,9 +611,11 @@ impl ConnectionHandler {
     async fn get_active_channel_count_for_type(&self, app_id: &str, channel_type: &str) -> i64 {
         // Get all channels with their socket counts
         let channels_map = {
-            // Acquire lock in a scoped block to ensure it's released immediately after use
-            let mut conn_manager = self.connection_manager.lock().await;
-            match conn_manager.get_channels_with_socket_count(app_id).await {
+            match self
+                .connection_manager
+                .get_channels_with_socket_count(app_id)
+                .await
+            {
                 Ok(map) => map,
                 Err(e) => {
                     error!("Failed to get channels for metrics update: {}", e);
@@ -616,12 +627,9 @@ impl ConnectionHandler {
         // Count active channels of the specified type
         // This processing happens AFTER the connection_manager lock is released
         let mut count = 0i64;
-        for channel_entry in channels_map.iter() {
-            let channel_name = channel_entry.key();
-            let socket_count = *channel_entry.value();
-
+        for (channel_name, socket_count) in &channels_map {
             // Only count channels that have active connections
-            if socket_count > 0 {
+            if *socket_count > 0 {
                 let ch_type = crate::channel::ChannelType::from_name(channel_name);
                 let ch_type_str = ch_type.as_str();
 

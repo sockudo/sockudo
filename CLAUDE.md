@@ -21,6 +21,7 @@ Sockudo uses Cargo feature flags to allow compiling only the backends you need, 
 - `redis-cluster` - Redis Cluster support (implies `redis`)
 - `nats` - NATS adapter for horizontal scaling
 - `mysql` - MySQL app manager
+- `scylla` - ScyllaDB app manager
 - `postgres` - PostgreSQL app manager
 - `dynamodb` - DynamoDB app manager
 - `sqs` - AWS SQS queue backend
@@ -104,6 +105,7 @@ make health
 - `src/app/` - Application management with multiple backend support (Memory, MySQL, PostgreSQL, DynamoDB)
 - `src/cache/` - Caching layer (Memory, Redis, RedisCluster)
 - `src/channel/` - Channel types and subscription management
+- `src/delta_compression.rs` - **NEW**: Delta compression for bandwidth optimization (fossil_delta)
 - `src/http_handler.rs` - REST API endpoints for event triggering
 - `src/websocket.rs` - WebSocket connection handling and message parsing
 - `src/webhook/` - Event notification system (HTTP, Lambda)
@@ -203,6 +205,9 @@ Key variables (see `.env.example` for complete list):
 - `UNIX_SOCKET_ENABLED` - Enable Unix socket server (true|false, default: false)
 - `UNIX_SOCKET_PATH` - Unix socket file path (default: /var/run/sockudo/sockudo.sock)
 - `UNIX_SOCKET_PERMISSION_MODE` - Unix socket file permissions in octal (default: 660)
+- `WEBSOCKET_MAX_MESSAGES` - Max messages buffered per connection (default: 1000, "none" to disable)
+- `WEBSOCKET_MAX_BYTES` - Max bytes buffered per connection (default: none, e.g., 1048576 for 1MB)
+- `WEBSOCKET_DISCONNECT_ON_BUFFER_FULL` - Disconnect slow clients when buffer full (true|false, default: true)
 
 #### Logging Configuration
 **Environment Variables:**
@@ -219,7 +224,42 @@ Key variables (see `.env.example` for complete list):
 ### Redis/NATS Configuration
 - Redis: Set `DATABASE_REDIS_HOST`, `DATABASE_REDIS_PORT`, `DATABASE_REDIS_PASSWORD`
 - Redis Cluster: Set `REDIS_CLUSTER_NODES` as comma-separated list
+- Redis Sentinel: Configure via `database.redis.sentinels` array in config file (see below)
 - NATS: Set `NATS_SERVERS` as comma-separated list (e.g., "nats://localhost:4222")
+
+#### Redis Sentinel Configuration
+Redis Sentinel provides high availability for Redis. When sentinels are configured, Sockudo automatically uses the Sentinel protocol to discover the current master.
+
+**Configuration File Example:**
+```json
+{
+  "database": {
+    "redis": {
+      "sentinels": [
+        { "host": "sentinel1.example.com", "port": 26379 },
+        { "host": "sentinel2.example.com", "port": 26379 },
+        { "host": "sentinel3.example.com", "port": 26379 }
+      ],
+      "sentinel_password": "optional-sentinel-auth",
+      "name": "mymaster",
+      "password": "optional-redis-master-password",
+      "db": 0,
+      "key_prefix": "sockudo:"
+    }
+  }
+}
+```
+
+**Configuration Options:**
+- `sentinels` - Array of sentinel nodes with `host` and `port`
+- `sentinel_password` - Optional password for authenticating with sentinel nodes
+- `name` - The master name monitored by sentinels (default: "mymaster")
+- `password` - Optional password for the Redis master instance
+- `username` - Optional username for Redis ACL authentication
+- `db` - Database number to use (default: 0)
+
+When sentinels are configured, the connection URL is automatically built in the format:
+`redis+sentinel://[sentinelpass@]host1:port1,host2:port2/master-name/db[?password=masterpass]`
 
 ## Development Guidelines
 
@@ -243,6 +283,80 @@ Key variables (see `.env.example` for complete list):
 - Rate limiting is enforced at both API and WebSocket levels
 - Use batch operations when processing multiple channels/connections
 - Metrics are exposed at `/metrics` for Prometheus scraping
+- WebSocket buffers are bounded to prevent memory exhaustion from slow consumers
+
+### WebSocket Buffer Configuration (Slow Consumer Handling)
+
+Sockudo uses bounded buffers for WebSocket connections to protect against slow consumers that can't keep up with message delivery. This prevents unbounded memory growth.
+
+**Three Limit Modes:**
+1. **Message count only** (default, fastest) - No size tracking overhead
+2. **Byte size only** - Precise memory control
+3. **Both limits** - Whichever triggers first (most precise)
+
+**Configuration Examples:**
+
+```json
+// Mode 1: Message count only (fastest, default)
+{
+  "websocket": {
+    "max_messages": 1000,
+    "max_bytes": null,
+    "disconnect_on_buffer_full": true
+  }
+}
+
+// Mode 2: Byte size only (1MB limit)
+{
+  "websocket": {
+    "max_messages": null,
+    "max_bytes": 1048576,
+    "disconnect_on_buffer_full": true
+  }
+}
+
+// Mode 3: Both limits (whichever triggers first)
+{
+  "websocket": {
+    "max_messages": 1000,
+    "max_bytes": 1048576,
+    "disconnect_on_buffer_full": true
+  }
+}
+```
+
+**Options:**
+- `max_messages` - Maximum number of messages in buffer (default: 1000, set to `null` to disable)
+- `max_bytes` - Maximum bytes in buffer (default: `null`/disabled, e.g., 1048576 for 1MB)
+- `disconnect_on_buffer_full` - When `true`, disconnects slow clients. When `false`, drops messages instead (default: true)
+
+**Behavior:**
+- When a client cannot consume messages fast enough, messages queue up in the per-connection buffer
+- Once any configured limit is reached:
+  - If `disconnect_on_buffer_full: true` → Connection is closed with error code 4100 (reconnect with backoff)
+  - If `disconnect_on_buffer_full: false` → New messages are dropped silently (logged as warning)
+
+**Environment Variables:**
+```bash
+# Message limit (set to "none" or "0" to disable)
+WEBSOCKET_MAX_MESSAGES=1000
+
+# Byte limit (set to "none" or "0" to disable)
+WEBSOCKET_MAX_BYTES=1048576
+
+# Disconnect behavior
+WEBSOCKET_DISCONNECT_ON_BUFFER_FULL=true
+```
+
+**Performance Characteristics:**
+- **Message-only mode**: Zero overhead for size tracking, uses bounded channel capacity
+- **Byte-only mode**: Atomic counter tracking (~1-2ns per message), large channel capacity (10,000)
+- **Both modes**: Atomic counter + channel capacity check
+
+**Memory Estimation:**
+- Message-only: Depends on average message size (~1-2KB typical)
+- Byte-only: Precise control (e.g., 1MB = exactly 1MB max)
+- With 1MB byte limit per connection and 10,000 connections: ~10GB worst case
 
 ## Platform Support
 
@@ -261,6 +375,7 @@ Key variables (see `.env.example` for complete list):
 5. Set appropriate limits via app configuration
 6. Configure structured logging for external systems (see [Production Logging](#production-logging))
 7. Consider Unix socket deployment for reverse proxy scenarios (see [Unix Socket Configuration](#unix-socket-configuration))
+8. Configure delta compression for bandwidth optimization (see [Delta Compression](#delta-compression))
 
 ### Unix Socket Configuration
 
@@ -347,6 +462,159 @@ LOG_COLORS_ENABLED=false ./target/release/sockudo
 - No color codes that interfere with log parsing
 - Structured data for better filtering and analysis
 - Compatible with log aggregation tools
+
+### Delta Compression
+
+Sockudo implements delta compression using `fossil_delta` and `xdelta3` algorithms to reduce bandwidth usage by sending only message differences.
+
+**Configuration:**
+```json
+{
+  "delta_compression": {
+    "enabled": true,
+    "algorithm": "fossil",
+    "full_message_interval": 10,
+    "min_message_size": 100,
+    "max_state_age_secs": 300,
+    "max_channel_states_per_socket": 100,
+    "cluster_coordination": false,
+    "omit_delta_algorithm": false
+  },
+  "tag_filtering": {
+    "enabled": false,
+    "enable_tags": true
+  }
+}
+```
+
+**Supported Algorithms:**
+- `fossil` (default) - Fast binary delta, excellent for most use cases
+- `xdelta3` - Industry-standard VCDIFF (RFC 3284), better compression ratio
+
+**Encrypted Channel Detection:**
+Delta compression is **automatically disabled** for `private-encrypted-*` channels. Encrypted payloads have no similarity between messages (due to unique nonces), so delta compression would provide zero benefit and waste CPU cycles.
+
+**Per-Publish Delta Control:**
+Publishers can control delta compression per-message via the HTTP API:
+```bash
+# Force delta compression
+curl -X POST http://localhost:6001/apps/my-app/events \
+  -d '{"name": "update", "channel": "ticker", "data": "{...}", "delta": true}'
+
+# Force full message (skip delta)
+curl -X POST http://localhost:6001/apps/my-app/events \
+  -d '{"name": "snapshot", "channel": "ticker", "data": "{...}", "delta": false}'
+```
+
+**Per-Subscription Delta Negotiation:**
+Clients can negotiate delta compression settings per-channel during subscription:
+```javascript
+// Enable with specific algorithm
+pusher.subscribe('ticker:BTC', { delta: { enabled: true, algorithm: 'fossil' } });
+
+// Disable for specific channel
+pusher.subscribe('snapshots', { delta: { enabled: false } });
+
+// Combined with tag filtering
+pusher.subscribe('events', {
+  filter: Filter.eq('type', 'important'),
+  delta: { enabled: true, algorithm: 'xdelta3' }
+});
+```
+
+**Bandwidth Optimization Options:**
+- `delta_compression.omit_delta_algorithm`: When `true`, omits the `algorithm` field from delta messages (saves ~20-30 bytes per message). Client must infer the algorithm. Default: `false`
+- `tag_filtering.enable_tags`: When `false`, strips tags from all messages globally (saves 50-200 bytes per message depending on tag size). Can be overridden per-channel. Default: `true`
+  - **Note:** Tags are stripped AFTER server-side filtering, so you can safely use `enable_tags: false` even when tag filtering is enabled. The server uses tags for routing decisions, then removes them before sending to clients.
+
+**Client Usage:**
+Clients can opt-in via:
+1. Global: Send `pusher:enable_delta_compression` event after connection
+2. Per-channel: Include `delta` settings in subscription request
+
+See [DELTA_COMPRESSION.md](./DELTA_COMPRESSION.md) for full documentation.
+
+**Performance:**
+- Typical bandwidth savings: 60-90% for similar consecutive messages
+- CPU overhead: ~5-20μs per message
+- Memory: ~10-50KB per socket
+
+**Horizontal Scaling:**
+- Fully supported on Redis, Redis Cluster, and NATS adapters
+- Node-local intervals by default (each node tracks independently)
+- Optional cluster coordination for synchronized full message intervals (adds ~0.5-1.2ms latency)
+
+**Cluster Coordination (Optional):**
+Enable synchronized full message intervals across all nodes:
+```json
+{
+  "delta_compression": {
+    "cluster_coordination": true
+  },
+  "adapter": {
+    "driver": "redis"  // or "redis-cluster" or "nats"
+  }
+}
+```
+
+See [docs/DELTA_COMPRESSION_HORIZONTAL_IMPLEMENTATION.md](./docs/DELTA_COMPRESSION_HORIZONTAL_IMPLEMENTATION.md) and [docs/DELTA_COMPRESSION_CLUSTER_COORDINATION.md](./docs/DELTA_COMPRESSION_CLUSTER_COORDINATION.md) for details.
+
+### Publication Filtering by Tags
+
+Sockudo implements server-side publication filtering by tags, allowing clients to subscribe to channels with filters that reduce bandwidth usage by 60-90% in high-volume scenarios.
+
+**Configuration:**
+Tag filtering is **disabled by default** for Pusher backward compatibility. Enable it via:
+```bash
+# Environment variable
+TAG_FILTERING_ENABLED=true
+
+# Or in config file
+{
+  "tag_filtering": {
+    "enabled": true
+  }
+}
+```
+
+**Server-side (adding tags to publications):**
+```bash
+POST /apps/:app_id/events
+{
+  "name": "event_name",
+  "channel": "channel_name",
+  "data": "{...}",
+  "tags": {
+    "event_type": "goal",
+    "priority": "high"
+  }
+}
+```
+
+**Client-side (subscribing with filters):**
+```javascript
+import { Filter } from 'sockudo-js';
+
+// Simple filter
+const channel = pusher.subscribe('match:123', Filter.eq('event_type', 'goal'));
+
+// Complex filter
+const filter = Filter.or(
+  Filter.eq('event_type', 'goal'),
+  Filter.and(
+    Filter.eq('event_type', 'shot'),
+    Filter.gte('xG', '0.8')
+  )
+);
+const channel = pusher.subscribe('match:123', filter);
+```
+
+**Performance:**
+- Zero-allocation evaluation in broadcast path (~12-94ns per filter)
+- 10k subscriber broadcast: 112-924μs with zero allocations
+- Typical bandwidth savings: 60-90% for filtered channels
+
+**Documentation:** See [TAG_FILTERING.md](./docs/TAG_FILTERING.md) and [TAG_FILTERING_QUICKSTART.md](./docs/TAG_FILTERING_QUICKSTART.md)
 
 ### Monitoring
 - Health endpoint: `GET /up/{app_id}` (WebSocket health check)

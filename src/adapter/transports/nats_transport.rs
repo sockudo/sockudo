@@ -7,8 +7,48 @@ use crate::options::NatsAdapterConfig;
 use async_nats::{Client as NatsClient, ConnectOptions as NatsOptions, Subject};
 use async_trait::async_trait;
 use futures::StreamExt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, error, info, warn};
+
+/// Metrics for tracking message processing and drops
+#[derive(Debug, Default)]
+pub struct TransportMetrics {
+    pub messages_received: AtomicU64,
+    pub messages_processed: AtomicU64,
+    pub messages_dropped_parse_error: AtomicU64,
+}
+
+impl TransportMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[inline]
+    pub fn record_received(&self) {
+        self.messages_received.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn record_processed(&self) {
+        self.messages_processed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn record_parse_error(&self) {
+        self.messages_dropped_parse_error
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> (u64, u64, u64) {
+        (
+            self.messages_received.load(Ordering::Relaxed),
+            self.messages_processed.load(Ordering::Relaxed),
+            self.messages_dropped_parse_error.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// NATS transport implementation
 #[derive(Clone)]
@@ -18,6 +58,15 @@ pub struct NatsTransport {
     request_subject: String,
     response_subject: String,
     config: NatsAdapterConfig,
+    /// Metrics for tracking message processing
+    metrics: Arc<TransportMetrics>,
+}
+
+impl NatsTransport {
+    /// Get transport metrics for monitoring
+    pub fn get_metrics(&self) -> Arc<TransportMetrics> {
+        self.metrics.clone()
+    }
 }
 
 impl TransportConfig for NatsAdapterConfig {
@@ -78,11 +127,12 @@ impl HorizontalTransport for NatsTransport {
             request_subject,
             response_subject,
             config,
+            metrics: Arc::new(TransportMetrics::new()),
         })
     }
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
-        let message_data = serde_json::to_vec(message)
+        let message_data = sonic_rs::to_vec(message)
             .map_err(|e| Error::Other(format!("Failed to serialize broadcast message: {e}")))?;
 
         self.client
@@ -98,7 +148,7 @@ impl HorizontalTransport for NatsTransport {
     }
 
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
-        let request_data = serde_json::to_vec(request)
+        let request_data = sonic_rs::to_vec(request)
             .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
 
         self.client
@@ -114,7 +164,7 @@ impl HorizontalTransport for NatsTransport {
     }
 
     async fn publish_response(&self, response: &ResponseBody) -> Result<()> {
-        let response_data = serde_json::to_vec(response)
+        let response_data = sonic_rs::to_vec(response)
             .map_err(|e| Error::Other(format!("Failed to serialize response: {e}")))?;
 
         self.client
@@ -135,6 +185,9 @@ impl HorizontalTransport for NatsTransport {
         let request_subject = self.request_subject.clone();
         let response_subject = self.response_subject.clone();
         let response_client = self.client.clone();
+        let metrics_broadcast = self.metrics.clone();
+        let metrics_request = self.metrics.clone();
+        let metrics_response = self.metrics.clone();
 
         // Subscribe to broadcast channel
         let mut broadcast_subscription = client
@@ -167,41 +220,84 @@ impl HorizontalTransport for NatsTransport {
         let broadcast_handler = handlers.on_broadcast.clone();
         tokio::spawn(async move {
             while let Some(msg) = broadcast_subscription.next().await {
-                if let Ok(broadcast) = serde_json::from_slice::<BroadcastMessage>(&msg.payload) {
-                    broadcast_handler(broadcast).await;
+                metrics_broadcast.record_received();
+                match sonic_rs::from_slice::<BroadcastMessage>(&msg.payload) {
+                    Ok(broadcast) => {
+                        broadcast_handler(broadcast).await;
+                        metrics_broadcast.record_processed();
+                    }
+                    Err(e) => {
+                        metrics_broadcast.record_parse_error();
+                        let payload_preview =
+                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                        error!(
+                            "Failed to parse broadcast message: {} - payload preview: {}",
+                            e, payload_preview
+                        );
+                    }
                 }
             }
+            warn!("Broadcast subscription ended unexpectedly");
         });
 
         // Spawn a task to handle request messages
         let request_handler = handlers.on_request.clone();
         tokio::spawn(async move {
             while let Some(msg) = request_subscription.next().await {
-                if let Ok(request) = serde_json::from_slice::<RequestBody>(&msg.payload) {
-                    let response_result = request_handler(request).await;
+                metrics_request.record_received();
+                match sonic_rs::from_slice::<RequestBody>(&msg.payload) {
+                    Ok(request) => {
+                        let response_result = request_handler(request).await;
 
-                    if let Ok(response) = response_result
-                        && let Ok(response_data) = serde_json::to_vec(&response)
-                    {
-                        let _ = response_client
-                            .publish(
-                                Subject::from(response_subject.clone()),
-                                response_data.into(),
-                            )
-                            .await;
+                        if let Ok(response) = response_result
+                            && let Ok(response_data) = sonic_rs::to_vec(&response)
+                            && let Err(e) = response_client
+                                .publish(
+                                    Subject::from(response_subject.clone()),
+                                    response_data.into(),
+                                )
+                                .await
+                        {
+                            warn!("Failed to publish response: {}", e);
+                        }
+                        metrics_request.record_processed();
+                    }
+                    Err(e) => {
+                        metrics_request.record_parse_error();
+                        let payload_preview =
+                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                        error!(
+                            "Failed to parse request message: {} - payload preview: {}",
+                            e, payload_preview
+                        );
                     }
                 }
             }
+            warn!("Request subscription ended unexpectedly");
         });
 
         // Spawn a task to handle response messages
         let response_handler = handlers.on_response.clone();
         tokio::spawn(async move {
             while let Some(msg) = response_subscription.next().await {
-                if let Ok(response) = serde_json::from_slice::<ResponseBody>(&msg.payload) {
-                    response_handler(response).await;
+                metrics_response.record_received();
+                match sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
+                    Ok(response) => {
+                        response_handler(response).await;
+                        metrics_response.record_processed();
+                    }
+                    Err(e) => {
+                        metrics_response.record_parse_error();
+                        let payload_preview =
+                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                        error!(
+                            "Failed to parse response message: {} - payload preview: {}",
+                            e, payload_preview
+                        );
+                    }
                 }
             }
+            warn!("Response subscription ended unexpectedly");
         });
 
         Ok(())

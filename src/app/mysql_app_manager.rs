@@ -7,7 +7,10 @@ use crate::token::Token;
 use crate::webhook::types::Webhook;
 use crate::websocket::SocketId;
 use async_trait::async_trait;
+use futures_util::{StreamExt, stream};
+use moka::future::Cache;
 use sqlx::{MySqlPool, mysql::MySqlPoolOptions};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
@@ -16,6 +19,7 @@ use tracing::{debug, error, info, warn};
 pub struct MySQLAppManager {
     config: DatabaseConnection,
     pool: MySqlPool,
+    app_cache: Cache<String, App>, // App ID -> App
 }
 
 impl MySQLAppManager {
@@ -53,7 +57,18 @@ impl MySQLAppManager {
             .await
             .map_err(|e| Error::Internal(format!("Failed to connect to MySQL: {e}")))?;
 
-        let manager = Self { config, pool };
+        // Initialize cache
+        let app_cache = Cache::builder()
+            .time_to_live(Duration::from_secs(config.cache_ttl))
+            .max_capacity(config.cache_max_capacity)
+            // Add other options like time_to_idle if needed
+            .build();
+
+        let manager = Self {
+            config,
+            pool,
+            app_cache,
+        };
 
         manager.ensure_table_exists().await?;
 
@@ -166,6 +181,7 @@ impl MySQLAppManager {
             ("allowed_origins", "JSON NULL"),
             ("enable_watchlist_events", "BOOLEAN NULL"),
             ("webhooks", "JSON NULL"),
+            ("channel_delta_compression", "JSON NULL"),
         ];
 
         for (column_name, column_type) in columns_to_add {
@@ -182,7 +198,13 @@ impl MySQLAppManager {
 
     /// Get an app by ID from cache or database
     pub async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
-        debug!("Fetching app {} from database", app_id);
+        // Try to get from cache first
+        if let Some(app) = self.app_cache.get(app_id).await {
+            return Ok(Some(app));
+        }
+
+        // Not in cache or expired, fetch from database
+        debug!("Cache miss for app {}, fetching from database", app_id);
 
         // Use a query_as that matches your App struct
         // Create the query with the correct table name
@@ -220,12 +242,28 @@ impl MySQLAppManager {
                 Error::Internal(format!("Failed to fetch app from MySQL: {e}"))
             })?;
 
-        Ok(app_result.map(|row| row.into_app()))
+        if let Some(app_row) = app_result {
+            // Convert to App
+            let app = app_row.into_app();
+
+            // Update cache
+            self.app_cache.insert(app_id.to_string(), app.clone()).await;
+
+            Ok(Some(app))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Get an app by key from cache or database
     pub async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
-        debug!("Fetching app by key {} from database", key);
+        // Check cache first
+        if let Some(app) = self.app_cache.get(key).await {
+            return Ok(Some(app));
+        }
+
+        // Not found in cache, query database
+        debug!("Cache miss for app key {}, fetching from database", key);
 
         let query = format!(
             r#"SELECT
@@ -261,7 +299,17 @@ impl MySQLAppManager {
                 Error::Internal(format!("Failed to fetch app from MySQL: {e}"))
             })?;
 
-        Ok(app_result.map(|row| row.into_app()))
+        if let Some(app_row) = app_result {
+            let app = app_row.into_app();
+
+            // Update cache with this app
+            let app_id = app.id.clone();
+            self.app_cache.insert(app_id, app.clone()).await;
+
+            Ok(Some(app.clone()))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Register a new app in the database
@@ -312,6 +360,9 @@ impl MySQLAppManager {
                 );
                 Error::Internal(format!("Failed to insert app into MySQL: {e}"))
             })?;
+
+        // Update cach
+        self.app_cache.insert(app.id.clone(), app).await;
 
         Ok(())
     }
@@ -369,6 +420,9 @@ impl MySQLAppManager {
             return Err(Error::InvalidAppKey);
         }
 
+        // Update cache
+        self.app_cache.insert(app.id.clone(), app).await;
+
         Ok(())
     }
 
@@ -394,6 +448,9 @@ impl MySQLAppManager {
         if result.rows_affected() == 0 {
             return Err(Error::InvalidAppKey);
         }
+
+        // Remove from cache
+        self.app_cache.remove(app_id).await;
 
         Ok(())
     }
@@ -434,9 +491,38 @@ impl MySQLAppManager {
                 Error::Internal(format!("Failed to fetch apps from MySQL: {e}"))
             })?;
 
-        let apps: Vec<App> = app_rows.into_iter().map(|row| row.into_app()).collect();
+        warn!(
+            "{}",
+            format!("Fetched {} app rows from database.", app_rows.len())
+        );
 
-        debug!("Fetched {} apps from database", apps.len());
+        // Process rows concurrently using streams:
+        // 1. Convert iterator to stream
+        // 2. Map each row to an async block that converts, caches, and returns the App
+        // 3. Buffer the async operations for concurrency
+        // 4. Collect the results (Apps) into a Vec
+        let apps = stream::iter(app_rows)
+            .map(|row| async {
+                let app = row.into_app(); // Convert row to App struct
+                let app_arc = Arc::new(app.clone()); // Create Arc for caching
+
+                // Insert the Arc<App> into the cache
+                // Note: insert takes key by value, so clone app_arc.id
+                self.app_cache.insert(app_arc.id.clone(), app.clone()).await;
+
+                // Return the owned App for the final Vec<App>
+                app
+            })
+            // Execute up to N futures concurrently (e.g., based on pool size)
+            // Adjust buffer size as needed. Using connection_pool_size might be reasonable.
+            .buffer_unordered(self.config.connection_pool_size as usize)
+            .collect::<Vec<App>>() // Collect the resulting Apps
+            .await; // Await the stream processing
+
+        info!(
+            "{}",
+            format!("Finished processing and caching {} apps.", apps.len())
+        );
 
         Ok(apps)
     }
@@ -453,10 +539,7 @@ impl MySQLAppManager {
         signature: &str,
         body: &str,
     ) -> Result<bool> {
-        let app = self
-            .find_by_id(app_id)
-            .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
+        let app = self.find_by_id(app_id).await?.ok_or(Error::InvalidAppKey)?;
 
         let token = Token::new(app.key.clone(), app.secret.clone());
         let expected = token.sign(body);
@@ -466,10 +549,7 @@ impl MySQLAppManager {
 
     /// Validate if a channel name is valid for an app
     pub async fn validate_channel_name(&self, app_id: &str, channel: &str) -> Result<()> {
-        let app = self
-            .find_by_id(app_id)
-            .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
+        let app = self.find_by_id(app_id).await?.ok_or(Error::InvalidAppKey)?;
 
         let max_length = app.max_channel_name_length.unwrap_or(200);
         if channel.len() > max_length as usize {
@@ -514,7 +594,7 @@ impl MySQLAppManager {
         let app = self
             .find_by_key(app_key)
             .await?
-            .ok_or_else(|| Error::InvalidAppKey)?;
+            .ok_or(Error::InvalidAppKey)?;
 
         // Create string to sign: socket_id
         let string_to_sign = format!("{socket_id}::user::{signature}");
@@ -578,6 +658,7 @@ impl AppRow {
             webhooks: self.webhooks,
             enable_watchlist_events: self.enable_watchlist_events,
             allowed_origins: self.allowed_origins,
+            channel_delta_compression: None, // Delta compression config not stored in DB
         }
     }
 }
@@ -641,6 +722,7 @@ impl Clone for MySQLAppManager {
         Self {
             config: self.config.clone(),
             pool: self.pool.clone(),
+            app_cache: self.app_cache.clone(),
         }
     }
 }
@@ -648,6 +730,7 @@ impl Clone for MySQLAppManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     // Helper to create a test app
     fn create_test_app(id: &str) -> App {
@@ -672,28 +755,24 @@ mod tests {
             webhooks: None,
             enable_watchlist_events: None,
             allowed_origins: None,
+            channel_delta_compression: None,
         }
     }
 
     async fn is_mysql_available() -> bool {
-        let config = get_test_db_config("applications").await;
+        let config = DatabaseConnection {
+            username: "sockudo".to_string(),
+            password: "sockudo123".to_string(),
+            database: "sockudo".to_string(),
+            table_name: "applications".to_string(),
+            cache_ttl: 5,
+            port: 13306,
+            ..Default::default()
+        };
 
         MySQLAppManager::new(config, DatabasePooling::default())
             .await
             .is_ok()
-    }
-
-    // Helper to create test database config using centralized config system
-    async fn get_test_db_config(table_name: &str) -> DatabaseConnection {
-        let mut config = crate::options::ServerOptions::default();
-        config
-            .override_from_env()
-            .await
-            .expect("Failed to load config from env");
-
-        let mut db_config = config.database.mysql.clone();
-        db_config.table_name = table_name.to_string();
-        db_config
     }
 
     #[tokio::test]
@@ -704,8 +783,16 @@ mod tests {
             return;
         }
 
-        // Setup test database using centralized config system
-        let config = get_test_db_config("applications").await;
+        // Setup test database with proper credentials for Docker MySQL dev environment
+        let config = DatabaseConnection {
+            username: "sockudo".to_string(),
+            password: "sockudo123".to_string(),
+            database: "sockudo".to_string(),
+            table_name: "applications".to_string(),
+            cache_ttl: 5, // Short TTL for testing
+            port: 13306,
+            ..Default::default()
+        };
 
         // Create manager
         let manager = MySQLAppManager::new(config, DatabasePooling::default())
@@ -732,6 +819,9 @@ mod tests {
 
         let app = manager.find_by_id("test1").await.unwrap().unwrap();
         assert_eq!(app.max_connections, 200);
+
+        // Test cache expiration
+        tokio::time::sleep(Duration::from_secs(6)).await;
 
         // Add another app
         let test_app2 = create_test_app("test2");

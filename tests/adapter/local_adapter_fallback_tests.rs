@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 /// Test that LocalAdapter gracefully handles cluster health configuration
 #[tokio::test]
 async fn test_local_adapter_cluster_health_disabled() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
 
     // LocalAdapter should not support cluster health, but should not panic
     // when these methods are called (they should be no-ops or return appropriate errors)
@@ -19,7 +19,7 @@ async fn test_local_adapter_cluster_health_disabled() {
     // These operations should work normally with local adapter
     let app_id = "test-app";
     let channel = "presence-local-test";
-    let socket_id = SocketId("socket-123".to_string());
+    let socket_id = SocketId::from_string("socket-123").unwrap();
 
     // Add to channel should work
     let added = adapter
@@ -64,7 +64,7 @@ async fn test_local_adapter_no_horizontal_interface() {
     // adapter.broadcast_presence_leave("app", "channel", "user", "socket").await;
 
     // Instead, LocalAdapter should work purely locally
-    let mut local_adapter = adapter;
+    let local_adapter = adapter;
     local_adapter.init().await;
 
     // Local operations should work fine
@@ -77,16 +77,16 @@ async fn test_local_adapter_no_horizontal_interface() {
 /// Test LocalAdapter with presence operations
 #[tokio::test]
 async fn test_local_adapter_presence_operations() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app_id = "test-app";
     let channel = "presence-local-channel";
 
     // Add multiple sockets
-    let socket1 = SocketId("socket-1".to_string());
-    let socket2 = SocketId("socket-2".to_string());
-    let socket3 = SocketId("socket-3".to_string());
+    let socket1 = SocketId::from_string("socket-1").unwrap();
+    let socket2 = SocketId::from_string("socket-2").unwrap();
+    let socket3 = SocketId::from_string("socket-3").unwrap();
 
     adapter
         .add_to_channel(app_id, channel, &socket1)
@@ -147,7 +147,7 @@ async fn test_local_adapter_fallback_from_failed_distributed_adapter() {
     };
 
     // Create local adapter as fallback
-    let mut fallback_adapter = LocalAdapter::new();
+    let fallback_adapter = LocalAdapter::new();
     fallback_adapter.init().await;
 
     // Local adapter should work even when cluster health config is available
@@ -155,7 +155,7 @@ async fn test_local_adapter_fallback_from_failed_distributed_adapter() {
 
     let app_id = "fallback-app";
     let channel = "fallback-channel";
-    let socket_id = SocketId("fallback-socket".to_string());
+    let socket_id = SocketId::from_string("fallback-socket").unwrap();
 
     // Basic operations should still work
     fallback_adapter
@@ -182,14 +182,14 @@ async fn test_local_adapter_fallback_from_failed_distributed_adapter() {
 /// Test LocalAdapter multi-app isolation
 #[tokio::test]
 async fn test_local_adapter_app_isolation() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app1 = "app-1";
     let app2 = "app-2";
     let channel = "shared-channel-name";
-    let socket1 = SocketId("socket-app1".to_string());
-    let socket2 = SocketId("socket-app2".to_string());
+    let socket1 = SocketId::from_string("socket-app1").unwrap();
+    let socket2 = SocketId::from_string("socket-app2").unwrap();
 
     // Add sockets to same channel name but different apps
     adapter
@@ -241,7 +241,7 @@ async fn test_local_adapter_concurrent_operations() {
     let adapter = Arc::new(Mutex::new(LocalAdapter::new()));
 
     {
-        let mut adapter_guard = adapter.lock().await;
+        let adapter_guard = adapter.lock().await;
         adapter_guard.init().await;
     }
 
@@ -256,8 +256,8 @@ async fn test_local_adapter_concurrent_operations() {
         let socket_id = format!("socket-{}", i);
 
         let handle = tokio::spawn(async move {
-            let mut adapter_guard = adapter_clone.lock().await;
-            let socket = SocketId(socket_id);
+            let adapter_guard = adapter_clone.lock().await;
+            let socket = SocketId::from_string(&socket_id).unwrap();
 
             // Add to channel
             adapter_guard
@@ -288,7 +288,7 @@ async fn test_local_adapter_concurrent_operations() {
 
     // Final count should be 0
     let final_count = {
-        let mut adapter_guard = adapter.lock().await;
+        let adapter_guard = adapter.lock().await;
         adapter_guard
             .get_channel_socket_count(app_id, channel)
             .await
@@ -303,7 +303,7 @@ async fn test_local_adapter_concurrent_operations() {
 /// Test LocalAdapter memory cleanup
 #[tokio::test]
 async fn test_local_adapter_memory_cleanup() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app_id = "cleanup-app";
@@ -312,7 +312,7 @@ async fn test_local_adapter_memory_cleanup() {
     // Add sockets to multiple channels
     for (i, channel) in channels.iter().enumerate() {
         for j in 0..5 {
-            let socket_id = SocketId(format!("socket-{}-{}", i, j));
+            let socket_id = SocketId::from_string(&format!("socket-{}-{}", i, j)).unwrap();
             adapter
                 .add_to_channel(app_id, channel, &socket_id)
                 .await
@@ -328,7 +328,7 @@ async fn test_local_adapter_memory_cleanup() {
 
     // Remove all sockets from one channel
     for j in 0..5 {
-        let socket_id = SocketId(format!("socket-0-{}", j));
+        let socket_id = SocketId::from_string(&format!("socket-0-{}", j)).unwrap();
         adapter
             .remove_from_channel(app_id, channels[0], &socket_id)
             .await
@@ -360,13 +360,13 @@ async fn test_local_adapter_with_custom_buffer() {
     // Adapter should be created successfully with custom buffer
     // The buffer size affects internal capacity but doesn't change the API behavior
 
-    let mut local_adapter = adapter;
+    let local_adapter = adapter;
     local_adapter.init().await;
 
     // Should work the same as default adapter
     let app_id = "buffer-test-app";
     let channel = "buffer-test-channel";
-    let socket_id = SocketId("buffer-socket".to_string());
+    let socket_id = SocketId::from_string("buffer-socket").unwrap();
 
     local_adapter
         .add_to_channel(app_id, channel, &socket_id)
@@ -383,12 +383,12 @@ async fn test_local_adapter_with_custom_buffer() {
 /// Test LocalAdapter error handling
 #[tokio::test]
 async fn test_local_adapter_error_handling() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app_id = "error-test-app";
     let channel = "error-test-channel";
-    let socket_id = SocketId("error-socket".to_string());
+    let socket_id = SocketId::from_string("error-socket").unwrap();
 
     // Try to remove from non-existent channel
     let removed = adapter
@@ -434,7 +434,7 @@ async fn test_local_adapter_error_handling() {
 /// Test LocalAdapter large scale operations
 #[tokio::test]
 async fn test_local_adapter_large_scale() {
-    let mut adapter = LocalAdapter::new();
+    let adapter = LocalAdapter::new();
     adapter.init().await;
 
     let app_id = "scale-test-app";
@@ -446,7 +446,7 @@ async fn test_local_adapter_large_scale() {
         let channel = format!("channel-{}", c);
 
         for s in 0..sockets_per_channel {
-            let socket_id = SocketId(format!("socket-{}-{}", c, s));
+            let socket_id = SocketId::from_string(&format!("socket-{}-{}", c, s)).unwrap();
             adapter
                 .add_to_channel(app_id, &channel, &socket_id)
                 .await
@@ -477,8 +477,7 @@ async fn test_local_adapter_large_scale() {
         num_channels
     );
 
-    for item in channels_with_counts.iter() {
-        let count = item.value();
+    for (_channel_name, count) in &channels_with_counts {
         assert_eq!(
             *count, sockets_per_channel,
             "Each channel should have {} sockets",
@@ -491,7 +490,7 @@ async fn test_local_adapter_large_scale() {
         let channel = format!("channel-{}", c);
 
         for s in 0..(sockets_per_channel / 2) {
-            let socket_id = SocketId(format!("socket-{}-{}", c, s));
+            let socket_id = SocketId::from_string(&format!("socket-{}-{}", c, s)).unwrap();
             adapter
                 .remove_from_channel(app_id, &channel, &socket_id)
                 .await

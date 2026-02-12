@@ -1,0 +1,188 @@
+services:
+  # Redis Cluster nodes (minimum 6 for 3 masters + 3 replicas)
+  redis-node-1:
+    image: redis:7-alpine
+    command: redis-server --port 7001 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --cluster-announce-ip redis-node-1 --cluster-announce-port 7001
+    ports:
+      - "7001:7001"
+    networks:
+      - redis-cluster-net
+    volumes:
+      - redis-node-1-data:/data
+
+  redis-node-2:
+    image: redis:7-alpine
+    command: redis-server --port 7002 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --cluster-announce-ip redis-node-2 --cluster-announce-port 7002
+    ports:
+      - "7002:7002"
+    networks:
+      - redis-cluster-net
+    volumes:
+      - redis-node-2-data:/data
+
+  redis-node-3:
+    image: redis:7-alpine
+    command: redis-server --port 7003 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --cluster-announce-ip redis-node-3 --cluster-announce-port 7003
+    ports:
+      - "7003:7003"
+    networks:
+      - redis-cluster-net
+    volumes:
+      - redis-node-3-data:/data
+
+  redis-node-4:
+    image: redis:7-alpine
+    command: redis-server --port 7004 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --cluster-announce-ip redis-node-4 --cluster-announce-port 7004
+    ports:
+      - "7004:7004"
+    networks:
+      - redis-cluster-net
+    volumes:
+      - redis-node-4-data:/data
+
+  redis-node-5:
+    image: redis:7-alpine
+    command: redis-server --port 7005 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --cluster-announce-ip redis-node-5 --cluster-announce-port 7005
+    ports:
+      - "7005:7005"
+    networks:
+      - redis-cluster-net
+    volumes:
+      - redis-node-5-data:/data
+
+  redis-node-6:
+    image: redis:7-alpine
+    command: redis-server --port 7006 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --cluster-announce-ip redis-node-6 --cluster-announce-port 7006
+    ports:
+      - "7006:7006"
+    networks:
+      - redis-cluster-net
+    volumes:
+      - redis-node-6-data:/data
+
+  # Cluster initializer - creates the cluster after all nodes are up
+  redis-cluster-init:
+    image: redis:7-alpine
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+      - redis-node-4
+      - redis-node-5
+      - redis-node-6
+    networks:
+      - redis-cluster-net
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sleep 5
+        echo 'Creating Redis Cluster...'
+        redis-cli --cluster create redis-node-1:7001 redis-node-2:7002 redis-node-3:7003 redis-node-4:7004 redis-node-5:7005 redis-node-6:7006 --cluster-replicas 1 --cluster-yes
+        echo 'Redis Cluster created successfully!'
+    restart: "no"
+
+  # Sockudo nodes using Redis Cluster adapter - build from Dockerfile
+  sockudo-node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DEBUG: "true"
+      ADAPTER_DRIVER: "redis-cluster"
+      REDIS_CLUSTER_NODES: "redis://redis-node-1:7001,redis://redis-node-2:7002,redis://redis-node-3:7003,redis://redis-node-4:7004,redis://redis-node-5:7005,redis://redis-node-6:7006"
+      ADAPTER_PREFIX: "sockudo:"
+      ADAPTER_REQUEST_TIMEOUT: "3000"
+      PORT: "6002"
+      HOST: "0.0.0.0"
+      METRICS_ENABLED: "true"
+      METRICS_PORT: "9602"
+      APP_MANAGER_DRIVER: "memory"
+      CACHE_DRIVER: "memory"
+      QUEUE_DRIVER: "memory"
+      RATE_LIMITER_DRIVER: "memory"
+      TAG_FILTERING_ENABLED: "true"
+      SHUTDOWN_GRACE_PERIOD: "1"
+      SOCKUDO_DEFAULT_APP_ID: "test-app"
+      SOCKUDO_DEFAULT_APP_KEY: "test-key"
+      SOCKUDO_DEFAULT_APP_SECRET: "test-secret"
+    ports:
+      - "6002:6002"
+      - "9602:9602"
+    networks:
+      - redis-cluster-net
+    depends_on:
+      - redis-cluster-init
+
+  sockudo-node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DEBUG: "true"
+      ADAPTER_DRIVER: "redis-cluster"
+      REDIS_CLUSTER_NODES: "redis://redis-node-1:7001,redis://redis-node-2:7002,redis://redis-node-3:7003,redis://redis-node-4:7004,redis://redis-node-5:7005,redis://redis-node-6:7006"
+      ADAPTER_PREFIX: "sockudo:"
+      ADAPTER_REQUEST_TIMEOUT: "3000"
+      PORT: "6003"
+      HOST: "0.0.0.0"
+      METRICS_ENABLED: "true"
+      METRICS_PORT: "9603"
+      APP_MANAGER_DRIVER: "memory"
+      CACHE_DRIVER: "memory"
+      QUEUE_DRIVER: "memory"
+      RATE_LIMITER_DRIVER: "memory"
+      TAG_FILTERING_ENABLED: "true"
+      SHUTDOWN_GRACE_PERIOD: "1"
+      SOCKUDO_DEFAULT_APP_ID: "test-app"
+      SOCKUDO_DEFAULT_APP_KEY: "test-key"
+      SOCKUDO_DEFAULT_APP_SECRET: "test-secret"
+    ports:
+      - "6003:6003"
+      - "9603:9603"
+    networks:
+      - redis-cluster-net
+    depends_on:
+      - redis-cluster-init
+
+  sockudo-node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DEBUG: "true"
+      ADAPTER_DRIVER: "redis-cluster"
+      REDIS_CLUSTER_NODES: "redis://redis-node-1:7001,redis://redis-node-2:7002,redis://redis-node-3:7003,redis://redis-node-4:7004,redis://redis-node-5:7005,redis://redis-node-6:7006"
+      ADAPTER_PREFIX: "sockudo:"
+      ADAPTER_REQUEST_TIMEOUT: "3000"
+      PORT: "6004"
+      HOST: "0.0.0.0"
+      METRICS_ENABLED: "true"
+      METRICS_PORT: "9604"
+      APP_MANAGER_DRIVER: "memory"
+      CACHE_DRIVER: "memory"
+      QUEUE_DRIVER: "memory"
+      RATE_LIMITER_DRIVER: "memory"
+      TAG_FILTERING_ENABLED: "true"
+      SHUTDOWN_GRACE_PERIOD: "1"
+      SOCKUDO_DEFAULT_APP_ID: "test-app"
+      SOCKUDO_DEFAULT_APP_KEY: "test-key"
+      SOCKUDO_DEFAULT_APP_SECRET: "test-secret"
+    ports:
+      - "6004:6004"
+      - "9604:9604"
+    networks:
+      - redis-cluster-net
+    depends_on:
+      - redis-cluster-init
+
+networks:
+  redis-cluster-net:
+    driver: bridge
+
+volumes:
+  redis-node-1-data:
+  redis-node-2-data:
+  redis-node-3-data:
+  redis-node-4-data:
+  redis-node-5-data:
+  redis-node-6-data:

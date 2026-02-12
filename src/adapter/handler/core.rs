@@ -5,10 +5,11 @@ use crate::app::config::App;
 use crate::channel::ChannelManager;
 use crate::cleanup::{AuthInfo, ConnectionCleanupInfo, DisconnectTask};
 use crate::error::{Error, Result};
-use crate::presence::PresenceManager;
+
 use crate::protocol::messages::{ErrorData, MessageData, PusherMessage};
 use crate::websocket::SocketId;
-use serde_json::Value;
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,7 +22,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
     ) -> Result<()> {
         let connection_message = PusherMessage::connection_established(
-            socket_id.as_ref().to_string(),
+            socket_id.to_string(),
             self.server_options.activity_timeout,
         );
         self.send_message_to_socket(app_id, socket_id, connection_message)
@@ -56,10 +57,17 @@ impl ConnectionHandler {
         // Get user ID before unsubscribing (for presence channels)
         let user_id = self.get_user_id_for_socket(socket_id, app_config).await?;
 
+        // CRITICAL: Clear delta compression state BEFORE unsubscribing from channel.
+        // This prevents race condition where a message broadcast arrives between unsubscribe
+        // and clear_channel_state, which would send a delta based on stale state.
+        // By clearing first, any in-flight messages will be sent as FULL (no base state).
+        self.delta_compression
+            .clear_channel_state(socket_id, &channel_name);
+
         // Perform unsubscription through channel manager
         ChannelManager::unsubscribe(
             &self.connection_manager,
-            socket_id.as_ref(),
+            &socket_id.to_string(),
             &channel_name,
             &app_config.id,
             user_id.as_deref(),
@@ -73,8 +81,6 @@ impl ConnectionHandler {
         // Get current subscription count after unsubscribe
         let current_sub_count = self
             .connection_manager
-            .lock()
-            .await
             .get_channel_socket_count(&app_config.id, &channel_name)
             .await;
 
@@ -105,16 +111,17 @@ impl ConnectionHandler {
         // Handle presence channel member removal
         if channel_name.starts_with("presence-") {
             if let Some(user_id_str) = user_id {
-                // Use centralized presence member removal logic
-                PresenceManager::handle_member_removed(
-                    &self.connection_manager,
-                    self.webhook_integration.as_ref(),
-                    app_config,
-                    &channel_name,
-                    &user_id_str,
-                    Some(socket_id),
-                )
-                .await?;
+                // Use centralized presence member removal logic (instance method for race safety)
+                self.presence_manager
+                    .handle_member_removed(
+                        &self.connection_manager,
+                        self.webhook_integration.as_ref(),
+                        app_config,
+                        &channel_name,
+                        &user_id_str,
+                        Some(socket_id),
+                    )
+                    .await?;
             }
         } else {
             // Send subscription count webhook for non-presence channels
@@ -144,26 +151,41 @@ impl ConnectionHandler {
         const CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS: u64 = 30;
 
         if let Some(ref cleanup_queue) = self.cleanup_queue {
-            let failures = self.cleanup_consecutive_failures.load(Ordering::Relaxed);
+            // FIX: Use Acquire ordering for reads and Release for writes to ensure
+            // proper memory ordering across threads
+            let failures = self.cleanup_consecutive_failures.load(Ordering::Acquire);
 
             if failures > MAX_CONSECUTIVE_FAILURES {
                 // Circuit breaker is open - check if we should try recovery
                 let opened_at = self
                     .cleanup_circuit_breaker_opened_at
-                    .load(Ordering::Relaxed);
+                    .load(Ordering::Acquire);
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
 
                 if opened_at == 0 {
-                    // First time hitting the limit - record when circuit breaker opened
-                    self.cleanup_circuit_breaker_opened_at
-                        .store(current_time, Ordering::Relaxed);
-                    warn!(
-                        "Circuit breaker opened: too many cleanup failures ({}), disabling async cleanup for {} seconds",
-                        failures, CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS
-                    );
+                    // FIX: Use compare_exchange to atomically set the opened_at time
+                    // Only one thread should "open" the circuit breaker
+                    match self.cleanup_circuit_breaker_opened_at.compare_exchange(
+                        0,
+                        current_time,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => {
+                            // We successfully opened the circuit breaker
+                            warn!(
+                                "Circuit breaker opened: too many cleanup failures ({}), disabling async cleanup for {} seconds",
+                                failures, CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS
+                            );
+                        }
+                        Err(_) => {
+                            // Another thread already opened it, that's fine
+                            debug!("Circuit breaker already opened by another thread");
+                        }
+                    }
                     return false;
                 } else if current_time >= opened_at + CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS {
                     // Time to try recovery - enter half-open state
@@ -202,11 +224,12 @@ impl ConnectionHandler {
             {
                 Ok(()) => {
                     // Success - reset both failure counter and circuit breaker state
+                    // FIX: Use Release ordering to ensure the reset is visible to other threads
                     let previous_failures =
-                        self.cleanup_consecutive_failures.swap(0, Ordering::Relaxed);
+                        self.cleanup_consecutive_failures.swap(0, Ordering::Release);
                     let was_circuit_breaker_open = self
                         .cleanup_circuit_breaker_opened_at
-                        .swap(0, Ordering::Relaxed);
+                        .swap(0, Ordering::Release);
 
                     if was_circuit_breaker_open > 0 {
                         info!(
@@ -219,9 +242,11 @@ impl ConnectionHandler {
                 }
                 Err(e) => {
                     // Failure - increment counter (circuit breaker logic handles the rest)
+                    // FIX: Use AcqRel ordering to ensure proper synchronization with
+                    // should_use_async_cleanup's reads
                     let new_failure_count = self
                         .cleanup_consecutive_failures
-                        .fetch_add(1, Ordering::Relaxed)
+                        .fetch_add(1, Ordering::AcqRel)
                         + 1;
                     warn!(
                         "Async cleanup failed for socket {} (failure #{}: {}), falling back to sync",
@@ -247,7 +272,7 @@ impl ConnectionHandler {
 
         // Step 1: Quick connection state capture (< 1ms)
         let disconnect_info = {
-            let mut connection_manager = self.connection_manager.lock().await;
+            let connection_manager = &self.connection_manager;
             let connection = connection_manager.get_connection(socket_id, app_id).await;
 
             if let Some(conn_ref) = connection {
@@ -262,12 +287,8 @@ impl ConnectionHandler {
                 // Set disconnecting flag atomically
                 conn_locked.state.disconnecting = true;
 
-                let channels: Vec<String> = conn_locked
-                    .state
-                    .subscribed_channels
-                    .iter()
-                    .cloned()
-                    .collect();
+                let channels: Vec<String> =
+                    conn_locked.state.get_subscribed_channels_list().to_vec();
                 let user_id = conn_locked.state.user_id.clone();
 
                 // Extract presence channel info for webhook processing
@@ -278,7 +299,7 @@ impl ConnectionHandler {
                     .collect();
 
                 Some(DisconnectTask {
-                    socket_id: socket_id.clone(),
+                    socket_id: *socket_id,
                     app_id: app_id.to_string(),
                     subscribed_channels: channels,
                     user_id: user_id.clone(),
@@ -316,6 +337,9 @@ impl ConnectionHandler {
             );
         }
 
+        // Step 3.5: MEMORY LEAK FIX - Clean up delta compression state for this socket
+        self.delta_compression.remove_socket(socket_id);
+
         // Step 4: Queue cleanup work (non-blocking)
         if let Some(task) = disconnect_info {
             if let Err(_send_error) = cleanup_queue.try_send(task) {
@@ -325,14 +349,17 @@ impl ConnectionHandler {
                     socket_id
                 );
 
-                // Reset the disconnecting flag since we're going to fall back to sync
-                // This ensures the sync cleanup can proceed properly
+                // FIX: Reset the disconnecting flag using proper lock (not try_lock) to ensure
+                // the flag is always reset before falling back to sync cleanup.
+                // Using try_lock() could fail and leave the flag stuck at true forever,
+                // preventing future cleanup attempts for this connection.
                 {
-                    let mut connection_manager = self.connection_manager.lock().await;
+                    let connection_manager = &self.connection_manager;
                     if let Some(conn_ref) =
                         connection_manager.get_connection(socket_id, app_id).await
-                        && let Ok(mut conn_locked) = conn_ref.inner.try_lock()
                     {
+                        // Use .lock().await instead of try_lock() to guarantee we reset the flag
+                        let mut conn_locked = conn_ref.inner.lock().await;
                         conn_locked.state.disconnecting = false;
                     }
                 }
@@ -364,7 +391,7 @@ impl ConnectionHandler {
         // This is the original synchronous implementation
         // Check if already disconnecting and set flag atomically
         let conn = {
-            let mut connection_manager = self.connection_manager.lock().await;
+            let connection_manager = &self.connection_manager;
             connection_manager.get_connection(socket_id, app_id).await
         };
 
@@ -404,6 +431,9 @@ impl ConnectionHandler {
                 socket_id
             );
         }
+
+        // MEMORY LEAK FIX: Clean up delta compression state for this socket
+        self.delta_compression.remove_socket(socket_id);
 
         // Get app configuration
         let app_config = match self.app_manager.find_by_id(app_id).await? {
@@ -466,7 +496,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
     ) -> Result<(HashSet<String>, Option<String>, Option<Vec<String>>)> {
-        let mut connection_manager = self.connection_manager.lock().await;
+        let connection_manager = &self.connection_manager;
         match connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
@@ -484,7 +514,11 @@ impl ConnectionHandler {
                     .and_then(|ui| ui.watchlist.clone());
 
                 Ok((
-                    conn_locked.state.subscribed_channels.clone(),
+                    conn_locked
+                        .state
+                        .get_subscribed_channels_list()
+                        .into_iter()
+                        .collect(),
                     conn_locked.state.user_id.clone(),
                     watchlist,
                 ))
@@ -519,7 +553,13 @@ impl ConnectionHandler {
         // Prepare batch operations for all channels
         let operations: Vec<(String, String, String)> = subscribed_channels
             .iter()
-            .map(|channel| (socket_id.0.clone(), channel.clone(), app_config.id.clone()))
+            .map(|channel| {
+                (
+                    socket_id.to_string(),
+                    channel.clone(),
+                    app_config.id.clone(),
+                )
+            })
             .collect();
 
         match ChannelManager::batch_unsubscribe(&self.connection_manager, operations).await {
@@ -569,17 +609,18 @@ impl ConnectionHandler {
     ) -> Result<()> {
         if channel_str.starts_with("presence-") {
             if let Some(disconnected_user_id) = user_id {
-                // Use centralized presence member removal logic
-                PresenceManager::handle_member_removed(
-                    &self.connection_manager,
-                    self.webhook_integration.as_ref(),
-                    app_config,
-                    channel_str,
-                    disconnected_user_id,
-                    Some(socket_id),
-                )
-                .await
-                .ok();
+                // Use centralized presence member removal logic (instance method for race safety)
+                self.presence_manager
+                    .handle_member_removed(
+                        &self.connection_manager,
+                        self.webhook_integration.as_ref(),
+                        app_config,
+                        channel_str,
+                        disconnected_user_id,
+                        Some(socket_id),
+                    )
+                    .await
+                    .ok();
             }
         } else {
             // Send subscription count webhook for non-presence channels
@@ -653,7 +694,7 @@ impl ConnectionHandler {
     }
 
     async fn cleanup_connection_from_manager(&self, socket_id: &SocketId, app_id: &str) {
-        let mut connection_manager = self.connection_manager.lock().await;
+        let connection_manager = &self.connection_manager;
 
         // Cleanup connection resources
         if let Some(conn_to_cleanup) = connection_manager.get_connection(socket_id, app_id).await {
@@ -697,7 +738,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         app_config: &App,
     ) -> Result<Option<String>> {
-        let mut connection_manager = self.connection_manager.lock().await;
+        let connection_manager = &self.connection_manager;
         if let Some(conn) = connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
@@ -715,11 +756,22 @@ impl ConnectionHandler {
         app_config: &App,
         channel_name: &str,
     ) -> Result<()> {
-        let mut connection_manager = self.connection_manager.lock().await;
+        let connection_manager = &self.connection_manager;
         if let Some(conn_arc) = connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
         {
+            // Remove from filter index for O(1) message routing (if local adapter is available)
+            if let Some(ref local_adapter) = self.local_adapter {
+                let filter_index = local_adapter.get_filter_index();
+                // Get the filter before removing it
+                let filter_node = conn_arc.get_channel_filter_sync(channel_name);
+                filter_index.remove_socket_filter(channel_name, *socket_id, filter_node.as_deref());
+            }
+
+            // Remove from WebSocketRef's channel_filters (lock-free)
+            conn_arc.channel_filters.remove(channel_name);
+
             let mut conn_locked = conn_arc.inner.lock().await;
             conn_locked.unsubscribe_from_channel(channel_name);
 
@@ -739,7 +791,7 @@ impl ConnectionHandler {
         channel_name: &str,
         user_id: &str,
     ) -> Result<bool> {
-        let mut connection_manager = self.connection_manager.lock().await;
+        let connection_manager = &self.connection_manager;
         let user_sockets = connection_manager.get_user_sockets(user_id, app_id).await?;
 
         for ws_ref in user_sockets.iter() {
@@ -764,7 +816,7 @@ impl ConnectionHandler {
             Ok(Some(cache_content)) => {
                 // Found cached content, send it to the socket
                 let cache_message: PusherMessage =
-                    serde_json::from_str(&cache_content).map_err(|e| {
+                    sonic_rs::from_str(&cache_content).map_err(|e| {
                         Error::InvalidMessageFormat(format!("Invalid cached message format: {e}"))
                     })?;
 
@@ -829,7 +881,7 @@ impl ConnectionHandler {
         let mut cache_manager = self.cache_manager.lock().await;
         let cache_key = format!("app:{app_id}:channel:{channel}:cache_miss");
 
-        let message_json = serde_json::to_string(message).map_err(|e| {
+        let message_json = sonic_rs::to_string(message).map_err(|e| {
             Error::InvalidMessageFormat(format!("Failed to serialize message for cache: {e}"))
         })?;
 
@@ -934,16 +986,18 @@ impl ConnectionHandler {
 
             // Process all members for this app
             for orphaned_member in members {
-                // Use PresenceManager to handle member removal
-                if let Err(e) = PresenceManager::handle_member_removed(
-                    &self.connection_manager,
-                    self.webhook_integration.as_ref(),
-                    &app_config,
-                    &orphaned_member.channel,
-                    &orphaned_member.user_id,
-                    None, // No excluding socket for dead node cleanup
-                )
-                .await
+                // Use PresenceManager to handle member removal (instance method for race safety)
+                if let Err(e) = self
+                    .presence_manager
+                    .handle_member_removed(
+                        &self.connection_manager,
+                        self.webhook_integration.as_ref(),
+                        &app_config,
+                        &orphaned_member.channel,
+                        &orphaned_member.user_id,
+                        None, // No excluding socket for dead node cleanup
+                    )
+                    .await
                 {
                     error!(
                         "Failed to handle member removal for user {} in channel {} (app: {}) during dead node cleanup: {}",

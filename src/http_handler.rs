@@ -9,6 +9,7 @@ use crate::protocol::messages::{
 };
 use crate::utils::{self, validate_channel_name};
 use crate::websocket::SocketId;
+use ahash::AHashMap;
 use axum::{
     Json,
     extract::{Path, Query, RawQuery, State}, // Added RawQuery
@@ -16,8 +17,10 @@ use axum::{
     response::{IntoResponse, Response as AxumResponse},
 };
 use futures_util::future::join_all;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use sonic_rs::prelude::*;
+use sonic_rs::{Value, json};
 use std::{
     collections::HashMap, // Added BTreeMap
     sync::Arc,
@@ -45,7 +48,7 @@ pub enum AppError {
     #[error("Internal Server Error: {0}")]
     InternalError(String),
     #[error("Serialization Error: {0}")]
-    SerializationError(#[from] serde_json::Error),
+    SerializationError(#[from] sonic_rs::Error),
     #[error("HTTP Header Build Error: {0}")]
     HeaderBuildError(#[from] axum::http::Error),
     #[error("Limit exceeded: {0}")]
@@ -129,24 +132,56 @@ pub struct EventQuery {
     pub auth_signature: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug)]
 pub struct ChannelQuery {
-    #[serde(default)]
     pub info: Option<String>,
-    // EventQuery fields are flattened here for GET requests that also need specific endpoint params
-    #[serde(flatten)]
     pub auth_params: EventQuery,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug)]
 pub struct ChannelsQuery {
-    #[serde(default)]
     pub filter_by_prefix: Option<String>,
-    #[serde(default)]
     pub info: Option<String>,
-    // EventQuery fields are flattened here
-    #[serde(flatten)]
     pub auth_params: EventQuery,
+}
+
+impl<'de> Deserialize<'de> for ChannelQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Flatten workaround for sonic-rs issue #114.
+        let mut obj = sonic_rs::Object::deserialize(deserializer)?;
+        let info = obj
+            .remove(&"info")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+        let auth_params: EventQuery = sonic_rs::from_value(&obj.into_value())
+            .map_err(|e| D::Error::custom(format!("invalid auth query params: {e}")))?;
+        Ok(Self { info, auth_params })
+    }
+}
+
+impl<'de> Deserialize<'de> for ChannelsQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Flatten workaround for sonic-rs issue #114.
+        let mut obj = sonic_rs::Object::deserialize(deserializer)?;
+        let filter_by_prefix = obj
+            .remove(&"filter_by_prefix")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+        let info = obj
+            .remove(&"info")
+            .and_then(|v| v.as_str().map(ToString::to_string));
+        let auth_params: EventQuery = sonic_rs::from_value(&obj.into_value())
+            .map_err(|e| D::Error::custom(format!("invalid auth query params: {e}")))?;
+        Ok(Self {
+            filter_by_prefix,
+            info,
+            auth_params,
+        })
+    }
 }
 
 // --- Response Structs ---
@@ -171,8 +206,8 @@ fn build_cache_payload(
     event_name: &str,
     event_data: &Value,
     channel: &str,
-) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&json!({
+) -> Result<String, sonic_rs::Error> {
+    sonic_rs::to_string(&json!({
         "event": event_name,
         "channel": channel,
         "data": event_data,
@@ -257,6 +292,8 @@ async fn process_single_event_parallel(
         channel,
         socket_id: original_socket_id_str, // Option<String>
         info,                              // Option<String>
+        tags,                              // Option<HashMap<String, String>>
+        delta: delta_flag,                 // Option<bool> - per-publish delta control
     } = event_data;
 
     // Validate and get the event name
@@ -291,7 +328,9 @@ async fn process_single_event_parallel(
     }
 
     // Map the original socket ID string to SocketId type
-    let mapped_socket_id: Option<SocketId> = original_socket_id_str.map(SocketId);
+    let mapped_socket_id: Option<SocketId> = original_socket_id_str
+        .as_ref()
+        .and_then(|s| SocketId::from_string(s).ok());
 
     // Determine the list of target channels for this event
     let target_channels: Vec<String> = match channels {
@@ -330,9 +369,16 @@ async fn process_single_event_parallel(
         // This is safe as `join_all` awaits futures within `app`'s lifetime.
         let name_for_task = name.clone(); // Option<String>
         let payload_for_task = event_payload_data.clone(); // Option<ApiMessageData>
-        let socket_id_for_task = mapped_socket_id.clone(); // Option<SocketId>
+        let socket_id_for_task = mapped_socket_id; // Option<SocketId>
         let info_for_task = info.clone(); // Option<String>
         let event_name_for_task = event_name_str.to_string(); // String
+        // Convert HashMap to BTreeMap for deterministic serialization order
+        // This is required for delta compression to work correctly
+        let tags_for_task: Option<std::collections::BTreeMap<String, String>> = tags
+            .clone()
+            .map(|h| h.into_iter().collect());
+        // Per-publish delta compression control
+        let delta_flag_for_task = delta_flag;
 
         async move {
             // This block processes a single channel.
@@ -343,9 +389,18 @@ async fn process_single_event_parallel(
             validate_channel_name(app, &target_channel_str).await?;
 
             // Construct the message to be sent to this specific channel.
+            // Pusher protocol requires data to be a STRING (containing JSON), not a nested object.
+            // This is critical for delta compression to work correctly - the client stores raw
+            // messages and computes deltas against them, so the wire format must be consistent.
             let message_data = match payload_for_task {
-                Some(ApiMessageData::String(s)) => MessageData::String(s),
-                Some(ApiMessageData::Json(j_val)) => MessageData::String(j_val.to_string()),
+                Some(ApiMessageData::String(s)) => {
+                    // Keep string data as-is - Pusher protocol expects data to be a string
+                    MessageData::String(s)
+                },
+                Some(ApiMessageData::Json(j_val)) => {
+                    // JSON objects must be stringified to match Pusher protocol
+                    MessageData::String(j_val.to_string())
+                },
                 None => MessageData::String("null".to_string()), // Default to "null" string if no data
             };
             let _message_to_send = PusherMessage {
@@ -354,24 +409,56 @@ async fn process_single_event_parallel(
                 event: name_for_task,
                 data: Some(message_data.clone()),
                 user_id: None,
+                tags: tags_for_task.clone(),
+                sequence: None,
+                conflation_key: None,
             };
             // Use the provided timestamp directly
             let timestamp_ms = start_time_ms;
-            handler_clone.broadcast_to_channel_with_timing(
-                app,
-                &target_channel_str,
-                _message_to_send,
-                socket_id_for_task.as_ref(),
-                timestamp_ms,
-            )
-                .await?;
+
+            // Use the appropriate broadcast method based on delta flag
+            match delta_flag_for_task {
+                Some(true) => {
+                    // Force delta compression for this message
+                    handler_clone.broadcast_to_channel_with_timing(
+                        app,
+                        &target_channel_str,
+                        _message_to_send,
+                        socket_id_for_task.as_ref(),
+                        timestamp_ms,
+                    )
+                    .await?;
+                }
+                Some(false) => {
+                    // Force full message (skip delta compression)
+                    handler_clone.broadcast_to_channel_force_full(
+                        app,
+                        &target_channel_str,
+                        _message_to_send,
+                        socket_id_for_task.as_ref(),
+                        timestamp_ms,
+                    )
+                    .await?;
+                }
+                None => {
+                    // Default behavior - use channel/global configuration
+                    handler_clone.broadcast_to_channel_with_timing(
+                        app,
+                        &target_channel_str,
+                        _message_to_send,
+                        socket_id_for_task.as_ref(),
+                        timestamp_ms,
+                    )
+                    .await?;
+                }
+            }
 
 
             // If info collection is requested, gather details for this channel.
             let mut collected_channel_specific_info: Option<(String, Value)> = None;
             if collect_info {
                 let is_presence = target_channel_str.starts_with("presence-");
-                let mut current_channel_info_map = serde_json::Map::new();
+                let mut current_channel_info_map = sonic_rs::Object::new();
 
                 // Get user count for presence channels if requested.
                 if is_presence && info_for_task.as_deref().is_some_and(|s| s.contains("user_count")) {
@@ -384,7 +471,7 @@ async fn process_single_event_parallel(
                     {
                         Ok(members_map) => {
                             current_channel_info_map
-                                .insert("user_count".to_string(), json!(members_map.len()));
+                                .insert("user_count", json!(members_map.len()));
                         }
                         Err(e) => {
                             warn!(
@@ -402,17 +489,15 @@ async fn process_single_event_parallel(
                 {
                     let count = handler_clone
                         .connection_manager
-                        .lock()
-                        .await
                         .get_channel_socket_count(&app.id, &target_channel_str)
                         .await;
-                    current_channel_info_map.insert("subscription_count".to_string(), json!(count));
+                    current_channel_info_map.insert("subscription_count", json!(count));
                 }
 
                 if !current_channel_info_map.is_empty() {
                     collected_channel_specific_info = Some((
                         target_channel_str.clone(),
-                        Value::Object(current_channel_info_map),
+                        current_channel_info_map.into_value(),
                     ));
                 }
             }
@@ -425,7 +510,7 @@ async fn process_single_event_parallel(
                 //     Some(ApiMessageData::Json(j_val)) => j_val, // Already a Value
                 //     None => json!(null),
                 // };
-                let message_data = serde_json::to_value(&message_data)
+                let message_data = sonic_rs::to_value(&message_data)
                     .map_err(AppError::SerializationError)?;
                 // Attempt to build the cache payload string.
                 match build_cache_payload(&event_name_for_task, &message_data, &target_channel_str) {
@@ -504,7 +589,7 @@ pub async fn events(
         / 1_000_000.0;
 
     // Calculate request size for metrics
-    let incoming_request_size_bytes = serde_json::to_vec(&event_payload)?.len();
+    let incoming_request_size_bytes = sonic_rs::to_vec(&event_payload)?.len();
 
     let app = handler
         .app_manager
@@ -532,7 +617,7 @@ pub async fn events(
     };
 
     // Calculate response size for metrics and record metrics
-    let outgoing_response_size_bytes = serde_json::to_vec(&response_payload)?.len();
+    let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
     record_api_metrics(
         &handler,
         &app_id,
@@ -561,11 +646,16 @@ pub async fn batch_events(
         .as_nanos() as f64
         / 1_000_000.0;
 
-    let body_bytes = serde_json::to_vec(&batch_message_payload)?;
+    let body_bytes = sonic_rs::to_vec(&batch_message_payload)?;
     let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
     tracing::Span::current().record("batch_len", batch_len);
     debug!("Received batch events request with {} events", batch_len);
+
+    // DEBUG: Check if tags are being sent
+    for (i, event) in batch_events_vec.iter().enumerate().take(3) {
+        debug!("Batch event #{}: tags={:?}", i, event.tags);
+    }
 
     // Fetch app configuration once.
     let app_config = handler
@@ -598,40 +688,28 @@ pub async fn batch_events(
         }
     }
 
-    // Create a collection of futures for processing each event in the batch.
-    let event_processing_futures = batch_events_vec.into_iter().map(|single_event_message| {
-        // Clone Arcs and capture references/owned data for the async task.
-        let handler_clone = Arc::clone(&handler);
-        let app_config_ref = &app_config; // Reference to app_config owned by batch_events
-        // single_event_message is moved into this closure, then cloned for process_single_event_parallel
+    // Process events SEQUENTIALLY to ensure proper delta compression state management.
+    // When multiple events in a batch target the same channel, concurrent processing would
+    // cause race conditions where all events compute deltas against the same base message,
+    // corrupting the delta chain. Sequential processing ensures each message's delta state
+    // is properly updated before the next message is processed.
+    let mut processed_event_data = Vec::with_capacity(batch_len);
 
-        async move {
-            let should_collect_info_for_this_event = single_event_message.info.is_some();
-            let channel_info_map = process_single_event_parallel(
-                &handler_clone,
-                app_config_ref,
-                single_event_message.clone(), // Clone for process_single_event_parallel
-                should_collect_info_for_this_event,
-                Some(start_time_ms),
-            )
-            .await?;
-            // Return the original message (for constructing response) and the processed info map
-            Ok((single_event_message, channel_info_map))
-        }
-    });
-
-    // Execute all event processing futures concurrently.
-    type EventResult = Result<(PusherApiMessage, HashMap<String, Value>), AppError>;
-
-    let results: Vec<EventResult> = join_all(event_processing_futures).await;
+    for single_event_message in batch_events_vec {
+        let should_collect_info_for_this_event = single_event_message.info.is_some();
+        let channel_info_map = process_single_event_parallel(
+            &handler,
+            &app_config,
+            single_event_message.clone(),
+            should_collect_info_for_this_event,
+            Some(start_time_ms),
+        )
+        .await?;
+        processed_event_data.push((single_event_message, channel_info_map));
+    }
 
     // Aggregate results and construct the batch response.
     let mut batch_response_info_vec = Vec::with_capacity(batch_len);
-    let mut processed_event_data = Vec::with_capacity(batch_len);
-
-    for result_item in results {
-        processed_event_data.push(result_item?); // Propagate the first error encountered.
-    }
 
     // Now, construct the response based on the successfully processed events.
     if any_message_requests_info {
@@ -664,7 +742,7 @@ pub async fn batch_events(
     };
 
     // Record metrics and return the response.
-    let outgoing_response_size_bytes_vec = serde_json::to_vec(&final_response_payload)?;
+    let outgoing_response_size_bytes_vec = sonic_rs::to_vec(&final_response_payload)?;
     record_api_metrics(
         &handler,
         &app_id,
@@ -699,13 +777,10 @@ pub async fn channel(
     let wants_user_count = info_query_str.wants_user_count();
     let wants_cache_data = info_query_str.wants_cache();
 
-    let socket_count_val;
-    {
-        let mut connection_manager_locked = handler.connection_manager.lock().await;
-        socket_count_val = connection_manager_locked
-            .get_channel_socket_count(&app_id, &channel_name)
-            .await;
-    }
+    let socket_count_val = handler
+        .connection_manager
+        .get_channel_socket_count(&app_id, &channel_name)
+        .await;
 
     let user_count_val = if wants_user_count {
         if channel_name.starts_with("presence-") {
@@ -754,7 +829,7 @@ pub async fn channel(
         user_count_val,
         cache_data_tuple,
     );
-    let response_json_bytes = serde_json::to_vec(&response_payload)?;
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     debug!("Channel info for '{}' retrieved successfully", channel_name);
     Ok((StatusCode::OK, Json(response_payload)))
@@ -782,22 +857,18 @@ pub async fn channels(
         .await?
         .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
-    let channels_map;
-    {
-        let mut connection_manager_locked = handler.connection_manager.lock().await;
-        channels_map = connection_manager_locked
-            .get_channels_with_socket_count(&app_id)
-            .await?;
-    }
+    let channels_map = handler
+        .connection_manager
+        .get_channels_with_socket_count(&app_id)
+        .await?;
 
-    let mut channels_info_response_map = HashMap::new();
-    for entry in channels_map.iter() {
-        let channel_name_str = entry.key();
+    let mut channels_info_response_map = AHashMap::new();
+    for (channel_name_str, _socket_count) in &channels_map {
         if !channel_name_str.starts_with(filter_prefix_str) {
             continue;
         }
         validate_channel_name(&app, channel_name_str).await?;
-        let mut current_channel_info_map = serde_json::Map::new();
+        let mut current_channel_info_map = sonic_rs::Object::new();
         if wants_user_count {
             if channel_name_str.starts_with("presence-") {
                 let members_map = ChannelManager::get_channel_members(
@@ -806,7 +877,7 @@ pub async fn channels(
                     channel_name_str,
                 )
                 .await?;
-                current_channel_info_map.insert("user_count".to_string(), json!(members_map.len()));
+                current_channel_info_map.insert("user_count", json!(members_map.len()));
             } else if !filter_prefix_str.starts_with("presence-") {
                 return Err(AppError::InvalidInput(
                     "user_count is only available for presence channels. Use filter_by_prefix=presence-".to_string()
@@ -816,7 +887,7 @@ pub async fn channels(
         if !current_channel_info_map.is_empty() {
             channels_info_response_map.insert(
                 channel_name_str.clone(),
-                Value::Object(current_channel_info_map),
+                current_channel_info_map.into_value(),
             );
         } else if query_params_specific.info.is_none() {
             channels_info_response_map.insert(channel_name_str.clone(), json!({}));
@@ -824,7 +895,7 @@ pub async fn channels(
     }
 
     let response_payload = PusherMessage::channels_list(channels_info_response_map);
-    let response_json_bytes = serde_json::to_vec(&response_payload)?;
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     debug!("Channels list for app '{}' retrieved successfully", app_id);
     Ok((StatusCode::OK, Json(response_payload)))
@@ -859,7 +930,7 @@ pub async fn channel_users(
         .map(|user_id_str| json!({ "id": user_id_str }))
         .collect::<Vec<_>>();
     let response_payload_val = json!({ "users": users_vec });
-    let response_json_bytes = serde_json::to_vec(&response_payload_val)?;
+    let response_json_bytes = sonic_rs::to_vec(&response_payload_val)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     info!(
         user_count = users_vec.len(),
@@ -884,10 +955,8 @@ pub async fn terminate_user_connections(
         user_id
     );
 
-    let connection_manager_arc = handler.connection_manager.clone();
-    connection_manager_arc
-        .lock()
-        .await
+    handler
+        .connection_manager
         .terminate_connection(&app_id, &user_id)
         .await?;
 
@@ -897,7 +966,7 @@ pub async fn terminate_user_connections(
     );
 
     let response_payload = json!({ "ok": true });
-    let response_size = serde_json::to_vec(&response_payload)?.len();
+    let response_size = sonic_rs::to_vec(&response_payload)?.len();
     record_api_metrics(&handler, &app_id, 0, response_size).await;
 
     Ok((StatusCode::OK, Json(response_payload)))
@@ -909,19 +978,19 @@ pub async fn terminate_user_connections(
 ///
 /// Critical components (WebSocket functionality fails without these):
 /// - Adapter: Core WebSocket connection handling
+/// - Cache Manager: Required for cache channels, subscription failures propagate errors
 ///
-/// Non-critical components (WebSocket works, but optional features may be degraded):
-/// - Cache Manager: Falls back to in-memory cache when Redis is unavailable
+/// Non-critical components (WebSocket works, but optional features don't):
 /// - Queue System: Only affects webhook delivery
 async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
     let mut critical_issues = Vec::new();
     let mut non_critical_issues = Vec::new();
 
     // CRITICAL CHECK 1: Adapter health - core WebSocket functionality
-    let adapter_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
-        let conn_mgr = handler.connection_manager.lock().await;
-        conn_mgr.check_health().await
-    })
+    let adapter_check = timeout(
+        Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
+        handler.connection_manager.check_health(),
+    )
     .await;
 
     match adapter_check {
@@ -936,9 +1005,7 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
         }
     }
 
-    // NON-CRITICAL CHECK: Cache manager health
-    // With FallbackCacheManager, Redis failures automatically fall back to memory cache,
-    // so cache issues don't cause service unavailability - just degraded performance
+    // CRITICAL CHECK 2: Cache manager health - required for cache channels
     if handler.server_options().cache.driver != crate::options::CacheDriver::None {
         let cache_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
             let cache_manager = handler.cache_manager.lock().await;
@@ -951,11 +1018,10 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
                 // Cache manager is healthy
             }
             Ok(Err(e)) => {
-                non_critical_issues.push(format!("Cache: {e} (using in-memory fallback)"));
+                critical_issues.push(format!("Cache: {e}"));
             }
             Err(_) => {
-                non_critical_issues
-                    .push("Cache health check timeout (using in-memory fallback)".to_string());
+                critical_issues.push("Cache health check timeout".to_string());
             }
         }
     }

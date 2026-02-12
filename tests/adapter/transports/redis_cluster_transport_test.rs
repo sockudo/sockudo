@@ -27,6 +27,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         prefix: "".to_string(), // Empty prefix
         request_timeout_ms: 1000,
         use_connection_manager: false,
+        use_sharded_pubsub: false,
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -38,6 +39,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         prefix: "test_single_node".to_string(),
         request_timeout_ms: 1000,
         use_connection_manager: false,
+        use_sharded_pubsub: false,
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -52,6 +54,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         prefix: "test_conn_mgr".to_string(),
         request_timeout_ms: 1000,
         use_connection_manager: true, // Enable connection manager
+        use_sharded_pubsub: false,
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -68,6 +71,7 @@ async fn test_redis_cluster_invalid_config() {
         prefix: "test".to_string(),
         request_timeout_ms: 1000,
         use_connection_manager: false,
+        use_sharded_pubsub: false,
     };
 
     let result = RedisClusterTransport::new(config).await;
@@ -83,6 +87,7 @@ async fn test_redis_cluster_invalid_config() {
         prefix: "test".to_string(),
         request_timeout_ms: 1000,
         use_connection_manager: false,
+        use_sharded_pubsub: false,
     };
 
     let result = tokio::time::timeout(

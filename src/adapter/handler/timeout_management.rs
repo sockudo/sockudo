@@ -3,7 +3,9 @@ use crate::error::Result;
 use crate::protocol::constants::PONG_TIMEOUT;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::SocketId;
-use fastwebsockets::Payload;
+use bytes::Bytes;
+use sockudo_ws::Message;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -28,7 +30,7 @@ impl ConnectionHandler {
     }
 
     pub async fn set_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
-        let socket_id_clone = socket_id.clone();
+        let socket_id_clone = *socket_id;
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
         let activity_timeout = self.server_options.activity_timeout;
@@ -42,7 +44,7 @@ impl ConnectionHandler {
 
             loop {
                 // Check if connection still exists and get actual inactivity time
-                let mut conn_manager = connection_manager.lock().await;
+                let conn_manager = Arc::clone(&connection_manager);
                 let conn = match conn_manager
                     .get_connection(&socket_id_clone, &app_id_clone)
                     .await
@@ -99,7 +101,7 @@ impl ConnectionHandler {
                         sleep(Duration::from_secs(PONG_TIMEOUT)).await;
 
                         // Re-acquire lock to check pong status
-                        let mut conn_manager = connection_manager.lock().await;
+                        let conn_manager = Arc::clone(&connection_manager);
                         if let Some(conn) = conn_manager
                             .get_connection(&socket_id_clone, &app_id_clone)
                             .await
@@ -142,7 +144,7 @@ impl ConnectionHandler {
         });
 
         // Store the timeout handle
-        let mut conn_manager = self.connection_manager.lock().await;
+        let conn_manager = &self.connection_manager;
         if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
             let mut ws = conn.inner.lock().await;
             ws.state.timeouts.activity_timeout_handle = Some(timeout_handle);
@@ -152,7 +154,7 @@ impl ConnectionHandler {
     }
 
     pub async fn clear_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
-        let mut conn_manager = self.connection_manager.lock().await;
+        let conn_manager = &self.connection_manager;
         if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
             let mut ws = conn.inner.lock().await;
             ws.state.timeouts.clear_activity_timeout();
@@ -162,7 +164,7 @@ impl ConnectionHandler {
 
     pub async fn update_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
         // Update last activity time
-        let mut conn_manager = self.connection_manager.lock().await;
+        let conn_manager = &self.connection_manager;
         if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
             let mut ws = conn.inner.lock().await;
             ws.update_activity();
@@ -176,7 +178,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         timeout_seconds: u64,
     ) -> Result<()> {
-        let socket_id_clone = socket_id.clone();
+        let socket_id_clone = *socket_id;
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
 
@@ -187,7 +189,7 @@ impl ConnectionHandler {
         let timeout_handle = tokio::spawn(async move {
             sleep(Duration::from_secs(timeout_seconds)).await;
 
-            let mut conn_manager = connection_manager.lock().await;
+            let conn_manager = connection_manager;
             if let Some(conn) = conn_manager
                 .get_connection(&socket_id_clone, &app_id_clone)
                 .await
@@ -207,7 +209,7 @@ impl ConnectionHandler {
         });
 
         // Store the timeout handle
-        let mut conn_manager = self.connection_manager.lock().await;
+        let conn_manager = &self.connection_manager;
         if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
             let mut ws = conn.inner.lock().await;
             ws.state.timeouts.auth_timeout_handle = Some(timeout_handle);
@@ -221,7 +223,7 @@ impl ConnectionHandler {
         app_id: &str,
         socket_id: &SocketId,
     ) -> Result<()> {
-        let mut conn_manager = self.connection_manager.lock().await;
+        let conn_manager = &self.connection_manager;
         if let Some(conn) = conn_manager.get_connection(socket_id, app_id).await {
             let mut ws = conn.inner.lock().await;
             ws.state.timeouts.clear_auth_timeout();
@@ -233,19 +235,19 @@ impl ConnectionHandler {
         &self,
         socket_id: &SocketId,
         app_config: &crate::app::config::App,
-        payload: Payload<'static>,
+        payload: Bytes,
     ) -> Result<()> {
         // Update activity and send pong
         self.update_activity_timeout(&app_config.id, socket_id)
             .await?;
 
-        let mut conn_manager = self.connection_manager.lock().await;
+        let conn_manager = &self.connection_manager;
         if let Some(conn) = conn_manager.get_connection(socket_id, &app_config.id).await {
             let mut ws = conn.inner.lock().await;
             // Reset connection status to Active when we receive a ping (client is alive)
             ws.state.status = crate::websocket::ConnectionStatus::Active;
             // Send low-level Pong frame in response because the auto response is disabled to allow custom handling
-            ws.send_frame(fastwebsockets::Frame::pong(payload))?;
+            ws.send_frame(Message::pong(payload))?;
         }
 
         Ok(())

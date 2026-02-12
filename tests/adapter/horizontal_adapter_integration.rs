@@ -1,10 +1,18 @@
+#[cfg(any(feature = "redis", feature = "nats"))]
 use sockudo::adapter::ConnectionManager;
+#[cfg(any(feature = "redis", feature = "nats"))]
 use sockudo::adapter::horizontal_adapter::RequestType;
+#[cfg(any(feature = "redis", feature = "nats"))]
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+#[cfg(any(feature = "redis", feature = "nats"))]
 use sockudo::error::Result;
+#[cfg(any(feature = "redis", feature = "nats"))]
 use sockudo::protocol::messages::{MessageData, PusherMessage};
+#[cfg(any(feature = "redis", feature = "nats"))]
 use std::collections::HashSet;
+#[cfg(any(feature = "redis", feature = "nats"))]
 use std::sync::Arc;
+#[cfg(any(feature = "redis", feature = "nats"))]
 use std::time::Duration;
 
 #[cfg(feature = "nats")]
@@ -25,7 +33,7 @@ async fn test_horizontal_adapter_with_redis_transport() -> Result<()> {
     let adapter = HorizontalAdapterBase::<RedisTransport>::new(config.clone()).await?;
 
     // Should be able to initialize
-    let mut adapter_mut = HorizontalAdapterBase::<RedisTransport>::new(config).await?;
+    let adapter_mut = HorizontalAdapterBase::<RedisTransport>::new(config).await?;
     adapter_mut.init().await;
 
     // Start listeners
@@ -52,7 +60,7 @@ async fn test_horizontal_adapter_with_nats_transport() -> Result<()> {
     let adapter = HorizontalAdapterBase::<NatsTransport>::new(config.clone()).await?;
 
     // Should be able to initialize
-    let mut adapter_mut = HorizontalAdapterBase::<NatsTransport>::new(config).await?;
+    let adapter_mut = HorizontalAdapterBase::<NatsTransport>::new(config).await?;
     adapter_mut.init().await;
 
     // Start listeners
@@ -78,8 +86,8 @@ async fn test_cross_node_broadcast_redis() -> Result<()> {
     let config1 = get_redis_config();
     let config2 = get_redis_config();
 
-    let mut adapter1 = HorizontalAdapterBase::<RedisTransport>::new(config1).await?;
-    let mut adapter2 = HorizontalAdapterBase::<RedisTransport>::new(config2).await?;
+    let adapter1 = HorizontalAdapterBase::<RedisTransport>::new(config1).await?;
+    let adapter2 = HorizontalAdapterBase::<RedisTransport>::new(config2).await?;
 
     // Initialize both adapters
     adapter1.init().await;
@@ -98,6 +106,9 @@ async fn test_cross_node_broadcast_redis() -> Result<()> {
         event: Some("cross-node-test".to_string()),
         data: Some(MessageData::String("cross-node broadcast test".to_string())),
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     // Send broadcast from adapter1
@@ -121,8 +132,8 @@ async fn test_cross_node_broadcast_nats() -> Result<()> {
     let config1 = get_nats_config();
     let config2 = get_nats_config();
 
-    let mut adapter1 = HorizontalAdapterBase::<NatsTransport>::new(config1).await?;
-    let mut adapter2 = HorizontalAdapterBase::<NatsTransport>::new(config2).await?;
+    let adapter1 = HorizontalAdapterBase::<NatsTransport>::new(config1).await?;
+    let adapter2 = HorizontalAdapterBase::<NatsTransport>::new(config2).await?;
 
     // Initialize both adapters
     adapter1.init().await;
@@ -143,6 +154,9 @@ async fn test_cross_node_broadcast_nats() -> Result<()> {
             "cross-node nats broadcast test".to_string(),
         )),
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     // Send broadcast from adapter1
@@ -166,8 +180,8 @@ async fn test_distributed_socket_count_redis() -> Result<()> {
     let config1 = get_redis_config();
     let config2 = get_redis_config();
 
-    let mut adapter1 = HorizontalAdapterBase::<RedisTransport>::new(config1).await?;
-    let mut adapter2 = HorizontalAdapterBase::<RedisTransport>::new(config2).await?;
+    let adapter1 = HorizontalAdapterBase::<RedisTransport>::new(config1).await?;
+    let adapter2 = HorizontalAdapterBase::<RedisTransport>::new(config2).await?;
 
     // Initialize both adapters
     adapter1.init().await;
@@ -181,9 +195,9 @@ async fn test_distributed_socket_count_redis() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add sockets to both adapters to simulate distributed state
-    let socket1 = sockudo::websocket::SocketId("test-socket-1".to_string());
-    let socket2 = sockudo::websocket::SocketId("test-socket-2".to_string());
-    let shared_socket = sockudo::websocket::SocketId("shared-socket".to_string());
+    let socket1 = sockudo::websocket::SocketId::from_string("test-socket-1").unwrap();
+    let socket2 = sockudo::websocket::SocketId::from_string("test-socket-2").unwrap();
+    let shared_socket = sockudo::websocket::SocketId::from_string("shared-socket").unwrap();
 
     // Add different sockets to each adapter
     let _ = adapter1
@@ -231,8 +245,8 @@ async fn test_distributed_socket_count_nats() -> Result<()> {
     let config1 = get_nats_config();
     let config2 = get_nats_config();
 
-    let mut adapter1 = HorizontalAdapterBase::<NatsTransport>::new(config1).await?;
-    let mut adapter2 = HorizontalAdapterBase::<NatsTransport>::new(config2).await?;
+    let adapter1 = HorizontalAdapterBase::<NatsTransport>::new(config1).await?;
+    let adapter2 = HorizontalAdapterBase::<NatsTransport>::new(config2).await?;
 
     // Initialize both adapters
     adapter1.init().await;
@@ -246,9 +260,9 @@ async fn test_distributed_socket_count_nats() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add sockets to both adapters to simulate distributed state
-    let socket1 = sockudo::websocket::SocketId("nats-socket-1".to_string());
-    let socket2 = sockudo::websocket::SocketId("nats-socket-2".to_string());
-    let shared_socket = sockudo::websocket::SocketId("nats-shared-socket".to_string());
+    let socket1 = sockudo::websocket::SocketId::from_string("nats-socket-1").unwrap();
+    let socket2 = sockudo::websocket::SocketId::from_string("nats-socket-2").unwrap();
+    let shared_socket = sockudo::websocket::SocketId::from_string("nats-shared-socket").unwrap();
 
     // Add different sockets to each adapter
     let _ = adapter1

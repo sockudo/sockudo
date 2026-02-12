@@ -1,11 +1,11 @@
 #![cfg(feature = "redis")]
 
-use serde_json::json;
 use sockudo::adapter::ConnectionManager;
 use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
 use sockudo::adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
 use sockudo::options::ClusterHealthConfig;
 use sockudo::websocket::SocketId;
+use sonic_rs::json;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,8 +60,8 @@ async fn test_redis_adapter_heartbeat_propagation() {
     };
 
     // Create two Redis adapters simulating two nodes
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     // Initialize both adapters
     adapter1.init().await;
@@ -106,8 +106,8 @@ async fn test_redis_adapter_presence_join_broadcast() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -169,8 +169,8 @@ async fn test_redis_adapter_presence_leave_broadcast() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -238,8 +238,8 @@ async fn test_redis_adapter_dead_node_detection() {
         cleanup_interval_ms: 150,
     };
 
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -321,8 +321,8 @@ async fn test_redis_adapter_multiple_apps_isolation() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_redis_adapter("node1", &cluster_config).await;
-    let mut adapter2 = create_redis_adapter("node2", &cluster_config).await;
+    let adapter1 = create_redis_adapter("node1", &cluster_config).await;
+    let adapter2 = create_redis_adapter("node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -342,8 +342,8 @@ async fn test_redis_adapter_multiple_apps_isolation() {
 
     // Verify app isolation - presence broadcasts don't interfere with channel operations
     // Test that local channel operations work correctly regardless of presence broadcasts
-    let socket_app1 = SocketId("local-socket1".to_string());
-    let socket_app2 = SocketId("local-socket2".to_string());
+    let socket_app1 = SocketId::from_string("local-socket1").unwrap();
+    let socket_app2 = SocketId::from_string("local-socket2").unwrap();
 
     adapter1
         .add_to_channel("app1", "channel1", &socket_app1)
@@ -379,7 +379,7 @@ async fn test_redis_adapter_reconnection_after_failure() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_redis_adapter("node1", &cluster_config).await;
+    let adapter = create_redis_adapter("node1", &cluster_config).await;
     adapter.init().await;
 
     // Add some presence data
@@ -435,7 +435,7 @@ async fn test_redis_adapter_cluster_health_disabled() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_redis_adapter("node1", &cluster_config).await;
+    let adapter = create_redis_adapter("node1", &cluster_config).await;
     adapter.init().await;
 
     // With cluster health disabled, presence operations should still work
@@ -475,7 +475,7 @@ async fn test_redis_adapter_concurrent_presence_operations() {
     ));
 
     {
-        let mut adapter_guard = adapter.lock().await;
+        let adapter_guard = adapter.lock().await;
         adapter_guard.init().await;
     }
 

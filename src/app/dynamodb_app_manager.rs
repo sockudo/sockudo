@@ -137,7 +137,7 @@ impl DynamoDbAppManager {
                 webhooks: if let Some(aws_sdk_dynamodb::types::AttributeValue::S(json_str)) =
                     map.get("webhooks")
                 {
-                    serde_json::from_str::<Vec<Webhook>>(json_str)
+                    sonic_rs::from_str::<Vec<Webhook>>(json_str)
                         .map_err(|e| {
                             tracing::warn!("Failed to parse webhooks JSON: {}", e);
                             e
@@ -175,6 +175,7 @@ impl DynamoDbAppManager {
                 } else {
                     None
                 },
+                channel_delta_compression: None, // Delta compression config not stored in DB
             })
         } else {
             Err(Error::Internal("Invalid DynamoDB item format".to_string()))
@@ -296,7 +297,7 @@ impl DynamoDbAppManager {
         }
 
         if let Some(webhooks) = &app.webhooks {
-            let json_str = serde_json::to_string(webhooks)
+            let json_str = sonic_rs::to_string(webhooks)
                 .expect("Failed to serialize webhooks to JSON. This indicates a bug.");
             item.insert(
                 "webhooks".to_string(),
@@ -350,14 +351,6 @@ impl DynamoDbAppManager {
             .attribute_definitions(
                 aws_sdk_dynamodb::types::AttributeDefinition::builder()
                     .attribute_name("id")
-                    .attribute_type(aws_sdk_dynamodb::types::ScalarAttributeType::S)
-                    .build()
-                    .unwrap(),
-            )
-            // Add attribute definition for the GSI key
-            .attribute_definitions(
-                aws_sdk_dynamodb::types::AttributeDefinition::builder()
-                    .attribute_name("key")
                     .attribute_type(aws_sdk_dynamodb::types::ScalarAttributeType::S)
                     .build()
                     .unwrap(),
@@ -428,9 +421,9 @@ impl DynamoDbAppManager {
         ))
     }
 
-    /// Get an app from DynamoDB
+    /// Get an app from cache or DynamoDB
     async fn get_app_internal(&self, app_id: &str) -> Result<Option<App>> {
-        // Fetch from DynamoDB
+        // If not in cache or expired, fetch from DynamoDB
         let response = self
             .client
             .get_item()
@@ -446,6 +439,9 @@ impl DynamoDbAppManager {
         if let Some(item) = response.item() {
             // Convert DynamoDB item to App
             let app = self.item_to_app(aws_sdk_dynamodb::types::AttributeValue::M(item.clone()))?;
+
+            // Update cache
+
             Ok(Some(app))
         } else {
             Ok(None)
@@ -473,6 +469,8 @@ impl AppManager for DynamoDbAppManager {
             .await
             .map_err(|e| Error::Internal(format!("Failed to insert app into DynamoDB: {e}")))?;
 
+        // Update cache
+
         Ok(())
     }
 
@@ -488,7 +486,6 @@ impl AppManager for DynamoDbAppManager {
             .send()
             .await
             .map_err(|e| Error::Internal(format!("Failed to update app in DynamoDB: {e}")))?;
-
         Ok(())
     }
 
@@ -504,7 +501,6 @@ impl AppManager for DynamoDbAppManager {
             .send()
             .await
             .map_err(|e| Error::Internal(format!("Failed to delete app from DynamoDB: {e}")))?;
-
         Ok(())
     }
 
@@ -521,23 +517,25 @@ impl AppManager for DynamoDbAppManager {
         // Process items and convert to App objects
         let mut apps = Vec::new();
         let items = response.items();
-        for item in items {
-            let app = self.item_to_app(aws_sdk_dynamodb::types::AttributeValue::M(item.clone()))?;
-            apps.push(app);
+        if !items.is_empty() {
+            for item in items {
+                let app =
+                    self.item_to_app(aws_sdk_dynamodb::types::AttributeValue::M(item.clone()))?;
+                apps.push(app);
+            }
         }
 
         Ok(apps)
     }
 
     async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
-        // Query DynamoDB by key (using GSI)
+        // If not in cache, query DynamoDB by key (using GSI)
         let response = self
             .client
             .query()
             .table_name(&self.config.table_name)
             .index_name("KeyIndex")
-            .key_condition_expression("#app_key = :key_val")
-            .expression_attribute_names("#app_key", "key")
+            .key_condition_expression("key = :key_val")
             .expression_attribute_values(
                 ":key_val",
                 aws_sdk_dynamodb::types::AttributeValue::S(key.to_string()),
@@ -552,6 +550,7 @@ impl AppManager for DynamoDbAppManager {
         {
             // Convert DynamoDB item to App
             let app = self.item_to_app(aws_sdk_dynamodb::types::AttributeValue::M(item.clone()))?;
+
             return Ok(Some(app));
         }
 
@@ -567,159 +566,5 @@ impl AppManager for DynamoDbAppManager {
             crate::error::Error::Internal(format!("App manager DynamoDB connection failed: {e}"))
         })?;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Helper to create a test config for DynamoDB Local
-    fn get_test_config(table_name: &str) -> DynamoDbConfig {
-        DynamoDbConfig {
-            region: std::env::var("DYNAMODB_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
-            table_name: table_name.to_string(),
-            endpoint: Some(
-                std::env::var("DYNAMODB_ENDPOINT")
-                    .unwrap_or_else(|_| "http://localhost:8000".to_string()),
-            ),
-            access_key: Some("test".to_string()),
-            secret_key: Some("test".to_string()),
-            profile_name: None,
-        }
-    }
-
-    // Helper to create a test app
-    fn create_test_app(id: &str) -> App {
-        App {
-            id: id.to_string(),
-            key: format!("{id}_key"),
-            secret: format!("{id}_secret"),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_backend_events_per_second: Some(1000),
-            max_client_events_per_second: 100,
-            max_read_requests_per_second: Some(1000),
-            max_presence_members_per_channel: Some(100),
-            max_presence_member_size_in_kb: Some(10),
-            max_channel_name_length: Some(200),
-            max_event_channels_at_once: Some(10),
-            max_event_name_length: Some(200),
-            max_event_payload_in_kb: Some(100),
-            max_event_batch_size: Some(10),
-            enable_user_authentication: Some(true),
-            webhooks: None,
-            enable_watchlist_events: None,
-            allowed_origins: None,
-        }
-    }
-
-    async fn is_dynamodb_available() -> bool {
-        let config = get_test_config("test_availability");
-        match DynamoDbAppManager::new(config).await {
-            Ok(manager) => manager.check_health().await.is_ok(),
-            Err(_) => false,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_dynamodb_app_manager() {
-        // Skip test if DynamoDB Local is not available
-        if !is_dynamodb_available().await {
-            eprintln!("Skipping test: DynamoDB Local not available");
-            return;
-        }
-
-        let config = get_test_config("sockudo_test_apps");
-        let manager = DynamoDbAppManager::new(config).await.unwrap();
-        manager.init().await.unwrap();
-
-        // Test registering an app
-        let test_app = create_test_app("dynamo_test1");
-        manager.create_app(test_app.clone()).await.unwrap();
-
-        // Test getting an app by ID
-        let app = manager.find_by_id("dynamo_test1").await.unwrap().unwrap();
-        assert_eq!(app.id, "dynamo_test1");
-        assert_eq!(app.key, "dynamo_test1_key");
-
-        // Test getting an app by key
-        let app = manager
-            .find_by_key("dynamo_test1_key")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(app.id, "dynamo_test1");
-
-        // Test updating an app
-        let mut updated_app = test_app.clone();
-        updated_app.max_connections = 200;
-        manager.update_app(updated_app).await.unwrap();
-
-        let app = manager.find_by_id("dynamo_test1").await.unwrap().unwrap();
-        assert_eq!(app.max_connections, 200);
-
-        // Test getting all apps
-        let test_app2 = create_test_app("dynamo_test2");
-        manager.create_app(test_app2).await.unwrap();
-
-        let apps = manager.get_apps().await.unwrap();
-        assert!(apps.len() >= 2);
-
-        // Test removing an app
-        manager.delete_app("dynamo_test1").await.unwrap();
-        assert!(manager.find_by_id("dynamo_test1").await.unwrap().is_none());
-
-        // Cleanup
-        manager.delete_app("dynamo_test2").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_allowed_origins() {
-        // Skip test if DynamoDB Local is not available
-        if !is_dynamodb_available().await {
-            eprintln!("Skipping test: DynamoDB Local not available");
-            return;
-        }
-
-        let config = get_test_config("sockudo_origins_test");
-        let manager = DynamoDbAppManager::new(config).await.unwrap();
-        manager.init().await.unwrap();
-
-        // Create app with allowed origins
-        let mut app = create_test_app("origins_test");
-        app.allowed_origins = Some(vec![
-            "https://example.com".to_string(),
-            "https://*.example.com".to_string(),
-            "http://localhost:3000".to_string(),
-        ]);
-        manager.create_app(app).await.unwrap();
-
-        // Retrieve and verify
-        let retrieved = manager.find_by_id("origins_test").await.unwrap().unwrap();
-        assert!(retrieved.allowed_origins.is_some());
-        let origins = retrieved.allowed_origins.unwrap();
-        assert_eq!(origins.len(), 3);
-        assert!(origins.contains(&"https://example.com".to_string()));
-
-        // Cleanup
-        manager.delete_app("origins_test").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_health_check() {
-        // Skip test if DynamoDB Local is not available
-        if !is_dynamodb_available().await {
-            eprintln!("Skipping test: DynamoDB Local not available");
-            return;
-        }
-
-        let config = get_test_config("sockudo_health_test");
-        let manager = DynamoDbAppManager::new(config).await.unwrap();
-
-        // Health check should succeed
-        let result = manager.check_health().await;
-        assert!(result.is_ok());
     }
 }

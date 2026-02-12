@@ -7,7 +7,7 @@ mod tests {
 
     fn create_test_task(socket_id: &str) -> DisconnectTask {
         DisconnectTask {
-            socket_id: SocketId(socket_id.to_string()),
+            socket_id: SocketId::from_string(socket_id).unwrap_or_default(),
             app_id: "test-app".to_string(),
             subscribed_channels: vec!["channel1".to_string(), "channel2".to_string()],
             user_id: Some("user123".to_string()),
@@ -30,7 +30,10 @@ mod tests {
 
         // Verify task was received
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.socket_id.0, task_clone.socket_id.0);
+        assert_eq!(
+            received.socket_id.to_string(),
+            task_clone.socket_id.to_string()
+        );
         assert_eq!(received.app_id, task_clone.app_id);
     }
 
@@ -72,7 +75,10 @@ mod tests {
             Ok(()) => {
                 // Verify task was received
                 let received = rx.recv().await.unwrap();
-                assert_eq!(received.socket_id.0, task_clone.socket_id.0);
+                assert_eq!(
+                    received.socket_id.to_string(),
+                    task_clone.socket_id.to_string()
+                );
             }
             Err(_) => panic!("Expected successful send"),
         }
@@ -127,7 +133,10 @@ mod tests {
         let err = result.unwrap_err();
         match err.as_ref() {
             mpsc::error::TrySendError::Full(returned_task) => {
-                assert_eq!(returned_task.socket_id.0, task2.socket_id.0);
+                assert_eq!(
+                    returned_task.socket_id.to_string(),
+                    task2.socket_id.to_string()
+                );
                 assert_eq!(returned_task.app_id, task2.app_id);
             }
             other => panic!("Expected Full error, got: {:?}", other),
@@ -144,7 +153,10 @@ mod tests {
         let err = result.unwrap_err();
         match err.as_ref() {
             mpsc::error::TrySendError::Closed(returned_task) => {
-                assert_eq!(returned_task.socket_id.0, task3.socket_id.0);
+                assert_eq!(
+                    returned_task.socket_id.to_string(),
+                    task3.socket_id.to_string()
+                );
                 assert_eq!(returned_task.app_id, task3.app_id);
             }
             other => panic!("Expected Closed error, got: {:?}", other),
@@ -157,14 +169,14 @@ mod tests {
         buffer_size: usize,
     ) -> (
         sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem,
-        std::sync::Arc<tokio::sync::Mutex<sockudo::adapter::local_adapter::LocalAdapter>>,
+        std::sync::Arc<sockudo::adapter::local_adapter::LocalAdapter>,
     ) {
+        use sockudo::adapter::connection_manager::ConnectionManager;
         use sockudo::adapter::local_adapter::LocalAdapter;
         use sockudo::app::memory_app_manager::MemoryAppManager;
         use sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem;
         use sockudo::cleanup::{CleanupConfig, WorkerThreadsConfig};
         use std::sync::Arc;
-        use tokio::sync::Mutex;
 
         let config = CleanupConfig {
             queue_buffer_size: buffer_size,
@@ -176,8 +188,8 @@ mod tests {
             fallback_to_sync: true,
         };
 
-        let local_adapter = Arc::new(Mutex::new(LocalAdapter::new()));
-        let connection_manager = local_adapter.clone();
+        let local_adapter = Arc::new(LocalAdapter::new());
+        let connection_manager: Arc<dyn ConnectionManager + Send + Sync> = local_adapter.clone();
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 

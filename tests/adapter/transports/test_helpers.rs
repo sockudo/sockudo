@@ -1,3 +1,4 @@
+use ahash::AHashMap;
 use sockudo::adapter::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 #[cfg(feature = "redis")]
 use sockudo::adapter::transports::RedisAdapterConfig;
@@ -5,6 +6,7 @@ use sockudo::adapter::transports::RedisAdapterConfig;
 use sockudo::options::NatsAdapterConfig;
 #[cfg(feature = "redis-cluster")]
 use sockudo::options::RedisClusterAdapterConfig;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -34,6 +36,7 @@ pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
         prefix: format!("test_{}", Uuid::new_v4().to_string().replace('-', "")),
         request_timeout_ms: 1000,      // Reduced timeout
         use_connection_manager: false, // Disable for grokzen cluster compatibility
+        use_sharded_pubsub: false,     // Use standard pub/sub for tests
     }
 }
 
@@ -67,6 +70,7 @@ pub fn create_test_broadcast(event: &str) -> BroadcastMessage {
         ),
         except_socket_id: None,
         timestamp_ms: None,
+        compression_metadata: None,
     }
 }
 
@@ -89,13 +93,13 @@ pub fn create_test_request() -> RequestBody {
 
 /// Create a test response message
 pub fn create_test_response(request_id: &str) -> ResponseBody {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     ResponseBody {
         request_id: request_id.to_string(),
         node_id: "test-node".to_string(),
         app_id: "test-app".to_string(),
-        members: HashMap::new(),
-        channels_with_sockets_count: HashMap::new(),
+        members: AHashMap::new(),
+        channels_with_sockets_count: AHashMap::new(),
         socket_ids: vec![],
         sockets_count: 0,
         exists: false,
@@ -244,13 +248,12 @@ pub fn create_test_handlers(
             Box::pin(async move {
                 collector.collect_request(msg.clone()).await;
                 // Return a dummy response for testing
-                use std::collections::{HashMap, HashSet};
                 Ok(ResponseBody {
                     request_id: msg.request_id,
                     node_id: "test-node".to_string(),
                     app_id: "test-app".to_string(),
-                    members: HashMap::new(),
-                    channels_with_sockets_count: HashMap::new(),
+                    members: AHashMap::new(),
+                    channels_with_sockets_count: AHashMap::new(),
                     socket_ids: vec![],
                     sockets_count: 0,
                     exists: false,

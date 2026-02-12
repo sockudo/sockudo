@@ -5,6 +5,9 @@ use tokio::sync::mpsc;
 pub mod multi_worker;
 pub mod worker;
 
+// Re-export CancellationToken for use by callers who want graceful shutdown
+pub use tokio_util::sync::CancellationToken;
+
 /// Unified cleanup sender that abstracts over single vs multi-worker implementations
 #[derive(Clone)]
 pub enum CleanupSender {
@@ -39,6 +42,70 @@ impl CleanupSender {
             CleanupSender::Direct(sender) => sender.is_closed(),
             CleanupSender::Multi(sender) => !sender.is_available(),
         }
+    }
+}
+
+/// Manages the cleanup system including workers and graceful shutdown
+pub struct CleanupSystem {
+    /// Cancellation token for graceful shutdown
+    cancel_token: CancellationToken,
+    /// Worker task handles
+    worker_handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl CleanupSystem {
+    /// Create a new cleanup system (call start_workers to begin processing)
+    pub fn new() -> Self {
+        Self {
+            cancel_token: CancellationToken::new(),
+            worker_handles: Vec::new(),
+        }
+    }
+
+    /// Get a clone of the cancellation token for use when starting workers
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
+    }
+
+    /// Add a worker handle to track
+    pub fn add_worker_handle(&mut self, handle: tokio::task::JoinHandle<()>) {
+        self.worker_handles.push(handle);
+    }
+
+    /// Initiate graceful shutdown of all workers
+    /// This will:
+    /// 1. Signal all workers to stop via the cancellation token
+    /// 2. Wait for all workers to finish processing their final batches
+    pub async fn shutdown(self) {
+        tracing::info!("Initiating cleanup system shutdown...");
+
+        // Signal all workers to stop
+        self.cancel_token.cancel();
+
+        // Wait for all workers to finish
+        for (i, handle) in self.worker_handles.into_iter().enumerate() {
+            match handle.await {
+                Ok(()) => {
+                    tracing::debug!("Cleanup worker {} shut down successfully", i);
+                }
+                Err(e) => {
+                    tracing::warn!("Cleanup worker {} task failed: {}", i, e);
+                }
+            }
+        }
+
+        tracing::info!("Cleanup system shutdown complete");
+    }
+
+    /// Check if shutdown has been requested
+    pub fn is_shutting_down(&self) -> bool {
+        self.cancel_token.is_cancelled()
+    }
+}
+
+impl Default for CleanupSystem {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -235,5 +302,5 @@ pub struct WebhookEvent {
     pub app_id: String,
     pub channel: String,
     pub user_id: Option<String>,
-    pub data: serde_json::Value,
+    pub data: sonic_rs::Value,
 }
