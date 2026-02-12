@@ -73,10 +73,11 @@ jobs:
             -v "$HOME/.cargo/registry":/root/.cargo/registry \
             -v "$HOME/.cargo/git":/root/.cargo/git \
             -w /src \
-            alpine:edge \
+            rust:1.93-alpine \
             sh -c "
-              apk add --no-cache rust cargo musl-dev pkgconf \
+              apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
+              rustup target add x86_64-unknown-linux-musl
               cargo build --release --features full --target x86_64-unknown-linux-musl
             "
 
@@ -95,10 +96,11 @@ jobs:
             -v "$HOME/.cargo/registry":/root/.cargo/registry \
             -v "$HOME/.cargo/git":/root/.cargo/git \
             -w /src \
-            alpine:edge \
+            rust:1.93-alpine \
             sh -c "
-              apk add --no-cache rust cargo musl-dev pkgconf \
+              apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
+              rustup target add aarch64-unknown-linux-musl
               cargo build --release --features full --target aarch64-unknown-linux-musl
             "
 
