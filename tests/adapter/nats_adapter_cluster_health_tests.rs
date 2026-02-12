@@ -1,10 +1,10 @@
 #![cfg(feature = "nats")]
 
-use serde_json::json;
 use sockudo::adapter::ConnectionManager;
 use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
 use sockudo::adapter::nats_adapter::NatsAdapter;
 use sockudo::options::{ClusterHealthConfig, NatsAdapterConfig};
+use sonic_rs::json;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,8 +57,8 @@ async fn test_nats_adapter_heartbeat_system() {
     };
 
     // Create two NATS adapters simulating two nodes
-    let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -86,9 +86,9 @@ async fn test_nats_presence_broadcast_and_sync() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
-    let mut adapter3 = create_nats_adapter("nats_node3", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
+    let adapter3 = create_nats_adapter("nats_node3", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -163,8 +163,8 @@ async fn test_nats_dead_node_detection_and_cleanup() {
         cleanup_interval_ms: 150,
     };
 
-    let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -212,8 +212,8 @@ async fn test_nats_pub_sub_pattern_isolation() {
     };
 
     // Create adapters with different prefixes
-    let mut adapter1 = create_nats_adapter("nats_cluster_a_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_cluster_b_node1", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_cluster_a_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_cluster_b_node1", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -251,7 +251,7 @@ async fn test_nats_wildcard_subscriptions() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter = create_nats_adapter("nats_node1", &cluster_config).await;
     adapter.init().await;
 
     // Test presence across multiple apps and channels
@@ -294,7 +294,7 @@ async fn test_nats_concurrent_operations() {
     ));
 
     {
-        let mut adapter_guard = adapter.lock().await;
+        let adapter_guard = adapter.lock().await;
         adapter_guard.init().await;
     }
 
@@ -360,7 +360,7 @@ async fn test_nats_reconnection_handling() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter = create_nats_adapter("nats_node1", &cluster_config).await;
     adapter.init().await;
 
     // Add initial presence
@@ -409,7 +409,7 @@ async fn test_nats_cluster_health_disabled() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter = create_nats_adapter("nats_node1", &cluster_config).await;
     adapter.init().await;
 
     // Presence operations should work without health monitoring
@@ -443,8 +443,8 @@ async fn test_nats_message_ordering() {
         cleanup_interval_ms: 200,
     };
 
-    let mut adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
-    let mut adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
+    let adapter1 = create_nats_adapter("nats_node1", &cluster_config).await;
+    let adapter2 = create_nats_adapter("nats_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;

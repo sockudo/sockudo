@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Delta Compression Test (Local Build)</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        background: #f5f5f5;
+      }
+      h1 {
+        color: #333;
+      }
+      .status {
+        padding: 15px;
+        margin: 10px 0;
+        border-radius: 5px;
+        background: #fff;
+        border-left: 4px solid #ccc;
+      }
+      .status.connected {
+        border-left-color: #28a745;
+      }
+      .status.error {
+        border-left-color: #dc3545;
+        background: #ffe6e6;
+      }
+      .controls {
+        margin: 20px 0;
+      }
+      button {
+        padding: 10px 20px;
+        margin: 5px;
+        border: none;
+        border-radius: 4px;
+        background: #667eea;
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      button:hover {
+        background: #5568d3;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+      .console {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        padding: 15px;
+        border-radius: 5px;
+        font-family: "Courier New", monospace;
+        font-size: 13px;
+        max-height: 500px;
+        overflow-y: auto;
+        margin: 20px 0;
+      }
+      .console-line {
+        margin: 3px 0;
+        line-height: 1.4;
+      }
+      .console-timestamp {
+        color: #858585;
+        margin-right: 10px;
+      }
+      .console-info {
+        color: #4fc3f7;
+      }
+      .console-success {
+        color: #66bb6a;
+      }
+      .console-error {
+        color: #ef5350;
+      }
+      .console-warning {
+        color: #ffa726;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        margin: 20px 0;
+      }
+      .stat-card {
+        background: white;
+        padding: 15px;
+        border-radius: 5px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      .stat-label {
+        color: #666;
+        font-size: 12px;
+        margin-bottom: 5px;
+      }
+      .stat-value {
+        font-size: 24px;
+        font-weight: bold;
+        color: #333;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Delta Compression Test (Local Build)</h1>
+
+    <div id="status" class="status">Status: Disconnected</div>
+
+    <div class="controls">
+      <button id="connect-btn" onclick="connect()">Connect</button>
+      <button id="disconnect-btn" onclick="disconnect()" disabled>
+        Disconnect
+      </button>
+      <button id="enable-delta-btn" onclick="enableDelta()" disabled>
+        Enable Delta
+      </button>
+      <button id="subscribe-btn" onclick="subscribe()" disabled>
+        Subscribe to Channel
+      </button>
+      <button id="send-message-btn" onclick="sendMessage()" disabled>
+        Send Test Message
+      </button>
+      <button id="clear-console-btn" onclick="clearConsole()">
+        Clear Console
+      </button>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Messages Received</div>
+        <div class="stat-value" id="messages-received">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Delta Messages</div>
+        <div class="stat-value" id="delta-messages">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Full Messages</div>
+        <div class="stat-value" id="full-messages">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Bandwidth Saved</div>
+        <div class="stat-value" id="bandwidth-saved">0%</div>
+      </div>
+    </div>
+
+    <div id="console" class="console"></div>
+
+    <!-- Local Pusher build -->
+    <script src="pusher-local.js"></script>
+    <!-- Fossil delta library -->
+    <script src="https://cdn.jsdelivr.net/npm/fossil-delta@1.0.2/fossil-delta.min.js"></script>
+
+    <script>
+      let pusher = null;
+      let channel = null;
+      let messageCount = 0;
+      const CHANNEL_NAME = "market-data";
+      const APP_KEY = "app-key";
+
+      function log(message, level = "info") {
+        const timestamp = new Date().toLocaleTimeString();
+        const line = document.createElement("div");
+        line.className = `console-line console-${level}`;
+        line.innerHTML = `<span class="console-timestamp">[${timestamp}]</span>${message}`;
+
+        const consoleDiv = document.getElementById("console");
+        consoleDiv.appendChild(line);
+        consoleDiv.scrollTop = consoleDiv.scrollHeight;
+      }
+
+      function clearConsole() {
+        document.getElementById("console").innerHTML = "";
+      }
+
+      function updateStatus(message, isConnected = false, isError = false) {
+        const statusDiv = document.getElementById("status");
+        statusDiv.textContent = "Status: " + message;
+        statusDiv.className = "status";
+        if (isConnected) statusDiv.classList.add("connected");
+        if (isError) statusDiv.classList.add("error");
+      }
+
+      function updateStats(stats) {
+        console.log("[updateStats] called with:", stats);
+        if (stats) {
+          document.getElementById("delta-messages").textContent =
+            stats.deltaMessages || 0;
+          document.getElementById("full-messages").textContent =
+            stats.fullMessages || 0;
+
+          const totalBytes = stats.totalBytesWithoutCompression || 0;
+          const compressedBytes = stats.totalBytesWithCompression || 0;
+          const saved =
+            totalBytes > 0
+              ? ((1 - compressedBytes / totalBytes) * 100).toFixed(1)
+              : 0;
+          document.getElementById("bandwidth-saved").textContent = saved + "%";
+
+          log(
+            `📊 Stats: Delta=${stats.deltaMessages} Full=${stats.fullMessages} Saved=${saved}%`,
+            "info",
+          );
+        }
+      }
+
+      async function connect() {
+        try {
+          log("Connecting to Sockudo server...", "info");
+
+          // Load configuration from backend server
+          const configResponse = await fetch("/config");
+          if (!configResponse.ok) {
+            throw new Error(`Failed to load config: ${configResponse.status}`);
+          }
+          const config = await configResponse.json();
+          log("✅ Loaded config from backend server", "success");
+
+          pusher = new Pusher(config.pusherKey, {
+            wsHost: config.pusherHost,
+            wsPort: config.pusherPort,
+            forceTLS: config.pusherUseTLS,
+            enabledTransports: ["ws"],
+            disabledTransports: ["sockjs"],
+            authEndpoint: config.authEndpoint,
+            cluster: config.pusherCluster || "mt1",
+            deltaCompression: {
+              enabled: true,
+              algorithms: ["fossil", "xdelta3"],
+              debug: true,
+              onStats: (stats) => {
+                updateStats(stats);
+              },
+            },
+          });
+
+          pusher.connection.bind("connected", () => {
+            log("✅ Connected to Sockudo", "success");
+            updateStatus("Connected", true);
+            document.getElementById("connect-btn").disabled = true;
+            document.getElementById("disconnect-btn").disabled = false;
+            document.getElementById("enable-delta-btn").disabled = false;
+            document.getElementById("subscribe-btn").disabled = false;
+          });
+
+          pusher.connection.bind("disconnected", () => {
+            log("❌ Disconnected from Sockudo", "warning");
+            updateStatus("Disconnected");
+            document.getElementById("connect-btn").disabled = false;
+            document.getElementById("disconnect-btn").disabled = true;
+            document.getElementById("enable-delta-btn").disabled = true;
+            document.getElementById("subscribe-btn").disabled = true;
+            document.getElementById("send-message-btn").disabled = true;
+          });
+
+          pusher.connection.bind("error", (err) => {
+            log("❌ Connection error: " + JSON.stringify(err), "error");
+            updateStatus(
+              "Error: " + (err.error?.message || "Unknown"),
+              false,
+              true,
+            );
+          });
+
+          // Log all incoming messages for debugging
+          pusher.connection.bind("message", (event) => {
+            log(`📨 Raw message: ${JSON.stringify(event)}`, "info");
+
+            // Check if sequence and conflation_key are present
+            if (event.sequence !== undefined) {
+              log(`   🔢 Sequence: ${event.sequence}`, "info");
+            }
+            if (event.conflation_key !== undefined) {
+              log(`   🔑 Conflation Key: ${event.conflation_key}`, "info");
+            }
+            if (event.rawMessage) {
+              log(`   📝 Raw: ${event.rawMessage}`, "info");
+            }
+          });
+        } catch (error) {
+          log("❌ Connection failed: " + error.message, "error");
+          updateStatus("Connection failed", false, true);
+        }
+      }
+
+      function disconnect() {
+        if (pusher) {
+          pusher.disconnect();
+          log("Disconnecting...", "warning");
+        }
+      }
+
+      function enableDelta() {
+        if (!pusher) {
+          log("❌ Not connected", "error");
+          return;
+        }
+
+        if (!pusher.deltaCompression) {
+          log("❌ Delta compression not available - checking why...", "error");
+          log(
+            `   Pusher object keys: ${Object.keys(pusher).join(", ")}`,
+            "error",
+          );
+          return;
+        }
+
+        log("Enabling delta compression...", "info");
+        pusher.deltaCompression.enable();
+
+        // Listen for delta compression events
+        pusher.connection.bind("pusher:delta_compression_enabled", (data) => {
+          log(
+            "✅ Delta compression enabled: " + JSON.stringify(data),
+            "success",
+          );
+        });
+
+        log("Delta compression enabled and stats tracking active", "success");
+      }
+
+      function subscribe() {
+        if (!pusher) {
+          log("❌ Not connected", "error");
+          return;
+        }
+
+        log(`Subscribing to channel: ${CHANNEL_NAME}`, "info");
+        channel = pusher.subscribe(CHANNEL_NAME);
+
+        channel.bind("pusher:subscription_succeeded", () => {
+          log(`✅ Subscribed to ${CHANNEL_NAME}`, "success");
+          document.getElementById("send-message-btn").disabled = false;
+        });
+
+        channel.bind("pusher:subscription_error", (status) => {
+          log(`❌ Subscription failed: ${status}`, "error");
+        });
+
+        // Bind to price events
+        channel.bind("price", (data) => {
+          messageCount++;
+          document.getElementById("messages-received").textContent =
+            messageCount;
+          log(`💰 Price event received: ${JSON.stringify(data)}`, "success");
+        });
+      }
+
+      async function sendMessage() {
+        try {
+          const response = await fetch("http://localhost:3000/trigger-event", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              channel: CHANNEL_NAME,
+              event: "price",
+              data: { asset: "BTC" },
+            }),
+          });
+
+          if (response.ok) {
+            log("✅ Message sent successfully", "success");
+          } else {
+            log(`❌ Failed to send message: ${response.status}`, "error");
+          }
+        } catch (error) {
+          log(`❌ Error sending message: ${error.message}`, "error");
+        }
+      }
+
+      // Initialize
+      log('Test page loaded. Click "Connect" to start.', "info");
+      log("Using LOCAL Pusher build from pusher-local.js", "warning");
+    </script>
+  </body>
+</html>

@@ -6,8 +6,13 @@
       <sourceFolder url="file://$MODULE_DIR$/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/benches" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/benchmark/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/xdelta3/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/benchmarks/sender/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/benchmark/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/xdelta3/target" />
+      <excludeFolder url="file://$MODULE_DIR$/benchmarks/sender/target" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

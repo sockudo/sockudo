@@ -18,6 +18,141 @@ A high-performance, scalable WebSocket server implementing the Pusher protocol i
 - **🛡️ Production Ready** - Rate limiting, SSL/TLS, metrics
 - **⚡ Async Cleanup** - Non-blocking disconnect handling
 - **📊 Real-time Metrics** - Prometheus integration
+- **🧠 Delta Compression + Conflation** - Fossil and Xdelta3 (VCDIFF) with per-channel controls
+- **🏷️ Tag Filtering** - High-performance server-side filtering with optional tag emission controls
+- **🌐 Native WebSocket Engine** - `sockudo_ws` (replacing `fastwebsockets`) with advanced runtime tuning
+
+## What Was Added In This Branch
+
+This branch includes a major realtime pipeline upgrade:
+
+- Delta compression enhancements (including late-subscriber sync, cluster coordination, state cleanup hardening, and sequence/base-index improvements)
+- Channel-level and global tag-filtering optimizations
+- Conflation key support to isolate delta state per logical stream/key
+- Broadcast and adapter path optimizations (lock/contention, batching, buffer controls)
+- Expanded benchmark/soak tooling and test assets
+- Full WebSocket transport migration from `fastwebsockets` to `sockudo_ws`
+- Xdelta3 backend migration from `xdelta3` crate to `oxidelta`
+
+## Delta Compression, Conflation, and Tag Filtering
+
+### Delta Algorithms
+
+- `fossil` (fast, low overhead)
+- `xdelta3` (VCDIFF/RFC 3284) powered by `oxidelta`
+
+### Core Delta Options (`config/config.json`)
+
+```json
+{
+  "delta_compression": {
+    "enabled": true,
+    "algorithm": "Fossil",
+    "full_message_interval": 10,
+    "min_message_size": 100,
+    "max_state_age_secs": 300,
+    "max_channel_states_per_socket": 100,
+    "max_conflation_states_per_channel": 100,
+    "conflation_key_path": null,
+    "cluster_coordination": true,
+    "omit_delta_algorithm": true
+  }
+}
+```
+
+### Tag Filtering (`config/config.json`)
+
+```json
+{
+  "tag_filtering": {
+    "enabled": true,
+    "enable_tags": false
+  }
+}
+```
+
+### Channel-Level Delta Overrides
+
+Per-app/per-channel overrides are available through `channel_delta_compression` in app config.  
+Supported modes include:
+
+- Simple: `inherit`, `disabled`, `fossil`, `xdelta3`
+- Full object settings: `enabled`, `algorithm`, `conflation_key`, `max_messages_per_key`, `max_conflation_keys`, `enable_tags`
+
+### Delta + Conflation Behavior
+
+- Delta state is tracked per socket and channel
+- Conflation key extraction isolates independent state streams (for example per `asset`, `symbol`, token id, etc.)
+- Cluster coordination can synchronize full-message intervals across nodes (Redis/NATS)
+- Cache-sync and late subscriber behavior were improved for reduced warm-up overhead
+
+### Detailed Docs
+
+- `DELTA_COMPRESSION.md`
+- `docs/DELTA_COMPRESSION_BANDWIDTH_OPTIMIZATION.md`
+- `docs/DELTA_COMPRESSION_CLUSTER_COORDINATION.md`
+- `docs/DELTA_COMPRESSION_HORIZONTAL_IMPLEMENTATION.md`
+- `docs/DELTA_COMPRESSION_LATE_SUBSCRIBERS.md`
+- `docs/TAG_FILTERING.md`
+- `docs/TAG_FILTERING_QUICKSTART.md`
+
+## WebSocket Engine (`sockudo_ws`)
+
+`fastwebsockets` was fully replaced with native `sockudo_ws` APIs:
+
+- Axum integration via `sockudo_ws::axum_integration::WebSocketUpgrade`
+- Split reader/writer model via `sockudo_ws::axum_integration::WebSocket::{split}`
+- Message-based send/receive model (`Text`, `Binary`, `Close`, control handling)
+- Native websocket runtime tuning mapped into `websocket` config
+
+### WebSocket Runtime Options (`config/config.json`)
+
+```json
+{
+  "websocket": {
+    "max_messages": 1000,
+    "max_bytes": 1048576,
+    "disconnect_on_buffer_full": false,
+    "max_message_size": 67108864,
+    "max_frame_size": 16777216,
+    "write_buffer_size": 16384,
+    "max_backpressure": 1048576,
+    "auto_ping": true,
+    "ping_interval": 30,
+    "idle_timeout": 120,
+    "compression": "disabled"
+  }
+}
+```
+
+### WebSocket Environment Variables
+
+```bash
+WEBSOCKET_MAX_MESSAGES=1000
+WEBSOCKET_MAX_BYTES=1048576
+WEBSOCKET_DISCONNECT_ON_BUFFER_FULL=false
+WEBSOCKET_MAX_MESSAGE_SIZE=67108864
+WEBSOCKET_MAX_FRAME_SIZE=16777216
+WEBSOCKET_WRITE_BUFFER_SIZE=16384
+WEBSOCKET_MAX_BACKPRESSURE=1048576
+WEBSOCKET_AUTO_PING=true
+WEBSOCKET_PING_INTERVAL=30
+WEBSOCKET_IDLE_TIMEOUT=120
+WEBSOCKET_COMPRESSION=disabled
+```
+
+Compression values for `WEBSOCKET_COMPRESSION` / `websocket.compression`:
+
+- `disabled`
+- `dedicated`
+- `shared`
+- `window256b`
+- `window1kb`
+- `window2kb`
+- `window4kb`
+- `window8kb`
+- `window16kb`
+- `window32kb`
 
 ## Quick Start
 

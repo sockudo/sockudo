@@ -7,12 +7,13 @@ use crate::app::config::App;
 use crate::error::{Error, Result};
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, UserInfo};
-use serde_json::Value;
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use tracing::{info, warn};
 
 impl ConnectionHandler {
     pub fn parse_and_validate_user_data(&self, user_data_str: &str) -> Result<UserInfo> {
-        let user_info_val: Value = serde_json::from_str(user_data_str)
+        let user_info_val: Value = sonic_rs::from_str(user_data_str)
             .map_err(|e| Error::Auth(format!("Invalid user_data JSON: {e}")))?;
 
         let user_id = user_info_val
@@ -47,12 +48,11 @@ impl ConnectionHandler {
         self.clear_user_authentication_timeout(&app_config.id, socket_id)
             .await?;
 
-        // Update connection state
-        let mut connection_manager = self.connection_manager.lock().await;
-        let connection_arc = connection_manager
+        let connection_arc = self
+            .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
-            .ok_or_else(|| Error::ConnectionNotFound)?;
+            .ok_or(Error::ConnectionNotFound)?;
 
         {
             let mut conn_locked = connection_arc.inner.lock().await;
@@ -60,7 +60,9 @@ impl ConnectionHandler {
         }
 
         // Re-add user to adapter's tracking (this updates user associations)
-        connection_manager.add_user(connection_arc.clone()).await?;
+        self.connection_manager
+            .add_user(connection_arc.clone())
+            .await?;
 
         Ok(())
     }
@@ -75,7 +77,7 @@ impl ConnectionHandler {
         let mut watchers_to_notify = Vec::new();
 
         if app_config.enable_watchlist_events.unwrap_or(false)
-            && let Some(watchlist) = &user_info.watchlist
+            && let Some(watchlist) = user_info.watchlist.as_ref()
         {
             info!(
                 "Processing watchlist for user {} with {} watched users",
@@ -89,7 +91,7 @@ impl ConnectionHandler {
                 .add_user_with_watchlist(
                     &app_config.id,
                     &user_info.id,
-                    socket_id.clone(),
+                    *socket_id,
                     user_info.watchlist.clone(),
                 )
                 .await?;
@@ -112,8 +114,6 @@ impl ConnectionHandler {
             for event in &watchlist_events {
                 if let Err(e) = self
                     .connection_manager
-                    .lock()
-                    .await
                     .send_message(&app_config.id, socket_id, event.clone())
                     .await
                 {
@@ -132,8 +132,6 @@ impl ConnectionHandler {
                 for watcher_socket_id in watchers_to_notify {
                     if let Err(e) = self
                         .connection_manager
-                        .lock()
-                        .await
                         .send_message(&app_config.id, &watcher_socket_id, online_event.clone())
                         .await
                     {
@@ -158,8 +156,6 @@ impl ConnectionHandler {
         let success_message = PusherMessage::signin_success(request.user_data.clone());
 
         self.connection_manager
-            .lock()
-            .await
             .send_message(&app_config.id, socket_id, success_message)
             .await
     }
@@ -178,7 +174,7 @@ impl ConnectionHandler {
             .await?;
 
         // For each watcher, get their active socket IDs
-        let mut connection_manager = self.connection_manager.lock().await;
+        let connection_manager = &self.connection_manager;
         for watcher_user_id in watchers {
             let user_sockets = connection_manager
                 .get_user_sockets(&watcher_user_id, app_id)
@@ -186,7 +182,7 @@ impl ConnectionHandler {
 
             for socket_ref in user_sockets {
                 let socket_guard = socket_ref.inner.lock().await;
-                watcher_sockets.push(socket_guard.state.socket_id.clone());
+                watcher_sockets.push(socket_guard.state.socket_id);
             }
         }
 

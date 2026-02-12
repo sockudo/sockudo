@@ -14,8 +14,7 @@ impl ConnectionHandler {
                 app_config.max_client_events_per_second,
                 1, // Per second
             ));
-            self.client_event_limiters
-                .insert(socket_id.clone(), limiter);
+            self.client_event_limiters.insert(*socket_id, limiter);
             debug!(
                 "Initialized client event rate limiter for socket {}: {} events/sec",
                 socket_id, app_config.max_client_events_per_second
@@ -38,7 +37,7 @@ impl ConnectionHandler {
             }
 
             let limiter = limiter_arc.value();
-            let limit_result = limiter.increment(socket_id.as_ref()).await?;
+            let limit_result = limiter.increment(&socket_id.to_string()).await?;
 
             if !limit_result.allowed {
                 // Track rate limit trigger

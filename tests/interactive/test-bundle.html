@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bundle Test</title>
+</head>
+<body>
+    <h1>Testing Bundled Libraries</h1>
+    <div id="results"></div>
+
+    <script src="public/dist/bundle.js"></script>
+    <script>
+        // Test if all libraries are available
+        const results = document.getElementById('results');
+
+        function addResult(text, success = true) {
+            const p = document.createElement('p');
+            p.textContent = text;
+            p.style.color = success ? 'green' : 'red';
+            results.appendChild(p);
+        }
+
+        // Check Pusher
+        if (typeof Pusher !== 'undefined') {
+            addResult('✓ Pusher loaded successfully');
+            addResult(`  Version: ${Pusher.VERSION || 'unknown'}`);
+        } else {
+            addResult('✗ Pusher not found', false);
+        }
+
+        // Check fossil-delta
+        if (typeof fossilDelta !== 'undefined') {
+            addResult('✓ fossil-delta loaded successfully');
+            if (typeof fossilDelta.create === 'function' && typeof fossilDelta.apply === 'function') {
+                addResult('  Functions: create() and apply() available');
+            }
+        } else {
+            addResult('✗ fossil-delta not found', false);
+        }
+
+        // Check vcdiff
+        if (typeof vcdiff !== 'undefined' && typeof vcdiff.decode === 'function') {
+            addResult('✓ vcdiff decoder loaded successfully');
+            addResult('  Function: decode() available');
+        } else {
+            addResult('✗ vcdiff decoder not found', false);
+        }
+
+        // Quick test of fossil-delta
+        try {
+            const source = new TextEncoder().encode('Hello World');
+            const target = new TextEncoder().encode('Hello JavaScript');
+            const delta = fossilDelta.create(source, target);
+            const result = fossilDelta.apply(source, delta);
+            const resultText = new TextDecoder().decode(result);
+            if (resultText === 'Hello JavaScript') {
+                addResult('✓ fossil-delta test passed: ' + resultText);
+            } else {
+                addResult('✗ fossil-delta test failed', false);
+            }
+        } catch (e) {
+            addResult('✗ fossil-delta test error: ' + e.message, false);
+        }
+
+        // Test connecting to Pusher
+        try {
+            const pusher = new Pusher('app-key', {
+                wsHost: 'localhost',
+                wsPort: 6001,
+                forceTLS: false,
+                disableStats: true,
+                enabledTransports: ['ws'],
+                cluster: 'mt1'
+            });
+
+            pusher.connection.bind('connected', () => {
+                addResult('✓ Successfully connected to Pusher/Sockudo');
+                pusher.disconnect();
+            });
+
+            pusher.connection.bind('error', (err) => {
+                addResult('✗ Connection error: ' + err.message, false);
+            });
+        } catch (e) {
+            addResult('✗ Pusher initialization error: ' + e.message, false);
+        }
+    </script>
+</body>
+</html>

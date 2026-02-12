@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libmariadb-dev \
     cmake \
+    libclang-dev \
+    clang \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user and directory

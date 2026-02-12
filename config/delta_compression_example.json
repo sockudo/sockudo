@@ -1,0 +1,41 @@
+{
+  "port": 6001,
+  "host": "0.0.0.0",
+  "adapter": {
+    "driver": "local"
+  },
+  "app_manager": {
+    "driver": "memory",
+    "array": {
+      "apps": [
+        {
+          "id": "test-app",
+          "key": "test-key",
+          "secret": "test-secret",
+          "max_connections": 100,
+          "enable_client_messages": true,
+          "enabled": true,
+          "max_backend_events_per_sec": 100,
+          "max_client_events_per_sec": 100,
+          "max_read_req_per_sec": 100
+        }
+      ]
+    }
+  },
+  "delta_compression": {
+    "enabled": true,
+    "algorithm": "fossil",
+    "full_message_interval": 10,
+    "min_message_size": 100,
+    "max_state_age_secs": 300,
+    "max_channel_states_per_socket": 100,
+    "conflation_key_path": "asset",
+    "max_conflation_states_per_channel": 100,
+    "omit_delta_algorithm": false
+  },
+  "tag_filtering": {
+    "enabled": false,
+    "enable_tags": true
+  },
+  "debug": true
+}

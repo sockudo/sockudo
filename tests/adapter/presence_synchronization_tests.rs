@@ -1,8 +1,8 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
-use serde_json::json;
 use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo::options::ClusterHealthConfig;
+use sonic_rs::json;
 
 #[tokio::test]
 async fn test_presence_member_join_broadcast() {
@@ -207,7 +207,7 @@ async fn test_presence_local_registry_update_always_happens() {
 
     // Verify local registry was updated even with cluster health disabled
     {
-        let horizontal = adapter_mut.horizontal.lock().await;
+        let horizontal = adapter_mut.horizontal.read().await;
         let registry = horizontal.cluster_presence_registry.read().await;
 
         // Should have entry for our node
@@ -243,7 +243,7 @@ async fn test_presence_local_registry_update_always_happens() {
 
     // Verify local registry was cleaned up
     {
-        let horizontal = adapter_mut.horizontal.lock().await;
+        let horizontal = adapter_mut.horizontal.read().await;
         let registry = horizontal.cluster_presence_registry.read().await;
 
         if let Some(node_data) = registry.get(&adapter_mut.node_id)
@@ -319,7 +319,7 @@ async fn test_multiple_presence_members_same_channel() {
 
     // Verify all members are in local registry
     {
-        let horizontal = adapter_mut.horizontal.lock().await;
+        let horizontal = adapter_mut.horizontal.read().await;
         let registry = horizontal.cluster_presence_registry.read().await;
 
         // Use safe access with proper error handling
@@ -414,7 +414,7 @@ async fn test_presence_state_consistency_across_join_leave() {
 
     // Verify final state
     {
-        let horizontal = adapter_mut.horizontal.lock().await;
+        let horizontal = adapter_mut.horizontal.read().await;
         let registry = horizontal.cluster_presence_registry.read().await;
 
         // Use safe access

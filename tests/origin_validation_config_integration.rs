@@ -31,6 +31,7 @@ mod origin_validation_config_integration_tests {
                 webhooks: None,
                 enable_watchlist_events: Some(false),
                 allowed_origins: None,
+                channel_delta_compression: None,
             },
             // App with specific allowed origins
             App {
@@ -58,6 +59,7 @@ mod origin_validation_config_integration_tests {
                     "*.staging.example.com".to_string(),
                     "http://localhost:3000".to_string(),
                 ]),
+                channel_delta_compression: None,
             },
             // App with wildcard allowing all origins
             App {
@@ -81,6 +83,7 @@ mod origin_validation_config_integration_tests {
                 webhooks: None,
                 enable_watchlist_events: Some(false),
                 allowed_origins: Some(vec!["*".to_string()]),
+                channel_delta_compression: None,
             },
         ];
 

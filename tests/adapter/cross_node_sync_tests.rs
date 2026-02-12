@@ -1,7 +1,8 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockNodeState, MockTransport};
+use ahash::AHashMap;
 use sockudo::adapter::horizontal_adapter::{RequestType, ResponseBody};
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 #[tokio::test]
 async fn test_request_response_aggregation_logic() {
@@ -21,8 +22,8 @@ async fn test_request_response_aggregation_logic() {
             request_id: request_id.to_string(),
             node_id: "node-1".to_string(),
             app_id: "test-app".to_string(),
-            members: HashMap::new(),
-            channels_with_sockets_count: HashMap::new(),
+            members: AHashMap::new(),
+            channels_with_sockets_count: AHashMap::new(),
             socket_ids: vec!["socket-1".to_string(), "socket-2".to_string()],
             sockets_count: 2,
             exists: true,
@@ -34,8 +35,8 @@ async fn test_request_response_aggregation_logic() {
             request_id: request_id.to_string(),
             node_id: "node-2".to_string(),
             app_id: "test-app".to_string(),
-            members: HashMap::new(),
-            channels_with_sockets_count: HashMap::new(),
+            members: AHashMap::new(),
+            channels_with_sockets_count: AHashMap::new(),
             socket_ids: vec!["socket-3".to_string()],
             sockets_count: 1,
             exists: true,
@@ -46,7 +47,7 @@ async fn test_request_response_aggregation_logic() {
 
     // Test the aggregation logic
     let combined_response = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,
@@ -84,19 +85,19 @@ async fn test_channel_members_aggregation_deduplication() {
     let mut responses = Vec::new();
 
     // Node 1: Has user-1 and user-2
-    let mut members1 = HashMap::new();
+    let mut members1 = AHashMap::new();
     members1.insert(
         "user-1".to_string(),
         sockudo::channel::PresenceMemberInfo {
             user_id: "user-1".to_string(),
-            user_info: Some(serde_json::json!({"name": "Alice", "node": "node-1"})),
+            user_info: Some(sonic_rs::json!({"name": "Alice", "node": "node-1"})),
         },
     );
     members1.insert(
         "user-2".to_string(),
         sockudo::channel::PresenceMemberInfo {
             user_id: "user-2".to_string(),
-            user_info: Some(serde_json::json!({"name": "Bob", "node": "node-1"})),
+            user_info: Some(sonic_rs::json!({"name": "Bob", "node": "node-1"})),
         },
     );
 
@@ -105,7 +106,7 @@ async fn test_channel_members_aggregation_deduplication() {
         node_id: "node-1".to_string(),
         app_id: "test-app".to_string(),
         members: members1,
-        channels_with_sockets_count: HashMap::new(),
+        channels_with_sockets_count: AHashMap::new(),
         socket_ids: Vec::new(),
         sockets_count: 0,
         exists: false,
@@ -114,19 +115,19 @@ async fn test_channel_members_aggregation_deduplication() {
     });
 
     // Node 2: Has user-1 (duplicate) and user-3 (unique)
-    let mut members2 = HashMap::new();
+    let mut members2 = AHashMap::new();
     members2.insert(
         "user-1".to_string(),
         sockudo::channel::PresenceMemberInfo {
             user_id: "user-1".to_string(),
-            user_info: Some(serde_json::json!({"name": "Alice", "node": "node-2"})), // Different data
+            user_info: Some(sonic_rs::json!({"name": "Alice", "node": "node-2"})), // Different data
         },
     );
     members2.insert(
         "user-3".to_string(),
         sockudo::channel::PresenceMemberInfo {
             user_id: "user-3".to_string(),
-            user_info: Some(serde_json::json!({"name": "Carol", "node": "node-2"})),
+            user_info: Some(sonic_rs::json!({"name": "Carol", "node": "node-2"})),
         },
     );
 
@@ -135,7 +136,7 @@ async fn test_channel_members_aggregation_deduplication() {
         node_id: "node-2".to_string(),
         app_id: "test-app".to_string(),
         members: members2,
-        channels_with_sockets_count: HashMap::new(),
+        channels_with_sockets_count: AHashMap::new(),
         socket_ids: Vec::new(),
         sockets_count: 0,
         exists: false,
@@ -145,7 +146,7 @@ async fn test_channel_members_aggregation_deduplication() {
 
     // Test aggregation
     let combined_response = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,
@@ -181,7 +182,7 @@ async fn test_channels_with_socket_count_aggregation() {
     let mut responses = Vec::new();
 
     // Node 1: Has channels A(2 sockets), B(1 socket)
-    let mut channels1 = HashMap::new();
+    let mut channels1 = AHashMap::new();
     channels1.insert("channel-A".to_string(), 2);
     channels1.insert("channel-B".to_string(), 1);
 
@@ -189,7 +190,7 @@ async fn test_channels_with_socket_count_aggregation() {
         request_id: request_id.to_string(),
         node_id: "node-1".to_string(),
         app_id: "test-app".to_string(),
-        members: HashMap::new(),
+        members: AHashMap::new(),
         channels_with_sockets_count: channels1,
         socket_ids: Vec::new(),
         sockets_count: 0,
@@ -199,7 +200,7 @@ async fn test_channels_with_socket_count_aggregation() {
     });
 
     // Node 2: Has channels A(3 sockets), C(1 socket)
-    let mut channels2 = HashMap::new();
+    let mut channels2 = AHashMap::new();
     channels2.insert("channel-A".to_string(), 3); // Overlaps with node-1
     channels2.insert("channel-C".to_string(), 1); // Unique to node-2
 
@@ -207,7 +208,7 @@ async fn test_channels_with_socket_count_aggregation() {
         request_id: request_id.to_string(),
         node_id: "node-2".to_string(),
         app_id: "test-app".to_string(),
-        members: HashMap::new(),
+        members: AHashMap::new(),
         channels_with_sockets_count: channels2,
         socket_ids: Vec::new(),
         sockets_count: 0,
@@ -218,7 +219,7 @@ async fn test_channels_with_socket_count_aggregation() {
 
     // Test aggregation
     let combined_response = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,
@@ -261,8 +262,8 @@ async fn test_exists_flag_aggregation_logic() {
             request_id: request_id.to_string(),
             node_id: format!("node-{}", i),
             app_id: "test-app".to_string(),
-            members: HashMap::new(),
-            channels_with_sockets_count: HashMap::new(),
+            members: AHashMap::new(),
+            channels_with_sockets_count: AHashMap::new(),
             socket_ids: Vec::new(),
             sockets_count: 0,
             exists: false, // All return false
@@ -272,7 +273,7 @@ async fn test_exists_flag_aggregation_logic() {
     }
 
     let combined_response = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id.clone(),
@@ -293,8 +294,8 @@ async fn test_exists_flag_aggregation_logic() {
             request_id: request_id.to_string(),
             node_id: "node-0".to_string(),
             app_id: "test-app".to_string(),
-            members: HashMap::new(),
-            channels_with_sockets_count: HashMap::new(),
+            members: AHashMap::new(),
+            channels_with_sockets_count: AHashMap::new(),
             socket_ids: Vec::new(),
             sockets_count: 0,
             exists: false,
@@ -305,8 +306,8 @@ async fn test_exists_flag_aggregation_logic() {
             request_id: request_id.to_string(),
             node_id: "node-1".to_string(),
             app_id: "test-app".to_string(),
-            members: HashMap::new(),
-            channels_with_sockets_count: HashMap::new(),
+            members: AHashMap::new(),
+            channels_with_sockets_count: AHashMap::new(),
             socket_ids: Vec::new(),
             sockets_count: 0,
             exists: true, // One returns true
@@ -316,7 +317,7 @@ async fn test_exists_flag_aggregation_logic() {
     ];
 
     let combined_response = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,
@@ -383,7 +384,7 @@ async fn test_partial_response_handling_timeout_behavior() {
 
     // Set very short timeout for testing
     {
-        let mut horizontal = adapter.horizontal.lock().await;
+        let mut horizontal = adapter.horizontal.write().await;
         horizontal.requests_timeout = 100; // 100ms timeout
     }
 
@@ -434,7 +435,7 @@ async fn test_empty_response_aggregation() {
     let responses = Vec::new(); // No responses at all
 
     let combined_response = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,

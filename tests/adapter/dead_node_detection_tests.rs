@@ -39,14 +39,14 @@ async fn test_heartbeat_tracking_updates_node_registry() {
 
     // Process the heartbeat through the adapter's request handler
     {
-        let mut horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.write().await;
         let result = horizontal.process_request(heartbeat_request.clone()).await;
         assert!(result.is_ok(), "Heartbeat processing should succeed");
     }
 
     // Verify the node is now tracked in heartbeat registry
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         let heartbeats = horizontal.node_heartbeats.read().await;
         assert!(
             heartbeats.contains_key("remote-node-1"),
@@ -70,7 +70,7 @@ async fn test_dead_node_detection_identifies_timeout_nodes() {
 
     // Manually add a node to heartbeat tracking with an old timestamp
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         let mut heartbeats = horizontal.node_heartbeats.write().await;
 
         // Add node with timestamp that will be considered "dead"
@@ -84,7 +84,7 @@ async fn test_dead_node_detection_identifies_timeout_nodes() {
 
     // Use the adapter's dead node detection logic
     let dead_nodes = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.get_dead_nodes(node_timeout_ms).await
     };
 
@@ -108,7 +108,7 @@ async fn test_cleanup_leader_election_logic() {
 
     // Set up a scenario where our node should be leader (alphabetically first)
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         let mut heartbeats = horizontal.node_heartbeats.write().await;
 
         // Add nodes that are alphabetically after our node
@@ -123,7 +123,7 @@ async fn test_cleanup_leader_election_logic() {
 
     // Test leader election logic
     let is_leader = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.is_cleanup_leader(&dead_nodes).await
     };
 
@@ -143,7 +143,7 @@ async fn test_cleanup_leader_election_excludes_dead_nodes() {
 
     // Set up scenario where we control the alphabetical ordering
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         let mut heartbeats = horizontal.node_heartbeats.write().await;
 
         // Add nodes that are alphabetically before and after our node
@@ -161,7 +161,7 @@ async fn test_cleanup_leader_election_excludes_dead_nodes() {
 
     // Test leader election with dead node excluded
     let is_leader = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal.is_cleanup_leader(&dead_nodes).await
     };
 
@@ -183,7 +183,7 @@ async fn test_dead_node_cleanup_removes_presence_data() {
     // Set up presence data for a node we'll mark as dead
     let dead_node_id = "doomed-node";
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
 
         // Add presence data for the doomed node
         horizontal
@@ -193,7 +193,7 @@ async fn test_dead_node_cleanup_removes_presence_data() {
                 "socket-123",
                 "user-456",
                 "test-app",
-                Some(serde_json::json!({"name": "Doomed User"})),
+                Some(sonic_rs::json!({"name": "Doomed User"})),
             )
             .await;
 
@@ -204,14 +204,14 @@ async fn test_dead_node_cleanup_removes_presence_data() {
                 "socket-789",
                 "user-999",
                 "test-app",
-                Some(serde_json::json!({"name": "Another Doomed User"})),
+                Some(sonic_rs::json!({"name": "Another Doomed User"})),
             )
             .await;
     }
 
     // Verify presence data exists before cleanup
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         let registry = horizontal.cluster_presence_registry.read().await;
         assert!(
             registry.contains_key(dead_node_id),
@@ -226,7 +226,7 @@ async fn test_dead_node_cleanup_removes_presence_data() {
 
     // Perform dead node cleanup
     let cleanup_tasks = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal
             .handle_dead_node_cleanup(dead_node_id)
             .await
@@ -242,7 +242,7 @@ async fn test_dead_node_cleanup_removes_presence_data() {
 
     // Verify presence data was removed
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         let registry = horizontal.cluster_presence_registry.read().await;
         assert!(
             !registry.contains_key(dead_node_id),
@@ -263,7 +263,7 @@ async fn test_dead_node_cleanup_removes_presence_data() {
 #[tokio::test]
 async fn test_dead_node_event_structure_contains_required_data() {
     let config = MockConfig::default();
-    let mut adapter = HorizontalAdapterBase::<MockTransport>::new(config)
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config)
         .await
         .unwrap();
 
@@ -275,7 +275,7 @@ async fn test_dead_node_event_structure_contains_required_data() {
     // Add some presence data that will become orphaned
     let dead_node_id = "failing-node";
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal
             .add_presence_entry(
                 dead_node_id,
@@ -283,14 +283,14 @@ async fn test_dead_node_event_structure_contains_required_data() {
                 "socket-abc",
                 "user-def",
                 "my-app",
-                Some(serde_json::json!({"display_name": "Test User", "status": "online"})),
+                Some(sonic_rs::json!({"display_name": "Test User", "status": "online"})),
             )
             .await;
     }
 
     // Simulate the dead node cleanup process that emits events
     let cleanup_tasks = {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal
             .handle_dead_node_cleanup(dead_node_id)
             .await
@@ -316,8 +316,8 @@ async fn test_dead_node_event_structure_contains_required_data() {
             orphaned_members,
         };
 
-        // Send through the adapter's event bus
-        if let Some(event_bus) = &adapter.event_bus {
+        // Send through the adapter's event bus (OnceLock API)
+        if let Some(event_bus) = adapter.event_bus.get() {
             event_bus.send(event).unwrap();
         }
     }
@@ -353,7 +353,7 @@ async fn test_follower_cleanup_only_removes_registry_data() {
 
     // Set up presence data for a dead node
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
         horizontal
             .add_presence_entry(
                 dead_node_id,
@@ -361,7 +361,7 @@ async fn test_follower_cleanup_only_removes_registry_data() {
                 "socket-1",
                 "user-1",
                 "test-app",
-                Some(serde_json::json!({"name": "User 1"})),
+                Some(sonic_rs::json!({"name": "User 1"})),
             )
             .await;
 
@@ -387,7 +387,7 @@ async fn test_follower_cleanup_only_removes_registry_data() {
 
     // Process the dead node notification
     {
-        let mut horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.write().await;
         let result = horizontal.process_request(dead_node_request).await;
         assert!(
             result.is_ok(),
@@ -397,7 +397,7 @@ async fn test_follower_cleanup_only_removes_registry_data() {
 
     // Verify both heartbeat and presence registry were cleaned up
     {
-        let horizontal = adapter.horizontal.lock().await;
+        let horizontal = adapter.horizontal.read().await;
 
         // Check heartbeat tracking
         let heartbeats = horizontal.node_heartbeats.read().await;

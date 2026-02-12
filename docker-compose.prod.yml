@@ -19,11 +19,11 @@ services:
       - SSL_HTTP_PORT=80
 
       # Production app settings
-      - SOCKUDO_DEFAULT_APP_ENABLED=false  # Disable default app in production
+      - SOCKUDO_DEFAULT_APP_ENABLED=false # Disable default app in production
 
     # Production port mapping (SSL)
     ports:
-      - "80:80"    # HTTP (redirects to HTTPS)
+      - "80:80" # HTTP (redirects to HTTPS)
       - "443:6001" # HTTPS
       - "9601:9601" # Metrics
 
@@ -32,10 +32,10 @@ services:
       resources:
         limits:
           memory: 1G
-          cpus: '2.0'
+          cpus: "2.0"
         reservations:
           memory: 512M
-          cpus: '1.0'
+          cpus: "1.0"
       restart_policy:
         condition: any
         delay: 5s
@@ -61,11 +61,11 @@ services:
   redis:
     command: >
       sh -c "
-        redis-server 
-        --requirepass $${REDIS_PASSWORD} 
-        --appendonly yes 
+        redis-server
+        --requirepass $${REDIS_PASSWORD}
+        --appendonly yes
         --appendfsync everysec
-        --maxmemory 512mb 
+        --maxmemory 512mb
         --maxmemory-policy allkeys-lru
         --save 900 1
         --save 300 10
@@ -82,10 +82,10 @@ services:
       resources:
         limits:
           memory: 512M
-          cpus: '1.0'
+          cpus: "1.0"
         reservations:
           memory: 256M
-          cpus: '0.5'
+          cpus: "0.5"
 
     # Enhanced health check
     healthcheck:
@@ -132,13 +132,23 @@ services:
       resources:
         limits:
           memory: 1G
-          cpus: '2.0'
+          cpus: "2.0"
         reservations:
           memory: 512M
-          cpus: '1.0'
+          cpus: "1.0"
 
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "sockudo", "-p${MYSQL_PASSWORD}"]
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "sockudo",
+          "-p${MYSQL_PASSWORD}",
+        ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -162,19 +172,19 @@ services:
       - prometheus-data:/prometheus
 
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'
-      - '--web.enable-admin-api'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
 
     deploy:
       resources:
         limits:
           memory: 512M
-          cpus: '1.0'
+          cpus: "1.0"
 
     networks:
       - sockudo-network
@@ -204,7 +214,7 @@ services:
       resources:
         limits:
           memory: 256M
-          cpus: '0.5'
+          cpus: "0.5"
 
     networks:
       - sockudo-network
@@ -231,10 +241,18 @@ services:
       resources:
         limits:
           memory: 128M
-          cpus: '0.5'
+          cpus: "0.5"
 
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost/health",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -249,3 +267,7 @@ volumes:
     driver: local
   grafana-data:
     driver: local
+
+networks:
+  sockudo-network:
+    driver: bridge

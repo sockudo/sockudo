@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::time::interval;
+
 /// Entry in the rate limiter map
 #[derive(Clone)]
 struct RateLimitEntry {
@@ -104,56 +105,43 @@ impl RateLimiter for MemoryRateLimiter {
 
     async fn increment(&self, key: &str) -> Result<RateLimitResult> {
         let now = Instant::now();
+        let window_duration = Duration::from_secs(self.config.window_secs);
+        let max_requests = self.config.max_requests;
 
-        // Try to get or create an entry
-        let result = if let Some(mut entry) = self.limits.get_mut(key) {
-            // Check if the window has expired
-            if entry.expiry <= now {
-                // Reset the window
-                entry.count = 1;
-                entry.window_start = now;
-                entry.expiry = now + Duration::from_secs(self.config.window_secs);
-
-                RateLimitResult {
-                    allowed: true,
-                    remaining: self.config.max_requests - 1,
-                    reset_after: self.config.window_secs,
-                    limit: self.config.max_requests,
-                }
-            } else {
-                // Increment the counter
-                let new_count = entry.count + 1;
-                entry.count = new_count;
-
-                let remaining = self.config.max_requests.saturating_sub(new_count);
-                let reset_after = entry.expiry.saturating_duration_since(now).as_secs();
-
-                RateLimitResult {
-                    allowed: remaining > 0,
-                    remaining,
-                    reset_after,
-                    limit: self.config.max_requests,
-                }
-            }
-        } else {
-            // Create a new entry
-            let entry = RateLimitEntry {
-                count: 1,
+        // FIX: Use entry API to atomically get-or-insert and modify in one operation
+        // This eliminates the TOCTOU race condition where another thread could insert
+        // between our get() and insert() calls
+        let mut entry = self.limits.entry(key.to_string()).or_insert_with(|| {
+            RateLimitEntry {
+                count: 0, // Will be incremented below
                 window_start: now,
-                expiry: now + Duration::from_secs(self.config.window_secs),
-            };
-
-            self.limits.insert(key.to_string(), entry);
-
-            RateLimitResult {
-                allowed: true,
-                remaining: self.config.max_requests - 1,
-                reset_after: self.config.window_secs,
-                limit: self.config.max_requests,
+                expiry: now + window_duration,
             }
-        };
+        });
 
-        Ok(result)
+        // Check if the window has expired and reset if needed
+        if entry.expiry <= now {
+            entry.count = 0;
+            entry.window_start = now;
+            entry.expiry = now + window_duration;
+        }
+
+        // Increment the counter atomically (we hold the entry lock)
+        entry.count += 1;
+        let new_count = entry.count;
+
+        // Calculate result while still holding the lock
+        let remaining = max_requests.saturating_sub(new_count);
+        let reset_after = entry.expiry.saturating_duration_since(now).as_secs();
+
+        // Entry lock is released here when `entry` goes out of scope
+
+        Ok(RateLimitResult {
+            allowed: new_count <= max_requests,
+            remaining,
+            reset_after,
+            limit: max_requests,
+        })
     }
 
     async fn reset(&self, key: &str) -> Result<()> {
@@ -189,5 +177,98 @@ impl Drop for MemoryRateLimiter {
         {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_rate_limiter_basic() {
+        let limiter = MemoryRateLimiter::new(5, 60);
+
+        // First request should be allowed
+        let result = limiter.increment("test_key").await.unwrap();
+        assert!(result.allowed);
+        assert_eq!(result.remaining, 4);
+        assert_eq!(result.limit, 5);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_exceeds_limit() {
+        let limiter = MemoryRateLimiter::new(3, 60);
+
+        // Use up all requests
+        for i in 0..3 {
+            let result = limiter.increment("test_key").await.unwrap();
+            assert!(result.allowed, "Request {} should be allowed", i + 1);
+        }
+
+        // Next request should be denied
+        let result = limiter.increment("test_key").await.unwrap();
+        assert!(!result.allowed);
+        assert_eq!(result.remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_check_doesnt_increment() {
+        let limiter = MemoryRateLimiter::new(5, 60);
+
+        // Check should not increment
+        let result = limiter.check("test_key").await.unwrap();
+        assert!(result.allowed);
+        assert_eq!(result.remaining, 5);
+
+        // Increment once
+        limiter.increment("test_key").await.unwrap();
+
+        // Check should show updated count
+        let result = limiter.check("test_key").await.unwrap();
+        assert!(result.allowed);
+        assert_eq!(result.remaining, 4);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_reset() {
+        let limiter = MemoryRateLimiter::new(5, 60);
+
+        // Increment a few times
+        limiter.increment("test_key").await.unwrap();
+        limiter.increment("test_key").await.unwrap();
+
+        // Reset
+        limiter.reset("test_key").await.unwrap();
+
+        // Should be back to full allowance
+        let result = limiter.check("test_key").await.unwrap();
+        assert_eq!(result.remaining, 5);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_concurrent_increments() {
+        use std::sync::Arc;
+
+        let limiter = Arc::new(MemoryRateLimiter::new(100, 60));
+        let mut handles = vec![];
+
+        // Spawn 50 concurrent tasks, each incrementing twice
+        for _ in 0..50 {
+            let limiter_clone = Arc::clone(&limiter);
+            let handle = tokio::spawn(async move {
+                limiter_clone.increment("concurrent_key").await.unwrap();
+                limiter_clone.increment("concurrent_key").await.unwrap();
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Should have exactly 100 increments (50 tasks * 2 increments each)
+        let result = limiter.check("concurrent_key").await.unwrap();
+        assert_eq!(result.remaining, 0, "Should have exactly 100 increments");
     }
 }

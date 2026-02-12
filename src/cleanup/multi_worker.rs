@@ -4,7 +4,7 @@ use crate::app::manager::AppManager;
 use crate::webhook::integration::WebhookIntegration;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 /// Multi-worker cleanup system that distributes work across multiple worker threads
@@ -17,7 +17,7 @@ pub struct MultiWorkerCleanupSystem {
 
 impl MultiWorkerCleanupSystem {
     pub fn new(
-        connection_manager: Arc<Mutex<dyn ConnectionManager + Send + Sync>>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
         config: CleanupConfig,

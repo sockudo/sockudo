@@ -135,6 +135,7 @@ impl WatchlistManager {
         socket_id: &SocketId,
     ) -> Result<Vec<PusherMessage>> {
         let mut events_to_send = Vec::new();
+        let mut should_cleanup_user = false;
 
         if let Some(app_online_users) = self.online_users.get(app_id)
             && let Some(mut user_sockets) = app_online_users.get_mut(user_id)
@@ -143,6 +144,8 @@ impl WatchlistManager {
 
             // If user has no more connections, they're offline
             if user_sockets.is_empty() {
+                should_cleanup_user = true;
+
                 // Notify watchers that this user went offline
                 if let Some(app_watchlists) = self.watchlists.get(app_id)
                     && let Some(user_entry) = app_watchlists.get(user_id)
@@ -153,6 +156,33 @@ impl WatchlistManager {
                         ]));
                     }
                 }
+            }
+        }
+
+        // MEMORY LEAK FIX: Clean up empty entries outside the borrow scope
+        if should_cleanup_user {
+            // Remove the empty user entry from online_users
+            if let Some(app_online_users) = self.online_users.get(app_id) {
+                app_online_users.remove(user_id);
+            }
+
+            // Clean up watchlist relationships
+            if let Some(app_watchlists) = self.watchlists.get(app_id) {
+                // Get the user's watching list before removing
+                let watching_list: Vec<String> = app_watchlists
+                    .get(user_id)
+                    .map(|entry| entry.watching.iter().cloned().collect())
+                    .unwrap_or_default();
+
+                // Remove this user from the watchers list of users they were watching
+                for watched_user_id in &watching_list {
+                    if let Some(mut watched_entry) = app_watchlists.get_mut(watched_user_id) {
+                        watched_entry.watchers.remove(user_id);
+                    }
+                }
+
+                // Remove the user's own watchlist entry
+                app_watchlists.remove(user_id);
             }
         }
 

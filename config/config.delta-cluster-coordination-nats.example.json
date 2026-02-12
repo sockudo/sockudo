@@ -1,0 +1,93 @@
+{
+  "adapter": {
+    "driver": "nats"
+  },
+  "port": 6001,
+  "host": "0.0.0.0",
+  "app_manager": {
+    "driver": "array",
+    "cache": {
+      "enabled": true,
+      "prefix": "sockudo"
+    }
+  },
+  "nats": {
+    "servers": "nats://127.0.0.1:4222",
+    "prefix": "sockudo"
+  },
+  "delta_compression": {
+    "enabled": true,
+    "algorithm": "fossil",
+    "full_message_interval": 10,
+    "min_message_size": 100,
+    "max_state_age_secs": 300,
+    "max_channel_states_per_socket": 100,
+    "cluster_coordination": true,
+    "omit_delta_algorithm": false
+  },
+  "tag_filtering": {
+    "enabled": false,
+    "enable_tags": true
+  },
+  "apps": [
+    {
+      "id": "app-id",
+      "key": "app-key",
+      "secret": "app-secret",
+      "max_connections": 10000,
+      "enable_client_messages": true,
+      "enabled": true,
+      "max_backend_events_per_sec": 1000,
+      "max_client_events_per_sec": 100,
+      "max_read_req_per_sec": 1000,
+      "webhooks": [],
+      "channel_delta_compression": {
+        "ticker:*": {
+          "enabled": true,
+          "algorithm": "fossil",
+          "conflation_key": "symbol",
+          "max_messages_per_key": 10,
+          "max_conflation_keys": 1000
+        },
+        "price:*": {
+          "enabled": true,
+          "algorithm": "fossil",
+          "conflation_key": "asset",
+          "max_messages_per_key": 5,
+          "max_conflation_keys": 500
+        },
+        "live-scores:*": {
+          "enabled": true,
+          "algorithm": "fossil",
+          "conflation_key": "match_id",
+          "max_messages_per_key": 20,
+          "max_conflation_keys": 100
+        },
+        "game-updates:*": {
+          "enabled": true,
+          "algorithm": "xdelta3",
+          "conflation_key": "game_id",
+          "max_messages_per_key": 15,
+          "max_conflation_keys": 200
+        }
+      }
+    }
+  ],
+  "metrics": {
+    "enabled": true,
+    "driver": "prometheus",
+    "host": "0.0.0.0",
+    "port": 9601,
+    "prefix": "sockudo_"
+  },
+  "rate_limiter": {
+    "enabled": true,
+    "driver": "memory"
+  },
+  "cluster_health": {
+    "enabled": true,
+    "heartbeat_interval_ms": 1000,
+    "node_timeout_ms": 3000,
+    "cleanup_interval_ms": 5000
+  }
+}

@@ -29,7 +29,7 @@ impl ConnectionHandler {
             channel: Some(request.channel.clone()),
             event: Some("pusher:subscribe".to_string()),
             data: Some(crate::protocol::messages::MessageData::Json(
-                serde_json::json!({
+                sonic_rs::json!({
                     "channel": request.channel,
                     "auth": signature,
                     "channel_data": request.channel_data
@@ -37,6 +37,9 @@ impl ConnectionHandler {
             )),
             name: None,
             user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
         };
 
         let is_valid = ChannelManager::signature_is_valid(
@@ -65,12 +68,7 @@ impl ConnectionHandler {
         };
 
         let is_valid = auth_validator
-            .validate_channel_auth(
-                socket_id.clone(),
-                &app_config.key,
-                &request.user_data,
-                signature,
-            )
+            .validate_channel_auth(*socket_id, &app_config.key, &request.user_data, signature)
             .await?;
 
         if !is_valid {

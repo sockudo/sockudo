@@ -1,0 +1,19 @@
+{
+  "name": "automated",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "node index.js",
+    "test:delta": "node delta-compression.test.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "dotenv": "^16.5.0",
+    "fossil-delta": "^2.0.0",
+    "node-fetch": "^3.3.2",
+    "pusher-js": "file:../interactive/sockudo-js",
+    "ws": "^8.18.0"
+  }
+}

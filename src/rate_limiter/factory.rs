@@ -4,8 +4,6 @@
 use crate::error::Result;
 use crate::rate_limiter::RateLimiter;
 use std::sync::Arc;
-#[cfg(any(feature = "redis", feature = "redis-cluster"))]
-use tracing::error;
 use tracing::{info, warn};
 
 use crate::options::{CacheDriver, RateLimiterConfig, RedisConnection};
@@ -111,7 +109,9 @@ impl RateLimiterFactory {
         info!("RateLimiter: Using Redis Cluster backend.");
 
         if global_redis_conn_details.cluster_nodes.is_empty() {
-            error!("RateLimiter: Redis cluster driver selected, but no cluster_nodes configured.");
+            tracing::error!(
+                "RateLimiter: Redis cluster driver selected, but no cluster_nodes configured."
+            );
             return Err(crate::error::Error::Configuration(
                 "RateLimiter: Redis cluster nodes not configured.".to_string(),
             ));

@@ -1,0 +1,11 @@
+[package]
+name = "bench-sender"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
+pushers = "1.5.0"
+sonic-rs = "0.5.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

@@ -1,38 +1,21 @@
 {
   "debug": false,
-  "host": "127.0.0.1",
+  "host": "0.0.0.0",
   "port": 6001,
   "mode": "production",
   "path_prefix": "/",
-  "shutdown_grace_period": 10,
+  "shutdown_grace_period": 2,
   "websocket_max_payload_kb": 64,
   "user_authentication_timeout": 3600,
   "activity_timeout": 120,
-  "unix_socket": {
-    "enabled": false,
-    "path": "/var/run/sockudo/sockudo.sock",
-    "permission_mode": "660"
-  },
   "adapter": {
     "driver": "local",
-    "redis": {
-      "requests_timeout": 5000,
-      "prefix": "sockudo_adapter:",
-      "cluster_mode": false,
-      "redis_pub_options": {},
-      "redis_sub_options": {}
-    },
+    "enable_socket_counting": true,
     "cluster": {
       "nodes": [],
-      "prefix": "sockudo_cluster:",
+      "prefix": "sockudo_adapter:",
       "request_timeout_ms": 5000,
       "use_connection_manager": true
-    },
-    "nats": {
-      "servers": ["nats://nats:4222"],
-      "prefix": "sockudo_nats:",
-      "request_timeout_ms": 5000,
-      "connection_timeout_ms": 5000
     },
     "cluster_health": {
       "enabled": true,
@@ -41,7 +24,7 @@
       "cleanup_interval_ms": 10000
     }
   },
-
+  "database": {},
   "app_manager": {
     "driver": "memory",
     "array": {
@@ -50,12 +33,29 @@
           "id": "app-id",
           "key": "app-key",
           "secret": "app-secret",
-          "max_connections": 10000,
+          "max_connections": 100000,
           "enable_client_messages": true,
-          "enable_user_authentication": false,
+          "enable_user_authentication": true,
           "enabled": true,
           "max_client_events_per_second": 1000,
-          "allowed_origins": ["*"]
+          "allowed_origins": ["*"],
+          "channel_delta_compression": {
+            "ticker:*": {
+              "enabled": true,
+              "algorithm": "Fossil",
+              "conflation_key": "item_id",
+              "max_messages_per_key": 10,
+              "max_conflation_keys": 1000,
+              "enable_tags": false
+            },
+            "price:*": {
+              "enabled": true,
+              "algorithm": "Fossil",
+              "conflation_key": "item_id",
+              "max_messages_per_key": 10,
+              "max_conflation_keys": 100
+            }
+          }
         }
       ]
     },
@@ -64,109 +64,23 @@
       "ttl": 300
     }
   },
-
   "cache": {
     "driver": "memory",
-    "redis": {
-      "prefix": "sockudo_cache:",
-      "cluster_mode": false
-    },
     "memory": {
       "ttl": 300,
       "cleanup_interval": 60,
       "max_capacity": 10000
     }
   },
-
-  "database": {
-    "redis": {
-      "host": "redis",
-      "port": 6379,
-      "db": 0,
-      "key_prefix": "sockudo:",
-      "sentinels": [],
-      "cluster_nodes": []
-    },
-    "mysql": {
-      "host": "mysql",
-      "port": 3306,
-      "username": "sockudo",
-      "password": "sockudo123",
-      "database": "sockudo",
-      "table_name": "applications",
-      "pool_min": 2,
-      "pool_max": 10,
-      "connection_pool_size": 10,
-      "cache_ttl": 300,
-      "cache_cleanup_interval": 60,
-      "cache_max_capacity": 100
-    },
-    "postgres": {
-      "host": "postgres",
-      "port": 5432,
-      "username": "sockudo",
-      "password": "sockudo123",
-      "database": "sockudo",
-      "table_name": "applications",
-      "pool_min": 2,
-      "pool_max": 10,
-      "connection_pool_size": 10,
-      "cache_ttl": 300,
-      "cache_cleanup_interval": 60,
-      "cache_max_capacity": 100
-    },
-    "dynamodb": {
-      "region": "us-east-1",
-      "table_name": "sockudo-applications"
-    }
-  },
-
   "queue": {
-    "driver": "memory",
-    "redis": {
-      "concurrency": 5,
-      "prefix": "sockudo_queue:",
-      "cluster_mode": false
-    },
-    "redis_cluster": {
-      "concurrency": 5,
-      "prefix": "sockudo_queue:",
-      "nodes": [],
-      "request_timeout_ms": 5000
-    },
-    "sqs": {
-      "region": "us-east-1",
-      "visibility_timeout": 30,
-      "max_messages": 10,
-      "wait_time_seconds": 5,
-      "concurrency": 5,
-      "fifo": false
-    }
+    "driver": "memory"
   },
-
   "rate_limiter": {
     "enabled": false,
-    "driver": "redis",
-    "api_rate_limit": {
-      "max_requests": 100,
-      "window_seconds": 60,
-      "identifier": "api",
-      "trust_hops": 0
-    },
-    "websocket_rate_limit": {
-      "max_requests": 20,
-      "window_seconds": 60,
-      "identifier": "websocket_connect",
-      "trust_hops": 0
-    },
-    "redis": {
-      "prefix": "sockudo_rl:",
-      "cluster_mode": false
-    }
+    "driver": "memory"
   },
-
   "metrics": {
-    "enabled": false,
+    "enabled": true,
     "driver": "prometheus",
     "host": "0.0.0.0",
     "port": 9601,
@@ -174,15 +88,9 @@
       "prefix": "sockudo_"
     }
   },
-
   "ssl": {
-    "enabled": false,
-    "cert_path": "/app/ssl/cert.pem",
-    "key_path": "/app/ssl/key.pem",
-    "redirect_http": false,
-    "http_port": 80
+    "enabled": false
   },
-
   "cors": {
     "credentials": true,
     "origin": ["*"],
@@ -194,59 +102,66 @@
       "Accept"
     ]
   },
-
   "channel_limits": {
     "max_name_length": 200,
     "cache_ttl": 3600
   },
-
   "event_limits": {
-    "max_channels_at_once": 1000,
-    "max_name_length": 2000,
-    "max_payload_in_kb": 1000,
-    "max_batch_size": 100
+    "max_channels_at_once": 100,
+    "max_name_length": 200,
+    "max_payload_in_kb": 100,
+    "max_batch_size": 10
   },
-
   "presence": {
     "max_members_per_channel": 100,
     "max_member_size_in_kb": 2
   },
-
   "http_api": {
-    "request_limit_in_mb": 10,
-    "accept_traffic": {
-      "memory_threshold": 0.9
-    }
+    "request_limit_in_mb": 10
   },
-
   "webhooks": {
     "batching": {
-      "enabled": false,
-      "duration": 50
+      "enabled": false
     }
   },
-  "instance": {
-    "process_id": "sockudo-docker-1"
-  },
-
   "logging": {
-    "colors_enabled": true,
+    "colors_enabled": false,
     "include_target": true
   },
-
-  "database_pooling": {
-    "enabled": true,
-    "min": 2,
-    "max": 10
-  },
-
   "cleanup": {
     "async_enabled": true,
     "fallback_to_sync": true,
-    "queue_buffer_size": 50000,
+    "queue_buffer_size": 10000,
     "batch_size": 25,
     "batch_timeout_ms": 50,
     "worker_threads": "auto",
     "max_retry_attempts": 2
+  },
+  "delta_compression": {
+    "enabled": true,
+    "algorithm": "Fossil",
+    "full_message_interval": 10,
+    "min_message_size": 100,
+    "max_state_age_secs": 300,
+    "max_channel_states_per_socket": 100,
+    "cluster_coordination": true,
+    "omit_delta_algorithm": true
+  },
+  "tag_filtering": {
+    "enabled": true,
+    "enable_tags": false
+  },
+  "websocket": {
+    "max_messages": 1000,
+    "max_bytes": 1048576,
+    "disconnect_on_buffer_full": false,
+    "max_message_size": 67108864,
+    "max_frame_size": 16777216,
+    "write_buffer_size": 16384,
+    "max_backpressure": 1048576,
+    "auto_ping": true,
+    "ping_interval": 30,
+    "idle_timeout": 120,
+    "compression": "disabled"
   }
 }

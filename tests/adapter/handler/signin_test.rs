@@ -1,9 +1,9 @@
-use serde_json::json;
 use sockudo::adapter::handler::types::SignInRequest;
 use sockudo::app::auth::AuthValidator;
 use sockudo::app::config::App;
 use sockudo::token::Token;
 use sockudo::websocket::SocketId;
+use sonic_rs::json;
 use std::sync::Arc;
 
 use crate::mocks::connection_handler_mock::{
@@ -33,6 +33,9 @@ async fn test_signin_request_from_message_json_format() {
         channel: None,
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let request = SignInRequest::from_message(&message).unwrap();
@@ -43,9 +46,9 @@ async fn test_signin_request_from_message_json_format() {
 
 #[tokio::test]
 async fn test_signin_request_from_message_structured_format() {
-    use serde_json::Value;
+    use ahash::AHashMap;
     use sockudo::protocol::messages::{MessageData, PusherMessage};
-    use std::collections::HashMap;
+    use sonic_rs::Value;
 
     let user_data = json!({
         "id": "test-user-456",
@@ -55,11 +58,8 @@ async fn test_signin_request_from_message_structured_format() {
     })
     .to_string();
 
-    let mut extra = HashMap::new();
-    extra.insert(
-        "auth".to_string(),
-        Value::String("app-key:another_signature".to_string()),
-    );
+    let mut extra = AHashMap::new();
+    extra.insert("auth".to_string(), Value::from("app-key:another_signature"));
 
     let message = PusherMessage {
         event: Some("pusher:signin".to_string()),
@@ -72,6 +72,9 @@ async fn test_signin_request_from_message_structured_format() {
         channel: None,
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let request = SignInRequest::from_message(&message).unwrap();
@@ -95,6 +98,9 @@ async fn test_signin_request_from_message_missing_user_data_json() {
         channel: None,
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -109,11 +115,11 @@ async fn test_signin_request_from_message_missing_user_data_json() {
 
 #[tokio::test]
 async fn test_signin_request_from_message_missing_auth_structured() {
+    use ahash::AHashMap;
     use sockudo::protocol::messages::{MessageData, PusherMessage};
-    use std::collections::HashMap;
 
     let user_data = json!({"id": "test-user"}).to_string();
-    let extra = HashMap::new(); // Empty extra, missing auth
+    let extra = AHashMap::new(); // Empty extra, missing auth
 
     let message = PusherMessage {
         event: Some("pusher:signin".to_string()),
@@ -126,6 +132,9 @@ async fn test_signin_request_from_message_missing_auth_structured() {
         channel: None,
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -148,6 +157,9 @@ async fn test_signin_request_from_message_invalid_format() {
         channel: None,
         name: None,
         user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -170,7 +182,7 @@ async fn test_verify_signin_authentication_with_prefix() {
     let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
 
     let user_data = json!({"id": "user-123"}).to_string();
-    let string_to_sign = format!("{}::user::{}", socket_id.0, user_data);
+    let string_to_sign = format!("{}::user::{}", socket_id, user_data);
     let token = Token::new("test-app-key".to_string(), "test-app-secret".to_string());
     let signature = token.sign(&string_to_sign);
 
@@ -199,7 +211,7 @@ async fn test_verify_signin_authentication_without_prefix() {
     let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
 
     let user_data = json!({"id": "user-123"}).to_string();
-    let string_to_sign = format!("{}::user::{}", socket_id.0, user_data);
+    let string_to_sign = format!("{}::user::{}", socket_id, user_data);
     let token = Token::new("test-app-key".to_string(), "test-app-secret".to_string());
     let signature = token.sign(&string_to_sign);
 
@@ -272,7 +284,7 @@ async fn test_auth_validator_with_different_user_data() {
     let user_data2 = json!({"id": "user-2"}).to_string();
 
     // Generate valid signature for user_data1
-    let string_to_sign = format!("{}::user::{}", socket_id.0, user_data1);
+    let string_to_sign = format!("{}::user::{}", socket_id, user_data1);
     let token = Token::new("test-app-key".to_string(), "test-app-secret".to_string());
     let signature = token.sign(&string_to_sign);
 
@@ -506,5 +518,6 @@ fn create_test_app() -> App {
         webhooks: Some(vec![]),
         enable_watchlist_events: None,
         allowed_origins: None,
+        channel_delta_compression: None,
     }
 }
