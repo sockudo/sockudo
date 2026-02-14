@@ -39,7 +39,7 @@ use axum::routing::{get, post};
 use axum::serve::IncomingStream;
 use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
 use axum_extra::extract::Host;
-use axum_server::tls_rustls::RustlsConfig;
+use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use clap::Parser;
 use error::Error;
 use futures_util::future::join_all;
@@ -1249,8 +1249,10 @@ impl SockudoServer {
             // Main HTTPS server
             info!("HTTPS server listening on https://{}", http_addr);
             let running = &self.state.running;
-            let server = axum_server::bind_rustls(http_addr, tls_config)
-                .acceptor(axum_server::accept::NoDelayAcceptor::new());
+            let server = axum_server::bind(http_addr).acceptor(
+                RustlsAcceptor::new(tls_config)
+                    .acceptor(axum_server::accept::NoDelayAcceptor::new()),
+            );
 
             tokio::select! {
                 result = server.serve(router_with_middleware_ssl.into_make_service_with_connect_info::<SocketAddr>()) => {
