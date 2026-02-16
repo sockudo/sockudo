@@ -64,7 +64,7 @@ hyper = "^1.7.0"
 chrono = "^0.4.42"
 sysinfo = "0.37.2"
 async-trait = "0.1.89"
-redis = { version = "^1.0.0-rc.3", features = [
+redis = { version = "^1", features = [
   "tokio-comp",
   "json",
   "cluster",
