@@ -1,10 +1,13 @@
-# Sockudo
-
-A high-performance, scalable WebSocket server implementing the Pusher protocol in Rust.
-
-[![Stars](https://img.shields.io/github/stars/sockudo/sockudo?style=social)](https://github.com/Sockudo/sockudo)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/sockudo/sockudo/ci.yml?branch=main)](https://github.com/sockudo/sockudo/actions)
-[![License](https://img.shields.io/github/license/sockudo/sockudo)](LICENSE)
+<p align="center">
+  <img src="images/logo.svg" alt="Sockudo Logo" width="200">
+  <h1 align="center">Sockudo</h1>
+  <p align="center">A high-performance, scalable WebSocket server implementing the Pusher protocol in Rust.</p>
+  <p align="center">
+    <a href="https://github.com/Sockudo/sockudo"><img src="https://img.shields.io/github/stars/sockudo/sockudo?style=social" alt="Stars"></a>
+    <a href="https://github.com/sockudo/sockudo/actions"><img src="https://img.shields.io/github/actions/workflow/status/sockudo/sockudo/ci.yml?branch=main" alt="Build Status"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/sockudo/sockudo" alt="License"></a>
+  </p>
+</p>
 
 ## Star History
 
