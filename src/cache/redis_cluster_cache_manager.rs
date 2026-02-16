@@ -204,17 +204,24 @@ impl RedisClusterCacheManager {
 
     /// Clear all keys with the current prefix
     pub async fn clear_prefix(&mut self) -> Result<usize> {
-        // Note: KEYS command is not directly supported in Redis Cluster across slots
-        // This is a simplified implementation that may not be efficient for large datasets
         let pattern = format!("{}:*", self.prefix);
 
-        // First get the keys
-        // Warning: This may not work as expected in large clusters due to slot distribution
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg(&pattern)
-            .query_async(&mut self.connection)
-            .await
-            .map_err(|e| Error::Cache(format!("Redis Cluster keys error: {e}")))?;
+        let keys = {
+            let mut keys: Vec<String> = Vec::new();
+            let mut iter: redis::AsyncIter<String> = self
+                .connection
+                .scan_match(&pattern)
+                .await
+                .map_err(|e| Error::Cache(format!("Redis Cluster scan error: {e}")))?;
+
+            while let Some(key) = iter.next_item().await {
+                let key = key.map_err(|e| {
+                    Error::Cache(format!("Redis Cluster scan iteration error: {e}"))
+                })?;
+                keys.push(key);
+            }
+            keys
+        };
 
         if keys.is_empty() {
             return Ok(0);

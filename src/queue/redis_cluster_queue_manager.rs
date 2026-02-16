@@ -196,14 +196,27 @@ impl QueueInterface for RedisClusterQueueManager {
 
     async fn disconnect(&self) -> crate::error::Result<()> {
         let mut conn = self.redis_connection.lock().await;
-        let keys: Vec<String> = conn
-            .keys(format!("{}:queue:*", self.prefix))
-            .await
-            .map_err(|e| {
-                crate::error::Error::Queue(format!(
-                    "Redis cluster disconnect error fetching keys: {e}"
-                ))
-            })?;
+        let pattern = format!("{}:queue:*", self.prefix);
+
+        let keys = {
+            let mut keys: Vec<String> = Vec::new();
+            let mut iter: redis::AsyncIter<String> =
+                conn.scan_match(&pattern).await.map_err(|e| {
+                    crate::error::Error::Queue(format!(
+                        "Redis cluster scan error during disconnect: {e}"
+                    ))
+                })?;
+
+            while let Some(key) = iter.next_item().await {
+                let key = key.map_err(|e| {
+                    crate::error::Error::Queue(format!(
+                        "Redis cluster scan iteration error during disconnect: {e}"
+                    ))
+                })?;
+                keys.push(key);
+            }
+            keys
+        };
 
         for key in keys {
             if let Err(e) = conn.del::<_, ()>(&key).await {
