@@ -35,13 +35,12 @@ RUN test -f Cargo.lock || cargo generate-lockfile
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 
 # Build dependencies (this layer will be cached unless Cargo files change)
-RUN RUSTFLAGS="-C target-cpu=native" cargo build --release --features full && rm src/main.rs target/release/deps/sockudo*
+RUN cargo build --release --features full && rm src/main.rs target/release/deps/sockudo*
 
 # Copy source code
 COPY src/ ./src/
 
-# Build the application with native CPU optimizations for maximum performance
-RUN RUSTFLAGS="-C target-cpu=native" cargo build --release --features full
+RUN cargo build --release --features full
 
 # Strip the binary to reduce size (optional)
 RUN strip target/release/sockudo

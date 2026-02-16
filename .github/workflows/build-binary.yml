@@ -78,7 +78,7 @@ jobs:
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
               mkdir -p .cargo
-              printf "[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\nrustflags = [\"-C\", \"target-cpu=native\"]\n" > .cargo/config.toml
+              printf "[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
               cargo build --release --features full --target x86_64-unknown-linux-musl
             '
 
@@ -102,7 +102,7 @@ jobs:
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
               mkdir -p .cargo
-              printf "[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\nrustflags = [\"-C\", \"target-cpu=native\"]\n" > .cargo/config.toml
+              printf "[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
               cargo build --release --features full --target aarch64-unknown-linux-musl
             '
 
@@ -119,9 +119,6 @@ jobs:
         if: "!contains(inputs.target_triple, 'musl')"
         shell: bash
         run: |
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            export RUSTFLAGS="-C target-cpu=native"
-          fi
           cargo build --release --features full --target ${{ inputs.target_triple }}
 
       - name: Prepare binary and create archive
