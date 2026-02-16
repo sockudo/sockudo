@@ -152,14 +152,7 @@ impl CacheManager for RedisCacheManager {
 
     /// Disconnect the manager's made connections
     async fn disconnect(&mut self) -> Result<()> {
-        // delete all keys with the current prefix
-        let pattern = format!("{}:*", self.prefix);
-        let _keys: Vec<String> = self
-            .connection
-            .keys(pattern)
-            .await
-            .map_err(|e| Error::Cache(format!("Redis keys error: {e}")))?;
-
+        self.clear_prefix().await?;
         Ok(())
     }
 
@@ -214,12 +207,21 @@ impl RedisCacheManager {
     pub async fn clear_prefix(&mut self) -> Result<usize> {
         let pattern = format!("{}:*", self.prefix);
 
-        // First get the keys
-        let keys: Vec<String> = self
-            .connection
-            .keys(pattern)
-            .await
-            .map_err(|e| Error::Cache(format!("Redis keys error: {e}")))?;
+        let keys = {
+            let mut keys: Vec<String> = Vec::new();
+            let mut iter: redis::AsyncIter<String> = self
+                .connection
+                .scan_match(&pattern)
+                .await
+                .map_err(|e| Error::Cache(format!("Redis scan error: {e}")))?;
+
+            while let Some(key) = iter.next_item().await {
+                let key =
+                    key.map_err(|e| Error::Cache(format!("Redis scan iteration error: {e}")))?;
+                keys.push(key);
+            }
+            keys
+        };
 
         if keys.is_empty() {
             return Ok(0);
