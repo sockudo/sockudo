@@ -1,0 +1,18 @@
+[package]
+name = "sockudo-queue-sqs"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "AWS SQS queue backend for Sockudo"
+
+[dependencies]
+sockudo-types = { path = "../sockudo-types" }
+async-trait = "0.1.89"
+serde = { version = "1", features = ["derive"] }
+sonic-rs = "0.5.6"
+ahash = { version = "0.8.12", features = ["serde"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
+tracing = "0.1"
+aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
+aws-sdk-sqs = "1.89.0"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

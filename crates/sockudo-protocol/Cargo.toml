@@ -1,0 +1,12 @@
+[package]
+name = "sockudo-protocol"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Protocol messages and constants for Sockudo"
+
+[dependencies]
+ahash = { version = "0.8.12", features = ["serde"] }
+serde = { version = "^1", features = ["derive"] }
+sonic-rs = "0.5.6"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

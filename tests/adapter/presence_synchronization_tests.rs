@@ -1,7 +1,7 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
 use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo::options::ClusterHealthConfig;
+use sockudo_config::adapter::ClusterHealthConfig;
 use sonic_rs::json;
 
 #[tokio::test]

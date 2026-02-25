@@ -1,0 +1,35 @@
+[package]
+name = "sockudo-adapter-redis-cluster"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Redis Cluster adapter implementation crate"
+
+[dependencies]
+sockudo-adapter-local = { path = "../sockudo-adapter-local" }
+sockudo-config = { path = "../sockudo-config", features = ["redis-cluster"] }
+sockudo-core = { path = "../sockudo-core" }
+sockudo-types = { path = "../sockudo-types" }
+sockudo-protocol = { path = "../sockudo-protocol" }
+sockudo-filter = { path = "../sockudo-filter" }
+ahash = "0.8.12"
+async-trait = "0.1.89"
+dashmap = "6.1.0"
+futures = "0.3.31"
+redis = { version = "^1", features = [
+  "tokio-comp",
+  "json",
+  "cluster",
+  "cluster-async",
+  "tls-rustls",
+  "tokio-rustls-comp",
+  "tls-rustls-webpki-roots",
+  "connection-manager",
+] }
+serde = { version = "^1", features = ["derive"] }
+sonic-rs = "0.5.6"
+tokio = { version = "^1", features = ["full", "tracing"] }
+tracing = "0.1"
+sockudo-ws = { version = "1.7.4", features = ["axum-integration"] }
+uuid = { version = "1.18.1", features = ["v4", "fast-rng", "macro-diagnostics"] }
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

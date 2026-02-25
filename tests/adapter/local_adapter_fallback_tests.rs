@@ -1,7 +1,7 @@
 use sockudo::adapter::ConnectionManager;
 use sockudo::adapter::local_adapter::LocalAdapter;
-use sockudo::options::ClusterHealthConfig;
 use sockudo::websocket::SocketId;
+use sockudo_config::adapter::ClusterHealthConfig;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
