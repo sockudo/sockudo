@@ -3,9 +3,9 @@ use sockudo::adapter::horizontal_adapter::{BroadcastMessage, RequestBody, Respon
 #[cfg(feature = "redis")]
 use sockudo::adapter::transports::RedisAdapterConfig;
 #[cfg(feature = "nats")]
-use sockudo::options::NatsAdapterConfig;
+use sockudo_config::adapter::NatsAdapterConfig;
 #[cfg(feature = "redis-cluster")]
-use sockudo::options::RedisClusterAdapterConfig;
+use sockudo_config::adapter::RedisClusterAdapterConfig;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;

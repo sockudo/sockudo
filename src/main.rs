@@ -2,30 +2,6 @@
 #![allow(dead_code)]
 #![allow(unused_assignments)]
 
-mod adapter;
-mod app;
-mod cache;
-mod channel;
-pub mod cleanup;
-mod delta_compression;
-mod error;
-mod filter;
-mod http_handler;
-mod metrics;
-mod middleware;
-mod namespace;
-mod options;
-mod presence;
-mod protocol;
-mod queue;
-mod rate_limiter;
-mod token;
-pub mod utils;
-mod watchlist;
-mod webhook;
-mod websocket;
-mod ws_handler;
-
 #[cfg(unix)]
 use axum::extract::connect_info::{self};
 use axum::extract::{DefaultBodyLimit, Request};
@@ -41,9 +17,9 @@ use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use clap::Parser;
-use error::Error;
 use futures_util::future::join_all;
 use mimalloc::MiMalloc;
+use sockudo::error::Error;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -58,26 +34,30 @@ use tokio::signal;
 use tokio::sync::Mutex;
 
 // Updated factory imports
-use crate::adapter::factory::AdapterFactory;
-use crate::app::factory::AppManagerFactory;
-use crate::cache::factory::CacheManagerFactory;
-use crate::cleanup::{CleanupConfig, CleanupSender};
-use crate::error::Result;
-use crate::http_handler::{
+use sockudo::adapter::factory::AdapterFactory;
+use sockudo::app::factory::AppManagerFactory;
+use sockudo::cache::CacheManagerFactory;
+use sockudo::cleanup::{CleanupConfig, CleanupSender};
+use sockudo::delta_compression;
+use sockudo::error::Result;
+use sockudo::http_handler::{
     batch_events, channel, channel_users, channels, events, metrics, terminate_user_connections,
     up, usage,
 };
 
-use crate::metrics::MetricsFactory;
+use sockudo::metrics::MetricsFactory;
+use sockudo::options::ServerOptions;
+use sockudo::queue::manager::{QueueManager, QueueManagerFactory};
+use sockudo::rate_limiter;
+use sockudo::rate_limiter::RateLimiter;
+use sockudo::rate_limiter::factory::RateLimiterFactory;
+use sockudo::rate_limiter::middleware::IpKeyExtractor;
+use sockudo::utils;
+use sockudo::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegration};
+use sockudo::ws_handler::handle_ws_upgrade;
 #[cfg(any(feature = "redis", feature = "nats"))]
-use crate::options::AdapterDriver;
-use crate::options::{QueueDriver, ServerOptions};
-use crate::queue::manager::{QueueManager, QueueManagerFactory};
-use crate::rate_limiter::RateLimiter;
-use crate::rate_limiter::factory::RateLimiterFactory;
-use crate::rate_limiter::middleware::IpKeyExtractor;
-use crate::webhook::integration::{BatchingConfig, WebhookConfig, WebhookIntegration};
-use crate::ws_handler::handle_ws_upgrade;
+use sockudo_config::drivers::AdapterDriver;
+use sockudo_config::drivers::QueueDriver;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_layer::Layer;
 // Import tracing and tracing_subscriber parts
@@ -85,20 +65,20 @@ use tracing::{debug, error, info, warn}; // Added LevelFilter
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, reload, util::SubscriberInitExt};
 
 // Import concrete adapter types for downcasting if set_metrics is specific
-use crate::adapter::ConnectionHandler;
-use crate::adapter::ConnectionManager;
+use sockudo::adapter::ConnectionHandler;
+use sockudo::adapter::ConnectionManager;
 
-use crate::app::auth::AuthValidator;
+use sockudo::app::auth::AuthValidator;
 // AppManager trait and concrete types
-use crate::app::manager::AppManager;
+use sockudo::app::manager::AppManager;
 // CacheManager trait and concrete types
-use crate::cache::manager::CacheManager;
-use crate::cache::memory_cache_manager::MemoryCacheManager; // Import for fallback
+use sockudo::cache::manager::CacheManager;
+use sockudo::cache::memory_cache_manager::MemoryCacheManager; // Import for fallback
 // MetricsInterface trait
-use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
-use crate::metrics::MetricsInterface;
-use crate::middleware::pusher_api_auth_middleware;
-use crate::websocket::WebSocketRef;
+use sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem;
+use sockudo::metrics::MetricsInterface;
+use sockudo::middleware::pusher_api_auth_middleware;
+use sockudo::websocket::WebSocketRef;
 
 #[cfg(unix)]
 #[derive(Clone, Debug)]
@@ -162,7 +142,7 @@ impl connect_info::Connected<IncomingStream<'_, UnixListener>> for UdsConnectInf
 struct ServerState {
     app_manager: Arc<dyn AppManager + Send + Sync>,
     connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
-    local_adapter: Option<Arc<crate::adapter::local_adapter::LocalAdapter>>,
+    local_adapter: Option<Arc<sockudo::adapter::local_adapter::LocalAdapter>>,
     auth_validator: Arc<AuthValidator>,
     cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
     queue_manager: Option<Arc<QueueManager>>,
@@ -176,7 +156,7 @@ struct ServerState {
     cleanup_config: CleanupConfig,
     delta_compression: Arc<delta_compression::DeltaCompressionManager>,
     /// Typed adapter for configuration and runtime type inspection
-    typed_adapter: crate::adapter::factory::TypedAdapter,
+    typed_adapter: sockudo::adapter::factory::TypedAdapter,
 }
 
 /// Main server struct
@@ -791,7 +771,15 @@ impl SockudoServer {
                 "Registering {} apps from configuration",
                 self.config.app_manager.array.apps.len()
             );
-            let apps_to_register = self.config.app_manager.array.apps.clone();
+            let apps_to_register: Vec<sockudo::app::config::App> = self
+                .config
+                .app_manager
+                .array
+                .apps
+                .clone()
+                .into_iter()
+                .map(Into::into)
+                .collect();
             for app in apps_to_register {
                 info!("Attempting to register app: id={}, key={}", app.id, app.key);
                 match self.state.app_manager.find_by_id(&app.id).await {
@@ -920,7 +908,7 @@ impl SockudoServer {
 
         let rate_limiter_middleware_layer = if self.config.rate_limiter.enabled {
             if let Some(rate_limiter_instance) = &self.state.http_api_rate_limiter {
-                let options = crate::rate_limiter::middleware::RateLimitOptions {
+                let options = sockudo::rate_limiter::middleware::RateLimitOptions {
                     include_headers: true,                // Include X-RateLimit-* headers
                     fail_open: false,                     // If rate limiter fails, deny request
                     key_prefix: Some("api:".to_string()), // Prefix for keys in store
@@ -939,7 +927,7 @@ impl SockudoServer {
                     trust_hops
                 );
                 let mut rate_limit_layer =
-                    crate::rate_limiter::middleware::RateLimitLayer::with_options(
+                    sockudo::rate_limiter::middleware::RateLimitLayer::with_options(
                         rate_limiter_instance.clone(),
                         ip_key_extractor,
                         options,

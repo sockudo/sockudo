@@ -2,7 +2,7 @@ use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
 use ahash::AHashMap;
 use sockudo::adapter::horizontal_adapter::{RequestBody, RequestType};
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo::options::ClusterHealthConfig;
+use sockudo_config::adapter::ClusterHealthConfig;
 use sonic_rs::json;
 
 /// Test sequence number conflict resolution during presence updates

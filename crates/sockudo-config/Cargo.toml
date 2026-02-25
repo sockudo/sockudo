@@ -1,0 +1,17 @@
+[package]
+name = "sockudo-config"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Configuration domain types for Sockudo"
+
+[features]
+default = []
+nats = []
+redis-cluster = []
+
+[dependencies]
+serde = { version = "^1", features = ["derive"] }
+ahash = { version = "0.8.12", features = ["serde"] }
+sonic-rs = "0.5.6"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

@@ -3,7 +3,7 @@
 use sockudo::adapter::ConnectionManager;
 use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
 use sockudo::adapter::redis_cluster_adapter::RedisClusterAdapter;
-use sockudo::options::{ClusterHealthConfig, RedisClusterAdapterConfig};
+use sockudo_config::adapter::{ClusterHealthConfig, RedisClusterAdapterConfig};
 use sonic_rs::json;
 use std::env;
 use std::sync::Arc;

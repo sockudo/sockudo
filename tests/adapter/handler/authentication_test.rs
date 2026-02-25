@@ -2,8 +2,8 @@ use crate::mocks::connection_handler_mock::create_test_connection_handler;
 use sockudo::adapter::handler::types::SubscriptionRequest;
 use sockudo::app::config::App;
 use sockudo::error::Error;
-use sockudo::protocol::messages::{MessageData, PusherMessage};
 use sockudo::websocket::SocketId;
+use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sonic_rs::json;
 
 #[tokio::test]

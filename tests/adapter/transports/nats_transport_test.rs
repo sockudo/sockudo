@@ -1,7 +1,7 @@
 use sockudo::adapter::horizontal_transport::HorizontalTransport;
 use sockudo::adapter::transports::NatsTransport;
 use sockudo::error::Result;
-use sockudo::options::NatsAdapterConfig;
+use sockudo_config::adapter::NatsAdapterConfig;
 
 use super::test_helpers::*;
 

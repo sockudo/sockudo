@@ -7,6 +7,33 @@ repository = "https://github.com/RustNSparks/sockudo"
 license-file = "LICENSE"
 description = "A simple, fast, and secure WebSocket server for real-time applications."
 
+[workspace]
+members = [
+  ".",
+  "crates/sockudo-types",
+  "crates/sockudo-protocol",
+  "crates/sockudo-filter",
+  "crates/sockudo-config",
+  "crates/sockudo-core",
+  "crates/sockudo-runtime",
+  "crates/sockudo-adapter-local",
+  "crates/sockudo-adapter-redis",
+  "crates/sockudo-adapter-redis-cluster",
+  "crates/sockudo-adapter-nats",
+  "crates/sockudo-store-mysql",
+  "crates/sockudo-store-postgres",
+  "crates/sockudo-store-dynamodb",
+  "crates/sockudo-store-scylla",
+  "crates/sockudo-queue-memory",
+  "crates/sockudo-queue-redis",
+  "crates/sockudo-queue-redis-cluster",
+  "crates/sockudo-queue-sqs",
+  "crates/sockudo-webhook-http",
+  "crates/sockudo-webhook-lambda",
+  "crates/sockudo-server",
+  "crates/sockudo-workspace-hack",
+]
+
 [features]
 default = ["local"]
 
@@ -25,23 +52,35 @@ full = [
 ]
 
 # Adapter features
-redis = ["dep:redis"]
-redis-cluster = ["redis"]
-nats = ["dep:async-nats"]
+redis = ["dep:redis", "dep:sockudo-queue-redis", "sockudo-core/redis", "sockudo-runtime/redis"]
+redis-cluster = ["redis", "sockudo-config/redis-cluster", "dep:sockudo-queue-redis-cluster", "sockudo-runtime/redis-cluster"]
+nats = ["dep:async-nats", "sockudo-config/nats", "sockudo-core/nats", "sockudo-runtime/nats"]
 
 # App manager features
-mysql = ["dep:sqlx"]
-postgres = ["dep:sqlx"]
-dynamodb = ["dep:aws-config", "dep:aws-sdk-dynamodb"]
-scylladb = ["dep:scylla"]
+mysql = ["dep:sqlx", "sockudo-runtime/mysql"]
+postgres = ["dep:sqlx", "sockudo-runtime/postgres"]
+dynamodb = ["dep:aws-config", "dep:aws-sdk-dynamodb", "sockudo-runtime/dynamodb"]
+scylladb = ["dep:scylla", "sockudo-runtime/scylladb"]
 
 # Queue features
-sqs = ["dep:aws-config", "dep:aws-sdk-sqs"]
+sqs = ["dep:aws-config", "dep:aws-sdk-sqs", "dep:sockudo-queue-sqs", "sockudo-runtime/sqs"]
 
 # Webhook features
-lambda = ["dep:aws-config", "dep:aws-sdk-lambda"]
+lambda = ["dep:aws-config", "dep:aws-sdk-lambda", "dep:sockudo-webhook-lambda", "sockudo-runtime/lambda"]
 
 [dependencies]
+sockudo-core = { path = "crates/sockudo-core" }
+sockudo-runtime = { path = "crates/sockudo-runtime", default-features = false }
+sockudo-config = { path = "crates/sockudo-config" }
+sockudo-filter = { path = "crates/sockudo-filter" }
+sockudo-protocol = { path = "crates/sockudo-protocol" }
+sockudo-queue-memory = { path = "crates/sockudo-queue-memory" }
+sockudo-queue-redis = { path = "crates/sockudo-queue-redis", optional = true }
+sockudo-queue-redis-cluster = { path = "crates/sockudo-queue-redis-cluster", optional = true }
+sockudo-queue-sqs = { path = "crates/sockudo-queue-sqs", optional = true }
+sockudo-webhook-http = { path = "crates/sockudo-webhook-http" }
+sockudo-webhook-lambda = { path = "crates/sockudo-webhook-lambda", optional = true }
+sockudo-types = { path = "crates/sockudo-types" }
 cmake = "0.1.56"
 axum = { version = "^0.8", features = ["ws"] }
 tokio = { version = "^1", features = ["full", "tracing"] }
@@ -120,7 +159,7 @@ rayon = "1.10" # Parallel iterators for filter evaluation
 tokio-util = "0.7" # CancellationToken for graceful shutdown
 memchr = "2.7" # SIMD-accelerated string searching
 libc = "0.2" # For process metrics on macOS/Linux
-
+sockudo-workspace-hack = { version = "0.1", path = "crates/sockudo-workspace-hack" }
 
 [dependencies.uuid]
 version = "1.18.1"

@@ -106,7 +106,7 @@ pub struct FilterNode {
 ### Building Filters Programmatically
 
 ```rust
-use sockudo::filter::FilterNodeBuilder;
+use sockudo_filter::FilterNodeBuilder;
 
 // Simple equality filter
 let filter = FilterNodeBuilder::eq("event_type", "goal");
@@ -542,3 +542,4 @@ If you're adding filters to an existing application:
 - [Centrifugo Blog Post](https://centrifugal.dev/blog/2024/10/14/publication-filtering-by-tags) - Original inspiration
 - [Rust Filter Implementation](../src/filter/mod.rs) - Server-side code
 - [JavaScript Filter API](../sockudo-js/src/core/channels/filter.ts) - Client-side code
+

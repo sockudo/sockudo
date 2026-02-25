@@ -5,9 +5,9 @@ use sockudo::app::config::App;
 use sockudo::app::manager::AppManager;
 use sockudo::app::memory_app_manager::MemoryAppManager;
 use sockudo::error::Error;
-use sockudo::http_handler::EventQuery;
 use sockudo::token::Token;
 use sockudo::websocket::SocketId;
+use sockudo_types::api::EventQuery;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
