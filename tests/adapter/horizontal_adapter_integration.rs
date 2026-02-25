@@ -7,7 +7,7 @@ use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 #[cfg(any(feature = "redis", feature = "nats"))]
 use sockudo::error::Result;
 #[cfg(any(feature = "redis", feature = "nats"))]
-use sockudo::protocol::messages::{MessageData, PusherMessage};
+use sockudo_protocol::messages::{MessageData, PusherMessage};
 #[cfg(any(feature = "redis", feature = "nats"))]
 use std::collections::HashSet;
 #[cfg(any(feature = "redis", feature = "nats"))]

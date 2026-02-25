@@ -14,12 +14,12 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
 
+    type TestConnectionManager = dyn ConnectionManager + Send + Sync;
+    type TestCleanupSystem = MultiWorkerCleanupSystem<TestConnectionManager>;
+
     /// Helper to create a real cleanup system with all components
-    async fn create_real_cleanup_system() -> (
-        MultiWorkerCleanupSystem,
-        Arc<LocalAdapter>,
-        Arc<MemoryAppManager>,
-    ) {
+    async fn create_real_cleanup_system()
+    -> (TestCleanupSystem, Arc<LocalAdapter>, Arc<MemoryAppManager>) {
         let config = CleanupConfig {
             queue_buffer_size: 100,
             batch_size: 2,
@@ -31,7 +31,7 @@ mod tests {
         };
 
         let local_adapter = Arc::new(LocalAdapter::new());
-        let connection_manager: Arc<dyn ConnectionManager + Send + Sync> = local_adapter.clone();
+        let connection_manager: Arc<TestConnectionManager> = local_adapter.clone();
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 
@@ -73,11 +73,8 @@ mod tests {
     }
 
     /// Helper to create a cleanup system with webhook app configuration
-    async fn create_cleanup_system_with_webhook_app() -> (
-        MultiWorkerCleanupSystem,
-        Arc<LocalAdapter>,
-        Arc<MemoryAppManager>,
-    ) {
+    async fn create_cleanup_system_with_webhook_app()
+    -> (TestCleanupSystem, Arc<LocalAdapter>, Arc<MemoryAppManager>) {
         let config = CleanupConfig {
             queue_buffer_size: 100,
             batch_size: 2,
@@ -89,7 +86,7 @@ mod tests {
         };
 
         let local_adapter = Arc::new(LocalAdapter::new());
-        let connection_manager: Arc<dyn ConnectionManager + Send + Sync> = local_adapter.clone();
+        let connection_manager: Arc<TestConnectionManager> = local_adapter.clone();
         // ChannelManager is now a static struct
         let app_manager = Arc::new(MemoryAppManager::new());
 

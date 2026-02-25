@@ -1,0 +1,18 @@
+[package]
+name = "sockudo-store-dynamodb"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "DynamoDB application store implementation crate"
+
+[dependencies]
+sockudo-core = { path = "../sockudo-core" }
+sockudo-types = { path = "../sockudo-types" }
+async-trait = "0.1.89"
+aws-config = { version = "^1.8.10", features = ["behavior-version-latest"] }
+aws-sdk-dynamodb = "1.98.0"
+tokio = { version = "^1", features = ["time"] }
+tracing = "0.1"
+sonic-rs = "0.5.6"
+thiserror = "^2.0.17"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

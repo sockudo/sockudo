@@ -1,0 +1,17 @@
+[package]
+name = "sockudo-store-scylla"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "ScyllaDB application store implementation crate"
+
+[dependencies]
+sockudo-core = { path = "../sockudo-core" }
+sockudo-types = { path = "../sockudo-types" }
+async-trait = "0.1.89"
+futures = "0.3.31"
+scylla = { version = "1.3.1", features = ["rustls-023"] }
+tracing = "0.1"
+sonic-rs = "0.5.6"
+thiserror = "^2.0.17"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

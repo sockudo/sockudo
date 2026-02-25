@@ -12,7 +12,7 @@ use crate::mocks::connection_handler_mock::{
 
 #[tokio::test]
 async fn test_signin_request_from_message_json_format() {
-    use sockudo::protocol::messages::{MessageData, PusherMessage};
+    use sockudo_protocol::messages::{MessageData, PusherMessage};
 
     let user_data = json!({
         "id": "test-user-123",
@@ -47,7 +47,7 @@ async fn test_signin_request_from_message_json_format() {
 #[tokio::test]
 async fn test_signin_request_from_message_structured_format() {
     use ahash::AHashMap;
-    use sockudo::protocol::messages::{MessageData, PusherMessage};
+    use sockudo_protocol::messages::{MessageData, PusherMessage};
     use sonic_rs::Value;
 
     let user_data = json!({
@@ -85,7 +85,7 @@ async fn test_signin_request_from_message_structured_format() {
 
 #[tokio::test]
 async fn test_signin_request_from_message_missing_user_data_json() {
-    use sockudo::protocol::messages::{MessageData, PusherMessage};
+    use sockudo_protocol::messages::{MessageData, PusherMessage};
 
     let message_data = json!({
         "auth": "app-key:signature_here"
@@ -116,7 +116,7 @@ async fn test_signin_request_from_message_missing_user_data_json() {
 #[tokio::test]
 async fn test_signin_request_from_message_missing_auth_structured() {
     use ahash::AHashMap;
-    use sockudo::protocol::messages::{MessageData, PusherMessage};
+    use sockudo_protocol::messages::{MessageData, PusherMessage};
 
     let user_data = json!({"id": "test-user"}).to_string();
     let extra = AHashMap::new(); // Empty extra, missing auth
@@ -149,7 +149,7 @@ async fn test_signin_request_from_message_missing_auth_structured() {
 
 #[tokio::test]
 async fn test_signin_request_from_message_invalid_format() {
-    use sockudo::protocol::messages::{MessageData, PusherMessage};
+    use sockudo_protocol::messages::{MessageData, PusherMessage};
 
     let message = PusherMessage {
         event: Some("pusher:signin".to_string()),

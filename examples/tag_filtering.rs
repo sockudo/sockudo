@@ -9,7 +9,7 @@
 // Run with: cargo run --example tag_filtering
 
 use ahash::AHashMap;
-use sockudo::filter::{FilterNode, node::FilterNodeBuilder};
+use sockudo_filter::{FilterNode, node::FilterNodeBuilder};
 
 fn main() {
     println!("=== Sockudo Tag Filtering Example ===\n");
@@ -35,7 +35,7 @@ fn main() {
 
     println!("Publications:");
     for (i, pub_tags) in publications.iter().enumerate() {
-        let matches = sockudo::filter::matches(&filter, pub_tags);
+        let matches = sockudo_filter::matches(&filter, pub_tags);
         println!(
             "  {}. {} at {} - Match: {}",
             i + 1,
@@ -73,7 +73,7 @@ fn main() {
 
     println!("Publications:");
     for (i, pub_tags) in publications_with_xg.iter().enumerate() {
-        let matches = sockudo::filter::matches(&filter, pub_tags);
+        let matches = sockudo_filter::matches(&filter, pub_tags);
         println!(
             "  {}. {} at {} (xG: {}) - Match: {}",
             i + 1,
@@ -107,7 +107,7 @@ fn main() {
 
     println!("Publications:");
     for (i, pub_tags) in critical_events.iter().enumerate() {
-        let matches = sockudo::filter::matches(&filter, pub_tags);
+        let matches = sockudo_filter::matches(&filter, pub_tags);
         println!(
             "  {}. {} at {} - Match: {}",
             i + 1,
@@ -153,7 +153,7 @@ fn main() {
             let mut tags = AHashMap::new();
             tags.insert("team".to_string(), team.to_string());
 
-            let matches = sockudo::filter::matches(filter, &tags);
+            let matches = sockudo_filter::matches(filter, &tags);
             let expected = match desc {
                 d if d.contains("Starts") => *sw,
                 d if d.contains("Ends") => *ew,
@@ -204,7 +204,7 @@ fn main() {
         tags.insert("xG".to_string(), xg.to_string());
         tags.insert("distance".to_string(), distance.to_string());
 
-        let matches = sockudo::filter::matches(&filter, &tags);
+        let matches = sockudo_filter::matches(&filter, &tags);
         println!(
             "  {}. xG={}, distance={}m - Match: {} {}",
             i + 1,
@@ -244,7 +244,7 @@ fn main() {
         let mut tags = AHashMap::new();
         tags.insert("event_type".to_string(), event.to_string());
 
-        let matches = sockudo::filter::matches(&filter, &tags);
+        let matches = sockudo_filter::matches(&filter, &tags);
         println!("  {} - Match: {}", event, if matches { "✓" } else { "✗" });
     }
     println!();
@@ -288,7 +288,7 @@ fn main() {
     let start = std::time::Instant::now();
 
     for _ in 0..iterations {
-        let _ = sockudo::filter::matches(&filter, &tags);
+        let _ = sockudo_filter::matches(&filter, &tags);
     }
 
     let duration = start.elapsed();

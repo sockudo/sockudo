@@ -1,0 +1,13 @@
+[package]
+name = "sockudo-webhook-http"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "HTTP webhook sender backend for Sockudo"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-webpki-roots"] }
+ahash = { version = "0.8.12", features = ["serde"] }
+tracing = "0.1"
+url = { version = "2.5.7", features = ["serde"] }
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

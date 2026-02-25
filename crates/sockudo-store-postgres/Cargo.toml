@@ -1,0 +1,19 @@
+[package]
+name = "sockudo-store-postgres"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "PostgreSQL application store implementation crate"
+
+[dependencies]
+sockudo-core = { path = "../sockudo-core" }
+sockudo-types = { path = "../sockudo-types" }
+async-trait = "0.1.89"
+moka = { version = "0.12.11", features = ["future"] }
+sqlx = { version = "^0.8.6", features = ["runtime-tokio-rustls", "postgres", "tls-rustls"] }
+tracing = "0.1"
+thiserror = "^2.0.17"
+urlencoding = "2.1.3"
+sonic-rs = "0.5.6"
+ahash = { version = "0.8.12", features = ["serde"] }
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

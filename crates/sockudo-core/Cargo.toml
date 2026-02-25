@@ -1,0 +1,42 @@
+[package]
+name = "sockudo-core"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Core contracts for Sockudo"
+
+[features]
+default = []
+redis = ["dep:redis"]
+nats = ["dep:async-nats"]
+
+[dependencies]
+async-trait = "0.1.89"
+ahash = { version = "0.8.12", features = ["serde"] }
+base64 = "0.22"
+bytes = "1.10"
+dashmap = "^6.1.0"
+fossil-delta = "0.2.0"
+futures = "0.3.31"
+oxidelta = "0.1.4"
+serde = { version = "^1", features = ["derive"] }
+sonic-rs = "0.5.6"
+thiserror = "^2.0.17"
+tokio = { version = "^1", features = ["sync", "rt", "macros", "time"] }
+tracing = "0.1"
+sockudo-filter = { path = "../sockudo-filter" }
+sockudo-types = { path = "../sockudo-types" }
+sockudo-protocol = { path = "../sockudo-protocol" }
+sockudo-ws = { version = "1.7.4", features = ["axum-integration"] }
+redis = { version = "^1", features = [
+  "tokio-comp",
+  "json",
+  "cluster",
+  "cluster-async",
+  "tls-rustls",
+  "tokio-rustls-comp",
+  "tls-rustls-webpki-roots",
+  "connection-manager",
+], optional = true }
+async-nats = { version = "^0.45", optional = true }
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

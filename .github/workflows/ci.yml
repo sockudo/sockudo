@@ -1,338 +1,429 @@
 name: CI - Lint and Test
 
 on:
-  push:
-    branches: [main, master, develop, beta]
-  pull_request:
-    branches: [main, master, develop, beta]
+    push:
+        branches: [main, master, develop, beta]
+    pull_request:
+        branches: [main, master, develop, beta]
 
 permissions:
-  contents: read
-  issues: write
-  pull-requests: write
+    contents: read
+    issues: write
+    pull-requests: write
 
 env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
 
 jobs:
-  # =============================================================================
-  # Lint and Format Check
-  # =============================================================================
-  lint:
-    name: Lint and Format
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    # =============================================================================
+    # Lint and Format Check
+    # =============================================================================
+    lint:
+        name: Lint and Format
+        runs-on: ubuntu-24.04
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+                  components: rustfmt, clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+            - name: Cache cargo registry
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+            - name: Check formatting
+              run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+            - name: Run clippy
+              run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # =============================================================================
-  # Test Suite
-  # =============================================================================
-  test:
-    name: Test Suite
-    runs-on: ubuntu-24.04
+    # =============================================================================
+    # Test Suite
+    # =============================================================================
+    test:
+        name: Test Suite
+        runs-on: ubuntu-24.04
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake mysql-client postgresql-client
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake mysql-client postgresql-client
 
-      - name: Start test services with docker-compose
-        run: |
-          # Start all test services using the exact same configuration
-          docker compose -f docker-compose.test.yml up -d
+            - name: Start test services with docker-compose
+              run: |
+                  # Start all test services using the exact same configuration
+                  docker compose -f docker-compose.test.yml up -d
 
-          # Wait for services to be healthy
-          echo "Waiting for services to be ready..."
+                  # Wait for services to be healthy
+                  echo "Waiting for services to be ready..."
 
-          # Wait for Redis instances
-          for i in {1..60}; do
-            if docker exec $(docker ps -q -f "name=redis-test") redis-cli ping &> /dev/null; then
-              echo "Redis test is ready!"
-              break
-            fi
-            echo "Waiting for Redis test... ($i/60)"
-            sleep 2
-          done
+                  # Wait for Redis instances
+                  for i in {1..60}; do
+                    if docker exec $(docker ps -q -f "name=redis-test") redis-cli ping &> /dev/null; then
+                      echo "Redis test is ready!"
+                      break
+                    fi
+                    echo "Waiting for Redis test... ($i/60)"
+                    sleep 2
+                  done
 
-          # Wait for Redis Cluster
-          for i in {1..60}; do
-            if docker exec $(docker ps -q -f "name=redis-cluster") redis-cli -p 7003 ping &> /dev/null; then
-              echo "Redis cluster is ready!"
-              break
-            fi
-            echo "Waiting for Redis cluster... ($i/60)"
-            sleep 2
-          done
+                  # Wait for Redis Cluster
+                  for i in {1..60}; do
+                    if docker exec $(docker ps -q -f "name=redis-cluster") redis-cli -p 7003 ping &> /dev/null; then
+                      echo "Redis cluster is ready!"
+                      break
+                    fi
+                    echo "Waiting for Redis cluster... ($i/60)"
+                    sleep 2
+                  done
 
-          # Wait for NATS instances
-          for i in {1..60}; do
-            if curl -f http://localhost:18222/varz &> /dev/null; then
-              echo "NATS-1 is ready!"
-              break
-            fi
-            echo "Waiting for NATS-1... ($i/60)"
-            sleep 2
-          done
+                  # Wait for NATS instances
+                  for i in {1..60}; do
+                    if curl -f http://localhost:18222/varz &> /dev/null; then
+                      echo "NATS-1 is ready!"
+                      break
+                    fi
+                    echo "Waiting for NATS-1... ($i/60)"
+                    sleep 2
+                  done
 
-          for i in {1..60}; do
-            if curl -f http://localhost:18223/varz &> /dev/null; then
-              echo "NATS-2 is ready!"
-              break
-            fi
-            echo "Waiting for NATS-2... ($i/60)"
-            sleep 2
-          done
+                  for i in {1..60}; do
+                    if curl -f http://localhost:18223/varz &> /dev/null; then
+                      echo "NATS-2 is ready!"
+                      break
+                    fi
+                    echo "Waiting for NATS-2... ($i/60)"
+                    sleep 2
+                  done
 
-          # Wait for MySQL test instance
-          for i in {1..60}; do
-            if mysql -h 127.0.0.1 -P 13306 -u root -proot123 -e "SELECT 1" &> /dev/null; then
-              echo "MySQL test is ready!"
-              break
-            fi
-            echo "Waiting for MySQL test... ($i/60)"
-            sleep 2
-          done
+                  # Wait for MySQL test instance
+                  for i in {1..60}; do
+                    if mysql -h 127.0.0.1 -P 13306 -u root -proot123 -e "SELECT 1" &> /dev/null; then
+                      echo "MySQL test is ready!"
+                      break
+                    fi
+                    echo "Waiting for MySQL test... ($i/60)"
+                    sleep 2
+                  done
 
-          # Wait for ScyllaDB test instance
-          for i in {1..120}; do
-            if docker exec $(docker ps -q -f "name=scylladb-test") nodetool status | grep -q "UN"; then
-              echo "ScyllaDB test is ready!"
-              break
-            fi
-            echo "Waiting for ScyllaDB test... ($i/120)"
-            sleep 2
-          done
+                  # Wait for ScyllaDB test instance
+                  for i in {1..120}; do
+                    if docker exec $(docker ps -q -f "name=scylladb-test") nodetool status | grep -q "UN"; then
+                      echo "ScyllaDB test is ready!"
+                      break
+                    fi
+                    echo "Waiting for ScyllaDB test... ($i/120)"
+                    sleep 2
+                  done
 
-          # Wait for PostgreSQL test instance
-          for i in {1..60}; do
-            if PGPASSWORD=postgres123 psql -h 127.0.0.1 -p 15432 -U postgres -d sockudo_test -c "SELECT 1" &> /dev/null; then
-              echo "PostgreSQL test is ready!"
-              break
-            fi
-            echo "Waiting for PostgreSQL test... ($i/60)"
-            sleep 2
-          done
+                  # Wait for PostgreSQL test instance
+                  for i in {1..60}; do
+                    if PGPASSWORD=postgres123 psql -h 127.0.0.1 -p 15432 -U postgres -d sockudo_test -c "SELECT 1" &> /dev/null; then
+                      echo "PostgreSQL test is ready!"
+                      break
+                    fi
+                    echo "Waiting for PostgreSQL test... ($i/60)"
+                    sleep 2
+                  done
 
-          # Wait for DynamoDB Local
-          for i in {1..30}; do
-            if curl -s http://localhost:18000 | grep -q 'MissingAuthenticationToken'; then
-              echo "DynamoDB Local is ready!"
-              break
-            fi
-            echo "Waiting for DynamoDB Local... ($i/30)"
-            sleep 2
-          done
+                  # Wait for DynamoDB Local
+                  for i in {1..30}; do
+                    if curl -s http://localhost:18000 | grep -q 'MissingAuthenticationToken'; then
+                      echo "DynamoDB Local is ready!"
+                      break
+                    fi
+                    echo "Waiting for DynamoDB Local... ($i/30)"
+                    sleep 2
+                  done
 
-      - name: Show running services
-        run: |
-          echo "=== Running Docker containers ==="
-          docker ps
-          echo "=== Port bindings ==="
-          docker port $(docker ps -q -f "name=redis-test") || true
-          docker port $(docker ps -q -f "name=redis-cluster") || true
-          docker port $(docker ps -q -f "name=nats-1") || true
-          docker port $(docker ps -q -f "name=nats-2") || true
-          docker port $(docker ps -q -f "name=mysql-test") || true
-          docker port $(docker ps -q -f "name=scylladb-test") || true
-          docker port $(docker ps -q -f "name=postgres-test") || true
-          docker port $(docker ps -q -f "name=dynamodb-test") || true
+            - name: Show running services
+              run: |
+                  echo "=== Running Docker containers ==="
+                  docker ps
+                  echo "=== Port bindings ==="
+                  docker port $(docker ps -q -f "name=redis-test") || true
+                  docker port $(docker ps -q -f "name=redis-cluster") || true
+                  docker port $(docker ps -q -f "name=nats-1") || true
+                  docker port $(docker ps -q -f "name=nats-2") || true
+                  docker port $(docker ps -q -f "name=mysql-test") || true
+                  docker port $(docker ps -q -f "name=scylladb-test") || true
+                  docker port $(docker ps -q -f "name=postgres-test") || true
+                  docker port $(docker ps -q -f "name=dynamodb-test") || true
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+            - name: Cache cargo registry
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run tests
-        run: cargo test --verbose --all-features
-        env:
-          # Redis configurations (matching docker-compose.test.yml)
-          DATABASE_REDIS_HOST: localhost
-          DATABASE_REDIS_PORT: 16379
+            - name: Run tests
+              run: cargo test --verbose --all-features
+              env:
+                  # Redis configurations (matching docker-compose.test.yml)
+                  DATABASE_REDIS_HOST: localhost
+                  DATABASE_REDIS_PORT: 16379
 
-          # Redis Cluster configuration (matching docker-compose.test.yml)
-          REDIS_CLUSTER_NODES: localhost:7001,localhost:7002,localhost:7003
+                  # Redis Cluster configuration (matching docker-compose.test.yml)
+                  REDIS_CLUSTER_NODES: localhost:7001,localhost:7002,localhost:7003
 
-          # NATS configuration (matching docker-compose.test.yml)
-          NATS_SERVERS: nats://localhost:14222,nats://localhost:14223
+                  # NATS configuration (matching docker-compose.test.yml)
+                  NATS_SERVERS: nats://localhost:14222,nats://localhost:14223
 
-          # MySQL configurations (matching docker-compose.test.yml)
-          DATABASE_MYSQL_HOST: localhost
-          DATABASE_MYSQL_PORT: 13306
-          DATABASE_MYSQL_USERNAME: root
-          DATABASE_MYSQL_PASSWORD: root123
-          DATABASE_MYSQL_DATABASE: sockudo
+                  # MySQL configurations (matching docker-compose.test.yml)
+                  DATABASE_MYSQL_HOST: localhost
+                  DATABASE_MYSQL_PORT: 13306
+                  DATABASE_MYSQL_USERNAME: root
+                  DATABASE_MYSQL_PASSWORD: root123
+                  DATABASE_MYSQL_DATABASE: sockudo
 
-          # ScyllaDB configurations (matching docker-compose.test.yml)
-          SCYLLADB_NODES: localhost:19042
-          SCYLLADB_KEYSPACE: sockudo_test
+                  # ScyllaDB configurations (matching docker-compose.test.yml)
+                  SCYLLADB_NODES: localhost:19042
+                  SCYLLADB_KEYSPACE: sockudo_test
 
-          # PostgreSQL configurations (matching docker-compose.test.yml)
-          DATABASE_POSTGRES_HOST: localhost
-          DATABASE_POSTGRES_PORT: 15432
-          DATABASE_POSTGRES_USERNAME: postgres
-          DATABASE_POSTGRES_PASSWORD: postgres123
-          DATABASE_POSTGRES_DATABASE: sockudo_test
+                  # PostgreSQL configurations (matching docker-compose.test.yml)
+                  DATABASE_POSTGRES_HOST: localhost
+                  DATABASE_POSTGRES_PORT: 15432
+                  DATABASE_POSTGRES_USERNAME: postgres
+                  DATABASE_POSTGRES_PASSWORD: postgres123
+                  DATABASE_POSTGRES_DATABASE: sockudo_test
 
-          # DynamoDB Local configurations (matching docker-compose.test.yml)
-          DYNAMODB_ENDPOINT: http://localhost:18000
-          DYNAMODB_REGION: us-east-1
+                  # DynamoDB Local configurations (matching docker-compose.test.yml)
+                  DYNAMODB_ENDPOINT: http://localhost:18000
+                  DYNAMODB_REGION: us-east-1
 
-      - name: Cleanup test services
-        if: always()
-        run: |
-          echo "Stopping test services..."
-          docker compose -f docker-compose.test.yml down -v || true
-          docker system prune -f || true
+            - name: Cleanup test services
+              if: always()
+              run: |
+                  echo "Stopping test services..."
+                  docker compose -f docker-compose.test.yml down -v || true
+                  docker system prune -f || true
 
-  # =============================================================================
-  # Security Audit
-  # =============================================================================
-  security:
-    name: Security Audit
-    runs-on: ubuntu-24.04
+    # =============================================================================
+    # Security Audit
+    # =============================================================================
+    security:
+        name: Security Audit
+        runs-on: ubuntu-24.04
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+            - name: Install cargo-audit
+              run: cargo install cargo-audit
 
-      - name: Security audit
-        run: cargo audit
+            - name: Security audit
+              run: cargo audit
 
-  # =============================================================================
-  # Manual Build Instructions (PR only)
-  # =============================================================================
-  manual-build-info:
-    name: 🔨 Manual Build Instructions
-    runs-on: ubuntu-24.04
-    needs: [lint, test, security]
-    steps:
-      - name: Post build instructions
-        uses: actions/github-script@v7
-        with:
-          script: |
-            console.log('Starting manual build info job...');
-            console.log('Event name:', context.eventName);
+    # =============================================================================
+    # Workspace Guardrails
+    # =============================================================================
+    guardrails:
+        name: Workspace Guardrails
+        runs-on: ubuntu-24.04
 
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/manual-build.yml`;
-            let prNumber, branchName;
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
 
-            if (context.eventName === 'pull_request') {
-              prNumber = context.payload.pull_request.number;
-              branchName = context.payload.pull_request.head.ref;
-            } else if (context.eventName === 'push') {
-              // For push events, try to find the associated PR
-              branchName = context.ref.replace('refs/heads/', '');
-              const prs = await github.rest.pulls.list({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                head: `${context.repo.owner}:${branchName}`,
-                state: 'open'
-              });
-              if (prs.data.length > 0) {
-                prNumber = prs.data[0].number;
-              }
-            }
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
 
-            if (!prNumber) {
-              console.log('No PR found for this push, skipping');
-              return;
-            }
+            - name: Install cargo-hakari and cargo-deny
+              run: |
+                  cargo install cargo-hakari --locked
+                  cargo install cargo-deny --locked
 
-            console.log('PR number:', prNumber);
-            console.log('Branch name:', branchName);
-            console.log('Run URL:', runUrl);
+            - name: Verify hakari workspace-hack
+              run: cargo hakari verify
 
-            // Check if we've already posted instructions
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-            });
+            - name: Dependency policy checks
+              run: cargo deny check advisories bans sources
 
-            console.log(`Found ${comments.data.length} existing comments`);
+    # =============================================================================
+    # Modular Build Matrix
+    # =============================================================================
+    modular-builds:
+        name: Modular Build - ${{ matrix.name }}
+        runs-on: ubuntu-24.04
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - name: core-only
+                      command: cargo check -p sockudo-types -p sockudo-protocol -p sockudo-filter -p sockudo-config -p sockudo-core
+                    - name: adapter-local
+                      command: cargo check -p sockudo-adapter-local
+                    - name: adapter-redis
+                      command: cargo check -p sockudo-adapter-redis
+                    - name: adapter-redis-cluster
+                      command: cargo check -p sockudo-adapter-redis-cluster
+                    - name: adapter-nats
+                      command: cargo check -p sockudo-adapter-nats
+                    - name: store-mysql
+                      command: cargo check -p sockudo-store-mysql
+                    - name: store-postgres
+                      command: cargo check -p sockudo-store-postgres
+                    - name: store-dynamodb
+                      command: cargo check -p sockudo-store-dynamodb
+                    - name: store-scylla
+                      command: cargo check -p sockudo-store-scylla
+                    - name: queue-memory
+                      command: cargo check -p sockudo-queue-memory
+                    - name: queue-redis
+                      command: cargo check -p sockudo-queue-redis
+                    - name: queue-redis-cluster
+                      command: cargo check -p sockudo-queue-redis-cluster
+                    - name: queue-sqs
+                      command: cargo check -p sockudo-queue-sqs
+                    - name: webhook-http
+                      command: cargo check -p sockudo-webhook-http
+                    - name: webhook-lambda
+                      command: cargo check -p sockudo-webhook-lambda
+                    - name: full-workspace
+                      command: cargo check --workspace --all-features
 
-            const existingComment = comments.data.find(comment =>
-              comment.user.login === 'github-actions[bot]' &&
-              comment.body.includes('Manual Build Available')
-            );
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
 
-            console.log('Existing comment found:', !!existingComment);
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
 
-            if (!existingComment) {
-              const body = [
-                '## 🔨 Manual Build Available',
-                '',
-                '**To build artifacts for this PR:**',
-                '',
-                `1. **Click here:** [🚀 Trigger Manual Build](${runUrl})`,
-                '2. Click **"Run workflow"** (green button)',
-                `3. Select branch: \`${branchName}\``,
-                '4. Choose platforms to build:',
-                '   - ☑️ Linux x64 (GNU)',
-                '   - ☑️ macOS x64 (Intel)',
-                '   - ☑️ macOS ARM64 (Apple Silicon)',
-                '   - ☑️ Windows x64',
-                '   - ☑️ Docker image',
-                '5. Click **"Run workflow"**',
-                '',
-                '**Artifacts will be posted here when build completes** ⬇️',
-                '',
-                '---',
-                '*This comment will be updated with download links once builds are triggered*'
-              ].join('\n');
+            - name: Cache cargo registry
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-modular-${{ matrix.name }}-${{ hashFiles('**/Cargo.lock') }}
 
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: body
-              });
+            - name: Run modular build check
+              run: ${{ matrix.command }}
 
-              console.log('Posted manual build instructions to PR');
-            } else {
-              console.log('Manual build instructions already posted, skipping');
-            }
+    # =============================================================================
+    # Manual Build Instructions (PR only)
+    # =============================================================================
+    manual-build-info:
+        name: 🔨 Manual Build Instructions
+        runs-on: ubuntu-24.04
+        needs: [lint, test, security, guardrails, modular-builds]
+        steps:
+            - name: Post build instructions
+              uses: actions/github-script@v7
+              with:
+                  script: |
+                      console.log('Starting manual build info job...');
+                      console.log('Event name:', context.eventName);
+
+                      const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/manual-build.yml`;
+                      let prNumber, branchName;
+
+                      if (context.eventName === 'pull_request') {
+                        prNumber = context.payload.pull_request.number;
+                        branchName = context.payload.pull_request.head.ref;
+                      } else if (context.eventName === 'push') {
+                        // For push events, try to find the associated PR
+                        branchName = context.ref.replace('refs/heads/', '');
+                        const prs = await github.rest.pulls.list({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          head: `${context.repo.owner}:${branchName}`,
+                          state: 'open'
+                        });
+                        if (prs.data.length > 0) {
+                          prNumber = prs.data[0].number;
+                        }
+                      }
+
+                      if (!prNumber) {
+                        console.log('No PR found for this push, skipping');
+                        return;
+                      }
+
+                      console.log('PR number:', prNumber);
+                      console.log('Branch name:', branchName);
+                      console.log('Run URL:', runUrl);
+
+                      // Check if we've already posted instructions
+                      const comments = await github.rest.issues.listComments({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: prNumber,
+                      });
+
+                      console.log(`Found ${comments.data.length} existing comments`);
+
+                      const existingComment = comments.data.find(comment =>
+                        comment.user.login === 'github-actions[bot]' &&
+                        comment.body.includes('Manual Build Available')
+                      );
+
+                      console.log('Existing comment found:', !!existingComment);
+
+                      if (!existingComment) {
+                        const body = [
+                          '## 🔨 Manual Build Available',
+                          '',
+                          '**To build artifacts for this PR:**',
+                          '',
+                          `1. **Click here:** [🚀 Trigger Manual Build](${runUrl})`,
+                          '2. Click **"Run workflow"** (green button)',
+                          `3. Select branch: \`${branchName}\``,
+                          '4. Choose platforms to build:',
+                          '   - ☑️ Linux x64 (GNU)',
+                          '   - ☑️ macOS x64 (Intel)',
+                          '   - ☑️ macOS ARM64 (Apple Silicon)',
+                          '   - ☑️ Windows x64',
+                          '   - ☑️ Docker image',
+                          '5. Click **"Run workflow"**',
+                          '',
+                          '**Artifacts will be posted here when build completes** ⬇️',
+                          '',
+                          '---',
+                          '*This comment will be updated with download links once builds are triggered*'
+                        ].join('\n');
+
+                        await github.rest.issues.createComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: prNumber,
+                          body: body
+                        });
+
+                        console.log('Posted manual build instructions to PR');
+                      } else {
+                        console.log('Manual build instructions already posted, skipping');
+                      }

@@ -2,7 +2,7 @@ use sockudo::adapter::connection_manager::{ConnectionManager, HorizontalAdapterI
 use sockudo::adapter::horizontal_adapter::RequestType;
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo::error::Result;
-use sockudo::protocol::messages::{MessageData, PusherMessage};
+use sockudo_protocol::messages::{MessageData, PusherMessage};
 use std::time::Duration;
 
 use super::horizontal_adapter_helpers::{MockConfig, MockNodeState, MockTransport};

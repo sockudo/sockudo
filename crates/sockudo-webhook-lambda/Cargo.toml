@@ -1,0 +1,15 @@
+[package]
+name = "sockudo-webhook-lambda"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "AWS Lambda webhook sender backend for Sockudo"
+
+[dependencies]
+sockudo-types = { path = "../sockudo-types" }
+aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
+aws-sdk-lambda = "1.104.0"
+dashmap = "6.1.0"
+sonic-rs = "0.5.6"
+tracing = "0.1"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

@@ -168,7 +168,9 @@ mod tests {
         worker_count: usize,
         buffer_size: usize,
     ) -> (
-        sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem,
+        sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem<
+            dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync,
+        >,
         std::sync::Arc<sockudo::adapter::local_adapter::LocalAdapter>,
     ) {
         use sockudo::adapter::connection_manager::ConnectionManager;

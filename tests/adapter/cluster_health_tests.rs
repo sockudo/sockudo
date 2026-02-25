@@ -1,6 +1,6 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo::options::ClusterHealthConfig;
+use sockudo_config::adapter::ClusterHealthConfig;
 
 #[tokio::test]
 async fn test_cluster_health_config_validation_success() {

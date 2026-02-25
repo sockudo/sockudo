@@ -1,0 +1,27 @@
+[package]
+name = "sockudo-queue-redis"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Redis queue backend for Sockudo"
+
+[dependencies]
+sockudo-types = { path = "../sockudo-types" }
+async-trait = "0.1.89"
+redis = { version = "1", features = [
+  "tokio-comp",
+  "json",
+  "cluster",
+  "cluster-async",
+  "tls-rustls",
+  "tokio-rustls-comp",
+  "tls-rustls-webpki-roots",
+  "connection-manager",
+] }
+dashmap = "6.1.0"
+ahash = { version = "0.8.12", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+sonic-rs = "0.5.6"
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
+tracing = "0.1"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

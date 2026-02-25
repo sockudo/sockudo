@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use sockudo::app::config::App;
 use sockudo::http_handler::up;
+use sockudo_config::drivers::CacheDriver;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -401,14 +402,14 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         &self,
         _app_id: &str,
         _socket_id: &sockudo::websocket::SocketId,
-        _message: sockudo::protocol::messages::PusherMessage,
+        _message: sockudo_protocol::messages::PusherMessage,
     ) -> sockudo::error::Result<()> {
         Ok(())
     }
     async fn send(
         &self,
         _channel: &str,
-        _message: sockudo::protocol::messages::PusherMessage,
+        _message: sockudo_protocol::messages::PusherMessage,
         _except: Option<&sockudo::websocket::SocketId>,
         _app_id: &str,
         _start_time_ms: Option<f64>,
@@ -627,7 +628,7 @@ async fn test_up_adapter_health_check_failure() {
 async fn test_up_cache_health_check_failure() {
     // Create server options with cache enabled (not None)
     let mut server_options = sockudo::options::ServerOptions::default();
-    server_options.cache.driver = sockudo::options::CacheDriver::Memory;
+    server_options.cache.driver = CacheDriver::Memory;
 
     let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
         sockudo::delta_compression::DeltaCompressionConfig::default(),

@@ -1,0 +1,16 @@
+[package]
+name = "sockudo-filter"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Filter parsing and matching engine for Sockudo"
+
+[dependencies]
+ahash = { version = "0.8.12", features = ["serde"] }
+dashmap = "6.1.0"
+memchr = "2.7"
+serde = { version = "^1", features = ["derive"] }
+sonic-rs = "0.5.6"
+sockudo-types = { path = "../sockudo-types" }
+tracing = "0.1"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

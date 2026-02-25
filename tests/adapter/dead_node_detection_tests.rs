@@ -2,7 +2,7 @@ use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
 use sockudo::adapter::ConnectionManager;
 use sockudo::adapter::horizontal_adapter::{DeadNodeEvent, RequestType};
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo::options::ClusterHealthConfig;
+use sockudo_config::adapter::ClusterHealthConfig;
 use std::time::Duration;
 
 #[tokio::test]

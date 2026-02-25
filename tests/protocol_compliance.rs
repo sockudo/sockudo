@@ -1,4 +1,4 @@
-use sockudo::protocol::messages::{MessageData, PusherMessage};
+use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
 
@@ -161,7 +161,7 @@ fn test_subscription_succeeded_format() {
     // According to spec: data should be a String (JSON-encoded object)
     // For presence channels, it contains presence data
     use ahash::AHashMap;
-    use sockudo::protocol::messages::PresenceData;
+    use sockudo_protocol::messages::PresenceData;
 
     let mut hash = AHashMap::new();
     hash.insert("user1".to_string(), Some(json!({"name": "Alice"})));

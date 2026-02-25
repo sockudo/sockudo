@@ -1,0 +1,34 @@
+[package]
+name = "sockudo-server"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Sockudo server assembly crate"
+
+[dependencies]
+sockudo-runtime = { path = "../sockudo-runtime" }
+sockudo-config = { path = "../sockudo-config" }
+sockudo-core = { path = "../sockudo-core" }
+sockudo-adapter-local = { path = "../sockudo-adapter-local" }
+sockudo-adapter-redis = { path = "../sockudo-adapter-redis" }
+sockudo-adapter-redis-cluster = { path = "../sockudo-adapter-redis-cluster" }
+sockudo-adapter-nats = { path = "../sockudo-adapter-nats" }
+sockudo-store-mysql = { path = "../sockudo-store-mysql" }
+sockudo-store-postgres = { path = "../sockudo-store-postgres" }
+sockudo-store-dynamodb = { path = "../sockudo-store-dynamodb" }
+sockudo-store-scylla = { path = "../sockudo-store-scylla" }
+sockudo-queue-memory = { path = "../sockudo-queue-memory" }
+sockudo-queue-redis = { path = "../sockudo-queue-redis" }
+sockudo-queue-redis-cluster = { path = "../sockudo-queue-redis-cluster" }
+sockudo-queue-sqs = { path = "../sockudo-queue-sqs" }
+sockudo-webhook-http = { path = "../sockudo-webhook-http" }
+sockudo-webhook-lambda = { path = "../sockudo-webhook-lambda" }
+
+clap = { version = "4.5.51", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+rustls = { version = "0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
+sonic-rs = "0.5.6"
+async-trait = "0.1.89"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }
