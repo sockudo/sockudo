@@ -1,35 +1,38 @@
 use crate::webhook::types::Webhook;
 use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
+use serde_aux::field_attributes::{
+    deserialize_number_from_string, deserialize_option_number_from_string,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct App {
     pub id: String,
     pub key: String,
     pub secret: String,
-    #[serde(deserialize_with = "deserialize_flexible_number")]
+    #[serde(deserialize_with = "deserialize_number_from_string")]
     pub max_connections: u32,
     pub enable_client_messages: bool,
     pub enabled: bool,
-    #[serde(default, deserialize_with = "deserialize_optional_number_from_string")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_backend_events_per_second: Option<u32>,
-    #[serde(deserialize_with = "deserialize_flexible_number")]
+    #[serde(deserialize_with = "deserialize_number_from_string")]
     pub max_client_events_per_second: u32,
-    #[serde(default, deserialize_with = "deserialize_optional_number_from_string")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_read_requests_per_second: Option<u32>,
-    #[serde(default, deserialize_with = "deserialize_optional_number_from_string")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_presence_members_per_channel: Option<u32>,
-    #[serde(default, deserialize_with = "deserialize_optional_number_from_string")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_presence_member_size_in_kb: Option<u32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_channel_name_length: Option<u32>,
-    #[serde(default, deserialize_with = "deserialize_optional_number_from_string")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_event_channels_at_once: Option<u32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_event_name_length: Option<u32>,
-    #[serde(default, deserialize_with = "deserialize_optional_number_from_string")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_event_payload_in_kb: Option<u32>,
-    #[serde(default, deserialize_with = "deserialize_optional_number_from_string")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_event_batch_size: Option<u32>,
     #[serde(default)]
     pub enable_user_authentication: Option<bool>,
@@ -42,73 +45,6 @@ pub struct App {
     #[serde(default)]
     pub channel_delta_compression:
         Option<AHashMap<String, crate::delta_compression::ChannelDeltaConfig>>,
-}
-
-// Helper functions to deserialize numbers from strings or numbers
-fn deserialize_flexible_number<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{Error, Visitor};
-    use std::fmt;
-
-    struct FlexibleU32Visitor;
-
-    impl<'de> Visitor<'de> for FlexibleU32Visitor {
-        type Value = u32;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a number or string containing a number")
-        }
-
-        fn visit_u32<E>(self, v: u32) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(v)
-        }
-
-        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            u32::try_from(v).map_err(|_| {
-                if v < 0 {
-                    E::custom(format!("number {} cannot be negative", v))
-                } else {
-                    E::custom(format!("number {} is too large for u32", v))
-                }
-            })
-        }
-
-        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            u32::try_from(v).map_err(|_| E::custom(format!("number {} is too large for u32", v)))
-        }
-
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            v.parse::<u32>().map_err(E::custom)
-        }
-    }
-
-    deserializer.deserialize_any(FlexibleU32Visitor)
-}
-
-fn deserialize_optional_number_from_string<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::Error;
-    let value = Option::<String>::deserialize(deserializer)?;
-    match value {
-        Some(s) => Ok(Some(s.parse::<u32>().map_err(D::Error::custom)?)),
-        None => Ok(None),
-    }
 }
 
 fn deserialize_and_validate_origins<'de, D>(
@@ -136,3 +72,65 @@ where
 }
 
 // Implementation with default values
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_app_json(overrides: &str) -> String {
+        format!(
+            r#"{{"id":"test","key":"key","secret":"secret","max_connections":100,"enable_client_messages":false,"enabled":true,"max_client_events_per_second":100{overrides}}}"#
+        )
+    }
+
+    #[test]
+    fn deserialize_optional_numbers_from_integers() {
+        let json = test_app_json(
+            r#","max_presence_members_per_channel":100,"max_event_payload_in_kb":64"#,
+        );
+        let app: App = sonic_rs::from_str(&json).unwrap();
+        assert_eq!(app.max_presence_members_per_channel, Some(100));
+        assert_eq!(app.max_event_payload_in_kb, Some(64));
+    }
+
+    #[test]
+    fn deserialize_optional_numbers_from_strings() {
+        let json = test_app_json(
+            r#","max_presence_members_per_channel":"100","max_event_payload_in_kb":"64""#,
+        );
+        let app: App = sonic_rs::from_str(&json).unwrap();
+        assert_eq!(app.max_presence_members_per_channel, Some(100));
+        assert_eq!(app.max_event_payload_in_kb, Some(64));
+    }
+
+    #[test]
+    fn deserialize_optional_numbers_from_null() {
+        let json = test_app_json(r#","max_presence_members_per_channel":null"#);
+        let app: App = sonic_rs::from_str(&json).unwrap();
+        assert_eq!(app.max_presence_members_per_channel, None);
+    }
+
+    #[test]
+    fn deserialize_optional_numbers_missing_fields() {
+        let json = test_app_json("");
+        let app: App = sonic_rs::from_str(&json).unwrap();
+        assert_eq!(app.max_presence_members_per_channel, None);
+        assert_eq!(app.max_event_payload_in_kb, None);
+    }
+
+    #[test]
+    fn cache_round_trip_preserves_optional_numbers() {
+        let json = test_app_json(
+            r#","max_presence_members_per_channel":100,"max_backend_events_per_second":50,"max_channel_name_length":200"#,
+        );
+        let app: App = sonic_rs::from_str(&json).unwrap();
+
+        // Simulate cache write/read (sonic_rs::to_string → sonic_rs::from_str)
+        let cached = sonic_rs::to_string(&app).unwrap();
+        let restored: App = sonic_rs::from_str(&cached).unwrap();
+
+        assert_eq!(restored.max_presence_members_per_channel, Some(100));
+        assert_eq!(restored.max_backend_events_per_second, Some(50));
+        assert_eq!(restored.max_channel_name_length, Some(200));
+    }
+}
