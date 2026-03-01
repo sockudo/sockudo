@@ -300,39 +300,34 @@ impl SockudoServer {
             debug_enabled
         );
 
-        let app_manager: Arc<dyn AppManager + Send + Sync> = {
-            let inner = AppManagerFactory::create(
-                &config.app_manager,
-                &config.database,
-                &config.database_pooling,
-            )
-            .await?;
-
-            if config.app_manager.cache.enabled {
-                info!(
-                    "Wrapping AppManager with CachedAppManager (ttl: {}s)",
-                    config.app_manager.cache.ttl
+        let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(
+                    "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
+                    e
                 );
-                let app_cache = Arc::new(Mutex::new(MemoryCacheManager::new(
-                    "app_cache".to_string(),
-                    crate::options::MemoryCacheOptions {
-                        ttl: config.app_manager.cache.ttl,
-                        cleanup_interval: 60,
-                        max_capacity: 1000,
-                    },
-                )));
-                Arc::new(crate::app::cached_app_manager::CachedAppManager::new(
-                    inner,
-                    app_cache,
-                    config.app_manager.cache.clone(),
-                ))
-            } else {
-                inner
-            }
-        };
+                let fallback_cache_options = config.cache.memory.clone();
+                Arc::new(Mutex::new(MemoryCacheManager::new(
+                    "fallback_cache".to_string(),
+                    fallback_cache_options,
+                )))
+            });
         info!(
-            "AppManager initialized with driver: {:?}",
-            config.app_manager.driver
+            "CacheManager initialized with driver: {:?}",
+            config.cache.driver
+        );
+
+        let app_manager = AppManagerFactory::create(
+            &config.app_manager,
+            &config.database,
+            &config.database_pooling,
+            cache_manager.clone(),
+        )
+        .await?;
+        info!(
+            "AppManager initialized with driver: {:?} (cache: {})",
+            config.app_manager.driver, config.app_manager.cache.enabled
         );
 
         let (connection_manager, typed_adapter) =
@@ -365,24 +360,6 @@ impl SockudoServer {
             info!("Cluster health disabled, skipping dead node cleanup event bus setup");
             None
         };
-
-        let cache_manager = CacheManagerFactory::create(&config.cache, &config.database.redis)
-            .await
-            .unwrap_or_else(|e| {
-                warn!(
-                    "CacheManagerFactory creation failed: {}. Using a NoOp (Memory) Cache.",
-                    e
-                );
-                let fallback_cache_options = config.cache.memory.clone();
-                Arc::new(Mutex::new(MemoryCacheManager::new(
-                    "fallback_cache".to_string(),
-                    fallback_cache_options,
-                )))
-            });
-        info!(
-            "CacheManager initialized with driver: {:?}",
-            config.cache.driver
-        );
 
         let auth_validator = Arc::new(AuthValidator::new(app_manager.clone()));
 
