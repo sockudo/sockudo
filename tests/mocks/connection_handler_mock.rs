@@ -1,16 +1,16 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use sockudo::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
-use sockudo::adapter::handler::ConnectionHandler;
-use sockudo::app::config::App;
-use sockudo::app::manager::AppManager;
-use sockudo::cache::manager::CacheManager;
-use sockudo::channel::PresenceMemberInfo;
-use sockudo::error::Result;
-use sockudo::metrics::MetricsInterface;
-use sockudo::namespace::Namespace;
-use sockudo::options::ServerOptions;
-use sockudo::websocket::{SocketId, WebSocketRef};
+use sockudo_runtime::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
+use sockudo_runtime::adapter::handler::ConnectionHandler;
+use sockudo_runtime::app::config::App;
+use sockudo_runtime::app::manager::AppManager;
+use sockudo_runtime::cache::manager::CacheManager;
+use sockudo_runtime::channel::PresenceMemberInfo;
+use sockudo_runtime::error::Result;
+use sockudo_runtime::metrics::MetricsInterface;
+use sockudo_runtime::namespace::Namespace;
+use sockudo_runtime::options::ServerOptions;
+use sockudo_runtime::websocket::{SocketId, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use sonic_rs::Value;
@@ -45,7 +45,7 @@ impl ConnectionManager for MockAdapter {
         _socket: WebSocketWriter,
         _app_id: &str,
         _app_manager: Arc<dyn AppManager + Send + Sync>,
-        _buffer_config: sockudo::websocket::WebSocketBufferConfig,
+        _buffer_config: sockudo_runtime::websocket::WebSocketBufferConfig,
     ) -> Result<()> {
         Ok(())
     }
@@ -385,8 +385,8 @@ impl MetricsInterface for MockMetricsInterface {
 #[allow(dead_code)]
 pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
     let app_manager = MockAppManager::new();
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
     let handler = ConnectionHandler::new(
@@ -407,8 +407,8 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
 pub fn create_test_connection_handler_with_app_manager(
     app_manager: MockAppManager,
 ) -> ConnectionHandler {
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
     ConnectionHandler::new(

@@ -1,8 +1,8 @@
 #![cfg(feature = "nats")]
 
-use sockudo::adapter::ConnectionManager;
-use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
-use sockudo::adapter::nats_adapter::NatsAdapter;
+use sockudo_runtime::adapter::ConnectionManager;
+use sockudo_runtime::adapter::connection_manager::HorizontalAdapterInterface;
+use sockudo_runtime::adapter::nats_adapter::NatsAdapter;
 use sockudo_config::adapter::{ClusterHealthConfig, NatsAdapterConfig};
 use sonic_rs::json;
 use std::env;

@@ -1,7 +1,7 @@
-use sockudo::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
-use sockudo::adapter::horizontal_adapter::RequestType;
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo::error::Result;
+use sockudo_runtime::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
+use sockudo_runtime::adapter::horizontal_adapter::RequestType;
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::error::Result;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use std::time::Duration;
 

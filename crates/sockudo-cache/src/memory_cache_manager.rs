@@ -1,8 +1,8 @@
 // src/cache/memory_cache_manager.rs
 
-use crate::cache::manager::CacheManager;
-use crate::error::Result; // Assuming your project's Error/Result types
-use crate::options::MemoryCacheOptions; // Using the type-safe options
+use crate::manager::CacheManager;
+use sockudo_core::error::Result; // Assuming your project's Error/Result types
+use sockudo_options::MemoryCacheOptions; // Using the type-safe options
 use async_trait::async_trait;
 use moka::future::Cache;
 use std::time::Duration;

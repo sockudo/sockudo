@@ -1,6 +1,6 @@
 // src/rate_limiter/memory_limiter.rs
 use super::{RateLimitConfig, RateLimitResult, RateLimiter};
-use crate::error::Result;
+use sockudo_core::error::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;

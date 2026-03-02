@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod unix_socket_config_tests {
 
-    use sockudo::options::{ServerOptions, UnixSocketConfig};
+    use sockudo_runtime::options::{ServerOptions, UnixSocketConfig};
     use std::env;
 
     #[test]

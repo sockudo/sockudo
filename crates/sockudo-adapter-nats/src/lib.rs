@@ -1,6 +1,8 @@
 //! NATS adapter implementation crate.
 
-pub use sockudo_adapter_local::{app, delta_compression, error, metrics, namespace, websocket};
+pub(crate) use sockudo_adapter_local::{
+    app, delta_compression, error, metrics, namespace, websocket,
+};
 
 pub mod adapter;
 pub mod backend;

@@ -4,7 +4,7 @@
 
 // src/rate_limiter/redis_limiter.rs
 use super::{RateLimitConfig, RateLimitResult, RateLimiter};
-use crate::error::{Error, Result};
+use sockudo_core::error::{Error, Result};
 use async_trait::async_trait;
 use redis::AsyncCommands;
 use redis::cluster::ClusterClient;

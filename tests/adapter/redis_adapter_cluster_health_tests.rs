@@ -1,9 +1,9 @@
 #![cfg(feature = "redis")]
 
-use sockudo::adapter::ConnectionManager;
-use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
-use sockudo::adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
-use sockudo::websocket::SocketId;
+use sockudo_runtime::adapter::ConnectionManager;
+use sockudo_runtime::adapter::connection_manager::HorizontalAdapterInterface;
+use sockudo_runtime::adapter::redis_adapter::{RedisAdapter, RedisAdapterOptions};
+use sockudo_runtime::websocket::SocketId;
 use sockudo_config::adapter::ClusterHealthConfig;
 use sonic_rs::json;
 use std::env;

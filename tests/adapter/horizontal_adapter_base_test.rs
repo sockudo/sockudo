@@ -1,10 +1,10 @@
 use super::horizontal_adapter_helpers::{MockConfig, MockTransport};
-use sockudo::adapter::ConnectionManager;
-use sockudo::adapter::horizontal_adapter::RequestType;
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo::adapter::horizontal_transport::{HorizontalTransport, TransportConfig};
-use sockudo::error::Result;
-use sockudo::websocket::SocketId;
+use sockudo_runtime::adapter::ConnectionManager;
+use sockudo_runtime::adapter::horizontal_adapter::RequestType;
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::horizontal_transport::{HorizontalTransport, TransportConfig};
+use sockudo_runtime::error::Result;
+use sockudo_runtime::websocket::SocketId;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sonic_rs::prelude::*;
 use std::collections::HashSet;
