@@ -50,9 +50,9 @@ impl SqsQueueManager {
 
         if let Some(prefix) = &self.config.queue_url_prefix {
             let queue_url = if self.config.fifo {
-                format!("{prefix}/{queue_name}.fifo")
+                format!("{prefix}{queue_name}.fifo")
             } else {
-                format!("{prefix}/{queue_name}")
+                format!("{prefix}{queue_name}")
             };
 
             let mut queue_urls = self.queue_urls.lock().await;
