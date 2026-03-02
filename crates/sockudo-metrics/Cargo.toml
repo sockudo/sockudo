@@ -1,0 +1,18 @@
+[package]
+name = "sockudo-metrics"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Metrics implementations and factory for Sockudo"
+
+[dependencies]
+sockudo-core = { path = "../sockudo-core" }
+sockudo-types = { path = "../sockudo-types" }
+async-trait = "0.1.89"
+prometheus = "0.14.0"
+sonic-rs = "0.5.6"
+tracing = "0.1"
+libc = "0.2"
+tokio = { version = "^1", features = ["sync"] }
+chrono = "^0.4.42"
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

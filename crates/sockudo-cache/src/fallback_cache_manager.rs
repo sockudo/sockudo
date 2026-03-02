@@ -1,7 +1,7 @@
-use crate::cache::manager::CacheManager;
-use crate::cache::memory_cache_manager::MemoryCacheManager;
-use crate::error::Result;
-use crate::options::MemoryCacheOptions;
+use crate::manager::CacheManager;
+use crate::memory_cache_manager::MemoryCacheManager;
+use sockudo_core::error::Result;
+use sockudo_options::MemoryCacheOptions;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -353,8 +353,8 @@ impl CacheManager for FallbackCacheManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::memory_cache_manager::MemoryCacheManager;
-    use crate::error::Error;
+    use crate::memory_cache_manager::MemoryCacheManager;
+    use sockudo_core::error::Error;
     use std::sync::Arc;
     use tokio::sync::Mutex as TokioMutex;
 

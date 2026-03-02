@@ -1,16 +1,16 @@
 #[cfg(test)]
 mod tests {
-    use sockudo::adapter::connection_manager::ConnectionManager;
-    use sockudo::adapter::local_adapter::LocalAdapter;
-    use sockudo::app::config::App;
-    use sockudo::app::manager::AppManager;
-    use sockudo::app::memory_app_manager::MemoryAppManager;
-    use sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem;
-    use sockudo::cleanup::{
+    use sockudo_runtime::adapter::connection_manager::ConnectionManager;
+    use sockudo_runtime::adapter::local_adapter::LocalAdapter;
+    use sockudo_runtime::app::config::App;
+    use sockudo_runtime::app::manager::AppManager;
+    use sockudo_runtime::app::memory_app_manager::MemoryAppManager;
+    use sockudo_runtime::cleanup::multi_worker::MultiWorkerCleanupSystem;
+    use sockudo_runtime::cleanup::{
         AuthInfo, CleanupConfig, ConnectionCleanupInfo, DisconnectTask, WorkerThreadsConfig,
     };
-    use sockudo::webhook::types::Webhook;
-    use sockudo::websocket::SocketId;
+    use sockudo_runtime::webhook::types::Webhook;
+    use sockudo_runtime::websocket::SocketId;
     use std::sync::Arc;
     use std::time::Instant;
 

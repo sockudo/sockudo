@@ -1,6 +1,6 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
 use ahash::AHashMap;
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo_config::adapter::ClusterHealthConfig;
 use std::sync::Arc;
 use std::time::Duration;

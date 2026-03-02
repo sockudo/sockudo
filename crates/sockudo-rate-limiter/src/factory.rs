@@ -1,17 +1,17 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use crate::error::Result;
-use crate::rate_limiter::RateLimiter;
+use sockudo_core::error::Result;
+use crate::RateLimiter;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use crate::options::{RateLimiterConfig, RedisConnection};
-use crate::rate_limiter::memory_limiter::MemoryRateLimiter;
+use sockudo_options::{RateLimiterConfig, RedisConnection};
+use crate::memory_limiter::MemoryRateLimiter;
 #[cfg(feature = "redis-cluster")]
-use crate::rate_limiter::redis_cluster_limiter::RedisClusterRateLimiter;
+use crate::redis_cluster_limiter::RedisClusterRateLimiter;
 #[cfg(feature = "redis")]
-use crate::rate_limiter::redis_limiter::RedisRateLimiter;
+use crate::redis_limiter::RedisRateLimiter;
 use sockudo_config::drivers::CacheDriver;
 
 pub struct RateLimiterFactory;
@@ -86,7 +86,7 @@ impl RateLimiterFactory {
             .unwrap_or_else(|| global_redis_conn_details.key_prefix.clone() + "rl_http:");
 
         let client = redis::Client::open(redis_url.as_str()).map_err(|e| {
-            crate::error::Error::Redis(format!(
+            sockudo_core::error::Error::Redis(format!(
                 "Failed to create Redis client for rate limiter: {e}"
             ))
         })?;
@@ -113,7 +113,7 @@ impl RateLimiterFactory {
             tracing::error!(
                 "RateLimiter: Redis cluster driver selected, but no cluster_nodes configured."
             );
-            return Err(crate::error::Error::Configuration(
+            return Err(sockudo_core::error::Error::Configuration(
                 "RateLimiter: Redis cluster nodes not configured.".to_string(),
             ));
         }
@@ -131,7 +131,7 @@ impl RateLimiterFactory {
             .unwrap_or_else(|| global_redis_conn_details.key_prefix.clone() + "rl_http:");
 
         let client = redis::cluster::ClusterClient::new(nodes).map_err(|e| {
-            crate::error::Error::Redis(format!(
+            sockudo_core::error::Error::Redis(format!(
                 "Failed to create Redis cluster client for rate limiter: {e}"
             ))
         })?;

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod origin_validation_integration_tests {
-    use sockudo::adapter::handler::origin_validation::OriginValidator;
+    use sockudo_runtime::adapter::handler::origin_validation::OriginValidator;
 
     #[test]
     fn test_complex_wildcard_patterns() {

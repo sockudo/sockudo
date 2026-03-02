@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use sockudo::cleanup::{CleanupConfig, WorkerThreadsConfig};
+    use sockudo_runtime::cleanup::{CleanupConfig, WorkerThreadsConfig};
 
     fn create_test_config() -> CleanupConfig {
         CleanupConfig {

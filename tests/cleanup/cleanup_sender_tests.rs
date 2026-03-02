@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use sockudo::cleanup::{CleanupSender, DisconnectTask};
-    use sockudo::websocket::SocketId;
+    use sockudo_runtime::cleanup::{CleanupSender, DisconnectTask};
+    use sockudo_runtime::websocket::SocketId;
     use std::time::Instant;
     use tokio::sync::mpsc;
 
@@ -168,16 +168,16 @@ mod tests {
         worker_count: usize,
         buffer_size: usize,
     ) -> (
-        sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem<
-            dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync,
+        sockudo_runtime::cleanup::multi_worker::MultiWorkerCleanupSystem<
+            dyn sockudo_runtime::adapter::connection_manager::ConnectionManager + Send + Sync,
         >,
-        std::sync::Arc<sockudo::adapter::local_adapter::LocalAdapter>,
+        std::sync::Arc<sockudo_runtime::adapter::local_adapter::LocalAdapter>,
     ) {
-        use sockudo::adapter::connection_manager::ConnectionManager;
-        use sockudo::adapter::local_adapter::LocalAdapter;
-        use sockudo::app::memory_app_manager::MemoryAppManager;
-        use sockudo::cleanup::multi_worker::MultiWorkerCleanupSystem;
-        use sockudo::cleanup::{CleanupConfig, WorkerThreadsConfig};
+        use sockudo_runtime::adapter::connection_manager::ConnectionManager;
+        use sockudo_runtime::adapter::local_adapter::LocalAdapter;
+        use sockudo_runtime::app::memory_app_manager::MemoryAppManager;
+        use sockudo_runtime::cleanup::multi_worker::MultiWorkerCleanupSystem;
+        use sockudo_runtime::cleanup::{CleanupConfig, WorkerThreadsConfig};
         use std::sync::Arc;
 
         let config = CleanupConfig {

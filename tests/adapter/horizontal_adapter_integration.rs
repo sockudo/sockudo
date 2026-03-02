@@ -1,11 +1,11 @@
 #[cfg(any(feature = "redis", feature = "nats"))]
-use sockudo::adapter::ConnectionManager;
+use sockudo_runtime::adapter::ConnectionManager;
 #[cfg(any(feature = "redis", feature = "nats"))]
-use sockudo::adapter::horizontal_adapter::RequestType;
+use sockudo_runtime::adapter::horizontal_adapter::RequestType;
 #[cfg(any(feature = "redis", feature = "nats"))]
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 #[cfg(any(feature = "redis", feature = "nats"))]
-use sockudo::error::Result;
+use sockudo_runtime::error::Result;
 #[cfg(any(feature = "redis", feature = "nats"))]
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 #[cfg(any(feature = "redis", feature = "nats"))]
@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "nats")]
-use sockudo::adapter::transports::NatsTransport;
+use sockudo_runtime::adapter::transports::NatsTransport;
 #[cfg(feature = "redis")]
-use sockudo::adapter::transports::RedisTransport;
+use sockudo_runtime::adapter::transports::RedisTransport;
 
 // Import test helpers from the transports tests
 #[cfg(feature = "nats")]
@@ -195,9 +195,9 @@ async fn test_distributed_socket_count_redis() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add sockets to both adapters to simulate distributed state
-    let socket1 = sockudo::websocket::SocketId::from_string("test-socket-1").unwrap();
-    let socket2 = sockudo::websocket::SocketId::from_string("test-socket-2").unwrap();
-    let shared_socket = sockudo::websocket::SocketId::from_string("shared-socket").unwrap();
+    let socket1 = sockudo_runtime::websocket::SocketId::from_string("test-socket-1").unwrap();
+    let socket2 = sockudo_runtime::websocket::SocketId::from_string("test-socket-2").unwrap();
+    let shared_socket = sockudo_runtime::websocket::SocketId::from_string("shared-socket").unwrap();
 
     // Add different sockets to each adapter
     let _ = adapter1
@@ -260,9 +260,9 @@ async fn test_distributed_socket_count_nats() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add sockets to both adapters to simulate distributed state
-    let socket1 = sockudo::websocket::SocketId::from_string("nats-socket-1").unwrap();
-    let socket2 = sockudo::websocket::SocketId::from_string("nats-socket-2").unwrap();
-    let shared_socket = sockudo::websocket::SocketId::from_string("nats-shared-socket").unwrap();
+    let socket1 = sockudo_runtime::websocket::SocketId::from_string("nats-socket-1").unwrap();
+    let socket2 = sockudo_runtime::websocket::SocketId::from_string("nats-socket-2").unwrap();
+    let shared_socket = sockudo_runtime::websocket::SocketId::from_string("nats-shared-socket").unwrap();
 
     // Add different sockets to each adapter
     let _ = adapter1

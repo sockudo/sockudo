@@ -1,6 +1,6 @@
-use sockudo::adapter::horizontal_transport::HorizontalTransport;
-use sockudo::adapter::transports::{RedisAdapterConfig, RedisTransport};
-use sockudo::error::Result;
+use sockudo_runtime::adapter::horizontal_transport::HorizontalTransport;
+use sockudo_runtime::adapter::transports::{RedisAdapterConfig, RedisTransport};
+use sockudo_runtime::error::Result;
 
 use super::test_helpers::*;
 

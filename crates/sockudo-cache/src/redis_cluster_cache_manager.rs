@@ -1,5 +1,5 @@
-use crate::cache::manager::CacheManager;
-use crate::error::{Error, Result};
+use crate::manager::CacheManager;
+use sockudo_core::error::{Error, Result};
 use async_trait::async_trait;
 use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};

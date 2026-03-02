@@ -2,20 +2,20 @@
 
 // src/cache/factory.rs
 #[cfg(any(feature = "redis", feature = "redis-cluster"))]
-use crate::cache::fallback_cache_manager::FallbackCacheManager;
-use crate::cache::manager::CacheManager;
-use crate::cache::memory_cache_manager::MemoryCacheManager; // Assuming MemoryCacheConfig is from options
+use crate::fallback_cache_manager::FallbackCacheManager;
+use crate::manager::CacheManager;
+use crate::memory_cache_manager::MemoryCacheManager; // Assuming MemoryCacheConfig is from options
 #[cfg(feature = "redis")]
-use crate::cache::redis_cache_manager::{
+use crate::redis_cache_manager::{
     RedisCacheConfig as StandaloneRedisCacheConfig, RedisCacheManager,
 };
 #[cfg(feature = "redis-cluster")]
-use crate::cache::redis_cluster_cache_manager::{
+use crate::redis_cluster_cache_manager::{
     RedisClusterCacheConfig, RedisClusterCacheManager,
 };
-use crate::error::{Error, Result};
+use sockudo_core::error::{Error, Result};
 
-use crate::options::{CacheConfig, MemoryCacheOptions, RedisConnection};
+use sockudo_options::{CacheConfig, MemoryCacheOptions, RedisConnection};
 use sockudo_config::drivers::CacheDriver;
 use std::sync::Arc;
 use tokio::sync::Mutex;

@@ -2,14 +2,14 @@
 
 // src/metrics/prometheus.rs
 
-use crate::error::Result;
+use sockudo_core::error::Result;
 
-use super::MetricsInterface;
 use async_trait::async_trait;
 use prometheus::{
     CounterVec, Gauge, GaugeVec, HistogramVec, Opts, TextEncoder, histogram_opts,
     register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec,
 };
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_types::socket::SocketId;
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
@@ -26,6 +26,30 @@ const INTERNAL_LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
 const END_TO_END_LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
     0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
 ];
+
+fn channel_type_from_name(channel_name: &str) -> &'static str {
+    if channel_name.starts_with("cache-")
+        || channel_name.starts_with("private-cache-")
+        || channel_name.starts_with("private-encrypted-cache-")
+        || channel_name.starts_with("presence-cache-")
+    {
+        return "cache";
+    }
+
+    if channel_name == "private-encrypted" || channel_name.starts_with("private-encrypted-") {
+        return "private_encrypted";
+    }
+
+    if channel_name == "private" || channel_name.starts_with("private-") {
+        return "private";
+    }
+
+    if channel_name == "presence" || channel_name.starts_with("presence-") {
+        return "presence";
+    }
+
+    "public"
+}
 
 /// A Prometheus implementation of the metrics interface
 pub struct PrometheusMetricsDriver {
@@ -826,8 +850,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
         recipient_count: usize,
         latency_ms: f64,
     ) {
-        // Determine channel type from channel name using the ChannelType enum
-        let channel_type = crate::channel::ChannelType::from_name(channel_name).as_str();
+        let channel_type = channel_type_from_name(channel_name);
 
         if recipient_count == 0 {
             return;

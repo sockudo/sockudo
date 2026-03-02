@@ -1,6 +1,6 @@
-use sockudo::adapter::horizontal_transport::HorizontalTransport;
-use sockudo::adapter::transports::RedisClusterTransport;
-use sockudo::error::Result;
+use sockudo_runtime::adapter::horizontal_transport::HorizontalTransport;
+use sockudo_runtime::adapter::transports::RedisClusterTransport;
+use sockudo_runtime::error::Result;
 use sockudo_config::adapter::RedisClusterAdapterConfig;
 
 use super::test_helpers::*;

@@ -1,8 +1,8 @@
-use sockudo::adapter::handler::types::SignInRequest;
-use sockudo::app::auth::AuthValidator;
-use sockudo::app::config::App;
-use sockudo::token::Token;
-use sockudo::websocket::SocketId;
+use sockudo_runtime::adapter::handler::types::SignInRequest;
+use sockudo_runtime::app::auth::AuthValidator;
+use sockudo_runtime::app::config::App;
+use sockudo_runtime::token::Token;
+use sockudo_runtime::websocket::SocketId;
 use sonic_rs::json;
 use std::sync::Arc;
 

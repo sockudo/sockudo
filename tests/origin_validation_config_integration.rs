@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod origin_validation_config_integration_tests {
-    use sockudo::adapter::handler::origin_validation::OriginValidator;
-    use sockudo::app::config::App;
-    use sockudo::app::manager::AppManager;
-    use sockudo::app::memory_app_manager::MemoryAppManager;
+    use sockudo_runtime::adapter::handler::origin_validation::OriginValidator;
+    use sockudo_runtime::app::config::App;
+    use sockudo_runtime::app::manager::AppManager;
+    use sockudo_runtime::app::memory_app_manager::MemoryAppManager;
 
     #[tokio::test]
     async fn test_memory_app_manager_with_allowed_origins() {

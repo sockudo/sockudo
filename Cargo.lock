@@ -4043,6 +4043,8 @@ dependencies = [
  "dashmap",
  "futures",
  "num_cpus",
+ "serde",
+ "sockudo-config",
  "sockudo-core",
  "sockudo-filter",
  "sockudo-protocol",
@@ -4052,6 +4054,7 @@ dependencies = [
  "sonic-rs",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4127,6 +4130,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sockudo-cache"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "moka",
+ "redis",
+ "sockudo-config",
+ "sockudo-core",
+ "sockudo-options",
+ "sockudo-workspace-hack",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sockudo-config"
 version = "0.1.0"
 dependencies = [
@@ -4145,12 +4164,19 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "dashmap",
  "fossil-delta",
  "futures",
+ "hex",
+ "hmac 0.13.0-rc.3",
+ "md5",
+ "num_cpus",
  "oxidelta",
  "redis",
+ "regex",
  "serde",
+ "sha2 0.11.0-rc.3",
  "sockudo-filter",
  "sockudo-protocol",
  "sockudo-types",
@@ -4177,6 +4203,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "sockudo-metrics"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "libc",
+ "prometheus",
+ "sockudo-core",
+ "sockudo-types",
+ "sockudo-workspace-hack",
+ "sonic-rs",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sockudo-options"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "serde",
+ "sockudo-config",
+ "sockudo-core",
+ "sockudo-types",
+ "sockudo-workspace-hack",
+ "sockudo-ws",
+ "sonic-rs",
+ "tokio",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+]
+
+[[package]]
 name = "sockudo-protocol"
 version = "0.1.0"
 dependencies = [
@@ -4194,6 +4255,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "sockudo-core",
  "sockudo-types",
  "sockudo-workspace-hack",
  "tokio",
@@ -4209,6 +4271,7 @@ dependencies = [
  "dashmap",
  "redis",
  "serde",
+ "sockudo-core",
  "sockudo-types",
  "sockudo-workspace-hack",
  "sonic-rs",
@@ -4225,6 +4288,7 @@ dependencies = [
  "dashmap",
  "redis",
  "serde",
+ "sockudo-core",
  "sockudo-types",
  "sockudo-workspace-hack",
  "sonic-rs",
@@ -4241,6 +4305,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-sqs",
  "serde",
+ "sockudo-core",
  "sockudo-types",
  "sockudo-workspace-hack",
  "sonic-rs",
@@ -4249,14 +4314,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "sockudo-rate-limiter"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "axum",
+ "dashmap",
+ "futures-util",
+ "hyper 1.8.1",
+ "redis",
+ "sockudo-config",
+ "sockudo-core",
+ "sockudo-options",
+ "sockudo-workspace-hack",
+ "sonic-rs",
+ "tokio",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "sockudo-runtime"
 version = "0.1.0"
 dependencies = [
  "ahash",
- "async-nats",
  "async-trait",
  "aws-config",
- "aws-sdk-dynamodb",
  "aws-sdk-lambda",
  "aws-sdk-sqs",
  "axum",
@@ -4285,34 +4370,41 @@ dependencies = [
  "moka",
  "num_cpus",
  "oxidelta",
- "prometheus",
  "rand 0.9.2",
  "rayon",
- "redis",
  "regex",
  "reqwest",
  "rustls 0.23.35",
- "scylla",
  "serde",
  "serde_json_path",
  "serde_urlencoded",
  "sha2 0.11.0-rc.3",
  "sockudo-adapter-local",
+ "sockudo-adapter-nats",
+ "sockudo-adapter-redis",
+ "sockudo-adapter-redis-cluster",
+ "sockudo-cache",
  "sockudo-config",
  "sockudo-core",
  "sockudo-filter",
+ "sockudo-metrics",
+ "sockudo-options",
  "sockudo-protocol",
  "sockudo-queue-memory",
  "sockudo-queue-redis",
  "sockudo-queue-redis-cluster",
  "sockudo-queue-sqs",
+ "sockudo-rate-limiter",
+ "sockudo-store-dynamodb",
+ "sockudo-store-mysql",
+ "sockudo-store-postgres",
+ "sockudo-store-scylla",
  "sockudo-types",
  "sockudo-webhook-http",
  "sockudo-webhook-lambda",
  "sockudo-workspace-hack",
  "sockudo-ws",
  "sonic-rs",
- "sqlx",
  "sysinfo",
  "thiserror 2.0.17",
  "tokio",

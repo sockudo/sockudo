@@ -6,6 +6,7 @@ license-file = "../../LICENSE"
 description = "In-memory queue backend for Sockudo"
 
 [dependencies]
+sockudo-core = { path = "../sockudo-core" }
 sockudo-types = { path = "../sockudo-types" }
 async-trait = "0.1.89"
 dashmap = "6.1.0"

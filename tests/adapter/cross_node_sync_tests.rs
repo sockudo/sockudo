@@ -1,7 +1,7 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockNodeState, MockTransport};
 use ahash::AHashMap;
-use sockudo::adapter::horizontal_adapter::{RequestType, ResponseBody};
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::horizontal_adapter::{RequestType, ResponseBody};
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use std::collections::HashSet;
 
 #[tokio::test]
@@ -88,14 +88,14 @@ async fn test_channel_members_aggregation_deduplication() {
     let mut members1 = AHashMap::new();
     members1.insert(
         "user-1".to_string(),
-        sockudo::channel::PresenceMemberInfo {
+        sockudo_runtime::channel::PresenceMemberInfo {
             user_id: "user-1".to_string(),
             user_info: Some(sonic_rs::json!({"name": "Alice", "node": "node-1"})),
         },
     );
     members1.insert(
         "user-2".to_string(),
-        sockudo::channel::PresenceMemberInfo {
+        sockudo_runtime::channel::PresenceMemberInfo {
             user_id: "user-2".to_string(),
             user_info: Some(sonic_rs::json!({"name": "Bob", "node": "node-1"})),
         },
@@ -118,14 +118,14 @@ async fn test_channel_members_aggregation_deduplication() {
     let mut members2 = AHashMap::new();
     members2.insert(
         "user-1".to_string(),
-        sockudo::channel::PresenceMemberInfo {
+        sockudo_runtime::channel::PresenceMemberInfo {
             user_id: "user-1".to_string(),
             user_info: Some(sonic_rs::json!({"name": "Alice", "node": "node-2"})), // Different data
         },
     );
     members2.insert(
         "user-3".to_string(),
-        sockudo::channel::PresenceMemberInfo {
+        sockudo_runtime::channel::PresenceMemberInfo {
             user_id: "user-3".to_string(),
             user_info: Some(sonic_rs::json!({"name": "Carol", "node": "node-2"})),
         },

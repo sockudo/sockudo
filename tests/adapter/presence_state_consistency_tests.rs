@@ -1,7 +1,7 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
 use ahash::AHashMap;
-use sockudo::adapter::horizontal_adapter::{RequestBody, RequestType};
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::horizontal_adapter::{RequestBody, RequestType};
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo_config::adapter::ClusterHealthConfig;
 use sonic_rs::json;
 
@@ -31,7 +31,7 @@ async fn test_sequence_number_conflict_resolution() {
     let horizontal = adapter.horizontal.read().await;
 
     // Create two presence entries with different sequence numbers
-    let entry1 = sockudo::adapter::horizontal_adapter::PresenceEntry {
+    let entry1 = sockudo_runtime::adapter::horizontal_adapter::PresenceEntry {
         user_info: Some(json!({"version": 1})),
         node_id: "node-1".to_string(),
         app_id: app_id.to_string(),
@@ -40,7 +40,7 @@ async fn test_sequence_number_conflict_resolution() {
         sequence_number: 100,
     };
 
-    let entry2 = sockudo::adapter::horizontal_adapter::PresenceEntry {
+    let entry2 = sockudo_runtime::adapter::horizontal_adapter::PresenceEntry {
         user_info: Some(json!({"version": 2})),
         node_id: "node-2".to_string(),
         app_id: app_id.to_string(),
@@ -169,7 +169,7 @@ async fn test_bulk_presence_cleanup() {
                 let user_id = format!("user-{}-{}", c, u);
                 let socket_id = format!("socket-{}-{}", c, u);
 
-                let entry = sockudo::adapter::horizontal_adapter::PresenceEntry {
+                let entry = sockudo_runtime::adapter::horizontal_adapter::PresenceEntry {
                     user_info: Some(json!({"bulk": true})),
                     node_id: "bulk-node".to_string(),
                     app_id: app_id.to_string(),

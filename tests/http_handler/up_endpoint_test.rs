@@ -4,8 +4,8 @@ use crate::mocks::connection_handler_mock::{
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use sockudo::app::config::App;
-use sockudo::http_handler::up;
+use sockudo_runtime::app::config::App;
+use sockudo_runtime::http_handler::up;
 use sockudo_config::drivers::CacheDriver;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,43 +31,43 @@ fn create_test_app(app_id: &str, enabled: bool) -> App {
 struct AppsAvailableMockAppManager;
 
 #[async_trait::async_trait]
-impl sockudo::app::manager::AppManager for AppsAvailableMockAppManager {
-    async fn init(&self) -> sockudo::error::Result<()> {
+impl sockudo_runtime::app::manager::AppManager for AppsAvailableMockAppManager {
+    async fn init(&self) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn create_app(&self, _app: App) -> sockudo::error::Result<()> {
+    async fn create_app(&self, _app: App) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn update_app(&self, _app: App) -> sockudo::error::Result<()> {
+    async fn update_app(&self, _app: App) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn delete_app(&self, _app_id: &str) -> sockudo::error::Result<()> {
+    async fn delete_app(&self, _app_id: &str) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn get_apps(&self) -> sockudo::error::Result<Vec<App>> {
+    async fn get_apps(&self) -> sockudo_runtime::error::Result<Vec<App>> {
         // Return at least one app to pass the "apps exist" check
         Ok(vec![create_test_app("default_app", true)])
     }
-    async fn find_by_key(&self, _key: &str) -> sockudo::error::Result<Option<App>> {
+    async fn find_by_key(&self, _key: &str) -> sockudo_runtime::error::Result<Option<App>> {
         Ok(None)
     }
-    async fn find_by_id(&self, _id: &str) -> sockudo::error::Result<Option<App>> {
+    async fn find_by_id(&self, _id: &str) -> sockudo_runtime::error::Result<Option<App>> {
         Ok(None)
     }
-    async fn check_health(&self) -> sockudo::error::Result<()> {
+    async fn check_health(&self) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
 }
 
 #[tokio::test]
 async fn test_up_general_health_check_with_apps() {
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
-    let handler = sockudo::adapter::handler::ConnectionHandler::new(
+    let handler = sockudo_runtime::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
-            as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+            as Arc<dyn sockudo_runtime::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
         None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
@@ -77,7 +77,7 @@ async fn test_up_general_health_check_with_apps() {
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
         ))),
         None,
-        sockudo::options::ServerOptions::default(),
+        sockudo_runtime::options::ServerOptions::default(),
         None,
         delta_manager,
     );
@@ -172,41 +172,41 @@ async fn test_up_specific_app_not_found() {
 struct ErrorMockAppManager;
 
 #[async_trait::async_trait]
-impl sockudo::app::manager::AppManager for ErrorMockAppManager {
-    async fn init(&self) -> sockudo::error::Result<()> {
+impl sockudo_runtime::app::manager::AppManager for ErrorMockAppManager {
+    async fn init(&self) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn create_app(&self, _app: App) -> sockudo::error::Result<()> {
+    async fn create_app(&self, _app: App) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn update_app(&self, _app: App) -> sockudo::error::Result<()> {
+    async fn update_app(&self, _app: App) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn delete_app(&self, _app_id: &str) -> sockudo::error::Result<()> {
+    async fn delete_app(&self, _app_id: &str) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn get_apps(&self) -> sockudo::error::Result<Vec<App>> {
-        Err(sockudo::error::Error::ApplicationNotFound)
+    async fn get_apps(&self) -> sockudo_runtime::error::Result<Vec<App>> {
+        Err(sockudo_runtime::error::Error::ApplicationNotFound)
     }
-    async fn find_by_key(&self, _key: &str) -> sockudo::error::Result<Option<App>> {
+    async fn find_by_key(&self, _key: &str) -> sockudo_runtime::error::Result<Option<App>> {
         Ok(None)
     }
-    async fn find_by_id(&self, _id: &str) -> sockudo::error::Result<Option<App>> {
-        Err(sockudo::error::Error::ApplicationNotFound)
+    async fn find_by_id(&self, _id: &str) -> sockudo_runtime::error::Result<Option<App>> {
+        Err(sockudo_runtime::error::Error::ApplicationNotFound)
     }
-    async fn check_health(&self) -> sockudo::error::Result<()> {
+    async fn check_health(&self) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
 }
 
 #[tokio::test]
 async fn test_up_general_health_check_app_manager_error() {
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
-    let handler = sockudo::adapter::handler::ConnectionHandler::new(
-        Arc::new(ErrorMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+    let handler = sockudo_runtime::adapter::handler::ConnectionHandler::new(
+        Arc::new(ErrorMockAppManager) as Arc<dyn sockudo_runtime::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
         None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
@@ -216,7 +216,7 @@ async fn test_up_general_health_check_app_manager_error() {
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
         ))),
         None,
-        sockudo::options::ServerOptions::default(),
+        sockudo_runtime::options::ServerOptions::default(),
         None,
         delta_manager,
     );
@@ -233,14 +233,14 @@ async fn test_up_general_health_check_app_manager_error() {
 
 #[tokio::test]
 async fn test_up_specific_app_manager_error() {
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
-    let handler = sockudo::adapter::handler::ConnectionHandler::new(
-        Arc::new(ErrorMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+    let handler = sockudo_runtime::adapter::handler::ConnectionHandler::new(
+        Arc::new(ErrorMockAppManager) as Arc<dyn sockudo_runtime::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
-            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+            as Arc<dyn sockudo_runtime::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockCacheManager::new(),
@@ -249,7 +249,7 @@ async fn test_up_specific_app_manager_error() {
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
         ))),
         None,
-        sockudo::options::ServerOptions::default(),
+        sockudo_runtime::options::ServerOptions::default(),
         None,
         delta_manager,
     );
@@ -268,47 +268,47 @@ async fn test_up_specific_app_manager_error() {
 struct TimeoutMockAppManager;
 
 #[async_trait::async_trait]
-impl sockudo::app::manager::AppManager for TimeoutMockAppManager {
-    async fn init(&self) -> sockudo::error::Result<()> {
+impl sockudo_runtime::app::manager::AppManager for TimeoutMockAppManager {
+    async fn init(&self) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn create_app(&self, _app: App) -> sockudo::error::Result<()> {
+    async fn create_app(&self, _app: App) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn update_app(&self, _app: App) -> sockudo::error::Result<()> {
+    async fn update_app(&self, _app: App) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn delete_app(&self, _app_id: &str) -> sockudo::error::Result<()> {
+    async fn delete_app(&self, _app_id: &str) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn get_apps(&self) -> sockudo::error::Result<Vec<App>> {
+    async fn get_apps(&self) -> sockudo_runtime::error::Result<Vec<App>> {
         // Sleep longer than HEALTH_CHECK_TIMEOUT_MS (400ms)
         sleep(Duration::from_millis(500)).await;
         Ok(vec![])
     }
-    async fn find_by_key(&self, _key: &str) -> sockudo::error::Result<Option<App>> {
+    async fn find_by_key(&self, _key: &str) -> sockudo_runtime::error::Result<Option<App>> {
         Ok(None)
     }
-    async fn find_by_id(&self, _id: &str) -> sockudo::error::Result<Option<App>> {
+    async fn find_by_id(&self, _id: &str) -> sockudo_runtime::error::Result<Option<App>> {
         // Sleep longer than HEALTH_CHECK_TIMEOUT_MS (400ms)
         sleep(Duration::from_millis(500)).await;
         Ok(None)
     }
-    async fn check_health(&self) -> sockudo::error::Result<()> {
+    async fn check_health(&self) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
 }
 
 #[tokio::test]
 async fn test_up_general_health_check_timeout() {
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
-    let handler = sockudo::adapter::handler::ConnectionHandler::new(
-        Arc::new(TimeoutMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+    let handler = sockudo_runtime::adapter::handler::ConnectionHandler::new(
+        Arc::new(TimeoutMockAppManager) as Arc<dyn sockudo_runtime::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
-            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+            as Arc<dyn sockudo_runtime::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockCacheManager::new(),
@@ -317,7 +317,7 @@ async fn test_up_general_health_check_timeout() {
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
         ))),
         None,
-        sockudo::options::ServerOptions::default(),
+        sockudo_runtime::options::ServerOptions::default(),
         None,
         delta_manager,
     );
@@ -334,14 +334,14 @@ async fn test_up_general_health_check_timeout() {
 
 #[tokio::test]
 async fn test_up_specific_app_timeout() {
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
-    let handler = sockudo::adapter::handler::ConnectionHandler::new(
-        Arc::new(TimeoutMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+    let handler = sockudo_runtime::adapter::handler::ConnectionHandler::new(
+        Arc::new(TimeoutMockAppManager) as Arc<dyn sockudo_runtime::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
-            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+            as Arc<dyn sockudo_runtime::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockCacheManager::new(),
@@ -350,7 +350,7 @@ async fn test_up_specific_app_timeout() {
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
         ))),
         None,
-        sockudo::options::ServerOptions::default(),
+        sockudo_runtime::options::ServerOptions::default(),
         None,
         delta_manager,
     );
@@ -369,65 +369,65 @@ async fn test_up_specific_app_timeout() {
 struct FailingAdapter;
 
 #[async_trait::async_trait]
-impl sockudo::adapter::ConnectionManager for FailingAdapter {
+impl sockudo_runtime::adapter::ConnectionManager for FailingAdapter {
     async fn init(&self) {}
-    async fn get_namespace(&self, _app_id: &str) -> Option<Arc<sockudo::namespace::Namespace>> {
+    async fn get_namespace(&self, _app_id: &str) -> Option<Arc<sockudo_runtime::namespace::Namespace>> {
         None
     }
     async fn add_socket(
         &self,
-        _socket_id: sockudo::websocket::SocketId,
+        _socket_id: sockudo_runtime::websocket::SocketId,
         _socket: sockudo_ws::axum_integration::WebSocketWriter,
         _app_id: &str,
-        _app_manager: Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
-        _buffer_config: sockudo::websocket::WebSocketBufferConfig,
-    ) -> sockudo::error::Result<()> {
+        _app_manager: Arc<dyn sockudo_runtime::app::manager::AppManager + Send + Sync>,
+        _buffer_config: sockudo_runtime::websocket::WebSocketBufferConfig,
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
     async fn get_connection(
         &self,
-        _socket_id: &sockudo::websocket::SocketId,
+        _socket_id: &sockudo_runtime::websocket::SocketId,
         _app_id: &str,
-    ) -> Option<sockudo::websocket::WebSocketRef> {
+    ) -> Option<sockudo_runtime::websocket::WebSocketRef> {
         None
     }
     async fn remove_connection(
         &self,
-        _socket_id: &sockudo::websocket::SocketId,
+        _socket_id: &sockudo_runtime::websocket::SocketId,
         _app_id: &str,
-    ) -> sockudo::error::Result<()> {
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
     async fn send_message(
         &self,
         _app_id: &str,
-        _socket_id: &sockudo::websocket::SocketId,
+        _socket_id: &sockudo_runtime::websocket::SocketId,
         _message: sockudo_protocol::messages::PusherMessage,
-    ) -> sockudo::error::Result<()> {
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
     async fn send(
         &self,
         _channel: &str,
         _message: sockudo_protocol::messages::PusherMessage,
-        _except: Option<&sockudo::websocket::SocketId>,
+        _except: Option<&sockudo_runtime::websocket::SocketId>,
         _app_id: &str,
         _start_time_ms: Option<f64>,
-    ) -> sockudo::error::Result<()> {
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
     async fn get_channel_members(
         &self,
         _app_id: &str,
         _channel: &str,
-    ) -> sockudo::error::Result<ahash::AHashMap<String, sockudo::channel::PresenceMemberInfo>> {
+    ) -> sockudo_runtime::error::Result<ahash::AHashMap<String, sockudo_runtime::channel::PresenceMemberInfo>> {
         Ok(ahash::AHashMap::new())
     }
     async fn get_channel_sockets(
         &self,
         _app_id: &str,
         _channel: &str,
-    ) -> sockudo::error::Result<Vec<sockudo::websocket::SocketId>> {
+    ) -> sockudo_runtime::error::Result<Vec<sockudo_runtime::websocket::SocketId>> {
         Ok(Vec::new())
     }
     async fn remove_channel(&self, _app_id: &str, _channel: &str) {}
@@ -435,30 +435,30 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         &self,
         _app_id: &str,
         _channel: &str,
-        _socket_id: &sockudo::websocket::SocketId,
-    ) -> sockudo::error::Result<bool> {
+        _socket_id: &sockudo_runtime::websocket::SocketId,
+    ) -> sockudo_runtime::error::Result<bool> {
         Ok(false)
     }
     async fn get_user_sockets(
         &self,
         _user_id: &str,
         _app_id: &str,
-    ) -> sockudo::error::Result<Vec<sockudo::websocket::WebSocketRef>> {
+    ) -> sockudo_runtime::error::Result<Vec<sockudo_runtime::websocket::WebSocketRef>> {
         Ok(Vec::new())
     }
-    async fn cleanup_connection(&self, _app_id: &str, _ws: sockudo::websocket::WebSocketRef) {}
+    async fn cleanup_connection(&self, _app_id: &str, _ws: sockudo_runtime::websocket::WebSocketRef) {}
     async fn terminate_connection(
         &self,
         _app_id: &str,
         _user_id: &str,
-    ) -> sockudo::error::Result<()> {
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
     async fn add_channel_to_sockets(
         &self,
         _app_id: &str,
         _channel: &str,
-        _socket_id: &sockudo::websocket::SocketId,
+        _socket_id: &sockudo_runtime::websocket::SocketId,
     ) {
     }
     async fn get_channel_socket_count(&self, _app_id: &str, _channel: &str) -> usize {
@@ -468,54 +468,54 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         &self,
         _app_id: &str,
         _channel: &str,
-        _socket_id: &sockudo::websocket::SocketId,
-    ) -> sockudo::error::Result<bool> {
+        _socket_id: &sockudo_runtime::websocket::SocketId,
+    ) -> sockudo_runtime::error::Result<bool> {
         Ok(false)
     }
     async fn remove_from_channel(
         &self,
         _app_id: &str,
         _channel: &str,
-        _socket_id: &sockudo::websocket::SocketId,
-    ) -> sockudo::error::Result<bool> {
+        _socket_id: &sockudo_runtime::websocket::SocketId,
+    ) -> sockudo_runtime::error::Result<bool> {
         Ok(false)
     }
     async fn get_presence_member(
         &self,
         _app_id: &str,
         _channel: &str,
-        _socket_id: &sockudo::websocket::SocketId,
-    ) -> Option<sockudo::channel::PresenceMemberInfo> {
+        _socket_id: &sockudo_runtime::websocket::SocketId,
+    ) -> Option<sockudo_runtime::channel::PresenceMemberInfo> {
         None
     }
     async fn terminate_user_connections(
         &self,
         _app_id: &str,
         _user_id: &str,
-    ) -> sockudo::error::Result<()> {
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn add_user(&self, _ws: sockudo::websocket::WebSocketRef) -> sockudo::error::Result<()> {
+    async fn add_user(&self, _ws: sockudo_runtime::websocket::WebSocketRef) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
     async fn remove_user(
         &self,
-        _ws: sockudo::websocket::WebSocketRef,
-    ) -> sockudo::error::Result<()> {
+        _ws: sockudo_runtime::websocket::WebSocketRef,
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
     async fn get_channels_with_socket_count(
         &self,
         _app_id: &str,
-    ) -> sockudo::error::Result<ahash::AHashMap<String, usize>> {
+    ) -> sockudo_runtime::error::Result<ahash::AHashMap<String, usize>> {
         Ok(ahash::AHashMap::new())
     }
-    async fn get_sockets_count(&self, _app_id: &str) -> sockudo::error::Result<usize> {
+    async fn get_sockets_count(&self, _app_id: &str) -> sockudo_runtime::error::Result<usize> {
         Ok(0)
     }
     async fn get_namespaces(
         &self,
-    ) -> sockudo::error::Result<Vec<(String, Arc<sockudo::namespace::Namespace>)>> {
+    ) -> sockudo_runtime::error::Result<Vec<(String, Arc<sockudo_runtime::namespace::Namespace>)>> {
         Ok(Vec::new())
     }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -525,9 +525,9 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
     async fn remove_user_socket(
         &self,
         _user_id: &str,
-        _socket_id: &sockudo::websocket::SocketId,
+        _socket_id: &sockudo_runtime::websocket::SocketId,
         _app_id: &str,
-    ) -> sockudo::error::Result<()> {
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
 
@@ -536,14 +536,14 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         _user_id: &str,
         _app_id: &str,
         _channel: &str,
-        _excluding_socket: Option<&sockudo::websocket::SocketId>,
-    ) -> sockudo::error::Result<usize> {
+        _excluding_socket: Option<&sockudo_runtime::websocket::SocketId>,
+    ) -> sockudo_runtime::error::Result<usize> {
         Ok(0)
     }
 
     // This is the key - make health check fail
-    async fn check_health(&self) -> sockudo::error::Result<()> {
-        Err(sockudo::error::Error::ApplicationNotFound)
+    async fn check_health(&self) -> sockudo_runtime::error::Result<()> {
+        Err(sockudo_runtime::error::Error::ApplicationNotFound)
     }
 
     fn get_node_id(&self) -> String {
@@ -552,7 +552,7 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
 
     fn as_horizontal_adapter(
         &self,
-    ) -> Option<&dyn sockudo::adapter::connection_manager::HorizontalAdapterInterface> {
+    ) -> Option<&dyn sockudo_runtime::adapter::connection_manager::HorizontalAdapterInterface> {
         None
     }
 }
@@ -561,11 +561,11 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
 struct FailingCacheManager;
 
 #[async_trait::async_trait]
-impl sockudo::cache::manager::CacheManager for FailingCacheManager {
-    async fn has(&mut self, _key: &str) -> sockudo::error::Result<bool> {
+impl sockudo_runtime::cache::manager::CacheManager for FailingCacheManager {
+    async fn has(&mut self, _key: &str) -> sockudo_runtime::error::Result<bool> {
         Ok(false)
     }
-    async fn get(&mut self, _key: &str) -> sockudo::error::Result<Option<String>> {
+    async fn get(&mut self, _key: &str) -> sockudo_runtime::error::Result<Option<String>> {
         Ok(None)
     }
     async fn set(
@@ -573,43 +573,43 @@ impl sockudo::cache::manager::CacheManager for FailingCacheManager {
         _key: &str,
         _value: &str,
         _ttl_seconds: u64,
-    ) -> sockudo::error::Result<()> {
+    ) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn remove(&mut self, _key: &str) -> sockudo::error::Result<()> {
+    async fn remove(&mut self, _key: &str) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn disconnect(&mut self) -> sockudo::error::Result<()> {
+    async fn disconnect(&mut self) -> sockudo_runtime::error::Result<()> {
         Ok(())
     }
-    async fn ttl(&mut self, _key: &str) -> sockudo::error::Result<Option<Duration>> {
+    async fn ttl(&mut self, _key: &str) -> sockudo_runtime::error::Result<Option<Duration>> {
         Ok(None)
     }
 
     // This is the key - make health check fail
-    async fn check_health(&self) -> sockudo::error::Result<()> {
-        Err(sockudo::error::Error::ApplicationNotFound)
+    async fn check_health(&self) -> sockudo_runtime::error::Result<()> {
+        Err(sockudo_runtime::error::Error::ApplicationNotFound)
     }
 }
 
 #[tokio::test]
 async fn test_up_adapter_health_check_failure() {
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
-    let handler = sockudo::adapter::handler::ConnectionHandler::new(
+    let handler = sockudo_runtime::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
-            as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+            as Arc<dyn sockudo_runtime::app::manager::AppManager + Send + Sync>,
         Arc::new(FailingAdapter)
-            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+            as Arc<dyn sockudo_runtime::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(FailingCacheManager)),
         Some(Arc::new(tokio::sync::Mutex::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
         ))),
         None,
-        sockudo::options::ServerOptions::default(),
+        sockudo_runtime::options::ServerOptions::default(),
         None,
         delta_manager,
     );
@@ -627,18 +627,18 @@ async fn test_up_adapter_health_check_failure() {
 #[tokio::test]
 async fn test_up_cache_health_check_failure() {
     // Create server options with cache enabled (not None)
-    let mut server_options = sockudo::options::ServerOptions::default();
+    let mut server_options = sockudo_runtime::options::ServerOptions::default();
     server_options.cache.driver = CacheDriver::Memory;
 
-    let delta_manager = Arc::new(sockudo::delta_compression::DeltaCompressionManager::new(
-        sockudo::delta_compression::DeltaCompressionConfig::default(),
+    let delta_manager = Arc::new(sockudo_runtime::delta_compression::DeltaCompressionManager::new(
+        sockudo_runtime::delta_compression::DeltaCompressionConfig::default(),
     ));
 
-    let handler = sockudo::adapter::handler::ConnectionHandler::new(
+    let handler = sockudo_runtime::adapter::handler::ConnectionHandler::new(
         Arc::new(AppsAvailableMockAppManager)
-            as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
+            as Arc<dyn sockudo_runtime::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
-            as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
+            as Arc<dyn sockudo_runtime::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
         Arc::new(tokio::sync::Mutex::new(FailingCacheManager)),
         Some(Arc::new(tokio::sync::Mutex::new(

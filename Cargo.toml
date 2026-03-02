@@ -16,6 +16,10 @@ members = [
   "crates/sockudo-config",
   "crates/sockudo-core",
   "crates/sockudo-runtime",
+  "crates/sockudo-options",
+  "crates/sockudo-metrics",
+  "crates/sockudo-cache",
+  "crates/sockudo-rate-limiter",
   "crates/sockudo-adapter-local",
   "crates/sockudo-adapter-redis",
   "crates/sockudo-adapter-redis-cluster",
@@ -53,7 +57,12 @@ full = [
 
 # Adapter features
 redis = ["dep:redis", "dep:sockudo-queue-redis", "sockudo-core/redis", "sockudo-runtime/redis"]
-redis-cluster = ["redis", "sockudo-config/redis-cluster", "dep:sockudo-queue-redis-cluster", "sockudo-runtime/redis-cluster"]
+redis-cluster = [
+  "redis",
+  "sockudo-config/redis-cluster",
+  "dep:sockudo-queue-redis-cluster",
+  "sockudo-runtime/redis-cluster",
+]
 nats = ["dep:async-nats", "sockudo-config/nats", "sockudo-core/nats", "sockudo-runtime/nats"]
 
 # App manager features
@@ -66,7 +75,12 @@ scylladb = ["dep:scylla", "sockudo-runtime/scylladb"]
 sqs = ["dep:aws-config", "dep:aws-sdk-sqs", "dep:sockudo-queue-sqs", "sockudo-runtime/sqs"]
 
 # Webhook features
-lambda = ["dep:aws-config", "dep:aws-sdk-lambda", "dep:sockudo-webhook-lambda", "sockudo-runtime/lambda"]
+lambda = [
+  "dep:aws-config",
+  "dep:aws-sdk-lambda",
+  "dep:sockudo-webhook-lambda",
+  "sockudo-runtime/lambda",
+]
 
 [dependencies]
 sockudo-core = { path = "crates/sockudo-core" }
