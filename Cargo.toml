@@ -1,6 +1,6 @@
 [package]
 name = "sockudo"
-version = "3.0.1"
+version = "3.0.2"
 edition = "2024"
 rust-version = "1.90"
 repository = "https://github.com/RustNSparks/sockudo"
