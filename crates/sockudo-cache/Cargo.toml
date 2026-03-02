@@ -1,0 +1,32 @@
+[package]
+name = "sockudo-cache"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "Cache managers and factory for Sockudo"
+
+[features]
+default = []
+redis = ["dep:redis"]
+redis-cluster = ["redis"]
+
+[dependencies]
+sockudo-core = { path = "../sockudo-core" }
+sockudo-options = { path = "../sockudo-options" }
+sockudo-config = { path = "../sockudo-config" }
+async-trait = "0.1.89"
+tokio = { version = "^1", features = ["sync", "time"] }
+tracing = "0.1"
+moka = { version = "0.12.11", features = ["future", "sync"] }
+ahash = { version = "0.8.12", features = ["serde"] }
+redis = { version = "^1", features = [
+  "tokio-comp",
+  "json",
+  "cluster",
+  "cluster-async",
+  "tls-rustls",
+  "tokio-rustls-comp",
+  "tls-rustls-webpki-roots",
+  "connection-manager",
+], optional = true }
+sockudo-workspace-hack = { version = "0.1", path = "../sockudo-workspace-hack" }

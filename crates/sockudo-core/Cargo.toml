@@ -19,11 +19,18 @@ dashmap = "^6.1.0"
 fossil-delta = "0.2.0"
 futures = "0.3.31"
 oxidelta = "0.1.4"
+chrono = "^0.4.42"
+md5 = "0.8.0"
+regex = "1.12.2"
 serde = { version = "^1", features = ["derive"] }
 sonic-rs = "0.5.6"
 thiserror = "^2.0.17"
 tokio = { version = "^1", features = ["sync", "rt", "macros", "time"] }
 tracing = "0.1"
+num_cpus = "1.17.0"
+hmac = "0.13.0-rc.3"
+sha2 = "0.11.0-rc.3"
+hex = "0.4.3"
 sockudo-filter = { path = "../sockudo-filter" }
 sockudo-types = { path = "../sockudo-types" }
 sockudo-protocol = { path = "../sockudo-protocol" }

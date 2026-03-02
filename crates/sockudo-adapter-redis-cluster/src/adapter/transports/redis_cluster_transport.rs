@@ -1,7 +1,5 @@
 use crate::adapter::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
-use crate::adapter::horizontal_transport::{
-    HorizontalTransport, TransportConfig, TransportHandlers,
-};
+use crate::adapter::horizontal_transport::{HorizontalTransport, TransportHandlers};
 use crate::error::{Error, Result};
 use async_trait::async_trait;
 use sockudo_config::adapter::RedisClusterAdapterConfig;
@@ -20,16 +18,6 @@ fn value_to_string(v: &redis::Value) -> Option<String> {
         redis::Value::SimpleString(s) => Some(s.clone()),
         redis::Value::VerbatimString { format: _, text } => Some(text.clone()),
         _ => None,
-    }
-}
-
-impl TransportConfig for RedisClusterAdapterConfig {
-    fn request_timeout_ms(&self) -> u64 {
-        self.request_timeout_ms
-    }
-
-    fn prefix(&self) -> &str {
-        &self.prefix
     }
 }
 

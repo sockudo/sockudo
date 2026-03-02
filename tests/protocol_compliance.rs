@@ -87,7 +87,7 @@ fn test_error_format() {
 fn test_signin_success_format() {
     // According to spec: data should be an Object with only user_data field
     // We need to check our implementation
-    use sockudo::adapter::handler::types::SignInRequest;
+    use sockudo_runtime::adapter::handler::types::SignInRequest;
 
     let request = SignInRequest {
         user_data: r#"{"id":"123","name":"John"}"#.to_string(),

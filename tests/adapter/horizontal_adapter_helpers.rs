@@ -1,15 +1,15 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use sockudo::adapter::horizontal_adapter::{
+use sockudo_runtime::adapter::horizontal_adapter::{
     BroadcastMessage, RequestBody, RequestType, ResponseBody,
 };
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo::adapter::horizontal_transport::{
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::horizontal_transport::{
     HorizontalTransport, TransportConfig, TransportHandlers,
 };
-use sockudo::channel::PresenceMemberInfo;
-use sockudo::error::{Error, Result};
-use sockudo::websocket::SocketId;
+use sockudo_runtime::channel::PresenceMemberInfo;
+use sockudo_runtime::error::{Error, Result};
+use sockudo_runtime::websocket::SocketId;
 use sonic_rs::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -191,7 +191,7 @@ impl MockTransport {
     /// Get access to published requests for testing
     pub async fn get_published_requests(
         &self,
-    ) -> Vec<sockudo::adapter::horizontal_adapter::RequestBody> {
+    ) -> Vec<sockudo_runtime::adapter::horizontal_adapter::RequestBody> {
         self.published_requests.lock().await.clone()
     }
 

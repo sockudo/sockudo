@@ -1,6 +1,6 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
-use sockudo::adapter::connection_manager::HorizontalAdapterInterface;
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::connection_manager::HorizontalAdapterInterface;
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo_config::adapter::ClusterHealthConfig;
 use sonic_rs::json;
 
@@ -63,7 +63,7 @@ async fn test_presence_member_join_broadcast() {
     assert_eq!(request.user_info, Some(user_info));
     assert_eq!(
         request.request_type,
-        sockudo::adapter::horizontal_adapter::RequestType::PresenceMemberJoined
+        sockudo_runtime::adapter::horizontal_adapter::RequestType::PresenceMemberJoined
     );
 }
 
@@ -118,7 +118,7 @@ async fn test_presence_member_leave_broadcast() {
     assert_eq!(request.user_info, None); // Leave requests don't include user info
     assert_eq!(
         request.request_type,
-        sockudo::adapter::horizontal_adapter::RequestType::PresenceMemberLeft
+        sockudo_runtime::adapter::horizontal_adapter::RequestType::PresenceMemberLeft
     );
 }
 
@@ -441,7 +441,7 @@ async fn test_presence_state_consistency_across_join_leave() {
     let requests = adapter_mut.transport.get_published_requests().await;
     assert_eq!(requests.len(), 3, "Should have 3 requests total");
 
-    use sockudo::adapter::horizontal_adapter::RequestType;
+    use sockudo_runtime::adapter::horizontal_adapter::RequestType;
     assert_eq!(requests[0].request_type, RequestType::PresenceMemberJoined);
     assert_eq!(requests[1].request_type, RequestType::PresenceMemberLeft);
     assert_eq!(requests[2].request_type, RequestType::PresenceMemberJoined);

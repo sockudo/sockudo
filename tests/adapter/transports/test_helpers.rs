@@ -1,7 +1,7 @@
 use ahash::AHashMap;
-use sockudo::adapter::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
+use sockudo_runtime::adapter::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 #[cfg(feature = "redis")]
-use sockudo::adapter::transports::RedisAdapterConfig;
+use sockudo_runtime::adapter::transports::RedisAdapterConfig;
 #[cfg(feature = "nats")]
 use sockudo_config::adapter::NatsAdapterConfig;
 #[cfg(feature = "redis-cluster")]
@@ -80,7 +80,7 @@ pub fn create_test_request() -> RequestBody {
         request_id: Uuid::new_v4().to_string(),
         node_id: "test-node".to_string(),
         app_id: "test-app".to_string(),
-        request_type: sockudo::adapter::horizontal_adapter::RequestType::Sockets,
+        request_type: sockudo_runtime::adapter::horizontal_adapter::RequestType::Sockets,
         channel: None,
         socket_id: None,
         user_id: None,
@@ -229,14 +229,14 @@ where
 /// Create transport handlers for testing
 pub fn create_test_handlers(
     collector: MessageCollector,
-) -> sockudo::adapter::horizontal_transport::TransportHandlers {
-    use sockudo::adapter::horizontal_transport::BoxFuture;
+) -> sockudo_runtime::adapter::horizontal_transport::TransportHandlers {
+    use sockudo_runtime::adapter::horizontal_transport::BoxFuture;
 
     let broadcast_collector = collector.clone();
     let request_collector = collector.clone();
     let response_collector = collector.clone();
 
-    sockudo::adapter::horizontal_transport::TransportHandlers {
+    sockudo_runtime::adapter::horizontal_transport::TransportHandlers {
         on_broadcast: Arc::new(move |msg| {
             let collector = broadcast_collector.clone();
             Box::pin(async move {
@@ -260,7 +260,7 @@ pub fn create_test_handlers(
                     channels: HashSet::new(),
                     members_count: 0,
                 })
-            }) as BoxFuture<'static, sockudo::error::Result<ResponseBody>>
+            }) as BoxFuture<'static, sockudo_runtime::error::Result<ResponseBody>>
         }),
         on_response: Arc::new(move |msg| {
             let collector = response_collector.clone();

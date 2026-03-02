@@ -1,6 +1,3 @@
-pub mod manager;
-
-// src/watchlist/manager.rs
 use crate::error::Result;
 use dashmap::DashMap;
 use sockudo_protocol::messages::PusherMessage;
@@ -11,14 +8,12 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct WatchlistEntry {
     pub user_id: String,
-    pub watchers: HashSet<String>, // Users watching this user
-    pub watching: HashSet<String>, // Users this user is watching
+    pub watchers: HashSet<String>,
+    pub watching: HashSet<String>,
 }
 
 pub struct WatchlistManager {
-    // Map: app_id -> user_id -> WatchlistEntry
     watchlists: Arc<DashMap<String, DashMap<String, WatchlistEntry>>>,
-    // Map: app_id -> user_id -> Set<socket_ids>
     online_users: Arc<DashMap<String, DashMap<String, HashSet<SocketId>>>>,
 }
 
@@ -36,7 +31,6 @@ impl WatchlistManager {
         }
     }
 
-    /// Add a user with their watchlist
     pub async fn add_user_with_watchlist(
         &self,
         app_id: &str,
@@ -46,7 +40,6 @@ impl WatchlistManager {
     ) -> Result<Vec<PusherMessage>> {
         let mut events_to_send = Vec::new();
 
-        // Initialize app-level maps if they don't exist
         if !self.watchlists.contains_key(app_id) {
             self.watchlists.insert(app_id.to_string(), DashMap::new());
         }
@@ -57,7 +50,6 @@ impl WatchlistManager {
         let app_watchlists = self.watchlists.get(app_id).unwrap();
         let app_online_users = self.online_users.get(app_id).unwrap();
 
-        // Track this socket as online for the user
         let was_offline = {
             let mut user_sockets = app_online_users.entry(user_id.to_string()).or_default();
             let was_empty = user_sockets.is_empty();
@@ -65,11 +57,9 @@ impl WatchlistManager {
             was_empty
         };
 
-        // Update watchlist relationships
         if let Some(watchlist_vec) = watchlist {
             let watching_set: HashSet<String> = watchlist_vec.into_iter().collect();
 
-            // Update this user's entry
             let mut user_entry = app_watchlists
                 .entry(user_id.to_string())
                 .or_insert_with(|| WatchlistEntry {
@@ -79,7 +69,6 @@ impl WatchlistManager {
                 });
             user_entry.watching = watching_set.clone();
 
-            // Update reverse relationships (add this user as a watcher)
             for watched_user_id in &watching_set {
                 let mut watched_entry = app_watchlists
                     .entry(watched_user_id.clone())
@@ -91,7 +80,6 @@ impl WatchlistManager {
                 watched_entry.watchers.insert(user_id.to_string());
             }
 
-            // If user just came online, notify their watchers
             if was_offline && let Some(user_entry) = app_watchlists.get(user_id) {
                 for _ in &user_entry.watchers {
                     events_to_send.push(PusherMessage::watchlist_online_event(vec![
@@ -100,7 +88,6 @@ impl WatchlistManager {
                 }
             }
 
-            // Send current online status of watched users to this user
             let mut online_watched_users = Vec::new();
             let mut offline_watched_users = Vec::new();
 
@@ -127,7 +114,6 @@ impl WatchlistManager {
         Ok(events_to_send)
     }
 
-    /// Remove a user connection
     pub async fn remove_user_connection(
         &self,
         app_id: &str,
@@ -142,11 +128,9 @@ impl WatchlistManager {
         {
             user_sockets.remove(socket_id);
 
-            // If user has no more connections, they're offline
             if user_sockets.is_empty() {
                 should_cleanup_user = true;
 
-                // Notify watchers that this user went offline
                 if let Some(app_watchlists) = self.watchlists.get(app_id)
                     && let Some(user_entry) = app_watchlists.get(user_id)
                 {
@@ -159,29 +143,23 @@ impl WatchlistManager {
             }
         }
 
-        // MEMORY LEAK FIX: Clean up empty entries outside the borrow scope
         if should_cleanup_user {
-            // Remove the empty user entry from online_users
             if let Some(app_online_users) = self.online_users.get(app_id) {
                 app_online_users.remove(user_id);
             }
 
-            // Clean up watchlist relationships
             if let Some(app_watchlists) = self.watchlists.get(app_id) {
-                // Get the user's watching list before removing
                 let watching_list: Vec<String> = app_watchlists
                     .get(user_id)
                     .map(|entry| entry.watching.iter().cloned().collect())
                     .unwrap_or_default();
 
-                // Remove this user from the watchers list of users they were watching
                 for watched_user_id in &watching_list {
                     if let Some(mut watched_entry) = app_watchlists.get_mut(watched_user_id) {
                         watched_entry.watchers.remove(user_id);
                     }
                 }
 
-                // Remove the user's own watchlist entry
                 app_watchlists.remove(user_id);
             }
         }
@@ -189,7 +167,6 @@ impl WatchlistManager {
         Ok(events_to_send)
     }
 
-    /// Get online status for a user's watchlist
     pub async fn get_watchlist_status(
         &self,
         app_id: &str,
@@ -216,7 +193,6 @@ impl WatchlistManager {
         Ok((online_users, offline_users))
     }
 
-    /// Clean up when app is removed
     pub async fn cleanup_app(&self, app_id: &str) {
         self.watchlists.remove(app_id);
         self.online_users.remove(app_id);

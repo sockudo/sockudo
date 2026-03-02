@@ -1,7 +1,5 @@
 use crate::adapter::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
-use crate::adapter::horizontal_transport::{
-    HorizontalTransport, TransportConfig, TransportHandlers,
-};
+use crate::adapter::horizontal_transport::{HorizontalTransport, TransportHandlers};
 use crate::error::{Error, Result};
 use async_nats::{Client as NatsClient, ConnectOptions as NatsOptions, Subject};
 use async_trait::async_trait;
@@ -66,16 +64,6 @@ impl NatsTransport {
     /// Get transport metrics for monitoring
     pub fn get_metrics(&self) -> Arc<TransportMetrics> {
         self.metrics.clone()
-    }
-}
-
-impl TransportConfig for NatsAdapterConfig {
-    fn request_timeout_ms(&self) -> u64 {
-        self.request_timeout_ms
-    }
-
-    fn prefix(&self) -> &str {
-        &self.prefix
     }
 }
 

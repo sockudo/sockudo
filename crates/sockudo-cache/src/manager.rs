@@ -1,4 +1,4 @@
-use crate::error::Result;
+use sockudo_core::error::Result;
 use async_trait::async_trait;
 use std::time::Duration;
 

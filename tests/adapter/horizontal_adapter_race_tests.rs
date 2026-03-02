@@ -1,9 +1,9 @@
-use sockudo::adapter::ConnectionManager;
-use sockudo::adapter::horizontal_adapter::RequestType;
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
-use sockudo::adapter::horizontal_transport::HorizontalTransport;
-use sockudo::error::Result;
-use sockudo::websocket::SocketId;
+use sockudo_runtime::adapter::ConnectionManager;
+use sockudo_runtime::adapter::horizontal_adapter::RequestType;
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::horizontal_transport::HorizontalTransport;
+use sockudo_runtime::error::Result;
+use sockudo_runtime::websocket::SocketId;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -138,7 +138,7 @@ async fn test_request_response_matching_under_load() -> Result<()> {
 
             // Verify response matches request
             if response.app_id != app_id {
-                return Err(sockudo::error::Error::Internal(format!(
+                return Err(sockudo_runtime::error::Error::Internal(format!(
                     "Response mismatch: expected {}, got {}",
                     app_id, response.app_id
                 )));
@@ -254,7 +254,7 @@ async fn test_node_count_changes_during_requests() -> Result<()> {
                 } else {
                     adapter.transport.remove_node().await;
                 }
-                Ok::<String, sockudo::error::Error>(format!("node-change-{}", i))
+                Ok::<String, sockudo_runtime::error::Error>(format!("node-change-{}", i))
             });
             handles.push(handle);
         } else {
@@ -557,7 +557,7 @@ async fn test_memory_consistency_under_concurrent_access() -> Result<()> {
             let broadcasts = adapter.transport.get_published_broadcasts().await;
             results.push(format!("broadcasts-{}", broadcasts.len()));
 
-            Ok::<Vec<String>, sockudo::error::Error>(results)
+            Ok::<Vec<String>, sockudo_runtime::error::Error>(results)
         });
         handles.push(handle);
     }
@@ -615,7 +615,7 @@ async fn test_adapter_state_isolation() -> Result<()> {
 
             // Verify response matches request parameters
             if response.app_id != format!("isolation-app-{}", i) {
-                return Err(sockudo::error::Error::Internal(
+                return Err(sockudo_runtime::error::Error::Internal(
                     "State isolation failed: wrong app_id".to_string(),
                 ));
             }

@@ -5,10 +5,10 @@
 //
 // Run with: cargo run --example test_conflation
 
-use sockudo::delta_compression::{
+use sockudo_runtime::delta_compression::{
     CompressionResult, DeltaAlgorithm, DeltaCompressionConfig, DeltaCompressionManager,
 };
-use sockudo::websocket::SocketId;
+use sockudo_runtime::websocket::SocketId;
 use std::time::Duration;
 
 #[tokio::main]

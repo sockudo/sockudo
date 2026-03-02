@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use sockudo::cleanup::{AuthInfo, CleanupSender, ConnectionCleanupInfo, DisconnectTask};
-    use sockudo::websocket::SocketId;
+    use sockudo_runtime::cleanup::{AuthInfo, CleanupSender, ConnectionCleanupInfo, DisconnectTask};
+    use sockudo_runtime::websocket::SocketId;
     use std::time::Instant;
     use tokio::sync::mpsc;
 

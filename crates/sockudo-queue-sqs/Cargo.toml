@@ -6,6 +6,7 @@ license-file = "../../LICENSE"
 description = "AWS SQS queue backend for Sockudo"
 
 [dependencies]
+sockudo-core = { path = "../sockudo-core" }
 sockudo-types = { path = "../sockudo-types" }
 async-trait = "0.1.89"
 serde = { version = "1", features = ["derive"] }

@@ -1,7 +1,7 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockTransport};
-use sockudo::adapter::ConnectionManager;
-use sockudo::adapter::horizontal_adapter::{DeadNodeEvent, RequestType};
-use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_runtime::adapter::ConnectionManager;
+use sockudo_runtime::adapter::horizontal_adapter::{DeadNodeEvent, RequestType};
+use sockudo_runtime::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use sockudo_config::adapter::ClusterHealthConfig;
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ async fn test_heartbeat_tracking_updates_node_registry() {
     adapter.start_listeners().await.unwrap();
 
     // Simulate receiving a heartbeat from another node
-    let heartbeat_request = sockudo::adapter::horizontal_adapter::RequestBody {
+    let heartbeat_request = sockudo_runtime::adapter::horizontal_adapter::RequestBody {
         request_id: "test-heartbeat-1".to_string(),
         node_id: "remote-node-1".to_string(),
         app_id: "cluster".to_string(),
@@ -302,7 +302,7 @@ async fn test_dead_node_event_structure_contains_required_data() {
         let orphaned_members = cleanup_tasks
             .into_iter()
             .map(|(app_id, channel, user_id, user_info)| {
-                sockudo::adapter::horizontal_adapter::OrphanedMember {
+                sockudo_runtime::adapter::horizontal_adapter::OrphanedMember {
                     app_id,
                     channel,
                     user_id,
@@ -371,7 +371,7 @@ async fn test_follower_cleanup_only_removes_registry_data() {
     }
 
     // Simulate receiving a "NodeDead" notification as a follower
-    let dead_node_request = sockudo::adapter::horizontal_adapter::RequestBody {
+    let dead_node_request = sockudo_runtime::adapter::horizontal_adapter::RequestBody {
         request_id: "cleanup-notification".to_string(),
         node_id: "leader-node".to_string(),
         app_id: "cluster".to_string(),

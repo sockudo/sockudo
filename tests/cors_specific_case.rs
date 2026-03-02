@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod cors_specific_case_tests {
-    use sockudo::adapter::handler::origin_validation::OriginValidator;
+    use sockudo_runtime::adapter::handler::origin_validation::OriginValidator;
 
     #[test]
     fn test_protocol_agnostic_with_custom_port() {
