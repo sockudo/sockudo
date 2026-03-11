@@ -78,7 +78,7 @@ jobs:
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
               mkdir -p .cargo
-              printf "[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
+              printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
               cargo build --release --features full --target x86_64-unknown-linux-musl
             '
 
@@ -102,7 +102,7 @@ jobs:
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
               mkdir -p .cargo
-              printf "[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
+              printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
               cargo build --release --features full --target aarch64-unknown-linux-musl
             '
 
