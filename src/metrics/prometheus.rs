@@ -550,8 +550,7 @@ impl PrometheusMetricsDriver {
                     ((now.as_secs_f64() - start_secs) * 1_000_000_000.0).max(1.0) as u64;
                 for worker in 0..num_workers {
                     let worker_label = worker.to_string();
-                    let busy_ns =
-                        metrics.worker_total_busy_duration(worker).as_nanos() as u64;
+                    let busy_ns = metrics.worker_total_busy_duration(worker).as_nanos() as u64;
                     let ratio = busy_ns as f64 / uptime_ns as f64;
                     self.tokio_worker_busy_ratio
                         .with_label_values(&[&worker_label])
