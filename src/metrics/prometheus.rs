@@ -39,6 +39,15 @@ pub struct PrometheusMetricsDriver {
     process_start_time_seconds: Gauge,
     process_open_fds: Gauge,
 
+    // Tokio runtime metrics
+    tokio_workers_count: Gauge,
+    tokio_active_tasks: Gauge,
+    tokio_injection_queue_depth: Gauge,
+    tokio_worker_local_queue_depth: GaugeVec,
+    tokio_worker_busy_ratio: GaugeVec,
+    tokio_worker_mean_poll_duration_us: Gauge,
+    tokio_budget_forced_yield_count: Gauge,
+
     // Metrics
     connected_sockets: GaugeVec,
     new_connections_total: CounterVec,
@@ -108,6 +117,55 @@ impl PrometheusMetricsDriver {
         let process_open_fds = register_gauge!(Opts::new(
             "process_open_fds",
             "Number of open file descriptors"
+        ))
+        .unwrap();
+
+        // Tokio runtime metrics
+        let tokio_workers_count = register_gauge!(Opts::new(
+            format!("{prefix}tokio_workers_count"),
+            "Number of Tokio runtime worker threads"
+        ))
+        .unwrap();
+
+        let tokio_active_tasks = register_gauge!(Opts::new(
+            format!("{prefix}tokio_active_tasks"),
+            "Number of active tasks in the Tokio runtime"
+        ))
+        .unwrap();
+
+        let tokio_injection_queue_depth = register_gauge!(Opts::new(
+            format!("{prefix}tokio_injection_queue_depth"),
+            "Depth of the Tokio runtime global injection queue"
+        ))
+        .unwrap();
+
+        let tokio_worker_local_queue_depth = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}tokio_worker_local_queue_depth"),
+                "Depth of each Tokio worker thread's local task queue"
+            ),
+            &["worker"]
+        )
+        .unwrap();
+
+        let tokio_worker_busy_ratio = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}tokio_worker_busy_ratio"),
+                "Ratio of time each Tokio worker thread spent executing tasks (0.0-1.0)"
+            ),
+            &["worker"]
+        )
+        .unwrap();
+
+        let tokio_worker_mean_poll_duration_us = register_gauge!(Opts::new(
+            format!("{prefix}tokio_worker_mean_poll_duration_us"),
+            "Mean task poll duration across all workers in microseconds"
+        ))
+        .unwrap();
+
+        let tokio_budget_forced_yield_count = register_gauge!(Opts::new(
+            format!("{prefix}tokio_budget_forced_yield_count"),
+            "Total number of times tasks were forced to yield by the Tokio coop budget"
         ))
         .unwrap();
 
@@ -413,6 +471,13 @@ impl PrometheusMetricsDriver {
             process_cpu_seconds_total,
             process_start_time_seconds,
             process_open_fds,
+            tokio_workers_count,
+            tokio_active_tasks,
+            tokio_injection_queue_depth,
+            tokio_worker_local_queue_depth,
+            tokio_worker_busy_ratio,
+            tokio_worker_mean_poll_duration_us,
+            tokio_budget_forced_yield_count,
             connected_sockets,
             new_connections_total,
             new_disconnections_total,
@@ -444,6 +509,59 @@ impl PrometheusMetricsDriver {
             redis_cluster_channel_queue_size,
             redis_cluster_channel_messages_dropped,
             redis_cluster_reconnections_total,
+        }
+    }
+
+    /// Update Tokio runtime metrics from the current runtime handle
+    pub fn update_tokio_runtime_metrics(&self) {
+        let handle = tokio::runtime::Handle::current();
+        let metrics = handle.metrics();
+
+        self.tokio_workers_count.set(metrics.num_workers() as f64);
+        self.tokio_active_tasks
+            .set(metrics.num_alive_tasks() as f64);
+        self.tokio_injection_queue_depth
+            .set(metrics.global_queue_depth() as f64);
+        self.tokio_budget_forced_yield_count
+            .set(metrics.budget_forced_yield_count() as f64);
+
+        let num_workers = metrics.num_workers();
+        let mut total_polls: u64 = 0;
+        let mut total_poll_duration_ns: u64 = 0;
+
+        for worker in 0..num_workers {
+            let worker_label = worker.to_string();
+
+            let queue_depth = metrics.worker_local_queue_depth(worker);
+            self.tokio_worker_local_queue_depth
+                .with_label_values(&[&worker_label])
+                .set(queue_depth as f64);
+
+            let polls = metrics.worker_poll_count(worker);
+            total_polls += polls;
+            total_poll_duration_ns += metrics.worker_total_busy_duration(worker).as_nanos() as u64;
+        }
+
+        // Approximate busy ratio: busy_duration / process_uptime
+        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            let start_secs = self.process_start_time_seconds.get();
+            if start_secs > 0.0 {
+                let uptime_ns =
+                    ((now.as_secs_f64() - start_secs) * 1_000_000_000.0).max(1.0) as u64;
+                for worker in 0..num_workers {
+                    let worker_label = worker.to_string();
+                    let busy_ns = metrics.worker_total_busy_duration(worker).as_nanos() as u64;
+                    let ratio = busy_ns as f64 / uptime_ns as f64;
+                    self.tokio_worker_busy_ratio
+                        .with_label_values(&[&worker_label])
+                        .set(ratio.min(1.0));
+                }
+            }
+        }
+
+        if total_polls > 0 {
+            let mean_poll_us = total_poll_duration_ns as f64 / total_polls as f64 / 1000.0;
+            self.tokio_worker_mean_poll_duration_us.set(mean_poll_us);
         }
     }
 
@@ -853,8 +971,9 @@ impl MetricsInterface for PrometheusMetricsDriver {
     }
 
     async fn get_metrics_as_plaintext(&self) -> String {
-        // Update process metrics before gathering
+        // Update process and runtime metrics before gathering
         self.update_process_metrics();
+        self.update_tokio_runtime_metrics();
 
         let encoder = TextEncoder::new();
         let metric_families = prometheus::gather(); // Gather from the default registry
