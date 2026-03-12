@@ -9,6 +9,32 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/xdelta3/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/benchmarks/sender/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-adapter-local/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-adapter-nats/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-adapter-redis-cluster/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-adapter-redis/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-cache/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-config/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-filter/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-metrics/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-options/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-protocol/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-queue-memory/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-queue-redis-cluster/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-queue-redis/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-queue-sqs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-rate-limiter/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-runtime/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-server/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-store-dynamodb/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-store-mysql/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-store-postgres/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-store-scylla/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-types/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-webhook-http/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-webhook-lambda/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-workspace-hack/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/benchmark/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/xdelta3/target" />

@@ -30,32 +30,15 @@
     "array": {
       "apps": [
         {
-          "id": "app-id",
-          "key": "app-key",
-          "secret": "app-secret",
+          "id": "songbird",
+          "key": "songbird-key",
+          "secret": "songbird-secret",
           "max_connections": 100000,
           "enable_client_messages": true,
           "enable_user_authentication": true,
           "enabled": true,
           "max_client_events_per_second": 1000,
-          "allowed_origins": ["*"],
-          "channel_delta_compression": {
-            "ticker:*": {
-              "enabled": true,
-              "algorithm": "Fossil",
-              "conflation_key": "item_id",
-              "max_messages_per_key": 10,
-              "max_conflation_keys": 1000,
-              "enable_tags": false
-            },
-            "price:*": {
-              "enabled": true,
-              "algorithm": "Fossil",
-              "conflation_key": "item_id",
-              "max_messages_per_key": 10,
-              "max_conflation_keys": 100
-            }
-          }
+          "allowed_origins": ["*"]
         }
       ]
     },
@@ -125,7 +108,7 @@
     }
   },
   "logging": {
-    "colors_enabled": false,
+    "colors_enabled": true,
     "include_target": true
   },
   "cleanup": {
