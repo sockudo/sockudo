@@ -121,6 +121,7 @@ rayon = "1.10" # Parallel iterators for filter evaluation
 tokio-util = "0.7" # CancellationToken for graceful shutdown
 memchr = "2.7" # SIMD-accelerated string searching
 libc = "0.2" # For process metrics on macOS/Linux
+crossfire = { version = "3.1.5", features = ["tokio"] }
 
 
 [dependencies.uuid]

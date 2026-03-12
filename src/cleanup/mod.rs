@@ -1,6 +1,6 @@
 use crate::websocket::SocketId;
+use crossfire::mpsc;
 use std::time::Instant;
-use tokio::sync::mpsc;
 
 pub mod multi_worker;
 pub mod worker;
@@ -8,11 +8,15 @@ pub mod worker;
 // Re-export CancellationToken for use by callers who want graceful shutdown
 pub use tokio_util::sync::CancellationToken;
 
+pub type CleanupChannelFlavor = mpsc::Array<DisconnectTask>;
+pub type CleanupSenderHandle = crossfire::MAsyncTx<CleanupChannelFlavor>;
+pub type CleanupReceiverHandle = crossfire::AsyncRx<CleanupChannelFlavor>;
+
 /// Unified cleanup sender that abstracts over single vs multi-worker implementations
 #[derive(Clone)]
 pub enum CleanupSender {
     /// Direct sender for single worker (optimized path)
-    Direct(mpsc::Sender<DisconnectTask>),
+    Direct(CleanupSenderHandle),
     /// Multi-worker sender with round-robin distribution
     Multi(multi_worker::MultiWorkerSender),
 }
@@ -22,7 +26,7 @@ impl CleanupSender {
     pub fn try_send(
         &self,
         task: DisconnectTask,
-    ) -> Result<(), Box<mpsc::error::TrySendError<DisconnectTask>>> {
+    ) -> Result<(), Box<crossfire::TrySendError<DisconnectTask>>> {
         match self {
             CleanupSender::Direct(sender) => sender.try_send(task).map_err(Box::new),
             CleanupSender::Multi(sender) => {
@@ -30,7 +34,7 @@ impl CleanupSender {
                 sender.send(task).map_err(|e| {
                     // MultiWorkerSender returns SendError when all queues are full or closed
                     // We treat this as "Full" for backpressure handling
-                    Box::new(mpsc::error::TrySendError::Full(e.0))
+                    Box::new(crossfire::TrySendError::Full(e.0))
                 })
             }
         }
@@ -39,7 +43,7 @@ impl CleanupSender {
     /// Check if the sender is still operational
     pub fn is_closed(&self) -> bool {
         match self {
-            CleanupSender::Direct(sender) => sender.is_closed(),
+            CleanupSender::Direct(sender) => sender.is_disconnected(),
             CleanupSender::Multi(sender) => !sender.is_available(),
         }
     }

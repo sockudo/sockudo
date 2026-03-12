@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use crate::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
+use crate::adapter::connection_manager::{
+    ConnectionManager, DeadNodeEventBusReceiver, DeadNodeEventBusSender, HorizontalAdapterInterface,
+};
 use crate::adapter::horizontal_adapter::{
     BroadcastMessage, DeadNodeEvent, HorizontalAdapter, OrphanedMember, PendingRequest,
     RequestBody, RequestType, ResponseBody, current_timestamp, generate_request_id,
@@ -23,6 +25,7 @@ use crate::options::ClusterHealthConfig;
 use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocketRef};
 use async_trait::async_trait;
+use crossfire::mpsc;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tracing::{debug, error, info, warn};
@@ -34,7 +37,7 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub local_adapter: Arc<LocalAdapter>,
     pub transport: T,
     pub config: T::Config,
-    pub event_bus: Arc<OnceLock<tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>>>,
+    pub event_bus: Arc<OnceLock<DeadNodeEventBusSender>>,
     pub node_id: String,
     pub cluster_health_enabled: bool,
     pub heartbeat_interval_ms: u64,
@@ -133,7 +136,7 @@ where
         Ok(())
     }
 
-    pub fn set_event_bus(&self, event_sender: tokio::sync::mpsc::UnboundedSender<DeadNodeEvent>) {
+    pub fn set_event_bus(&self, event_sender: DeadNodeEventBusSender) {
         // OnceLock::set returns Err if already set, which we ignore (first-write-wins)
         let _ = self.event_bus.set(event_sender);
     }
@@ -1469,10 +1472,8 @@ where
         Some(self)
     }
 
-    fn configure_dead_node_events(
-        &self,
-    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<DeadNodeEvent>> {
-        let (event_sender, event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    fn configure_dead_node_events(&self) -> Option<DeadNodeEventBusReceiver> {
+        let (event_sender, event_receiver) = mpsc::unbounded_async();
         self.set_event_bus(event_sender);
         Some(event_receiver)
     }

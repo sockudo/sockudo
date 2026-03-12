@@ -736,11 +736,11 @@ impl SockudoServer {
         ));
 
         // Start dead node cleanup event processing loop (only runs if cluster health is enabled)
-        if let Some(mut event_receiver) = dead_node_event_receiver {
+        if let Some(event_receiver) = dead_node_event_receiver {
             let handler_clone = handler.clone();
             tokio::spawn(async move {
                 info!("Starting dead node cleanup event processing loop");
-                while let Some(event) = event_receiver.recv().await {
+                while let Ok(event) = event_receiver.recv().await {
                     if let Err(e) = handler_clone.handle_dead_node_cleanup(event).await {
                         error!("Error processing dead node cleanup event: {}", e);
                     }

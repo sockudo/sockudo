@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use crossfire::mpsc;
     use sockudo::cleanup::{AuthInfo, CleanupSender, ConnectionCleanupInfo, DisconnectTask};
     use sockudo::websocket::SocketId;
     use std::time::Instant;
-    use tokio::sync::mpsc;
 
     fn create_disconnect_task_with_presence(socket_id: &str) -> DisconnectTask {
         DisconnectTask {
@@ -28,7 +28,7 @@ mod tests {
         // the system should fall back to sync cleanup
 
         // Create a small channel to simulate full queue
-        let (tx, mut rx) = mpsc::channel::<DisconnectTask>(1);
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(1);
         let sender = CleanupSender::Direct(tx);
 
         // Fill the queue
@@ -40,7 +40,7 @@ mod tests {
         let result = sender.try_send(task2.clone());
         match result {
             Err(boxed_err) => match boxed_err.as_ref() {
-                mpsc::error::TrySendError::Full(returned_task) => {
+                crossfire::TrySendError::Full(returned_task) => {
                     println!(
                         "[TEST VALIDATION] Queue full, falling back to sync processing for task: {:?}",
                         returned_task

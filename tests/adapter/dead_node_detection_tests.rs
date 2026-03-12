@@ -268,7 +268,7 @@ async fn test_dead_node_event_structure_contains_required_data() {
         .unwrap();
 
     // Set up event receiver
-    let mut event_receiver = adapter
+    let event_receiver = adapter
         .configure_dead_node_events()
         .expect("Should be able to configure dead node events");
 

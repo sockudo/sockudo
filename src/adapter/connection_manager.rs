@@ -6,9 +6,14 @@ use crate::protocol::messages::PusherMessage;
 use crate::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
 use ahash::AHashMap as HashMap;
 use async_trait::async_trait;
+use crossfire::mpsc;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
 use std::sync::Arc;
+
+pub type DeadNodeEventBusFlavor = mpsc::List<crate::adapter::horizontal_adapter::DeadNodeEvent>;
+pub type DeadNodeEventBusSender = crossfire::MTx<DeadNodeEventBusFlavor>;
+pub type DeadNodeEventBusReceiver = crossfire::AsyncRx<DeadNodeEventBusFlavor>;
 
 /// Parameters for delta compression when sending messages
 pub struct CompressionParams<'a> {
@@ -161,11 +166,7 @@ pub trait ConnectionManager: Send + Sync {
 
     /// Configure dead node event bus if this adapter supports clustering
     /// Returns Some(receiver) if configured, None if not supported
-    fn configure_dead_node_events(
-        &self,
-    ) -> Option<
-        tokio::sync::mpsc::UnboundedReceiver<crate::adapter::horizontal_adapter::DeadNodeEvent>,
-    > {
+    fn configure_dead_node_events(&self) -> Option<DeadNodeEventBusReceiver> {
         None // Default: no clustering support
     }
 }

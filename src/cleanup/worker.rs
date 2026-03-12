@@ -8,8 +8,7 @@ use crate::websocket::SocketId;
 use ahash::AHashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tokio::time::sleep;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -42,7 +41,7 @@ impl CleanupWorker {
     /// Run the cleanup worker with optional cancellation support.
     ///
     /// This is a backward-compatible wrapper that creates a never-cancelled token.
-    pub async fn run(&self, receiver: mpsc::Receiver<DisconnectTask>) {
+    pub async fn run(&self, receiver: super::CleanupReceiverHandle) {
         // Create a token that never gets cancelled for backward compatibility
         let cancel_token = CancellationToken::new();
         self.run_with_cancellation(receiver, cancel_token).await;
@@ -57,7 +56,7 @@ impl CleanupWorker {
     /// In both cases, any pending batch will be processed before exiting.
     pub async fn run_with_cancellation(
         &self,
-        mut receiver: mpsc::Receiver<DisconnectTask>,
+        receiver: super::CleanupReceiverHandle,
         cancel_token: CancellationToken,
     ) {
         info!("Cleanup worker started with config: {:?}", self.config);
@@ -81,9 +80,12 @@ impl CleanupWorker {
                 }
 
                 // Receive new disconnect tasks
-                task = receiver.recv() => {
-                    match task {
-                        Some(task) => {
+                recv_result = timeout(
+                    Duration::from_millis(self.config.batch_timeout_ms),
+                    receiver.recv()
+                ) => {
+                    match recv_result {
+                        Ok(Ok(task)) => {
                             debug!("Received disconnect task for socket: {}", task.socket_id);
                             batch.push(task);
 
@@ -94,7 +96,7 @@ impl CleanupWorker {
                                 last_batch_time = Instant::now();
                             }
                         }
-                        None => {
+                        Ok(Err(_)) => {
                             // Channel closed, process remaining batch and exit
                             if !batch.is_empty() {
                                 info!("Processing final batch of {} tasks before shutdown", batch.len());
@@ -103,15 +105,13 @@ impl CleanupWorker {
                             info!("Cleanup worker shutting down (channel closed)");
                             break;
                         }
-                    }
-                }
-
-                // Timeout to ensure batches don't wait too long
-                _ = sleep(Duration::from_millis(self.config.batch_timeout_ms)) => {
-                    if !batch.is_empty() && last_batch_time.elapsed() >= Duration::from_millis(self.config.batch_timeout_ms) {
-                        debug!("Processing batch due to timeout: {} tasks", batch.len());
-                        self.process_batch(&mut batch).await;
-                        last_batch_time = Instant::now();
+                        Err(_) => {
+                            if !batch.is_empty() && last_batch_time.elapsed() >= Duration::from_millis(self.config.batch_timeout_ms) {
+                                debug!("Processing batch due to timeout: {} tasks", batch.len());
+                                self.process_batch(&mut batch).await;
+                                last_batch_time = Instant::now();
+                            }
+                        }
                     }
                 }
             }

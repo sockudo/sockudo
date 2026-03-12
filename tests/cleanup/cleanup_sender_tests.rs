@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use crossfire::mpsc;
     use sockudo::cleanup::{CleanupSender, DisconnectTask};
     use sockudo::websocket::SocketId;
     use std::time::Instant;
-    use tokio::sync::mpsc;
 
     fn create_test_task(socket_id: &str) -> DisconnectTask {
         DisconnectTask {
@@ -19,7 +19,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_sender_direct_variant() {
         // Test that Direct variant properly sends tasks
-        let (tx, mut rx) = mpsc::channel::<DisconnectTask>(10);
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(10);
         let sender = CleanupSender::Direct(tx);
 
         let task = create_test_task("socket1");
@@ -40,7 +40,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_sender_direct_backpressure() {
         // Test that Direct variant handles backpressure correctly
-        let (tx, _rx) = mpsc::channel::<DisconnectTask>(2);
+        let (tx, _rx) = mpsc::bounded_async::<DisconnectTask>(2);
         let sender = CleanupSender::Direct(tx);
 
         // Fill the channel
@@ -54,7 +54,7 @@ mod tests {
         let err = result.unwrap_err();
 
         match err.as_ref() {
-            mpsc::error::TrySendError::Full(_) => {
+            crossfire::TrySendError::Full(_) => {
                 // Expected: channel is full
             }
             _ => panic!("Expected Full error"),
@@ -64,7 +64,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_sender_try_send_interface() {
         // Test that try_send interface is consistent across variants
-        let (tx, mut rx) = mpsc::channel::<DisconnectTask>(10);
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(10);
         let sender = CleanupSender::Direct(tx);
 
         let task = create_test_task("socket1");
@@ -87,7 +87,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_sender_is_closed() {
         // Test is_closed() for Direct variant
-        let (tx, rx) = mpsc::channel::<DisconnectTask>(10);
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(10);
         let sender = CleanupSender::Direct(tx);
 
         assert!(!sender.is_closed());
@@ -103,7 +103,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_sender_clone_semantics() {
         // Test that CleanupSender can be cloned safely
-        let (tx, mut rx) = mpsc::channel::<DisconnectTask>(10);
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(10);
         let sender = CleanupSender::Direct(tx);
         let sender_clone = sender.clone();
 
@@ -119,7 +119,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_sender_error_types() {
         // Test different error conditions with specific error type verification
-        let (tx, rx) = mpsc::channel::<DisconnectTask>(1);
+        let (tx, rx) = mpsc::bounded_async::<DisconnectTask>(1);
         let sender = CleanupSender::Direct(tx);
 
         // Fill channel
@@ -132,7 +132,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match err.as_ref() {
-            mpsc::error::TrySendError::Full(returned_task) => {
+            crossfire::TrySendError::Full(returned_task) => {
                 assert_eq!(
                     returned_task.socket_id.to_string(),
                     task2.socket_id.to_string()
@@ -152,7 +152,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match err.as_ref() {
-            mpsc::error::TrySendError::Closed(returned_task) => {
+            crossfire::TrySendError::Disconnected(returned_task) => {
                 assert_eq!(
                     returned_task.socket_id.to_string(),
                     task3.socket_id.to_string()
