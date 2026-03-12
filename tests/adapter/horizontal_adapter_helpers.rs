@@ -463,7 +463,8 @@ impl HorizontalTransport for MockTransport {
 
         Ok(Self {
             healthy: Arc::new(Mutex::new(config.healthy)),
-            node_count: Arc::new(Mutex::new(config.node_states.len())),
+            // Match production semantics: node count includes the local node.
+            node_count: Arc::new(Mutex::new(config.node_states.len() + 1)),
             config,
             handlers: Arc::new(Mutex::new(None)),
             published_broadcasts: Arc::new(Mutex::new(Vec::new())),

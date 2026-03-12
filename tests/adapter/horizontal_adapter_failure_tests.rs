@@ -332,7 +332,7 @@ async fn test_node_join_leave_during_requests() -> Result<()> {
 
     // Initial node count
     let initial_count = adapter.transport.get_node_count().await?;
-    assert_eq!(initial_count, 2);
+    assert_eq!(initial_count, 3);
 
     // Start concurrent requests while changing node count
     let mut handles = Vec::new();
