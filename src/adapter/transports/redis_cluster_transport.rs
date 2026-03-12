@@ -5,6 +5,7 @@ use crate::adapter::horizontal_transport::{
 use crate::error::{Error, Result};
 use crate::options::RedisClusterAdapterConfig;
 use async_trait::async_trait;
+use crossfire::mpsc;
 
 use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
@@ -12,6 +13,9 @@ use redis::cluster_async::ClusterConnection;
 
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
+
+type RedisPushChannelFlavor = mpsc::List<redis::PushInfo>;
+type RedisPushReceiver = crossfire::AsyncRx<RedisPushChannelFlavor>;
 
 /// Helper function to convert redis::Value to String
 fn value_to_string(v: &redis::Value) -> Option<String> {
@@ -288,11 +292,13 @@ impl HorizontalTransport for RedisClusterTransport {
                 // Create a new channel and client for each connection attempt
                 // This is necessary because the push_sender moves tx into the client,
                 // and when the channel closes, we need a fresh one for reconnection
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                let (tx, rx): (crossfire::MTx<RedisPushChannelFlavor>, RedisPushReceiver) =
+                    mpsc::unbounded_async();
+                let push_sender = move |msg| tx.send(msg).map_err(|_| redis::aio::SendError);
 
                 let sub_client = match ClusterClientBuilder::new(nodes.clone())
                     .use_protocol(redis::ProtocolVersion::RESP3)
-                    .push_sender(tx)
+                    .push_sender(push_sender)
                     .build()
                 {
                     Ok(client) => client,
@@ -367,7 +373,7 @@ impl HorizontalTransport for RedisClusterTransport {
                 reconnection_count = 0;
 
                 // Process messages from the channel - PushInfo is the message type for RESP3
-                while let Some(push_info) = rx.recv().await {
+                while let Ok(push_info) = rx.recv().await {
                     // Extract channel and payload from PushInfo
                     // Handle both standard (Message) and sharded (SMessage) pub/sub messages
                     let is_message = matches!(
