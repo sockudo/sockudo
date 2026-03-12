@@ -25,6 +25,9 @@ RUN groupadd -r sockudo && useradd -r -g sockudo sockudo
 # Set the working directory
 WORKDIR /app
 
+# Preserve repo rustflags such as `--cfg tokio_unstable` inside Docker builds.
+COPY .cargo/ ./.cargo/
+
 # Copy dependency files first for better layer caching
 COPY Cargo.toml ./
 # Copy Cargo.lock if it exists, otherwise create empty one

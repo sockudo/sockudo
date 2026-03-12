@@ -522,10 +522,11 @@ impl PrometheusMetricsDriver {
             .set(metrics.num_alive_tasks() as f64);
         self.tokio_injection_queue_depth
             .set(metrics.global_queue_depth() as f64);
-        self.tokio_budget_forced_yield_count
-            .set(metrics.budget_forced_yield_count() as f64);
 
         let num_workers = metrics.num_workers();
+
+        self.tokio_budget_forced_yield_count
+            .set(metrics.budget_forced_yield_count() as f64);
         let mut total_polls: u64 = 0;
         let mut total_poll_duration_ns: u64 = 0;
 
@@ -533,6 +534,7 @@ impl PrometheusMetricsDriver {
             let worker_label = worker.to_string();
 
             let queue_depth = metrics.worker_local_queue_depth(worker);
+
             self.tokio_worker_local_queue_depth
                 .with_label_values(&[&worker_label])
                 .set(queue_depth as f64);
