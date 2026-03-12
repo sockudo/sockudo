@@ -8,6 +8,7 @@ use crate::filter::FilterNode;
 use crate::protocol::messages::PusherMessage;
 use ahash::AHashMap as HashMap;
 use bytes::Bytes;
+use crossfire::{TrySendError, mpsc};
 use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -19,8 +20,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 
@@ -197,6 +197,12 @@ pub struct SizedMessage {
     pub bytes: Bytes,
     pub size: usize,
 }
+
+type MessageChannelFlavor = mpsc::Array<Message>;
+type MessageSenderHandle = crossfire::MAsyncTx<MessageChannelFlavor>;
+type SizedMessageChannelFlavor = mpsc::Array<SizedMessage>;
+type SizedMessageSenderHandle = crossfire::MAsyncTx<SizedMessageChannelFlavor>;
+type SizedMessageReceiverHandle = crossfire::AsyncRx<SizedMessageChannelFlavor>;
 
 impl SizedMessage {
     #[inline]
@@ -487,7 +493,7 @@ impl PartialEq for ConnectionState {
 // Message sender for async message handling
 #[derive(Debug)]
 pub struct MessageSender {
-    sender: mpsc::Sender<Message>,
+    sender: MessageSenderHandle,
     _receiver_handle: JoinHandle<()>,
 }
 
@@ -522,58 +528,74 @@ impl MessageSender {
     /// * `byte_counter` - Optional shared counter for tracking bytes (only if byte limit is enabled)
     pub fn new_with_broadcast(
         mut socket: WebSocketWriter,
-        mut broadcast_rx: mpsc::Receiver<SizedMessage>,
+        broadcast_rx: SizedMessageReceiverHandle,
         buffer_capacity: usize,
         byte_counter: Option<Arc<ByteCounter>>,
     ) -> Self {
-        let (sender, mut receiver) = mpsc::channel::<Message>(buffer_capacity);
+        let (sender, receiver) = mpsc::bounded_async::<Message>(buffer_capacity);
 
         let receiver_handle = tokio::spawn(async move {
             let mut msg_count = 0;
             let mut is_shutting_down = false;
+            let mut broadcast_closed = false;
+            let mut receiver_closed = false;
 
             loop {
                 tokio::select! {
                     // Priority for broadcasts
                     biased;
 
-                    Some(sized_msg) = broadcast_rx.recv() => {
-                        msg_count += 1;
-                        let msg_size = sized_msg.size;
-                        let msg = Message::Text(sized_msg.bytes);
+                    recv_result = broadcast_rx.recv(), if !broadcast_closed => {
+                        match recv_result {
+                            Ok(sized_msg) => {
+                                msg_count += 1;
+                                let msg_size = sized_msg.size;
+                                let msg = Message::Text(sized_msg.bytes);
 
-                        if let Err(e) = socket.send(msg).await {
-                            Self::log_connection_error(
-                                &e,
-                                SocketOperation::WriteFrame,
-                                msg_count,
-                                is_shutting_down,
-                            );
-                            break;
-                        }
+                                if let Err(e) = socket.send(msg).await {
+                                    Self::log_connection_error(
+                                        &e,
+                                        SocketOperation::WriteFrame,
+                                        msg_count,
+                                        is_shutting_down,
+                                    );
+                                    break;
+                                }
 
-                        // Decrement byte counter after successful write
-                        if let Some(ref counter) = byte_counter {
-                            counter.sub(msg_size);
+                                // Decrement byte counter after successful write
+                                if let Some(ref counter) = byte_counter {
+                                    counter.sub(msg_size);
+                                }
+                            }
+                            Err(_) => {
+                                broadcast_closed = true;
+                            }
                         }
                     }
                     // Regular messages
-                    Some(message) = receiver.recv() => {
-                        msg_count += 1;
+                    recv_result = receiver.recv(), if !receiver_closed => {
+                        match recv_result {
+                            Ok(message) => {
+                                msg_count += 1;
 
-                        // Detect if this is a close message (indicates shutdown)
-                        if matches!(message, Message::Close(_)) {
-                            is_shutting_down = true;
-                        }
+                                // Detect if this is a close message (indicates shutdown)
+                                if matches!(message, Message::Close(_)) {
+                                    is_shutting_down = true;
+                                }
 
-                        if let Err(e) = socket.send(message).await {
-                            Self::log_connection_error(
-                                &e,
-                                SocketOperation::WriteFrame,
-                                msg_count,
-                                is_shutting_down,
-                            );
-                            break;
+                                if let Err(e) = socket.send(message).await {
+                                    Self::log_connection_error(
+                                        &e,
+                                        SocketOperation::WriteFrame,
+                                        msg_count,
+                                        is_shutting_down,
+                                    );
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                receiver_closed = true;
+                            }
                         }
                     }
                     else => break,
@@ -630,13 +652,13 @@ impl MessageSender {
     }
 
     pub fn new(mut socket: WebSocketWriter, buffer_capacity: usize) -> Self {
-        let (sender, mut receiver) = mpsc::channel::<Message>(buffer_capacity);
+        let (sender, receiver) = mpsc::bounded_async::<Message>(buffer_capacity);
 
         let receiver_handle = tokio::spawn(async move {
             let mut msg_count = 0;
             let mut is_shutting_down = false;
 
-            while let Some(message) = receiver.recv().await {
+            while let Ok(message) = receiver.recv().await {
                 msg_count += 1;
 
                 // Detect if this is a close message (indicates shutdown)
@@ -674,7 +696,7 @@ impl MessageSender {
     pub fn send(&self, message: Message) -> Result<()> {
         self.sender.try_send(message).map_err(|e| match e {
             TrySendError::Full(_) => Error::BufferFull("Message buffer is full".into()),
-            TrySendError::Closed(_) => Error::Connection("Message channel closed".into()),
+            TrySendError::Disconnected(_) => Error::Connection("Message channel closed".into()),
         })
     }
 
@@ -700,7 +722,7 @@ pub struct WebSocket {
     pub state: ConnectionState,
     pub message_sender: MessageSender,
     // Direct broadcast channel for lock-free broadcasts (bounded for backpressure)
-    pub broadcast_tx: mpsc::Sender<SizedMessage>,
+    pub broadcast_tx: SizedMessageSenderHandle,
     // Buffer configuration for backpressure handling
     pub buffer_config: WebSocketBufferConfig,
     // Byte counter for tracking buffer memory (only Some if byte tracking enabled)
@@ -726,7 +748,7 @@ impl WebSocket {
 
         // Create dedicated broadcast channel with bounded capacity
         let channel_capacity = buffer_config.channel_capacity();
-        let (broadcast_tx, broadcast_rx) = mpsc::channel::<SizedMessage>(channel_capacity);
+        let (broadcast_tx, broadcast_rx) = mpsc::bounded_async::<SizedMessage>(channel_capacity);
 
         // Create MessageSender with broadcast receiver and byte counter
         let message_sender = MessageSender::new_with_broadcast(
@@ -885,7 +907,7 @@ impl Hash for WebSocket {
 #[derive(Clone)]
 pub struct WebSocketRef {
     // Lock-free broadcast channel access (bounded for backpressure)
-    pub broadcast_tx: mpsc::Sender<SizedMessage>,
+    pub broadcast_tx: SizedMessageSenderHandle,
 
     // Lock-free filter storage per channel (for fast broadcast filtering)
     // Wrapped in Arc to avoid expensive clones during broadcast (10k sockets × clone per message)
@@ -959,7 +981,7 @@ impl WebSocketRef {
                 let limit = self.buffer_config.limit.message_limit().unwrap_or(0);
                 self.handle_buffer_full("message limit", limit, None)
             }
-            Err(TrySendError::Closed(_)) => Err(Error::ConnectionClosed(
+            Err(TrySendError::Disconnected(_)) => Err(Error::ConnectionClosed(
                 "Broadcast channel closed".to_string(),
             )),
         }

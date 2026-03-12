@@ -1,15 +1,15 @@
-use super::{CleanupConfig, DisconnectTask, worker::CleanupWorker};
+use super::{CleanupConfig, CleanupSenderHandle, DisconnectTask, worker::CleanupWorker};
 use crate::adapter::connection_manager::ConnectionManager;
 use crate::app::manager::AppManager;
 use crate::webhook::integration::WebhookIntegration;
+use crossfire::mpsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 /// Multi-worker cleanup system that distributes work across multiple worker threads
 pub struct MultiWorkerCleanupSystem {
-    senders: Vec<mpsc::Sender<DisconnectTask>>,
+    senders: Vec<CleanupSenderHandle>,
     worker_handles: Vec<tokio::task::JoinHandle<()>>,
     round_robin_counter: Arc<AtomicUsize>,
     config: CleanupConfig,
@@ -34,7 +34,7 @@ impl MultiWorkerCleanupSystem {
 
         // Create individual workers with their own channels
         for worker_id in 0..num_workers {
-            let (sender, receiver) = mpsc::channel(config.queue_buffer_size);
+            let (sender, receiver) = mpsc::bounded_async(config.queue_buffer_size);
 
             // Use per-worker configuration directly (no division across workers)
             let worker_config = config.clone();
@@ -79,9 +79,7 @@ impl MultiWorkerCleanupSystem {
     }
 
     /// Get a direct sender for single worker optimization (avoids wrapper overhead)
-    pub fn get_direct_sender(
-        &self,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::cleanup::DisconnectTask>> {
+    pub fn get_direct_sender(&self) -> Option<CleanupSenderHandle> {
         if self.senders.len() == 1 {
             self.senders.first().cloned()
         } else {
@@ -131,7 +129,7 @@ impl MultiWorkerCleanupSystem {
 
 /// Sender wrapper that distributes tasks across multiple worker threads
 pub struct MultiWorkerSender {
-    senders: Vec<mpsc::Sender<DisconnectTask>>,
+    senders: Vec<CleanupSenderHandle>,
     round_robin_counter: Arc<AtomicUsize>,
 }
 
@@ -141,9 +139,9 @@ impl MultiWorkerSender {
     pub fn send(
         &self,
         task: DisconnectTask,
-    ) -> Result<(), Box<mpsc::error::SendError<DisconnectTask>>> {
+    ) -> Result<(), Box<crossfire::SendError<DisconnectTask>>> {
         if self.senders.is_empty() {
-            return Err(Box::new(mpsc::error::SendError(task)));
+            return Err(Box::new(crossfire::SendError(task)));
         }
 
         // Use round-robin distribution with wrapping to prevent overflow
@@ -156,7 +154,7 @@ impl MultiWorkerSender {
 
         match self.senders[worker_index].try_send(task) {
             Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(task)) => {
+            Err(crossfire::TrySendError::Full(task)) => {
                 // Queue is full - try other workers before giving up
                 warn!("Worker {} queue is full, trying next worker", worker_index);
 
@@ -165,16 +163,16 @@ impl MultiWorkerSender {
                     let next_index = (worker_index + offset) % self.senders.len();
                     match self.senders[next_index].try_send(task.clone()) {
                         Ok(()) => return Ok(()),
-                        Err(mpsc::error::TrySendError::Full(_)) => continue,
-                        Err(mpsc::error::TrySendError::Closed(_)) => continue,
+                        Err(crossfire::TrySendError::Full(_)) => continue,
+                        Err(crossfire::TrySendError::Disconnected(_)) => continue,
                     }
                 }
 
                 // All workers are either full or closed - return error for backpressure
                 error!("All cleanup worker queues are full or closed");
-                Err(Box::new(mpsc::error::SendError(task)))
+                Err(Box::new(crossfire::SendError(task)))
             }
-            Err(mpsc::error::TrySendError::Closed(task)) => {
+            Err(crossfire::TrySendError::Disconnected(task)) => {
                 // Worker channel is closed, try the next available one
                 warn!("Worker {} channel closed, trying next worker", worker_index);
 
@@ -183,14 +181,14 @@ impl MultiWorkerSender {
                     let next_index = (worker_index + offset) % self.senders.len();
                     match self.senders[next_index].try_send(task.clone()) {
                         Ok(()) => return Ok(()),
-                        Err(mpsc::error::TrySendError::Full(_)) => continue,
-                        Err(mpsc::error::TrySendError::Closed(_)) => continue,
+                        Err(crossfire::TrySendError::Full(_)) => continue,
+                        Err(crossfire::TrySendError::Disconnected(_)) => continue,
                     }
                 }
 
                 // All workers are unavailable
                 error!("All cleanup workers are unavailable");
-                Err(Box::new(mpsc::error::SendError(task)))
+                Err(Box::new(crossfire::SendError(task)))
             }
         }
     }
@@ -200,14 +198,14 @@ impl MultiWorkerSender {
     pub fn send_with_fallback(
         &self,
         task: DisconnectTask,
-    ) -> Result<(), Box<mpsc::error::SendError<DisconnectTask>>> {
+    ) -> Result<(), Box<crossfire::SendError<DisconnectTask>>> {
         // This is the same implementation as send() - UnboundedSender doesn't block
         self.send(task)
     }
 
     /// Check if any worker is available
     pub fn is_available(&self) -> bool {
-        self.senders.iter().any(|sender| !sender.is_closed())
+        self.senders.iter().any(|sender| !sender.is_disconnected())
     }
 
     /// Get the number of workers
@@ -221,7 +219,7 @@ impl MultiWorkerSender {
         let available = self
             .senders
             .iter()
-            .filter(|sender| !sender.is_closed())
+            .filter(|sender| !sender.is_disconnected())
             .count();
         let closed = total - available;
 
@@ -253,7 +251,7 @@ impl Clone for MultiWorkerSender {
 impl MultiWorkerSender {
     /// Test helper to create MultiWorkerSender directly
     #[cfg(test)]
-    pub fn new_for_test(senders: Vec<mpsc::Sender<DisconnectTask>>) -> Self {
+    pub fn new_for_test(senders: Vec<CleanupSenderHandle>) -> Self {
         Self {
             senders,
             round_robin_counter: Arc::new(AtomicUsize::new(0)),
