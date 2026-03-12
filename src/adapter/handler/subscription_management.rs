@@ -210,6 +210,20 @@ impl ConnectionHandler {
         }
         let t_after_metrics = t_start.elapsed().as_micros();
 
+        // Private/presence channel auth satisfies the user auth timeout requirement.
+        if subscription_result.success
+            && ChannelType::from_name(&request.channel).requires_authentication()
+            && let Err(e) = self
+                .clear_user_authentication_timeout(&app_config.id, socket_id)
+                .await
+        {
+            tracing::warn!(
+                "Failed to clear user auth timeout for socket {}: {}",
+                socket_id,
+                e
+            );
+        }
+
         let total = t_start.elapsed().as_micros();
         tracing::debug!(
             "PERF[EXECUTE_SUB] socket_id={} channel={} total={}μs msg_create={}μs channel_mgr={}μs metrics={}μs",

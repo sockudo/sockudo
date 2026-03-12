@@ -357,19 +357,19 @@ async fn test_dynamic_node_count_handling() -> Result<()> {
     let config = MockConfig::default();
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
 
-    // Initial node count should match config
+    // Initial node count should include the local node plus the two simulated remote nodes.
     let initial_count = adapter.transport.get_node_count().await?;
-    assert_eq!(initial_count, 2); // Default config has 2 nodes
+    assert_eq!(initial_count, 3);
 
     // Simulate node joining
     adapter.transport.add_node().await;
     let new_count = adapter.transport.get_node_count().await?;
-    assert_eq!(new_count, 3);
+    assert_eq!(new_count, 4);
 
     // Simulate node leaving
     adapter.transport.remove_node().await;
     let final_count = adapter.transport.get_node_count().await?;
-    assert_eq!(final_count, 2);
+    assert_eq!(final_count, 3);
 
     Ok(())
 }

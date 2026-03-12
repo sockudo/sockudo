@@ -388,9 +388,16 @@ async fn test_partial_response_handling_timeout_behavior() {
         horizontal.requests_timeout = 100; // 100ms timeout
     }
 
-    // Add multiple nodes to simulate expecting multiple responses
-    adapter.transport.add_node().await;
-    adapter.transport.add_node().await; // Now we have 3 total nodes
+    // Simulate discovered remote nodes so the request path does not take the single-node fast path.
+    {
+        let horizontal = adapter.horizontal.read().await;
+        horizontal
+            .add_discovered_node_for_test("node-1".to_string())
+            .await;
+        horizontal
+            .add_discovered_node_for_test("node-2".to_string())
+            .await;
+    }
 
     let start_time = std::time::Instant::now();
 

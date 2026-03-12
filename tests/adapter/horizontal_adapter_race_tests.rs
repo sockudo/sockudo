@@ -687,7 +687,7 @@ async fn test_cleanup_after_abandoned_operations() -> Result<()> {
 
     // Verify transport state is clean
     let node_count = adapter.transport.get_node_count().await?;
-    assert_eq!(node_count, 2); // Should be back to original
+    assert_eq!(node_count, 3); // Should be back to the original total node count
 
     adapter.transport.check_health().await?; // Should still be healthy
 
