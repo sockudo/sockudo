@@ -3,8 +3,6 @@
 
 use crate::error::Result;
 
-#[cfg(feature = "sqs")]
-use sockudo_config::queue::SqsQueueConfig;
 use crate::queue::JobProcessorFnAsync;
 use crate::queue::QueueInterface;
 use crate::queue::memory_queue_manager::MemoryQueueManager;
@@ -14,6 +12,8 @@ use crate::queue::redis_cluster_queue_manager::RedisClusterQueueManager;
 use crate::queue::redis_queue_manager::RedisQueueManager;
 #[cfg(feature = "sqs")]
 use crate::queue::sqs_queue_manager::SqsQueueManager;
+#[cfg(feature = "sqs")]
+use sockudo_config::queue::SqsQueueConfig;
 use sockudo_types::webhook::JobData;
 use tracing::*;
 
