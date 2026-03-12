@@ -152,6 +152,11 @@ async fn test_all_nodes_timeout_scenario() -> Result<()> {
     let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
     adapter.start_listeners().await?;
 
+    // Simulate discovered remote nodes so this exercises the timeout path.
+    let adapter = adapter
+        .with_discovered_nodes(vec!["node-1", "node-2"])
+        .await?;
+
     let start = std::time::Instant::now();
 
     let response = adapter

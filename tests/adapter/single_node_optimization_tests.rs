@@ -123,8 +123,12 @@ async fn test_single_node_skips_requests() -> Result<()> {
 
     // Verify no requests were published to transport
     let published_requests = adapter.transport.get_published_requests().await;
+    let app_requests: Vec<_> = published_requests
+        .into_iter()
+        .filter(|request| request.request_type != RequestType::Heartbeat)
+        .collect();
     assert_eq!(
-        published_requests.len(),
+        app_requests.len(),
         0,
         "Single node should not publish requests"
     );

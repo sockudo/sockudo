@@ -196,7 +196,12 @@ where
         socket_id: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<ResponseBody> {
-        let node_count = self.transport.get_node_count().await?;
+        let should_skip_horizontal = self.should_skip_horizontal_communication().await;
+        let node_count = if should_skip_horizontal {
+            1
+        } else {
+            self.transport.get_node_count().await?
+        };
 
         // Create the request
         let request_id = Uuid::new_v4().to_string();
@@ -220,6 +225,21 @@ where
             target_node_id: None,
         };
 
+        if should_skip_horizontal {
+            return Ok(ResponseBody {
+                request_id,
+                node_id: request.node_id,
+                app_id: app_id.to_string(),
+                members: HashMap::new(),
+                socket_ids: Vec::new(),
+                sockets_count: 0,
+                channels_with_sockets_count: HashMap::new(),
+                exists: false,
+                channels: HashSet::new(),
+                members_count: 0,
+            });
+        }
+
         // Add to pending requests
         {
             let horizontal = self.horizontal.read().await;
@@ -239,10 +259,8 @@ where
             }
         }
 
-        // Broadcast the request via transport (skip if single node)
-        if !self.should_skip_horizontal_communication().await {
-            self.transport.publish_request(&request).await?;
-        }
+        // Broadcast the request via transport.
+        self.transport.publish_request(&request).await?;
 
         // Wait for responses with adaptive timeout based on request type and node count
         let base_timeout = self.config.request_timeout_ms();
