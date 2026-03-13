@@ -534,6 +534,7 @@ impl SockudoServer {
             batching: BatchingConfig {
                 enabled: config.webhooks.batching.enabled,
                 duration: config.webhooks.batching.duration,
+                size: config.webhooks.batching.size,
             },
             process_id: config.instance.process_id.clone(),
             debug: config.debug,

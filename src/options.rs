@@ -1616,6 +1616,7 @@ pub struct WebhooksConfig {
 pub struct BatchingConfig {
     pub enabled: bool,
     pub duration: u64, // ms
+    pub size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2034,6 +2035,7 @@ impl Default for BatchingConfig {
         Self {
             enabled: true,
             duration: 50,
+            size: 100,
         }
     }
 }
@@ -2421,6 +2423,8 @@ impl ServerOptions {
             parse_bool_env("WEBHOOK_BATCHING_ENABLED", self.webhooks.batching.enabled);
         self.webhooks.batching.duration =
             parse_env::<u64>("WEBHOOK_BATCHING_DURATION", self.webhooks.batching.duration);
+        self.webhooks.batching.size =
+            parse_env::<usize>("WEBHOOK_BATCHING_SIZE", self.webhooks.batching.size);
 
         // --- NATS Adapter ---
         if let Ok(servers) = std::env::var("NATS_SERVERS") {
