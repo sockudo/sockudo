@@ -206,6 +206,7 @@ pub enum QueueDriver {
     #[serde(rename = "redis-cluster")] // Add this variant
     RedisCluster,
     Sqs,
+    Sns,
     None,
 }
 
@@ -217,6 +218,7 @@ impl FromStr for QueueDriver {
             "redis" => Ok(QueueDriver::Redis),
             "redis-cluster" => Ok(QueueDriver::RedisCluster), // Add this case
             "sqs" => Ok(QueueDriver::Sqs),
+            "sns" => Ok(QueueDriver::Sns),
             "none" => Ok(QueueDriver::None),
             _ => Err(format!("Unknown queue driver: {s}")),
         }
@@ -231,6 +233,7 @@ impl AsRef<str> for QueueDriver {
             QueueDriver::Redis => "redis",
             QueueDriver::RedisCluster => "redis-cluster", // Add this case
             QueueDriver::Sqs => "sqs",
+            QueueDriver::Sns => "sns",
             QueueDriver::None => "none",
         }
     }
@@ -353,6 +356,14 @@ pub struct SqsQueueConfig {
     pub concurrency: u32,
     pub fifo: bool,
     pub message_group_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnsQueueConfig {
+    pub region: String,
+    pub topic_arn: String,
+    pub endpoint_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1562,6 +1573,7 @@ pub struct QueueConfig {
     pub redis: RedisQueueConfig,
     pub redis_cluster: RedisClusterQueueConfig, // Add this field
     pub sqs: SqsQueueConfig,
+    pub sns: SnsQueueConfig,
 }
 
 // Updated RedisQueueConfig for type safety
@@ -1718,6 +1730,16 @@ impl Default for SqsQueueConfig {
             concurrency: 5,
             fifo: false,
             message_group_id: Some("default".to_string()),
+        }
+    }
+}
+
+impl Default for SnsQueueConfig {
+    fn default() -> Self {
+        Self {
+            region: "us-east-1".to_string(),
+            topic_arn: String::new(),
+            endpoint_url: None,
         }
     }
 }
@@ -2416,6 +2438,17 @@ impl ServerOptions {
         self.queue.sqs.fifo = parse_bool_env("QUEUE_SQS_FIFO", self.queue.sqs.fifo);
         if let Ok(endpoint) = std::env::var("QUEUE_SQS_ENDPOINT_URL") {
             self.queue.sqs.endpoint_url = Some(endpoint);
+        }
+
+        // --- Queue: SNS ---
+        if let Ok(region) = std::env::var("QUEUE_SNS_REGION") {
+            self.queue.sns.region = region;
+        }
+        if let Ok(topic_arn) = std::env::var("QUEUE_SNS_TOPIC_ARN") {
+            self.queue.sns.topic_arn = topic_arn;
+        }
+        if let Ok(endpoint) = std::env::var("QUEUE_SNS_ENDPOINT_URL") {
+            self.queue.sns.endpoint_url = Some(endpoint);
         }
 
         // --- Webhooks ---
