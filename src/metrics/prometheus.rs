@@ -38,6 +38,7 @@ pub struct PrometheusMetricsDriver {
     process_cpu_seconds_total: Gauge,
     process_start_time_seconds: Gauge,
     process_open_fds: Gauge,
+    process_max_fds: Gauge,
 
     // Tokio runtime metrics
     tokio_workers_count: Gauge,
@@ -117,6 +118,12 @@ impl PrometheusMetricsDriver {
         let process_open_fds = register_gauge!(Opts::new(
             "process_open_fds",
             "Number of open file descriptors"
+        ))
+        .unwrap();
+
+        let process_max_fds = register_gauge!(Opts::new(
+            "process_max_fds",
+            "Maximum number of open file descriptors"
         ))
         .unwrap();
 
@@ -471,6 +478,7 @@ impl PrometheusMetricsDriver {
             process_cpu_seconds_total,
             process_start_time_seconds,
             process_open_fds,
+            process_max_fds,
             tokio_workers_count,
             tokio_active_tasks,
             tokio_injection_queue_depth,
@@ -609,6 +617,13 @@ impl PrometheusMetricsDriver {
                 let fd_count = entries.count();
                 self.process_open_fds.set(fd_count as f64);
             }
+
+            unsafe {
+                let mut rlim: libc::rlimit = std::mem::zeroed();
+                if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) == 0 {
+                    self.process_max_fds.set(rlim.rlim_cur as f64);
+                }
+            }
         }
 
         #[cfg(target_os = "macos")]
@@ -626,6 +641,11 @@ impl PrometheusMetricsDriver {
                     let stime = rusage.ru_stime.tv_sec as f64
                         + rusage.ru_stime.tv_usec as f64 / 1_000_000.0;
                     self.process_cpu_seconds_total.set(utime + stime);
+                }
+
+                let mut rlim: libc::rlimit = std::mem::zeroed();
+                if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) == 0 {
+                    self.process_max_fds.set(rlim.rlim_cur as f64);
                 }
             }
         }
