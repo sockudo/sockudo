@@ -13,6 +13,10 @@ use crate::queue::redis_cluster_queue_manager::RedisClusterQueueManager;
 use crate::queue::redis_queue_manager::RedisQueueManager;
 #[cfg(feature = "sqs")]
 use crate::queue::sqs_queue_manager::SqsQueueManager;
+#[cfg(feature = "sns")]
+use crate::options::SnsQueueConfig;
+#[cfg(feature = "sns")]
+use crate::queue::sns_queue_manager::SnsQueueManager;
 use crate::webhook::sender::JobProcessorFnAsync;
 use crate::webhook::types::JobData;
 use tracing::*;
@@ -113,6 +117,24 @@ impl QueueManagerFactory {
                 manager.start_processing();
                 Ok(Box::new(manager))
             }
+            #[cfg(feature = "sns")]
+            "sns" => {
+                warn!(
+                    "SNS queue manager should be created via create_sns(). Falling back to memory queue."
+                );
+                let manager = MemoryQueueManager::new();
+                manager.start_processing();
+                Ok(Box::new(manager))
+            }
+            #[cfg(not(feature = "sns"))]
+            "sns" => {
+                warn!(
+                    "SNS queue manager requested but not compiled in. Falling back to memory queue."
+                );
+                let manager = MemoryQueueManager::new();
+                manager.start_processing();
+                Ok(Box::new(manager))
+            }
             other => Err(crate::error::Error::Queue(format!(
                 "Unsupported queue driver: {other}"
             ))),
@@ -139,6 +161,27 @@ impl QueueManagerFactory {
         config: crate::options::SqsQueueConfig,
     ) -> Result<Box<dyn QueueInterface>> {
         warn!("SQS queue manager requested but not compiled in. Falling back to memory queue.");
+        let manager = MemoryQueueManager::new();
+        manager.start_processing();
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(feature = "sns")]
+    pub async fn create_sns(config: SnsQueueConfig) -> Result<Box<dyn QueueInterface>> {
+        info!(
+            "Creating SNS queue manager (Region: {}, Topic: {})",
+            config.region, config.topic_arn
+        );
+        let manager = SnsQueueManager::new(config).await?;
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(not(feature = "sns"))]
+    #[allow(unused_variables)]
+    pub async fn create_sns(
+        config: crate::options::SnsQueueConfig,
+    ) -> Result<Box<dyn QueueInterface>> {
+        warn!("SNS queue manager requested but not compiled in. Falling back to memory queue.");
         let manager = MemoryQueueManager::new();
         manager.start_processing();
         Ok(Box::new(manager))

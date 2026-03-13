@@ -441,6 +441,21 @@ impl SockudoServer {
                     }
                 }
             }
+            QueueDriver::Sns => {
+                match QueueManagerFactory::create_sns(config.queue.sns.clone()).await {
+                    Ok(queue_driver_impl) => {
+                        info!("Queue manager initialized with SNS driver");
+                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize SNS queue manager: {}, queues will be disabled",
+                            e
+                        );
+                        None
+                    }
+                }
+            }
             QueueDriver::None => {
                 info!("Queue driver set to None, queue manager will be disabled.");
                 None
