@@ -460,6 +460,16 @@ impl sockudo::adapter::ConnectionManager for FailingAdapter {
         _socket_id: &sockudo::websocket::SocketId,
     ) {
     }
+    async fn get_channel_socket_count_info(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+    ) -> sockudo::adapter::connection_manager::ChannelSocketCount {
+        sockudo::adapter::connection_manager::ChannelSocketCount {
+            count: 0,
+            complete: true,
+        }
+    }
     async fn get_channel_socket_count(&self, _app_id: &str, _channel: &str) -> usize {
         0
     }

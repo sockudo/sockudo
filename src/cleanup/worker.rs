@@ -299,12 +299,12 @@ impl CleanupWorker {
         // IMPORTANT: Acquire and release lock for each channel to minimize lock contention
         for channel in &task.subscribed_channels {
             // Acquire lock for minimal duration - just for this single channel check
-            let socket_count = self
+            let socket_count_info = self
                 .connection_manager
-                .get_channel_socket_count(&task.app_id, channel)
+                .get_channel_socket_count_info(&task.app_id, channel)
                 .await;
 
-            if socket_count == 0 {
+            if socket_count_info.complete && socket_count_info.count == 0 {
                 events.push(WebhookEvent {
                     event_type: "channel_vacated".to_string(),
                     app_id: task.app_id.clone(),

@@ -82,6 +82,16 @@ pub struct ResponseBody {
     pub exists: bool,
     pub channels: HashSet<String>,
     pub members_count: usize, // New field for ChannelMembersCount
+    #[serde(default)]
+    pub responses_received: usize,
+    #[serde(default)]
+    pub expected_responses: usize,
+    #[serde(default = "default_true")]
+    pub complete: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Message for broadcasting events
@@ -120,6 +130,13 @@ pub struct PendingRequest {
     pub(crate) app_id: String,
     pub(crate) responses: Vec<ResponseBody>,
     pub(crate) notify: Arc<Notify>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AggregationStats {
+    pub responses_received: usize,
+    pub expected_responses: usize,
+    pub complete: bool,
 }
 
 /// Presence entry for cluster-wide presence tracking
@@ -269,6 +286,9 @@ impl HorizontalAdapter {
             exists: false,
             channels: HashSet::new(),
             members_count: 0,
+            responses_received: 0,
+            expected_responses: 0,
+            complete: true,
         };
 
         // Process based on request type
@@ -615,6 +635,9 @@ impl HorizontalAdapter {
                 exists: false,
                 channels: HashSet::new(),
                 members_count: 0,
+                responses_received: 0,
+                expected_responses: 0,
+                complete: true,
             });
         }
 
@@ -671,12 +694,19 @@ impl HorizontalAdapter {
         };
 
         // Use the aggregation method
+        let responses_received = responses.len();
+        let complete = responses_received >= max_expected_responses;
         let combined_response = self.aggregate_responses(
             request_id.clone(),
             self.node_id.clone(),
             app_id.to_string(),
             &request_type,
             responses,
+            AggregationStats {
+                responses_received,
+                expected_responses: max_expected_responses,
+                complete,
+            },
         );
 
         // Validate the aggregated response
@@ -715,6 +745,7 @@ impl HorizontalAdapter {
         app_id: String,
         request_type: &RequestType,
         responses: Vec<ResponseBody>,
+        stats: AggregationStats,
     ) -> ResponseBody {
         let mut combined_response = ResponseBody {
             request_id,
@@ -727,6 +758,9 @@ impl HorizontalAdapter {
             exists: false,
             channels: HashSet::new(),
             members_count: 0,
+            responses_received: stats.responses_received,
+            expected_responses: stats.expected_responses,
+            complete: stats.complete,
         };
 
         if responses.is_empty() {

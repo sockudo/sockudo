@@ -9,8 +9,8 @@ use crate::adapter::connection_manager::{
     ConnectionManager, DeadNodeEventBusReceiver, DeadNodeEventBusSender, HorizontalAdapterInterface,
 };
 use crate::adapter::horizontal_adapter::{
-    BroadcastMessage, DeadNodeEvent, HorizontalAdapter, OrphanedMember, PendingRequest,
-    RequestBody, RequestType, ResponseBody, current_timestamp, generate_request_id,
+    AggregationStats, BroadcastMessage, DeadNodeEvent, HorizontalAdapter, OrphanedMember,
+    PendingRequest, RequestBody, RequestType, ResponseBody, current_timestamp, generate_request_id,
 };
 use crate::adapter::horizontal_transport::{
     HorizontalTransport, TransportConfig, TransportHandlers,
@@ -240,6 +240,9 @@ where
                 exists: false,
                 channels: HashSet::new(),
                 members_count: 0,
+                responses_received: 0,
+                expected_responses: 0,
+                complete: true,
             });
         }
 
@@ -272,7 +275,6 @@ where
         // For presence queries that need member data, use full timeout
         let timeout_duration = match request_type {
             RequestType::SocketExistsInChannel
-            | RequestType::ChannelSocketsCount
             | RequestType::SocketsCount
             | RequestType::Channels
             | RequestType::Sockets => {
@@ -281,7 +283,9 @@ where
                 let adaptive = (50 * node_count as u64).clamp(min_timeout, base_timeout);
                 Duration::from_millis(adaptive)
             }
-            RequestType::ChannelMembers | RequestType::ChannelMembersCount => {
+            RequestType::ChannelMembers
+            | RequestType::ChannelMembersCount
+            | RequestType::ChannelSocketsCount => {
                 // Presence queries need more time for data aggregation
                 Duration::from_millis(base_timeout)
             }
@@ -310,6 +314,9 @@ where
                 exists: false,
                 channels: HashSet::new(),
                 members_count: 0,
+                responses_received: 0,
+                expected_responses: 0,
+                complete: true,
             });
         }
 
@@ -402,6 +409,9 @@ where
             // If result is None, continue waiting (notification came but not enough responses yet)
         };
 
+        let responses_received = responses.len();
+        let complete = responses_received >= max_expected_responses;
+
         // Aggregate responses first, then clean up to prevent race condition
         let combined_response = {
             let horizontal = self.horizontal.read().await;
@@ -411,6 +421,11 @@ where
                 app_id.to_string(),
                 &request_type,
                 responses,
+                AggregationStats {
+                    responses_received,
+                    expected_responses: max_expected_responses,
+                    complete,
+                },
             )
         }; // horizontal lock released here
 
@@ -1283,7 +1298,11 @@ where
             .await;
     }
 
-    async fn get_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
+    async fn get_channel_socket_count_info(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> crate::adapter::connection_manager::ChannelSocketCount {
         // Get local count
         let local_count = self
             .local_adapter
@@ -1301,12 +1320,24 @@ where
             )
             .await
         {
-            Ok(response) => local_count + response.sockets_count,
+            Ok(response) => crate::adapter::connection_manager::ChannelSocketCount {
+                count: local_count + response.sockets_count,
+                complete: response.complete,
+            },
             Err(e) => {
                 error!("Failed to get remote channel socket count: {}", e);
-                local_count
+                crate::adapter::connection_manager::ChannelSocketCount {
+                    count: local_count,
+                    complete: false,
+                }
             }
         }
+    }
+
+    async fn get_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
+        self.get_channel_socket_count_info(app_id, channel)
+            .await
+            .count
     }
 
     async fn add_to_channel(

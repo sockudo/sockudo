@@ -105,6 +105,9 @@ pub fn create_test_response(request_id: &str) -> ResponseBody {
         exists: false,
         channels: HashSet::new(),
         members_count: 0,
+        responses_received: 0,
+        expected_responses: 0,
+        complete: true,
     }
 }
 
@@ -259,6 +262,9 @@ pub fn create_test_handlers(
                     exists: false,
                     channels: HashSet::new(),
                     members_count: 0,
+                    responses_received: 0,
+                    expected_responses: 0,
+                    complete: true,
                 })
             }) as BoxFuture<'static, sockudo::error::Result<ResponseBody>>
         }),

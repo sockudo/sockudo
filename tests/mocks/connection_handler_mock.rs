@@ -1,6 +1,8 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use sockudo::adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
+use sockudo::adapter::connection_manager::{
+    ChannelSocketCount, ConnectionManager, HorizontalAdapterInterface,
+};
 use sockudo::adapter::handler::ConnectionHandler;
 use sockudo::app::config::App;
 use sockudo::app::manager::AppManager;
@@ -100,6 +102,16 @@ impl ConnectionManager for MockAdapter {
         Ok(())
     }
     async fn add_channel_to_sockets(&self, _app_id: &str, _channel: &str, _socket_id: &SocketId) {}
+    async fn get_channel_socket_count_info(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+    ) -> ChannelSocketCount {
+        ChannelSocketCount {
+            count: 0,
+            complete: true,
+        }
+    }
     async fn get_channel_socket_count(&self, _app_id: &str, _channel: &str) -> usize {
         0
     }
