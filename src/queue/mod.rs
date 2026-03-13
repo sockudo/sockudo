@@ -14,6 +14,8 @@ pub mod memory_queue_manager;
 pub mod redis_cluster_queue_manager;
 #[cfg(feature = "redis")]
 pub mod redis_queue_manager;
+#[cfg(feature = "sns")]
+pub mod sns_queue_manager;
 #[cfg(feature = "sqs")]
 pub mod sqs_queue_manager;
 
