@@ -9,7 +9,7 @@ use crate::webhook::lambda_sender::LambdaWebhookSender;
 // JobData now contains app_secret and its payload.events is Vec<Value>
 // PusherWebhookPayload is the structure for the final POST body
 use crate::token::Token; // For HMAC SHA256 signing
-use crate::webhook::types::{JobData, PusherWebhookPayload, Webhook};
+use crate::webhook::types::{JobData, JobPayload, PusherWebhookPayload, Webhook, WebhookFilter};
 use ahash::AHashMap;
 use reqwest::{Client, header};
 use sonic_rs::Value;
@@ -94,30 +94,85 @@ impl WebhookSender {
         Ok((pusher_payload, body_json_string))
     }
 
+    fn event_matches_webhook_filter(&self, event: &Value, filter: Option<&WebhookFilter>) -> bool {
+        let Some(filter) = filter else {
+            return true;
+        };
+
+        let channel = event
+            .get("channel")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        if let Some(prefix) = &filter.channel_prefix
+            && !channel.starts_with(prefix)
+        {
+            return false;
+        }
+
+        if let Some(suffix) = &filter.channel_suffix
+            && !channel.ends_with(suffix)
+        {
+            return false;
+        }
+
+        if let Some(pattern) = &filter.channel_pattern {
+            let Ok(regex) = regex::Regex::new(pattern) else {
+                warn!(
+                    "Ignoring invalid webhook channel_pattern regex: {}",
+                    pattern
+                );
+                return false;
+            };
+
+            if !regex.is_match(channel) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn filter_events_for_webhook(&self, events: &[Value], webhook_config: &Webhook) -> Vec<Value> {
+        events
+            .iter()
+            .filter(|event| {
+                event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|event_name| {
+                        webhook_config.event_types.contains(&event_name.to_string())
+                            && self
+                                .event_matches_webhook_filter(event, webhook_config.filter.as_ref())
+                    })
+            })
+            .cloned()
+            .collect()
+    }
+
     fn find_relevant_webhooks<'a>(
         &self,
         events: &[Value],
         webhook_configs: &'a [Webhook],
-    ) -> AHashMap<String, &'a Webhook> {
+    ) -> AHashMap<String, (&'a Webhook, Vec<Value>)> {
         let mut relevant_configs = AHashMap::new();
 
-        for event_value in events {
-            if let Some(event_name) = event_value.get("name").and_then(Value::as_str) {
-                for wh_config in webhook_configs {
-                    if wh_config.event_types.contains(&event_name.to_string()) {
-                        let key = wh_config
-                            .url
-                            .as_ref()
-                            .map(|u| u.to_string())
-                            .or_else(|| wh_config.lambda_function.clone())
-                            .or_else(|| wh_config.lambda.as_ref().map(|l| l.function_name.clone()))
-                            .unwrap_or_else(String::new);
+        for wh_config in webhook_configs {
+            let filtered_events = self.filter_events_for_webhook(events, wh_config);
+            if filtered_events.is_empty() {
+                continue;
+            }
 
-                        if !key.is_empty() {
-                            relevant_configs.entry(key).or_insert(wh_config);
-                        }
-                    }
-                }
+            let key = wh_config
+                .url
+                .as_ref()
+                .map(|u| u.to_string())
+                .or_else(|| wh_config.lambda_function.clone())
+                .or_else(|| wh_config.lambda.as_ref().map(|l| l.function_name.clone()))
+                .unwrap_or_else(String::new);
+
+            if !key.is_empty() {
+                relevant_configs.insert(key, (wh_config, filtered_events));
             }
         }
         relevant_configs
@@ -145,9 +200,7 @@ impl WebhookSender {
             .await?;
 
         // Create payload and signature
-        let (pusher_payload, body_json_string) = self.create_pusher_payload(&job)?;
-        let signature =
-            Token::new(job.app_key.clone(), job.app_secret.clone()).sign(&body_json_string);
+        let (pusher_payload, _body_json_string) = self.create_pusher_payload(&job)?;
 
         // Find relevant webhooks
         let relevant_webhooks = self.find_relevant_webhooks(&job.payload.events, webhook_configs);
@@ -163,7 +216,7 @@ impl WebhookSender {
 
         // Process webhooks
         let mut tasks = Vec::new();
-        for (_endpoint_key, webhook_config) in relevant_webhooks {
+        for (_endpoint_key, (webhook_config, filtered_events)) in relevant_webhooks {
             let permit = self
                 .webhook_semaphore
                 .clone()
@@ -173,13 +226,24 @@ impl WebhookSender {
                     Error::Other(format!("Failed to acquire webhook semaphore permit: {e}"))
                 })?;
 
+            let filtered_job = JobData {
+                payload: JobPayload {
+                    time_ms: job.payload.time_ms,
+                    events: filtered_events,
+                },
+                ..job.clone()
+            };
+            let (_, filtered_body_json_string) = self.create_pusher_payload(&filtered_job)?;
+            let filtered_signature = Token::new(job.app_key.clone(), job.app_secret.clone())
+                .sign(&filtered_body_json_string);
+
             let task = self.create_webhook_task(
                 webhook_config,
                 permit,
                 app_id.clone(),
                 app_key.clone(),
-                signature.clone(),
-                body_json_string.clone(),
+                filtered_signature,
+                filtered_body_json_string,
             );
             tasks.push(task);
         }
@@ -515,5 +579,86 @@ mod tests {
         for result in results {
             assert!(result.unwrap().is_ok());
         }
+    }
+
+    #[test]
+    fn test_filter_events_for_webhook_respects_channel_prefix() {
+        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        let webhook = Webhook {
+            url: Some(url::Url::parse("http://localhost/webhook").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: Some(WebhookFilter {
+                channel_prefix: Some("#server-to-user".to_string()),
+                channel_suffix: None,
+                channel_pattern: None,
+            }),
+            headers: None,
+        };
+
+        let filtered = webhook_sender.filter_events_for_webhook(
+            &[
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "#server-to-user-123"
+                }),
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "private-conversation.123"
+                }),
+            ],
+            &webhook,
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].get("channel").and_then(Value::as_str),
+            Some("#server-to-user-123")
+        );
+    }
+
+    #[test]
+    fn test_find_relevant_webhooks_splits_events_per_endpoint() {
+        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        let prefixed = Webhook {
+            url: Some(url::Url::parse("http://localhost/prefix").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: Some(WebhookFilter {
+                channel_prefix: Some("#server-to-user".to_string()),
+                channel_suffix: None,
+                channel_pattern: None,
+            }),
+            headers: None,
+        };
+        let catch_all = Webhook {
+            url: Some(url::Url::parse("http://localhost/all").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        };
+
+        let webhooks = [prefixed.clone(), catch_all.clone()];
+        let relevant = webhook_sender.find_relevant_webhooks(
+            &[
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "#server-to-user-1"
+                }),
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "private-conversation.1"
+                }),
+            ],
+            &webhooks,
+        );
+
+        assert_eq!(relevant.len(), 2);
+        assert_eq!(relevant.get("http://localhost/prefix").unwrap().1.len(), 1);
+        assert_eq!(relevant.get("http://localhost/all").unwrap().1.len(), 2);
     }
 }

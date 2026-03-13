@@ -42,6 +42,7 @@ impl Default for WebhookConfig {
 pub struct BatchingConfig {
     pub enabled: bool,
     pub duration: u64, // in milliseconds
+    pub size: usize,
 }
 
 impl Default for BatchingConfig {
@@ -49,6 +50,7 @@ impl Default for BatchingConfig {
         Self {
             enabled: false,
             duration: 50,
+            size: 100,
         }
     }
 }
@@ -125,6 +127,7 @@ impl WebhookIntegration {
         let queue_manager_clone = self.queue_manager.clone();
         let batched_webhooks_clone = self.batched_webhooks.clone();
         let batch_duration = self.config.batching.duration;
+        let batch_size = self.config.batching.size.max(1);
 
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(batch_duration));
@@ -148,8 +151,8 @@ impl WebhookIntegration {
 
                 if let Some(qm) = &queue_manager_clone {
                     for (queue_name, jobs) in webhooks_to_process {
-                        for job in jobs {
-                            if let Err(e) = qm.add_to_queue(&queue_name, job).await {
+                        for batch in Self::merge_jobs_for_queue(jobs, batch_size) {
+                            if let Err(e) = qm.add_to_queue(&queue_name, batch).await {
                                 error!(
                                     "{}",
                                     format!(
@@ -187,6 +190,85 @@ impl WebhookIntegration {
             ));
         }
         Ok(())
+    }
+
+    fn merge_jobs_for_queue(jobs: Vec<JobData>, batch_size: usize) -> Vec<JobData> {
+        let mut merged = Vec::new();
+        let mut current: Option<JobData> = None;
+        let batch_size = batch_size.max(1);
+
+        for job in jobs {
+            for chunk in Self::split_job_by_size(job, batch_size) {
+                match current.as_mut() {
+                    Some(existing)
+                        if existing.app_id == chunk.app_id
+                            && existing.app_key == chunk.app_key
+                            && existing.app_secret == chunk.app_secret
+                            && existing.payload.events.len() + chunk.payload.events.len()
+                                <= batch_size =>
+                    {
+                        existing.payload.time_ms =
+                            existing.payload.time_ms.min(chunk.payload.time_ms);
+                        existing.payload.events.extend(chunk.payload.events);
+                    }
+                    Some(_) => {
+                        if let Some(finished) = current.take() {
+                            merged.push(finished);
+                        }
+                        current = Some(chunk);
+                    }
+                    None => current = Some(chunk),
+                }
+            }
+        }
+
+        if let Some(finished) = current {
+            merged.push(finished);
+        }
+
+        merged
+    }
+
+    fn split_job_by_size(job: JobData, batch_size: usize) -> Vec<JobData> {
+        let batch_size = batch_size.max(1);
+        let JobData {
+            app_key,
+            app_id,
+            app_secret,
+            payload,
+            original_signature,
+        } = job;
+
+        let JobPayload { time_ms, events } = payload;
+        let mut chunks = Vec::new();
+
+        for event_chunk in events.chunks(batch_size) {
+            chunks.push(JobData {
+                app_key: app_key.clone(),
+                app_id: app_id.clone(),
+                app_secret: app_secret.clone(),
+                payload: JobPayload {
+                    time_ms,
+                    events: event_chunk.to_vec(),
+                },
+                original_signature: original_signature.clone(),
+            });
+        }
+
+        if chunks.is_empty() {
+            chunks.push(JobData {
+                app_key,
+                app_id,
+                app_secret,
+                payload: JobPayload {
+                    time_ms,
+                    events: Vec::new(),
+                },
+                original_signature,
+            });
+        }
+
+        chunks
     }
 
     fn create_job_data(
@@ -454,6 +536,7 @@ mod tests {
             batching: BatchingConfig {
                 enabled: true,
                 duration: 1000,
+                size: 50,
             },
             process_id: "test-process".to_string(),
             debug: false,
@@ -465,6 +548,7 @@ mod tests {
         assert_eq!(config.enabled, deserialized.enabled);
         assert_eq!(config.batching.enabled, deserialized.batching.enabled);
         assert_eq!(config.batching.duration, deserialized.batching.duration);
+        assert_eq!(config.batching.size, deserialized.batching.size);
     }
 
     #[tokio::test]
@@ -678,5 +762,73 @@ mod tests {
             .send_subscription_count_changed(&app, "test_channel", 5)
             .await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_merge_jobs_for_queue_batches_by_app_and_size() {
+        let jobs = vec![
+            JobData {
+                app_key: "key-a".to_string(),
+                app_id: "app-a".to_string(),
+                app_secret: "secret-a".to_string(),
+                payload: JobPayload {
+                    time_ms: 10,
+                    events: vec![json!({"name": "channel_occupied", "channel": "one"})],
+                },
+                original_signature: "sig-1".to_string(),
+            },
+            JobData {
+                app_key: "key-a".to_string(),
+                app_id: "app-a".to_string(),
+                app_secret: "secret-a".to_string(),
+                payload: JobPayload {
+                    time_ms: 20,
+                    events: vec![json!({"name": "channel_vacated", "channel": "two"})],
+                },
+                original_signature: "sig-2".to_string(),
+            },
+            JobData {
+                app_key: "key-b".to_string(),
+                app_id: "app-b".to_string(),
+                app_secret: "secret-b".to_string(),
+                payload: JobPayload {
+                    time_ms: 30,
+                    events: vec![json!({"name": "channel_occupied", "channel": "three"})],
+                },
+                original_signature: "sig-3".to_string(),
+            },
+        ];
+
+        let merged = WebhookIntegration::merge_jobs_for_queue(jobs, 2);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].app_id, "app-a");
+        assert_eq!(merged[0].payload.events.len(), 2);
+        assert_eq!(merged[1].app_id, "app-b");
+        assert_eq!(merged[1].payload.events.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_jobs_for_queue_splits_oversized_jobs() {
+        let job = JobData {
+            app_key: "key-a".to_string(),
+            app_id: "app-a".to_string(),
+            app_secret: "secret-a".to_string(),
+            payload: JobPayload {
+                time_ms: 10,
+                events: vec![
+                    json!({"name": "channel_occupied", "channel": "one"}),
+                    json!({"name": "channel_occupied", "channel": "two"}),
+                    json!({"name": "channel_occupied", "channel": "three"}),
+                ],
+            },
+            original_signature: "sig-1".to_string(),
+        };
+
+        let merged = WebhookIntegration::merge_jobs_for_queue(vec![job], 2);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].payload.events.len(), 2);
+        assert_eq!(merged[1].payload.events.len(), 1);
     }
 }
