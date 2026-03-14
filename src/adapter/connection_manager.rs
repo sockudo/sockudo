@@ -15,6 +15,12 @@ pub type DeadNodeEventBusFlavor = mpsc::List<crate::adapter::horizontal_adapter:
 pub type DeadNodeEventBusSender = crossfire::MTx<DeadNodeEventBusFlavor>;
 pub type DeadNodeEventBusReceiver = crossfire::AsyncRx<DeadNodeEventBusFlavor>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelSocketCount {
+    pub count: usize,
+    pub complete: bool,
+}
+
 /// Parameters for delta compression when sending messages
 pub struct CompressionParams<'a> {
     pub delta_compression: Arc<crate::delta_compression::DeltaCompressionManager>,
@@ -113,6 +119,11 @@ pub trait ConnectionManager: Send + Sync {
     async fn cleanup_connection(&self, app_id: &str, ws: WebSocketRef);
     async fn terminate_connection(&self, app_id: &str, user_id: &str) -> Result<()>;
     async fn add_channel_to_sockets(&self, app_id: &str, channel: &str, socket_id: &SocketId);
+    async fn get_channel_socket_count_info(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> ChannelSocketCount;
     async fn get_channel_socket_count(&self, app_id: &str, channel: &str) -> usize;
     async fn add_to_channel(
         &self,

@@ -777,10 +777,11 @@ pub async fn channel(
     let wants_user_count = info_query_str.wants_user_count();
     let wants_cache_data = info_query_str.wants_cache();
 
-    let socket_count_val = handler
+    let socket_count_info = handler
         .connection_manager
-        .get_channel_socket_count(&app_id, &channel_name)
+        .get_channel_socket_count_info(&app_id, &channel_name)
         .await;
+    let socket_count_val = socket_count_info.count;
 
     let user_count_val = if wants_user_count {
         if channel_name.starts_with("presence-") {
@@ -823,12 +824,15 @@ pub async fn channel(
     } else {
         None
     };
-    let response_payload = PusherMessage::channel_info(
+    let mut response_payload = PusherMessage::channel_info(
         socket_count_val > 0,
         subscription_count_val,
         user_count_val,
         cache_data_tuple,
     );
+    if wants_subscription_count && !socket_count_info.complete {
+        response_payload["subscription_count_complete"] = json!(false);
+    }
     let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     debug!("Channel info for '{}' retrieved successfully", channel_name);

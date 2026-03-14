@@ -1652,6 +1652,17 @@ impl ConnectionManager for LocalAdapter {
         namespace.add_channel_to_socket(channel, socket_id);
     }
 
+    async fn get_channel_socket_count_info(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> crate::adapter::connection_manager::ChannelSocketCount {
+        crate::adapter::connection_manager::ChannelSocketCount {
+            count: self.get_channel_socket_count(app_id, channel).await,
+            complete: true,
+        }
+    }
+
     async fn get_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
         let namespace = self.get_or_create_namespace(app_id).await;
         namespace.get_channel_socket_count(channel)

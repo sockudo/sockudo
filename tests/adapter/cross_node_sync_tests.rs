@@ -1,6 +1,6 @@
 use crate::adapter::horizontal_adapter_helpers::{MockConfig, MockNodeState, MockTransport};
 use ahash::AHashMap;
-use sockudo::adapter::horizontal_adapter::{RequestType, ResponseBody};
+use sockudo::adapter::horizontal_adapter::{AggregationStats, RequestType, ResponseBody};
 use sockudo::adapter::horizontal_adapter_base::HorizontalAdapterBase;
 use std::collections::HashSet;
 
@@ -29,6 +29,9 @@ async fn test_request_response_aggregation_logic() {
             exists: true,
             channels: HashSet::new(),
             members_count: 0,
+            responses_received: 0,
+            expected_responses: 0,
+            complete: true,
         },
         // Response 2: Node has 1 socket in channel
         ResponseBody {
@@ -42,6 +45,9 @@ async fn test_request_response_aggregation_logic() {
             exists: true,
             channels: HashSet::new(),
             members_count: 0,
+            responses_received: 0,
+            expected_responses: 0,
+            complete: true,
         },
     ];
 
@@ -54,6 +60,11 @@ async fn test_request_response_aggregation_logic() {
             "test-app".to_string(),
             &RequestType::ChannelSockets,
             responses,
+            AggregationStats {
+                responses_received: 2,
+                expected_responses: 2,
+                complete: true,
+            },
         )
     };
 
@@ -62,6 +73,9 @@ async fn test_request_response_aggregation_logic() {
     assert_eq!(combined_response.app_id, "test-app");
     assert_eq!(combined_response.socket_ids.len(), 3); // Combined from both nodes
     assert_eq!(combined_response.sockets_count, 3); // Sum of both nodes
+    assert!(combined_response.complete);
+    assert_eq!(combined_response.responses_received, 2);
+    assert_eq!(combined_response.expected_responses, 2);
     // Note: exists field is not aggregated for ChannelSockets request type
 
     // Verify all socket IDs are present
@@ -112,6 +126,9 @@ async fn test_channel_members_aggregation_deduplication() {
         exists: false,
         channels: HashSet::new(),
         members_count: 2,
+        responses_received: 0,
+        expected_responses: 0,
+        complete: true,
     });
 
     // Node 2: Has user-1 (duplicate) and user-3 (unique)
@@ -142,6 +159,9 @@ async fn test_channel_members_aggregation_deduplication() {
         exists: false,
         channels: HashSet::new(),
         members_count: 2,
+        responses_received: 0,
+        expected_responses: 0,
+        complete: true,
     });
 
     // Test aggregation
@@ -153,6 +173,11 @@ async fn test_channel_members_aggregation_deduplication() {
             "test-app".to_string(),
             &RequestType::ChannelMembers,
             responses,
+            AggregationStats {
+                responses_received: 2,
+                expected_responses: 2,
+                complete: true,
+            },
         )
     };
 
@@ -197,6 +222,9 @@ async fn test_channels_with_socket_count_aggregation() {
         exists: false,
         channels: HashSet::new(),
         members_count: 0,
+        responses_received: 0,
+        expected_responses: 0,
+        complete: true,
     });
 
     // Node 2: Has channels A(3 sockets), C(1 socket)
@@ -215,6 +243,9 @@ async fn test_channels_with_socket_count_aggregation() {
         exists: false,
         channels: HashSet::new(),
         members_count: 0,
+        responses_received: 0,
+        expected_responses: 0,
+        complete: true,
     });
 
     // Test aggregation
@@ -226,6 +257,11 @@ async fn test_channels_with_socket_count_aggregation() {
             "test-app".to_string(),
             &RequestType::ChannelsWithSocketsCount,
             responses,
+            AggregationStats {
+                responses_received: 2,
+                expected_responses: 2,
+                complete: true,
+            },
         )
     };
 
@@ -269,6 +305,9 @@ async fn test_exists_flag_aggregation_logic() {
             exists: false, // All return false
             channels: HashSet::new(),
             members_count: 0,
+            responses_received: 0,
+            expected_responses: 0,
+            complete: true,
         });
     }
 
@@ -280,6 +319,11 @@ async fn test_exists_flag_aggregation_logic() {
             "test-app".to_string(),
             &RequestType::SocketExistsInChannel,
             responses,
+            AggregationStats {
+                responses_received: 3,
+                expected_responses: 3,
+                complete: true,
+            },
         )
     };
 
@@ -301,6 +345,9 @@ async fn test_exists_flag_aggregation_logic() {
             exists: false,
             channels: HashSet::new(),
             members_count: 0,
+            responses_received: 0,
+            expected_responses: 0,
+            complete: true,
         },
         ResponseBody {
             request_id: request_id.to_string(),
@@ -313,6 +360,9 @@ async fn test_exists_flag_aggregation_logic() {
             exists: true, // One returns true
             channels: HashSet::new(),
             members_count: 0,
+            responses_received: 0,
+            expected_responses: 0,
+            complete: true,
         },
     ];
 
@@ -324,6 +374,11 @@ async fn test_exists_flag_aggregation_logic() {
             "test-app".to_string(),
             &RequestType::SocketExistsInChannel,
             responses,
+            AggregationStats {
+                responses_received: 2,
+                expected_responses: 2,
+                complete: true,
+            },
         )
     };
 
@@ -449,6 +504,11 @@ async fn test_empty_response_aggregation() {
             "test-app".to_string(),
             &RequestType::ChannelSockets,
             responses,
+            AggregationStats {
+                responses_received: 0,
+                expected_responses: 2,
+                complete: false,
+            },
         )
     };
 
@@ -460,4 +520,7 @@ async fn test_empty_response_aggregation() {
     assert!(!combined_response.exists);
     assert!(combined_response.members.is_empty());
     assert!(combined_response.channels_with_sockets_count.is_empty());
+    assert!(!combined_response.complete);
+    assert_eq!(combined_response.responses_received, 0);
+    assert_eq!(combined_response.expected_responses, 2);
 }

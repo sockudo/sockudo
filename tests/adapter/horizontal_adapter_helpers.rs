@@ -349,6 +349,9 @@ impl MockTransport {
                 exists: true,
                 channels: HashSet::new(),
                 members_count: 999_999_999,
+                responses_received: 0,
+                expected_responses: 0,
+                complete: true,
             };
         }
 
@@ -363,6 +366,9 @@ impl MockTransport {
             exists: false,
             channels: HashSet::new(),
             members_count: 0,
+            responses_received: 0,
+            expected_responses: 0,
+            complete: true,
         };
 
         match request.request_type {
