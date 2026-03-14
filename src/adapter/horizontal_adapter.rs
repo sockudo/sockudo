@@ -4,6 +4,7 @@ use ahash::AHashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,7 @@ use crate::metrics::MetricsInterface;
 use crate::websocket::SocketId;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Notify, RwLock};
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -183,9 +184,9 @@ pub struct HorizontalAdapter {
     pub pending_requests: DashMap<String, PendingRequest>,
 
     /// Timeout for requests in milliseconds
-    pub requests_timeout: u64,
+    pub requests_timeout: AtomicU64,
 
-    pub metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+    pub metrics: OnceLock<Arc<dyn MetricsInterface + Send + Sync>>,
 
     /// Complete cluster-wide presence registry (node-first structure for efficient cleanup)
     ///AHashMap<node_id,AHashMap<channel,AHashMap<socket_id, PresenceEntry>>>
@@ -211,19 +212,23 @@ impl HorizontalAdapter {
             node_id: Uuid::new_v4().to_string(),
             local_adapter: Arc::new(LocalAdapter::new()),
             pending_requests: DashMap::new(),
-            requests_timeout: 5000, // Default 5 seconds
-            metrics: None,
+            requests_timeout: AtomicU64::new(5000),
+            metrics: OnceLock::new(),
             cluster_presence_registry: Arc::new(RwLock::new(AHashMap::new())),
             node_heartbeats: Arc::new(RwLock::new(AHashMap::new())),
             sequence_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
+    pub fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
+        let _ = self.metrics.set(metrics);
+    }
+
     /// Start the request cleanup task
     pub fn start_request_cleanup(&self) {
         // Clone data needed for the task
         // let node_id = self.node_id.clone();
-        let timeout = self.requests_timeout;
+        let timeout = self.requests_timeout.load(Ordering::Relaxed);
         let pending_requests_clone = self.pending_requests.clone();
 
         // Spawn a background task to clean up stale requests
@@ -269,8 +274,7 @@ impl HorizontalAdapter {
         }
 
         // Track metrics for received request
-        if let Some(ref metrics) = self.metrics {
-            let metrics = metrics.lock().await;
+        if let Some(metrics) = self.metrics.get() {
             metrics.mark_horizontal_adapter_request_received(&request.app_id);
         }
 
@@ -541,8 +545,7 @@ impl HorizontalAdapter {
     /// Process a response received from another node
     pub async fn process_response(&self, response: ResponseBody) -> Result<()> {
         // Track received response
-        if let Some(metrics_ref) = &self.metrics {
-            let metrics = metrics_ref.lock().await;
+        if let Some(metrics) = self.metrics.get() {
             metrics.mark_horizontal_adapter_response_received(&response.app_id);
         }
 
@@ -599,8 +602,7 @@ impl HorizontalAdapter {
         );
 
         // Track sent request in metrics
-        if let Some(metrics_ref) = &self.metrics {
-            let metrics = metrics_ref.lock().await;
+        if let Some(metrics) = self.metrics.get() {
             metrics.mark_horizontal_adapter_request_sent(app_id);
         }
 
@@ -614,7 +616,7 @@ impl HorizontalAdapter {
         );
 
         // Wait for responses with proper timeout handling
-        let timeout_duration = Duration::from_millis(self.requests_timeout);
+        let timeout_duration = Duration::from_millis(self.requests_timeout.load(Ordering::Relaxed));
         let max_expected_responses = expected_node_count.saturating_sub(1);
 
         // If we don't expect any responses (single node), return immediately
@@ -718,8 +720,7 @@ impl HorizontalAdapter {
         }
 
         // Track metrics
-        if let Some(metrics_ref) = &self.metrics {
-            let metrics = metrics_ref.lock().await;
+        if let Some(metrics) = self.metrics.get() {
             let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
 
             metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
@@ -913,7 +914,7 @@ impl HorizontalAdapter {
         recipient_count: Option<usize>,
         app_id: &str,
         channel: &str,
-        metrics_ref: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+        metrics_ref: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     ) {
         if send_result.is_ok()
             && let Some(timestamp_ms) = timestamp_ms
@@ -929,13 +930,7 @@ impl HorizontalAdapter {
 
                 // Only track metrics if we have a valid recipient count
                 if let Some(recipient_count) = recipient_count {
-                    let metrics_locked = metrics.lock().await;
-                    metrics_locked.track_broadcast_latency(
-                        app_id,
-                        channel,
-                        recipient_count,
-                        latency_ms,
-                    );
+                    metrics.track_broadcast_latency(app_id, channel, recipient_count, latency_ms);
                 }
             }
         }

@@ -27,13 +27,13 @@ use crate::websocket::{SocketId, WebSocketRef};
 use async_trait::async_trait;
 use crossfire::mpsc;
 use sockudo_ws::axum_integration::WebSocketWriter;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Generic base adapter that handles all common horizontal scaling logic
 pub struct HorizontalAdapterBase<T: HorizontalTransport> {
-    pub horizontal: Arc<RwLock<HorizontalAdapter>>,
+    pub horizontal: Arc<HorizontalAdapter>,
     pub local_adapter: Arc<LocalAdapter>,
     pub transport: T,
     pub config: T::Config,
@@ -55,14 +55,13 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
 /// if the effective node count is 1 or less.
 async fn should_skip_horizontal_communication_impl(
     cluster_health_enabled: bool,
-    horizontal: &Arc<RwLock<HorizontalAdapter>>,
+    horizontal: &Arc<HorizontalAdapter>,
 ) -> bool {
     // Don't skip sending if cluster health is disabled, we have no way of knowing other nodes
     if !cluster_health_enabled {
         return false;
     }
-    let horizontal_guard = horizontal.read().await;
-    let effective_node_count = horizontal_guard.get_effective_node_count().await;
+    let effective_node_count = horizontal.get_effective_node_count().await;
     effective_node_count <= 1
 }
 
@@ -81,8 +80,11 @@ where
     T::Config: TransportConfig,
 {
     pub async fn new(config: T::Config) -> Result<Self> {
-        let mut horizontal = HorizontalAdapter::new();
-        horizontal.requests_timeout = config.request_timeout_ms();
+        let horizontal = HorizontalAdapter::new();
+        horizontal.requests_timeout.store(
+            config.request_timeout_ms(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let node_id = horizontal.node_id.clone();
 
         // Get the Arc reference to the same LocalAdapter that HorizontalAdapter uses
@@ -93,7 +95,7 @@ where
         let cluster_health_defaults = ClusterHealthConfig::default();
 
         Ok(Self {
-            horizontal: Arc::new(RwLock::new(horizontal)),
+            horizontal: Arc::new(horizontal),
             local_adapter,
             transport,
             config,
@@ -120,8 +122,7 @@ where
         self.app_manager = Some(app_manager.clone());
 
         // Also set on the internal LocalAdapter
-        let horizontal = self.horizontal.read().await;
-        horizontal
+        self.horizontal
             .local_adapter
             .set_delta_compression(delta_compression, app_manager)
             .await;
@@ -129,10 +130,9 @@ where
 
     pub async fn set_metrics(
         &self,
-        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
+        metrics: Arc<dyn MetricsInterface + Send + Sync>,
     ) -> Result<()> {
-        let mut horizontal = self.horizontal.write().await;
-        horizontal.metrics = Some(metrics);
+        self.horizontal.set_metrics(metrics);
         Ok(())
     }
 
@@ -144,16 +144,14 @@ where
     /// Configure this adapter with discovered nodes for testing
     /// This simulates that node discovery has already happened and sets up multi-node behavior
     pub async fn with_discovered_nodes(self, node_ids: Vec<&str>) -> Result<Self> {
-        let horizontal = self.horizontal.read().await;
         for node_id in node_ids {
             let node_id_string = node_id.to_string();
             if node_id_string != self.node_id {
-                horizontal
+                self.horizontal
                     .add_discovered_node_for_test(node_id_string)
                     .await;
             }
         }
-        drop(horizontal); // Release the lock
         Ok(self)
     }
 
@@ -208,10 +206,7 @@ where
 
         // Create the request
         let request_id = Uuid::new_v4().to_string();
-        let node_id = {
-            let horizontal = self.horizontal.read().await;
-            horizontal.node_id.clone()
-        };
+        let node_id = self.horizontal.node_id.clone();
 
         let request = RequestBody {
             request_id: request_id.clone(),
@@ -248,8 +243,7 @@ where
 
         // Add to pending requests
         {
-            let horizontal = self.horizontal.read().await;
-            horizontal.pending_requests.insert(
+            self.horizontal.pending_requests.insert(
                 request_id.clone(),
                 PendingRequest {
                     start_time: Instant::now(),
@@ -259,8 +253,7 @@ where
                 },
             );
 
-            if let Some(metrics_ref) = &horizontal.metrics {
-                let metrics = metrics_ref.lock().await;
+            if let Some(metrics) = self.horizontal.metrics.get() {
                 metrics.mark_horizontal_adapter_request_sent(app_id);
             }
         }
@@ -269,7 +262,10 @@ where
         self.transport.publish_request(&request).await?;
 
         // Wait for responses with adaptive timeout based on request type and node count
-        let base_timeout = self.config.request_timeout_ms();
+        let base_timeout = self
+            .horizontal
+            .requests_timeout
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         // Adaptive timeout: For simple queries (socket checks, counts), use shorter timeout
         // For presence queries that need member data, use full timeout
@@ -298,11 +294,7 @@ where
         let max_expected_responses = node_count.saturating_sub(1);
 
         if max_expected_responses == 0 {
-            self.horizontal
-                .read()
-                .await
-                .pending_requests
-                .remove(&request_id);
+            self.horizontal.pending_requests.remove(&request_id);
             return Ok(ResponseBody {
                 request_id,
                 node_id: request.node_id,
@@ -323,26 +315,23 @@ where
         // Wait for responses using event-driven approach
         let start = Instant::now();
         let deadline = start + timeout_duration;
-        let notify = {
-            let horizontal = self.horizontal.read().await;
-            horizontal
-                .pending_requests
-                .get(&request_id)
-                .map(|req| req.notify.clone())
-                .ok_or_else(|| {
-                    Error::Other(format!(
-                        "Request {request_id} not found in pending requests"
-                    ))
-                })?
-        };
+        let notify = self
+            .horizontal
+            .pending_requests
+            .get(&request_id)
+            .map(|req| req.notify.clone())
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "Request {request_id} not found in pending requests"
+                ))
+            })?;
 
         let responses = loop {
             // Wait for notification or timeout
             let result = tokio::select! {
                 _ = notify.notified() => {
                     // Check if we have enough responses OR can return early
-                    let horizontal = self.horizontal.read().await;
-                    if let Some(pending_request) = horizontal.pending_requests.get(&request_id) {
+                    if let Some(pending_request) = self.horizontal.pending_requests.get(&request_id) {
                         let response_count = pending_request.responses.len();
 
                         // Early return optimization: Return immediately when we find a positive result
@@ -393,8 +382,7 @@ where
                         request_id,
                         start.elapsed().as_millis()
                     );
-                    let horizontal = self.horizontal.read().await;
-                    let responses = if let Some(pending_request) = horizontal.pending_requests.get(&request_id) {
+                    let responses = if let Some(pending_request) = self.horizontal.pending_requests.get(&request_id) {
                         pending_request.responses.clone()
                     } else {
                         Vec::new()
@@ -413,55 +401,42 @@ where
         let complete = responses_received >= max_expected_responses;
 
         // Aggregate responses first, then clean up to prevent race condition
-        let combined_response = {
-            let horizontal = self.horizontal.read().await;
-            horizontal.aggregate_responses(
-                request_id.clone(),
-                request.node_id,
-                app_id.to_string(),
-                &request_type,
-                responses,
-                AggregationStats {
-                    responses_received,
-                    expected_responses: max_expected_responses,
-                    complete,
-                },
-            )
-        }; // horizontal lock released here
+        let combined_response = self.horizontal.aggregate_responses(
+            request_id.clone(),
+            request.node_id,
+            app_id.to_string(),
+            &request_type,
+            responses,
+            AggregationStats {
+                responses_received,
+                expected_responses: max_expected_responses,
+                complete,
+            },
+        );
 
         // Clean up the pending request after aggregation is complete
-        {
-            let horizontal = self.horizontal.read().await;
-            horizontal.pending_requests.remove(&request_id);
-        }
+        self.horizontal.pending_requests.remove(&request_id);
 
         // Track metrics
-        {
-            let horizontal = self.horizontal.read().await;
-            if let Some(metrics_ref) = &horizontal.metrics {
-                let metrics = metrics_ref.lock().await;
-                let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
-                metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
+        if let Some(metrics) = self.horizontal.metrics.get() {
+            let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
+            metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
-                let resolved = combined_response.sockets_count > 0
-                    || !combined_response.members.is_empty()
-                    || combined_response.exists
-                    || !combined_response.channels.is_empty()
-                    || combined_response.members_count > 0
-                    || !combined_response.channels_with_sockets_count.is_empty();
+            let resolved = combined_response.sockets_count > 0
+                || !combined_response.members.is_empty()
+                || combined_response.exists
+                || !combined_response.channels.is_empty()
+                || combined_response.members_count > 0
+                || !combined_response.channels_with_sockets_count.is_empty();
 
-                metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
-            }
-        } // horizontal and metrics locks released here
+            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
+        }
 
         Ok(combined_response)
     }
 
     pub async fn start_listeners(&self) -> Result<()> {
-        {
-            let horizontal = self.horizontal.read().await;
-            horizontal.start_request_cleanup();
-        }
+        self.horizontal.start_request_cleanup();
 
         // Start cluster health system only if enabled
         if self.cluster_health_enabled {
@@ -480,10 +455,7 @@ where
             on_broadcast: Arc::new(move |broadcast| {
                 let horizontal_clone = broadcast_horizontal.clone();
                 Box::pin(async move {
-                    let node_id = {
-                        let horizontal = horizontal_clone.read().await;
-                        horizontal.node_id.clone()
-                    };
+                    let node_id = horizontal_clone.node_id.clone();
 
                     if broadcast.node_id == node_id {
                         return;
@@ -504,7 +476,7 @@ where
                             .as_ref()
                             .and_then(|id| SocketId::from_string(id).ok());
 
-                        let horizontal_lock = horizontal_clone.read().await;
+                        let horizontal_lock = &horizontal_clone;
 
                         // Log tag filtering status
                         let tag_filtering_enabled =
@@ -609,9 +581,8 @@ where
                         };
 
                         // Track delta compression metrics if compression was used
-                        if compression_used && let Some(ref metrics) = horizontal_lock.metrics {
-                            let metrics_lock = metrics.lock().await;
-                            metrics_lock.track_horizontal_delta_compression(
+                        if compression_used && let Some(metrics) = horizontal_lock.metrics.get() {
+                            metrics.track_horizontal_delta_compression(
                                 &broadcast.app_id,
                                 &broadcast.channel,
                                 true,
@@ -619,8 +590,7 @@ where
                         }
 
                         // Track broadcast latency metrics using helper function
-                        let metrics_ref = horizontal_lock.metrics.clone();
-                        drop(horizontal_lock); // Release horizontal lock to avoid deadlock
+                        let metrics_ref = horizontal_lock.metrics.get().cloned();
 
                         HorizontalAdapter::track_broadcast_latency_if_successful(
                             &send_result,
@@ -638,10 +608,7 @@ where
                 let horizontal_clone = request_horizontal.clone();
                 let transport_clone = transport_for_request.clone();
                 Box::pin(async move {
-                    let node_id = {
-                        let horizontal = horizontal_clone.read().await;
-                        horizontal.node_id.clone()
-                    };
+                    let node_id = horizontal_clone.node_id.clone();
 
                     if request.node_id == node_id {
                         return Err(Error::OwnRequestIgnored);
@@ -655,8 +622,7 @@ where
                         return Err(Error::RequestNotForThisNode);
                     }
 
-                    let horizontal_lock = horizontal_clone.read().await;
-                    let response = horizontal_lock.process_request(request.clone()).await?;
+                    let response = horizontal_clone.process_request(request.clone()).await?;
 
                     // Check if this was a heartbeat that detected a new node
                     if request.request_type == RequestType::Heartbeat && response.exists {
@@ -691,17 +657,13 @@ where
             on_response: Arc::new(move |response| {
                 let horizontal_clone = response_horizontal.clone();
                 Box::pin(async move {
-                    let node_id = {
-                        let horizontal = horizontal_clone.read().await;
-                        horizontal.node_id.clone()
-                    };
+                    let node_id = horizontal_clone.node_id.clone();
 
                     if response.node_id == node_id {
                         return;
                     }
 
-                    let horizontal_lock = horizontal_clone.read().await;
-                    let _ = horizontal_lock.process_response(response).await;
+                    let _ = horizontal_clone.process_response(response).await;
                 })
             }),
         };
@@ -776,17 +738,11 @@ where
             loop {
                 interval.tick().await;
 
-                let dead_nodes = {
-                    let horizontal_guard = horizontal.read().await;
-                    horizontal_guard.get_dead_nodes(node_timeout_ms).await
-                };
+                let dead_nodes = horizontal.get_dead_nodes(node_timeout_ms).await;
 
                 if !dead_nodes.is_empty() {
                     // Single leader election for entire cleanup round
-                    let is_leader = {
-                        let horizontal_guard = horizontal.read().await;
-                        horizontal_guard.is_cleanup_leader(&dead_nodes).await
-                    };
+                    let is_leader = horizontal.is_cleanup_leader(&dead_nodes).await;
 
                     if is_leader {
                         info!(
@@ -800,26 +756,17 @@ where
                             debug!("Processing dead node: {}", dead_node_id);
 
                             // 1. Remove from local heartbeat tracking
-                            {
-                                let horizontal_guard = horizontal.read().await;
-                                horizontal_guard.remove_dead_node(&dead_node_id).await;
-                            }
+                            horizontal.remove_dead_node(&dead_node_id).await;
 
                             // 2. Get orphaned members and clean up local registry
-                            let cleanup_tasks = {
-                                let horizontal_guard = horizontal.read().await;
-                                match horizontal_guard
-                                    .handle_dead_node_cleanup(&dead_node_id)
-                                    .await
-                                {
-                                    Ok(tasks) => tasks,
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to cleanup dead node {}: {}",
-                                            dead_node_id, e
-                                        );
-                                        continue;
-                                    }
+                            let cleanup_tasks = match horizontal
+                                .handle_dead_node_cleanup(&dead_node_id)
+                                .await
+                            {
+                                Ok(tasks) => tasks,
+                                Err(e) => {
+                                    error!("Failed to cleanup dead node {}: {}", dead_node_id, e);
+                                    continue;
                                 }
                             };
 
@@ -899,15 +846,13 @@ where
     pub async fn get_cluster_presence_registry(
         &self,
     ) -> crate::adapter::horizontal_adapter::ClusterPresenceRegistry {
-        let horizontal = self.horizontal.read().await;
-        let registry = horizontal.cluster_presence_registry.read().await;
+        let registry = self.horizontal.cluster_presence_registry.read().await;
         registry.clone()
     }
 
     /// Get a snapshot of node heartbeat tracking
     pub async fn get_node_heartbeats(&self) -> HashMap<String, Instant> {
-        let horizontal = self.horizontal.read().await;
-        let heartbeats = horizontal.node_heartbeats.read().await;
+        let heartbeats = self.horizontal.node_heartbeats.read().await;
         heartbeats.clone()
     }
 }
@@ -1015,10 +960,7 @@ where
 
         // Fall back to regular sending without delta compression
         // Send locally first (tracked in connection manager for metrics)
-        let node_id = {
-            let horizontal_lock = self.horizontal.read().await;
-            horizontal_lock.node_id.clone()
-        };
+        let node_id = self.horizontal.node_id.clone();
 
         let local_result = self
             .local_adapter
@@ -1068,9 +1010,8 @@ where
     ) -> Result<()> {
         // Send locally first with delta compression support
         let (node_id, local_result) = {
-            let horizontal_lock = self.horizontal.read().await;
-
-            let result = horizontal_lock
+            let result = self
+                .horizontal
                 .local_adapter
                 .send_with_compression(
                     channel,
@@ -1084,7 +1025,7 @@ where
                     },
                 )
                 .await;
-            (horizontal_lock.node_id.clone(), result)
+            (self.horizontal.node_id.clone(), result)
         };
 
         if let Err(e) = local_result {
@@ -1522,19 +1463,16 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
         user_info: Option<sonic_rs::Value>,
     ) -> Result<()> {
         // Store in our own registry first with a single lock acquisition
-        {
-            let horizontal = self.horizontal.read().await;
-            horizontal
-                .add_presence_entry(
-                    &self.node_id,
-                    channel,
-                    socket_id,
-                    user_id,
-                    app_id,
-                    user_info.clone(),
-                )
-                .await;
-        }
+        self.horizontal
+            .add_presence_entry(
+                &self.node_id,
+                channel,
+                socket_id,
+                user_id,
+                app_id,
+                user_info.clone(),
+            )
+            .await;
 
         // Skip cluster broadcast if cluster health is disabled
         if !self.cluster_health_enabled {
@@ -1573,12 +1511,9 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
         socket_id: &str,
     ) -> Result<()> {
         // Remove from our own registry first with a single lock acquisition
-        {
-            let horizontal = self.horizontal.read().await;
-            horizontal
-                .remove_presence_entry(&self.node_id, channel, socket_id)
-                .await;
-        }
+        self.horizontal
+            .remove_presence_entry(&self.node_id, channel, socket_id)
+            .await;
 
         // Skip cluster broadcast if cluster health is disabled
         if !self.cluster_health_enabled {
@@ -1611,24 +1546,20 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
 
 /// Helper function to send presence state to a new node
 async fn send_presence_state_to_node<T: HorizontalTransport>(
-    horizontal: &Arc<tokio::sync::RwLock<HorizontalAdapter>>,
+    horizontal: &Arc<HorizontalAdapter>,
     transport: &T,
     target_node_id: &str,
 ) -> Result<()> {
     // Get our presence data
     let (our_node_id, data_to_send) = {
-        let horizontal_lock = horizontal.read().await;
-        let registry = horizontal_lock.cluster_presence_registry.read().await;
+        let registry = horizontal.cluster_presence_registry.read().await;
 
         // Get only our node's data
-        if let Some(our_presence_data) = registry.get(&horizontal_lock.node_id) {
+        if let Some(our_presence_data) = registry.get(&horizontal.node_id) {
             // Clone the data to avoid holding the lock
-            (
-                horizontal_lock.node_id.clone(),
-                Some(our_presence_data.clone()),
-            )
+            (horizontal.node_id.clone(), Some(our_presence_data.clone()))
         } else {
-            (horizontal_lock.node_id.clone(), None)
+            (horizontal.node_id.clone(), None)
         }
     };
 

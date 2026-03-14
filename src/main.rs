@@ -55,7 +55,6 @@ use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::signal;
-use tokio::sync::Mutex;
 
 // Updated factory imports
 use crate::adapter::factory::AdapterFactory;
@@ -164,10 +163,10 @@ struct ServerState {
     connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     local_adapter: Option<Arc<crate::adapter::local_adapter::LocalAdapter>>,
     auth_validator: Arc<AuthValidator>,
-    cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
+    cache_manager: Arc<dyn CacheManager + Send + Sync>,
     queue_manager: Option<Arc<QueueManager>>,
     webhooks_integration: Arc<WebhookIntegration>,
-    metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     running: AtomicBool,
     http_api_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     debug_enabled: bool,
@@ -308,10 +307,10 @@ impl SockudoServer {
                     e
                 );
                 let fallback_cache_options = config.cache.memory.clone();
-                Arc::new(Mutex::new(MemoryCacheManager::new(
+                Arc::new(MemoryCacheManager::new(
                     "fallback_cache".to_string(),
                     fallback_cache_options,
-                )))
+                ))
             });
         info!(
             "CacheManager initialized with driver: {:?}",
@@ -860,12 +859,11 @@ impl SockudoServer {
         }
 
         // Initialize Metrics
-        if let Some(metrics) = &self.state.metrics {
-            let metrics_guard = metrics.lock().await; // Lock the Mutex to get access
-            if let Err(e) = metrics_guard.init().await {
-                // Call init on the MetricsInterface implementor
-                warn!("Failed to initialize metrics: {}", e);
-            }
+        if let Some(metrics) = &self.state.metrics
+            && let Err(e) = metrics.init().await
+        {
+            // Call init on the MetricsInterface implementor
+            warn!("Failed to initialize metrics: {}", e);
         }
         info!("Server init sequence completed.");
         Ok(())
@@ -1438,11 +1436,8 @@ impl SockudoServer {
         self.state.delta_compression.stop_cleanup_task().await;
 
         // Disconnect from backend services
-        {
-            let mut cache_manager_locked = self.state.cache_manager.lock().await;
-            if let Err(e) = cache_manager_locked.disconnect().await {
-                warn!("Error disconnecting cache manager: {}", e);
-            }
+        if let Err(e) = self.state.cache_manager.disconnect().await {
+            warn!("Error disconnecting cache manager: {}", e);
         }
         if let Some(queue_manager_arc) = &self.state.queue_manager
             && let Err(e) = queue_manager_arc.disconnect().await

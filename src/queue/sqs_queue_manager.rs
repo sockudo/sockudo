@@ -3,13 +3,12 @@ use crate::error::{Error, Result};
 use crate::options::SqsQueueConfig; // Use the struct from options.rs
 use crate::queue::{ArcJobProcessorFn, QueueInterface};
 use crate::webhook::sender::JobProcessorFnAsync;
-use ahash::AHashMap;
 use async_trait::async_trait;
 use aws_sdk_sqs as sqs;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::interval;
 use tracing::{error, info};
 
@@ -22,11 +21,12 @@ pub struct SqsQueueManager {
 
     // todo -> change Mutex<Hashmap> to Dashmap
     /// Cache of queue URLs
-    queue_urls: Arc<Mutex<AHashMap<String, String>>>,
+    queue_urls: Arc<dashmap::DashMap<String, String, ahash::RandomState>>,
     /// Active workers
-    worker_handles: Arc<Mutex<AHashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
+    worker_handles:
+        Arc<dashmap::DashMap<String, Vec<tokio::task::JoinHandle<()>>, ahash::RandomState>>,
     /// Flag to control worker shutdown
-    shutdown: Arc<Mutex<bool>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl SqsQueueManager {
@@ -53,19 +53,16 @@ impl SqsQueueManager {
         Ok(Self {
             client,
             config,
-            queue_urls: Arc::new(Mutex::new(AHashMap::new())),
-            worker_handles: Arc::new(Mutex::new(AHashMap::new())),
-            shutdown: Arc::new(Mutex::new(false)),
+            queue_urls: Arc::new(dashmap::DashMap::with_hasher(ahash::RandomState::new())),
+            worker_handles: Arc::new(dashmap::DashMap::with_hasher(ahash::RandomState::new())),
+            shutdown: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Get or create the URL for a queue
     async fn get_queue_url(&self, queue_name: &str) -> Result<String> {
         // Check cache first
-        let cached_url = {
-            let queue_urls = self.queue_urls.lock().await;
-            queue_urls.get(queue_name).cloned()
-        };
+        let cached_url = self.queue_urls.get(queue_name).map(|entry| entry.clone());
 
         if let Some(url) = cached_url {
             return Ok(url);
@@ -80,8 +77,8 @@ impl SqsQueueManager {
             };
 
             // Cache the URL
-            let mut queue_urls = self.queue_urls.lock().await;
-            queue_urls.insert(queue_name.to_string(), queue_url.clone());
+            self.queue_urls
+                .insert(queue_name.to_string(), queue_url.clone());
 
             return Ok(queue_url);
         }
@@ -103,8 +100,8 @@ impl SqsQueueManager {
             Ok(output) => {
                 if let Some(url) = output.queue_url() {
                     // Cache the URL for future use
-                    let mut queue_urls = self.queue_urls.lock().await;
-                    queue_urls.insert(queue_name.to_string(), url.to_string());
+                    self.queue_urls
+                        .insert(queue_name.to_string(), url.to_string());
 
                     Ok(url.to_string())
                 } else {
@@ -168,8 +165,8 @@ impl SqsQueueManager {
 
         if let Some(url) = result.queue_url() {
             // Cache the URL
-            let mut queue_urls = self.queue_urls.lock().await;
-            queue_urls.insert(queue_name.to_string(), url.to_string());
+            self.queue_urls
+                .insert(queue_name.to_string(), url.to_string());
 
             Ok(url.to_string())
         } else {
@@ -209,7 +206,7 @@ impl SqsQueueManager {
                 interval.tick().await;
 
                 // Check if we should shutdown
-                if *shutdown.lock().await {
+                if shutdown.load(Ordering::Relaxed) {
                     info!(
                         "{}",
                         format!(
@@ -411,8 +408,8 @@ impl QueueInterface for SqsQueueManager {
         }
 
         // Store the worker handles
-        let mut handles = self.worker_handles.lock().await;
-        handles.insert(queue_name.to_string(), worker_handles);
+        self.worker_handles
+            .insert(queue_name.to_string(), worker_handles);
 
         info!(
             "{}",
@@ -428,23 +425,22 @@ impl QueueInterface for SqsQueueManager {
     /// Disconnect and clean up
     async fn disconnect(&self) -> Result<()> {
         // Signal workers to shutdown
-        {
-            let mut shutdown = self.shutdown.lock().await;
-            *shutdown = true;
-        }
+        self.shutdown.store(true, Ordering::Relaxed);
 
         // Wait for workers to finish
-        {
-            let mut handles = self.worker_handles.lock().await;
-            for (queue_name, workers) in handles.drain() {
+        let queue_names: Vec<String> = self
+            .worker_handles
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        for queue_name in queue_names {
+            if let Some((_, workers)) = self.worker_handles.remove(&queue_name) {
                 info!(
                     "{}",
                     format!("Waiting for SQS queue {} workers to shutdown", queue_name)
                 );
 
                 for handle in workers {
-                    // We don't want to await here as it could block indefinitely
-                    // Just detach the tasks and let them complete on their own
                     handle.abort();
                 }
             }
@@ -465,12 +461,6 @@ impl QueueInterface for SqsQueueManager {
 
 impl Drop for SqsQueueManager {
     fn drop(&mut self) {
-        // Signal workers to shutdown when the manager is dropped
-        // We can't use async functions in drop, so we spawn a task
-        let shutdown = self.shutdown.clone();
-        tokio::spawn(async move {
-            let mut lock = shutdown.lock().await;
-            *lock = true;
-        });
+        self.shutdown.store(true, Ordering::Relaxed);
     }
 }

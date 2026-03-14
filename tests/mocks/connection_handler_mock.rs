@@ -19,7 +19,6 @@ use sonic_rs::Value;
 use std::any::Any;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 pub struct MockAdapter;
 
@@ -280,22 +279,22 @@ impl MockCacheManager {
 
 #[async_trait]
 impl CacheManager for MockCacheManager {
-    async fn has(&mut self, _key: &str) -> Result<bool> {
+    async fn has(&self, _key: &str) -> Result<bool> {
         Ok(false)
     }
-    async fn get(&mut self, _key: &str) -> Result<Option<String>> {
+    async fn get(&self, _key: &str) -> Result<Option<String>> {
         Ok(None)
     }
-    async fn set(&mut self, _key: &str, _value: &str, _ttl_seconds: u64) -> Result<()> {
+    async fn set(&self, _key: &str, _value: &str, _ttl_seconds: u64) -> Result<()> {
         Ok(())
     }
-    async fn remove(&mut self, _key: &str) -> Result<()> {
+    async fn remove(&self, _key: &str) -> Result<()> {
         Ok(())
     }
-    async fn disconnect(&mut self) -> Result<()> {
+    async fn disconnect(&self) -> Result<()> {
         Ok(())
     }
-    async fn ttl(&mut self, _key: &str) -> Result<Option<Duration>> {
+    async fn ttl(&self, _key: &str) -> Result<Option<Duration>> {
         Ok(None)
     }
     async fn check_health(&self) -> Result<()> {
@@ -405,8 +404,8 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
         None, // local_adapter
-        Arc::new(Mutex::new(MockCacheManager::new())),
-        Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
+        Arc::new(MockCacheManager::new()),
+        Some(Arc::new(MockMetricsInterface::new())),
         None,
         ServerOptions::default(),
         None,
@@ -427,8 +426,8 @@ pub fn create_test_connection_handler_with_app_manager(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
         None, // local_adapter
-        Arc::new(Mutex::new(MockCacheManager::new())),
-        Some(Arc::new(Mutex::new(MockMetricsInterface::new()))),
+        Arc::new(MockCacheManager::new()),
+        Some(Arc::new(MockMetricsInterface::new())),
         None,
         ServerOptions::default(),
         None,

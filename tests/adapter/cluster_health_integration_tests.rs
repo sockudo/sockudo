@@ -112,7 +112,7 @@ async fn test_dead_node_detection_logic() {
 
     // Manually add nodes to heartbeat tracking with specific timestamps
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
 
         // Add a node that should be considered dead (old timestamp)
@@ -126,7 +126,7 @@ async fn test_dead_node_detection_logic() {
 
     // Test dead node detection
     let dead_nodes = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.get_dead_nodes(node_timeout_ms).await
     };
 
@@ -146,7 +146,7 @@ async fn test_leader_election_algorithm() {
 
     // Set up a deterministic scenario for leader election
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
 
         // Add nodes with guaranteed alphabetical ordering
@@ -160,7 +160,7 @@ async fn test_leader_election_algorithm() {
 
     // Test 1: When no nodes are dead, the alphabetically first node should be leader
     let is_leader = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.is_cleanup_leader(&Vec::new()).await
     };
     assert!(
@@ -171,7 +171,7 @@ async fn test_leader_election_algorithm() {
     // Test 2: When the alphabetically first node is dead, we should become leader
     let dead_nodes = vec!["000-definitely-first".to_string()];
     let is_leader = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.is_cleanup_leader(&dead_nodes).await
     };
     // Our node_id (UUID) should now be alphabetically first among alive nodes
@@ -203,7 +203,7 @@ async fn test_cluster_health_disabled_no_heartbeat() {
     // Nodes should NOT be tracking each other when cluster health is disabled
     for node in &cluster.nodes {
         let heartbeats = {
-            let horizontal = node.horizontal.read().await;
+            let horizontal = node.horizontal.clone();
             let heartbeats = horizontal.node_heartbeats.read().await;
             heartbeats.len()
         };

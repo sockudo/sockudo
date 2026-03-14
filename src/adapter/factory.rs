@@ -74,7 +74,7 @@ impl TypedAdapter {
     #[allow(unused_variables)]
     pub async fn set_metrics(
         &self,
-        metrics: Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>,
+        metrics: Arc<dyn crate::metrics::MetricsInterface + Send + Sync>,
     ) -> Result<()> {
         match self {
             TypedAdapter::Local(_) => {

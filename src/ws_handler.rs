@@ -43,7 +43,6 @@ pub async fn handle_ws_upgrade(
             if let Err(e) = handler.handle_socket(socket, app_key.clone(), origin).await {
                 error!("Error handling socket: {e}");
                 if let Some(ref metrics) = handler.metrics {
-                    let metrics_locked = metrics.lock().await;
                     match &e {
                         crate::error::Error::ApplicationNotFound
                         | crate::error::Error::ApplicationDisabled
@@ -52,8 +51,7 @@ pub async fn handle_ws_upgrade(
                         | crate::error::Error::InvalidMessageFormat(_)
                         | crate::error::Error::InvalidEventName(_) => {}
                         _ => {
-                            metrics_locked
-                                .mark_connection_error(&app_key, "socket_handling_failed");
+                            metrics.mark_connection_error(&app_key, "socket_handling_failed");
                         }
                     }
                 }

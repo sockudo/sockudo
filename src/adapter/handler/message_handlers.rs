@@ -174,12 +174,11 @@ impl ConnectionHandler {
             Err(e) => {
                 // Track authentication failures
                 if let Some(ref metrics) = self.metrics {
-                    let metrics_locked = metrics.lock().await;
                     let error_type = match &e {
                         Error::Auth(_) => "authentication_failed",
                         _ => "authentication_error",
                     };
-                    metrics_locked.mark_connection_error(&app_config.id, error_type);
+                    metrics.mark_connection_error(&app_config.id, error_type);
                 }
                 return Err(e);
             }

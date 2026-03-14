@@ -192,8 +192,7 @@ impl ConnectionHandler {
 
             // Mark subscription metric
             {
-                let metrics_locked = metrics.lock().await;
-                metrics_locked.mark_channel_subscription(&app_config.id, channel_type_str);
+                metrics.mark_channel_subscription(&app_config.id, channel_type_str);
             }
 
             // Update active channel count if this is the first connection to the channel

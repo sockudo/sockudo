@@ -222,8 +222,7 @@ async fn record_api_metrics(
     outgoing_response_size: usize,
 ) {
     if let Some(metrics_arc) = &handler.metrics {
-        let metrics = metrics_arc.lock().await;
-        metrics.mark_api_message(app_id, incoming_request_size, outgoing_response_size);
+        metrics_arc.mark_api_message(app_id, incoming_request_size, outgoing_response_size);
         debug!(
             incoming_bytes = incoming_request_size,
             outgoing_bytes = outgoing_response_size,
@@ -515,12 +514,12 @@ async fn process_single_event_parallel(
                 // Attempt to build the cache payload string.
                 match build_cache_payload(&event_name_for_task, &message_data, &target_channel_str) {
                     Ok(cache_payload_str) => {
-                        let mut cache_manager_locked = handler_clone.cache_manager.lock().await;
                         let cache_key_str =
                             format!("app:{}:channel:{}:cache_miss", &app.id, target_channel_str);
 
                         // Attempt to set the cache entry.
-                        match cache_manager_locked
+                        match handler_clone
+                            .cache_manager
                             .set(&cache_key_str, &cache_payload_str, 3600) // TTL is 1 hour
                             .await
                         {
@@ -802,12 +801,12 @@ pub async fn channel(
     };
 
     let cache_data_tuple = if wants_cache_data && utils::is_cache_channel(&channel_name) {
-        let mut cache_manager_locked = handler.cache_manager.lock().await;
         let cache_key_str = format!("app:{app_id}:channel:{channel_name}:cache_miss");
 
-        match cache_manager_locked.get(&cache_key_str).await? {
+        match handler.cache_manager.get(&cache_key_str).await? {
             Some(cache_content_str) => {
-                let ttl_duration = cache_manager_locked
+                let ttl_duration = handler
+                    .cache_manager
                     .ttl(&cache_key_str)
                     .await?
                     .unwrap_or_else(|| core::time::Duration::from_secs(3600));
@@ -1011,10 +1010,10 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
 
     // CRITICAL CHECK 2: Cache manager health - required for cache channels
     if handler.server_options().cache.driver != crate::options::CacheDriver::None {
-        let cache_check = timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS), async {
-            let cache_manager = handler.cache_manager.lock().await;
-            cache_manager.check_health().await
-        })
+        let cache_check = timeout(
+            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
+            handler.cache_manager.check_health(),
+        )
         .await;
 
         match cache_check {
@@ -1202,10 +1201,7 @@ pub async fn metrics(
 ) -> Result<impl IntoResponse, AppError> {
     debug!("{}", "Metrics endpoint called");
     let plaintext_metrics_str = match handler.metrics.clone() {
-        Some(metrics_arc) => {
-            let metrics_data_guard = metrics_arc.lock().await;
-            metrics_data_guard.get_metrics_as_plaintext().await
-        }
+        Some(metrics_arc) => metrics_arc.get_metrics_as_plaintext().await,
         None => {
             info!(
                 "{}",

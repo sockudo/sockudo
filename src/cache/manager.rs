@@ -6,20 +6,20 @@ use std::time::Duration;
 #[async_trait]
 pub trait CacheManager: Send + Sync {
     /// Check if the given key exists in cache
-    async fn has(&mut self, key: &str) -> Result<bool>;
+    async fn has(&self, key: &str) -> Result<bool>;
 
     /// Get a key from the cache
     /// Returns None if cache does not exist
-    async fn get(&mut self, key: &str) -> Result<Option<String>>;
+    async fn get(&self, key: &str) -> Result<Option<String>>;
 
     /// Set or overwrite the value in the cache
-    async fn set(&mut self, key: &str, value: &str, ttl_seconds: u64) -> Result<()>;
+    async fn set(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<()>;
 
     /// Remove a key from the cache
-    async fn remove(&mut self, key: &str) -> Result<()>;
+    async fn remove(&self, key: &str) -> Result<()>;
 
     /// Disconnect the manager's made connections
-    async fn disconnect(&mut self) -> Result<()>;
+    async fn disconnect(&self) -> Result<()>;
 
     /// Health check for the cache manager
     async fn check_health(&self) -> Result<()> {
@@ -27,5 +27,5 @@ pub trait CacheManager: Send + Sync {
         Ok(())
     }
 
-    async fn ttl(&mut self, key: &str) -> Result<Option<Duration>>;
+    async fn ttl(&self, key: &str) -> Result<Option<Duration>>;
 }
