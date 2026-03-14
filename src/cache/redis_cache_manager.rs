@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use async_trait::async_trait;
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 /// Configuration for the Redis cache manager
 #[derive(Clone, Debug)]
@@ -35,7 +36,7 @@ pub struct RedisCacheManager {
     /// Redis client
     client: Client,
     /// Connection manager with automatic reconnection
-    connection: redis::aio::ConnectionManager,
+    connection: Mutex<ConnectionManager>,
     /// Key prefix
     prefix: String,
 }
@@ -43,7 +44,6 @@ pub struct RedisCacheManager {
 impl RedisCacheManager {
     /// Creates a new Redis cache manager with configuration
     pub async fn new(config: RedisCacheConfig) -> Result<Self> {
-        // Build the Redis URL with RESP3 if enabled
         let redis_url = if config.use_resp3 && !config.url.contains("protocol=resp3") {
             if config.url.contains('?') {
                 format!("{}&protocol=resp3", config.url)
@@ -54,11 +54,9 @@ impl RedisCacheManager {
             config.url
         };
 
-        // Create Redis client
         let client = Client::open(redis_url)
             .map_err(|e| Error::Cache(format!("Failed to create Redis client: {e}")))?;
 
-        // Create ConnectionManager with same config as RedisAdapter for consistency
         let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
             .set_number_of_retries(5)
             .set_exponent_base(2.0)
@@ -71,7 +69,7 @@ impl RedisCacheManager {
 
         Ok(Self {
             client,
-            connection,
+            connection: Mutex::new(connection),
             prefix: config.prefix,
         })
     }
@@ -95,40 +93,35 @@ impl RedisCacheManager {
 
 #[async_trait]
 impl CacheManager for RedisCacheManager {
-    /// Check if the given key exists in cache
-    async fn has(&mut self, key: &str) -> Result<bool> {
-        let exists: bool = self
-            .connection
+    async fn has(&self, key: &str) -> Result<bool> {
+        let mut connection = self.connection.lock().await;
+        let exists: bool = connection
             .exists(self.prefixed_key(key))
             .await
             .map_err(|e| Error::Cache(format!("Redis exists error: {e}")))?;
         Ok(exists)
     }
 
-    /// Get a key from the cache
-    /// Returns None if cache does not exist
-    async fn get(&mut self, key: &str) -> Result<Option<String>> {
-        let value: Option<String> = self
-            .connection
+    async fn get(&self, key: &str) -> Result<Option<String>> {
+        let mut connection = self.connection.lock().await;
+        let value: Option<String> = connection
             .get(self.prefixed_key(key))
             .await
             .map_err(|e| Error::Cache(format!("Redis get error: {e}")))?;
         Ok(value)
     }
 
-    /// Set or overwrite the value in the cache
-    async fn set(&mut self, key: &str, value: &str, ttl_seconds: u64) -> Result<()> {
+    async fn set(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<()> {
         let prefixed_key = self.prefixed_key(key);
+        let mut connection = self.connection.lock().await;
 
         if ttl_seconds > 0 {
-            // Set with expiration
-            self.connection
+            connection
                 .set_ex::<_, _, ()>(prefixed_key, value, ttl_seconds)
                 .await
                 .map_err(|e| Error::Cache(format!("Redis set error: {e}")))?;
         } else {
-            // Set without expiration
-            self.connection
+            connection
                 .set::<_, _, ()>(prefixed_key, value)
                 .await
                 .map_err(|e| Error::Cache(format!("Redis set error: {e}")))?;
@@ -137,9 +130,9 @@ impl CacheManager for RedisCacheManager {
         Ok(())
     }
 
-    async fn remove(&mut self, key: &str) -> Result<()> {
-        let deleted: i32 = self
-            .connection
+    async fn remove(&self, key: &str) -> Result<()> {
+        let mut connection = self.connection.lock().await;
+        let deleted: i32 = connection
             .del(self.prefixed_key(key))
             .await
             .map_err(|e| Error::Cache(format!("Redis delete error: {e}")))?;
@@ -150,14 +143,12 @@ impl CacheManager for RedisCacheManager {
         }
     }
 
-    /// Disconnect the manager's made connections
-    async fn disconnect(&mut self) -> Result<()> {
+    async fn disconnect(&self) -> Result<()> {
         self.clear_prefix().await?;
         Ok(())
     }
 
     async fn check_health(&self) -> Result<()> {
-        // Use a dedicated connection for health check to avoid impacting main operations
         let mut conn = self
             .client
             .get_multiplexed_async_connection()
@@ -177,9 +168,10 @@ impl CacheManager for RedisCacheManager {
             )))
         }
     }
-    async fn ttl(&mut self, key: &str) -> Result<Option<Duration>> {
-        let ttl: i64 = self
-            .connection
+
+    async fn ttl(&self, key: &str) -> Result<Option<Duration>> {
+        let mut connection = self.connection.lock().await;
+        let ttl: i64 = connection
             .ttl(self.prefixed_key(key))
             .await
             .map_err(|e| Error::Cache(format!("Redis TTL error: {e}")))?;
@@ -191,26 +183,23 @@ impl CacheManager for RedisCacheManager {
     }
 }
 
-// Additional utility methods for the cache manager
 impl RedisCacheManager {
-    /// Delete a key from the cache
-    pub async fn delete(&mut self, key: &str) -> Result<bool> {
-        let deleted: i32 = self
-            .connection
+    pub async fn delete(&self, key: &str) -> Result<bool> {
+        let mut connection = self.connection.lock().await;
+        let deleted: i32 = connection
             .del(self.prefixed_key(key))
             .await
             .map_err(|e| Error::Cache(format!("Redis delete error: {e}")))?;
         Ok(deleted > 0)
     }
 
-    /// Clear all keys with the current prefix
-    pub async fn clear_prefix(&mut self) -> Result<usize> {
+    pub async fn clear_prefix(&self) -> Result<usize> {
         let pattern = format!("{}:*", self.prefix);
+        let mut connection = self.connection.lock().await;
 
         let keys = {
-            let mut keys: Vec<String> = Vec::new();
-            let mut iter: redis::AsyncIter<String> = self
-                .connection
+            let mut keys = Vec::new();
+            let mut iter: redis::AsyncIter<String> = connection
                 .scan_match(&pattern)
                 .await
                 .map_err(|e| Error::Cache(format!("Redis scan error: {e}")))?;
@@ -227,9 +216,7 @@ impl RedisCacheManager {
             return Ok(0);
         }
 
-        // Then delete them
-        let deleted: i32 = self
-            .connection
+        let deleted: i32 = connection
             .del(keys)
             .await
             .map_err(|e| Error::Cache(format!("Redis delete error: {e}")))?;
@@ -237,64 +224,54 @@ impl RedisCacheManager {
         Ok(deleted as usize)
     }
 
-    /// Set multiple key-value pairs at once
-    pub async fn set_many(&mut self, pairs: &[(&str, &str)], ttl_seconds: u64) -> Result<()> {
+    pub async fn set_many(&self, pairs: &[(&str, &str)], ttl_seconds: u64) -> Result<()> {
         if pairs.is_empty() {
             return Ok(());
         }
 
-        // Convert to prefixed keys
         let prefixed_pairs: Vec<(String, &str)> = pairs
             .iter()
             .map(|(k, v)| (self.prefixed_key(k), *v))
             .collect();
 
-        // Use a pipeline for better performance
         let mut pipe = redis::pipe();
-
         for (key, value) in &prefixed_pairs {
             if ttl_seconds > 0 {
-                pipe.set_ex(key, *value, ttl_seconds as usize as u64);
+                pipe.set_ex(key, *value, ttl_seconds);
             } else {
                 pipe.set(key, *value);
             }
         }
 
-        // Execute pipeline
-        pipe.query_async::<()>(&mut self.connection)
+        let mut connection = self.connection.lock().await;
+        pipe.query_async::<()>(&mut *connection)
             .await
             .map_err(|e| Error::Cache(format!("Redis pipeline error: {e}")))?;
 
         Ok(())
     }
 
-    /// Increment a counter in Redis
-    pub async fn increment(&mut self, key: &str, by: i64) -> Result<i64> {
-        let value: i64 = self
-            .connection
+    pub async fn increment(&self, key: &str, by: i64) -> Result<i64> {
+        let mut connection = self.connection.lock().await;
+        let value: i64 = connection
             .incr(self.prefixed_key(key), by)
             .await
             .map_err(|e| Error::Cache(format!("Redis increment error: {e}")))?;
         Ok(value)
     }
 
-    /// Get the remaining TTL for a key in seconds - todo
     pub async fn get_remaining_ttl() {
         todo!()
     }
 
-    /// Get multiple keys at once
-    pub async fn get_many(&mut self, keys: &[&str]) -> Result<Vec<Option<String>>> {
+    pub async fn get_many(&self, keys: &[&str]) -> Result<Vec<Option<String>>> {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Convert to prefixed keys
         let prefixed_keys: Vec<String> = keys.iter().map(|k| self.prefixed_key(k)).collect();
-
-        // Use MGET for better performance
-        let values: Vec<Option<String>> = self
-            .connection
+        let mut connection = self.connection.lock().await;
+        let values: Vec<Option<String>> = connection
             .mget(prefixed_keys)
             .await
             .map_err(|e| Error::Cache(format!("Redis mget error: {e}")))?;
@@ -302,20 +279,18 @@ impl RedisCacheManager {
         Ok(values)
     }
 
-    /// Flush all keys from the current database
-    pub async fn flush_db(&mut self) -> Result<()> {
-        // Use the cmd method to execute FLUSHDB command
+    pub async fn flush_db(&self) -> Result<()> {
+        let mut connection = self.connection.lock().await;
         redis::cmd("FLUSHDB")
-            .query_async::<()>(&mut self.connection)
+            .query_async::<()>(&mut *connection)
             .await
             .map_err(|e| Error::Cache(format!("Redis flushdb error: {e}")))?;
 
         Ok(())
     }
 
-    /// Return the raw connection manager for advanced operations
-    pub fn get_connection(&self) -> ConnectionManager {
-        self.connection.clone()
+    pub async fn get_connection(&self) -> ConnectionManager {
+        self.connection.lock().await.clone()
     }
 }
 
@@ -323,7 +298,6 @@ impl RedisCacheManager {
 pub struct CacheManagerFactory;
 
 impl CacheManagerFactory {
-    /// Create a new Redis cache manager
     pub async fn create_redis(
         redis_url: &str,
         prefix: Option<&str>,
@@ -340,7 +314,6 @@ impl CacheManagerFactory {
         Ok(Box::new(cache_manager))
     }
 
-    /// Create a new Redis cache manager with RESP3 protocol
     pub async fn create_redis_resp3(
         redis_url: &str,
         prefix: Option<&str>,

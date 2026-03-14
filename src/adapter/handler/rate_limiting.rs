@@ -32,8 +32,7 @@ impl ConnectionHandler {
         if let Some(limiter_arc) = self.client_event_limiters.get(socket_id) {
             // Track rate limit check
             if let Some(ref metrics) = self.metrics {
-                let metrics_locked = metrics.lock().await;
-                metrics_locked.mark_rate_limit_check(&app_config.id, "client_events");
+                metrics.mark_rate_limit_check(&app_config.id, "client_events");
             }
 
             let limiter = limiter_arc.value();
@@ -42,8 +41,7 @@ impl ConnectionHandler {
             if !limit_result.allowed {
                 // Track rate limit trigger
                 if let Some(ref metrics) = self.metrics {
-                    let metrics_locked = metrics.lock().await;
-                    metrics_locked.mark_rate_limit_triggered(&app_config.id, "client_events");
+                    metrics.mark_rate_limit_triggered(&app_config.id, "client_events");
                 }
 
                 warn!(

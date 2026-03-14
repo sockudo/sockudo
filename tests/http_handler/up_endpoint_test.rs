@@ -69,12 +69,10 @@ async fn test_up_general_health_check_with_apps() {
             as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
         None, // local_adapter
-        Arc::new(tokio::sync::Mutex::new(
-            crate::mocks::connection_handler_mock::MockCacheManager::new(),
-        )),
-        Some(Arc::new(tokio::sync::Mutex::new(
+        Arc::new(crate::mocks::connection_handler_mock::MockCacheManager::new()),
+        Some(Arc::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
-        ))),
+        )),
         None,
         sockudo::options::ServerOptions::default(),
         None,
@@ -208,12 +206,10 @@ async fn test_up_general_health_check_app_manager_error() {
         Arc::new(ErrorMockAppManager) as Arc<dyn sockudo::app::manager::AppManager + Send + Sync>,
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new()),
         None, // local_adapter
-        Arc::new(tokio::sync::Mutex::new(
-            crate::mocks::connection_handler_mock::MockCacheManager::new(),
-        )),
-        Some(Arc::new(tokio::sync::Mutex::new(
+        Arc::new(crate::mocks::connection_handler_mock::MockCacheManager::new()),
+        Some(Arc::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
-        ))),
+        )),
         None,
         sockudo::options::ServerOptions::default(),
         None,
@@ -241,12 +237,10 @@ async fn test_up_specific_app_manager_error() {
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
             as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
-        Arc::new(tokio::sync::Mutex::new(
-            crate::mocks::connection_handler_mock::MockCacheManager::new(),
-        )),
-        Some(Arc::new(tokio::sync::Mutex::new(
+        Arc::new(crate::mocks::connection_handler_mock::MockCacheManager::new()),
+        Some(Arc::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
-        ))),
+        )),
         None,
         sockudo::options::ServerOptions::default(),
         None,
@@ -309,12 +303,10 @@ async fn test_up_general_health_check_timeout() {
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
             as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
-        Arc::new(tokio::sync::Mutex::new(
-            crate::mocks::connection_handler_mock::MockCacheManager::new(),
-        )),
-        Some(Arc::new(tokio::sync::Mutex::new(
+        Arc::new(crate::mocks::connection_handler_mock::MockCacheManager::new()),
+        Some(Arc::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
-        ))),
+        )),
         None,
         sockudo::options::ServerOptions::default(),
         None,
@@ -342,12 +334,10 @@ async fn test_up_specific_app_timeout() {
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
             as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
-        Arc::new(tokio::sync::Mutex::new(
-            crate::mocks::connection_handler_mock::MockCacheManager::new(),
-        )),
-        Some(Arc::new(tokio::sync::Mutex::new(
+        Arc::new(crate::mocks::connection_handler_mock::MockCacheManager::new()),
+        Some(Arc::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
-        ))),
+        )),
         None,
         sockudo::options::ServerOptions::default(),
         None,
@@ -571,27 +561,22 @@ struct FailingCacheManager;
 
 #[async_trait::async_trait]
 impl sockudo::cache::manager::CacheManager for FailingCacheManager {
-    async fn has(&mut self, _key: &str) -> sockudo::error::Result<bool> {
+    async fn has(&self, _key: &str) -> sockudo::error::Result<bool> {
         Ok(false)
     }
-    async fn get(&mut self, _key: &str) -> sockudo::error::Result<Option<String>> {
+    async fn get(&self, _key: &str) -> sockudo::error::Result<Option<String>> {
         Ok(None)
     }
-    async fn set(
-        &mut self,
-        _key: &str,
-        _value: &str,
-        _ttl_seconds: u64,
-    ) -> sockudo::error::Result<()> {
+    async fn set(&self, _key: &str, _value: &str, _ttl_seconds: u64) -> sockudo::error::Result<()> {
         Ok(())
     }
-    async fn remove(&mut self, _key: &str) -> sockudo::error::Result<()> {
+    async fn remove(&self, _key: &str) -> sockudo::error::Result<()> {
         Ok(())
     }
-    async fn disconnect(&mut self) -> sockudo::error::Result<()> {
+    async fn disconnect(&self) -> sockudo::error::Result<()> {
         Ok(())
     }
-    async fn ttl(&mut self, _key: &str) -> sockudo::error::Result<Option<Duration>> {
+    async fn ttl(&self, _key: &str) -> sockudo::error::Result<Option<Duration>> {
         Ok(None)
     }
 
@@ -613,10 +598,10 @@ async fn test_up_adapter_health_check_failure() {
         Arc::new(FailingAdapter)
             as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
-        Arc::new(tokio::sync::Mutex::new(FailingCacheManager)),
-        Some(Arc::new(tokio::sync::Mutex::new(
+        Arc::new(FailingCacheManager),
+        Some(Arc::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
-        ))),
+        )),
         None,
         sockudo::options::ServerOptions::default(),
         None,
@@ -649,10 +634,10 @@ async fn test_up_cache_health_check_failure() {
         Arc::new(crate::mocks::connection_handler_mock::MockAdapter::new())
             as Arc<dyn sockudo::adapter::connection_manager::ConnectionManager + Send + Sync>,
         None, // local_adapter
-        Arc::new(tokio::sync::Mutex::new(FailingCacheManager)),
-        Some(Arc::new(tokio::sync::Mutex::new(
+        Arc::new(FailingCacheManager),
+        Some(Arc::new(
             crate::mocks::connection_handler_mock::MockMetricsInterface::new(),
-        ))),
+        )),
         None,
         server_options,
         None,

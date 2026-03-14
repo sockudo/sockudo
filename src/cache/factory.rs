@@ -17,7 +17,6 @@ use crate::error::{Error, Result};
 
 use crate::options::{CacheConfig, CacheDriver, MemoryCacheOptions, RedisConnection};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::info;
 
 pub struct CacheManagerFactory;
@@ -27,7 +26,7 @@ impl CacheManagerFactory {
     pub async fn create(
         config: &CacheConfig,
         global_redis_conn_details: &RedisConnection,
-    ) -> Result<Arc<Mutex<dyn CacheManager + Send + Sync>>> {
+    ) -> Result<Arc<dyn CacheManager + Send + Sync>> {
         // Corrected return type
         info!(
             "{}",
@@ -63,7 +62,7 @@ impl CacheManagerFactory {
                         ..Default::default()
                     };
                     let manager = RedisClusterCacheManager::new(cluster_cache_config).await?;
-                    return Ok(Arc::new(Mutex::new(manager)));
+                    return Ok(Arc::new(manager));
                 }
 
                 #[cfg(not(feature = "redis-cluster"))]
@@ -96,7 +95,7 @@ impl CacheManagerFactory {
                     config.memory.clone(),
                 )
                 .await;
-                Ok(Arc::new(Mutex::new(fallback_manager)))
+                Ok(Arc::new(fallback_manager))
             }
             #[cfg(feature = "redis-cluster")]
             CacheDriver::RedisCluster => {
@@ -134,7 +133,7 @@ impl CacheManagerFactory {
                     config.memory.clone(),
                 )
                 .await;
-                Ok(Arc::new(Mutex::new(fallback_manager)))
+                Ok(Arc::new(fallback_manager))
             }
             CacheDriver::Memory => {
                 info!("{}", "Using memory cache manager.".to_string());
@@ -146,7 +145,7 @@ impl CacheManagerFactory {
                 };
                 let manager =
                     MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone()); // Pass prefix and MemoryCacheOptions
-                Ok(Arc::new(Mutex::new(manager)))
+                Ok(Arc::new(manager))
             }
             CacheDriver::None => {
                 info!(
@@ -165,7 +164,7 @@ impl CacheManagerFactory {
                 );
                 let manager =
                     MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone());
-                Ok(Arc::new(Mutex::new(manager)))
+                Ok(Arc::new(manager))
             }
             #[cfg(not(feature = "redis-cluster"))]
             CacheDriver::RedisCluster => {
@@ -174,7 +173,7 @@ impl CacheManagerFactory {
                 );
                 let manager =
                     MemoryCacheManager::new("default_mem_cache".to_string(), config.memory.clone());
-                Ok(Arc::new(Mutex::new(manager)))
+                Ok(Arc::new(manager))
             }
         }
     }
