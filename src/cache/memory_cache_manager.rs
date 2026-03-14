@@ -52,14 +52,14 @@ impl MemoryCacheManager {
 
 #[async_trait]
 impl CacheManager for MemoryCacheManager {
-    async fn has(&mut self, key: &str) -> Result<bool> {
+    async fn has(&self, key: &str) -> Result<bool> {
         let prefixed_key = self.prefixed_key(key);
         // Moka's `get` implicitly checks expiry.
         let exists = self.cache.get(&prefixed_key).await.is_some();
         Ok(exists)
     }
 
-    async fn get(&mut self, key: &str) -> Result<Option<String>> {
+    async fn get(&self, key: &str) -> Result<Option<String>> {
         let prefixed_key = self.prefixed_key(key);
         Ok(self.cache.get(&prefixed_key).await)
     }
@@ -72,7 +72,7 @@ impl CacheManager for MemoryCacheManager {
     //  you'd need `Cache::builder().expire_after(MyCustomExpiry::new())`
     //  or use `insert_with_expiry` if available and appropriate.
     /// For simplicity, this implementation relies on the cache's global TTL if configured.
-    async fn set(&mut self, key: &str, value: &str, _ttl_seconds: u64) -> Result<()> {
+    async fn set(&self, key: &str, value: &str, _ttl_seconds: u64) -> Result<()> {
         // Note: _ttl_seconds is marked as unused. If you need per-entry TTL that differs
         // from the cache's default, Moka requires a more complex Expiry policy or
         // using a different cache for entries with different TTL characteristics.
@@ -85,14 +85,14 @@ impl CacheManager for MemoryCacheManager {
         Ok(())
     }
 
-    async fn remove(&mut self, key: &str) -> Result<()> {
+    async fn remove(&self, key: &str) -> Result<()> {
         let prefixed_key = self.prefixed_key(key);
         // Moka's invalidate does not return a value, it just removes the entry.
         self.cache.invalidate(&prefixed_key).await;
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> Result<()> {
+    async fn disconnect(&self) -> Result<()> {
         // Moka's cache is in-memory and managed by RAII.
         // "Disconnecting" can mean clearing all entries.
         self.cache.invalidate_all();
@@ -101,7 +101,7 @@ impl CacheManager for MemoryCacheManager {
 
     /// Returns the configured default TTL of the cache if a key exists,
     /// or None if the key doesn't exist or no default TTL is configured.
-    async fn ttl(&mut self, key: &str) -> Result<Option<Duration>> {
+    async fn ttl(&self, key: &str) -> Result<Option<Duration>> {
         let prefixed_key = self.prefixed_key(key);
         if self.cache.contains_key(&prefixed_key) {
             // Check if key exists (Moka's contains_key is sync)

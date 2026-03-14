@@ -91,8 +91,7 @@ impl ConnectionHandler {
 
             // Mark unsubscription metric
             {
-                let metrics_locked = metrics.lock().await;
-                metrics_locked.mark_channel_unsubscription(&app_config.id, channel_type_str);
+                metrics.mark_channel_unsubscription(&app_config.id, channel_type_str);
             }
 
             // Update active channel count if this was the last connection to the channel
@@ -374,8 +373,7 @@ impl ConnectionHandler {
         // Step 5: Update metrics immediately (outside connection lock to minimize contention)
         if let Some(ref metrics) = self.metrics {
             // Use regular lock instead of try_lock to ensure metrics are always updated
-            let metrics_locked = metrics.lock().await;
-            metrics_locked.mark_disconnection(app_id, socket_id);
+            metrics.mark_disconnection(app_id, socket_id);
         }
 
         debug!(
@@ -479,8 +477,7 @@ impl ConnectionHandler {
 
         // Update metrics
         if let Some(ref metrics) = self.metrics {
-            let metrics_locked = metrics.lock().await;
-            metrics_locked.mark_disconnection(app_id, socket_id);
+            metrics.mark_disconnection(app_id, socket_id);
         }
 
         debug!(
@@ -809,10 +806,9 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         channel: &str,
     ) -> Result<()> {
-        let mut cache_manager = self.cache_manager.lock().await;
         let cache_key = format!("app:{app_id}:channel:{channel}:cache_miss");
 
-        match cache_manager.get(&cache_key).await {
+        match self.cache_manager.get(&cache_key).await {
             Ok(Some(cache_content)) => {
                 // Found cached content, send it to the socket
                 let cache_message: PusherMessage =
@@ -878,7 +874,6 @@ impl ConnectionHandler {
         message: &PusherMessage,
         ttl_seconds: Option<u64>,
     ) -> Result<()> {
-        let mut cache_manager = self.cache_manager.lock().await;
         let cache_key = format!("app:{app_id}:channel:{channel}:cache_miss");
 
         let message_json = sonic_rs::to_string(message).map_err(|e| {
@@ -887,13 +882,13 @@ impl ConnectionHandler {
 
         match ttl_seconds {
             Some(ttl) => {
-                cache_manager
+                self.cache_manager
                     .set(&cache_key, &message_json, ttl)
                     .await
                     .map_err(|e| Error::Internal(format!("Failed to store cache with TTL: {e}")))?;
             }
             None => {
-                cache_manager
+                self.cache_manager
                     .set(&cache_key, &message_json, 0)
                     .await
                     .map_err(|e| Error::Internal(format!("Failed to store cache: {e}")))?;
@@ -906,10 +901,9 @@ impl ConnectionHandler {
 
     /// Clear cache for a specific channel
     pub async fn clear_cache_for_channel(&self, app_id: &str, channel: &str) -> Result<()> {
-        let mut cache_manager = self.cache_manager.lock().await;
         let cache_key = format!("app:{app_id}:channel:{channel}:cache_miss");
 
-        cache_manager.remove(&cache_key).await.map_err(|e| {
+        self.cache_manager.remove(&cache_key).await.map_err(|e| {
             Error::Internal(format!("Failed to clear cache for channel {channel}: {e}"))
         })?;
 
@@ -919,10 +913,9 @@ impl ConnectionHandler {
 
     /// Check if a channel has cached content
     pub async fn has_cache_for_channel(&self, app_id: &str, channel: &str) -> Result<bool> {
-        let mut cache_manager = self.cache_manager.lock().await;
         let cache_key = format!("app:{app_id}:channel:{channel}:cache_miss");
 
-        match cache_manager.get(&cache_key).await {
+        match self.cache_manager.get(&cache_key).await {
             Ok(Some(_)) => Ok(true),
             Ok(None) => Ok(false),
             Err(e) => {

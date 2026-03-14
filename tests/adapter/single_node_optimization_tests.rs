@@ -65,7 +65,7 @@ async fn test_multi_node_sends_broadcast() -> Result<()> {
 
     // Simulate other nodes by adding them to heartbeat registry
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
         heartbeats.insert("node-2".to_string(), std::time::Instant::now());
     }
@@ -155,7 +155,7 @@ async fn test_multi_node_sends_requests() -> Result<()> {
 
     // Simulate other nodes by adding them to heartbeat registry
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
         heartbeats.insert("node-2".to_string(), std::time::Instant::now());
     }
@@ -233,7 +233,7 @@ async fn test_multi_node_sends_presence_broadcasts() -> Result<()> {
 
     // Simulate other nodes by adding them to heartbeat registry
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
         heartbeats.insert("node-2".to_string(), std::time::Instant::now());
     }
@@ -292,21 +292,21 @@ async fn test_effective_node_count_detection() -> Result<()> {
 
     // Check initial effective node count (should be 1 - just ourselves)
     let node_count = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.get_effective_node_count().await
     };
     assert_eq!(node_count, 1, "Initial node count should be 1");
 
     // Simulate another node joining by adding to heartbeat registry
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
         heartbeats.insert("node-2".to_string(), std::time::Instant::now());
     }
 
     // Check updated effective node count (should be 2)
     let node_count = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.get_effective_node_count().await
     };
     assert_eq!(
@@ -354,7 +354,7 @@ async fn test_transition_single_to_multi_node() -> Result<()> {
 
     // Simulate second node joining
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
         heartbeats.insert("node-2".to_string(), std::time::Instant::now());
     }
@@ -391,7 +391,7 @@ async fn test_should_skip_horizontal_communication() -> Result<()> {
 
     // Add another node
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
         heartbeats.insert("node-2".to_string(), std::time::Instant::now());
     }
@@ -417,7 +417,7 @@ async fn test_dead_node_optimization() -> Result<()> {
 
     // Add a "dead" node to the heartbeat registry
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut heartbeats = horizontal.node_heartbeats.write().await;
         // Add an old heartbeat (simulating dead node)
         heartbeats.insert(
@@ -428,7 +428,7 @@ async fn test_dead_node_optimization() -> Result<()> {
 
     // Test get_dead_nodes method
     let dead_nodes = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.get_dead_nodes(5000).await // 5 second timeout
     };
 

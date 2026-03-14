@@ -211,7 +211,7 @@ impl FallbackCacheManager {
 
 #[async_trait]
 impl CacheManager for FallbackCacheManager {
-    async fn has(&mut self, key: &str) -> Result<bool> {
+    async fn has(&self, key: &str) -> Result<bool> {
         self.try_recover().await;
 
         // Acquire read lock to prevent state changes during operation
@@ -221,7 +221,7 @@ impl CacheManager for FallbackCacheManager {
             return self.fallback.lock().await.has(key).await;
         }
 
-        let mut primary = self.primary.lock().await;
+        let primary = self.primary.lock().await;
         match primary.has(key).await {
             Ok(result) => Ok(result),
             Err(e) => {
@@ -231,7 +231,7 @@ impl CacheManager for FallbackCacheManager {
         }
     }
 
-    async fn get(&mut self, key: &str) -> Result<Option<String>> {
+    async fn get(&self, key: &str) -> Result<Option<String>> {
         self.try_recover().await;
 
         // Acquire read lock to prevent state changes during operation
@@ -241,7 +241,7 @@ impl CacheManager for FallbackCacheManager {
             return self.fallback.lock().await.get(key).await;
         }
 
-        let mut primary = self.primary.lock().await;
+        let primary = self.primary.lock().await;
         match primary.get(key).await {
             Ok(result) => Ok(result),
             Err(e) => {
@@ -251,7 +251,7 @@ impl CacheManager for FallbackCacheManager {
         }
     }
 
-    async fn set(&mut self, key: &str, value: &str, ttl_seconds: u64) -> Result<()> {
+    async fn set(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<()> {
         self.try_recover().await;
 
         // Acquire read lock to prevent state changes during operation
@@ -266,7 +266,7 @@ impl CacheManager for FallbackCacheManager {
                 .await;
         }
 
-        let mut primary = self.primary.lock().await;
+        let primary = self.primary.lock().await;
         match primary.set(key, value, ttl_seconds).await {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -280,7 +280,7 @@ impl CacheManager for FallbackCacheManager {
         }
     }
 
-    async fn remove(&mut self, key: &str) -> Result<()> {
+    async fn remove(&self, key: &str) -> Result<()> {
         self.try_recover().await;
 
         // Acquire read lock to prevent state changes during operation
@@ -290,7 +290,7 @@ impl CacheManager for FallbackCacheManager {
             return self.fallback.lock().await.remove(key).await;
         }
 
-        let mut primary = self.primary.lock().await;
+        let primary = self.primary.lock().await;
         match primary.remove(key).await {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -300,7 +300,7 @@ impl CacheManager for FallbackCacheManager {
         }
     }
 
-    async fn disconnect(&mut self) -> Result<()> {
+    async fn disconnect(&self) -> Result<()> {
         let primary_result = self.primary.lock().await.disconnect().await;
         if let Err(ref e) = primary_result {
             warn!(error = ?e, "Failed to disconnect primary cache");
@@ -329,7 +329,7 @@ impl CacheManager for FallbackCacheManager {
         primary.check_health().await
     }
 
-    async fn ttl(&mut self, key: &str) -> Result<Option<Duration>> {
+    async fn ttl(&self, key: &str) -> Result<Option<Duration>> {
         self.try_recover().await;
 
         // Acquire read lock to prevent state changes during operation
@@ -339,7 +339,7 @@ impl CacheManager for FallbackCacheManager {
             return self.fallback.lock().await.ttl(key).await;
         }
 
-        let mut primary = self.primary.lock().await;
+        let primary = self.primary.lock().await;
         match primary.ttl(key).await {
             Ok(result) => Ok(result),
             Err(e) => {
@@ -380,21 +380,21 @@ mod tests {
 
     #[async_trait]
     impl CacheManager for MockCache {
-        async fn has(&mut self, key: &str) -> Result<bool> {
+        async fn has(&self, key: &str) -> Result<bool> {
             if *self.should_fail.lock().await {
                 return Err(Error::Cache("Mock failure".to_string()));
             }
             Ok(self.data.lock().await.contains_key(key))
         }
 
-        async fn get(&mut self, key: &str) -> Result<Option<String>> {
+        async fn get(&self, key: &str) -> Result<Option<String>> {
             if *self.should_fail.lock().await {
                 return Err(Error::Cache("Mock failure".to_string()));
             }
             Ok(self.data.lock().await.get(key).cloned())
         }
 
-        async fn set(&mut self, key: &str, value: &str, _ttl_seconds: u64) -> Result<()> {
+        async fn set(&self, key: &str, value: &str, _ttl_seconds: u64) -> Result<()> {
             if *self.should_fail.lock().await {
                 return Err(Error::Cache("Mock failure".to_string()));
             }
@@ -405,7 +405,7 @@ mod tests {
             Ok(())
         }
 
-        async fn remove(&mut self, key: &str) -> Result<()> {
+        async fn remove(&self, key: &str) -> Result<()> {
             if *self.should_fail.lock().await {
                 return Err(Error::Cache("Mock failure".to_string()));
             }
@@ -413,7 +413,7 @@ mod tests {
             Ok(())
         }
 
-        async fn disconnect(&mut self) -> Result<()> {
+        async fn disconnect(&self) -> Result<()> {
             Ok(())
         }
 
@@ -424,7 +424,7 @@ mod tests {
             Ok(())
         }
 
-        async fn ttl(&mut self, _key: &str) -> Result<Option<Duration>> {
+        async fn ttl(&self, _key: &str) -> Result<Option<Duration>> {
             if *self.should_fail.lock().await {
                 return Err(Error::Cache("Mock failure".to_string()));
             }
@@ -443,7 +443,7 @@ mod tests {
             max_capacity: 100,
         };
 
-        let mut manager = FallbackCacheManager::new(Box::new(mock), options);
+        let manager = FallbackCacheManager::new(Box::new(mock), options);
 
         // Initially should use primary
         assert!(!manager.is_using_fallback());
@@ -474,7 +474,7 @@ mod tests {
             max_capacity: 100,
         };
 
-        let mut manager = FallbackCacheManager::new(Box::new(mock), options);
+        let manager = FallbackCacheManager::new(Box::new(mock), options);
 
         // Trigger failure to switch to fallback
         *should_fail.lock().await = true;
@@ -532,7 +532,7 @@ mod tests {
             .map(|i| {
                 let manager_clone = manager.clone();
                 tokio::spawn(async move {
-                    let mut mgr = manager_clone.lock().await;
+                    let mgr = manager_clone.lock().await;
                     mgr.set(&format!("key{}", i), &format!("value{}", i), 60)
                         .await
                 })
@@ -549,7 +549,7 @@ mod tests {
 
         // Verify all keys were set correctly
         for i in 0..10 {
-            let mut mgr = manager.lock().await;
+            let mgr = manager.lock().await;
             let value = mgr.get(&format!("key{}", i)).await.unwrap();
             assert_eq!(value, Some(format!("value{}", i)));
         }
@@ -563,7 +563,7 @@ mod tests {
             max_capacity: 100,
         };
 
-        let mut cache = MemoryCacheManager::new("test_prefix".to_string(), options);
+        let cache = MemoryCacheManager::new("test_prefix".to_string(), options);
 
         // Add some entries
         cache.set("key1", "value1", 60).await.unwrap();

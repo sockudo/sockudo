@@ -34,7 +34,6 @@ use sockudo_ws::axum_integration::{WebSocket, WebSocketReader, WebSocketWriter};
 use sonic_rs::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
-use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
 #[derive(Clone)]
@@ -42,8 +41,8 @@ pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
     pub(crate) connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     pub(crate) local_adapter: Option<Arc<crate::adapter::local_adapter::LocalAdapter>>,
-    pub(crate) cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
-    pub(crate) metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+    pub(crate) cache_manager: Arc<dyn CacheManager + Send + Sync>,
+    pub(crate) metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
     watchlist_manager: Arc<WatchlistManager>,
@@ -62,8 +61,8 @@ impl ConnectionHandler {
         app_manager: Arc<dyn AppManager + Send + Sync>,
         connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         local_adapter: Option<Arc<crate::adapter::local_adapter::LocalAdapter>>,
-        cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
-        metrics: Option<Arc<Mutex<dyn MetricsInterface + Send + Sync>>>,
+        cache_manager: Arc<dyn CacheManager + Send + Sync>,
+        metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
         server_options: ServerOptions,
         cleanup_queue: Option<crate::cleanup::CleanupSender>,
@@ -116,13 +115,12 @@ impl ConnectionHandler {
             Err(e) => {
                 // Track application validation errors
                 if let Some(ref metrics) = self.metrics {
-                    let metrics_locked = metrics.lock().await;
                     let error_type = match &e {
                         Error::ApplicationNotFound => "app_not_found",
                         Error::ApplicationDisabled => "app_disabled",
                         _ => "app_validation_failed",
                     };
-                    metrics_locked.mark_connection_error(&app_key, error_type);
+                    metrics.mark_connection_error(&app_key, error_type);
                 }
                 return Err(e);
             }
@@ -143,8 +141,7 @@ impl ConnectionHandler {
             if !OriginValidator::validate_origin(origin_str, allowed_origins) {
                 // Track origin validation errors
                 if let Some(ref metrics) = self.metrics {
-                    let metrics_locked = metrics.lock().await;
-                    metrics_locked.mark_connection_error(&app_config.id, "origin_not_allowed");
+                    metrics.mark_connection_error(&app_config.id, "origin_not_allowed");
                 }
 
                 // Send error message directly through the raw WebSocket before closing
@@ -268,8 +265,7 @@ impl ConnectionHandler {
 
         // Update metrics after lock is released to prevent deadlock
         if let Some(ref metrics) = self.metrics {
-            let metrics_locked = metrics.lock().await;
-            metrics_locked.mark_new_connection(&app_config.id, &socket_id);
+            metrics.mark_new_connection(&app_config.id, &socket_id);
         }
 
         Ok(())
@@ -356,12 +352,11 @@ impl ConnectionHandler {
             Err(e) => {
                 // Track message parsing errors
                 if let Some(ref metrics) = self.metrics {
-                    let metrics_locked = metrics.lock().await;
                     let error_type = match &e {
                         Error::InvalidMessageFormat(_) => "invalid_message_format",
                         _ => "message_parse_error",
                     };
-                    metrics_locked.mark_connection_error(&app_config.id, error_type);
+                    metrics.mark_connection_error(&app_config.id, error_type);
                 }
                 return Err(e);
             }
@@ -372,8 +367,7 @@ impl ConnectionHandler {
             None => {
                 // Track missing event name errors
                 if let Some(ref metrics) = self.metrics {
-                    let metrics_locked = metrics.lock().await;
-                    metrics_locked.mark_connection_error(&app_config.id, "missing_event_name");
+                    metrics.mark_connection_error(&app_config.id, "missing_event_name");
                 }
                 return Err(Error::InvalidEventName("Event name is required".into()));
             }
@@ -381,12 +375,11 @@ impl ConnectionHandler {
 
         // Track WebSocket message received metrics
         if let Some(ref metrics) = self.metrics {
-            let metrics_locked = metrics.lock().await;
             let payload_size = match &message {
                 Message::Text(b) | Message::Binary(b) => b.len(),
                 _ => 0,
             };
-            metrics_locked.mark_ws_message_received(&app_config.id, payload_size);
+            metrics.mark_ws_message_received(&app_config.id, payload_size);
         }
 
         debug!(
@@ -561,7 +554,7 @@ impl ConnectionHandler {
         &self,
         app_id: &str,
         channel_type: &str,
-        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
+        metrics: Arc<dyn MetricsInterface + Send + Sync>,
     ) {
         // Get current count for this channel type
         // IMPORTANT: We must get the count BEFORE acquiring the metrics lock to avoid deadlock
@@ -570,8 +563,7 @@ impl ConnectionHandler {
             .await;
 
         // Now acquire the metrics lock and update
-        let metrics_locked = metrics.lock().await;
-        metrics_locked.update_active_channels(app_id, channel_type, current_count + 1);
+        metrics.update_active_channels(app_id, channel_type, current_count + 1);
 
         debug!(
             "Incremented active {} channels for app {} to {}",
@@ -586,7 +578,7 @@ impl ConnectionHandler {
         &self,
         app_id: &str,
         channel_type: &str,
-        metrics: Arc<Mutex<dyn MetricsInterface + Send + Sync>>,
+        metrics: Arc<dyn MetricsInterface + Send + Sync>,
     ) {
         // Get current count for this channel type
         // IMPORTANT: We must get the count BEFORE acquiring the metrics lock to avoid deadlock
@@ -598,8 +590,7 @@ impl ConnectionHandler {
         let new_count = std::cmp::max(0, current_count - 1);
 
         // Now acquire the metrics lock and update
-        let metrics_locked = metrics.lock().await;
-        metrics_locked.update_active_channels(app_id, channel_type, new_count);
+        metrics.update_active_channels(app_id, channel_type, new_count);
 
         debug!(
             "Decremented active {} channels for app {} to {}",

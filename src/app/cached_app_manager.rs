@@ -5,7 +5,6 @@ use crate::error::{Error, Result};
 use crate::options::CacheSettings;
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 const CACHE_PREFIX_ID: &str = "app:id";
@@ -14,14 +13,14 @@ const CACHE_PREFIX_KEY: &str = "app:key";
 /// Caching decorator for AppManager implementations
 pub struct CachedAppManager {
     inner: Arc<dyn AppManager + Send + Sync>,
-    cache: Arc<Mutex<dyn CacheManager + Send + Sync>>,
+    cache: Arc<dyn CacheManager + Send + Sync>,
     settings: CacheSettings,
 }
 
 impl CachedAppManager {
     pub fn new(
         inner: Arc<dyn AppManager + Send + Sync>,
-        cache: Arc<Mutex<dyn CacheManager + Send + Sync>>,
+        cache: Arc<dyn CacheManager + Send + Sync>,
         settings: CacheSettings,
     ) -> Self {
         Self {
@@ -50,8 +49,7 @@ impl CachedAppManager {
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
-        let mut cache = self.cache.lock().await;
-        match cache.get(key).await {
+        match self.cache.get(key).await {
             Ok(Some(json)) => match Self::deserialize(&json) {
                 Ok(value) => {
                     debug!("Cache hit: {}", key);
@@ -82,15 +80,13 @@ impl CachedAppManager {
             }
         };
 
-        let mut cache = self.cache.lock().await;
-        if let Err(e) = cache.set(key, &json, self.settings.ttl).await {
+        if let Err(e) = self.cache.set(key, &json, self.settings.ttl).await {
             warn!("Cache set error for {}: {}", key, e);
         }
     }
 
     async fn remove(&self, key: &str) {
-        let mut cache = self.cache.lock().await;
-        if let Err(e) = cache.remove(key).await {
+        if let Err(e) = self.cache.remove(key).await {
             warn!("Cache remove error for {}: {}", key, e);
         }
     }
@@ -244,14 +240,14 @@ mod tests {
 
     async fn create_test_manager() -> CachedAppManager {
         let inner = Arc::new(MemoryAppManager::new());
-        let cache = Arc::new(Mutex::new(MemoryCacheManager::new(
+        let cache = Arc::new(MemoryCacheManager::new(
             "test".to_string(),
             MemoryCacheOptions {
                 ttl: 300,
                 cleanup_interval: 60,
                 max_capacity: 1000,
             },
-        )));
+        ));
         let settings = CacheSettings {
             enabled: true,
             ttl: 300,
@@ -319,10 +315,10 @@ mod tests {
     #[tokio::test]
     async fn test_cache_disabled() {
         let inner = Arc::new(MemoryAppManager::new());
-        let cache = Arc::new(Mutex::new(MemoryCacheManager::new(
+        let cache = Arc::new(MemoryCacheManager::new(
             "test".to_string(),
             MemoryCacheOptions::default(),
-        )));
+        ));
         let settings = CacheSettings {
             enabled: false,
             ttl: 300,
