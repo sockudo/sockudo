@@ -5,7 +5,6 @@ use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use redis::cluster_async::ClusterConnection;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 /// Configuration for the Redis Cluster cache manager
 #[derive(Clone, Debug)]
@@ -34,7 +33,9 @@ impl Default for RedisClusterCacheConfig {
 /// A Redis Cluster-based implementation of the CacheManager trait
 pub struct RedisClusterCacheManager {
     client: ClusterClient,
-    connection: Mutex<ClusterConnection>,
+    /// ClusterConnection is internally multiplexed (backed by MultiplexedConnection per node).
+    /// Clone is cheap — clones share the same internal per-node connection pool.
+    connection: ClusterConnection,
     prefix: String,
 }
 
@@ -60,7 +61,7 @@ impl RedisClusterCacheManager {
 
         Ok(Self {
             client,
-            connection: Mutex::new(connection),
+            connection,
             prefix: config.prefix,
         })
     }
@@ -83,7 +84,7 @@ impl RedisClusterCacheManager {
 #[async_trait]
 impl CacheManager for RedisClusterCacheManager {
     async fn has(&self, key: &str) -> Result<bool> {
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         let exists: bool = connection
             .exists(self.prefixed_key(key))
             .await
@@ -92,7 +93,7 @@ impl CacheManager for RedisClusterCacheManager {
     }
 
     async fn get(&self, key: &str) -> Result<Option<String>> {
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         let value: Option<String> = connection
             .get(self.prefixed_key(key))
             .await
@@ -102,7 +103,7 @@ impl CacheManager for RedisClusterCacheManager {
 
     async fn set(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<()> {
         let prefixed_key = self.prefixed_key(key);
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
 
         if ttl_seconds > 0 {
             connection
@@ -120,7 +121,7 @@ impl CacheManager for RedisClusterCacheManager {
     }
 
     async fn remove(&self, key: &str) -> Result<()> {
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         let deleted: i32 = connection
             .del(self.prefixed_key(key))
             .await
@@ -137,10 +138,7 @@ impl CacheManager for RedisClusterCacheManager {
     }
 
     async fn check_health(&self) -> Result<()> {
-        let mut connection =
-            self.client.get_async_connection().await.map_err(|e| {
-                Error::Cache(format!("Failed to acquire health check connection: {e}"))
-            })?;
+        let mut connection = self.connection.clone();
 
         let response = redis::cmd("PING")
             .query_async::<String>(&mut connection)
@@ -159,7 +157,7 @@ impl CacheManager for RedisClusterCacheManager {
     }
 
     async fn ttl(&self, key: &str) -> Result<Option<Duration>> {
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         let ttl: i64 = connection
             .ttl(self.prefixed_key(key))
             .await
@@ -173,7 +171,7 @@ impl CacheManager for RedisClusterCacheManager {
 
 impl RedisClusterCacheManager {
     pub async fn delete(&self, key: &str) -> Result<bool> {
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         let deleted: i32 = connection
             .del(self.prefixed_key(key))
             .await
@@ -183,7 +181,7 @@ impl RedisClusterCacheManager {
 
     pub async fn clear_prefix(&self) -> Result<usize> {
         let pattern = format!("{}:*", self.prefix);
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
 
         let keys = {
             let mut keys = Vec::new();
@@ -227,7 +225,7 @@ impl RedisClusterCacheManager {
             .map(|(k, v)| (self.prefixed_key(k), *v))
             .collect();
 
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         for (key, value) in &prefixed_pairs {
             if ttl_seconds > 0 {
                 connection
@@ -246,7 +244,7 @@ impl RedisClusterCacheManager {
     }
 
     pub async fn increment(&self, key: &str, by: i64) -> Result<i64> {
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         let value: i64 = connection
             .incr(self.prefixed_key(key), by)
             .await
@@ -264,7 +262,7 @@ impl RedisClusterCacheManager {
         }
 
         let mut results = Vec::with_capacity(keys.len());
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         for key in keys {
             let value: Option<String> = connection
                 .get(self.prefixed_key(key))
@@ -280,18 +278,15 @@ impl RedisClusterCacheManager {
         self.client.clone()
     }
 
-    pub async fn get_connection(&self) -> Result<ClusterConnection> {
-        self.client
-            .get_async_connection()
-            .await
-            .map_err(|e| Error::Cache(format!("Failed to get Redis Cluster connection: {e}")))
+    pub fn get_connection(&self) -> ClusterConnection {
+        self.connection.clone()
     }
 
     pub async fn get_cluster_info(&self) -> Result<String> {
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         let info: String = redis::cmd("CLUSTER")
             .arg("INFO")
-            .query_async(&mut *connection)
+            .query_async(&mut connection)
             .await
             .map_err(|e| Error::Cache(format!("Redis Cluster info error: {e}")))?;
 
@@ -299,10 +294,10 @@ impl RedisClusterCacheManager {
     }
 
     pub async fn get_cluster_nodes(&self) -> Result<String> {
-        let mut connection = self.connection.lock().await;
+        let mut connection = self.connection.clone();
         let nodes: String = redis::cmd("CLUSTER")
             .arg("NODES")
-            .query_async(&mut *connection)
+            .query_async(&mut connection)
             .await
             .map_err(|e| Error::Cache(format!("Redis Cluster nodes error: {e}")))?;
 
