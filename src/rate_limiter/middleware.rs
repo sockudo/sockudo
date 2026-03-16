@@ -68,7 +68,7 @@ pub struct RateLimitLayer<K> {
     limiter: Arc<dyn RateLimiter>,
     key_extractor: Arc<K>,
     options: RateLimitOptions,
-    metrics: Option<Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>>,
+    metrics: Option<Arc<dyn crate::metrics::MetricsInterface + Send + Sync>>,
     config_name: String, // Track which rate limit config this is using
 }
 
@@ -102,7 +102,7 @@ where
 
     pub fn with_metrics(
         mut self,
-        metrics: Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>,
+        metrics: Arc<dyn crate::metrics::MetricsInterface + Send + Sync>,
     ) -> Self {
         self.metrics = Some(metrics);
         self
@@ -136,7 +136,7 @@ pub struct RateLimitService<S, K> {
     limiter: Arc<dyn RateLimiter>,
     key_extractor: Arc<K>,
     options: RateLimitOptions,
-    metrics: Option<Arc<tokio::sync::Mutex<dyn crate::metrics::MetricsInterface + Send + Sync>>>,
+    metrics: Option<Arc<dyn crate::metrics::MetricsInterface + Send + Sync>>,
     config_name: String,
 }
 
@@ -201,9 +201,8 @@ where
 
             // Track rate limit check with config name
             if let Some(ref metrics) = metrics {
-                let metrics_locked = metrics.lock().await;
                 // Use "global" as app_id for IP-based rate limiting
-                metrics_locked.mark_rate_limit_check_with_context(
+                metrics.mark_rate_limit_check_with_context(
                     "global",
                     primary_limiter_type,
                     request_context,
@@ -236,8 +235,7 @@ where
 
                 // Track rate limit triggered with config name
                 if let Some(ref metrics) = metrics {
-                    let metrics_locked = metrics.lock().await;
-                    metrics_locked.mark_rate_limit_triggered_with_context(
+                    metrics.mark_rate_limit_triggered_with_context(
                         "global",
                         primary_limiter_type,
                         request_context,

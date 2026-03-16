@@ -28,7 +28,7 @@ async fn test_sequence_number_conflict_resolution() {
     let socket_id = "socket-conflict";
 
     // Get access to horizontal adapter
-    let horizontal = adapter.horizontal.read().await;
+    let horizontal = adapter.horizontal.clone();
 
     // Create two presence entries with different sequence numbers
     let entry1 = sockudo::adapter::horizontal_adapter::PresenceEntry {
@@ -128,7 +128,7 @@ async fn test_presence_state_with_clock_skew() {
 
     // Process requests (late one first to test handling)
     {
-        let horizontal = adapter.horizontal.write().await;
+        let horizontal = adapter.horizontal.clone();
         let _ = horizontal.process_request(request_late).await;
         let _ = horizontal.process_request(request_early).await;
     }
@@ -160,7 +160,7 @@ async fn test_bulk_presence_cleanup() {
 
     // Populate with bulk data to test scale
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let mut registry = horizontal.cluster_presence_registry.write().await;
 
         for c in 0..channels {
@@ -190,7 +190,7 @@ async fn test_bulk_presence_cleanup() {
 
     // Test bulk cleanup performance and correctness
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         let cleanup_tasks = horizontal
             .handle_dead_node_cleanup("bulk-node")
             .await

@@ -53,7 +53,7 @@ async fn test_request_response_aggregation_logic() {
 
     // Test the aggregation logic
     let combined_response = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,
@@ -166,7 +166,7 @@ async fn test_channel_members_aggregation_deduplication() {
 
     // Test aggregation
     let combined_response = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,
@@ -250,7 +250,7 @@ async fn test_channels_with_socket_count_aggregation() {
 
     // Test aggregation
     let combined_response = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,
@@ -312,7 +312,7 @@ async fn test_exists_flag_aggregation_logic() {
     }
 
     let combined_response = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id.clone(),
@@ -367,7 +367,7 @@ async fn test_exists_flag_aggregation_logic() {
     ];
 
     let combined_response = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,
@@ -439,13 +439,15 @@ async fn test_partial_response_handling_timeout_behavior() {
 
     // Set very short timeout for testing
     {
-        let mut horizontal = adapter.horizontal.write().await;
-        horizontal.requests_timeout = 100; // 100ms timeout
+        adapter
+            .horizontal
+            .requests_timeout
+            .store(100, std::sync::atomic::Ordering::Relaxed);
     }
 
     // Simulate discovered remote nodes so the request path does not take the single-node fast path.
     {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal
             .add_discovered_node_for_test("node-1".to_string())
             .await;
@@ -497,7 +499,7 @@ async fn test_empty_response_aggregation() {
     let responses = Vec::new(); // No responses at all
 
     let combined_response = {
-        let horizontal = adapter.horizontal.read().await;
+        let horizontal = adapter.horizontal.clone();
         horizontal.aggregate_responses(
             request_id.to_string(),
             node_id,

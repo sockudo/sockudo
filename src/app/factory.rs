@@ -15,7 +15,6 @@ use crate::app::scylla_app_manager::{ScyllaDbAppManager, ScyllaDbConfig};
 use crate::cache::manager::CacheManager;
 use crate::options::{AppManagerConfig, AppManagerDriver, DatabaseConfig, DatabasePooling};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 pub struct AppManagerFactory;
@@ -26,7 +25,7 @@ impl AppManagerFactory {
         config: &AppManagerConfig,
         db_config: &DatabaseConfig,
         pooling: &DatabasePooling,
-        cache_manager: Arc<Mutex<dyn CacheManager + Send + Sync>>,
+        cache_manager: Arc<dyn CacheManager + Send + Sync>,
     ) -> Result<Arc<dyn AppManager + Send + Sync>> {
         info!(
             "{}",
