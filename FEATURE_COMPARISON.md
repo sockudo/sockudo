@@ -540,14 +540,15 @@ This document provides a detailed comparison of features available in **Ably**, 
 | **Self-Hosted** | ❌ (Cloud Only) | ✅ | ✅ | - | - |
 | **Docker Support** | N/A | ✅ | ✅ | - | - |
 | **Docker Compose** | N/A | ✅ | ✅ | - | - |
-| **Kubernetes Ready** | N/A | ✅ | ⚠️ Partial | 🟡 Medium | 🟡 Medium |
-| **Helm Charts** | N/A | ✅ | ❌ | 🟡 Medium | 🟡 Medium |
+| **Kubernetes Ready** | N/A | ✅ | ✅ | - | - |
+| **Helm Charts** | N/A | ✅ | ✅ | - | - |
 | **Binary Releases** | N/A | ✅ (Multi-platform) | ✅ | - | - |
 | **Unix Socket Support** | N/A | ❌ | ✅ | - | - |
 
 **Notes:**
 - Ably is cloud-only SaaS.
 - Sockudo and Centrifugo are self-hosted.
+- Sockudo ships production-ready Helm charts (`charts/sockudo/`) with HPA, PDB, ServiceMonitor, NetworkPolicy, and configurable probes.
 - Sockudo's Unix socket support is unique - good for reverse proxy deployments.
 
 ---
