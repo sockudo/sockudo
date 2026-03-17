@@ -460,8 +460,7 @@ impl SockudoServer {
                             if let Some(url_override) = config.queue.redis.url_override.as_ref() {
                                 queue_redis_url_arg = Some(url_override.as_str());
                             } else {
-                                owned_default_queue_redis_url =
-                                    config.database.redis.to_url();
+                                owned_default_queue_redis_url = config.database.redis.to_url();
                                 queue_redis_url_arg = Some(&owned_default_queue_redis_url);
                             }
 

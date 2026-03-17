@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use ahash::AHashMap;
+use async_trait::async_trait;
 use sockudo_core::app::{App, AppManager};
 use sockudo_core::delta_types::ChannelDeltaConfig;
 use sockudo_core::error::{Error, Result};
@@ -170,10 +170,7 @@ impl DynamoDbAppManager {
                 {
                     sonic_rs::from_str::<AHashMap<String, ChannelDeltaConfig>>(json_str)
                         .map_err(|e| {
-                            tracing::warn!(
-                                "Failed to parse channel_delta_compression JSON: {}",
-                                e
-                            );
+                            tracing::warn!("Failed to parse channel_delta_compression JSON: {}", e);
                             e
                         })
                         .ok()

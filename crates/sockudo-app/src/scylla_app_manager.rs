@@ -429,14 +429,16 @@ impl AppRow {
                     .ok()
             }),
             channel_delta_compression: self.channel_delta_compression.and_then(|json| {
-                sonic_rs::from_str::<ahash::AHashMap<String, sockudo_core::delta_types::ChannelDeltaConfig>>(&json)
-                    .map_err(|e| {
-                        error!(
-                            "Failed to deserialize channel_delta_compression for app {}: {}",
-                            self.id, e
-                        )
-                    })
-                    .ok()
+                sonic_rs::from_str::<
+                    ahash::AHashMap<String, sockudo_core::delta_types::ChannelDeltaConfig>,
+                >(&json)
+                .map_err(|e| {
+                    error!(
+                        "Failed to deserialize channel_delta_compression for app {}: {}",
+                        self.id, e
+                    )
+                })
+                .ok()
             }),
         }
     }
