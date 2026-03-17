@@ -1,0 +1,25 @@
+[package]
+name = "sockudo-cache"
+description = "Cache manager implementations for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[features]
+default = ["local"]
+local = []
+full = ["redis", "redis-cluster"]
+redis = ["sockudo-core/redis", "dep:redis"]
+redis-cluster = ["redis", "sockudo-core/redis-cluster"]
+
+[dependencies]
+sockudo-core = { workspace = true }
+
+ahash = { workspace = true }
+async-trait = { workspace = true }
+moka = { workspace = true }
+redis = { workspace = true, optional = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

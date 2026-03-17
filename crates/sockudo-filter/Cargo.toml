@@ -1,0 +1,25 @@
+[package]
+name = "sockudo-filter"
+description = "Zero-allocation tag-based publication filtering for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[dependencies]
+ahash = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+sonic-rs = { workspace = true }
+memchr = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+sonic-rs = { workspace = true }
+serde = { workspace = true }
+
+[[bench]]
+name = "filter_bench"
+path = "benches/filter_bench.rs"
+harness = false
