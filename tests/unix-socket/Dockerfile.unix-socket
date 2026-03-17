@@ -13,16 +13,16 @@ RUN mkdir -p /var/run/sockudo && \
     chmod 755 /var/run/sockudo
 
 # Copy nginx configuration
-COPY test/unix-socket/nginx-unix-socket.conf /etc/nginx/nginx.conf
+COPY tests/unix-socket/nginx-unix-socket.conf /etc/nginx/nginx.conf
 
 # Copy the multinode client HTML file to be served by nginx
-COPY test/multinode/client/index.html /usr/share/nginx/html/index.html
+COPY tests/multinode/client/index.html /usr/share/nginx/html/index.html
 
 # Copy supervisor configuration
-COPY test/unix-socket/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY tests/unix-socket/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Copy startup script
-COPY test/unix-socket/start.sh /usr/local/bin/start.sh
+COPY tests/unix-socket/start.sh /usr/local/bin/start.sh
 RUN chmod +x /usr/local/bin/start.sh
 
 # Set working directory
