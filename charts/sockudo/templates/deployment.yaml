@@ -1,0 +1,350 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sockudo.fullname" . }}
+  labels:
+    {{- include "sockudo.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sockudo.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "sockudo.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "sockudo.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Fixed: Explicitly define the binary to run
+          command:
+            - /usr/local/bin/sockudo
+          args:
+            - --config
+            - /app/config/config.json
+          ports:
+            - name: http
+              containerPort: 6001
+              protocol: TCP
+            {{- if .Values.config.metrics.enabled }}
+            - name: metrics
+              containerPort: 9601
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.cluster.enabled }}
+            - name: cluster
+              containerPort: {{ .Values.cluster.port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "6001"
+            - name: LOG_OUTPUT_FORMAT
+              value: {{ .Values.config.logOutputFormat | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.config.rustLog | quote }}
+            - name: SHUTDOWN_GRACE_PERIOD
+              value: {{ .Values.config.shutdownGracePeriod | quote }}
+            {{- if .Values.config.debug }}
+            - name: DEBUG
+              value: "true"
+            {{- end }}
+            # Driver configuration
+            - name: ADAPTER_DRIVER
+              value: {{ .Values.config.adapterDriver | quote }}
+            - name: APP_MANAGER_DRIVER
+              value: {{ .Values.config.appManagerDriver | quote }}
+            - name: CACHE_DRIVER
+              value: {{ .Values.config.cacheDriver | quote }}
+            - name: QUEUE_DRIVER
+              value: {{ .Values.config.queueDriver | quote }}
+            - name: RATE_LIMITER_DRIVER
+              value: {{ .Values.config.rateLimiterDriver | quote }}
+            # Rate limiter
+            - name: RATE_LIMITER_ENABLED
+              value: {{ .Values.config.rateLimiter.enabled | quote }}
+            - name: RATE_LIMITER_API_MAX_REQUESTS
+              value: {{ .Values.config.rateLimiter.apiMaxRequests | quote }}
+            - name: RATE_LIMITER_API_WINDOW_SECONDS
+              value: {{ .Values.config.rateLimiter.apiWindowSeconds | quote }}
+            - name: RATE_LIMITER_WS_MAX_REQUESTS
+              value: {{ .Values.config.rateLimiter.wsMaxRequests | quote }}
+            - name: RATE_LIMITER_WS_WINDOW_SECONDS
+              value: {{ .Values.config.rateLimiter.wsWindowSeconds | quote }}
+            # Metrics
+            {{- if .Values.config.metrics.enabled }}
+            - name: METRICS_ENABLED
+              value: "true"
+            - name: METRICS_HOST
+              value: "0.0.0.0"
+            - name: METRICS_PORT
+              value: "9601"
+            - name: METRICS_PROMETHEUS_PREFIX
+              value: {{ .Values.config.metrics.prefix | quote }}
+            {{- end }}
+            # Redis
+            {{- if .Values.redis.host }}
+            - name: DATABASE_REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: DATABASE_REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            - name: DATABASE_REDIS_DB
+              value: {{ .Values.redis.db | quote }}
+            - name: DATABASE_REDIS_KEY_PREFIX
+              value: {{ .Values.redis.keyPrefix | quote }}
+            {{- if or .Values.redis.existingSecret .Values.redis.password }}
+            - name: DATABASE_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: redis-password
+            {{- end }}
+            {{- if or .Values.redis.existingSecret .Values.redis.username }}
+            - name: DATABASE_REDIS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: redis-username
+                  optional: true
+            {{- end }}
+            {{- end }}
+            # Redis Cluster
+            {{- if .Values.redisCluster.nodes }}
+            - name: REDIS_CLUSTER_NODES
+              value: {{ .Values.redisCluster.nodes | quote }}
+            - name: DATABASE_REDIS_CLUSTER_USE_TLS
+              value: {{ .Values.redisCluster.useTls | quote }}
+            {{- if or .Values.redisCluster.existingSecret .Values.redisCluster.password }}
+            - name: DATABASE_REDIS_CLUSTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redisCluster.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: redis-cluster-password
+            {{- end }}
+            {{- if or .Values.redisCluster.existingSecret .Values.redisCluster.username }}
+            - name: DATABASE_REDIS_CLUSTER_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redisCluster.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: redis-cluster-username
+                  optional: true
+            {{- end }}
+            {{- end }}
+            # MySQL
+            {{- if .Values.database.mysql.host }}
+            - name: DATABASE_MYSQL_HOST
+              value: {{ .Values.database.mysql.host | quote }}
+            - name: DATABASE_MYSQL_PORT
+              value: {{ .Values.database.mysql.port | quote }}
+            - name: DATABASE_MYSQL_DATABASE
+              value: {{ .Values.database.mysql.database | quote }}
+            - name: DATABASE_MYSQL_TABLE_NAME
+              value: {{ .Values.database.mysql.tableName | quote }}
+            {{- if or .Values.database.existingSecret .Values.database.mysql.username }}
+            - name: DATABASE_MYSQL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: database-username
+            {{- end }}
+            {{- if or .Values.database.existingSecret .Values.database.mysql.password }}
+            - name: DATABASE_MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: database-password
+            {{- end }}
+            {{- end }}
+            # PostgreSQL
+            {{- if .Values.database.postgres.host }}
+            - name: DATABASE_POSTGRES_HOST
+              value: {{ .Values.database.postgres.host | quote }}
+            - name: DATABASE_POSTGRES_PORT
+              value: {{ .Values.database.postgres.port | quote }}
+            - name: DATABASE_POSTGRES_DATABASE
+              value: {{ .Values.database.postgres.database | quote }}
+            {{- if or .Values.database.existingSecret .Values.database.postgres.username }}
+            - name: DATABASE_POSTGRES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: database-username
+            {{- end }}
+            {{- if or .Values.database.existingSecret .Values.database.postgres.password }}
+            - name: DATABASE_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: database-password
+            {{- end }}
+            {{- end }}
+            # NATS
+            {{- if .Values.nats.servers }}
+            - name: NATS_SERVERS
+              value: {{ .Values.nats.servers | quote }}
+            - name: NATS_CONNECTION_TIMEOUT_MS
+              value: {{ .Values.nats.connectionTimeoutMs | quote }}
+            - name: NATS_REQUEST_TIMEOUT_MS
+              value: {{ .Values.nats.requestTimeoutMs | quote }}
+            {{- if .Values.nats.username }}
+            - name: NATS_USERNAME
+              value: {{ .Values.nats.username | quote }}
+            {{- end }}
+            {{- if or .Values.nats.existingSecret .Values.nats.password }}
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nats.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: nats-password
+            {{- end }}
+            {{- if or .Values.nats.existingSecret .Values.nats.token }}
+            - name: NATS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nats.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: nats-token
+                  optional: true
+            {{- end }}
+            {{- end }}
+            # Cluster
+            {{- if .Values.cluster.enabled }}
+            - name: CLUSTER_PORT
+              value: {{ .Values.cluster.port | quote }}
+            - name: CLUSTER_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: INSTANCE_PROCESS_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CLUSTER_HELLO_INTERVAL
+              value: {{ .Values.cluster.helloInterval | quote }}
+            - name: CLUSTER_CHECK_INTERVAL
+              value: {{ .Values.cluster.checkInterval | quote }}
+            - name: CLUSTER_NODE_TIMEOUT
+              value: {{ .Values.cluster.nodeTimeout | quote }}
+            - name: CLUSTER_MASTER_TIMEOUT
+              value: {{ .Values.cluster.masterTimeout | quote }}
+            {{- end }}
+            # Default app
+            {{- if .Values.defaultApp.enabled }}
+            - name: SOCKUDO_DEFAULT_APP_ENABLED
+              value: "true"
+            - name: SOCKUDO_DEFAULT_APP_ID
+              value: {{ .Values.defaultApp.id | quote }}
+            - name: SOCKUDO_DEFAULT_APP_KEY
+              value: {{ .Values.defaultApp.key | quote }}
+            - name: SOCKUDO_DEFAULT_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sockudo.secretName" . }}
+                  key: default-app-secret
+            - name: SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS
+              value: {{ .Values.defaultApp.maxConnections | quote }}
+            - name: SOCKUDO_ENABLE_CLIENT_MESSAGES
+              value: {{ .Values.defaultApp.enableClientMessages | quote }}
+            - name: SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION
+              value: {{ .Values.defaultApp.enableUserAuthentication | quote }}
+            - name: SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND
+              value: {{ .Values.defaultApp.maxClientEventsPerSecond | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: logs
+              mountPath: /app/logs
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "sockudo.configMapName" . }}
+        - name: tmp
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

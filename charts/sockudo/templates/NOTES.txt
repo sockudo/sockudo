@@ -1,0 +1,36 @@
+Sockudo has been deployed successfully!
+
+1. Get the application URL:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "sockudo.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "sockudo.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo http://$SERVICE_IP:{{ .Values.service.port }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "sockudo.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  echo "Visit http://127.0.0.1:{{ .Values.service.port }}/up to check health"
+{{- end }}
+
+2. WebSocket endpoint:
+  ws://{{ include "sockudo.fullname" . }}:{{ .Values.service.port }}/app/{APP_KEY}
+
+{{- if .Values.config.metrics.enabled }}
+
+3. Metrics:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "sockudo.fullname" . }}-metrics {{ .Values.metricsService.port }}:{{ .Values.metricsService.port }}
+  echo "Visit http://127.0.0.1:{{ .Values.metricsService.port }}/metrics"
+{{- end }}
+
+{{- if .Values.defaultApp.enabled }}
+
+4. Default app configured:
+  App ID:  {{ .Values.defaultApp.id }}
+  App Key: {{ .Values.defaultApp.key }}
+{{- end }}

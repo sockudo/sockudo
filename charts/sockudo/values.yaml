@@ -1,0 +1,354 @@
+replicaCount: 1
+
+image:
+  repository: sockudo/sockudo
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# -- Sockudo server configuration
+config:
+  # -- Server mode: "production" or "development"
+  mode: production
+  # -- Enable debug logging
+  debug: false
+  # -- Log output format: "human" or "json"
+  logOutputFormat: json
+  # -- Rust log level
+  rustLog: "info,sockudo=info"
+  # -- Graceful shutdown period in seconds
+  shutdownGracePeriod: 10
+
+  # -- Adapter driver: local, redis, redis-cluster, nats
+  adapterDriver: local
+  # -- App manager driver: memory, mysql, postgres, dynamodb, scylladb
+  appManagerDriver: memory
+  # -- Cache driver: memory, redis, redis-cluster, none
+  cacheDriver: memory
+  # -- Queue driver: memory, redis, redis-cluster, sqs, sns, none
+  queueDriver: memory
+  # -- Rate limiter driver: memory, redis, redis-cluster
+  rateLimiterDriver: memory
+
+  # -- WebSocket settings
+  websocket:
+    maxPayloadKb: 64
+    maxMessages: 1000
+    maxBytes: 1048576
+    pingInterval: 30
+    idleTimeout: 120
+    compression: disabled
+
+  # -- Rate limiter settings
+  rateLimiter:
+    enabled: true
+    apiMaxRequests: 100
+    apiWindowSeconds: 60
+    wsMaxRequests: 20
+    wsWindowSeconds: 60
+
+  # -- Metrics settings
+  metrics:
+    enabled: true
+    driver: prometheus
+    prefix: "sockudo_"
+
+  # -- SSL/TLS settings (typically terminated at ingress)
+  ssl:
+    enabled: false
+
+  # -- Delta compression settings
+  deltaCompression:
+    enabled: true
+    algorithm: Fossil
+    fullMessageInterval: 10
+    minMessageSize: 100
+    maxStateAgeSecs: 300
+
+  # -- CORS settings
+  cors:
+    credentials: true
+    origin:
+      - "*"
+    methods:
+      - GET
+      - POST
+      - OPTIONS
+    allowedHeaders:
+      - Authorization
+      - Content-Type
+      - X-Requested-With
+      - Accept
+
+# -- Config file content (JSON). If set, mounted as /app/config/config.json.
+# Takes precedence over individual config.* values above.
+# configJson: |
+#   { "debug": false, "port": 6001, ... }
+
+# -- Default app configuration (for development/testing)
+defaultApp:
+  enabled: false
+  id: ""
+  key: ""
+  secret: ""
+  maxConnections: 1000
+  enableClientMessages: true
+  enableUserAuthentication: false
+  maxClientEventsPerSecond: 100
+
+# -- Extra environment variables (name/value pairs)
+extraEnv: []
+  # - name: REDIS_URL
+  #   value: "redis://redis:6379"
+
+# -- Extra environment variables from secrets/configmaps
+extraEnvFrom: []
+  # - secretRef:
+  #     name: sockudo-redis-credentials
+
+# -- Redis configuration (when using redis-based drivers)
+redis:
+  # -- Redis host
+  host: ""
+  # -- Redis port
+  port: 6379
+  # -- Redis database number
+  db: 0
+  # -- Redis key prefix
+  keyPrefix: "sockudo:"
+  # -- Redis username (optional)
+  username: ""
+  # -- Redis password (optional)
+  password: ""
+  # -- Use an existing secret for Redis credentials
+  # Must contain keys: redis-password (and optionally redis-username)
+  existingSecret: ""
+
+# -- Redis Cluster configuration
+redisCluster:
+  # -- Comma-separated Redis cluster node URLs
+  nodes: ""
+  # -- Redis Cluster username (optional)
+  username: ""
+  # -- Redis Cluster password (optional)
+  password: ""
+  # -- Use TLS for Redis Cluster
+  useTls: false
+  # -- Use an existing secret for Redis Cluster credentials
+  existingSecret: ""
+
+# -- Database configuration (MySQL/PostgreSQL for app manager)
+database:
+  mysql:
+    host: ""
+    port: 3306
+    username: ""
+    password: ""
+    database: "sockudo"
+    tableName: "apps"
+  postgres:
+    host: ""
+    port: 5432
+    username: ""
+    password: ""
+    database: "sockudo"
+  # -- Use an existing secret for database credentials
+  # Must contain keys matching: database-username, database-password
+  existingSecret: ""
+
+# -- NATS configuration (when using nats adapter)
+nats:
+  servers: ""
+  username: ""
+  password: ""
+  token: ""
+  connectionTimeoutMs: 5000
+  requestTimeoutMs: 5000
+  existingSecret: ""
+
+# -- Cluster (multi-node) configuration
+cluster:
+  enabled: false
+  port: 6002
+  helloInterval: 5000
+  checkInterval: 10000
+  nodeTimeout: 30000
+  masterTimeout: 60000
+
+service:
+  type: ClusterIP
+  port: 6001
+  # -- Node port (only used when type is NodePort)
+  nodePort: ""
+  annotations: {}
+
+metricsService:
+  # -- Enable a separate service for metrics scraping
+  enabled: true
+  port: 9601
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    # nginx.ingress.kubernetes.io/upstream-hash-by: "$remote_addr"
+  hosts:
+    - host: sockudo.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: sockudo-tls
+  #    hosts:
+  #      - sockudo.local
+
+# -- WebSocket-specific ingress (if you need separate ingress for WS)
+# Useful when your ingress controller needs different annotations for WebSocket
+wsIngress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+resources:
+  limits:
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+
+# -- Pod Disruption Budget
+pdb:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+livenessProbe:
+  httpGet:
+    path: /up
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+readinessProbe:
+  httpGet:
+    path: /up
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+startupProbe:
+  httpGet:
+    path: /up
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 30
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# -- Topology spread constraints for pod scheduling
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: DoNotSchedule
+  #   labelSelector:
+  #     matchLabels: {}
+
+# -- Priority class name for pods
+priorityClassName: ""
+
+# -- Termination grace period (should be >= config.shutdownGracePeriod)
+terminationGracePeriodSeconds: 30
+
+# -- Extra volumes to add to the pod
+extraVolumes: []
+# -- Extra volume mounts to add to the container
+extraVolumeMounts: []
+
+# -- Init containers
+initContainers: []
+
+# -- Sidecar containers
+extraContainers: []
+
+# -- ServiceMonitor for Prometheus Operator
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  honorLabels: false
+  metricRelabelings: []
+  relabelings: []
+
+# -- Network policy
+networkPolicy:
+  enabled: false
+  ingress: []
+  egress: []
