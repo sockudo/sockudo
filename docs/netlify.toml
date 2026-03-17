@@ -1,0 +1,7 @@
+[build]
+command = "bun run build"
+publish = "dist"
+
+[build.environment]
+NODE_VERSION = "22"
+NITRO_PRESET = "netlify"

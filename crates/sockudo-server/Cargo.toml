@@ -1,0 +1,110 @@
+[package]
+name = "sockudo-server"
+description = "A simple, fast, and secure WebSocket server for real-time applications."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[features]
+default = ["local"]
+local = []
+full = [
+  "redis",
+  "redis-cluster",
+  "nats",
+  "mysql",
+  "postgres",
+  "dynamodb",
+  "scylladb",
+  "sqs",
+  "sns",
+  "lambda",
+]
+
+redis = [
+  "sockudo-core/redis",
+  "sockudo-adapter/redis",
+  "sockudo-cache/redis",
+  "sockudo-queue/redis",
+  "sockudo-rate-limiter/redis",
+]
+redis-cluster = [
+  "redis",
+  "sockudo-core/redis-cluster",
+  "sockudo-adapter/redis-cluster",
+  "sockudo-cache/redis-cluster",
+  "sockudo-queue/redis-cluster",
+  "sockudo-rate-limiter/redis-cluster",
+]
+nats = ["sockudo-core/nats", "sockudo-adapter/nats"]
+mysql = ["sockudo-core/mysql", "sockudo-app/mysql"]
+postgres = ["sockudo-core/postgres", "sockudo-app/postgres"]
+dynamodb = ["sockudo-core/dynamodb", "sockudo-app/dynamodb"]
+scylladb = ["sockudo-core/scylladb", "sockudo-app/scylladb"]
+sqs = ["sockudo-core/sqs", "sockudo-queue/sqs"]
+sns = ["sockudo-core/sns", "sockudo-queue/sns"]
+lambda = ["sockudo-core/lambda", "sockudo-webhook/lambda"]
+
+[[bin]]
+name = "sockudo"
+path = "src/main.rs"
+
+[dependencies]
+sockudo-core = { workspace = true }
+sockudo-protocol = { workspace = true }
+sockudo-filter = { workspace = true }
+sockudo-app = { workspace = true }
+sockudo-cache = { workspace = true }
+sockudo-queue = { workspace = true }
+sockudo-rate-limiter = { workspace = true }
+sockudo-metrics = { workspace = true }
+sockudo-webhook = { workspace = true }
+sockudo-delta = { workspace = true }
+sockudo-adapter = { workspace = true }
+
+ahash = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+axum-server = { workspace = true }
+clap = { workspace = true }
+cmake = { workspace = true }
+crossfire = { workspace = true }
+futures-util = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+mimalloc = { workspace = true }
+num_cpus = { workspace = true }
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_urlencoded = { workspace = true }
+sockudo-ws = { workspace = true }
+sonic-rs = { workspace = true }
+sysinfo = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+
+[package.metadata.binstall]
+pkg-url = "https://github.com/RustNSparks/sockudo/releases/download/v{version}/sockudo-v{version}-{target}{archive-suffix}"
+pkg-fmt = "tgz"
+supported-targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
