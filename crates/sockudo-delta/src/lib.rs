@@ -1443,3 +1443,1129 @@ fn base64_encode(data: &[u8]) -> String {
     use base64::{Engine as _, engine::general_purpose};
     general_purpose::STANDARD.encode(data)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_base64_encode() {
+        assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
+        assert_eq!(base64_encode(b"world"), "d29ybGQ=");
+        assert_eq!(base64_encode(b""), "");
+    }
+
+    #[tokio::test]
+    async fn test_conflation_cache_should_send_full_message() {
+        let config = DeltaCompressionConfig::default();
+        let mut cache = ConflationKeyCache::new(10);
+
+        // Add first message
+        cache.add_message(vec![1, 2, 3]).await.unwrap();
+        assert!(!cache.should_send_full_message(&config).await);
+
+        // Increment delta count to threshold
+        for _ in 0..config.full_message_interval {
+            cache.increment_delta_count();
+        }
+        assert!(cache.should_send_full_message(&config).await);
+    }
+
+    #[tokio::test]
+    async fn test_delta_compression_manager_enable_disable() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        assert!(!manager.is_enabled_for_socket(&socket_id));
+
+        manager.enable_for_socket(&socket_id);
+        assert!(manager.is_enabled_for_socket(&socket_id));
+
+        manager.remove_socket(&socket_id);
+        assert!(!manager.is_enabled_for_socket(&socket_id));
+    }
+
+    #[tokio::test]
+    async fn test_compression_first_message() {
+        let config = DeltaCompressionConfig {
+            min_message_size: 20, // Lower threshold for testing
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        let message = b"{\"test\":\"data\",\"value\":123,\"extra_field\":\"to_make_it_longer\"}";
+        let result = manager
+            .compress_message(&socket_id, "test-channel", "test-event", message, None)
+            .await
+            .unwrap();
+
+        match result {
+            CompressionResult::FullMessage { sequence, .. } => {
+                assert_eq!(sequence, 0);
+            }
+            _ => panic!("Expected full message for first message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_compression_small_message_uncompressed() {
+        let config = DeltaCompressionConfig {
+            min_message_size: 100,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        let small_message = b"small";
+        let result = manager
+            .compress_message(
+                &socket_id,
+                "test-channel",
+                "test-event",
+                small_message,
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            CompressionResult::Uncompressed => {}
+            _ => panic!("Expected uncompressed for small message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_compression_delta_creation() {
+        let config = DeltaCompressionConfig {
+            min_message_size: 20, // Lower threshold for testing
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        let message1 =
+            b"{\"test\":\"data\",\"value\":123,\"extra\":\"content_here_to_make_longer\"}";
+        let message2 =
+            b"{\"test\":\"data\",\"value\":456,\"extra\":\"content_here_to_make_longer\"}";
+
+        // First message
+        let result1 = manager
+            .compress_message(&socket_id, "test-channel", "test-event", message1, None)
+            .await
+            .unwrap();
+        // Store the first message
+        manager
+            .store_sent_message(
+                &socket_id,
+                "test-channel",
+                "test-event",
+                message1.to_vec(),
+                matches!(result1, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Second message should produce delta
+        let result = manager
+            .compress_message(&socket_id, "test-channel", "test-event", message2, None)
+            .await
+            .unwrap();
+        // Store the second message
+        manager
+            .store_sent_message(
+                &socket_id,
+                "test-channel",
+                "test-event",
+                message2.to_vec(),
+                matches!(result, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            CompressionResult::Delta {
+                delta, sequence, ..
+            } => {
+                assert_eq!(sequence, 1);
+                assert!(delta.len() < message2.len());
+            }
+            _ => panic!("Expected delta for similar message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_xdelta3_algorithm() {
+        let config = DeltaCompressionConfig {
+            algorithm: DeltaAlgorithm::Xdelta3,
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        let message1 =
+            b"{\"test\":\"data\",\"value\":123,\"extra\":\"content_here_to_make_longer\"}";
+        let message2 =
+            b"{\"test\":\"data\",\"value\":456,\"extra\":\"content_here_to_make_longer\"}";
+
+        // First message
+        let result1 = manager
+            .compress_message(&socket_id, "test-channel", "test-event", message1, None)
+            .await
+            .unwrap();
+        manager
+            .store_sent_message(
+                &socket_id,
+                "test-channel",
+                "test-event",
+                message1.to_vec(),
+                matches!(result1, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Second message should produce delta
+        let result = manager
+            .compress_message(&socket_id, "test-channel", "test-event", message2, None)
+            .await
+            .unwrap();
+        manager
+            .store_sent_message(
+                &socket_id,
+                "test-channel",
+                "test-event",
+                message2.to_vec(),
+                matches!(result, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            CompressionResult::Delta {
+                delta, sequence, ..
+            } => {
+                assert_eq!(sequence, 1);
+                assert!(!delta.is_empty());
+            }
+            _ => panic!("Expected delta for xdelta3 algorithm"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_algorithm_comparison() {
+        let algorithms = [DeltaAlgorithm::Fossil, DeltaAlgorithm::Xdelta3];
+
+        let message1 = b"{\"counter\":0,\"data\":\"some_data_that_stays_the_same\"}";
+        let message2 = b"{\"counter\":1,\"data\":\"some_data_that_stays_the_same\"}";
+
+        for algorithm in &algorithms {
+            let config = DeltaCompressionConfig {
+                algorithm: *algorithm,
+                min_message_size: 20,
+                ..Default::default()
+            };
+            let manager = DeltaCompressionManager::new(config);
+            let socket_id = SocketId::new();
+
+            manager.enable_for_socket(&socket_id);
+
+            // First message
+            let result1 = manager
+                .compress_message(&socket_id, "test-channel", "test-event", message1, None)
+                .await
+                .unwrap();
+            manager
+                .store_sent_message(
+                    &socket_id,
+                    "test-channel",
+                    "test-event",
+                    message1.to_vec(),
+                    matches!(result1, CompressionResult::FullMessage { .. }),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Second message
+            let result = manager
+                .compress_message(&socket_id, "test-channel", "test-event", message2, None)
+                .await
+                .unwrap();
+            manager
+                .store_sent_message(
+                    &socket_id,
+                    "test-channel",
+                    "test-event",
+                    message2.to_vec(),
+                    matches!(result, CompressionResult::FullMessage { .. }),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // All algorithms should produce a delta
+            match result {
+                CompressionResult::Delta { delta, .. } => {
+                    assert!(
+                        !delta.is_empty(),
+                        "Algorithm {:?} produced empty delta",
+                        algorithm
+                    );
+                }
+                _ => panic!("Algorithm {:?} did not produce delta", algorithm),
+            }
+        }
+    }
+
+    #[test]
+    fn test_conflation_key_extraction_root_level() {
+        let config = DeltaCompressionConfig {
+            conflation_key_path: Some("asset".to_string()),
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+
+        let msg1 = br#"{"asset":"BTC","price":"100.00"}"#;
+        let msg2 = br#"{"asset":"ETH","price":"1.00"}"#;
+        let msg3 = br#"{"asset":"BTC","price":"100.01"}"#;
+
+        assert_eq!(manager.extract_conflation_key(msg1), "BTC");
+        assert_eq!(manager.extract_conflation_key(msg2), "ETH");
+        assert_eq!(manager.extract_conflation_key(msg3), "BTC");
+    }
+
+    #[test]
+    fn test_conflation_key_extraction_nested() {
+        let config = DeltaCompressionConfig {
+            conflation_key_path: Some("data.symbol".to_string()),
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+
+        let msg = br#"{"data":{"symbol":"AAPL","value":150}}"#;
+        assert_eq!(manager.extract_conflation_key(msg), "AAPL");
+    }
+
+    #[test]
+    fn test_conflation_key_extraction_no_path() {
+        let config = DeltaCompressionConfig {
+            conflation_key_path: None,
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+
+        let msg = br#"{"asset":"BTC","price":"100.00"}"#;
+        assert_eq!(manager.extract_conflation_key(msg), "");
+    }
+
+    #[tokio::test]
+    async fn test_conflation_key_separate_delta_states() {
+        let config = DeltaCompressionConfig {
+            conflation_key_path: Some("asset".to_string()),
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Messages for different assets
+        let btc1 = br#"{"asset":"BTC","price":"100.00","volume":"1000","timestamp":"2024-01-01T00:00:00Z"}"#;
+        let eth1 =
+            br#"{"asset":"ETH","price":"1.00","volume":"500","timestamp":"2024-01-01T00:00:00Z"}"#;
+        let btc2 = br#"{"asset":"BTC","price":"100.01","volume":"1000","timestamp":"2024-01-01T00:00:01Z"}"#;
+        let eth2 =
+            br#"{"asset":"ETH","price":"1.01","volume":"500","timestamp":"2024-01-01T00:00:01Z"}"#;
+
+        // First BTC message - should be full
+        let result1 = manager
+            .compress_message(&socket_id, "prices", "update", btc1, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            result1,
+            CompressionResult::FullMessage { sequence: 0, .. }
+        ));
+        manager
+            .store_sent_message(
+                &socket_id,
+                "prices",
+                "update",
+                btc1.to_vec(),
+                matches!(result1, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // First ETH message - should be full (different conflation key)
+        let result2 = manager
+            .compress_message(&socket_id, "prices", "update", eth1, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            result2,
+            CompressionResult::FullMessage { sequence: 0, .. }
+        ));
+        manager
+            .store_sent_message(
+                &socket_id,
+                "prices",
+                "update",
+                eth1.to_vec(),
+                matches!(result2, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Second BTC message - should be delta (compared to first BTC)
+        let result3 = manager
+            .compress_message(&socket_id, "prices", "update", btc2, None)
+            .await
+            .unwrap();
+        manager
+            .store_sent_message(
+                &socket_id,
+                "prices",
+                "update",
+                btc2.to_vec(),
+                matches!(result3, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+        match result3 {
+            CompressionResult::Delta {
+                delta, sequence, ..
+            } => {
+                assert_eq!(sequence, 1);
+                // Delta should be small since only price changed slightly
+                assert!(delta.len() < btc2.len() / 2);
+            }
+            _ => panic!("Expected delta for second BTC message"),
+        }
+
+        // Second ETH message - should be delta (compared to first ETH)
+        let result4 = manager
+            .compress_message(&socket_id, "prices", "update", eth2, None)
+            .await
+            .unwrap();
+        manager
+            .store_sent_message(
+                &socket_id,
+                "prices",
+                "update",
+                eth2.to_vec(),
+                matches!(result4, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+        match result4 {
+            CompressionResult::Delta {
+                delta, sequence, ..
+            } => {
+                assert_eq!(sequence, 1);
+                // Delta should be small since only price changed slightly
+                assert!(delta.len() < eth2.len() / 2);
+            }
+            _ => panic!("Expected delta for second ETH message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_conflation_improves_compression_efficiency() {
+        // Without conflation - interleaved messages have poor compression
+        let config_no_conflation = DeltaCompressionConfig {
+            conflation_key_path: None,
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager_no_conflation = DeltaCompressionManager::new(config_no_conflation);
+        let socket_id_1 = SocketId::new();
+        manager_no_conflation.enable_for_socket(&socket_id_1);
+
+        // With conflation - messages grouped by asset have good compression
+        let config_conflation = DeltaCompressionConfig {
+            conflation_key_path: Some("asset".to_string()),
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager_conflation = DeltaCompressionManager::new(config_conflation);
+        let socket_id_2 = SocketId::new();
+        manager_conflation.enable_for_socket(&socket_id_2);
+
+        let btc1 = br#"{"asset":"BTC","price":"100.00","volume":"1000","extra_data":"some_long_string_here"}"#;
+        let eth1 = br#"{"asset":"ETH","price":"1.00","volume":"500","extra_data":"some_long_string_here"}"#;
+        let btc2 = br#"{"asset":"BTC","price":"100.01","volume":"1000","extra_data":"some_long_string_here"}"#;
+
+        // Without conflation: BTC1 -> ETH1 -> BTC2
+        manager_no_conflation
+            .compress_message(&socket_id_1, "prices", "update", btc1, None)
+            .await
+            .unwrap();
+        manager_no_conflation
+            .compress_message(&socket_id_1, "prices", "update", eth1, None)
+            .await
+            .unwrap();
+        let result_no_conflation = manager_no_conflation
+            .compress_message(&socket_id_1, "prices", "update", btc2, None)
+            .await
+            .unwrap();
+
+        // With conflation: BTC1 -> ETH1 -> BTC2 (but BTC2 compares to BTC1)
+        manager_conflation
+            .compress_message(&socket_id_2, "prices", "update", btc1, None)
+            .await
+            .unwrap();
+        manager_conflation
+            .compress_message(&socket_id_2, "prices", "update", eth1, None)
+            .await
+            .unwrap();
+        let result_conflation = manager_conflation
+            .compress_message(&socket_id_2, "prices", "update", btc2, None)
+            .await
+            .unwrap();
+
+        // With conflation should produce smaller delta
+        match (result_no_conflation, result_conflation) {
+            (
+                CompressionResult::Delta {
+                    delta: delta_no_conflation,
+                    ..
+                },
+                CompressionResult::Delta {
+                    delta: delta_conflation,
+                    ..
+                },
+            ) => {
+                // Conflation should produce smaller or equal delta
+                assert!(
+                    delta_conflation.len() <= delta_no_conflation.len(),
+                    "Conflation delta ({}) should be <= non-conflation delta ({})",
+                    delta_conflation.len(),
+                    delta_no_conflation.len()
+                );
+            }
+            (CompressionResult::FullMessage { .. }, CompressionResult::Delta { .. }) => {
+                // Even better - without conflation sends full, with conflation sends delta
+            }
+            _ => {
+                // Other combinations are acceptable
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_conflation_state_cleanup() {
+        let config = DeltaCompressionConfig {
+            conflation_key_path: Some("asset".to_string()),
+            max_conflation_states_per_channel: Some(2), // Only keep 2 conflation groups
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+        manager.enable_for_socket(&socket_id);
+
+        // Send messages for 3 different assets
+        let btc = br#"{"asset":"BTC","price":"100.00","data":"some_long_content_here"}"#;
+        let eth = br#"{"asset":"ETH","price":"1.00","data":"some_long_content_here"}"#;
+        let ada = br#"{"asset":"ADA","price":"0.50","data":"some_long_content_here"}"#;
+
+        let result1 = manager
+            .compress_message(&socket_id, "prices", "update", btc, None)
+            .await
+            .unwrap();
+        manager
+            .store_sent_message(
+                &socket_id,
+                "prices",
+                "update",
+                btc.to_vec(),
+                matches!(result1, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let result2 = manager
+            .compress_message(&socket_id, "prices", "update", eth, None)
+            .await
+            .unwrap();
+        manager
+            .store_sent_message(
+                &socket_id,
+                "prices",
+                "update",
+                eth.to_vec(),
+                matches!(result2, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let result3 = manager
+            .compress_message(&socket_id, "prices", "update", ada, None)
+            .await
+            .unwrap();
+        manager
+            .store_sent_message(
+                &socket_id,
+                "prices",
+                "update",
+                ada.to_vec(),
+                matches!(result3, CompressionResult::FullMessage { .. }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Get socket state and check channel state
+        let socket_state = manager.socket_states.get(&socket_id).unwrap();
+        let channel_state = socket_state.get_channel_state("prices").unwrap();
+
+        // Collect which states exist for debugging
+        let existing_keys: Vec<String> = channel_state
+            .conflation_groups
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+
+        // Should have 2 conflation groups - limit is now enforced on insert, not just cleanup
+        assert_eq!(
+            channel_state.conflation_groups.len(),
+            2,
+            "Expected 2 conflation groups after limit enforcement on insert, got: {:?}",
+            existing_keys
+        );
+
+        // Cleanup should not change anything since limit is already enforced
+        manager.cleanup().await;
+
+        let channel_state_after = socket_state.get_channel_state("prices").unwrap();
+        assert_eq!(channel_state_after.conflation_groups.len(), 2);
+    }
+
+    #[test]
+    fn test_conflation_key_with_number_type() {
+        let config = DeltaCompressionConfig {
+            conflation_key_path: Some("id".to_string()),
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+
+        let msg1 = br#"{"id":123,"data":"content"}"#;
+        let msg2 = br#"{"id":456,"data":"content"}"#;
+
+        assert_eq!(manager.extract_conflation_key(msg1), "123");
+        assert_eq!(manager.extract_conflation_key(msg2), "456");
+    }
+}
+
+#[cfg(test)]
+mod enhanced_tests {
+    use super::*;
+
+    // =========================================================================
+    // ENCRYPTED CHANNEL DETECTION TESTS
+    // =========================================================================
+
+    #[test]
+    fn test_is_encrypted_channel() {
+        // Positive cases - encrypted channels
+        assert!(DeltaCompressionManager::is_encrypted_channel(
+            "private-encrypted-chat"
+        ));
+        assert!(DeltaCompressionManager::is_encrypted_channel(
+            "private-encrypted-"
+        ));
+        assert!(DeltaCompressionManager::is_encrypted_channel(
+            "private-encrypted-my-channel"
+        ));
+        assert!(DeltaCompressionManager::is_encrypted_channel(
+            "private-encrypted-123"
+        ));
+
+        // Negative cases - not encrypted channels
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "private-chat"
+        ));
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "presence-room"
+        ));
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "public-channel"
+        ));
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "encrypted-private"
+        )); // wrong prefix order
+        assert!(!DeltaCompressionManager::is_encrypted_channel(
+            "privateencrypted-chat"
+        )); // no dash
+        assert!(!DeltaCompressionManager::is_encrypted_channel(""));
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_channel_skips_compression() {
+        let config = DeltaCompressionConfig {
+            min_message_size: 10,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Large message that would normally be compressed
+        let message = b"{\"encrypted_data\":\"very_long_encrypted_payload_that_is_definitely_over_100_bytes_to_trigger_compression_normally\"}";
+
+        // For encrypted channel, should return Uncompressed
+        let result = manager
+            .compress_message(
+                &socket_id,
+                "private-encrypted-chat",
+                "message",
+                message,
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            CompressionResult::Uncompressed => {
+                // Expected - encrypted channels should skip compression
+            }
+            _ => panic!(
+                "Expected Uncompressed for encrypted channel, got: {:?}",
+                result
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_enabled_for_socket_channel_respects_encrypted() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Regular channels should be enabled
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "private-chat"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "presence-room"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "public-channel"));
+
+        // Encrypted channels should always return false
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "private-encrypted-chat"));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "private-encrypted-secret"));
+    }
+
+    // =========================================================================
+    // PER-SUBSCRIPTION DELTA SETTINGS TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_per_channel_delta_settings_enable_disable() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        // Enable globally first
+        manager.enable_for_socket(&socket_id);
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-b"));
+
+        // Disable for specific channel
+        manager.set_channel_delta_settings(&socket_id, "channel-a", Some(false), None);
+
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-b")); // unaffected
+    }
+
+    #[tokio::test]
+    async fn test_per_channel_delta_settings_without_global_enable() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        // Socket is NOT globally enabled
+        assert!(!manager.is_enabled_for_socket(&socket_id));
+
+        // Set per-channel settings - this should auto-enable the socket
+        manager.set_channel_delta_settings(&socket_id, "channel-a", Some(true), None);
+
+        // Now the channel should be enabled (and global socket state too)
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+    }
+
+    #[tokio::test]
+    async fn test_per_channel_algorithm_override() {
+        let config = DeltaCompressionConfig {
+            algorithm: DeltaAlgorithm::Fossil, // Global default
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Default algorithm
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-a"),
+            DeltaAlgorithm::Fossil
+        );
+
+        // Override for specific channel
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "channel-a",
+            Some(true),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        // Channel A uses Xdelta3
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-a"),
+            DeltaAlgorithm::Xdelta3
+        );
+
+        // Channel B still uses global default
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-b"),
+            DeltaAlgorithm::Fossil
+        );
+    }
+
+    #[tokio::test]
+    async fn test_has_channel_delta_settings() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // No per-channel settings yet
+        assert!(!manager.has_channel_delta_settings(&socket_id, "channel-a"));
+
+        // Set per-channel settings
+        manager.set_channel_delta_settings(&socket_id, "channel-a", Some(true), None);
+
+        // Now it has settings
+        assert!(manager.has_channel_delta_settings(&socket_id, "channel-a"));
+        assert!(!manager.has_channel_delta_settings(&socket_id, "channel-b"));
+    }
+
+    #[tokio::test]
+    async fn test_clear_channel_state_clears_delta_settings() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Set per-channel settings
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "channel-a",
+            Some(false),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        assert!(manager.has_channel_delta_settings(&socket_id, "channel-a"));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+
+        // Clear channel state (simulates unsubscribe)
+        manager.clear_channel_state(&socket_id, "channel-a");
+
+        // Per-channel settings should be cleared
+        assert!(!manager.has_channel_delta_settings(&socket_id, "channel-a"));
+
+        // Should now fall back to global (enabled)
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+    }
+
+    #[tokio::test]
+    async fn test_per_channel_settings_ignored_for_encrypted_channels() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Try to enable delta for encrypted channel
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "private-encrypted-chat",
+            Some(true),
+            Some(DeltaAlgorithm::Fossil),
+        );
+
+        // Should still be disabled because is_enabled_for_socket_channel checks encrypted
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "private-encrypted-chat"));
+    }
+
+    // =========================================================================
+    // PER-CHANNEL DELTA SETTINGS STRUCT TESTS
+    // =========================================================================
+
+    #[test]
+    fn test_per_channel_delta_settings_default() {
+        let settings = PerChannelDeltaSettings::default();
+        assert!(settings.enabled);
+        assert!(settings.algorithm.is_none());
+    }
+
+    // =========================================================================
+    // COMPRESSION WITH PER-CHANNEL ALGORITHM TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_compression_uses_per_channel_algorithm() {
+        let config = DeltaCompressionConfig {
+            algorithm: DeltaAlgorithm::Fossil, // Global default
+            min_message_size: 20,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+
+        // Set Xdelta3 for this channel
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "test-channel",
+            Some(true),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        // First message (full)
+        let message1 = b"{\"test\":\"data\",\"value\":123,\"extra\":\"content_to_make_longer\"}";
+        let result1 = manager
+            .compress_message(&socket_id, "test-channel", "event", message1, None)
+            .await
+            .unwrap();
+
+        match result1 {
+            CompressionResult::FullMessage { .. } => {}
+            _ => panic!("Expected full message for first message"),
+        }
+
+        // Store the message
+        manager
+            .store_sent_message(
+                &socket_id,
+                "test-channel",
+                "event",
+                message1.to_vec(),
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Second message (should be delta with Xdelta3)
+        let message2 = b"{\"test\":\"data\",\"value\":456,\"extra\":\"content_to_make_longer\"}";
+        let result2 = manager
+            .compress_message(&socket_id, "test-channel", "event", message2, None)
+            .await
+            .unwrap();
+
+        match result2 {
+            CompressionResult::Delta { algorithm, .. } => {
+                assert_eq!(algorithm, DeltaAlgorithm::Xdelta3);
+            }
+            CompressionResult::FullMessage { .. } => {
+                // Acceptable if delta wasn't beneficial
+            }
+            _ => panic!("Expected delta or full message"),
+        }
+    }
+
+    // =========================================================================
+    // SOCKET STATE MANAGEMENT TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_socket_delta_state_channel_enabled_check() {
+        let state = SocketDeltaState {
+            enabled: true,
+            channel_states: DashMap::new(),
+            channel_delta_settings: DashMap::new(),
+        };
+
+        // Default: follows global enabled state
+        assert!(state.is_enabled_for_channel("any-channel"));
+
+        // Explicitly disable a channel
+        state.set_channel_delta_settings(
+            "disabled-channel".to_string(),
+            PerChannelDeltaSettings {
+                enabled: false,
+                algorithm: None,
+            },
+        );
+
+        assert!(!state.is_enabled_for_channel("disabled-channel"));
+        assert!(state.is_enabled_for_channel("other-channel"));
+    }
+
+    #[tokio::test]
+    async fn test_socket_delta_state_algorithm_selection() {
+        let state = SocketDeltaState {
+            enabled: true,
+            channel_states: DashMap::new(),
+            channel_delta_settings: DashMap::new(),
+        };
+
+        let default_algo = DeltaAlgorithm::Fossil;
+
+        // Default algorithm when no per-channel settings
+        assert_eq!(
+            state.get_algorithm_for_channel("channel", default_algo),
+            DeltaAlgorithm::Fossil
+        );
+
+        // Set per-channel algorithm
+        state.set_channel_delta_settings(
+            "xdelta-channel".to_string(),
+            PerChannelDeltaSettings {
+                enabled: true,
+                algorithm: Some(DeltaAlgorithm::Xdelta3),
+            },
+        );
+
+        assert_eq!(
+            state.get_algorithm_for_channel("xdelta-channel", default_algo),
+            DeltaAlgorithm::Xdelta3
+        );
+        assert_eq!(
+            state.get_algorithm_for_channel("other-channel", default_algo),
+            DeltaAlgorithm::Fossil
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_channel_delta_settings() {
+        let state = SocketDeltaState {
+            enabled: true,
+            channel_states: DashMap::new(),
+            channel_delta_settings: DashMap::new(),
+        };
+
+        state.set_channel_delta_settings(
+            "channel".to_string(),
+            PerChannelDeltaSettings {
+                enabled: false,
+                algorithm: Some(DeltaAlgorithm::Xdelta3),
+            },
+        );
+
+        assert!(!state.is_enabled_for_channel("channel"));
+
+        state.remove_channel_delta_settings("channel");
+
+        // Back to default (enabled follows global)
+        assert!(state.is_enabled_for_channel("channel"));
+    }
+
+    // =========================================================================
+    // GLOBAL DISABLED TESTS
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_global_disabled_ignores_per_channel() {
+        let config = DeltaCompressionConfig {
+            enabled: false, // Globally disabled
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        // Even with per-socket enabled
+        manager.enable_for_socket(&socket_id);
+
+        // And per-channel enabled
+        manager.set_channel_delta_settings(&socket_id, "channel", Some(true), None);
+
+        // Should still be disabled because global config is disabled
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel"));
+    }
+
+    // =========================================================================
+    // INTEGRATION TEST - FULL FLOW
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_full_per_subscription_flow() {
+        let config = DeltaCompressionConfig {
+            algorithm: DeltaAlgorithm::Fossil,
+            min_message_size: 20,
+            full_message_interval: 5,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        // Step 1: Socket connects (no global enable yet)
+        assert!(!manager.is_enabled_for_socket(&socket_id));
+
+        // Step 2: Client subscribes to channel-a with delta: { enabled: true, algorithm: 'xdelta3' }
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "channel-a",
+            Some(true),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        // Socket should now be enabled (auto-enabled by per-channel request)
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-a"),
+            DeltaAlgorithm::Xdelta3
+        );
+
+        // Step 3: Client subscribes to channel-b with delta: false
+        manager.set_channel_delta_settings(&socket_id, "channel-b", Some(false), None);
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-b"));
+
+        // Step 4: Client subscribes to channel-c without delta settings (uses global)
+        // No set_channel_delta_settings call needed
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-c"));
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "channel-c"),
+            DeltaAlgorithm::Fossil // Global default
+        );
+
+        // Step 5: Client unsubscribes from channel-a
+        manager.clear_channel_state(&socket_id, "channel-a");
+        assert!(!manager.has_channel_delta_settings(&socket_id, "channel-a"));
+        // Falls back to global enabled
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
+
+        // Step 6: Client disconnects
+        manager.remove_socket(&socket_id);
+        assert!(!manager.is_enabled_for_socket(&socket_id));
+    }
+}

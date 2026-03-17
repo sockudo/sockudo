@@ -611,3 +611,320 @@ impl AppManager for ScyllaDbAppManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn create_test_config() -> ScyllaDbConfig {
+        let nodes = env::var("SCYLLADB_NODES")
+            .unwrap_or_else(|_| "localhost:19042".to_string())
+            .split(',')
+            .map(|s| s.to_string())
+            .collect();
+
+        let keyspace = env::var("SCYLLADB_KEYSPACE").unwrap_or_else(|_| "sockudo_test".to_string());
+
+        let replication_class =
+            env::var("SCYLLADB_REPLICATION_CLASS").unwrap_or_else(|_| "SimpleStrategy".to_string());
+
+        let replication_factor = env::var("SCYLLADB_REPLICATION_FACTOR")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+
+        ScyllaDbConfig {
+            nodes,
+            keyspace,
+            table_name: "applications_test".to_string(),
+            username: None,
+            password: None,
+            replication_class,
+            replication_factor,
+        }
+    }
+
+    fn create_test_app(id: &str) -> App {
+        App {
+            id: id.to_string(),
+            key: format!("{}_key", id),
+            secret: format!("{}_secret", id),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_backend_events_per_second: Some(100),
+            max_client_events_per_second: 100,
+            max_read_requests_per_second: Some(100),
+            max_presence_members_per_channel: Some(100),
+            max_presence_member_size_in_kb: Some(2),
+            max_channel_name_length: Some(200),
+            max_event_channels_at_once: Some(10),
+            max_event_name_length: Some(200),
+            max_event_payload_in_kb: Some(10),
+            max_event_batch_size: Some(10),
+            enable_user_authentication: Some(true),
+            webhooks: None,
+            enable_watchlist_events: None,
+            allowed_origins: None,
+            channel_delta_compression: None,
+        }
+    }
+
+    fn create_test_app_with_webhooks(id: &str) -> App {
+        use sockudo_core::webhook_types::WebhookFilter;
+        use url::Url;
+
+        let webhooks = vec![
+            Webhook {
+                url: Some(Url::parse("https://example.com/webhook1").unwrap()),
+                lambda_function: None,
+                lambda: None,
+                event_types: vec!["channel_occupied".to_string()],
+                filter: None,
+                headers: None,
+            },
+            Webhook {
+                url: Some(Url::parse("https://example.com/webhook2").unwrap()),
+                lambda_function: None,
+                lambda: None,
+                event_types: vec!["channel_vacated".to_string(), "member_added".to_string()],
+                filter: Some(WebhookFilter {
+                    channel_prefix: Some("private-".to_string()),
+                    channel_suffix: None,
+                    channel_pattern: None,
+                }),
+                headers: None,
+            },
+        ];
+
+        App {
+            id: id.to_string(),
+            key: format!("{}_key", id),
+            secret: format!("{}_secret", id),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_backend_events_per_second: Some(100),
+            max_client_events_per_second: 100,
+            max_read_requests_per_second: Some(100),
+            max_presence_members_per_channel: Some(100),
+            max_presence_member_size_in_kb: Some(2),
+            max_channel_name_length: Some(200),
+            max_event_channels_at_once: Some(10),
+            max_event_name_length: Some(200),
+            max_event_payload_in_kb: Some(10),
+            max_event_batch_size: Some(10),
+            enable_user_authentication: Some(true),
+            webhooks: Some(webhooks),
+            enable_watchlist_events: Some(true),
+            allowed_origins: Some(vec![
+                "https://example.com".to_string(),
+                "https://app.example.com".to_string(),
+            ]),
+            channel_delta_compression: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_and_find_app() {
+        let config = create_test_config();
+        let manager = ScyllaDbAppManager::new(config).await.unwrap();
+
+        let app = create_test_app("test_app_create");
+        manager.create_app(app.clone()).await.unwrap();
+
+        let found = manager.find_by_id("test_app_create").await.unwrap();
+        assert!(found.is_some());
+        let found_app = found.unwrap();
+        assert_eq!(found_app.id, "test_app_create");
+        assert_eq!(found_app.key, "test_app_create_key");
+        assert_eq!(found_app.secret, "test_app_create_secret");
+        assert_eq!(found_app.max_connections, 100);
+
+        manager.delete_app("test_app_create").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_app_with_webhooks() {
+        let config = create_test_config();
+        let manager = ScyllaDbAppManager::new(config).await.unwrap();
+
+        let app = create_test_app_with_webhooks("test_app_webhooks");
+        manager.create_app(app.clone()).await.unwrap();
+
+        let found = manager.find_by_id("test_app_webhooks").await.unwrap();
+        assert!(found.is_some());
+        let found_app = found.unwrap();
+
+        // Verify webhooks
+        assert!(found_app.webhooks.is_some());
+        let webhooks = found_app.webhooks.unwrap();
+        assert_eq!(webhooks.len(), 2);
+        assert_eq!(
+            webhooks[0].url.as_ref().unwrap().as_str(),
+            "https://example.com/webhook1"
+        );
+        assert_eq!(webhooks[0].event_types.len(), 1);
+        assert_eq!(
+            webhooks[1].url.as_ref().unwrap().as_str(),
+            "https://example.com/webhook2"
+        );
+        assert_eq!(webhooks[1].event_types.len(), 2);
+
+        // Verify enable_watchlist_events
+        assert_eq!(found_app.enable_watchlist_events, Some(true));
+
+        // Verify allowed_origins
+        assert!(found_app.allowed_origins.is_some());
+        let origins = found_app.allowed_origins.unwrap();
+        assert_eq!(origins.len(), 2);
+        assert_eq!(origins[0], "https://example.com");
+
+        manager.delete_app("test_app_webhooks").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_app() {
+        let config = create_test_config();
+        let manager = ScyllaDbAppManager::new(config).await.unwrap();
+
+        // Create initial app
+        let mut app = create_test_app("test_app_update");
+        manager.create_app(app.clone()).await.unwrap();
+
+        // Update app with webhooks
+        use url::Url;
+
+        app.max_connections = 200;
+        app.webhooks = Some(vec![Webhook {
+            url: Some(Url::parse("https://updated.com/webhook").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        }]);
+        app.enable_watchlist_events = Some(true);
+
+        manager.update_app(app.clone()).await.unwrap();
+
+        // Verify update
+        let found = manager.find_by_id("test_app_update").await.unwrap();
+        assert!(found.is_some());
+        let found_app = found.unwrap();
+        assert_eq!(found_app.max_connections, 200);
+        assert!(found_app.webhooks.is_some());
+        assert_eq!(
+            found_app.webhooks.unwrap()[0]
+                .url
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "https://updated.com/webhook"
+        );
+        assert_eq!(found_app.enable_watchlist_events, Some(true));
+
+        manager.delete_app("test_app_update").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_find_by_key() {
+        let config = create_test_config();
+        let manager = ScyllaDbAppManager::new(config).await.unwrap();
+
+        let app = create_test_app("test_app_key");
+        manager.create_app(app.clone()).await.unwrap();
+
+        let found = manager.find_by_key("test_app_key_key").await.unwrap();
+        assert!(found.is_some());
+        let found_app = found.unwrap();
+        assert_eq!(found_app.key, "test_app_key_key");
+        assert_eq!(found_app.id, "test_app_key");
+
+        manager.delete_app("test_app_key").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_apps() {
+        let config = create_test_config();
+        let manager = ScyllaDbAppManager::new(config).await.unwrap();
+
+        // Create multiple apps
+        let app1 = create_test_app("test_get_apps_1");
+        let app2 = create_test_app_with_webhooks("test_get_apps_2");
+        let app3 = create_test_app("test_get_apps_3");
+
+        manager.create_app(app1).await.unwrap();
+        manager.create_app(app2).await.unwrap();
+        manager.create_app(app3).await.unwrap();
+
+        // Get all apps
+        let apps = manager.get_apps().await.unwrap();
+
+        // Should have at least our 3 test apps
+        let test_apps: Vec<_> = apps
+            .iter()
+            .filter(|a| a.id.starts_with("test_get_apps_"))
+            .collect();
+        assert!(test_apps.len() >= 3);
+
+        // Cleanup
+        manager.delete_app("test_get_apps_1").await.unwrap();
+        manager.delete_app("test_get_apps_2").await.unwrap();
+        manager.delete_app("test_get_apps_3").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_app() {
+        let config = create_test_config();
+        let manager = ScyllaDbAppManager::new(config).await.unwrap();
+
+        let app = create_test_app("test_app_delete");
+        manager.create_app(app.clone()).await.unwrap();
+
+        // Verify it exists
+        let found = manager.find_by_id("test_app_delete").await.unwrap();
+        assert!(found.is_some());
+
+        // Delete it
+        manager.delete_app("test_app_delete").await.unwrap();
+
+        // Verify it's gone
+        let found = manager.find_by_id("test_app_delete").await.unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_webhooks_to_none() {
+        let config = create_test_config();
+        let manager = ScyllaDbAppManager::new(config).await.unwrap();
+
+        // Create app with webhooks
+        let mut app = create_test_app_with_webhooks("test_app_webhooks_none");
+        manager.create_app(app.clone()).await.unwrap();
+
+        // Update to remove webhooks
+        app.webhooks = None;
+        app.enable_watchlist_events = Some(false);
+        manager.update_app(app.clone()).await.unwrap();
+
+        // Verify webhooks are removed
+        let found = manager.find_by_id("test_app_webhooks_none").await.unwrap();
+        assert!(found.is_some());
+        let found_app = found.unwrap();
+        assert!(found_app.webhooks.is_none());
+        assert_eq!(found_app.enable_watchlist_events, Some(false));
+
+        manager.delete_app("test_app_webhooks_none").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_health_check() {
+        let config = create_test_config();
+        let manager = ScyllaDbAppManager::new(config).await.unwrap();
+
+        let result = manager.check_health().await;
+        assert!(result.is_ok());
+    }
+}

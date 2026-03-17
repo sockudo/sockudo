@@ -4,7 +4,7 @@ pub mod worker;
 // Re-export core cleanup types from sockudo-adapter
 pub use sockudo_adapter::cleanup::{
     AuthInfo, CleanupChannelFlavor, CleanupReceiverHandle, CleanupSender, CleanupSenderHandle,
-    ConnectionCleanupInfo, DisconnectTask, MultiWorkerSender,
+    ConnectionCleanupInfo, DisconnectTask, MultiWorkerSender, WorkerStats,
 };
 
 // Re-export CleanupConfig and WorkerThreadsConfig from sockudo-core options

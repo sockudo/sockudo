@@ -104,4 +104,50 @@ impl MultiWorkerSender {
     pub fn is_available(&self) -> bool {
         self.senders.iter().any(|s| !s.is_disconnected())
     }
+
+    /// Send a disconnect task with fallback to other workers if one fails
+    pub fn send_with_fallback(
+        &self,
+        task: DisconnectTask,
+    ) -> Result<(), SendError> {
+        self.send(task)
+    }
+
+    /// Get the number of workers
+    pub fn worker_count(&self) -> usize {
+        self.senders.len()
+    }
+
+    /// Get statistics about worker availability
+    pub fn get_worker_stats(&self) -> WorkerStats {
+        let total = self.senders.len();
+        let available = self
+            .senders
+            .iter()
+            .filter(|sender| !sender.is_disconnected())
+            .count();
+        let closed = total - available;
+
+        WorkerStats {
+            total_workers: total,
+            available_workers: available,
+            closed_workers: closed,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(senders: Vec<CleanupSenderHandle>) -> Self {
+        Self {
+            senders,
+            next_worker: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+}
+
+/// Statistics about worker availability
+#[derive(Debug, Clone)]
+pub struct WorkerStats {
+    pub total_workers: usize,
+    pub available_workers: usize,
+    pub closed_workers: usize,
 }

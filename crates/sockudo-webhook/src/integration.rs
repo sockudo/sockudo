@@ -466,3 +466,387 @@ impl WebhookIntegration {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sockudo_app::memory_app_manager::MemoryAppManager;
+    use sockudo_core::webhook_types::{JobData, JobPayload};
+    use sockudo_queue::manager::QueueManagerFactory;
+
+    async fn create_test_queue_manager() -> Arc<QueueManager> {
+        let driver = QueueManagerFactory::create("memory", None, None, None)
+            .await
+            .expect("Failed to create test queue manager");
+        Arc::new(QueueManager::new(driver))
+    }
+
+    #[tokio::test]
+    async fn test_send_cache_missed() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration.send_cache_missed(&app, "test_channel").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_subscription_count_changed() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_subscription_count_changed(&app, "test_channel", 5)
+            .await;
+        assert!(result.is_ok());
+
+        let config = WebhookConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_subscription_count_changed(&app, "test_channel", 5)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_webhook_config_serialization() {
+        let config = WebhookConfig {
+            enabled: true,
+            batching: BatchingConfig {
+                enabled: true,
+                duration: 1000,
+                size: 50,
+            },
+            process_id: "test-process".to_string(),
+            debug: false,
+        };
+
+        let serialized = sonic_rs::to_string(&config).unwrap();
+        let deserialized: WebhookConfig = sonic_rs::from_str(&serialized).unwrap();
+
+        assert_eq!(config.enabled, deserialized.enabled);
+        assert_eq!(config.batching.enabled, deserialized.batching.enabled);
+        assert_eq!(config.batching.duration, deserialized.batching.duration);
+        assert_eq!(config.batching.size, deserialized.batching.size);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_integration_new() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager)).await;
+        assert!(integration.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_integration_send_event() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_client_event(
+                &app,
+                "test_channel",
+                "test_event",
+                json!("test_data"),
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_integration_send_client_event() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_client_event(
+                &app,
+                "test_channel",
+                "test_event",
+                json!("test_data"),
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_integration_send_member_added() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_member_added(&app, "test_channel", "test_user")
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_integration_send_member_removed() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_member_removed(&app, "test_channel", "test_user")
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_integration_send_channel_occupied() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_channel_occupied(&app, "test_channel")
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_integration_send_channel_vacated() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration.send_channel_vacated(&app, "test_channel").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_integration_send_subscription_count_changed() {
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager.clone(), Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_subscription_count_changed(&app, "test_channel", 5)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_merge_jobs_for_queue_batches_by_app_and_size() {
+        let jobs = vec![
+            JobData {
+                app_key: "key-a".to_string(),
+                app_id: "app-a".to_string(),
+                app_secret: "secret-a".to_string(),
+                payload: JobPayload {
+                    time_ms: 10,
+                    events: vec![json!({"name": "channel_occupied", "channel": "one"})],
+                },
+                original_signature: "sig-1".to_string(),
+            },
+            JobData {
+                app_key: "key-a".to_string(),
+                app_id: "app-a".to_string(),
+                app_secret: "secret-a".to_string(),
+                payload: JobPayload {
+                    time_ms: 20,
+                    events: vec![json!({"name": "channel_vacated", "channel": "two"})],
+                },
+                original_signature: "sig-2".to_string(),
+            },
+            JobData {
+                app_key: "key-b".to_string(),
+                app_id: "app-b".to_string(),
+                app_secret: "secret-b".to_string(),
+                payload: JobPayload {
+                    time_ms: 30,
+                    events: vec![json!({"name": "channel_occupied", "channel": "three"})],
+                },
+                original_signature: "sig-3".to_string(),
+            },
+        ];
+
+        let merged = WebhookIntegration::merge_jobs_for_queue(jobs, 2);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].app_id, "app-a");
+        assert_eq!(merged[0].payload.events.len(), 2);
+        assert_eq!(merged[1].app_id, "app-b");
+        assert_eq!(merged[1].payload.events.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_jobs_for_queue_splits_oversized_jobs() {
+        let job = JobData {
+            app_key: "key-a".to_string(),
+            app_id: "app-a".to_string(),
+            app_secret: "secret-a".to_string(),
+            payload: JobPayload {
+                time_ms: 10,
+                events: vec![
+                    json!({"name": "channel_occupied", "channel": "one"}),
+                    json!({"name": "channel_occupied", "channel": "two"}),
+                    json!({"name": "channel_occupied", "channel": "three"}),
+                ],
+            },
+            original_signature: "sig-1".to_string(),
+        };
+
+        let merged = WebhookIntegration::merge_jobs_for_queue(vec![job], 2);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].payload.events.len(), 2);
+        assert_eq!(merged[1].payload.events.len(), 1);
+    }
+}
