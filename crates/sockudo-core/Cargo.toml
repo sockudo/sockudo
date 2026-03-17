@@ -1,0 +1,53 @@
+[package]
+name = "sockudo-core"
+description = "Core traits, types, error handling, and configuration for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[features]
+default = ["local"]
+local = []
+full = ["redis", "redis-cluster", "nats", "mysql", "postgres", "dynamodb", "scylladb", "sqs", "sns", "lambda"]
+redis = ["dep:redis"]
+redis-cluster = ["redis"]
+nats = []
+mysql = []
+postgres = []
+dynamodb = []
+scylladb = []
+sqs = []
+sns = []
+lambda = []
+
+[dependencies]
+sockudo-protocol = { workspace = true }
+sockudo-filter = { workspace = true }
+
+ahash = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+crossfire = { workspace = true }
+dashmap = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+md5 = { workspace = true }
+memchr = { workspace = true }
+rand = { workspace = true }
+redis = { workspace = true, optional = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde-aux = { workspace = true }
+sha2 = { workspace = true }
+sockudo-ws = { workspace = true }
+sonic-rs = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true }

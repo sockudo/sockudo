@@ -1,0 +1,53 @@
+[package]
+name = "sockudo-adapter"
+description = "Connection adapters and horizontal scaling for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[features]
+default = ["local"]
+local = []
+full = ["redis", "redis-cluster", "nats"]
+redis = ["sockudo-core/redis", "dep:redis"]
+redis-cluster = ["redis", "sockudo-core/redis-cluster"]
+nats = ["sockudo-core/nats", "dep:async-nats"]
+
+[dependencies]
+sockudo-core = { workspace = true }
+sockudo-protocol = { workspace = true }
+sockudo-filter = { workspace = true }
+sockudo-delta = { workspace = true }
+sockudo-metrics = { workspace = true }
+sockudo-webhook = { workspace = true }
+
+ahash = { workspace = true }
+base64 = { workspace = true }
+async-nats = { workspace = true, optional = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+crossfire = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+mockall = { workspace = true }
+moka = { workspace = true }
+num_cpus = { workspace = true }
+rand = { workspace = true }
+redis = { workspace = true, optional = true }
+regex = { workspace = true }
+serde = { workspace = true }
+sockudo-ws = { workspace = true }
+sonic-rs = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+md5 = { workspace = true }
+sockudo-app = { workspace = true }
+num_cpus = { workspace = true }
