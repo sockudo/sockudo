@@ -29,6 +29,7 @@ redis = [
   "sockudo-cache/redis",
   "sockudo-queue/redis",
   "sockudo-rate-limiter/redis",
+  "sockudo-delta/redis",
 ]
 redis-cluster = [
   "redis",
@@ -38,7 +39,7 @@ redis-cluster = [
   "sockudo-queue/redis-cluster",
   "sockudo-rate-limiter/redis-cluster",
 ]
-nats = ["sockudo-core/nats", "sockudo-adapter/nats"]
+nats = ["sockudo-core/nats", "sockudo-adapter/nats", "sockudo-delta/nats"]
 mysql = ["sockudo-core/mysql", "sockudo-app/mysql"]
 postgres = ["sockudo-core/postgres", "sockudo-app/postgres"]
 dynamodb = ["sockudo-core/dynamodb", "sockudo-app/dynamodb"]
