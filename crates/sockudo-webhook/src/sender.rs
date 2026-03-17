@@ -441,11 +441,7 @@ async fn send_pusher_webhook_once(
         request_builder = request_builder.header(key, value);
     }
 
-    match request_builder
-        .body(json_body.to_string())
-        .send()
-        .await
-    {
+    match request_builder.body(json_body.to_string()).send().await {
         Ok(response) => {
             let status = response.status();
             if status.is_success() {

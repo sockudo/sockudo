@@ -218,21 +218,20 @@ impl PresenceManager {
                 let uid = user_id.to_string();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    let still_gone =
-                        match Self::user_has_other_connections_in_presence_channel(
-                            cm, &app.id, &ch, &uid, None,
-                        )
-                        .await
-                        {
-                            Ok(has_connections) => !has_connections,
-                            Err(_) => true,
-                        };
-                    if still_gone
-                        && let Err(e) = wi.send_member_removed(&app, &ch, &uid).await
+                    let still_gone = match Self::user_has_other_connections_in_presence_channel(
+                        cm, &app.id, &ch, &uid, None,
+                    )
+                    .await
                     {
+                        Ok(has_connections) => !has_connections,
+                        Err(_) => true,
+                    };
+                    if still_gone && let Err(e) = wi.send_member_removed(&app, &ch, &uid).await {
                         tracing::warn!(
                             "Failed to send member_removed webhook for user {} in channel {}: {}",
-                            uid, ch, e
+                            uid,
+                            ch,
+                            e
                         );
                     }
                 });
