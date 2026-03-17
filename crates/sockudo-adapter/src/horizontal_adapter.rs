@@ -481,10 +481,12 @@ impl HorizontalAdapter {
             }
             RequestType::PresenceStateSync => {
                 if let Some(presence_data) = request.user_info {
-                    // Deserialize the bulk presence data
-                    match sonic_rs::from_value::<AHashMap<String, AHashMap<String, PresenceEntry>>>(
-                        &presence_data,
-                    ) {
+                    let deser_result = sonic_rs::to_vec(&presence_data).and_then(|bytes| {
+                        sonic_rs::from_slice::<AHashMap<String, AHashMap<String, PresenceEntry>>>(
+                            &bytes,
+                        )
+                    });
+                    match deser_result {
                         Ok(incoming_node_data) => {
                             let mut registry = self.cluster_presence_registry.write().await;
 
