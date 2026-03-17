@@ -357,7 +357,16 @@ impl Clone for WebhookSender {
     }
 }
 
-/// Helper function to send a Pusher-formatted webhook
+/// Maximum total retry duration (5 minutes) per Pusher spec.
+const MAX_RETRY_DURATION: Duration = Duration::from_secs(300);
+
+/// Initial retry delay.
+const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Helper function to send a Pusher-formatted webhook with retry and exponential backoff.
+///
+/// On non-2XX responses or network errors, retries with exponential backoff
+/// for up to 5 minutes (per Pusher protocol spec).
 async fn send_pusher_webhook(
     client: &Client,
     url: &str,
@@ -368,6 +377,60 @@ async fn send_pusher_webhook(
 ) -> Result<()> {
     debug!("Sending Pusher webhook to URL: {}", url);
 
+    let start = tokio::time::Instant::now();
+    let mut delay = INITIAL_RETRY_DELAY;
+    let mut attempt = 0u32;
+
+    loop {
+        attempt += 1;
+        let result = send_pusher_webhook_once(
+            client,
+            url,
+            app_key,
+            signature,
+            &json_body,
+            &custom_headers_config,
+        )
+        .await;
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let elapsed = start.elapsed();
+                if elapsed + delay > MAX_RETRY_DURATION {
+                    error!(
+                        "Webhook to {} failed after {} attempts over {:.1}s, giving up: {}",
+                        url,
+                        attempt,
+                        elapsed.as_secs_f64(),
+                        e
+                    );
+                    return Err(e);
+                }
+
+                warn!(
+                    "Webhook to {} failed (attempt {}), retrying in {:.1}s: {}",
+                    url,
+                    attempt,
+                    delay.as_secs_f64(),
+                    e
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(60));
+            }
+        }
+    }
+}
+
+/// Single attempt to send a Pusher webhook.
+async fn send_pusher_webhook_once(
+    client: &Client,
+    url: &str,
+    app_key: &str,
+    signature: &str,
+    json_body: &str,
+    custom_headers_config: &AHashMap<String, String>,
+) -> Result<()> {
     let mut request_builder = client
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
@@ -378,7 +441,11 @@ async fn send_pusher_webhook(
         request_builder = request_builder.header(key, value);
     }
 
-    match request_builder.body(json_body).send().await {
+    match request_builder
+        .body(json_body.to_string())
+        .send()
+        .await
+    {
         Ok(response) => {
             let status = response.status();
             if status.is_success() {
@@ -390,11 +457,8 @@ async fn send_pusher_webhook(
             } else {
                 let error_text = response.text().await.unwrap_or_default();
                 error!(
-                    "{}",
-                    format!(
-                        "Pusher webhook to {} failed with status {}: {}",
-                        url, status, error_text
-                    )
+                    "Pusher webhook to {} failed with status {}: {}",
+                    url, status, error_text
                 );
                 Err(Error::Other(format!(
                     "Webhook to {url} failed with status {status}"
@@ -402,10 +466,7 @@ async fn send_pusher_webhook(
             }
         }
         Err(e) => {
-            error!(
-                "{}",
-                format!("Failed to send Pusher webhook to {}: {}", url, e)
-            );
+            error!("Failed to send Pusher webhook to {}: {}", url, e);
             Err(Error::Other(format!(
                 "HTTP request failed for webhook to {url}: {e}"
             )))
