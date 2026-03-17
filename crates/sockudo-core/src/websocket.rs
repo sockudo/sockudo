@@ -1172,4 +1172,35 @@ mod tests {
         assert_eq!(msg.size, 11);
         assert_eq!(msg.bytes, bytes);
     }
+
+    #[test]
+    fn test_websocket_buffer_config_message_limit() {
+        let config = WebSocketBufferConfig::with_message_limit(500, false);
+        assert_eq!(config.channel_capacity(), 500);
+        assert!(!config.disconnect_on_full);
+        assert!(!config.tracks_bytes());
+    }
+
+    #[test]
+    fn test_websocket_buffer_config_byte_limit() {
+        let config = WebSocketBufferConfig::with_byte_limit(1_048_576, true);
+        assert_eq!(config.channel_capacity(), 10_000);
+        assert!(config.disconnect_on_full);
+        assert!(config.tracks_bytes());
+    }
+
+    #[test]
+    fn test_websocket_buffer_config_both_limits() {
+        let config = WebSocketBufferConfig::with_both_limits(1000, 1_048_576, true);
+        assert_eq!(config.channel_capacity(), 1000);
+        assert!(config.disconnect_on_full);
+        assert!(config.tracks_bytes());
+    }
+
+    #[test]
+    fn test_websocket_buffer_config_legacy_new() {
+        let config = WebSocketBufferConfig::new(500, false);
+        assert_eq!(config.channel_capacity(), 500);
+        assert!(!config.disconnect_on_full);
+    }
 }

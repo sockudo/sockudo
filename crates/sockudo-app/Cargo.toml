@@ -35,3 +35,8 @@ sqlx = { workspace = true, optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 urlencoding = { workspace = true, optional = true }
+
+[dev-dependencies]
+sockudo-cache = { path = "../sockudo-cache" }
+tokio = { workspace = true, features = ["full"] }
+url = { workspace = true }

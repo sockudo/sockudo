@@ -476,3 +476,229 @@ fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPay
         debug!("  Event: {:?}", event);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use sockudo_app::memory_app_manager::MemoryAppManager;
+    use sockudo_core::app::{App, AppManager};
+    use sockudo_core::webhook_types::JobPayload;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_creating_webhook_sender() {
+        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        assert!(webhook_sender.webhook_semaphore.available_permits() > 0);
+        assert!(webhook_sender.app_manager.get_apps().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_no_events() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "test_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_with_events() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "test_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "test-channel"
+                })],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_invalid_app() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let webhook_sender = WebhookSender::new(app_manager.clone());
+
+        let job = JobData {
+            app_id: "non_existent_app".to_string(),
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            payload: JobPayload {
+                time_ms: 1234567890,
+                events: vec![],
+            },
+            original_signature: "test_signature".to_string(),
+        };
+
+        let result = webhook_sender.process_webhook_job(job).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_webhook_job_concurrent_requests() {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let app = App {
+            id: "test_app".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        };
+        app_manager.create_app(app).await.unwrap();
+        let webhook_sender = Arc::new(WebhookSender::new(app_manager.clone()));
+
+        let mut handles = vec![];
+        for i in 0..10 {
+            let sender_clone = webhook_sender.clone();
+            let job = JobData {
+                app_id: "test_app".to_string(),
+                app_key: "test_key".to_string(),
+                app_secret: "test_secret".to_string(),
+                payload: JobPayload {
+                    time_ms: 1234567890 + i,
+                    events: vec![sonic_rs::json!({
+                        "name": "channel_occupied",
+                        "channel": format!("test-channel-{}", i)
+                    })],
+                },
+                original_signature: format!("test_signature_{i}"),
+            };
+
+            handles.push(tokio::spawn(async move {
+                sender_clone.process_webhook_job(job).await
+            }));
+        }
+
+        let results = futures::future::join_all(handles).await;
+        for result in results {
+            assert!(result.unwrap().is_ok());
+        }
+    }
+
+    #[test]
+    fn test_filter_events_for_webhook_respects_channel_prefix() {
+        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        let webhook = Webhook {
+            url: Some(url::Url::parse("http://localhost/webhook").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: Some(WebhookFilter {
+                channel_prefix: Some("#server-to-user".to_string()),
+                channel_suffix: None,
+                channel_pattern: None,
+            }),
+            headers: None,
+        };
+
+        let filtered = webhook_sender.filter_events_for_webhook(
+            &[
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "#server-to-user-123"
+                }),
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "private-conversation.123"
+                }),
+            ],
+            &webhook,
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].get("channel").and_then(Value::as_str),
+            Some("#server-to-user-123")
+        );
+    }
+
+    #[test]
+    fn test_find_relevant_webhooks_splits_events_per_endpoint() {
+        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        let prefixed = Webhook {
+            url: Some(url::Url::parse("http://localhost/prefix").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: Some(WebhookFilter {
+                channel_prefix: Some("#server-to-user".to_string()),
+                channel_suffix: None,
+                channel_pattern: None,
+            }),
+            headers: None,
+        };
+        let catch_all = Webhook {
+            url: Some(url::Url::parse("http://localhost/all").unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        };
+
+        let webhooks = [prefixed.clone(), catch_all.clone()];
+        let relevant = webhook_sender.find_relevant_webhooks(
+            &[
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "#server-to-user-1"
+                }),
+                sonic_rs::json!({
+                    "name": "channel_occupied",
+                    "channel": "private-conversation.1"
+                }),
+            ],
+            &webhooks,
+        );
+
+        assert_eq!(relevant.len(), 2);
+        assert_eq!(relevant.get("http://localhost/prefix").unwrap().1.len(), 1);
+        assert_eq!(relevant.get("http://localhost/all").unwrap().1.len(), 2);
+    }
+}
