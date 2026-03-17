@@ -1,0 +1,10 @@
+{
+  "context_servers": {
+    "sockudo-docs": {
+      "source": "custom",
+      "command": "bunx",
+      "args": ["mcp-remote", "https://sockudo.io/mcp"],
+      "env": {},
+    },
+  },
+}

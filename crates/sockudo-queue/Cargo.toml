@@ -1,0 +1,33 @@
+[package]
+name = "sockudo-queue"
+description = "Queue manager implementations for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[features]
+default = ["local"]
+local = []
+full = ["redis", "redis-cluster", "sqs", "sns"]
+redis = ["sockudo-core/redis", "dep:redis"]
+redis-cluster = ["redis", "sockudo-core/redis-cluster"]
+sqs = ["sockudo-core/sqs", "dep:aws-config", "dep:aws-sdk-sqs"]
+sns = ["sockudo-core/sns", "dep:aws-config", "dep:aws-sdk-sns"]
+
+[dependencies]
+sockudo-core = { workspace = true }
+
+async-trait = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-sns = { workspace = true, optional = true }
+aws-sdk-sqs = { workspace = true, optional = true }
+ahash = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+redis = { workspace = true, optional = true }
+serde = { workspace = true }
+sonic-rs = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

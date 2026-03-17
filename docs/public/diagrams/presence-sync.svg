@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 440" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="13">
+  <style>
+    .box { rx: 8; ry: 8; stroke-width: 1.5; }
+    .label { text-anchor: middle; dominant-baseline: central; }
+    .label-left { dominant-baseline: central; }
+    .edge-label { text-anchor: middle; dominant-baseline: central; font-size: 11; }
+    .arrow { stroke-width: 1.5; fill: none; marker-end: url(#ah2); }
+    .arrow-both { stroke-width: 1.5; fill: none; marker-start: url(#ah2-rev); marker-end: url(#ah2); }
+    @media (prefers-color-scheme: dark) {
+      .box-node    { fill: #1a3328; stroke: #34d399; }
+      .box-entry   { fill: #1e293b; stroke: #475569; }
+      .box-channel { fill: #1e3a5f; stroke: #38bdf8; }
+      .box-action  { fill: #3b2f1a; stroke: #fbbf24; }
+      .box-infra   { fill: #3b1f5e; stroke: #a78bfa; }
+      .group-bg    { fill: #0f172a; stroke: #334155; }
+      .label       { fill: #e2e8f0; }
+      .label-left  { fill: #e2e8f0; }
+      .label-dim   { fill: #94a3b8; }
+      .edge-label  { fill: #94a3b8; }
+      .arrow       { stroke: #64748b; }
+      .arrow-both  { stroke: #64748b; }
+      .arrow-head  { fill: #64748b; }
+      .divider     { stroke: #334155; }
+    }
+    @media (prefers-color-scheme: light) {
+      .box-node    { fill: #ecfdf5; stroke: #10b981; }
+      .box-entry   { fill: #f8fafc; stroke: #cbd5e1; }
+      .box-channel { fill: #eff6ff; stroke: #3b82f6; }
+      .box-action  { fill: #fefce8; stroke: #eab308; }
+      .box-infra   { fill: #f5f3ff; stroke: #8b5cf6; }
+      .group-bg    { fill: #f8fafc; stroke: #e2e8f0; }
+      .label       { fill: #1e293b; }
+      .label-left  { fill: #1e293b; }
+      .label-dim   { fill: #64748b; }
+      .edge-label  { fill: #64748b; }
+      .arrow       { stroke: #94a3b8; }
+      .arrow-both  { stroke: #94a3b8; }
+      .arrow-head  { fill: #94a3b8; }
+      .divider     { stroke: #e2e8f0; }
+    }
+  </style>
+  <defs>
+    <marker id="ah2" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" class="arrow-head"/>
+    </marker>
+    <marker id="ah2-rev" markerWidth="10" markerHeight="7" refX="1" refY="3.5" orient="auto">
+      <polygon points="10 0, 0 3.5, 10 7" class="arrow-head"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text class="label" x="390" y="24" font-weight="700" font-size="14">Cluster Presence Registry</text>
+  <text class="label label-dim" x="390" y="42" font-size="11">Each node tracks presence data from all nodes</text>
+
+  <!-- Node A group -->
+  <rect class="box group-bg" x="20" y="60" width="360" height="160" rx="12" ry="12" opacity="0.5"/>
+  <rect class="box box-node" x="30" y="70" width="100" height="36"/>
+  <text class="label" x="80" y="88" font-weight="700">Node A</text>
+
+  <!-- Channel boxes under Node A -->
+  <rect class="box box-channel" x="40" y="120" width="150" height="30"/>
+  <text class="label" x="115" y="135" font-size="11">presence-chat</text>
+
+  <rect class="box box-channel" x="210" y="120" width="150" height="30"/>
+  <text class="label" x="285" y="135" font-size="11">presence-lobby</text>
+
+  <!-- Entries under channels -->
+  <rect class="box box-entry" x="40" y="162" width="150" height="48"/>
+  <text class="label-left label-dim" x="50" y="178" font-size="10">socket: abc123</text>
+  <text class="label-left label-dim" x="50" y="194" font-size="10">user: alice  seq: 42</text>
+
+  <rect class="box box-entry" x="210" y="162" width="150" height="48"/>
+  <text class="label-left label-dim" x="220" y="178" font-size="10">socket: def456</text>
+  <text class="label-left label-dim" x="220" y="194" font-size="10">user: bob  seq: 17</text>
+
+  <!-- Node B group -->
+  <rect class="box group-bg" x="400" y="60" width="360" height="160" rx="12" ry="12" opacity="0.5"/>
+  <rect class="box box-node" x="410" y="70" width="100" height="36"/>
+  <text class="label" x="460" y="88" font-weight="700">Node B</text>
+
+  <!-- Channel boxes under Node B -->
+  <rect class="box box-channel" x="420" y="120" width="150" height="30"/>
+  <text class="label" x="495" y="135" font-size="11">presence-chat</text>
+
+  <rect class="box box-channel" x="590" y="120" width="150" height="30"/>
+  <text class="label" x="665" y="135" font-size="11">presence-game</text>
+
+  <!-- Entries under channels -->
+  <rect class="box box-entry" x="420" y="162" width="150" height="48"/>
+  <text class="label-left label-dim" x="430" y="178" font-size="10">socket: ghi789</text>
+  <text class="label-left label-dim" x="430" y="194" font-size="10">user: charlie  seq: 8</text>
+
+  <rect class="box box-entry" x="590" y="162" width="150" height="48"/>
+  <text class="label-left label-dim" x="600" y="178" font-size="10">socket: jkl012</text>
+  <text class="label-left label-dim" x="600" y="194" font-size="10">user: dave  seq: 3</text>
+
+  <!-- Sync arrows between nodes -->
+  <line class="arrow-both" x1="200" y1="88" x2="410" y2="88"/>
+  <text class="edge-label" x="305" y="78" font-size="10" font-weight="600">pub/sub sync</text>
+
+  <!-- Divider -->
+  <line class="divider" x1="20" y1="245" x2="760" y2="245" stroke-dasharray="4"/>
+
+  <!-- Sync flow -->
+  <text class="label" x="390" y="270" font-weight="700" font-size="13">Presence Sync Flow</text>
+
+  <!-- Step 1: Join -->
+  <rect class="box box-action" x="20" y="290" width="170" height="56"/>
+  <text class="label" x="105" y="310" font-weight="700" font-size="12">1. User Joins</text>
+  <text class="label label-dim" x="105" y="330" font-size="10">on Node A</text>
+
+  <line class="arrow" x1="190" y1="318" x2="230" y2="318"/>
+
+  <!-- Step 2: Broadcast -->
+  <rect class="box box-infra" x="230" y="290" width="170" height="56"/>
+  <text class="label" x="315" y="310" font-weight="700" font-size="12">2. Broadcast</text>
+  <text class="label label-dim" x="315" y="330" font-size="10">PresenceMemberJoined</text>
+
+  <line class="arrow" x1="400" y1="318" x2="440" y2="318"/>
+
+  <!-- Step 3: All nodes update -->
+  <rect class="box box-node" x="440" y="290" width="170" height="56"/>
+  <text class="label" x="525" y="310" font-weight="700" font-size="12">3. All Nodes</text>
+  <text class="label label-dim" x="525" y="330" font-size="10">update registry</text>
+
+  <line class="arrow" x1="610" y1="318" x2="650" y2="318"/>
+
+  <!-- Step 4: Conflict resolution -->
+  <rect class="box box-entry" x="650" y="290" width="110" height="56"/>
+  <text class="label" x="705" y="310" font-weight="700" font-size="12">4. Resolve</text>
+  <text class="label label-dim" x="705" y="330" font-size="10">highest seq wins</text>
+
+  <!-- Dead node flow -->
+  <text class="label label-dim" x="390" y="376" font-size="11">Dead node cleanup</text>
+
+  <rect class="box box-action" x="80" y="392" width="200" height="36"/>
+  <text class="label" x="180" y="410" font-size="11">Heartbeat timeout detected</text>
+
+  <line class="arrow" x1="280" y1="410" x2="320" y2="410"/>
+
+  <rect class="box box-infra" x="320" y="392" width="160" height="36"/>
+  <text class="label" x="400" y="410" font-size="11">Leader broadcasts</text>
+
+  <line class="arrow" x1="480" y1="410" x2="520" y2="410"/>
+
+  <rect class="box box-node" x="520" y="392" width="190" height="36"/>
+  <text class="label" x="615" y="410" font-size="11">All nodes drop entries</text>
+</svg>

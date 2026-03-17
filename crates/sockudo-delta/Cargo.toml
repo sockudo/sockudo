@@ -1,0 +1,30 @@
+[package]
+name = "sockudo-delta"
+description = "Delta compression for Sockudo WebSocket messages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[dependencies]
+sockudo-core = { workspace = true }
+
+ahash = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+dashmap = { workspace = true }
+fossil-delta = { workspace = true }
+oxidelta = { workspace = true }
+serde = { workspace = true }
+sonic-rs = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "delta_compression_bench"
+path = "benches/delta_compression_bench.rs"
+harness = false

@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 520" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="13">
+  <style>
+    .box { rx: 10; ry: 10; stroke-width: 1.5; }
+    .label { text-anchor: middle; dominant-baseline: central; }
+    .edge-label { text-anchor: middle; dominant-baseline: central; font-size: 11; }
+    .arrow { stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    @media (prefers-color-scheme: dark) {
+      .box-primary { fill: #1e3a5f; stroke: #38bdf8; }
+      .box-server  { fill: #1a3328; stroke: #34d399; }
+      .box-backend { fill: #3b1f5e; stroke: #a78bfa; }
+      .label       { fill: #e2e8f0; }
+      .edge-label  { fill: #94a3b8; }
+      .arrow       { stroke: #64748b; }
+      .arrow-head  { fill: #64748b; }
+      .divider     { stroke: #334155; }
+    }
+    @media (prefers-color-scheme: light) {
+      .box-primary { fill: #eff6ff; stroke: #3b82f6; }
+      .box-server  { fill: #ecfdf5; stroke: #10b981; }
+      .box-backend { fill: #f5f3ff; stroke: #8b5cf6; }
+      .label       { fill: #1e293b; }
+      .edge-label  { fill: #64748b; }
+      .arrow       { stroke: #94a3b8; }
+      .arrow-head  { fill: #94a3b8; }
+      .divider     { stroke: #e2e8f0; }
+    }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" class="arrow-head"/>
+    </marker>
+  </defs>
+
+  <!-- Clients row -->
+  <rect class="box box-primary" x="60" y="30" width="160" height="50"/>
+  <text class="label" x="140" y="55" font-weight="600">Web Clients</text>
+
+  <rect class="box box-primary" x="280" y="30" width="160" height="50"/>
+  <text class="label" x="360" y="55" font-weight="600">Mobile Apps</text>
+
+  <rect class="box box-primary" x="500" y="30" width="160" height="50"/>
+  <text class="label" x="580" y="55" font-weight="600">Workers</text>
+
+  <!-- Arrows from clients to Sockudo -->
+  <line class="arrow" x1="140" y1="80" x2="310" y2="175"/>
+  <line class="arrow" x1="360" y1="80" x2="360" y2="175"/>
+  <line class="arrow" x1="580" y1="80" x2="410" y2="175"/>
+
+  <!-- Protocol label -->
+  <rect class="box box-primary" x="430" y="110" width="230" height="36" opacity="0.5"/>
+  <text class="edge-label" x="545" y="128" font-size="12" font-weight="500">WebSocket  /app/{appKey}</text>
+
+  <!-- Sockudo server -->
+  <rect class="box box-server" x="230" y="175" width="260" height="70"/>
+  <text class="label" x="360" y="200" font-weight="700" font-size="16">Sockudo</text>
+  <text class="label" x="360" y="222" font-size="11">Rust + Tokio Runtime</text>
+
+  <!-- Arrows from Sockudo down -->
+  <line class="arrow" x1="280" y1="245" x2="140" y2="335"/>
+  <line class="arrow" x1="360" y1="245" x2="360" y2="335"/>
+  <line class="arrow" x1="440" y1="245" x2="580" y2="335"/>
+
+  <!-- Protocol label -->
+  <rect class="box box-backend" x="430" y="270" width="260" height="36" opacity="0.5"/>
+  <text class="edge-label" x="560" y="288" font-size="12" font-weight="500">HTTP API  /apps/{appId}/events</text>
+
+  <!-- Backend row -->
+  <rect class="box box-backend" x="40" y="335" width="200" height="50"/>
+  <text class="label" x="140" y="360" font-weight="600">Backend Servers</text>
+
+  <rect class="box box-backend" x="260" y="335" width="200" height="50"/>
+  <text class="label" x="360" y="360" font-weight="600">Laravel / Django / …</text>
+
+  <rect class="box box-backend" x="480" y="335" width="200" height="50"/>
+  <text class="label" x="580" y="360" font-weight="600">Pusher SDKs</text>
+
+  <!-- Legend -->
+  <line class="divider" x1="40" y1="420" x2="680" y2="420" stroke-dasharray="4"/>
+  <rect class="box box-primary" x="60" y="440" width="16" height="16"/>
+  <text class="edge-label" x="130" y="448" font-size="11">Clients</text>
+  <rect class="box box-server" x="200" y="440" width="16" height="16"/>
+  <text class="edge-label" x="270" y="448" font-size="11">Sockudo</text>
+  <rect class="box box-backend" x="340" y="440" width="16" height="16"/>
+  <text class="edge-label" x="410" y="448" font-size="11">Backends</text>
+</svg>
