@@ -1,0 +1,33 @@
+[package]
+name = "sockudo-rate-limiter"
+description = "Rate limiter implementations for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[features]
+default = ["local"]
+local = []
+full = ["redis", "redis-cluster"]
+redis = ["sockudo-core/redis", "dep:redis"]
+redis-cluster = ["redis", "sockudo-core/redis-cluster"]
+
+[dependencies]
+sockudo-core = { workspace = true }
+sockudo-metrics = { workspace = true }
+
+async-trait = { workspace = true }
+axum = { workspace = true }
+ahash = { workspace = true }
+dashmap = { workspace = true }
+futures-util = { workspace = true }
+http = { workspace = true }
+hyper = { workspace = true }
+redis = { workspace = true, optional = true }
+sonic-rs = { workspace = true }
+tokio = { workspace = true }
+tower-layer = { workspace = true }
+tower-service = { workspace = true }
+tracing = { workspace = true }
