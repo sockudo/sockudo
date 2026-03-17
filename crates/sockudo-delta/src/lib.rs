@@ -7,6 +7,8 @@
 // Re-export core delta types so consumers can use `sockudo_delta::*`
 pub use sockudo_core::delta_types::*;
 
+pub mod coordination;
+
 use ahash::AHashMap;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

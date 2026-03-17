@@ -634,15 +634,56 @@ impl SockudoServer {
             #[allow(unused_mut)]
             let mut manager = delta_compression_manager;
 
-            // Cluster coordination for delta compression is not yet available in the extracted crate.
-            // RedisClusterCoordinator and NatsClusterCoordinator need to be migrated to sockudo-delta.
-            // For now, log a warning if cluster coordination is requested.
             if config.delta_compression.cluster_coordination {
-                warn!(
-                    "Delta compression cluster coordination is configured but the coordinator \
-                     implementations have not yet been migrated to the sockudo-delta crate. \
-                     Falling back to node-local delta intervals."
-                );
+                #[cfg(feature = "redis")]
+                if matches!(
+                    config.adapter.driver,
+                    sockudo_core::options::AdapterDriver::Redis
+                        | sockudo_core::options::AdapterDriver::RedisCluster
+                ) {
+                    let redis_url = config.database.redis.to_url();
+
+                    match sockudo_delta::coordination::RedisClusterCoordinator::new(
+                        &redis_url,
+                        Some(&config.database.redis.key_prefix),
+                    )
+                    .await
+                    {
+                        Ok(coordinator) => {
+                            info!("Delta compression cluster coordination enabled via Redis");
+                            manager.set_cluster_coordinator(Arc::new(coordinator));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to setup Redis cluster coordination, falling back to node-local: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
+                #[cfg(feature = "nats")]
+                if config.adapter.driver == sockudo_core::options::AdapterDriver::Nats {
+                    let nats_servers = config.adapter.nats.servers.clone();
+
+                    match sockudo_delta::coordination::NatsClusterCoordinator::new(
+                        nats_servers,
+                        Some(&config.adapter.nats.prefix),
+                    )
+                    .await
+                    {
+                        Ok(coordinator) => {
+                            info!("Delta compression cluster coordination enabled via NATS");
+                            manager.set_cluster_coordinator(Arc::new(coordinator));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to setup NATS cluster coordination, falling back to node-local: {}",
+                                e
+                            );
+                        }
+                    }
+                }
             }
 
             Arc::new(manager)
