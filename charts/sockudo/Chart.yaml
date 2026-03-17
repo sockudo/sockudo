@@ -1,0 +1,16 @@
+apiVersion: v2
+name: sockudo
+description: A simple, fast, and secure WebSocket server implementing the Pusher protocol
+type: application
+version: 0.1.0
+appVersion: "3.2.1"
+keywords:
+  - websocket
+  - pusher
+  - realtime
+  - rust
+home: https://github.com/sockudo/sockudo
+sources:
+  - https://github.com/sockudo/sockudo
+maintainers:
+  - name: sockudo

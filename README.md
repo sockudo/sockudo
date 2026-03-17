@@ -171,6 +171,25 @@ make up
 # Metrics on http://localhost:9601/metrics
 ```
 
+### Kubernetes (Helm)
+
+```bash
+# Install with defaults
+helm install sockudo ./charts/sockudo
+
+# Production with Redis adapter and autoscaling
+helm install sockudo ./charts/sockudo \
+  --set config.adapterDriver=redis \
+  --set redis.host=redis-master \
+  --set redis.existingSecret=my-redis-secret \
+  --set autoscaling.enabled=true \
+  --set pdb.enabled=true \
+  --set ingress.enabled=true \
+  --set serviceMonitor.enabled=true
+```
+
+See [`charts/sockudo/values.yaml`](charts/sockudo/values.yaml) for all configurable options.
+
 ### From Source
 
 ```bash
@@ -319,6 +338,8 @@ Behavior:
 | **High Traffic** | 4vCPU/4GB+ | redis | redis | redis | 50K+ |
 | **Multi-Region** | 8vCPU/8GB+ | redis-cluster | redis-cluster | redis-cluster | 100K+ |
 
+All scenarios above can be deployed via Docker Compose or the included [Helm chart](charts/sockudo/) on Kubernetes with built-in HPA autoscaling.
+
 ## Architecture
 
 ```
@@ -338,6 +359,7 @@ Behavior:
 - **[Full Documentation](docs/)** - Complete setup and configuration guide
 - **[Performance Tuning](docs/QUEUE_CONFIG.md)** - Optimize for your workload
 - **[Docker Deployment](docker-compose.yml)** - Production-ready containers
+- **[Helm Charts](charts/sockudo/)** - Kubernetes deployment with HPA, PDB, ServiceMonitor
 - **[API Reference](docs/API.md)** - WebSocket and HTTP API details
 
 ## Testing
