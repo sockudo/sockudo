@@ -19,7 +19,7 @@ use axum::routing::{get, post};
 #[cfg(unix)]
 use axum::serve::IncomingStream;
 use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
-use axum_extra::extract::Host;
+use axum::http::header;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use clap::Parser;
 use futures_util::future::join_all;
@@ -1160,8 +1160,12 @@ impl SockudoServer {
 
                 let https_port = self.config.port;
                 let redirect_app =
-                    Router::new().fallback(move |Host(host): Host, uri: Uri| async move {
-                        match make_https(&host, uri, https_port) {
+                    Router::new().fallback(move |headers: axum::http::HeaderMap, uri: Uri| async move {
+                        let host = headers
+                            .get(header::HOST)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("localhost");
+                        match make_https(host, uri, https_port) {
                             Ok(uri_https) => Ok(Redirect::permanent(&uri_https.to_string())),
                             Err(error) => {
                                 error!(error = ?error, "failed to convert URI to HTTPS for redirect");

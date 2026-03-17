@@ -66,7 +66,6 @@ sockudo-adapter = { workspace = true }
 
 ahash = { workspace = true }
 axum = { workspace = true }
-axum-extra = { workspace = true }
 axum-server = { workspace = true }
 clap = { workspace = true }
 cmake = { workspace = true }
