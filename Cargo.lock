@@ -3941,207 +3941,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "sockudo-adapter"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "async-nats",
- "async-trait",
- "base64",
- "bytes",
- "chrono",
- "crossfire",
- "dashmap",
- "futures",
- "futures-util",
- "md5",
- "mockall",
- "moka",
- "num_cpus",
- "rand 0.9.2",
- "redis",
- "regex",
- "serde",
- "sockudo-app",
- "sockudo-core",
- "sockudo-delta",
- "sockudo-filter",
- "sockudo-metrics",
- "sockudo-protocol",
- "sockudo-webhook",
- "sockudo-ws",
- "sonic-rs",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "sockudo-app"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "async-trait",
- "aws-config",
- "aws-sdk-dynamodb",
- "dashmap",
- "futures",
- "futures-util",
- "moka",
- "regex",
- "scylla",
- "serde",
- "sockudo-core",
- "sonic-rs",
- "sqlx",
- "tokio",
- "tracing",
- "urlencoding",
-]
-
-[[package]]
-name = "sockudo-cache"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "async-trait",
- "moka",
- "redis",
- "sockudo-core",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "sockudo-core"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "async-trait",
- "bytes",
- "chrono",
- "crossfire",
- "dashmap",
- "futures-util",
- "hex",
- "hmac 0.13.0-rc.5",
- "md5",
- "memchr",
- "rand 0.9.2",
- "redis",
- "regex",
- "serde",
- "serde-aux",
- "sha2 0.11.0-rc.5",
- "sockudo-filter",
- "sockudo-protocol",
- "sockudo-ws",
- "sonic-rs",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "urlencoding",
- "uuid",
-]
-
-[[package]]
-name = "sockudo-delta"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "async-trait",
- "base64",
- "criterion",
- "dashmap",
- "fossil-delta",
- "oxidelta",
- "serde",
- "sockudo-core",
- "sonic-rs",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "sockudo-filter"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "criterion",
- "dashmap",
- "memchr",
- "serde",
- "sonic-rs",
-]
-
-[[package]]
-name = "sockudo-metrics"
-version = "3.2.0"
-dependencies = [
- "async-trait",
- "chrono",
- "libc",
- "prometheus",
- "sockudo-core",
- "sonic-rs",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "sockudo-protocol"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "serde",
- "sonic-rs",
-]
-
-[[package]]
-name = "sockudo-queue"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "async-trait",
- "aws-config",
- "aws-sdk-sns",
- "aws-sdk-sqs",
- "chrono",
- "dashmap",
- "redis",
- "serde",
- "sockudo-core",
- "sonic-rs",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "sockudo-rate-limiter"
-version = "3.2.0"
-dependencies = [
- "ahash",
- "async-trait",
- "axum",
- "dashmap",
- "futures-util",
- "http 1.4.0",
- "hyper 1.8.1",
- "redis",
- "sockudo-core",
- "sockudo-metrics",
- "sonic-rs",
- "tokio",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "sockudo-server"
-version = "3.2.0"
+name = "sockudo"
+version = "3.2.1"
 dependencies = [
  "ahash",
  "axum",
@@ -4184,8 +3985,207 @@ dependencies = [
 ]
 
 [[package]]
+name = "sockudo-adapter"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "async-nats",
+ "async-trait",
+ "base64",
+ "bytes",
+ "chrono",
+ "crossfire",
+ "dashmap",
+ "futures",
+ "futures-util",
+ "md5",
+ "mockall",
+ "moka",
+ "num_cpus",
+ "rand 0.9.2",
+ "redis",
+ "regex",
+ "serde",
+ "sockudo-app",
+ "sockudo-core",
+ "sockudo-delta",
+ "sockudo-filter",
+ "sockudo-metrics",
+ "sockudo-protocol",
+ "sockudo-webhook",
+ "sockudo-ws",
+ "sonic-rs",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "sockudo-app"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "dashmap",
+ "futures",
+ "futures-util",
+ "moka",
+ "regex",
+ "scylla",
+ "serde",
+ "sockudo-core",
+ "sonic-rs",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "urlencoding",
+]
+
+[[package]]
+name = "sockudo-cache"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "moka",
+ "redis",
+ "sockudo-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sockudo-core"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "crossfire",
+ "dashmap",
+ "futures-util",
+ "hex",
+ "hmac 0.13.0-rc.5",
+ "md5",
+ "memchr",
+ "rand 0.9.2",
+ "redis",
+ "regex",
+ "serde",
+ "serde-aux",
+ "sha2 0.11.0-rc.5",
+ "sockudo-filter",
+ "sockudo-protocol",
+ "sockudo-ws",
+ "sonic-rs",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+]
+
+[[package]]
+name = "sockudo-delta"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "base64",
+ "criterion",
+ "dashmap",
+ "fossil-delta",
+ "oxidelta",
+ "serde",
+ "sockudo-core",
+ "sonic-rs",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sockudo-filter"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "criterion",
+ "dashmap",
+ "memchr",
+ "serde",
+ "sonic-rs",
+]
+
+[[package]]
+name = "sockudo-metrics"
+version = "3.2.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "libc",
+ "prometheus",
+ "sockudo-core",
+ "sonic-rs",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sockudo-protocol"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "serde",
+ "sonic-rs",
+]
+
+[[package]]
+name = "sockudo-queue"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-sns",
+ "aws-sdk-sqs",
+ "chrono",
+ "dashmap",
+ "redis",
+ "serde",
+ "sockudo-core",
+ "sonic-rs",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sockudo-rate-limiter"
+version = "3.2.1"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "axum",
+ "dashmap",
+ "futures-util",
+ "http 1.4.0",
+ "hyper 1.8.1",
+ "redis",
+ "sockudo-core",
+ "sockudo-metrics",
+ "sonic-rs",
+ "tokio",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "sockudo-webhook"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "ahash",
  "async-trait",
