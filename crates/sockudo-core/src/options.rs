@@ -568,7 +568,16 @@ impl RedisConnection {
     }
 
     fn build_standard_url(&self) -> String {
-        let mut url = String::from("redis://");
+        // Extract scheme from host if present, otherwise default to redis://
+        let (scheme, host) = if self.host.starts_with("rediss://") {
+            ("rediss://", self.host.trim_start_matches("rediss://"))
+        } else if self.host.starts_with("redis://") {
+            ("redis://", self.host.trim_start_matches("redis://"))
+        } else {
+            ("redis://", self.host.as_str())
+        };
+
+        let mut url = String::from(scheme);
 
         if let Some(ref username) = self.username {
             url.push_str(username);
@@ -583,7 +592,7 @@ impl RedisConnection {
             url.push('@');
         }
 
-        url.push_str(&self.host);
+        url.push_str(host);
         url.push(':');
         url.push_str(&self.port.to_string());
         url.push('/');

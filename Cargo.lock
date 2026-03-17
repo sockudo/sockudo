@@ -4095,12 +4095,14 @@ name = "sockudo-delta"
 version = "3.2.1"
 dependencies = [
  "ahash",
+ "async-nats",
  "async-trait",
  "base64",
  "criterion",
  "dashmap",
  "fossil-delta",
  "oxidelta",
+ "redis",
  "serde",
  "sockudo-core",
  "sonic-rs",
