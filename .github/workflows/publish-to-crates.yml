@@ -12,7 +12,7 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  # =============================================================
+  # =============================================================================
   # Publish to Crates.io
   # =============================================================================
   publish-crates:
@@ -30,8 +30,42 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libpq-dev libmariadb-dev cmake
 
-      - name: Publish to crates.io
+      - name: Publish workspace crates to crates.io
         env:
           CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         if: env.CRATES_IO_TOKEN != ''
-        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          # Publish crates in dependency order, skipping already-published ones.
+          CRATES=(
+            sockudo-protocol
+            sockudo-filter
+            sockudo-core
+            sockudo-app
+            sockudo-cache
+            sockudo-queue
+            sockudo-rate-limiter
+            sockudo-metrics
+            sockudo-webhook
+            sockudo-delta
+            sockudo-adapter
+            sockudo-server
+          )
+
+          for crate in "${CRATES[@]}"; do
+            echo "::group::Publishing $crate"
+            VERSION=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r ".packages[] | select(.name == \"$crate\") | .version")
+
+            # Check if this version already exists on crates.io
+            if cargo search "$crate" --limit 1 2>/dev/null | grep -q "\"$VERSION\""; then
+              echo "$crate@$VERSION already published, skipping."
+            else
+              echo "Publishing $crate@$VERSION..."
+              cargo publish -p "$crate" --token "$CRATES_IO_TOKEN" || {
+                echo "::warning::Failed to publish $crate@$VERSION"
+              }
+              # Wait a bit to avoid rate limits
+              sleep 15
+            fi
+            echo "::endgroup::"
+          done
