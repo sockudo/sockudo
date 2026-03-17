@@ -294,4 +294,228 @@ mod tests {
         assert!(matches(&filter, &matching));
         assert!(!matches(&filter, &non_matching));
     }
+
+    #[test]
+    fn test_not_in() {
+        let filter = FilterNodeBuilder::nin("event_type", &["goal", "shot"]);
+        let matching = tags(&[("event_type", "pass")]);
+        let non_matching = tags(&[("event_type", "goal")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_exists() {
+        let filter = FilterNodeBuilder::exists("event_type");
+        let matching = tags(&[("event_type", "goal")]);
+        let non_matching = tags(&[("other_key", "value")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_not_exists() {
+        let filter = FilterNodeBuilder::not_exists("event_type");
+        let matching = tags(&[("other_key", "value")]);
+        let non_matching = tags(&[("event_type", "goal")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_starts_with() {
+        let filter = FilterNodeBuilder::starts_with("ticker", "GOO");
+        let matching = tags(&[("ticker", "GOOGLE")]);
+        let non_matching = tags(&[("ticker", "AAPL")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_ends_with() {
+        let filter = FilterNodeBuilder::ends_with("ticker", "LE");
+        let matching = tags(&[("ticker", "GOOGLE")]);
+        let non_matching = tags(&[("ticker", "AAPL")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_contains() {
+        let filter = FilterNodeBuilder::contains("ticker", "OOG");
+        let matching = tags(&[("ticker", "GOOGLE")]);
+        let non_matching = tags(&[("ticker", "AAPL")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_greater_than() {
+        let filter = FilterNodeBuilder::gt("xG", "0.5");
+        let matching = tags(&[("xG", "0.85")]);
+        let non_matching = tags(&[("xG", "0.3")]);
+        let equal = tags(&[("xG", "0.5")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+        assert!(!matches(&filter, &equal));
+    }
+
+    #[test]
+    fn test_greater_than_or_equal() {
+        let filter = FilterNodeBuilder::gte("xG", "0.5");
+        let matching_greater = tags(&[("xG", "0.85")]);
+        let matching_equal = tags(&[("xG", "0.5")]);
+        let non_matching = tags(&[("xG", "0.3")]);
+
+        assert!(matches(&filter, &matching_greater));
+        assert!(matches(&filter, &matching_equal));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_less_than() {
+        let filter = FilterNodeBuilder::lt("xG", "0.5");
+        let matching = tags(&[("xG", "0.3")]);
+        let non_matching = tags(&[("xG", "0.85")]);
+        let equal = tags(&[("xG", "0.5")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+        assert!(!matches(&filter, &equal));
+    }
+
+    #[test]
+    fn test_less_than_or_equal() {
+        let filter = FilterNodeBuilder::lte("xG", "0.5");
+        let matching_less = tags(&[("xG", "0.3")]);
+        let matching_equal = tags(&[("xG", "0.5")]);
+        let non_matching = tags(&[("xG", "0.85")]);
+
+        assert!(matches(&filter, &matching_less));
+        assert!(matches(&filter, &matching_equal));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_complex_nested() {
+        let filter = FilterNodeBuilder::or(vec![
+            FilterNodeBuilder::eq("event_type", "goal"),
+            FilterNodeBuilder::and(vec![
+                FilterNodeBuilder::eq("event_type", "shot"),
+                FilterNodeBuilder::gte("xG", "0.8"),
+                FilterNodeBuilder::neq("outcome", "saved"),
+            ]),
+        ]);
+
+        let matching_goal = tags(&[("event_type", "goal")]);
+        let matching_dangerous_shot =
+            tags(&[("event_type", "shot"), ("xG", "0.85"), ("outcome", "goal")]);
+        let non_matching_saved_shot =
+            tags(&[("event_type", "shot"), ("xG", "0.85"), ("outcome", "saved")]);
+        let non_matching_low_xg = tags(&[("event_type", "shot"), ("xG", "0.3")]);
+
+        assert!(matches(&filter, &matching_goal));
+        assert!(matches(&filter, &matching_dangerous_shot));
+        assert!(!matches(&filter, &non_matching_saved_shot));
+        assert!(!matches(&filter, &non_matching_low_xg));
+    }
+
+    #[test]
+    fn test_numeric_comparison_integers() {
+        let filter = FilterNodeBuilder::gt("count", "42");
+        let matching = tags(&[("count", "100")]);
+        let non_matching = tags(&[("count", "10")]);
+
+        assert!(matches(&filter, &matching));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_numeric_comparison_decimals() {
+        let filter = FilterNodeBuilder::gte("price", "99.5");
+        let matching_greater = tags(&[("price", "150.25")]);
+        let matching_equal = tags(&[("price", "99.5")]);
+        let non_matching = tags(&[("price", "50.0")]);
+
+        assert!(matches(&filter, &matching_greater));
+        assert!(matches(&filter, &matching_equal));
+        assert!(!matches(&filter, &non_matching));
+    }
+
+    #[test]
+    fn test_missing_key_in_comparison() {
+        let filter = FilterNodeBuilder::eq("event_type", "goal");
+        let empty_tags = tags(&[]);
+
+        assert!(!matches(&filter, &empty_tags));
+    }
+
+    #[test]
+    fn test_missing_key_in_numeric_comparison() {
+        let filter = FilterNodeBuilder::gt("count", "42");
+        let empty_tags = tags(&[]);
+
+        assert!(!matches(&filter, &empty_tags));
+    }
+
+    #[test]
+    fn test_and_filter_with_numeric_deserialization() {
+        let json = r#"{
+            "op": "and",
+            "nodes": [
+                {
+                    "key": "user_id",
+                    "cmp": "eq",
+                    "val": 12345
+                },
+                {
+                    "key": "status",
+                    "cmp": "eq",
+                    "val": "premium"
+                }
+            ]
+        }"#;
+
+        let filter: FilterNode = sonic_rs::from_str(json).unwrap();
+
+        let matching_tags = tags(&[("user_id", "12345"), ("status", "premium")]);
+        let non_matching_user = tags(&[("user_id", "99999"), ("status", "premium")]);
+        let non_matching_status = tags(&[("user_id", "12345"), ("status", "basic")]);
+
+        assert!(matches(&filter, &matching_tags));
+        assert!(!matches(&filter, &non_matching_user));
+        assert!(!matches(&filter, &non_matching_status));
+    }
+
+    #[test]
+    fn test_numeric_val_deserialization() {
+        let json = r#"{"key":"count","cmp":"eq","val":100}"#;
+        let filter: FilterNode = sonic_rs::from_str(json).unwrap();
+
+        assert_eq!(
+            filter.val,
+            Some("100".to_string()),
+            "Numeric val should be converted to string"
+        );
+
+        let test_tags = tags(&[("count", "100")]);
+        assert!(
+            matches(&filter, &test_tags),
+            "Filter with numeric val should match string tag"
+        );
+
+        let json_float = r#"{"key":"temperature","cmp":"eq","val":98.6}"#;
+        let filter_float: FilterNode = sonic_rs::from_str(json_float).unwrap();
+        assert_eq!(filter_float.val, Some("98.6".to_string()));
+
+        let temp_tags = tags(&[("temperature", "98.6")]);
+        assert!(matches(&filter_float, &temp_tags));
+    }
 }

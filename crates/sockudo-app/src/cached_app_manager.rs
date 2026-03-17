@@ -216,3 +216,119 @@ impl AppManager for CachedAppManager {
         self.inner.check_health().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory_app_manager::MemoryAppManager;
+    use sockudo_cache::MemoryCacheManager;
+    use sockudo_core::options::MemoryCacheOptions;
+
+    fn create_test_app(id: &str) -> App {
+        App {
+            id: id.to_string(),
+            key: format!("{}_key", id),
+            secret: format!("{}_secret", id),
+            max_connections: 100,
+            enable_client_messages: false,
+            enabled: true,
+            max_client_events_per_second: 100,
+            ..Default::default()
+        }
+    }
+
+    async fn create_test_manager() -> CachedAppManager {
+        let inner = Arc::new(MemoryAppManager::new());
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions {
+                ttl: 300,
+                cleanup_interval: 60,
+                max_capacity: 1000,
+            },
+        ));
+        let settings = CacheSettings {
+            enabled: true,
+            ttl: 300,
+        };
+
+        CachedAppManager::new(inner, cache, settings)
+    }
+
+    #[tokio::test]
+    async fn test_find_by_id_caches_result() {
+        let manager = create_test_manager().await;
+        let app = create_test_app("test1");
+
+        manager.create_app(app.clone()).await.unwrap();
+
+        let found1 = manager.find_by_id("test1").await.unwrap();
+        assert!(found1.is_some());
+
+        let found2 = manager.find_by_id("test1").await.unwrap();
+        assert!(found2.is_some());
+        assert_eq!(found2.unwrap().id, "test1");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_key_caches_result() {
+        let manager = create_test_manager().await;
+        let app = create_test_app("test2");
+
+        manager.create_app(app.clone()).await.unwrap();
+
+        let found = manager.find_by_key("test2_key").await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().key, "test2_key");
+    }
+
+    #[tokio::test]
+    async fn test_update_invalidates_cache() {
+        let manager = create_test_manager().await;
+        let mut app = create_test_app("test3");
+
+        manager.create_app(app.clone()).await.unwrap();
+
+        let found = manager.find_by_id("test3").await.unwrap().unwrap();
+        assert_eq!(found.max_connections, 100);
+
+        app.max_connections = 200;
+        manager.update_app(app).await.unwrap();
+
+        let found_updated = manager.find_by_id("test3").await.unwrap().unwrap();
+        assert_eq!(found_updated.max_connections, 200);
+    }
+
+    #[tokio::test]
+    async fn test_delete_invalidates_cache() {
+        let manager = create_test_manager().await;
+        let app = create_test_app("test4");
+
+        manager.create_app(app).await.unwrap();
+        assert!(manager.find_by_id("test4").await.unwrap().is_some());
+
+        manager.delete_app("test4").await.unwrap();
+        assert!(manager.find_by_id("test4").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cache_disabled() {
+        let inner = Arc::new(MemoryAppManager::new());
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let settings = CacheSettings {
+            enabled: false,
+            ttl: 300,
+        };
+
+        let manager = CachedAppManager::new(inner, cache, settings);
+        let app = create_test_app("test5");
+
+        manager.create_app(app).await.unwrap();
+
+        let found = manager.find_by_id("test5").await.unwrap();
+        assert!(found.is_some());
+    }
+}
