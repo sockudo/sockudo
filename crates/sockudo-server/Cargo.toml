@@ -1,5 +1,5 @@
 [package]
-name = "sockudo-server"
+name = "sockudo"
 description = "A simple, fast, and secure WebSocket server for real-time applications."
 version.workspace = true
 edition.workspace = true

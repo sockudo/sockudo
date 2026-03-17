@@ -79,7 +79,7 @@ jobs:
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
               mkdir -p .cargo
               printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
-              cargo build --release --features full --target x86_64-unknown-linux-musl
+              cargo build -p sockudo --release --features full --target x86_64-unknown-linux-musl
             '
 
       - name: Install system dependencies (Linux ARM64 GNU)
@@ -103,7 +103,7 @@ jobs:
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev perl
               mkdir -p .cargo
               printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
-              cargo build --release --features full --target aarch64-unknown-linux-musl
+              cargo build -p sockudo --release --features full --target aarch64-unknown-linux-musl
             '
 
       - name: Cache cargo registry
@@ -119,7 +119,7 @@ jobs:
         if: "!contains(inputs.target_triple, 'musl')"
         shell: bash
         run: |
-          cargo build --release --features full --target ${{ inputs.target_triple }}
+          cargo build -p sockudo --release --features full --target ${{ inputs.target_triple }}
 
       - name: Prepare binary and create archive
         id: prepare_artifact

@@ -57,7 +57,7 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
 RUN test -f Cargo.lock || cargo generate-lockfile
 
 # Build dependencies only (this layer is cached unless Cargo.toml files change)
-RUN cargo build -p sockudo-server --release --features full || true
+RUN cargo build -p sockudo --release --features full || true
 # Clean up dummy sources but keep compiled deps
 RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta adapter server; do \
         rm -rf crates/sockudo-$dir/src; \
@@ -68,7 +68,7 @@ RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook
 COPY crates/ ./crates/
 
 # Build the real binary
-RUN cargo build -p sockudo-server --release --features full
+RUN cargo build -p sockudo --release --features full
 
 # Strip the binary to reduce size
 RUN strip target/release/sockudo

@@ -64,16 +64,16 @@ Features are defined **per-crate** and propagated through `sockudo-server`. The 
 
 ```bash
 # Local development (default - fastest compile times)
-cargo build -p sockudo-server
+cargo build -p sockudo
 
 # With Redis only
-cargo build -p sockudo-server --features redis
+cargo build -p sockudo --features redis
 
 # With Redis Cluster and PostgreSQL
-cargo build -p sockudo-server --features "redis-cluster,postgres"
+cargo build -p sockudo --features "redis-cluster,postgres"
 
 # Production build with all features
-cargo build -p sockudo-server --release --features full
+cargo build -p sockudo --release --features full
 
 # Build entire workspace (all crates, default features)
 cargo build --workspace
@@ -110,7 +110,7 @@ cargo test -p sockudo-adapter
 cargo clippy --workspace
 
 # Build the server binary (local development - fastest)
-cargo build -p sockudo-server --release
+cargo build -p sockudo --release
 
 # Run the server
 ./target/release/sockudo --config config/config.json

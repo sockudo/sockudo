@@ -364,7 +364,7 @@ jobs:
             sockudo-webhook
             sockudo-delta
             sockudo-adapter
-            sockudo-server
+            sockudo
           )
 
           for crate in "${CRATES[@]}"; do
