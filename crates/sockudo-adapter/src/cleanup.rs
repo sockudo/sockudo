@@ -106,10 +106,7 @@ impl MultiWorkerSender {
     }
 
     /// Send a disconnect task with fallback to other workers if one fails
-    pub fn send_with_fallback(
-        &self,
-        task: DisconnectTask,
-    ) -> Result<(), SendError> {
+    pub fn send_with_fallback(&self, task: DisconnectTask) -> Result<(), SendError> {
         self.send(task)
     }
 
