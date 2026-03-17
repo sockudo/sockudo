@@ -591,3 +591,547 @@ impl Clone for PgSQLAppManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn get_test_db_config(table_name: &str) -> DatabaseConnection {
+        DatabaseConnection {
+            host: std::env::var("DATABASE_POSTGRES_HOST")
+                .unwrap_or_else(|_| "localhost".to_string()),
+            port: std::env::var("DATABASE_POSTGRES_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(15432),
+            username: std::env::var("DATABASE_POSTGRES_USER")
+                .unwrap_or_else(|_| "postgres".to_string()),
+            password: std::env::var("DATABASE_POSTGRES_PASSWORD")
+                .unwrap_or_else(|_| "postgres123".to_string()),
+            database: std::env::var("DATABASE_POSTGRES_DATABASE")
+                .unwrap_or_else(|_| "sockudo_test".to_string()),
+            table_name: table_name.to_string(),
+            cache_ttl: 5, // Short TTL for testing
+            ..Default::default()
+        }
+    }
+
+    fn create_test_app(id: &str) -> App {
+        App {
+            id: id.to_string(),
+            key: format!("{id}_key"),
+            secret: format!("{id}_secret"),
+            max_connections: 100,
+            enable_client_messages: true,
+            enabled: true,
+            max_backend_events_per_second: Some(1000),
+            max_client_events_per_second: 100,
+            max_read_requests_per_second: Some(1000),
+            max_presence_members_per_channel: Some(100),
+            max_presence_member_size_in_kb: Some(10),
+            max_channel_name_length: Some(200),
+            max_event_channels_at_once: Some(10),
+            max_event_name_length: Some(200),
+            max_event_payload_in_kb: Some(100),
+            max_event_batch_size: Some(10),
+            enable_user_authentication: Some(true),
+            webhooks: None,
+            enable_watchlist_events: None,
+            allowed_origins: None,
+            channel_delta_compression: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pgsql_app_manager() {
+        // Setup test database
+        let config = get_test_db_config("apps_test");
+
+        // Create manager
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Test registering an app
+        let test_app = create_test_app("test1");
+        manager.create_app(test_app.clone()).await.unwrap();
+
+        // Test getting an app
+        let app = manager.find_by_id("test1").await.unwrap().unwrap();
+        assert_eq!(app.id, "test1");
+        assert_eq!(app.key, "test1_key");
+
+        // Test getting an app by key
+        let app = manager.find_by_key("test1_key").await.unwrap().unwrap();
+        assert_eq!(app.id, "test1");
+
+        // Test updating an app
+        let mut updated_app = test_app.clone();
+        updated_app.max_connections = 200;
+        manager.update_app(updated_app).await.unwrap();
+
+        let app = manager.find_by_id("test1").await.unwrap().unwrap();
+        assert_eq!(app.max_connections, 200);
+
+        // Test cache expiration
+        tokio::time::sleep(Duration::from_secs(6)).await;
+
+        // Add another app
+        let test_app2 = create_test_app("test2");
+        manager.create_app(test_app2).await.unwrap();
+
+        // Get all apps
+        let apps = manager.get_apps().await.unwrap();
+        assert_eq!(apps.len(), 2);
+
+        // Test removing an app
+        manager.delete_app("test1").await.unwrap();
+        assert!(manager.find_by_id("test1").await.unwrap().is_none());
+
+        // Cleanup
+        manager.delete_app("test2").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_webhooks_serialization() {
+        let config = get_test_db_config("apps_webhooks_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create app with webhooks
+        let webhook = Webhook {
+            url: Some("https://example.com/webhook".parse().unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec![
+                "channel_occupied".to_string(),
+                "channel_vacated".to_string(),
+            ],
+            filter: None,
+            headers: None,
+        };
+
+        let mut app = create_test_app("webhook_test");
+        app.webhooks = Some(vec![webhook.clone()]);
+
+        manager.create_app(app.clone()).await.unwrap();
+
+        // Retrieve and verify webhooks
+        let retrieved = manager.find_by_id("webhook_test").await.unwrap().unwrap();
+        assert!(retrieved.webhooks.is_some());
+        let webhooks = retrieved.webhooks.unwrap();
+        assert_eq!(webhooks.len(), 1);
+        assert_eq!(webhooks[0].event_types, webhook.event_types);
+        assert_eq!(webhooks[0].url, webhook.url);
+
+        // Cleanup
+        manager.delete_app("webhook_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_multiple_webhooks() {
+        let config = get_test_db_config("apps_multi_webhooks_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create app with multiple webhooks
+        let webhook1 = Webhook {
+            url: Some("https://example.com/webhook1".parse().unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        };
+
+        let webhook2 = Webhook {
+            url: Some("https://example.com/webhook2".parse().unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["member_added".to_string(), "member_removed".to_string()],
+            filter: None,
+            headers: None,
+        };
+
+        let mut app = create_test_app("multi_webhook_test");
+        app.webhooks = Some(vec![webhook1, webhook2]);
+
+        manager.create_app(app.clone()).await.unwrap();
+
+        // Retrieve and verify
+        let retrieved = manager
+            .find_by_id("multi_webhook_test")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(retrieved.webhooks.is_some());
+        assert_eq!(retrieved.webhooks.unwrap().len(), 2);
+
+        // Cleanup
+        manager.delete_app("multi_webhook_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_watchlist_events() {
+        let config = get_test_db_config("apps_watchlist_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Test with watchlist enabled
+        let mut app1 = create_test_app("watchlist_enabled");
+        app1.enable_watchlist_events = Some(true);
+        manager.create_app(app1).await.unwrap();
+
+        let retrieved1 = manager
+            .find_by_id("watchlist_enabled")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retrieved1.enable_watchlist_events, Some(true));
+
+        // Test with watchlist disabled
+        let mut app2 = create_test_app("watchlist_disabled");
+        app2.enable_watchlist_events = Some(false);
+        manager.create_app(app2).await.unwrap();
+
+        let retrieved2 = manager
+            .find_by_id("watchlist_disabled")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retrieved2.enable_watchlist_events, Some(false));
+
+        // Test with watchlist unset (None)
+        let app3 = create_test_app("watchlist_none");
+        manager.create_app(app3).await.unwrap();
+
+        let retrieved3 = manager.find_by_id("watchlist_none").await.unwrap().unwrap();
+        assert_eq!(retrieved3.enable_watchlist_events, None);
+
+        // Cleanup
+        manager.delete_app("watchlist_enabled").await.unwrap();
+        manager.delete_app("watchlist_disabled").await.unwrap();
+        manager.delete_app("watchlist_none").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_allowed_origins() {
+        let config = get_test_db_config("apps_origins_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Test with allowed origins
+        let mut app = create_test_app("origins_test");
+        app.allowed_origins = Some(vec![
+            "https://example.com".to_string(),
+            "https://*.example.com".to_string(),
+            "http://localhost:3000".to_string(),
+        ]);
+        manager.create_app(app.clone()).await.unwrap();
+
+        let retrieved = manager.find_by_id("origins_test").await.unwrap().unwrap();
+        assert!(retrieved.allowed_origins.is_some());
+        let origins = retrieved.allowed_origins.unwrap();
+        assert_eq!(origins.len(), 3);
+        assert!(origins.contains(&"https://example.com".to_string()));
+        assert!(origins.contains(&"https://*.example.com".to_string()));
+        assert!(origins.contains(&"http://localhost:3000".to_string()));
+
+        // Cleanup
+        manager.delete_app("origins_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_webhooks() {
+        let config = get_test_db_config("apps_update_webhooks_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create app without webhooks
+        let app = create_test_app("update_webhooks");
+        manager.create_app(app).await.unwrap();
+
+        // Update to add webhooks
+        let webhook = Webhook {
+            url: Some("https://example.com/new-webhook".parse().unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        };
+
+        let mut updated_app = create_test_app("update_webhooks");
+        updated_app.webhooks = Some(vec![webhook]);
+        updated_app.enable_watchlist_events = Some(true);
+        manager.update_app(updated_app).await.unwrap();
+
+        // Verify update
+        let retrieved = manager
+            .find_by_id("update_webhooks")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(retrieved.webhooks.is_some());
+        assert_eq!(retrieved.webhooks.unwrap().len(), 1);
+        assert_eq!(retrieved.enable_watchlist_events, Some(true));
+
+        // Cleanup
+        manager.delete_app("update_webhooks").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cache_behavior() {
+        let mut config = get_test_db_config("apps_cache_test");
+        config.cache_ttl = 2; // 2 seconds for quick testing
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create an app
+        let app = create_test_app("cache_test");
+        manager.create_app(app).await.unwrap();
+
+        // First retrieval - should hit database
+        let retrieved1 = manager.find_by_id("cache_test").await.unwrap().unwrap();
+        assert_eq!(retrieved1.id, "cache_test");
+
+        // Second retrieval - should hit cache
+        let retrieved2 = manager.find_by_id("cache_test").await.unwrap().unwrap();
+        assert_eq!(retrieved2.id, "cache_test");
+
+        // Wait for cache to expire
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // Third retrieval - should hit database again
+        let retrieved3 = manager.find_by_id("cache_test").await.unwrap().unwrap();
+        assert_eq!(retrieved3.id, "cache_test");
+
+        // Cleanup
+        manager.delete_app("cache_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_find_by_key_with_webhooks() {
+        let config = get_test_db_config("apps_key_webhooks_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create app with webhooks
+        let webhook = Webhook {
+            url: Some("https://example.com/webhook".parse().unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        };
+
+        let mut app = create_test_app("key_test");
+        app.webhooks = Some(vec![webhook]);
+        manager.create_app(app).await.unwrap();
+
+        // Find by key and verify webhooks are included
+        let retrieved = manager.find_by_key("key_test_key").await.unwrap().unwrap();
+        assert_eq!(retrieved.id, "key_test");
+        assert!(retrieved.webhooks.is_some());
+        assert_eq!(retrieved.webhooks.unwrap().len(), 1);
+
+        // Cleanup
+        manager.delete_app("key_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_all_apps_with_webhooks() {
+        let config = get_test_db_config("apps_all_webhooks_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create multiple apps with different webhook configurations
+        let webhook1 = Webhook {
+            url: Some("https://example.com/webhook1".parse().unwrap()),
+            lambda_function: None,
+            lambda: None,
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        };
+
+        let mut app1 = create_test_app("all_apps_1");
+        app1.webhooks = Some(vec![webhook1]);
+        manager.create_app(app1).await.unwrap();
+
+        let mut app2 = create_test_app("all_apps_2");
+        app2.enable_watchlist_events = Some(true);
+        manager.create_app(app2).await.unwrap();
+
+        let app3 = create_test_app("all_apps_3");
+        manager.create_app(app3).await.unwrap();
+
+        // Get all apps
+        let all_apps = manager.get_apps().await.unwrap();
+        assert!(all_apps.len() >= 3);
+
+        // Verify each app has correct data
+        let app1_found = all_apps.iter().find(|a| a.id == "all_apps_1");
+        assert!(app1_found.is_some());
+        assert!(app1_found.unwrap().webhooks.is_some());
+
+        let app2_found = all_apps.iter().find(|a| a.id == "all_apps_2");
+        assert!(app2_found.is_some());
+        assert_eq!(app2_found.unwrap().enable_watchlist_events, Some(true));
+
+        // Cleanup
+        manager.delete_app("all_apps_1").await.unwrap();
+        manager.delete_app("all_apps_2").await.unwrap();
+        manager.delete_app("all_apps_3").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_health_check() {
+        let config = get_test_db_config("apps_health_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Health check should succeed
+        let result = manager.check_health().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_app() {
+        let config = get_test_db_config("apps_delete_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Try to delete non-existent app
+        let result = manager.delete_app("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_update_nonexistent_app() {
+        let config = get_test_db_config("apps_update_fail_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Try to update non-existent app
+        let app = create_test_app("nonexistent");
+        let result = manager.update_app(app).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_null_values() {
+        let config = get_test_db_config("apps_null_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create app with all optional fields as None
+        let mut app = create_test_app("null_test");
+        app.webhooks = None;
+        app.enable_watchlist_events = None;
+        app.allowed_origins = None;
+        app.max_backend_events_per_second = None;
+        app.max_read_requests_per_second = None;
+        app.enable_user_authentication = None;
+
+        manager.create_app(app).await.unwrap();
+
+        // Retrieve and verify None values are handled correctly
+        let retrieved = manager.find_by_id("null_test").await.unwrap().unwrap();
+        assert_eq!(retrieved.webhooks, None);
+        assert_eq!(retrieved.enable_watchlist_events, None);
+        assert_eq!(retrieved.allowed_origins, None);
+        assert_eq!(retrieved.max_backend_events_per_second, None);
+
+        // Cleanup
+        manager.delete_app("null_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_empty_webhooks_array() {
+        let config = get_test_db_config("apps_empty_webhooks_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create app with empty webhooks array
+        let mut app = create_test_app("empty_webhooks");
+        app.webhooks = Some(vec![]);
+        manager.create_app(app).await.unwrap();
+
+        // Retrieve and verify
+        let retrieved = manager.find_by_id("empty_webhooks").await.unwrap().unwrap();
+        assert!(retrieved.webhooks.is_some());
+        assert_eq!(retrieved.webhooks.unwrap().len(), 0);
+
+        // Cleanup
+        manager.delete_app("empty_webhooks").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_webhook_with_lambda_config() {
+        let config = get_test_db_config("apps_lambda_test");
+
+        let manager = PgSQLAppManager::new(config, DatabasePooling::default())
+            .await
+            .unwrap();
+
+        // Create app with Lambda webhook
+        let webhook = Webhook {
+            url: None,
+            lambda_function: None,
+            lambda: Some(sockudo_core::webhook_types::LambdaConfig {
+                function_name: "my-webhook-function".to_string(),
+                region: "us-east-1".to_string(),
+            }),
+            event_types: vec!["channel_occupied".to_string()],
+            filter: None,
+            headers: None,
+        };
+
+        let mut app = create_test_app("lambda_test");
+        app.webhooks = Some(vec![webhook]);
+        manager.create_app(app).await.unwrap();
+
+        // Retrieve and verify Lambda config
+        let retrieved = manager.find_by_id("lambda_test").await.unwrap().unwrap();
+        assert!(retrieved.webhooks.is_some());
+        let webhooks = retrieved.webhooks.unwrap();
+        assert_eq!(webhooks.len(), 1);
+        assert!(webhooks[0].lambda.is_some());
+        assert_eq!(
+            webhooks[0].lambda.as_ref().unwrap().function_name,
+            "my-webhook-function"
+        );
+
+        // Cleanup
+        manager.delete_app("lambda_test").await.unwrap();
+    }
+}

@@ -33,3 +33,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+sockudo-app = { path = "../sockudo-app" }
+sockudo-queue = { path = "../sockudo-queue" }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
