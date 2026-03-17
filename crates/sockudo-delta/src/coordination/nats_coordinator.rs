@@ -100,9 +100,10 @@ impl ClusterCoordinator for NatsClusterCoordinator {
                 new_count, interval, app_id, channel, conflation_key
             );
 
-            self.kv_store.put(&key, "0".into()).await.map_err(|e| {
-                Error::Internal(format!("Failed to reset NATS counter: {}", e))
-            })?;
+            self.kv_store
+                .put(&key, "0".into())
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to reset NATS counter: {}", e)))?;
 
             Ok((true, interval))
         } else {
@@ -114,25 +115,19 @@ impl ClusterCoordinator for NatsClusterCoordinator {
             self.kv_store
                 .put(&key, new_count.to_string().into())
                 .await
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to increment NATS counter: {}", e))
-                })?;
+                .map_err(|e| Error::Internal(format!("Failed to increment NATS counter: {}", e)))?;
 
             Ok((false, new_count))
         }
     }
 
-    async fn reset_counter(
-        &self,
-        app_id: &str,
-        channel: &str,
-        conflation_key: &str,
-    ) -> Result<()> {
+    async fn reset_counter(&self, app_id: &str, channel: &str, conflation_key: &str) -> Result<()> {
         let key = self.get_key(app_id, channel, conflation_key);
 
-        self.kv_store.delete(&key).await.map_err(|e| {
-            Error::Internal(format!("Failed to delete NATS counter: {}", e))
-        })?;
+        self.kv_store
+            .delete(&key)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to delete NATS counter: {}", e)))?;
 
         debug!(
             "Cluster coordination (NATS): Reset counter for app={}, channel={}, key={}",
@@ -141,12 +136,7 @@ impl ClusterCoordinator for NatsClusterCoordinator {
         Ok(())
     }
 
-    async fn get_counter(
-        &self,
-        app_id: &str,
-        channel: &str,
-        conflation_key: &str,
-    ) -> Result<u32> {
+    async fn get_counter(&self, app_id: &str, channel: &str, conflation_key: &str) -> Result<u32> {
         let key = self.get_key(app_id, channel, conflation_key);
 
         match self.kv_store.get(&key).await {

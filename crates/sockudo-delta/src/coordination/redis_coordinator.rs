@@ -96,12 +96,7 @@ impl ClusterCoordinator for RedisClusterCoordinator {
         }
     }
 
-    async fn reset_counter(
-        &self,
-        app_id: &str,
-        channel: &str,
-        conflation_key: &str,
-    ) -> Result<()> {
+    async fn reset_counter(&self, app_id: &str, channel: &str, conflation_key: &str) -> Result<()> {
         let key = self.get_key(app_id, channel, conflation_key);
         let mut conn = self.connection.lock().await;
 
@@ -117,12 +112,7 @@ impl ClusterCoordinator for RedisClusterCoordinator {
         Ok(())
     }
 
-    async fn get_counter(
-        &self,
-        app_id: &str,
-        channel: &str,
-        conflation_key: &str,
-    ) -> Result<u32> {
+    async fn get_counter(&self, app_id: &str, channel: &str, conflation_key: &str) -> Result<u32> {
         let key = self.get_key(app_id, channel, conflation_key);
         let mut conn = self.connection.lock().await;
 
