@@ -24,17 +24,17 @@ license-file = "LICENSE"
 
 [workspace.dependencies]
 # Internal crates
-sockudo-protocol = { path = "crates/sockudo-protocol" }
-sockudo-filter = { path = "crates/sockudo-filter" }
-sockudo-core = { path = "crates/sockudo-core" }
-sockudo-app = { path = "crates/sockudo-app" }
-sockudo-cache = { path = "crates/sockudo-cache" }
-sockudo-queue = { path = "crates/sockudo-queue" }
-sockudo-rate-limiter = { path = "crates/sockudo-rate-limiter" }
-sockudo-metrics = { path = "crates/sockudo-metrics" }
-sockudo-webhook = { path = "crates/sockudo-webhook" }
-sockudo-delta = { path = "crates/sockudo-delta" }
-sockudo-adapter = { path = "crates/sockudo-adapter" }
+sockudo-protocol = { version = "=3.2.0", path = "crates/sockudo-protocol" }
+sockudo-filter = { version = "=3.2.0", path = "crates/sockudo-filter" }
+sockudo-core = { version = "=3.2.0", path = "crates/sockudo-core" }
+sockudo-app = { version = "=3.2.0", path = "crates/sockudo-app" }
+sockudo-cache = { version = "=3.2.0", path = "crates/sockudo-cache" }
+sockudo-queue = { version = "=3.2.0", path = "crates/sockudo-queue" }
+sockudo-rate-limiter = { version = "=3.2.0", path = "crates/sockudo-rate-limiter" }
+sockudo-metrics = { version = "=3.2.0", path = "crates/sockudo-metrics" }
+sockudo-webhook = { version = "=3.2.0", path = "crates/sockudo-webhook" }
+sockudo-delta = { version = "=3.2.0", path = "crates/sockudo-delta" }
+sockudo-adapter = { version = "=3.2.0", path = "crates/sockudo-adapter" }
 
 # External dependencies (shared versions)
 async-trait = "0.1.89"
