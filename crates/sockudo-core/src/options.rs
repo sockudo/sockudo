@@ -1213,9 +1213,7 @@ impl CleanupConfig {
         if let WorkerThreadsConfig::Fixed(n) = self.worker_threads
             && n == 0
         {
-            return Err(
-                "worker_threads must be greater than 0 when using fixed count".to_string(),
-            );
+            return Err("worker_threads must be greater than 0 when using fixed count".to_string());
         }
         Ok(())
     }
