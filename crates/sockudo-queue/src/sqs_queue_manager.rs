@@ -315,10 +315,10 @@ impl QueueInterface for SqsQueueManager {
             .queue_url(queue_url)
             .message_body(data_json);
 
-        if self.config.fifo {
-            if let Some(group_id) = &self.config.message_group_id {
-                send_message_request = send_message_request.message_group_id(group_id);
-            }
+        if self.config.fifo
+            && let Some(group_id) = &self.config.message_group_id
+        {
+            send_message_request = send_message_request.message_group_id(group_id);
         }
 
         let result = send_message_request.send().await.map_err(|e| {

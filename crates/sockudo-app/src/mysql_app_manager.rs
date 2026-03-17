@@ -95,10 +95,10 @@ impl MySQLAppManager {
 
             if let Err(e) = sqlx::query(&add_column_query).execute(&self.pool).await {
                 let mut is_duplicate_column_error = false;
-                if let Some(db_err) = e.as_database_error() {
-                    if db_err.code() == Some(std::borrow::Cow::from("1060")) {
-                        is_duplicate_column_error = true;
-                    }
+                if let Some(db_err) = e.as_database_error()
+                    && db_err.code() == Some(std::borrow::Cow::from("1060"))
+                {
+                    is_duplicate_column_error = true;
                 }
 
                 if is_duplicate_column_error {
