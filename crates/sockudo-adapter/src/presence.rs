@@ -207,16 +207,35 @@ impl PresenceManager {
                 user_id, channel
             );
 
-            // Send member_removed webhook
-            if let Some(webhook_integration) = webhook_integration
-                && let Err(e) = webhook_integration
-                    .send_member_removed(app_config, channel, user_id)
-                    .await
-            {
-                warn!(
-                    "Failed to send member_removed webhook for user {} in channel {}: {}",
-                    user_id, channel, e
-                );
+            // Send member_removed webhook with 3-second delay
+            // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects.
+            // If the user reconnects within the delay, no webhook is sent.
+            if let Some(webhook_integration) = webhook_integration {
+                let wi = Arc::clone(webhook_integration);
+                let cm = Arc::clone(connection_manager);
+                let app = app_config.clone();
+                let ch = channel.to_string();
+                let uid = user_id.to_string();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let still_gone =
+                        match Self::user_has_other_connections_in_presence_channel(
+                            cm, &app.id, &ch, &uid, None,
+                        )
+                        .await
+                        {
+                            Ok(has_connections) => !has_connections,
+                            Err(_) => true,
+                        };
+                    if still_gone
+                        && let Err(e) = wi.send_member_removed(&app, &ch, &uid).await
+                    {
+                        tracing::warn!(
+                            "Failed to send member_removed webhook for user {} in channel {}: {}",
+                            uid, ch, e
+                        );
+                    }
+                });
             }
 
             // Broadcast member_removed event to remaining clients in the channel

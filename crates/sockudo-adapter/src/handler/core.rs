@@ -11,6 +11,7 @@ use sockudo_protocol::messages::{ErrorData, MessageData, PusherMessage};
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
@@ -132,14 +133,22 @@ impl ConnectionHandler {
             }
         }
 
-        // Send channel_vacated webhook if no subscribers left
+        // Send channel_vacated webhook if no subscribers left (with 3-second delay)
+        // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects
         if current_sub_count == 0
             && let Some(webhook_integration) = &self.webhook_integration
         {
-            webhook_integration
-                .send_channel_vacated(app_config, &channel_name)
-                .await
-                .ok();
+            let wi = Arc::clone(webhook_integration);
+            let cm = Arc::clone(&self.connection_manager);
+            let app = app_config.clone();
+            let channel = channel_name.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let count = cm.get_channel_socket_count(&app.id, &channel).await;
+                if count == 0 {
+                    wi.send_channel_vacated(&app, &channel).await.ok();
+                }
+            });
         }
 
         Ok(())
@@ -629,14 +638,22 @@ impl ConnectionHandler {
             }
         }
 
-        // Send channel_vacated webhook if no subscribers left
+        // Send channel_vacated webhook if no subscribers left (with 3-second delay)
+        // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects
         if current_sub_count == 0
             && let Some(webhook_integration) = &self.webhook_integration
         {
-            webhook_integration
-                .send_channel_vacated(app_config, channel_str)
-                .await
-                .ok();
+            let wi = Arc::clone(webhook_integration);
+            let cm = Arc::clone(&self.connection_manager);
+            let app = app_config.clone();
+            let channel = channel_str.to_string();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let count = cm.get_channel_socket_count(&app.id, &channel).await;
+                if count == 0 {
+                    wi.send_channel_vacated(&app, &channel).await.ok();
+                }
+            });
         }
 
         Ok(())
