@@ -51,21 +51,42 @@ jobs:
             sockudo
           )
 
+          FAILED_CRATES=()
+
           for crate in "${CRATES[@]}"; do
             echo "::group::Publishing $crate"
             VERSION=$(cargo metadata --no-deps --format-version 1 \
               | jq -r ".packages[] | select(.name == \"$crate\") | .version")
 
             # Check if this version already exists on crates.io
-            if cargo search "$crate" --limit 1 2>/dev/null | grep -q "\"$VERSION\""; then
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/$crate/$VERSION")
+            if [ "$HTTP_STATUS" = "200" ]; then
               echo "$crate@$VERSION already published, skipping."
             else
               echo "Publishing $crate@$VERSION..."
               cargo publish -p "$crate" --token "$CRATES_IO_TOKEN" || {
-                echo "::warning::Failed to publish $crate@$VERSION"
+                echo "::warning::Failed to publish $crate@$VERSION (will retry)"
+                FAILED_CRATES+=("$crate")
               }
-              # Wait a bit to avoid rate limits
-              sleep 15
+              # Wait for crates.io index to propagate
+              sleep 30
             fi
             echo "::endgroup::"
           done
+
+          # Retry failed crates once (index may have propagated by now)
+          if [ ${#FAILED_CRATES[@]} -gt 0 ]; then
+            echo "Retrying ${#FAILED_CRATES[@]} failed crate(s) after index propagation delay..."
+            sleep 30
+            for crate in "${FAILED_CRATES[@]}"; do
+              echo "::group::Retrying $crate"
+              VERSION=$(cargo metadata --no-deps --format-version 1 \
+                | jq -r ".packages[] | select(.name == \"$crate\") | .version")
+              echo "Retrying $crate@$VERSION..."
+              cargo publish -p "$crate" --token "$CRATES_IO_TOKEN" || {
+                echo "::error::Failed to publish $crate@$VERSION after retry"
+              }
+              sleep 30
+              echo "::endgroup::"
+            done
+          fi
