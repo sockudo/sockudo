@@ -80,7 +80,12 @@ impl ConnectionHandler {
                 // Truly inactive for activity timeout duration, send ping
                 let ping_result = {
                     let mut ws = conn.inner.lock().await;
-                    // Update connection status to indicate ping sent
+                    if !ws.is_connected() {
+                        debug!("Connection {} already closed, cleaning up", socket_id_clone);
+                        drop(ws);
+                        conn_manager.cleanup_connection(&app_id_clone, conn).await;
+                        break;
+                    }
                     ws.state.status = sockudo_core::websocket::ConnectionStatus::PingSent(
                         std::time::Instant::now(),
                     );
@@ -113,14 +118,16 @@ impl ConnectionHandler {
                                 ws.state.status
                                 && ping_time.elapsed() > Duration::from_secs(PONG_TIMEOUT)
                             {
-                                // No pong received, close connection gracefully
                                 warn!(
-                                    "No pong received from socket {} after ping, closing connection",
+                                    "No pong received from socket {} after ping, forcing cleanup",
                                     socket_id_clone
                                 );
                                 let _ = ws
                                     .close(4201, "Pong reply not received in time".to_string())
                                     .await;
+                                drop(ws);
+                                conn_manager.cleanup_connection(&app_id_clone, conn).await;
+                                break;
                             }
                         }
                         // After handling ping/pong, wait full activity timeout before next check
