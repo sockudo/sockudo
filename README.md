@@ -24,8 +24,28 @@
 - **🧠 Delta Compression + Conflation** - Fossil and Xdelta3 (VCDIFF) with per-channel controls
 - **🏷️ Tag Filtering** - High-performance server-side filtering with optional tag emission controls
 - **🌐 Native WebSocket Engine** - `sockudo_ws` (replacing `fastwebsockets`) with advanced runtime tuning
+- **📦 Official Client SDKs** - JavaScript, Swift, Kotlin, and Flutter clients with filters, delta decoding, and encrypted channel support
 
-## What Was Added In This Branch
+## Official Client SDKs
+
+Sockudo now has official clients for the main application runtimes:
+
+| Client | Repository | Distribution |
+|---|---|---|
+| JavaScript / TypeScript | `sockudo/sockudo-js` | npm: `@sockudo/client` |
+| Swift | `sockudo/sockudo-swift` | Swift Package Manager |
+| Kotlin | `sockudo/sockudo-kotlin` | Maven / Gradle |
+| Flutter / Dart | `sockudo/sockudo-flutter` | `pub.dev` |
+
+Shared capabilities across the official SDKs:
+
+- public, private, presence, and encrypted channels
+- channel auth and user sign-in
+- tag-filter subscription options
+- Fossil and Xdelta3/VCDIFF delta reconstruction
+- live integration coverage against Sockudo on port `6001`
+
+## What This Branch Adds
 
 This branch includes a major realtime pipeline upgrade:
 
@@ -36,6 +56,7 @@ This branch includes a major realtime pipeline upgrade:
 - Expanded benchmark/soak tooling and test assets
 - Full WebSocket transport migration from `fastwebsockets` to `sockudo_ws`
 - Xdelta3 backend migration from `xdelta3` crate to `oxidelta`
+- official native/mobile client ports for Swift, Kotlin, and Flutter
 
 ## Delta Compression, Conflation, and Tag Filtering
 
@@ -234,7 +255,7 @@ cargo build --release --features full          # All backends
 
 ## Basic Usage
 
-Connect using any Pusher-compatible client:
+Connect using any Pusher-compatible or official Sockudo client:
 
 ```javascript
 import Pusher from 'pusher-js';
@@ -250,6 +271,28 @@ const channel = pusher.subscribe('my-channel');
 channel.bind('my-event', (data) => {
     console.log('Received:', data);
 });
+```
+
+```swift
+import SockudoSwift
+
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        forceTLS: false,
+        enabledTransports: [.ws],
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        wssPort: 6001
+    )
+)
+
+let channel = client.subscribe("my-channel")
+channel.bind("my-event") { data, _ in
+    print(data ?? "")
+}
+client.connect()
 ```
 
 ## Configuration
@@ -357,6 +400,7 @@ All scenarios above can be deployed via Docker Compose or the included [Helm cha
 ## Documentation
 
 - **[Full Documentation](docs/)** - Complete setup and configuration guide
+- **[Client Overview](docs/content/3.client/1.overview.md)** - Official SDKs and runtime targets
 - **[Performance Tuning](docs/QUEUE_CONFIG.md)** - Optimize for your workload
 - **[Docker Deployment](docker-compose.yml)** - Production-ready containers
 - **[Helm Charts](charts/sockudo/)** - Kubernetes deployment with HPA, PDB, ServiceMonitor
@@ -367,6 +411,11 @@ All scenarios above can be deployed via Docker Compose or the included [Helm cha
 ```bash
 # Run all tests
 make test
+
+# Run official client live integration tests against localhost:6001
+cd ../sockudo-swift && SOCKUDO_LIVE_TESTS=1 swift test
+cd ../sockudo-kotlin && SOCKUDO_LIVE_TESTS=1 ./gradlew :lib:test --tests io.sockudo.client.LiveIntegrationTest
+cd ../sockudo_flutter && SOCKUDO_LIVE_TESTS=1 flutter test
 
 # Interactive WebSocket testing
 cd test/interactive && npm install && npm start

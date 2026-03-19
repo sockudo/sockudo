@@ -82,6 +82,9 @@ For larger changes (new sections, restructuring), please open an issue first to 
 |------|-------------|
 | [sockudo/sockudo](https://github.com/sockudo/sockudo) | The Sockudo server (Rust) |
 | [sockudo/sockudo-js](https://github.com/sockudo/sockudo-js) | Official JavaScript/TypeScript client (`@sockudo/client`) |
+| [sockudo/sockudo-swift](https://github.com/sockudo/sockudo-swift) | Official Swift client for iOS, macOS, tvOS, and watchOS |
+| [sockudo/sockudo-kotlin](https://github.com/sockudo/sockudo-kotlin) | Official Kotlin/JVM client for Android and backend JVM apps |
+| [sockudo/sockudo-flutter](https://github.com/sockudo/sockudo-flutter) | Official Flutter and Dart client |
 
 ## License
 

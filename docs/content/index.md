@@ -159,10 +159,10 @@ Built for teams that need control, performance, and advanced features beyond bas
   orientation: vertical
   ---
   #title
-  Developer Friendly
+  Multi-Client SDKs
   
   #description
-  First-class TypeScript client with Filter API, delta reconstruction, and ergonomic subscription management. JSON config with environment variable overrides.
+  Official JavaScript, Swift, Kotlin, and Flutter clients with filter subscriptions, encrypted channels, and delta reconstruction.
   :::
 ::
 
@@ -253,6 +253,19 @@ Everything you need to build production-grade realtime applications.
   
   #description
   Prometheus metrics endpoint with detailed WebSocket, pub/sub, and delta compression stats. Health checks for readiness and liveness probes.
+  :::
+
+  :::u-page-feature
+  ---
+  icon: i-lucide-smartphone
+  orientation: vertical
+  to: /client/overview
+  ---
+  #title
+  Official Client SDKs
+  
+  #description
+  Use the JavaScript client in web runtimes, Swift on Apple platforms, Kotlin on Android and JVM, or Flutter across mobile and desktop.
   :::
 ::
 
