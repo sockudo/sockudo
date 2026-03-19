@@ -465,7 +465,15 @@ impl PartialEq for ConnectionState {
 #[derive(Debug)]
 pub struct MessageSender {
     sender: MessageSenderHandle,
-    _receiver_handle: JoinHandle<()>,
+    receiver_handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for MessageSender {
+    fn drop(&mut self) {
+        if let Some(handle) = self.receiver_handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -569,7 +577,7 @@ impl MessageSender {
 
         Self {
             sender,
-            _receiver_handle: receiver_handle,
+            receiver_handle: Some(receiver_handle),
         }
     }
 
@@ -642,7 +650,7 @@ impl MessageSender {
 
         Self {
             sender,
-            _receiver_handle: receiver_handle,
+            receiver_handle: Some(receiver_handle),
         }
     }
 
