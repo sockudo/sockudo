@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 /// Buffer limit strategy for WebSocket connections
@@ -503,6 +504,7 @@ impl MessageSender {
         broadcast_rx: SizedMessageReceiverHandle,
         buffer_capacity: usize,
         byte_counter: Option<Arc<ByteCounter>>,
+        shutdown_token: CancellationToken,
     ) -> Self {
         let (sender, receiver) = mpsc::bounded_async::<Message>(buffer_capacity);
 
@@ -516,6 +518,10 @@ impl MessageSender {
                 tokio::select! {
                     biased;
 
+                    _ = shutdown_token.cancelled() => {
+                        debug!("Receiver task shutting down via cancellation token");
+                        break;
+                    }
                     recv_result = broadcast_rx.recv(), if !broadcast_closed => {
                         match recv_result {
                             Ok(sized_msg) => {
@@ -689,6 +695,7 @@ pub struct WebSocket {
     pub broadcast_tx: SizedMessageSenderHandle,
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
+    pub shutdown_token: CancellationToken,
 }
 
 impl WebSocket {
@@ -709,12 +716,14 @@ impl WebSocket {
 
         let channel_capacity = buffer_config.channel_capacity();
         let (broadcast_tx, broadcast_rx) = mpsc::bounded_async::<SizedMessage>(channel_capacity);
+        let shutdown_token = CancellationToken::new();
 
         let message_sender = MessageSender::new_with_broadcast(
             socket,
             broadcast_rx,
             channel_capacity,
             byte_counter.clone(),
+            shutdown_token.clone(),
         );
 
         WebSocket {
@@ -723,6 +732,7 @@ impl WebSocket {
             broadcast_tx,
             buffer_config,
             byte_counter,
+            shutdown_token,
         }
     }
 
@@ -861,6 +871,7 @@ pub struct WebSocketRef {
     pub socket_id: SocketId,
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
+    pub shutdown_token: CancellationToken,
     pub inner: Arc<Mutex<WebSocket>>,
 }
 
@@ -870,6 +881,7 @@ impl WebSocketRef {
         let socket_id = *websocket.get_socket_id();
         let buffer_config = websocket.buffer_config;
         let byte_counter = websocket.byte_counter.clone();
+        let shutdown_token = websocket.shutdown_token.clone();
 
         let channel_filters = Arc::new(DashMap::new());
         for (channel, filter) in &websocket.state.subscribed_channels {
@@ -882,6 +894,7 @@ impl WebSocketRef {
             socket_id,
             buffer_config,
             byte_counter,
+            shutdown_token,
             inner: Arc::new(Mutex::new(websocket)),
         }
     }
@@ -958,6 +971,15 @@ impl WebSocketRef {
     pub async fn close(&self, code: u16, reason: String) -> Result<()> {
         let mut ws = self.inner.lock().await;
         ws.close(code, reason).await
+    }
+
+    /// Signal both reader and writer tasks to shut down.
+    pub fn shutdown(&self) {
+        self.shutdown_token.cancel();
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.shutdown_token.clone()
     }
 
     pub fn get_socket_id_sync(&self) -> &SocketId {

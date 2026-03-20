@@ -178,6 +178,9 @@ impl Namespace {
     pub async fn cleanup_connection(&self, ws_ref: WebSocketRef) {
         let socket_id = ws_ref.get_socket_id().await;
 
+        // Signal reader and writer tasks to stop
+        ws_ref.shutdown();
+
         let channels_to_check: Vec<String> = self
             .channels
             .iter()
