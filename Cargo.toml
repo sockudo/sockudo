@@ -16,7 +16,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "3.2.2"
+version = "3.2.3"
 edition = "2024"
 rust-version = "1.90"
 repository = "https://github.com/sockudo/sockudo"
@@ -24,17 +24,17 @@ license-file = "LICENSE"
 
 [workspace.dependencies]
 # Internal crates
-sockudo-protocol = { version = "3.2.2", path = "crates/sockudo-protocol" }
-sockudo-filter = { version = "3.2.2", path = "crates/sockudo-filter" }
-sockudo-core = { version = "3.2.2", path = "crates/sockudo-core" }
-sockudo-app = { version = "3.2.2", path = "crates/sockudo-app" }
-sockudo-cache = { version = "3.2.2", path = "crates/sockudo-cache" }
-sockudo-queue = { version = "3.2.2", path = "crates/sockudo-queue" }
-sockudo-rate-limiter = { version = "3.2.2", path = "crates/sockudo-rate-limiter" }
-sockudo-metrics = { version = "3.2.2", path = "crates/sockudo-metrics" }
-sockudo-webhook = { version = "3.2.2", path = "crates/sockudo-webhook" }
-sockudo-delta = { version = "3.2.2", path = "crates/sockudo-delta" }
-sockudo-adapter = { version = "3.2.2", path = "crates/sockudo-adapter" }
+sockudo-protocol = { version = "3.2.3", path = "crates/sockudo-protocol" }
+sockudo-filter = { version = "3.2.3", path = "crates/sockudo-filter" }
+sockudo-core = { version = "3.2.3", path = "crates/sockudo-core" }
+sockudo-app = { version = "3.2.3", path = "crates/sockudo-app" }
+sockudo-cache = { version = "3.2.3", path = "crates/sockudo-cache" }
+sockudo-queue = { version = "3.2.3", path = "crates/sockudo-queue" }
+sockudo-rate-limiter = { version = "3.2.3", path = "crates/sockudo-rate-limiter" }
+sockudo-metrics = { version = "3.2.3", path = "crates/sockudo-metrics" }
+sockudo-webhook = { version = "3.2.3", path = "crates/sockudo-webhook" }
+sockudo-delta = { version = "3.2.3", path = "crates/sockudo-delta" }
+sockudo-adapter = { version = "3.2.3", path = "crates/sockudo-adapter" }
 
 # External dependencies (shared versions)
 async-trait = "0.1.89"
