@@ -240,7 +240,12 @@ jobs:
         run: cargo install cargo-audit
 
       - name: Security audit
-        run: cargo audit
+        run: |
+          # Ignored until async-nats ships a release with rustls-webpki >= 0.103.10
+          # and drops rustls-pemfile 2.2.0 / rustls-native-certs 0.7.
+          cargo audit \
+            --ignore RUSTSEC-2026-0049 \
+            --ignore RUSTSEC-2025-0134
 
   # =============================================================================
   # Manual Build Instructions (PR only)

@@ -150,10 +150,16 @@ jobs:
       - name: Run security audit
         run: |
           echo "🔒 Running comprehensive security audit..."
-          cargo audit --json > security_audit.json
-          
+          cargo audit \
+            --ignore RUSTSEC-2026-0049 \
+            --ignore RUSTSEC-2025-0134 \
+            --json > security_audit.json
+
           # Generate human-readable report
-          cargo audit > security_report.txt || true
+          cargo audit \
+            --ignore RUSTSEC-2026-0049 \
+            --ignore RUSTSEC-2025-0134 \
+            > security_report.txt || true
 
       - name: Check for security issues
         id: security_check
