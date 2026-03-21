@@ -164,6 +164,7 @@ struct ServerState {
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     running: AtomicBool,
     http_api_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
+    websocket_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     debug_enabled: bool,
     cleanup_queue: Option<CleanupSender>,
     cleanup_worker_handles: Option<Vec<tokio::task::JoinHandle<()>>>,
@@ -274,6 +275,33 @@ struct Args {
 }
 
 impl SockudoServer {
+    fn build_rate_limit_layer(
+        limiter: Arc<dyn RateLimiter + Send + Sync>,
+        key_prefix: &str,
+        trust_hops: usize,
+        config_name: &str,
+        metrics: Option<&Arc<dyn MetricsInterface + Send + Sync>>,
+    ) -> sockudo_rate_limiter::middleware::RateLimitLayer<IpKeyExtractor> {
+        let options = sockudo_rate_limiter::middleware::RateLimitOptions {
+            include_headers: true,
+            fail_open: false,
+            key_prefix: Some(key_prefix.to_string()),
+        };
+
+        let mut rate_limit_layer = sockudo_rate_limiter::middleware::RateLimitLayer::with_options(
+            limiter,
+            IpKeyExtractor::new(trust_hops),
+            options,
+        )
+        .with_config_name(config_name.to_string());
+
+        if let Some(metrics) = metrics {
+            rate_limit_layer = rate_limit_layer.with_metrics(metrics.clone());
+        }
+
+        rate_limit_layer
+    }
+
     async fn get_http_addr(&self) -> SocketAddr {
         sockudo_core::utils::resolve_socket_addr(&self.config.host, self.config.port, "HTTP server")
             .await
@@ -385,7 +413,7 @@ impl SockudoServer {
         };
 
         let http_api_rate_limiter_instance = if config.rate_limiter.enabled {
-            RateLimiterFactory::create(&config.rate_limiter, &config.database.redis)
+            RateLimiterFactory::create_api(&config.rate_limiter, &config.database.redis)
                 .await
                 .unwrap_or_else(|e| {
                     error!(
@@ -402,6 +430,27 @@ impl SockudoServer {
         };
         info!(
             "HTTP API RateLimiter initialized (enabled: {}) with driver: {:?}",
+            config.rate_limiter.enabled, config.rate_limiter.driver
+        );
+
+        let websocket_rate_limiter_instance = if config.rate_limiter.enabled {
+            RateLimiterFactory::create_websocket(&config.rate_limiter, &config.database.redis)
+                .await
+                .unwrap_or_else(|e| {
+                    error!(
+                        "Failed to initialize WebSocket rate limiter: {}. Using a permissive limiter.",
+                        e
+                    );
+                    Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(
+                        u32::MAX, 1,
+                    ))
+                })
+        } else {
+            info!("WebSocket rate limiting is globally disabled. Using a permissive limiter.");
+            Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(u32::MAX, 1))
+        };
+        info!(
+            "WebSocket RateLimiter initialized (enabled: {}) with driver: {:?}",
             config.rate_limiter.enabled, config.rate_limiter.driver
         );
 
@@ -703,6 +752,7 @@ impl SockudoServer {
             metrics: metrics.clone(),
             running: AtomicBool::new(true),
             http_api_rate_limiter: Some(http_api_rate_limiter_instance.clone()),
+            websocket_rate_limiter: Some(websocket_rate_limiter_instance.clone()),
             debug_enabled,
             cleanup_queue,
             cleanup_worker_handles,
@@ -914,38 +964,26 @@ impl SockudoServer {
 
         let cors = cors_builder;
 
-        let rate_limiter_middleware_layer = if self.config.rate_limiter.enabled {
+        let api_rate_limiter_middleware_layer = if self.config.rate_limiter.enabled {
             if let Some(rate_limiter_instance) = &self.state.http_api_rate_limiter {
-                let options = sockudo_rate_limiter::middleware::RateLimitOptions {
-                    include_headers: true,
-                    fail_open: false,
-                    key_prefix: Some("api:".to_string()),
-                };
                 let trust_hops = self
                     .config
                     .rate_limiter
                     .api_rate_limit
                     .trust_hops
                     .unwrap_or(0) as usize;
-                let ip_key_extractor = IpKeyExtractor::new(trust_hops);
 
                 info!(
-                    "Applying custom rate limiting middleware with trust_hops: {}",
+                    "Applying HTTP API rate limiting middleware with trust_hops: {}",
                     trust_hops
                 );
-                let mut rate_limit_layer =
-                    sockudo_rate_limiter::middleware::RateLimitLayer::with_options(
-                        rate_limiter_instance.clone(),
-                        ip_key_extractor,
-                        options,
-                    )
-                    .with_config_name("api_rate_limit".to_string());
-
-                if let Some(ref metrics) = self.state.metrics {
-                    rate_limit_layer = rate_limit_layer.with_metrics(metrics.clone());
-                }
-
-                Some(rate_limit_layer)
+                Some(Self::build_rate_limit_layer(
+                    rate_limiter_instance.clone(),
+                    "api",
+                    trust_hops,
+                    "api_rate_limit",
+                    self.state.metrics.as_ref(),
+                ))
             } else {
                 warn!(
                     "Rate limiting is enabled in config, but no RateLimiter instance found in server state for HTTP API. Rate limiting will not be applied."
@@ -957,6 +995,37 @@ impl SockudoServer {
             None
         };
 
+        let websocket_rate_limiter_middleware_layer = if self.config.rate_limiter.enabled {
+            if let Some(rate_limiter_instance) = &self.state.websocket_rate_limiter {
+                let trust_hops = self
+                    .config
+                    .rate_limiter
+                    .websocket_rate_limit
+                    .trust_hops
+                    .unwrap_or(0) as usize;
+
+                info!(
+                    "Applying WebSocket rate limiting middleware with trust_hops: {}",
+                    trust_hops
+                );
+                Some(Self::build_rate_limit_layer(
+                    rate_limiter_instance.clone(),
+                    "websocket_connect",
+                    trust_hops,
+                    "websocket_rate_limit",
+                    self.state.metrics.as_ref(),
+                ))
+            } else {
+                warn!(
+                    "Rate limiting is enabled in config, but no RateLimiter instance found for WebSocket upgrades. WebSocket rate limiting will not be applied."
+                );
+                None
+            }
+        } else {
+            info!("Custom WebSocket rate limiting is disabled in configuration.");
+            None
+        };
+
         let body_limit_bytes =
             (self.config.http_api.request_limit_in_mb as usize).saturating_mul(1024 * 1024);
         debug!(
@@ -964,8 +1033,12 @@ impl SockudoServer {
             self.config.http_api.request_limit_in_mb, body_limit_bytes
         );
 
-        let mut router = Router::new()
-            .route("/app/{appKey}", get(handle_ws_upgrade))
+        let mut websocket_router = Router::new().route("/app/{appKey}", get(handle_ws_upgrade));
+        if let Some(middleware) = websocket_rate_limiter_middleware_layer {
+            websocket_router = websocket_router.layer(middleware);
+        }
+
+        let mut api_router = Router::new()
             .route(
                 "/apps/{appId}/events",
                 post(events).route_layer(axum_middleware::from_fn_with_state(
@@ -1007,7 +1080,15 @@ impl SockudoServer {
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),
-            )
+            );
+
+        if let Some(middleware) = api_rate_limiter_middleware_layer {
+            api_router = api_router.layer(middleware);
+        }
+
+        let mut router = Router::new()
+            .merge(websocket_router)
+            .merge(api_router)
             .route("/up", get(up))
             .route("/up/{appId}", get(up))
             .layer(DefaultBodyLimit::max(body_limit_bytes))
@@ -1015,11 +1096,6 @@ impl SockudoServer {
 
         if self.config.http_api.usage_enabled {
             router = router.route("/usage", get(usage));
-        }
-
-        // Apply rate limiter middleware if it was created
-        if let Some(middleware) = rate_limiter_middleware_layer {
-            router = router.layer(middleware);
         }
 
         router.with_state(self.handler.clone())
@@ -1418,6 +1494,112 @@ impl SockudoServer {
         tokio::time::sleep(Duration::from_secs(self.config.shutdown_grace_period)).await;
         info!("Server stopped");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use sockudo_rate_limiter::memory_limiter::MemoryRateLimiter;
+    use tower::ServiceExt;
+
+    async fn ok_handler() -> StatusCode {
+        StatusCode::OK
+    }
+
+    fn scoped_test_router() -> Router {
+        let api_layer = SockudoServer::build_rate_limit_layer(
+            Arc::new(MemoryRateLimiter::new(1, 60)),
+            "api",
+            0,
+            "api_rate_limit",
+            None,
+        );
+        let websocket_layer = SockudoServer::build_rate_limit_layer(
+            Arc::new(MemoryRateLimiter::new(1, 60)),
+            "websocket_connect",
+            0,
+            "websocket_rate_limit",
+            None,
+        );
+
+        Router::new()
+            .merge(
+                Router::new()
+                    .route("/app/{appKey}", get(ok_handler))
+                    .layer(websocket_layer),
+            )
+            .merge(
+                Router::new()
+                    .route("/apps/{appId}/events", post(ok_handler))
+                    .layer(api_layer),
+            )
+    }
+
+    #[tokio::test]
+    async fn websocket_rate_limit_is_scoped_to_websocket_routes() {
+        let app = scoped_test_router();
+
+        let ws_request = Request::builder()
+            .method("GET")
+            .uri("/app/demo-key")
+            .header("x-real-ip", "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let ws_response = app.clone().oneshot(ws_request).await.unwrap();
+        assert_eq!(ws_response.status(), StatusCode::OK);
+
+        let api_request = Request::builder()
+            .method("POST")
+            .uri("/apps/demo/events")
+            .header("x-real-ip", "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let api_response = app.clone().oneshot(api_request).await.unwrap();
+        assert_eq!(api_response.status(), StatusCode::OK);
+
+        let second_ws_request = Request::builder()
+            .method("GET")
+            .uri("/app/demo-key")
+            .header("x-real-ip", "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let second_ws_response = app.oneshot(second_ws_request).await.unwrap();
+        assert_eq!(second_ws_response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn api_rate_limit_is_scoped_to_api_routes() {
+        let app = scoped_test_router();
+
+        let api_request = Request::builder()
+            .method("POST")
+            .uri("/apps/demo/events")
+            .header("x-real-ip", "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let api_response = app.clone().oneshot(api_request).await.unwrap();
+        assert_eq!(api_response.status(), StatusCode::OK);
+
+        let ws_request = Request::builder()
+            .method("GET")
+            .uri("/app/demo-key")
+            .header("x-real-ip", "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let ws_response = app.clone().oneshot(ws_request).await.unwrap();
+        assert_eq!(ws_response.status(), StatusCode::OK);
+
+        let second_api_request = Request::builder()
+            .method("POST")
+            .uri("/apps/demo/events")
+            .header("x-real-ip", "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let second_api_response = app.oneshot(second_api_request).await.unwrap();
+        assert_eq!(second_api_response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }
 
