@@ -1,7 +1,7 @@
 use ahash::AHashMap;
 use axum::{
     Json,
-    extract::{Path, Query, RawQuery, State},
+    extract::{Extension, Path, Query, RawQuery, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     response::{IntoResponse, Response as AxumResponse},
 };
@@ -506,10 +506,11 @@ async fn process_single_event_parallel(
 #[instrument(skip(handler, event_payload), fields(app_id = %app_id))]
 pub async fn events(
     Path(app_id): Path<String>,
-    Query(auth_q_params_struct): Query<EventQuery>,
+    Query(_auth_q_params_struct): Query<EventQuery>,
+    Extension(app): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
-    uri: Uri,
-    RawQuery(raw_query_str_option): RawQuery,
+    _uri: Uri,
+    RawQuery(_raw_query_str_option): RawQuery,
     Json(event_payload): Json<PusherApiMessage>,
 ) -> Result<impl IntoResponse, AppError> {
     let start_time_ms = std::time::SystemTime::now()
@@ -519,12 +520,6 @@ pub async fn events(
         / 1_000_000.0;
 
     let incoming_request_size_bytes = sonic_rs::to_vec(&event_payload)?.len();
-
-    let app = handler
-        .app_manager()
-        .find_by_id(app_id.as_str())
-        .await?
-        .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
     let need_channel_info = event_payload.info.is_some();
 
@@ -562,6 +557,7 @@ pub async fn events(
 pub async fn batch_events(
     Path(app_id): Path<String>,
     Query(_auth_q_params_struct): Query<EventQuery>,
+    Extension(app_config): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
     _uri: Uri,
     RawQuery(_raw_query_str_option): RawQuery,
@@ -582,12 +578,6 @@ pub async fn batch_events(
     for (i, event) in batch_events_vec.iter().enumerate().take(3) {
         debug!("Batch event #{}: tags={:?}", i, event.tags);
     }
-
-    let app_config = handler
-        .app_manager()
-        .find_by_id(app_id.as_str())
-        .await?
-        .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
     if let Some(max_batch) = app_config.max_event_batch_size
         && batch_len > max_batch as usize
@@ -666,17 +656,12 @@ pub async fn batch_events(
 pub async fn channel(
     Path((app_id, channel_name)): Path<(String, String)>,
     Query(query_params_specific): Query<ChannelQuery>,
+    Extension(app): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
-    uri: Uri,
-    RawQuery(raw_query_str_option): RawQuery,
+    _uri: Uri,
+    RawQuery(_raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
     debug!("Request for channel info for channel: {}", channel_name);
-    let app = handler
-        .app_manager()
-        .find_by_id(&app_id)
-        .await?
-        .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
-
     validate_channel_name(&app, &channel_name).await?;
 
     let info_query_str = query_params_specific.info.as_ref();
@@ -751,9 +736,10 @@ pub async fn channel(
 pub async fn channels(
     Path(app_id): Path<String>,
     Query(query_params_specific): Query<ChannelsQuery>,
+    Extension(app): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
-    uri: Uri,
-    RawQuery(raw_query_str_option): RawQuery,
+    _uri: Uri,
+    RawQuery(_raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
     debug!("Request for channels list for app_id: {}", app_id);
 
@@ -762,11 +748,6 @@ pub async fn channels(
         .as_deref()
         .unwrap_or("");
     let wants_user_count = query_params_specific.info.as_ref().wants_user_count();
-    let app = handler
-        .app_manager()
-        .find_by_id(&app_id)
-        .await?
-        .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
 
     let channels_map = handler
         .connection_manager()
@@ -816,14 +797,10 @@ pub async fn channels(
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
 pub async fn channel_users(
     Path((app_id, channel_name)): Path<(String, String)>,
-    Query(auth_q_params_struct): Query<EventQuery>,
+    Query(_auth_q_params_struct): Query<EventQuery>,
+    Extension(app): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
-    let app = handler
-        .app_manager()
-        .find_by_id(&app_id)
-        .await?
-        .ok_or_else(|| AppError::AppNotFound(app_id.clone()))?;
     debug!("Request for users in channel: {}", channel_name);
     validate_channel_name(&app, &channel_name).await?;
 
@@ -854,10 +831,11 @@ pub async fn channel_users(
 #[instrument(skip(handler), fields(app_id = %app_id, user_id = %user_id))]
 pub async fn terminate_user_connections(
     Path((app_id, user_id)): Path<(String, String)>,
-    Query(auth_q_params_struct): Query<EventQuery>,
+    Query(_auth_q_params_struct): Query<EventQuery>,
+    Extension(app): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
-    uri: Uri,
-    RawQuery(raw_query_str_option): RawQuery,
+    _uri: Uri,
+    RawQuery(_raw_query_str_option): RawQuery,
 ) -> Result<impl IntoResponse, AppError> {
     info!(
         "Received request to terminate user connections for user_id: {}",
@@ -866,7 +844,7 @@ pub async fn terminate_user_connections(
 
     handler
         .connection_manager()
-        .terminate_connection(&app_id, &user_id)
+        .terminate_connection(&app.id, &user_id)
         .await?;
 
     info!(
@@ -876,7 +854,7 @@ pub async fn terminate_user_connections(
 
     let response_payload = json!({ "ok": true });
     let response_size = sonic_rs::to_vec(&response_payload)?.len();
-    record_api_metrics(&handler, &app_id, 0, response_size).await;
+    record_api_metrics(&handler, &app.id, 0, response_size).await;
 
     Ok((StatusCode::OK, Json(response_payload)))
 }
