@@ -1098,6 +1098,10 @@ impl SockudoServer {
             router = router.route("/usage", get(usage));
         }
 
+        // Return plain text 404 for unmatched routes.
+        // Without this, Axum returns an empty-body 404 which nginx may serve as a file download.
+        router = router.fallback(fallback_404);
+
         router.with_state(self.handler.clone())
     }
 
