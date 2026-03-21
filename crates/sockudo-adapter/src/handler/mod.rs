@@ -203,6 +203,14 @@ impl ConnectionHandler {
         // Setup rate limiting if needed
         self.setup_rate_limiting(&socket_id, &app_config).await?;
 
+        // Get the cancellation token so the reader loop can be cancelled
+        // when the connection is cleaned up (e.g., ghost connection timeout)
+        let shutdown_token = self
+            .connection_manager
+            .get_connection(&socket_id, &app_config.id)
+            .await
+            .map(|conn| conn.cancellation_token());
+
         // Send connection established
         self.send_connection_established(&app_config.id, &socket_id)
             .await?;
@@ -212,7 +220,7 @@ impl ConnectionHandler {
 
         // Main message loop
         let result = self
-            .run_message_loop(socket_rx, &socket_id, &app_config)
+            .run_message_loop(socket_rx, &socket_id, &app_config, shutdown_token)
             .await;
 
         // Cleanup
@@ -303,8 +311,27 @@ impl ConnectionHandler {
         mut reader: WebSocketReader,
         socket_id: &SocketId,
         app_config: &App,
+        shutdown_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<()> {
-        while let Some(next) = reader.next().await {
+        loop {
+            let next = if let Some(ref token) = shutdown_token {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => {
+                        debug!("Reader loop for socket {} cancelled via shutdown token", socket_id);
+                        break;
+                    }
+                    msg = reader.next() => msg,
+                }
+            } else {
+                reader.next().await
+            };
+
+            let next = match next {
+                Some(n) => n,
+                None => break,
+            };
+
             let message = match next {
                 Ok(m) => m,
                 Err(e) => return Err(Error::WebSocket(e)),
