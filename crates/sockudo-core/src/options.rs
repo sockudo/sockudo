@@ -887,6 +887,7 @@ pub struct EventLimits {
 pub struct HttpApiConfig {
     pub request_limit_in_mb: u32,
     pub accept_traffic: AcceptTraffic,
+    pub usage_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1485,6 +1486,7 @@ impl Default for HttpApiConfig {
         Self {
             request_limit_in_mb: 10,
             accept_traffic: AcceptTraffic::default(),
+            usage_enabled: true,
         }
     }
 }
