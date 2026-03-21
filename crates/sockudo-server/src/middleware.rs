@@ -89,7 +89,7 @@ pub async fn pusher_api_auth_middleware(
     let auth_validator = AuthValidator::new(handler_state.app_manager().clone());
 
     match auth_validator
-        .validate_pusher_api_request(
+        .authenticate_pusher_api_request(
             &auth_q_params_struct,
             method.as_str(),
             &path,
@@ -98,17 +98,11 @@ pub async fn pusher_api_auth_middleware(
         )
         .await
     {
-        Ok(true) => {
+        Ok(app) => {
             tracing::debug!("Pusher API authentication successful for path: {}", path);
-            let request = HttpRequest::from_parts(parts, Body::from(body_bytes.clone()));
+            let mut request = HttpRequest::from_parts(parts, Body::from(body_bytes.clone()));
+            request.extensions_mut().insert(app);
             Ok(next.run(request).await)
-        }
-        Ok(false) => {
-            tracing::warn!(
-                "Pusher API authentication failed (validator returned false) for path: {}",
-                path
-            );
-            Err(AppError::ApiAuthFailed("Invalid API signature".to_string()))
         }
         Err(e) => {
             tracing::warn!(

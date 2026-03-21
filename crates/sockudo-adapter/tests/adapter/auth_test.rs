@@ -17,10 +17,16 @@ use crate::mocks::connection_handler_mock::{
 
 async fn create_test_app_manager() -> Arc<dyn AppManager> {
     let manager = MemoryAppManager::new();
-    let app = App {
-        id: "test-app-id".to_string(),
-        key: "test-app-key".to_string(),
-        secret: "test-app-secret".to_string(),
+    let app = test_app("test-app-id", "test-app-key", "test-app-secret");
+    manager.create_app(app).await.unwrap();
+    Arc::new(manager)
+}
+
+fn test_app(id: &str, key: &str, secret: &str) -> App {
+    App {
+        id: id.to_string(),
+        key: key.to_string(),
+        secret: secret.to_string(),
         max_connections: 1000,
         enable_client_messages: true,
         enabled: true,
@@ -39,8 +45,23 @@ async fn create_test_app_manager() -> Arc<dyn AppManager> {
         enable_watchlist_events: None,
         allowed_origins: None,
         channel_delta_compression: None,
-    };
-    manager.create_app(app).await.unwrap();
+    }
+}
+
+async fn create_multi_app_manager() -> Arc<dyn AppManager> {
+    let manager = MemoryAppManager::new();
+    manager
+        .create_app(test_app("test-app-id", "test-app-key", "test-app-secret"))
+        .await
+        .unwrap();
+    manager
+        .create_app(test_app(
+            "other-app-id",
+            "other-app-key",
+            "other-app-secret",
+        ))
+        .await
+        .unwrap();
     Arc::new(manager)
 }
 
@@ -399,6 +420,47 @@ async fn test_api_auth_invalid_signature() {
 }
 
 #[tokio::test]
+async fn test_api_auth_rejects_route_app_id_mismatch() {
+    let app_manager = create_multi_app_manager().await;
+    let auth_validator = AuthValidator::new(app_manager);
+
+    let current_timestamp = Utc::now().timestamp().to_string();
+    let mut query_params = BTreeMap::new();
+    query_params.insert("auth_key".to_string(), "test-app-key".to_string());
+    query_params.insert("auth_timestamp".to_string(), current_timestamp.clone());
+    query_params.insert("auth_version".to_string(), "1.0".to_string());
+
+    let request_path = "/apps/other-app-id/events";
+    let signature = generate_valid_signature(
+        "test-app-key",
+        "test-app-secret",
+        "GET",
+        request_path,
+        &query_params,
+    );
+
+    let auth_query = EventQuery {
+        auth_key: "test-app-key".to_string(),
+        auth_timestamp: current_timestamp,
+        auth_version: "1.0".to_string(),
+        body_md5: "".to_string(),
+        auth_signature: signature,
+    };
+
+    let result = auth_validator
+        .validate_pusher_api_request(&auth_query, "GET", request_path, &query_params, None)
+        .await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        Error::Auth(msg) => {
+            assert!(msg.contains("does not match route app_id"));
+        }
+        _ => panic!("Expected Auth error for mismatched route app_id"),
+    }
+}
+
+#[tokio::test]
 async fn test_api_auth_post_with_body_md5() {
     let app_manager = create_test_app_manager().await;
     let auth_validator = AuthValidator::new(app_manager);
@@ -490,29 +552,7 @@ async fn test_sign_in_token_generation() {
 
     let socket_id = "12345.67890";
     let user_data = "test-user-data";
-    let app_config = App {
-        id: "test-app-id".to_string(),
-        key: "test-key".to_string(),
-        secret: "test-secret".to_string(),
-        max_connections: 1000,
-        enable_client_messages: true,
-        enabled: true,
-        max_backend_events_per_second: Some(1000),
-        max_client_events_per_second: 100,
-        max_read_requests_per_second: Some(1000),
-        max_presence_members_per_channel: None,
-        max_presence_member_size_in_kb: None,
-        max_channel_name_length: None,
-        max_event_channels_at_once: None,
-        max_event_name_length: None,
-        max_event_payload_in_kb: None,
-        max_event_batch_size: None,
-        enable_user_authentication: None,
-        webhooks: Some(vec![]),
-        enable_watchlist_events: None,
-        allowed_origins: None,
-        channel_delta_compression: None,
-    };
+    let app_config = test_app("test-app-id", "test-key", "test-secret");
 
     let signature =
         auth_validator.sign_in_token_for_user_data(socket_id, user_data, app_config.clone());
