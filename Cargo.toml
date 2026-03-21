@@ -41,12 +41,34 @@ async-trait = "0.1.89"
 ahash = { version = "0.8.12", features = ["serde"] }
 axum = { version = "^0.8", features = ["ws"] }
 axum-extra = { version = "^0.12", features = ["typed-header"] }
-axum-server = { version = "^0.7", features = ["tls-rustls"] }
-aws-config = { version = "^1.8.10", features = ["behavior-version-latest"] }
-aws-sdk-dynamodb = "1.98.0"
-aws-sdk-lambda = "1.104.0"
-aws-sdk-sns = "1.89.0"
-aws-sdk-sqs = "1.89.0"
+axum-server = { version = "^0.8", features = ["tls-rustls"] }
+aws-config = { version = "^1.8.10", default-features = false, features = [
+  "behavior-version-latest",
+  "credentials-process",
+  "default-https-client",
+  "rt-tokio",
+  "sso",
+] }
+aws-sdk-dynamodb = { version = "1.98.0", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-lambda = { version = "1.104.0", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-sns = { version = "1.89.0", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-sqs = { version = "1.89.0", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+] }
 async-nats = "^0.45"
 base64 = "0.22"
 bytes = "1.10"
