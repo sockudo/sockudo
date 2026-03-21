@@ -1008,11 +1008,14 @@ impl SockudoServer {
                     pusher_api_auth_middleware,
                 )),
             )
-            .route("/usage", get(usage))
             .route("/up", get(up))
             .route("/up/{appId}", get(up))
             .layer(DefaultBodyLimit::max(body_limit_bytes))
             .layer(cors);
+
+        if self.config.http_api.usage_enabled {
+            router = router.route("/usage", get(usage));
+        }
 
         // Apply rate limiter middleware if it was created
         if let Some(middleware) = rate_limiter_middleware_layer {

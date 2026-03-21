@@ -67,6 +67,10 @@ config:
     idleTimeout: 120
     compression: disabled
 
+  # -- HTTP API settings
+  httpApi:
+    usageEnabled: true
+
   # -- Rate limiter settings
   rateLimiter:
     enabled: true

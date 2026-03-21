@@ -887,6 +887,7 @@ pub struct EventLimits {
 pub struct HttpApiConfig {
     pub request_limit_in_mb: u32,
     pub accept_traffic: AcceptTraffic,
+    pub usage_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1485,6 +1486,7 @@ impl Default for HttpApiConfig {
         Self {
             request_limit_in_mb: 10,
             accept_traffic: AcceptTraffic::default(),
+            usage_enabled: true,
         }
     }
 }
@@ -1931,6 +1933,10 @@ impl ServerOptions {
         if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
             self.metrics.prometheus.prefix = val;
         }
+
+        // --- HTTP API ---
+        self.http_api.usage_enabled =
+            parse_bool_env("HTTP_API_USAGE_ENABLED", self.http_api.usage_enabled);
 
         // --- Rate Limiter ---
         self.rate_limiter.enabled =
