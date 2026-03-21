@@ -1022,6 +1022,17 @@ pub async fn up(
     Ok(response_val)
 }
 
+/// Fallback handler for unmatched routes.
+/// Returns a plain text 404.
+pub async fn fallback_404(uri: Uri) -> impl IntoResponse {
+    debug!("No route matched for: {}", uri);
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "text/plain")],
+        "404 NOT FOUND",
+    )
+}
+
 /// GET /metrics (Prometheus format)
 #[instrument(skip(handler), fields(service = "metrics_exporter"))]
 pub async fn metrics(
