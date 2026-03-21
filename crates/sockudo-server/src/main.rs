@@ -1014,6 +1014,10 @@ impl SockudoServer {
             .layer(DefaultBodyLimit::max(body_limit_bytes))
             .layer(cors);
 
+        // Return plain text 404 for unmatched routes.
+        // Without this, Axum returns an empty-body 404 which nginx may serve as a file download.
+        router = router.fallback(fallback_404);
+
         // Apply rate limiter middleware if it was created
         if let Some(middleware) = rate_limiter_middleware_layer {
             router = router.layer(middleware);
