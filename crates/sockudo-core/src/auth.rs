@@ -47,6 +47,16 @@ impl AuthValidator {
         AuthValidator { app_manager }
     }
 
+    fn route_app_id_from_path(request_path: &str) -> Option<&str> {
+        let mut segments = request_path
+            .split('/')
+            .filter(|segment| !segment.is_empty());
+        match (segments.next(), segments.next()) {
+            (Some("apps"), Some(app_id)) if !app_id.is_empty() => Some(app_id),
+            _ => None,
+        }
+    }
+
     pub async fn validate_channel_auth(
         &self,
         socket_id: SocketId,
@@ -63,22 +73,14 @@ impl AuthValidator {
         Ok(is_valid)
     }
 
-    /// Validates a Pusher-compatible API request signature.
-    ///
-    /// - `auth_params_from_query_struct`: Parsed essential authentication query parameters (auth_key, auth_timestamp, auth_signature).
-    /// - `http_method`: The HTTP method (e.g., "GET", "POST").
-    /// - `request_path`: The full request path (e.g., "/apps/your_app_id/events").
-    /// - `all_query_params_from_url`: A map of ALL query parameters from the request URL, excluding `auth_signature`.
-    /// - `request_body_bytes_for_md5_check`: Raw body bytes for POST MD5 check. For GET, this is None.
-    pub async fn validate_pusher_api_request(
+    pub async fn authenticate_pusher_api_request(
         &self,
         auth_params_from_query_struct: &EventQuery,
         http_method: &str,
         request_path: &str,
         all_query_params_from_url: &BTreeMap<String, String>,
         request_body_bytes_for_md5_check: Option<&[u8]>,
-    ) -> Result<bool, Error> {
-        // Fetch app using auth_key from the parsed EventQuery struct
+    ) -> Result<App, Error> {
         let app = self
             .app_manager
             .find_by_key(&auth_params_from_query_struct.auth_key)
@@ -92,6 +94,19 @@ impl AuthValidator {
             return Err(Error::InvalidAppKey);
         }
         let app_config = app.unwrap();
+
+        if let Some(route_app_id) = Self::route_app_id_from_path(request_path)
+            && route_app_id != app_config.id
+        {
+            debug!(
+                authenticated_app_id = %app_config.id,
+                route_app_id = %route_app_id,
+                "Authenticated app did not match route app id"
+            );
+            return Err(Error::Auth(
+                "Authenticated app does not match route app_id".to_string(),
+            ));
+        }
 
         // --- Timestamp Validation ---
         let auth_ts_str = &auth_params_from_query_struct.auth_timestamp;
@@ -109,7 +124,6 @@ impl AuthValidator {
 
         let current_ts = Utc::now().timestamp();
         if (current_ts - auth_ts).abs() > 600 {
-            // 600 seconds = 10 minutes
             debug!(
                 "Timestamp validation failed. Server time: {}, Provided timestamp: {}, Difference: {}s",
                 current_ts,
@@ -121,19 +135,14 @@ impl AuthValidator {
             ));
         }
 
-        // --- Prepare parameters for signing string construction ---
-        // Start with all query parameters received in the URL (excluding auth_signature)
-        // Convert keys to lowercase before sorting to ensure case-insensitive alphabetical order
         let mut params_for_signing_string: BTreeMap<String, String> = BTreeMap::new();
         for (key, value) in all_query_params_from_url {
             params_for_signing_string.insert(key.to_lowercase(), value.clone());
         }
 
-        // --- body_md5 validation and inclusion in signature params ---
         let uppercased_http_method = http_method.to_uppercase();
         if uppercased_http_method == "POST" {
             if let Some(body_bytes) = request_body_bytes_for_md5_check {
-                // POST with a non-empty body
                 match params_for_signing_string.get("body_md5") {
                     Some(body_md5_from_query) if !body_md5_from_query.is_empty() => {
                         let actual_body_md5 = format!("{:x}", md5::compute(body_bytes));
@@ -144,10 +153,8 @@ impl AuthValidator {
                             );
                             return Err(Error::Auth("body_md5 mismatch".to_string()));
                         }
-                        // body_md5 is valid and already in params_for_signing_string
                     }
                     _ => {
-                        // body_md5 is missing or empty in query, but POST body is non-empty
                         debug!(
                             "POST request has a non-empty body, but 'body_md5' is missing or empty in query parameters."
                         );
@@ -156,36 +163,25 @@ impl AuthValidator {
                         ));
                     }
                 }
-            } else {
-                // POST with an empty body
-                if params_for_signing_string.contains_key("body_md5") {
-                    debug!(
-                        "POST request has an empty body, but 'body_md5' was found in query parameters."
-                    );
-                    return Err(Error::Auth(
-                        "body_md5 must not be present in query parameters for POST requests with an empty body"
-                            .to_string(),
-                    ));
-                }
-                // No body_md5 to include for empty body POST
-            }
-        } else {
-            // For GET requests (or other methods that are not POST)
-            if params_for_signing_string.contains_key("body_md5") {
+            } else if params_for_signing_string.contains_key("body_md5") {
                 debug!(
-                    "{} request should not contain 'body_md5' in query parameters.",
-                    uppercased_http_method
+                    "POST request has an empty body, but 'body_md5' was found in query parameters."
                 );
-                return Err(Error::Auth(format!(
-                    "body_md5 must not be present in query parameters for {uppercased_http_method} requests"
-                )));
+                return Err(Error::Auth(
+                    "body_md5 must not be present in query parameters for POST requests with an empty body"
+                        .to_string(),
+                ));
             }
-            // No body_md5 to include for GET
+        } else if params_for_signing_string.contains_key("body_md5") {
+            debug!(
+                "{} request should not contain 'body_md5' in query parameters.",
+                uppercased_http_method
+            );
+            return Err(Error::Auth(format!(
+                "body_md5 must not be present in query parameters for {uppercased_http_method} requests"
+            )));
         }
 
-        // --- Construct the string to sign ---
-        // BTreeMap iterates in key-sorted order.
-        // Keys are already lowercased when inserted into the map.
         let mut sorted_params_kv_pairs: Vec<String> = Vec::new();
         for (key, value) in &params_for_signing_string {
             sorted_params_kv_pairs.push(format!("{}={}", key, value));
@@ -209,10 +205,36 @@ impl AuthValidator {
             &generated_signature,
             &auth_params_from_query_struct.auth_signature,
         ) {
-            Ok(true)
+            Ok(app_config)
         } else {
             Err(Error::Auth("Invalid API signature".to_string()))
         }
+    }
+
+    /// Validates a Pusher-compatible API request signature.
+    ///
+    /// - `auth_params_from_query_struct`: Parsed essential authentication query parameters (auth_key, auth_timestamp, auth_signature).
+    /// - `http_method`: The HTTP method (e.g., "GET", "POST").
+    /// - `request_path`: The full request path (e.g., "/apps/your_app_id/events").
+    /// - `all_query_params_from_url`: A map of ALL query parameters from the request URL, excluding `auth_signature`.
+    /// - `request_body_bytes_for_md5_check`: Raw body bytes for POST MD5 check. For GET, this is None.
+    pub async fn validate_pusher_api_request(
+        &self,
+        auth_params_from_query_struct: &EventQuery,
+        http_method: &str,
+        request_path: &str,
+        all_query_params_from_url: &BTreeMap<String, String>,
+        request_body_bytes_for_md5_check: Option<&[u8]>,
+    ) -> Result<bool, Error> {
+        self.authenticate_pusher_api_request(
+            auth_params_from_query_struct,
+            http_method,
+            request_path,
+            all_query_params_from_url,
+            request_body_bytes_for_md5_check,
+        )
+        .await
+        .map(|_| true)
     }
 
     pub fn sign_in_token_is_valid(
