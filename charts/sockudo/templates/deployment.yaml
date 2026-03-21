@@ -95,6 +95,9 @@ spec:
               value: {{ .Values.config.queueDriver | quote }}
             - name: RATE_LIMITER_DRIVER
               value: {{ .Values.config.rateLimiterDriver | quote }}
+            # HTTP API
+            - name: HTTP_API_USAGE_ENABLED
+              value: {{ .Values.config.httpApi.usageEnabled | quote }}
             # Rate limiter
             - name: RATE_LIMITER_ENABLED
               value: {{ .Values.config.rateLimiter.enabled | quote }}

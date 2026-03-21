@@ -28,6 +28,9 @@ data:
       "queue": {
         "driver": {{ .Values.config.queueDriver | quote }}
       },
+      "http_api": {
+        "usage_enabled": {{ .Values.config.httpApi.usageEnabled }}
+      },
       "rate_limiter": {
         "enabled": {{ .Values.config.rateLimiter.enabled }},
         "driver": {{ .Values.config.rateLimiterDriver | quote }}
