@@ -1934,6 +1934,10 @@ impl ServerOptions {
             self.metrics.prometheus.prefix = val;
         }
 
+        // --- HTTP API ---
+        self.http_api.usage_enabled =
+            parse_bool_env("HTTP_API_USAGE_ENABLED", self.http_api.usage_enabled);
+
         // --- Rate Limiter ---
         self.rate_limiter.enabled =
             parse_bool_env("RATE_LIMITER_ENABLED", self.rate_limiter.enabled);
