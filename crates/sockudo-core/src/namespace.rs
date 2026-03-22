@@ -189,13 +189,10 @@ impl Namespace {
             .collect();
 
         for channel_name in channels_to_check {
-            if let Some(socket_set) = self.channels.get(&channel_name) {
-                socket_set.remove(&socket_id);
-                if socket_set.is_empty() {
-                    self.channels
-                        .remove_if(&channel_name, |_, set| set.is_empty());
-                }
-            }
+            self.channels.remove_if(&channel_name, |_, set| {
+                set.remove(&socket_id);
+                set.is_empty()
+            });
         }
 
         let user_id_option = ws_ref.get_user_id().await;
