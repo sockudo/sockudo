@@ -50,6 +50,7 @@ use sockudo_core::error::Result;
 
 use crate::ws_handler::handle_ws_upgrade;
 use sockudo_core::options::{QueueDriver, ServerOptions};
+use sockudo_core::origin_validation::OriginValidator;
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_queue::QueueManagerFactory;
 use sockudo_rate_limiter::factory::RateLimiterFactory;
@@ -920,9 +921,12 @@ impl SockudoServer {
                     .collect::<Vec<_>>(),
             );
 
-        let use_allow_origin_any = self.config.cors.origin.contains(&"*".to_string())
-            || self.config.cors.origin.contains(&"Any".to_string())
-            || self.config.cors.origin.contains(&"any".to_string());
+        let use_allow_origin_any = self
+            .config
+            .cors
+            .origin
+            .iter()
+            .any(|s| s == "*" || s.eq_ignore_ascii_case("any"));
 
         if use_allow_origin_any {
             cors_builder = cors_builder.allow_origin(AllowOrigin::any());
@@ -938,17 +942,14 @@ impl SockudoServer {
                 );
             }
         } else if !self.config.cors.origin.is_empty() {
-            let origins = self
-                .config
-                .cors
-                .origin
-                .iter()
-                .map(|s| {
-                    s.parse::<HeaderValue>()
-                        .expect("Failed to parse CORS origin")
-                })
-                .collect::<Vec<_>>();
-            cors_builder = cors_builder.allow_origin(AllowOrigin::list(origins));
+            let allowed_origins = self.config.cors.origin.clone();
+            cors_builder = cors_builder.allow_origin(AllowOrigin::predicate(
+                move |origin: &HeaderValue, _parts: &http::request::Parts| {
+                    origin.to_str().is_ok_and(|origin_str| {
+                        OriginValidator::validate_origin(origin_str, &allowed_origins)
+                    })
+                },
+            ));
             cors_builder = cors_builder.allow_credentials(self.config.cors.credentials);
         } else {
             warn!(
