@@ -1,10 +1,17 @@
 use async_trait::async_trait;
-use dashmap::DashMap;
 use sockudo_core::app::{App, AppManager};
 use sockudo_core::error::Result;
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+#[derive(Default)]
+struct MemoryAppState {
+    apps_by_id: HashMap<String, App>,
+    app_id_by_key: HashMap<String, String>,
+}
 
 pub struct MemoryAppManager {
-    apps: DashMap<String, App>,
+    state: RwLock<MemoryAppState>,
 }
 
 impl Default for MemoryAppManager {
@@ -16,7 +23,7 @@ impl Default for MemoryAppManager {
 impl MemoryAppManager {
     pub fn new() -> Self {
         Self {
-            apps: DashMap::new(),
+            state: RwLock::new(MemoryAppState::default()),
         }
     }
 }
@@ -28,39 +35,52 @@ impl AppManager for MemoryAppManager {
     }
 
     async fn create_app(&self, config: App) -> Result<()> {
-        self.apps.insert(config.id.clone(), config);
+        let mut state = self.state.write().unwrap();
+        if let Some(previous) = state.apps_by_id.insert(config.id.clone(), config.clone()) {
+            state.app_id_by_key.remove(&previous.key);
+        }
+        state
+            .app_id_by_key
+            .insert(config.key.clone(), config.id.clone());
         Ok(())
     }
 
     async fn update_app(&self, config: App) -> Result<()> {
-        self.apps.insert(config.id.clone(), config);
+        let mut state = self.state.write().unwrap();
+        if let Some(previous) = state.apps_by_id.insert(config.id.clone(), config.clone()) {
+            state.app_id_by_key.remove(&previous.key);
+        }
+        state
+            .app_id_by_key
+            .insert(config.key.clone(), config.id.clone());
         Ok(())
     }
 
     async fn delete_app(&self, app_id: &str) -> Result<()> {
-        self.apps.remove(app_id);
+        let mut state = self.state.write().unwrap();
+        if let Some(previous) = state.apps_by_id.remove(app_id) {
+            state.app_id_by_key.remove(&previous.key);
+        }
         Ok(())
     }
 
     async fn get_apps(&self) -> Result<Vec<App>> {
-        let apps = self
-            .apps
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect();
-        Ok(apps)
+        let state = self.state.read().unwrap();
+        Ok(state.apps_by_id.values().cloned().collect())
     }
+
     async fn find_by_key(&self, key: &str) -> Result<Option<App>> {
-        let app = self
-            .apps
-            .iter()
-            .find(|app| app.key == key)
-            .map(|app| app.clone());
-        Ok(app)
+        let state = self.state.read().unwrap();
+        Ok(state
+            .app_id_by_key
+            .get(key)
+            .and_then(|app_id| state.apps_by_id.get(app_id))
+            .cloned())
     }
 
     async fn find_by_id(&self, app_id: &str) -> Result<Option<App>> {
-        Ok(self.apps.get(app_id).map(|app| app.clone()))
+        let state = self.state.read().unwrap();
+        Ok(state.apps_by_id.get(app_id).cloned())
     }
 
     async fn check_health(&self) -> Result<()> {
