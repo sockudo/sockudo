@@ -13,7 +13,6 @@ use tracing::{debug, error};
 pub struct RedisQueueManager {
     redis_client: redis::Client,
     redis_connection: ConnectionManager,
-    job_processors: dashmap::DashMap<String, ArcJobProcessorFn, ahash::RandomState>,
     prefix: String,
     concurrency: usize,
 }
@@ -33,7 +32,6 @@ impl RedisQueueManager {
         Ok(Self {
             redis_client: client,
             redis_connection: connection,
-            job_processors: dashmap::DashMap::with_hasher(ahash::RandomState::new()),
             prefix: prefix.to_string(),
             concurrency,
         })
@@ -157,8 +155,6 @@ impl QueueInterface for RedisQueueManager {
         let queue_key = self.format_key(queue_name).await;
         let processor_arc: ArcJobProcessorFn = Arc::from(callback);
 
-        self.job_processors
-            .insert(queue_name.to_string(), processor_arc.clone());
         debug!(
             "{}",
             format!(

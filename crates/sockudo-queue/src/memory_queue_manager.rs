@@ -1,9 +1,12 @@
 use crate::ArcJobProcessorFn;
+use ahash::AHashMap as HashMap;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use sockudo_core::queue::QueueInterface;
 use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -12,8 +15,8 @@ const MAX_QUEUE_SIZE: usize = 100_000;
 
 /// Memory-based queue manager for simple deployments
 pub struct MemoryQueueManager {
-    queues: Arc<DashMap<String, Vec<JobData>, ahash::RandomState>>,
-    processors: Arc<DashMap<String, ArcJobProcessorFn, ahash::RandomState>>,
+    queues: Arc<DashMap<String, VecDeque<JobData>, ahash::RandomState>>,
+    processors: Arc<RwLock<HashMap<String, ArcJobProcessorFn>>>,
 }
 
 impl Default for MemoryQueueManager {
@@ -25,7 +28,7 @@ impl Default for MemoryQueueManager {
 impl MemoryQueueManager {
     pub fn new() -> Self {
         let queues = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
-        let processors = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        let processors = Arc::new(RwLock::new(HashMap::new()));
 
         Self { queues, processors }
     }
@@ -43,35 +46,37 @@ impl MemoryQueueManager {
             loop {
                 interval.tick().await;
 
-                let queue_names: Vec<String> = queues
-                    .iter()
-                    .map(|entry| entry.key().clone())
-                    .filter(|name| processors.contains_key(name))
-                    .collect();
+                let queue_names: Vec<String> =
+                    queues.iter().map(|entry| entry.key().clone()).collect();
 
                 for queue_name in queue_names {
-                    if let Some(processor) = processors.get(&queue_name)
-                        && let Some((key, mut jobs_vec)) = queues.remove(&queue_name)
+                    let processor = {
+                        let processors_guard = processors.read().unwrap();
+                        processors_guard.get(&queue_name).cloned()
+                    };
+
+                    if let Some(processor) = processor
+                        && let Some(mut jobs_queue) = queues.get_mut(&queue_name)
                     {
-                        if !jobs_vec.is_empty() {
-                            debug!(
-                                "Processing {} jobs from memory queue {}",
-                                jobs_vec.len(),
-                                key
-                            );
+                        if jobs_queue.is_empty() {
+                            continue;
+                        }
 
-                            queues.insert(key, Vec::new());
+                        let jobs: Vec<JobData> = jobs_queue.drain(..).collect();
+                        debug!(
+                            "Processing {} jobs from memory queue {}",
+                            jobs.len(),
+                            queue_name
+                        );
+                        drop(jobs_queue);
 
-                            for job in jobs_vec.drain(..) {
-                                let processor_clone = Arc::clone(&processor);
-                                tokio::spawn(async move {
-                                    if let Err(e) = processor_clone(job).await {
-                                        tracing::error!("Failed to process webhook job: {}", e);
-                                    }
-                                });
-                            }
-                        } else {
-                            queues.insert(key, jobs_vec);
+                        for job in jobs {
+                            let processor_clone = processor.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = processor_clone(job).await {
+                                    tracing::error!("Failed to process webhook job: {}", e);
+                                }
+                            });
                         }
                     }
                 }
@@ -95,10 +100,12 @@ impl QueueInterface for MemoryQueueManager {
                 "Memory queue '{}' at capacity ({}), dropping {} oldest job(s)",
                 queue_name, MAX_QUEUE_SIZE, to_remove
             );
-            queue.drain(0..to_remove);
+            for _ in 0..to_remove {
+                queue.pop_front();
+            }
         }
 
-        queue.push(data);
+        queue.push_back(data);
         Ok(())
     }
 
@@ -108,6 +115,8 @@ impl QueueInterface for MemoryQueueManager {
         callback: JobProcessorFnAsync,
     ) -> sockudo_core::error::Result<()> {
         self.processors
+            .write()
+            .unwrap()
             .insert(queue_name.to_string(), Arc::from(callback));
         debug!("Registered processor for memory queue: {}", queue_name);
 
@@ -116,6 +125,7 @@ impl QueueInterface for MemoryQueueManager {
 
     async fn disconnect(&self) -> sockudo_core::error::Result<()> {
         self.queues.clear();
+        self.processors.write().unwrap().clear();
         Ok(())
     }
 
