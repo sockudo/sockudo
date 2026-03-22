@@ -81,4 +81,74 @@ mod cors_specific_case_tests {
             &allowed_origins
         ));
     }
+
+    #[test]
+    fn test_cors_config_wildcard_origins() {
+        // Simulates patterns that would appear in cors.origin config
+        let allowed = vec![
+            "*.sockudo.io".to_string(),
+            "https://exact.example.com".to_string(),
+        ];
+
+        // Wildcard subdomain matching
+        assert!(OriginValidator::validate_origin(
+            "https://beta.sockudo.io",
+            &allowed
+        ));
+        assert!(OriginValidator::validate_origin(
+            "https://app.sockudo.io",
+            &allowed
+        ));
+        assert!(OriginValidator::validate_origin(
+            "http://staging.sockudo.io",
+            &allowed
+        ));
+
+        // Exact match
+        assert!(OriginValidator::validate_origin(
+            "https://exact.example.com",
+            &allowed
+        ));
+
+        // Non-matching origins rejected
+        assert!(!OriginValidator::validate_origin(
+            "https://evil.com",
+            &allowed
+        ));
+        assert!(!OriginValidator::validate_origin(
+            "https://notsockudo.io",
+            &allowed
+        ));
+    }
+
+    #[test]
+    fn test_cors_and_app_origins_behave_identically() {
+        // The same origin list should produce the same results
+        // whether used in cors.origin or app.allowed_origins
+        let origins = vec![
+            "*.example.com".to_string(),
+            "https://specific.other.com".to_string(),
+            "localhost:3000".to_string(),
+        ];
+
+        let test_cases = vec![
+            ("https://app.example.com", true),
+            ("http://sub.example.com", true),
+            ("https://specific.other.com", true),
+            ("http://specific.other.com", false),
+            ("http://localhost:3000", true),
+            ("https://localhost:3000", true),
+            ("https://evil.com", false),
+        ];
+
+        for (origin, expected) in test_cases {
+            assert_eq!(
+                OriginValidator::validate_origin(origin, &origins),
+                expected,
+                "Origin '{}' should be {}",
+                origin,
+                if expected { "allowed" } else { "rejected" }
+            );
+        }
+    }
 }

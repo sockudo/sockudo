@@ -54,8 +54,8 @@ impl OriginValidator {
             return Err("pattern cannot be empty".to_string());
         }
 
-        // Allow wildcard-only pattern
-        if pattern == "*" {
+        // Allow wildcard and "any" markers
+        if pattern == "*" || pattern.eq_ignore_ascii_case("any") {
             return Ok(());
         }
 
@@ -115,7 +115,7 @@ impl OriginValidator {
         let origin_lower = origin.to_lowercase();
 
         for allowed in allowed_origins {
-            if allowed == "*" {
+            if allowed == "*" || allowed.eq_ignore_ascii_case("any") {
                 debug!("Wildcard origin configured, allowing all origins");
                 return true;
             }
