@@ -3,8 +3,8 @@ use dashmap::DashMap;
 use sockudo_core::error::Result;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct WatchlistEntry {
@@ -13,11 +13,16 @@ pub struct WatchlistEntry {
     pub watching: HashSet<String>, // Users this user is watching
 }
 
+#[derive(Default)]
+struct AppWatchlistState {
+    watchlists: HashMap<String, WatchlistEntry>,
+    online_users: HashMap<String, HashSet<SocketId>>,
+}
+
 pub struct WatchlistManager {
-    // Map: app_id -> user_id -> WatchlistEntry
-    watchlists: Arc<DashMap<String, DashMap<String, WatchlistEntry>>>,
-    // Map: app_id -> user_id -> Set<socket_ids>
-    online_users: Arc<DashMap<String, DashMap<String, HashSet<SocketId>>>>,
+    // Keep app-level sharding concurrent while serializing the multi-map updates
+    // required to maintain watchlist relationships within a single app.
+    apps: Arc<DashMap<String, Arc<Mutex<AppWatchlistState>>>>,
 }
 
 impl Default for WatchlistManager {
@@ -29,9 +34,15 @@ impl Default for WatchlistManager {
 impl WatchlistManager {
     pub fn new() -> Self {
         Self {
-            watchlists: Arc::new(DashMap::new()),
-            online_users: Arc::new(DashMap::new()),
+            apps: Arc::new(DashMap::new()),
         }
+    }
+
+    fn app_state(&self, app_id: &str) -> Arc<Mutex<AppWatchlistState>> {
+        self.apps
+            .entry(app_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(AppWatchlistState::default())))
+            .clone()
     }
 
     /// Add a user with their watchlist
@@ -43,43 +54,46 @@ impl WatchlistManager {
         watchlist: Option<Vec<String>>,
     ) -> Result<Vec<PusherMessage>> {
         let mut events_to_send = Vec::new();
+        let app_state = self.app_state(app_id);
+        let mut state = app_state.lock().unwrap();
 
-        // Initialize app-level maps if they don't exist
-        if !self.watchlists.contains_key(app_id) {
-            self.watchlists.insert(app_id.to_string(), DashMap::new());
-        }
-        if !self.online_users.contains_key(app_id) {
-            self.online_users.insert(app_id.to_string(), DashMap::new());
-        }
-
-        let app_watchlists = self.watchlists.get(app_id).unwrap();
-        let app_online_users = self.online_users.get(app_id).unwrap();
-
-        // Track this socket as online for the user
         let was_offline = {
-            let mut user_sockets = app_online_users.entry(user_id.to_string()).or_default();
+            let user_sockets = state.online_users.entry(user_id.to_string()).or_default();
             let was_empty = user_sockets.is_empty();
             user_sockets.insert(socket_id);
             was_empty
         };
 
-        // Update watchlist relationships
         if let Some(watchlist_vec) = watchlist {
             let watching_set: HashSet<String> = watchlist_vec.into_iter().collect();
+            let previous_watching = state
+                .watchlists
+                .get(user_id)
+                .map(|entry| entry.watching.clone())
+                .unwrap_or_default();
 
-            // Update this user's entry
-            let mut user_entry = app_watchlists
-                .entry(user_id.to_string())
-                .or_insert_with(|| WatchlistEntry {
-                    user_id: user_id.to_string(),
-                    watchers: HashSet::new(),
-                    watching: watching_set.clone(),
-                });
-            user_entry.watching = watching_set.clone();
+            for removed_user_id in previous_watching.difference(&watching_set) {
+                if let Some(removed_entry) = state.watchlists.get_mut(removed_user_id) {
+                    removed_entry.watchers.remove(user_id);
+                }
+            }
 
-            // Update reverse relationships (add this user as a watcher)
+            let user_watchers = {
+                let user_entry = state
+                    .watchlists
+                    .entry(user_id.to_string())
+                    .or_insert_with(|| WatchlistEntry {
+                        user_id: user_id.to_string(),
+                        watchers: HashSet::new(),
+                        watching: watching_set.clone(),
+                    });
+                user_entry.watching = watching_set.clone();
+                user_entry.watchers.clone()
+            };
+
             for watched_user_id in &watching_set {
-                let mut watched_entry = app_watchlists
+                let watched_entry = state
+                    .watchlists
                     .entry(watched_user_id.clone())
                     .or_insert_with(|| WatchlistEntry {
                         user_id: watched_user_id.clone(),
@@ -89,23 +103,23 @@ impl WatchlistManager {
                 watched_entry.watchers.insert(user_id.to_string());
             }
 
-            // If user just came online, notify their watchers
-            if was_offline && let Some(user_entry) = app_watchlists.get(user_id) {
-                for _ in &user_entry.watchers {
+            if was_offline {
+                for _ in &user_watchers {
                     events_to_send.push(PusherMessage::watchlist_online_event(vec![
                         user_id.to_string(),
                     ]));
                 }
             }
 
-            // Send current online status of watched users to this user
             let mut online_watched_users = Vec::new();
             let mut offline_watched_users = Vec::new();
 
             for watched_user_id in &watching_set {
-                if app_online_users.contains_key(watched_user_id)
-                    && !app_online_users.get(watched_user_id).unwrap().is_empty()
-                {
+                let is_online = state
+                    .online_users
+                    .get(watched_user_id)
+                    .is_some_and(|sockets| !sockets.is_empty());
+                if is_online {
                     online_watched_users.push(watched_user_id.clone());
                 } else {
                     offline_watched_users.push(watched_user_id.clone());
@@ -133,21 +147,17 @@ impl WatchlistManager {
         socket_id: &SocketId,
     ) -> Result<Vec<PusherMessage>> {
         let mut events_to_send = Vec::new();
+        let Some(app_state) = self.apps.get(app_id).map(|entry| entry.value().clone()) else {
+            return Ok(events_to_send);
+        };
+        let mut state = app_state.lock().unwrap();
+
         let mut should_cleanup_user = false;
-
-        if let Some(app_online_users) = self.online_users.get(app_id)
-            && let Some(mut user_sockets) = app_online_users.get_mut(user_id)
-        {
+        if let Some(user_sockets) = state.online_users.get_mut(user_id) {
             user_sockets.remove(socket_id);
-
-            // If user has no more connections, they're offline
             if user_sockets.is_empty() {
                 should_cleanup_user = true;
-
-                // Notify watchers that this user went offline
-                if let Some(app_watchlists) = self.watchlists.get(app_id)
-                    && let Some(user_entry) = app_watchlists.get(user_id)
-                {
+                if let Some(user_entry) = state.watchlists.get(user_id) {
                     for _ in &user_entry.watchers {
                         events_to_send.push(PusherMessage::watchlist_offline_event(vec![
                             user_id.to_string(),
@@ -157,30 +167,15 @@ impl WatchlistManager {
             }
         }
 
-        // MEMORY LEAK FIX: Clean up empty entries outside the borrow scope
         if should_cleanup_user {
-            // Remove the empty user entry from online_users
-            if let Some(app_online_users) = self.online_users.get(app_id) {
-                app_online_users.remove(user_id);
-            }
+            state.online_users.remove(user_id);
 
-            // Clean up watchlist relationships
-            if let Some(app_watchlists) = self.watchlists.get(app_id) {
-                // Get the user's watching list before removing
-                let watching_list: Vec<String> = app_watchlists
-                    .get(user_id)
-                    .map(|entry| entry.watching.iter().cloned().collect())
-                    .unwrap_or_default();
-
-                // Remove this user from the watchers list of users they were watching
-                for watched_user_id in &watching_list {
-                    if let Some(mut watched_entry) = app_watchlists.get_mut(watched_user_id) {
+            if let Some(user_entry) = state.watchlists.remove(user_id) {
+                for watched_user_id in &user_entry.watching {
+                    if let Some(watched_entry) = state.watchlists.get_mut(watched_user_id) {
                         watched_entry.watchers.remove(user_id);
                     }
                 }
-
-                // Remove the user's own watchlist entry
-                app_watchlists.remove(user_id);
             }
         }
 
@@ -196,17 +191,19 @@ impl WatchlistManager {
         let mut online_users = Vec::new();
         let mut offline_users = Vec::new();
 
-        if let Some(app_watchlists) = self.watchlists.get(app_id)
-            && let Some(user_entry) = app_watchlists.get(user_id)
-            && let Some(app_online_users) = self.online_users.get(app_id)
-        {
-            for watched_user_id in &user_entry.watching {
-                if app_online_users.contains_key(watched_user_id)
-                    && !app_online_users.get(watched_user_id).unwrap().is_empty()
-                {
-                    online_users.push(watched_user_id.clone());
-                } else {
-                    offline_users.push(watched_user_id.clone());
+        if let Some(app_state) = self.apps.get(app_id).map(|entry| entry.value().clone()) {
+            let state = app_state.lock().unwrap();
+            if let Some(user_entry) = state.watchlists.get(user_id) {
+                for watched_user_id in &user_entry.watching {
+                    let is_online = state
+                        .online_users
+                        .get(watched_user_id)
+                        .is_some_and(|sockets| !sockets.is_empty());
+                    if is_online {
+                        online_users.push(watched_user_id.clone());
+                    } else {
+                        offline_users.push(watched_user_id.clone());
+                    }
                 }
             }
         }
@@ -216,17 +213,17 @@ impl WatchlistManager {
 
     /// Clean up when app is removed
     pub async fn cleanup_app(&self, app_id: &str) {
-        self.watchlists.remove(app_id);
-        self.online_users.remove(app_id);
+        self.apps.remove(app_id);
     }
 
     pub async fn get_watchers_for_user(&self, app_id: &str, user_id: &str) -> Result<Vec<String>> {
         let mut watchers = Vec::new();
 
-        if let Some(app_watchlists) = self.watchlists.get(app_id)
-            && let Some(user_entry) = app_watchlists.get(user_id)
-        {
-            watchers.extend(user_entry.watchers.iter().cloned());
+        if let Some(app_state) = self.apps.get(app_id).map(|entry| entry.value().clone()) {
+            let state = app_state.lock().unwrap();
+            if let Some(user_entry) = state.watchlists.get(user_id) {
+                watchers.extend(user_entry.watchers.iter().cloned());
+            }
         }
 
         Ok(watchers)

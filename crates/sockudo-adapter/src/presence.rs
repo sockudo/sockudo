@@ -6,6 +6,7 @@ use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_webhook::WebhookIntegration;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
 /// Lock key for presence operations to prevent TOCTOU races
@@ -19,9 +20,8 @@ fn presence_lock_key(app_id: &str, channel: &str, user_id: &str) -> String {
 /// consistent across different disconnect paths (sync, async, direct unsubscribe)
 pub struct PresenceManager {
     /// Per-user locks to prevent TOCTOU races during presence operations
-    /// Maps "app_id:channel:user_id" -> lock guard
-    /// Using DashMap for concurrent access with per-key granularity
-    presence_locks: DashMap<String, ()>,
+    /// Maps "app_id:channel:user_id" -> async mutex for true per-key exclusivity
+    presence_locks: DashMap<String, Arc<Mutex<()>>>,
 }
 
 impl Default for PresenceManager {
@@ -35,6 +35,13 @@ impl PresenceManager {
         Self {
             presence_locks: DashMap::new(),
         }
+    }
+
+    fn get_presence_lock(&self, lock_key: &str) -> Arc<Mutex<()>> {
+        self.presence_locks
+            .entry(lock_key.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// Handles presence member addition including both webhook and broadcast
@@ -68,7 +75,8 @@ impl PresenceManager {
         // With lock:
         // - Thread A: acquires lock, checks count=0, sends member_added, releases lock
         // - Thread B: acquires lock, checks count=1, skips member_added, releases lock
-        let _lock_guard = self.presence_locks.entry(lock_key.clone()).or_insert(());
+        let presence_lock = self.get_presence_lock(&lock_key);
+        let _lock_guard = presence_lock.lock().await;
 
         // Check if user already had connections in this presence channel (excluding current socket)
         // This check is now protected by the lock
@@ -188,7 +196,8 @@ impl PresenceManager {
         //
         // With lock:
         // - Operations are serialized per user+channel, ensuring consistent state
-        let _lock_guard = self.presence_locks.entry(lock_key.clone()).or_insert(());
+        let presence_lock = self.get_presence_lock(&lock_key);
+        let _lock_guard = presence_lock.lock().await;
 
         // Check if user has other connections in this presence channel
         // This check is now protected by the lock
@@ -288,16 +297,30 @@ impl PresenceManager {
     /// Cleanup stale lock entries periodically
     /// Call this from a background task to prevent unbounded growth of the locks map
     pub fn cleanup_stale_locks(&self) {
-        // DashMap entries are automatically cleaned up when the guard is dropped,
-        // but we can periodically clear the map if it grows too large
         if self.presence_locks.len() > 100_000 {
+            let stale_keys: Vec<String> = self
+                .presence_locks
+                .iter()
+                .filter_map(|entry| {
+                    let lock = entry.value();
+                    let in_use = Arc::strong_count(lock) > 1 || lock.try_lock().is_err();
+                    if in_use {
+                        None
+                    } else {
+                        Some(entry.key().clone())
+                    }
+                })
+                .collect();
+
             warn!(
-                "Presence locks map has {} entries, clearing stale entries",
-                self.presence_locks.len()
+                "Presence locks map has {} entries, removing {} stale entries",
+                self.presence_locks.len(),
+                stale_keys.len()
             );
-            // Clear all entries - this is safe because we only use entry() which
-            // will recreate entries as needed
-            self.presence_locks.clear();
+
+            for key in stale_keys {
+                self.presence_locks.remove(&key);
+            }
         }
     }
 
@@ -380,7 +403,9 @@ mod tests {
 
         // Add entries below threshold
         for i in 0..100 {
-            manager.presence_locks.insert(format!("key_{}", i), ());
+            manager
+                .presence_locks
+                .insert(format!("key_{}", i), Arc::new(Mutex::new(())));
         }
 
         manager.cleanup_stale_locks();

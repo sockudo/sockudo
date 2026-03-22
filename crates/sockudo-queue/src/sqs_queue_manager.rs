@@ -8,6 +8,7 @@ use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 use tokio::time::interval;
 use tracing::{error, info};
@@ -20,10 +21,9 @@ pub struct SqsQueueManager {
     config: SqsQueueConfig,
 
     /// Cache of queue URLs
-    queue_urls: Arc<dashmap::DashMap<String, String, ahash::RandomState>>,
+    queue_urls: Arc<RwLock<HashMap<String, String>>>,
     /// Active workers
-    worker_handles:
-        Arc<dashmap::DashMap<String, Vec<tokio::task::JoinHandle<()>>, ahash::RandomState>>,
+    worker_handles: Arc<Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
     /// Flag to control worker shutdown
     shutdown: Arc<AtomicBool>,
 }
@@ -46,17 +46,15 @@ impl SqsQueueManager {
         Ok(Self {
             client,
             config,
-            queue_urls: Arc::new(dashmap::DashMap::with_hasher(ahash::RandomState::new())),
-            worker_handles: Arc::new(dashmap::DashMap::with_hasher(ahash::RandomState::new())),
+            queue_urls: Arc::new(RwLock::new(HashMap::new())),
+            worker_handles: Arc::new(Mutex::new(HashMap::new())),
             shutdown: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Get or create the URL for a queue
     async fn get_queue_url(&self, queue_name: &str) -> Result<String> {
-        let cached_url = self.queue_urls.get(queue_name).map(|entry| entry.clone());
-
-        if let Some(url) = cached_url {
+        if let Some(url) = self.queue_urls.read().unwrap().get(queue_name).cloned() {
             return Ok(url);
         }
 
@@ -68,6 +66,8 @@ impl SqsQueueManager {
             };
 
             self.queue_urls
+                .write()
+                .unwrap()
                 .insert(queue_name.to_string(), queue_url.clone());
 
             return Ok(queue_url);
@@ -89,6 +89,8 @@ impl SqsQueueManager {
             Ok(output) => {
                 if let Some(url) = output.queue_url() {
                     self.queue_urls
+                        .write()
+                        .unwrap()
                         .insert(queue_name.to_string(), url.to_string());
 
                     Ok(url.to_string())
@@ -148,6 +150,8 @@ impl SqsQueueManager {
 
         if let Some(url) = result.queue_url() {
             self.queue_urls
+                .write()
+                .unwrap()
                 .insert(queue_name.to_string(), url.to_string());
 
             Ok(url.to_string())
@@ -355,6 +359,8 @@ impl QueueInterface for SqsQueueManager {
         }
 
         self.worker_handles
+            .lock()
+            .unwrap()
             .insert(queue_name.to_string(), worker_handles);
 
         info!(
@@ -371,21 +377,15 @@ impl QueueInterface for SqsQueueManager {
     async fn disconnect(&self) -> Result<()> {
         self.shutdown.store(true, Ordering::Relaxed);
 
-        let queue_names: Vec<String> = self
-            .worker_handles
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
-        for queue_name in queue_names {
-            if let Some((_, workers)) = self.worker_handles.remove(&queue_name) {
-                info!(
-                    "{}",
-                    format!("Waiting for SQS queue {} workers to shutdown", queue_name)
-                );
+        let worker_handles = std::mem::take(&mut *self.worker_handles.lock().unwrap());
+        for (queue_name, workers) in worker_handles {
+            info!(
+                "{}",
+                format!("Waiting for SQS queue {} workers to shutdown", queue_name)
+            );
 
-                for handle in workers {
-                    handle.abort();
-                }
+            for handle in workers {
+                handle.abort();
             }
         }
 

@@ -1047,11 +1047,10 @@ impl LocalAdapter {
 
     // Helper function to get or create namespace
     async fn get_or_create_namespace(&self, app_id: &str) -> Arc<Namespace> {
-        if !self.namespaces.contains_key(app_id) {
-            let namespace = Arc::new(Namespace::new(app_id.to_string()));
-            self.namespaces.insert(app_id.to_string(), namespace);
-        }
-        self.namespaces.get(app_id).unwrap().clone()
+        self.namespaces
+            .entry(app_id.to_string())
+            .or_insert_with(|| Arc::new(Namespace::new(app_id.to_string())))
+            .clone()
     }
 
     // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
