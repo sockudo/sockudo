@@ -191,7 +191,9 @@ impl Namespace {
         for channel_name in channels_to_check {
             if let Some(socket_set) = self.channels.get(&channel_name) {
                 socket_set.remove(&socket_id);
-                if socket_set.is_empty() {
+                let is_empty = socket_set.is_empty();
+                drop(socket_set); // Release read lock before acquiring write lock
+                if is_empty {
                     self.channels
                         .remove_if(&channel_name, |_, set| set.is_empty());
                 }
@@ -368,36 +370,40 @@ impl Namespace {
     }
 
     pub async fn remove_user_socket(&self, user_id: &str, socket_id: &SocketId) -> Result<()> {
-        if let Some(user_sockets_ref) = self.users.get_mut(user_id) {
-            let mut found_socket = None;
+        // Collect socket refs without holding the lock across await points
+        let sockets_snapshot: Vec<WebSocketRef> =
+            if let Some(user_sockets_ref) = self.users.get(user_id) {
+                user_sockets_ref.iter().map(|r| r.clone()).collect()
+            } else {
+                debug!(
+                    "User {} not found when removing socket {}",
+                    user_id, socket_id
+                );
+                return Ok(());
+            };
 
-            for ws_ref in user_sockets_ref.iter() {
-                let ws_socket_id = ws_ref.get_socket_id().await;
-                if ws_socket_id == *socket_id {
-                    found_socket = Some(ws_ref.clone());
-                    break;
-                }
+        let mut found_socket = None;
+        for ws_ref in &sockets_snapshot {
+            let ws_socket_id = ws_ref.get_socket_id().await;
+            if ws_socket_id == *socket_id {
+                found_socket = Some(ws_ref.clone());
+                break;
             }
+        }
 
-            if let Some(ws_ref) = found_socket {
-                user_sockets_ref.remove(&ws_ref);
-            }
-
+        if let Some(ref ws_ref) = found_socket
+            && let Some(user_sockets_ref) = self.users.get_mut(user_id)
+        {
+            user_sockets_ref.remove(ws_ref);
             let is_empty = user_sockets_ref.is_empty();
             drop(user_sockets_ref);
-
             if is_empty {
                 self.users.remove(user_id);
                 debug!("Removed empty user entry for: {}", user_id);
             }
-
-            debug!("Removed socket {} from user {}", socket_id, user_id);
-        } else {
-            debug!(
-                "User {} not found when removing socket {}",
-                user_id, socket_id
-            );
         }
+
+        debug!("Removed socket {} from user {}", socket_id, user_id);
         Ok(())
     }
 
