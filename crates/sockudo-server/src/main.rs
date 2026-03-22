@@ -921,9 +921,12 @@ impl SockudoServer {
                     .collect::<Vec<_>>(),
             );
 
-        let use_allow_origin_any = self.config.cors.origin.contains(&"*".to_string())
-            || self.config.cors.origin.contains(&"Any".to_string())
-            || self.config.cors.origin.contains(&"any".to_string());
+        let use_allow_origin_any = self
+            .config
+            .cors
+            .origin
+            .iter()
+            .any(|s| s == "*" || s.eq_ignore_ascii_case("any"));
 
         if use_allow_origin_any {
             cors_builder = cors_builder.allow_origin(AllowOrigin::any());
