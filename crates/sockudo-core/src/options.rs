@@ -492,9 +492,7 @@ pub struct CorsConfig {
     pub allowed_headers: Vec<String>,
 }
 
-fn deserialize_and_validate_cors_origins<'de, D>(
-    deserializer: D,
-) -> Result<Vec<String>, D::Error>
+fn deserialize_and_validate_cors_origins<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -2056,9 +2054,7 @@ impl ServerOptions {
         // --- CORS ---
         if let Ok(origins) = std::env::var("CORS_ORIGINS") {
             let parsed: Vec<String> = origins.split(',').map(|s| s.trim().to_string()).collect();
-            if let Err(e) =
-                crate::origin_validation::OriginValidator::validate_patterns(&parsed)
-            {
+            if let Err(e) = crate::origin_validation::OriginValidator::validate_patterns(&parsed) {
                 warn!(
                     "CORS_ORIGINS contains invalid patterns: {}. Keeping previous CORS origins.",
                     e
@@ -2889,10 +2885,9 @@ mod cors_config_tests {
 
     #[test]
     fn test_deserialize_valid_wildcard_patterns() {
-        let config = cors_from_json(
-            r#"{"origin": ["*.example.com", "https://*.staging.example.com"]}"#,
-        )
-        .unwrap();
+        let config =
+            cors_from_json(r#"{"origin": ["*.example.com", "https://*.staging.example.com"]}"#)
+                .unwrap();
         assert_eq!(config.origin.len(), 2);
     }
 
@@ -2914,8 +2909,6 @@ mod cors_config_tests {
 
     #[test]
     fn test_deserialize_rejects_mixed_valid_and_invalid() {
-        assert!(
-            cors_from_json(r#"{"origin": ["https://good.com", "*.*bad"]}"#).is_err()
-        );
+        assert!(cors_from_json(r#"{"origin": ["https://good.com", "*.*bad"]}"#).is_err());
     }
 }
