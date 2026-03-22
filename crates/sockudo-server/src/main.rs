@@ -57,6 +57,7 @@ use sockudo_rate_limiter::middleware::IpKeyExtractor;
 use sockudo_webhook::integration::QueueManager;
 use sockudo_webhook::{BatchingConfig, WebhookConfig, WebhookIntegration};
 use tower::Layer;
+use sockudo_core::origin_validation::OriginValidator;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, reload, util::SubscriberInitExt};
@@ -938,17 +939,14 @@ impl SockudoServer {
                 );
             }
         } else if !self.config.cors.origin.is_empty() {
-            let origins = self
-                .config
-                .cors
-                .origin
-                .iter()
-                .map(|s| {
-                    s.parse::<HeaderValue>()
-                        .expect("Failed to parse CORS origin")
-                })
-                .collect::<Vec<_>>();
-            cors_builder = cors_builder.allow_origin(AllowOrigin::list(origins));
+            let allowed_origins = self.config.cors.origin.clone();
+            cors_builder = cors_builder.allow_origin(AllowOrigin::predicate(
+                move |origin: &HeaderValue, _parts: &http::request::Parts| {
+                    origin.to_str().map_or(false, |origin_str| {
+                        OriginValidator::validate_origin(origin_str, &allowed_origins)
+                    })
+                },
+            ));
             cors_builder = cors_builder.allow_credentials(self.config.cors.credentials);
         } else {
             warn!(
