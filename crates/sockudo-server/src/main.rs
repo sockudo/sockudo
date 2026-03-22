@@ -945,7 +945,7 @@ impl SockudoServer {
             let allowed_origins = self.config.cors.origin.clone();
             cors_builder = cors_builder.allow_origin(AllowOrigin::predicate(
                 move |origin: &HeaderValue, _parts: &http::request::Parts| {
-                    origin.to_str().map_or(false, |origin_str| {
+                    origin.to_str().is_ok_and(|origin_str| {
                         OriginValidator::validate_origin(origin_str, &allowed_origins)
                     })
                 },
