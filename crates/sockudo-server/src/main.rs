@@ -50,6 +50,7 @@ use sockudo_core::error::Result;
 
 use crate::ws_handler::handle_ws_upgrade;
 use sockudo_core::options::{QueueDriver, ServerOptions};
+use sockudo_core::origin_validation::OriginValidator;
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_queue::QueueManagerFactory;
 use sockudo_rate_limiter::factory::RateLimiterFactory;
@@ -57,7 +58,6 @@ use sockudo_rate_limiter::middleware::IpKeyExtractor;
 use sockudo_webhook::integration::QueueManager;
 use sockudo_webhook::{BatchingConfig, WebhookConfig, WebhookIntegration};
 use tower::Layer;
-use sockudo_core::origin_validation::OriginValidator;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, reload, util::SubscriberInitExt};
