@@ -1,0 +1,29 @@
+{
+  "name": "@sockudo/dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bunx --bun vite",
+    "dev:server": "bun run server.ts",
+    "dev:all": "trap 'kill 0' EXIT; bun run server.ts & bunx --bun vite",
+    "build": "bunx --bun vite build",
+    "preview": "bunx --bun vite preview"
+  },
+  "dependencies": {
+    "@sockudo/client": "^1.1.0",
+    "@types/bun": "^1.3.11",
+    "lucide-vue-next": "^0.577.0",
+    "pinia": "^3.0.4",
+    "pusher": "^5.3.3",
+    "vue": "^3.5.30"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.1",
+    "vue-tsc": "^2.2.12"
+  }
+}
