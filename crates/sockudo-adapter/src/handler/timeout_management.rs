@@ -34,6 +34,7 @@ impl ConnectionHandler {
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
         let activity_timeout = self.server_options.activity_timeout;
+        let metrics = self.metrics.clone();
 
         // Clear any existing timeout
         self.clear_activity_timeout(app_id, socket_id).await?;
@@ -84,6 +85,9 @@ impl ConnectionHandler {
                         debug!("Connection {} already closed, cleaning up", socket_id_clone);
                         drop(ws);
                         conn_manager.cleanup_connection(&app_id_clone, conn).await;
+                        if let Some(ref m) = metrics {
+                            m.mark_disconnection(&app_id_clone, &socket_id_clone);
+                        }
                         break;
                     }
                     ws.state.status = sockudo_core::websocket::ConnectionStatus::PingSent(
@@ -127,6 +131,9 @@ impl ConnectionHandler {
                                     .await;
                                 drop(ws);
                                 conn_manager.cleanup_connection(&app_id_clone, conn).await;
+                                if let Some(ref m) = metrics {
+                                    m.mark_disconnection(&app_id_clone, &socket_id_clone);
+                                }
                                 break;
                             }
                         }
@@ -145,6 +152,9 @@ impl ConnectionHandler {
                         // Clean up the connection since it's broken
                         // Note: cleanup_connection expects the connection to still exist
                         conn_manager.cleanup_connection(&app_id_clone, conn).await;
+                        if let Some(ref m) = metrics {
+                            m.mark_disconnection(&app_id_clone, &socket_id_clone);
+                        }
                         break; // Exit the loop after cleanup
                     }
                 }
