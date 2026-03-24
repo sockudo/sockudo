@@ -1083,6 +1083,17 @@ impl SockudoServer {
                 )),
             );
 
+        // Prevent idle HTTP connection buildup on API routes
+        api_router = api_router.layer(axum_middleware::map_response(
+            |mut response: axum::response::Response| async move {
+                response.headers_mut().insert(
+                    axum::http::header::CONNECTION,
+                    axum::http::HeaderValue::from_static("close"),
+                );
+                response
+            },
+        ));
+
         if let Some(middleware) = api_rate_limiter_middleware_layer {
             api_router = api_router.layer(middleware);
         }
