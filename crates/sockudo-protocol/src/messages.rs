@@ -5,6 +5,13 @@ use sonic_rs::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use crate::protocol_version::ProtocolVersion;
+
+/// Generate a unique message ID (UUIDv4) for client-side deduplication.
+pub fn generate_message_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceData {
     pub ids: Vec<String>,
@@ -101,6 +108,13 @@ pub struct PusherMessage {
     /// Delta compression conflation key for message grouping
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflation_key: Option<String>,
+    /// Unique message ID for client-side deduplication
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// Monotonically increasing serial for connection recovery.
+    /// Assigned per-channel at broadcast time when connection recovery is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +139,11 @@ pub struct PusherApiMessage {
     /// - `None`: Use default behavior based on channel/global configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delta: Option<bool>,
+    /// Idempotency key for deduplicating publish requests.
+    /// If the same key is seen within the TTL window, the server returns the
+    /// cached response without re-broadcasting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +221,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
     pub fn subscription_succeeded(channel: String, presence_data: Option<PresenceData>) -> Self {
@@ -226,6 +247,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -242,6 +265,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -255,6 +280,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
     pub fn channel_event<S: Into<String>>(event: S, channel: S, data: Value) -> Self {
@@ -267,6 +294,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -287,6 +316,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -306,6 +337,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -320,6 +353,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -391,6 +426,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -406,6 +443,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -419,6 +458,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -434,6 +475,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 
@@ -465,6 +508,16 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+        }
+    }
+
+    /// Rewrite the event name prefix to match the given protocol version.
+    /// This is the single translation point between V1 (`pusher:`) and V2 (`sockudo:`) wire formats.
+    pub fn rewrite_prefix(&mut self, version: ProtocolVersion) {
+        if let Some(ref event) = self.event {
+            self.event = Some(version.rewrite_event_prefix(event));
         }
     }
 
@@ -494,6 +547,8 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
         }
     }
 }

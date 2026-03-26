@@ -196,6 +196,8 @@ async fn test_broadcast_during_listener_changes() -> Result<()> {
                 tags: None,
                 sequence: None,
                 conflation_key: None,
+                message_id: None,
+                serial: None,
             };
 
             tokio::time::sleep(Duration::from_millis(i * 10)).await;
@@ -339,6 +341,8 @@ async fn test_transport_state_consistency_under_load() -> Result<()> {
                         tags: None,
                         sequence: None,
                         conflation_key: None,
+                message_id: None,
+                serial: None,
                     };
 
                     adapter

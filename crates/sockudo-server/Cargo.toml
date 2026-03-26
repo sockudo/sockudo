@@ -8,9 +8,14 @@ repository.workspace = true
 license-file.workspace = true
 
 [features]
-default = ["local"]
+default = ["local", "v2"]
 local = []
+v2 = ["delta", "tag-filtering", "recovery"]
+delta = ["sockudo-adapter/delta", "sockudo-delta"]
+tag-filtering = ["sockudo-adapter/tag-filtering", "sockudo-filter"]
+recovery = ["sockudo-adapter/recovery"]
 full = [
+  "v2",
   "redis",
   "redis-cluster",
   "nats",
@@ -29,7 +34,7 @@ redis = [
   "sockudo-cache/redis",
   "sockudo-queue/redis",
   "sockudo-rate-limiter/redis",
-  "sockudo-delta/redis",
+  "sockudo-delta?/redis",
 ]
 redis-cluster = [
   "redis",
@@ -39,7 +44,7 @@ redis-cluster = [
   "sockudo-queue/redis-cluster",
   "sockudo-rate-limiter/redis-cluster",
 ]
-nats = ["sockudo-core/nats", "sockudo-adapter/nats", "sockudo-delta/nats"]
+nats = ["sockudo-core/nats", "sockudo-adapter/nats", "sockudo-delta?/nats"]
 mysql = ["sockudo-core/mysql", "sockudo-app/mysql"]
 postgres = ["sockudo-core/postgres", "sockudo-app/postgres"]
 dynamodb = ["sockudo-core/dynamodb", "sockudo-app/dynamodb"]
@@ -55,14 +60,14 @@ path = "src/main.rs"
 [dependencies]
 sockudo-core = { workspace = true }
 sockudo-protocol = { workspace = true }
-sockudo-filter = { workspace = true }
+sockudo-filter = { workspace = true, optional = true }
 sockudo-app = { workspace = true }
 sockudo-cache = { workspace = true }
 sockudo-queue = { workspace = true }
 sockudo-rate-limiter = { workspace = true }
 sockudo-metrics = { workspace = true }
 sockudo-webhook = { workspace = true }
-sockudo-delta = { workspace = true }
+sockudo-delta = { workspace = true, optional = true }
 sockudo-adapter = { workspace = true }
 
 ahash = { workspace = true }
@@ -92,6 +97,7 @@ tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [package.metadata.binstall]
 pkg-url = "https://github.com/sockudo/sockudo/releases/download/v{version}/sockudo-v{version}-{target}{archive-suffix}"

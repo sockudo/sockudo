@@ -1,6 +1,6 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use sockudo_core::app::{App, AppManager};
+use sockudo_core::app::{App, AppConnectionRecoveryConfig, AppIdempotencyConfig, AppManager};
 use sockudo_core::delta_types::ChannelDeltaConfig;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::webhook_types::Webhook;
@@ -177,6 +177,32 @@ impl DynamoDbAppManager {
                 } else {
                     None
                 },
+                idempotency: if let Some(
+                    aws_sdk_dynamodb::types::AttributeValue::S(json_str),
+                ) = map.get("idempotency")
+                {
+                    sonic_rs::from_str::<AppIdempotencyConfig>(json_str)
+                        .map_err(|e| {
+                            tracing::warn!("Failed to parse idempotency JSON: {}", e);
+                            e
+                        })
+                        .ok()
+                } else {
+                    None
+                },
+                connection_recovery: if let Some(
+                    aws_sdk_dynamodb::types::AttributeValue::S(json_str),
+                ) = map.get("connection_recovery")
+                {
+                    sonic_rs::from_str::<AppConnectionRecoveryConfig>(json_str)
+                        .map_err(|e| {
+                            tracing::warn!("Failed to parse connection_recovery JSON: {}", e);
+                            e
+                        })
+                        .ok()
+                } else {
+                    None
+                },
             })
         } else {
             Err(Error::Internal("Invalid DynamoDB item format".to_string()))
@@ -321,6 +347,24 @@ impl DynamoDbAppManager {
             );
             item.insert(
                 "channel_delta_compression".to_string(),
+                aws_sdk_dynamodb::types::AttributeValue::S(json_str),
+            );
+        }
+
+        if let Some(idempotency) = &app.idempotency {
+            let json_str = sonic_rs::to_string(idempotency)
+                .expect("Failed to serialize idempotency to JSON. This indicates a bug.");
+            item.insert(
+                "idempotency".to_string(),
+                aws_sdk_dynamodb::types::AttributeValue::S(json_str),
+            );
+        }
+
+        if let Some(connection_recovery) = &app.connection_recovery {
+            let json_str = sonic_rs::to_string(connection_recovery)
+                .expect("Failed to serialize connection_recovery to JSON. This indicates a bug.");
+            item.insert(
+                "connection_recovery".to_string(),
                 aws_sdk_dynamodb::types::AttributeValue::S(json_str),
             );
         }

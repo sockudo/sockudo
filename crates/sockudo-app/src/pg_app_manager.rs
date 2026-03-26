@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use moka::future::Cache;
-use sockudo_core::app::{App, AppManager};
+use sockudo_core::app::{App, AppConnectionRecoveryConfig, AppIdempotencyConfig, AppManager};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::{DatabaseConnection, DatabasePooling};
 use sockudo_core::token::Token;
@@ -105,6 +105,8 @@ impl PgSQLAppManager {
             ("allowed_origins", "JSONB"),
             ("webhooks", "JSONB"),
             ("channel_delta_compression", "JSONB"),
+            ("idempotency", "JSONB"),
+            ("connection_recovery", "JSONB"),
         ];
 
         for (column_name, column_type) in columns_to_add {
@@ -154,7 +156,9 @@ impl PgSQLAppManager {
                 enable_watchlist_events,
                 webhooks,
                 allowed_origins,
-                channel_delta_compression
+                channel_delta_compression,
+                idempotency,
+                connection_recovery
             FROM {} WHERE id = $1"#,
             self.config.table_name
         );
@@ -199,7 +203,9 @@ impl PgSQLAppManager {
                 enable_watchlist_events,
                 webhooks,
                 allowed_origins,
-                channel_delta_compression
+                channel_delta_compression,
+                idempotency,
+                connection_recovery
             FROM {} WHERE key = $1"#,
             self.config.table_name
         );
@@ -235,8 +241,8 @@ impl PgSQLAppManager {
                 max_event_channels_at_once, max_event_name_length,
                 max_event_payload_in_kb, max_event_batch_size, enable_user_authentication,
                 enable_watchlist_events, webhooks, allowed_origins,
-                channel_delta_compression
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)"#,
+                channel_delta_compression, idempotency, connection_recovery
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)"#,
             self.config.table_name
         );
 
@@ -262,6 +268,8 @@ impl PgSQLAppManager {
             .bind(sqlx::types::Json(&app.webhooks))
             .bind(sqlx::types::Json(&app.allowed_origins))
             .bind(sqlx::types::Json(&app.channel_delta_compression))
+            .bind(sqlx::types::Json(&app.idempotency))
+            .bind(sqlx::types::Json(&app.connection_recovery))
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -289,8 +297,10 @@ impl PgSQLAppManager {
                 enable_user_authentication = $16, enable_watchlist_events = $17,
                 webhooks = $18, allowed_origins = $19,
                 channel_delta_compression = $20,
+                idempotency = $21,
+                connection_recovery = $22,
                 updated_at = CURRENT_TIMESTAMP
-                WHERE id = $21"#,
+                WHERE id = $23"#,
             self.config.table_name
         );
 
@@ -315,6 +325,8 @@ impl PgSQLAppManager {
             .bind(sqlx::types::Json(&app.webhooks))
             .bind(sqlx::types::Json(&app.allowed_origins))
             .bind(sqlx::types::Json(&app.channel_delta_compression))
+            .bind(sqlx::types::Json(&app.idempotency))
+            .bind(sqlx::types::Json(&app.connection_recovery))
             .bind(&app.id)
             .execute(&self.pool)
             .await
@@ -378,7 +390,8 @@ impl PgSQLAppManager {
             enable_watchlist_events,
             webhooks,
             allowed_origins,
-            channel_delta_compression
+            channel_delta_compression,
+            idempotency
         FROM {}"#,
             self.config.table_name
         );
@@ -509,6 +522,10 @@ struct AppRow {
     #[sqlx(json(nullable))]
     channel_delta_compression:
         Option<ahash::AHashMap<String, sockudo_core::delta_types::ChannelDeltaConfig>>,
+    #[sqlx(json(nullable))]
+    idempotency: Option<AppIdempotencyConfig>,
+    #[sqlx(json(nullable))]
+    connection_recovery: Option<AppConnectionRecoveryConfig>,
 }
 
 impl AppRow {
@@ -537,6 +554,8 @@ impl AppRow {
             enable_watchlist_events: self.enable_watchlist_events,
             allowed_origins: self.allowed_origins,
             channel_delta_compression: self.channel_delta_compression,
+            idempotency: self.idempotency,
+            connection_recovery: self.connection_recovery,
         }
     }
 }
@@ -640,6 +659,8 @@ mod tests {
             enable_watchlist_events: None,
             allowed_origins: None,
             channel_delta_compression: None,
+            idempotency: None,
+            connection_recovery: None,
         }
     }
 

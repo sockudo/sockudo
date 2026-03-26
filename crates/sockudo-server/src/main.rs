@@ -170,6 +170,7 @@ struct ServerState {
     cleanup_queue: Option<CleanupSender>,
     cleanup_worker_handles: Option<Vec<tokio::task::JoinHandle<()>>>,
     cleanup_config: CleanupConfig,
+    #[cfg(feature = "delta")]
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     /// Typed adapter for configuration and runtime type inspection
     typed_adapter: sockudo_adapter::factory::TypedAdapter,
@@ -657,90 +658,94 @@ impl SockudoServer {
         };
 
         // Initialize delta compression manager
-        let algorithm = match config.delta_compression.algorithm.as_str() {
-            "xdelta3" => sockudo_delta::DeltaAlgorithm::Xdelta3,
-            _ => sockudo_delta::DeltaAlgorithm::Fossil,
-        };
-
-        let delta_config = sockudo_delta::DeltaCompressionConfig {
-            enabled: config.delta_compression.enabled,
-            algorithm,
-            full_message_interval: config.delta_compression.full_message_interval,
-            min_message_size: config.delta_compression.min_message_size,
-            max_state_age: Duration::from_secs(config.delta_compression.max_state_age_secs),
-            max_channel_states_per_socket: config.delta_compression.max_channel_states_per_socket,
-            min_compression_ratio: 0.9,
-            max_conflation_states_per_channel: config
-                .delta_compression
-                .max_conflation_states_per_channel,
-            conflation_key_path: config.delta_compression.conflation_key_path.clone(),
-            cluster_coordination: config.delta_compression.cluster_coordination,
-            omit_delta_algorithm: config.delta_compression.omit_delta_algorithm,
-        };
-        let delta_compression_manager = sockudo_delta::DeltaCompressionManager::new(delta_config);
-
-        // Setup cluster coordination if enabled and adapter supports it
+        #[cfg(feature = "delta")]
         let delta_compression_manager = {
-            #[allow(unused_mut)]
-            let mut manager = delta_compression_manager;
+            let algorithm = match config.delta_compression.algorithm.as_str() {
+                "xdelta3" => sockudo_delta::DeltaAlgorithm::Xdelta3,
+                _ => sockudo_delta::DeltaAlgorithm::Fossil,
+            };
 
-            if config.delta_compression.cluster_coordination {
-                #[cfg(feature = "redis")]
-                if matches!(
-                    config.adapter.driver,
-                    sockudo_core::options::AdapterDriver::Redis
-                        | sockudo_core::options::AdapterDriver::RedisCluster
-                ) {
-                    let redis_url = config.database.redis.to_url();
+            let delta_config = sockudo_delta::DeltaCompressionConfig {
+                enabled: config.delta_compression.enabled,
+                algorithm,
+                full_message_interval: config.delta_compression.full_message_interval,
+                min_message_size: config.delta_compression.min_message_size,
+                max_state_age: Duration::from_secs(config.delta_compression.max_state_age_secs),
+                max_channel_states_per_socket: config.delta_compression.max_channel_states_per_socket,
+                min_compression_ratio: 0.9,
+                max_conflation_states_per_channel: config
+                    .delta_compression
+                    .max_conflation_states_per_channel,
+                conflation_key_path: config.delta_compression.conflation_key_path.clone(),
+                cluster_coordination: config.delta_compression.cluster_coordination,
+                omit_delta_algorithm: config.delta_compression.omit_delta_algorithm,
+            };
+            let delta_compression_manager = sockudo_delta::DeltaCompressionManager::new(delta_config);
 
-                    match sockudo_delta::coordination::RedisClusterCoordinator::new(
-                        &redis_url,
-                        Some(&config.database.redis.key_prefix),
-                    )
-                    .await
-                    {
-                        Ok(coordinator) => {
-                            info!("Delta compression cluster coordination enabled via Redis");
-                            manager.set_cluster_coordinator(Arc::new(coordinator));
+            // Setup cluster coordination if enabled and adapter supports it
+            let delta_compression_manager = {
+                #[allow(unused_mut)]
+                let mut manager = delta_compression_manager;
+
+                if config.delta_compression.cluster_coordination {
+                    #[cfg(feature = "redis")]
+                    if matches!(
+                        config.adapter.driver,
+                        sockudo_core::options::AdapterDriver::Redis
+                            | sockudo_core::options::AdapterDriver::RedisCluster
+                    ) {
+                        let redis_url = config.database.redis.to_url();
+
+                        match sockudo_delta::coordination::RedisClusterCoordinator::new(
+                            &redis_url,
+                            Some(&config.database.redis.key_prefix),
+                        )
+                        .await
+                        {
+                            Ok(coordinator) => {
+                                info!("Delta compression cluster coordination enabled via Redis");
+                                manager.set_cluster_coordinator(Arc::new(coordinator));
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to setup Redis cluster coordination, falling back to node-local: {}",
+                                    e
+                                );
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "Failed to setup Redis cluster coordination, falling back to node-local: {}",
-                                e
-                            );
+                    }
+
+                    #[cfg(feature = "nats")]
+                    if config.adapter.driver == sockudo_core::options::AdapterDriver::Nats {
+                        let nats_servers = config.adapter.nats.servers.clone();
+
+                        match sockudo_delta::coordination::NatsClusterCoordinator::new(
+                            nats_servers,
+                            Some(&config.adapter.nats.prefix),
+                        )
+                        .await
+                        {
+                            Ok(coordinator) => {
+                                info!("Delta compression cluster coordination enabled via NATS");
+                                manager.set_cluster_coordinator(Arc::new(coordinator));
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to setup NATS cluster coordination, falling back to node-local: {}",
+                                    e
+                                );
+                            }
                         }
                     }
                 }
 
-                #[cfg(feature = "nats")]
-                if config.adapter.driver == sockudo_core::options::AdapterDriver::Nats {
-                    let nats_servers = config.adapter.nats.servers.clone();
+                Arc::new(manager)
+            };
 
-                    match sockudo_delta::coordination::NatsClusterCoordinator::new(
-                        nats_servers,
-                        Some(&config.adapter.nats.prefix),
-                    )
-                    .await
-                    {
-                        Ok(coordinator) => {
-                            info!("Delta compression cluster coordination enabled via NATS");
-                            manager.set_cluster_coordinator(Arc::new(coordinator));
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to setup NATS cluster coordination, falling back to node-local: {}",
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-
-            Arc::new(manager)
+            // Start background cleanup task for delta compression state management
+            delta_compression_manager.start_cleanup_task().await;
+            delta_compression_manager
         };
-
-        // Start background cleanup task for delta compression state management
-        delta_compression_manager.start_cleanup_task().await;
 
         let state = ServerState {
             app_manager: app_manager.clone(),
@@ -758,21 +763,35 @@ impl SockudoServer {
             cleanup_queue,
             cleanup_worker_handles,
             cleanup_config,
+            #[cfg(feature = "delta")]
             delta_compression: delta_compression_manager.clone(),
             typed_adapter: typed_adapter.clone(),
         };
 
-        let handler = Arc::new(ConnectionHandler::new(
+        let mut builder = ConnectionHandler::builder(
             state.app_manager.clone(),
             state.connection_manager.clone(),
-            state.local_adapter.clone(),
             state.cache_manager.clone(),
-            state.metrics.clone(),
-            Some(webhook_integration),
             config.clone(),
-            state.cleanup_queue.clone(),
-            delta_compression_manager.clone(),
-        ));
+        )
+        .webhook_integration(webhook_integration);
+
+        if let Some(adapter) = state.local_adapter.clone() {
+            builder = builder.local_adapter(adapter);
+        }
+        if let Some(m) = state.metrics.clone() {
+            builder = builder.metrics(m);
+        }
+        if let Some(q) = state.cleanup_queue.clone() {
+            builder = builder.cleanup_queue(q);
+        }
+
+        #[cfg(feature = "delta")]
+        {
+            builder = builder.delta_compression(delta_compression_manager.clone());
+        }
+
+        let handler = Arc::new(builder.build());
 
         // Start dead node cleanup event processing loop (only runs if cluster health is enabled)
         if let Some(event_receiver) = dead_node_event_receiver {
@@ -787,6 +806,25 @@ impl SockudoServer {
                 info!("Dead node cleanup event processing loop ended");
             });
         }
+
+        // Start replay buffer eviction task (only when connection recovery is enabled)
+        #[cfg(feature = "recovery")]
+        if config.connection_recovery.enabled
+            && let Some(replay_buf) = handler.replay_buffer().cloned() {
+                let eviction_interval =
+                    std::time::Duration::from_secs(config.connection_recovery.buffer_ttl_seconds / 4);
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(eviction_interval);
+                    loop {
+                        interval.tick().await;
+                        replay_buf.evict_expired();
+                    }
+                });
+                info!(
+                    "Connection recovery replay buffer eviction task started (interval: {}s)",
+                    eviction_interval.as_secs()
+                );
+            }
 
         // Set metrics for adapters using TypedAdapter (lock-free configuration)
         if let Some(metrics_instance_arc) = &metrics {
@@ -804,29 +842,35 @@ impl SockudoServer {
         }
 
         // Set delta compression for adapters using TypedAdapter (lock-free configuration)
-        typed_adapter
-            .set_delta_compression(delta_compression_manager.clone(), app_manager.clone())
-            .await;
-        info!(
-            "Delta compression initialized for adapter: {:?}",
-            config.adapter.driver
-        );
-
-        // Set tag filtering enabled flag using TypedAdapter
-        typed_adapter.set_tag_filtering_enabled(config.tag_filtering.enabled);
-        if config.tag_filtering.enabled {
+        #[cfg(feature = "delta")]
+        {
+            typed_adapter
+                .set_delta_compression(delta_compression_manager.clone(), app_manager.clone())
+                .await;
             info!(
-                "Tag filtering enabled for adapter: {:?}",
+                "Delta compression initialized for adapter: {:?}",
                 config.adapter.driver
             );
         }
 
-        // Set global enable_tags flag using TypedAdapter
-        typed_adapter.set_enable_tags_globally(config.tag_filtering.enable_tags);
-        info!(
-            "Global enable_tags setting: {}",
-            config.tag_filtering.enable_tags
-        );
+        // Set tag filtering enabled flag using TypedAdapter
+        #[cfg(feature = "tag-filtering")]
+        {
+            typed_adapter.set_tag_filtering_enabled(config.tag_filtering.enabled);
+            if config.tag_filtering.enabled {
+                info!(
+                    "Tag filtering enabled for adapter: {:?}",
+                    config.adapter.driver
+                );
+            }
+
+            // Set global enable_tags flag using TypedAdapter
+            typed_adapter.set_enable_tags_globally(config.tag_filtering.enable_tags);
+            info!(
+                "Global enable_tags setting: {}",
+                config.tag_filtering.enable_tags
+            );
+        }
 
         Ok(Self {
             config,
@@ -1463,6 +1507,7 @@ impl SockudoServer {
         }
 
         // Stop delta compression cleanup task gracefully
+        #[cfg(feature = "delta")]
         self.state.delta_compression.stop_cleanup_task().await;
 
         // Disconnect from backend services
@@ -1689,14 +1734,15 @@ async fn main() -> Result<()> {
     let mut config = ServerOptions::default();
     info!("Starting with default configuration");
 
-    match ServerOptions::load_from_file("config/config.json").await {
-        Ok(file_config) => {
-            config = file_config;
-            info!("Loaded configuration from config/config.json");
-        }
-        Err(e) => {
-            info!("No config/config.json found or failed to load: {e}. Using defaults.");
-        }
+    // Try TOML first, fall back to JSON for backward compatibility
+    if let Ok(file_config) = ServerOptions::load_from_file("config/config.toml").await {
+        config = file_config;
+        info!("Loaded configuration from config/config.toml");
+    } else if let Ok(file_config) = ServerOptions::load_from_file("config/config.json").await {
+        config = file_config;
+        info!("Loaded configuration from config/config.json");
+    } else {
+        info!("No config/config.toml or config/config.json found. Using defaults.");
     }
 
     if let Some(config_path) = args.config {

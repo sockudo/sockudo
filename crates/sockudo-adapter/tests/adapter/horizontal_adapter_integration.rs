@@ -109,6 +109,8 @@ async fn test_cross_node_broadcast_redis() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     // Send broadcast from adapter1
@@ -157,6 +159,8 @@ async fn test_cross_node_broadcast_nats() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     // Send broadcast from adapter1

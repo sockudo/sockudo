@@ -72,6 +72,8 @@ async fn test_verify_channel_authentication_private_channel_with_auth() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let request = SubscriptionRequest {
@@ -116,6 +118,8 @@ async fn test_verify_channel_authentication_presence_channel() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let request = SubscriptionRequest {

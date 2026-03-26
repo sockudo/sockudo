@@ -39,6 +39,13 @@
           "enabled": true,
           "max_client_events_per_second": 1000,
           "allowed_origins": ["*"],
+          "idempotency": {
+            "enabled": true,
+            "ttl_seconds": 300
+          },
+          "connection_recovery": {
+            "enabled": false
+          },
           "channel_delta_compression": {
             "ticker:*": {
               "enabled": true,
@@ -150,6 +157,16 @@
   "tag_filtering": {
     "enabled": true,
     "enable_tags": false
+  },
+  "idempotency": {
+    "enabled": true,
+    "ttl_seconds": 120,
+    "max_key_length": 128
+  },
+  "connection_recovery": {
+    "enabled": false,
+    "buffer_ttl_seconds": 120,
+    "max_buffer_size": 100
   },
   "websocket": {
     "max_messages": 1000,

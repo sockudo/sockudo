@@ -33,6 +33,7 @@ impl Namespace {
         socket_writer: WebSocketWriter,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         buffer_config: WebSocketBufferConfig,
+        protocol_version: sockudo_protocol::ProtocolVersion,
     ) -> Result<WebSocketRef> {
         let app_config = match app_manager.find_by_id(&self.app_id).await {
             Ok(Some(app)) => app,
@@ -56,6 +57,7 @@ impl Namespace {
 
         let mut websocket = WebSocket::with_buffer_config(socket_id, socket_writer, buffer_config);
         websocket.state.app = Some(app_config);
+        websocket.state.protocol_version = protocol_version;
 
         let websocket_ref = WebSocketRef::new(websocket);
         self.sockets.insert(socket_id, websocket_ref.clone());

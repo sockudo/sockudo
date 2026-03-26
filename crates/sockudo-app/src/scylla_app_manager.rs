@@ -4,7 +4,7 @@ use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::prepared::PreparedStatement;
 use scylla::{DeserializeRow, SerializeRow};
-use sockudo_core::app::{App, AppManager};
+use sockudo_core::app::{App, AppConnectionRecoveryConfig, AppIdempotencyConfig, AppManager};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::webhook_types::Webhook;
 use std::sync::Arc;
@@ -78,8 +78,8 @@ impl ScyllaDbAppManager {
                 max_event_payload_in_kb, max_event_batch_size,
                 enable_user_authentication, enable_watchlist_events,
                 webhooks, allowed_origins, channel_delta_compression,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, toTimestamp(now()), toTimestamp(now()))"#,
+                idempotency, connection_recovery, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, toTimestamp(now()), toTimestamp(now()))"#,
             config.keyspace, config.table_name
         );
 
@@ -94,6 +94,8 @@ impl ScyllaDbAppManager {
                 enable_user_authentication = ?, enable_watchlist_events = ?,
                 webhooks = ?, allowed_origins = ?,
                 channel_delta_compression = ?,
+                idempotency = ?,
+                connection_recovery = ?,
                 updated_at = toTimestamp(now())
             WHERE id = ?"#,
             config.keyspace, config.table_name
@@ -210,6 +212,32 @@ impl ScyllaDbAppManager {
             }
         }
 
+        let alter_query = format!(
+            "ALTER TABLE {}.{} ADD idempotency text",
+            config.keyspace, config.table_name
+        );
+        if let Err(e) = session.query_unpaged(alter_query, &[]).await {
+            let err_str = e.to_string();
+            if !err_str.contains("already exist") && !err_str.contains("conflicts") {
+                return Err(Error::Internal(format!(
+                    "Failed to add idempotency column: {e}"
+                )));
+            }
+        }
+
+        let alter_query = format!(
+            "ALTER TABLE {}.{} ADD connection_recovery text",
+            config.keyspace, config.table_name
+        );
+        if let Err(e) = session.query_unpaged(alter_query, &[]).await {
+            let err_str = e.to_string();
+            if !err_str.contains("already exist") && !err_str.contains("conflicts") {
+                return Err(Error::Internal(format!(
+                    "Failed to add connection_recovery column: {e}"
+                )));
+            }
+        }
+
         Ok(())
     }
 }
@@ -238,6 +266,8 @@ struct AppRow {
     webhooks: Option<String>,
     allowed_origins: Option<String>,
     channel_delta_compression: Option<String>,
+    idempotency: Option<String>,
+    connection_recovery: Option<String>,
 }
 
 /// Struct for UPDATE (SET fields first, then id for WHERE)
@@ -263,6 +293,8 @@ struct UpdateRow {
     webhooks: Option<String>,
     allowed_origins: Option<String>,
     channel_delta_compression: Option<String>,
+    idempotency: Option<String>,
+    connection_recovery: Option<String>,
     id: String,
 }
 
@@ -300,6 +332,16 @@ impl UpdateRow {
             })
             .transpose()?;
 
+        let idempotency = app
+            .idempotency
+            .as_ref()
+            .map(|i| {
+                sonic_rs::to_string(i).map_err(|e| {
+                    Error::Internal(format!("Failed to serialize idempotency: {}", e))
+                })
+            })
+            .transpose()?;
+
         Ok(Self {
             key: app.key.clone(),
             secret: app.secret.clone(),
@@ -323,6 +365,8 @@ impl UpdateRow {
             webhooks,
             allowed_origins,
             channel_delta_compression,
+            idempotency,
+            connection_recovery,
             id: app.id.clone(),
         })
     }
@@ -362,6 +406,26 @@ impl AppRow {
             })
             .transpose()?;
 
+        let idempotency = app
+            .idempotency
+            .as_ref()
+            .map(|i| {
+                sonic_rs::to_string(i).map_err(|e| {
+                    Error::Internal(format!("Failed to serialize idempotency: {}", e))
+                })
+            })
+            .transpose()?;
+
+        let connection_recovery = app
+            .connection_recovery
+            .as_ref()
+            .map(|c| {
+                sonic_rs::to_string(c).map_err(|e| {
+                    Error::Internal(format!("Failed to serialize connection_recovery: {}", e))
+                })
+            })
+            .transpose()?;
+
         Ok(Self {
             id: app.id.clone(),
             key: app.key.clone(),
@@ -386,6 +450,8 @@ impl AppRow {
             webhooks,
             allowed_origins,
             channel_delta_compression,
+            idempotency,
+            connection_recovery,
         })
     }
 
@@ -439,6 +505,26 @@ impl AppRow {
                     )
                 })
                 .ok()
+            }),
+            idempotency: self.idempotency.and_then(|json| {
+                sonic_rs::from_str::<AppIdempotencyConfig>(&json)
+                    .map_err(|e| {
+                        error!(
+                            "Failed to deserialize idempotency for app {}: {}",
+                            self.id, e
+                        )
+                    })
+                    .ok()
+            }),
+            connection_recovery: self.connection_recovery.and_then(|json| {
+                sonic_rs::from_str::<AppConnectionRecoveryConfig>(&json)
+                    .map_err(|e| {
+                        error!(
+                            "Failed to deserialize connection_recovery for app {}: {}",
+                            self.id, e
+                        )
+                    })
+                    .ok()
             }),
         }
     }
@@ -499,7 +585,8 @@ impl AppManager for ScyllaDbAppManager {
                 max_event_channels_at_once, max_event_name_length,
                 max_event_payload_in_kb, max_event_batch_size,
                 enable_user_authentication, enable_watchlist_events,
-                webhooks, allowed_origins, channel_delta_compression
+                webhooks, allowed_origins, channel_delta_compression,
+                idempotency, connection_recovery
             FROM {}.{}"#,
             self.config.keyspace, self.config.table_name
         );
@@ -668,6 +755,8 @@ mod tests {
             enable_watchlist_events: None,
             allowed_origins: None,
             channel_delta_compression: None,
+            idempotency: None,
+            connection_recovery: None,
         }
     }
 
@@ -723,6 +812,8 @@ mod tests {
                 "https://app.example.com".to_string(),
             ]),
             channel_delta_compression: None,
+            idempotency: None,
+            connection_recovery: None,
         }
     }
 

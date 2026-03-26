@@ -45,6 +45,7 @@ impl TypedAdapter {
         }
     }
 
+    #[cfg(feature = "delta")]
     /// Set delta compression on the adapter
     /// For horizontal adapters, this delegates to the internal LocalAdapter (which uses OnceLock)
     pub async fn set_delta_compression(
@@ -58,15 +59,18 @@ impl TypedAdapter {
             .await;
     }
 
+    #[cfg(feature = "tag-filtering")]
     /// Set tag filtering enabled flag
     pub fn set_tag_filtering_enabled(&self, enabled: bool) {
         self.local_adapter().set_tag_filtering_enabled(enabled);
     }
 
+    #[cfg(feature = "tag-filtering")]
     /// Set global enable_tags flag
     pub fn set_enable_tags_globally(&self, enabled: bool) {
         self.local_adapter().set_enable_tags_globally(enabled);
     }
+
 
     /// Set metrics on the adapter (only applicable to horizontal adapters)
     /// Note: This uses interior mutability through the adapter's internal RwLock

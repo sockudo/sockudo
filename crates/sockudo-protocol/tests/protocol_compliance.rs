@@ -379,6 +379,8 @@ fn test_channel_event_with_user_id() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
     let json = message_to_json(&message);
 
@@ -470,6 +472,8 @@ fn test_client_event_accepts_string() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let json = message_to_json(&message);
@@ -503,6 +507,8 @@ fn test_client_event_accepts_json() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let json = message_to_json(&message);

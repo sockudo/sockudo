@@ -1,0 +1,171 @@
+debug = false
+host = "0.0.0.0"
+port = 6001
+mode = "production"
+path_prefix = "/"
+shutdown_grace_period = 2
+websocket_max_payload_kb = 64
+user_authentication_timeout = 3600
+activity_timeout = 120
+
+[adapter]
+driver = "local"
+enable_socket_counting = true
+
+[adapter.cluster]
+nodes = []
+prefix = "sockudo_adapter:"
+request_timeout_ms = 5000
+use_connection_manager = true
+
+[adapter.cluster_health]
+enabled = true
+heartbeat_interval_ms = 10000
+node_timeout_ms = 30000
+cleanup_interval_ms = 10000
+
+[database]
+
+[app_manager]
+driver = "memory"
+
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "app-id"
+key = "app-key"
+secret = "app-secret"
+max_connections = 100000
+enable_client_messages = true
+enable_user_authentication = true
+enabled = true
+max_client_events_per_second = 1000
+allowed_origins = ["*"]
+
+[app_manager.array.apps.idempotency]
+enabled = true
+ttl_seconds = 300
+
+[app_manager.array.apps.connection_recovery]
+enabled = false
+
+[app_manager.array.apps.channel_delta_compression."ticker:*"]
+enabled = true
+algorithm = "Fossil"
+conflation_key = "item_id"
+max_messages_per_key = 10
+max_conflation_keys = 1000
+enable_tags = false
+
+[app_manager.array.apps.channel_delta_compression."price:*"]
+enabled = true
+algorithm = "Fossil"
+conflation_key = "item_id"
+max_messages_per_key = 10
+max_conflation_keys = 100
+
+[app_manager.cache]
+enabled = false
+ttl = 300
+
+[cache]
+driver = "memory"
+
+[cache.memory]
+ttl = 300
+cleanup_interval = 60
+max_capacity = 10000
+
+[queue]
+driver = "memory"
+
+[rate_limiter]
+enabled = false
+driver = "memory"
+
+[metrics]
+enabled = true
+driver = "prometheus"
+host = "0.0.0.0"
+port = 9601
+
+[metrics.prometheus]
+prefix = "sockudo_"
+
+[ssl]
+enabled = false
+
+[cors]
+credentials = true
+origin = ["*"]
+methods = ["GET", "POST", "OPTIONS"]
+allowed_headers = ["Authorization", "Content-Type", "X-Requested-With", "Accept"]
+
+[channel_limits]
+max_name_length = 200
+cache_ttl = 3600
+
+[event_limits]
+max_channels_at_once = 100
+max_name_length = 200
+max_payload_in_kb = 100
+max_batch_size = 10
+
+[presence]
+max_members_per_channel = 100
+max_member_size_in_kb = 2
+
+[http_api]
+request_limit_in_mb = 10
+
+[webhooks.batching]
+enabled = false
+
+[logging]
+colors_enabled = false
+include_target = true
+
+[cleanup]
+async_enabled = true
+fallback_to_sync = true
+queue_buffer_size = 10000
+batch_size = 25
+batch_timeout_ms = 50
+worker_threads = "auto"
+max_retry_attempts = 2
+
+[delta_compression]
+enabled = true
+algorithm = "Fossil"
+full_message_interval = 10
+min_message_size = 100
+max_state_age_secs = 300
+max_channel_states_per_socket = 100
+cluster_coordination = true
+omit_delta_algorithm = true
+
+[tag_filtering]
+enabled = true
+enable_tags = false
+
+[idempotency]
+enabled = true
+ttl_seconds = 120
+max_key_length = 128
+
+[connection_recovery]
+enabled = false
+buffer_ttl_seconds = 120
+max_buffer_size = 100
+
+[websocket]
+max_messages = 1000
+max_bytes = 1048576
+disconnect_on_buffer_full = false
+max_message_size = 67108864
+max_frame_size = 16777216
+write_buffer_size = 16384
+max_backpressure = 1048576
+auto_ping = true
+ping_interval = 30
+idle_timeout = 120
+compression = "disabled"

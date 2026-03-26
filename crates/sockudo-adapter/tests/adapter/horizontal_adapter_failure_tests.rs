@@ -37,6 +37,8 @@ async fn test_transport_publish_failure_recovery() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     // Send should fail due to simulated transport error
@@ -55,6 +57,8 @@ async fn test_transport_publish_failure_recovery() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     // This should succeed
@@ -547,6 +551,8 @@ async fn test_unicode_and_special_characters() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     adapter

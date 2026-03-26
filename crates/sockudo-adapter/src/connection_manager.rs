@@ -6,6 +6,7 @@ use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::Result;
 use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
+use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
@@ -21,6 +22,7 @@ pub struct ChannelSocketCount {
     pub complete: bool,
 }
 
+#[cfg(feature = "delta")]
 /// Parameters for delta compression when sending messages
 pub struct CompressionParams<'a> {
     pub delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
@@ -64,6 +66,7 @@ pub trait ConnectionManager: Send + Sync {
         app_id: &str,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         buffer_config: WebSocketBufferConfig,
+        protocol_version: ProtocolVersion,
     ) -> Result<()>;
 
     async fn get_connection(&self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef>;
@@ -87,6 +90,7 @@ pub trait ConnectionManager: Send + Sync {
         start_time_ms: Option<f64>,
     ) -> Result<()>;
 
+    #[cfg(feature = "delta")]
     async fn send_with_compression(
         &self,
         channel: &str,

@@ -167,6 +167,21 @@ impl CacheManager for RedisClusterCacheManager {
         }
         Ok(Some(Duration::from_secs(ttl as u64)))
     }
+
+    async fn set_if_not_exists(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<bool> {
+        let prefixed_key = self.prefixed_key(key);
+        let mut connection = self.connection.clone();
+        let result: Option<String> = redis::cmd("SET")
+            .arg(&prefixed_key)
+            .arg(value)
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl_seconds)
+            .query_async(&mut connection)
+            .await
+            .map_err(|e| Error::Cache(format!("Redis Cluster SET NX error: {e}")))?;
+        Ok(result.is_some())
+    }
 }
 
 impl RedisClusterCacheManager {

@@ -40,6 +40,8 @@ impl ConnectionHandler {
             tags: None,
             sequence: None,
             conflation_key: None,
+                message_id: None,
+                serial: None,
         };
 
         let is_valid = ChannelManager::signature_is_valid(

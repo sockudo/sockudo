@@ -1,7 +1,7 @@
 <p align="center">
   <img src="images/logo.svg" alt="Sockudo Logo" width="200">
   <h1 align="center">Sockudo</h1>
-  <p align="center">A high-performance, scalable WebSocket server implementing the Pusher protocol in Rust.</p>
+  <p align="center">A high-performance, scalable WebSocket server for real-time applications, built in Rust.</p>
   <p align="center">
     <a href="https://github.com/Sockudo/sockudo"><img src="https://img.shields.io/github/stars/sockudo/sockudo?style=social" alt="Stars"></a>
     <a href="https://github.com/sockudo/sockudo/actions"><img src="https://img.shields.io/github/actions/workflow/status/sockudo/sockudo/ci.yml?branch=main" alt="Build Status"></a>
@@ -16,174 +16,69 @@
 ## Features
 
 - **🚀 High Performance** - Handle 100K+ concurrent connections
-- **🔄 Pusher Compatible** - Drop-in replacement for Pusher services
+- **🔄 Dual Protocol** - V1 for Pusher compatibility, V2 for Sockudo-native with serial numbers, message IDs, and connection recovery
+- **🔗 Connection Recovery** - Ably-style serial-based message replay for exactly-once delivery (V2)
+- **🆔 Message Idempotency** - Automatic `message_id` on every broadcast, HTTP-level `idempotency_key` deduplication
 - **🏗️ Scalable Architecture** - Redis, Redis Cluster, NATS adapters
 - **🛡️ Production Ready** - Rate limiting, SSL/TLS, metrics
 - **⚡ Async Cleanup** - Non-blocking disconnect handling
 - **📊 Real-time Metrics** - Prometheus integration
 - **🧠 Delta Compression + Conflation** - Fossil and Xdelta3 (VCDIFF) with per-channel controls
 - **🏷️ Tag Filtering** - High-performance server-side filtering with optional tag emission controls
-- **🌐 Native WebSocket Engine** - `sockudo_ws` (replacing `fastwebsockets`) with advanced runtime tuning
-- **📦 Official Client SDKs** - JavaScript, Swift, Kotlin, and Flutter clients with filters, delta decoding, and encrypted channel support
+- **🌐 Native WebSocket Engine** - `sockudo_ws` with advanced runtime tuning
+- **📦 Official SDKs** - Client and server SDKs for all major platforms
+
+## What's New in v4
+
+Sockudo v4 introduces **dual protocol versioning**, making Sockudo its own platform while retaining full Pusher compatibility:
+
+| | Protocol V1 (default) | Protocol V2 |
+|---|---|---|
+| Event prefix | `pusher:` / `pusher_internal:` | `sockudo:` / `sockudo_internal:` |
+| `serial` | Never sent | Always on every message |
+| `message_id` | Never sent | Always on every broadcast |
+| Connection recovery | Not available | Always available |
+| Delta compression | Not available | Native |
+| Tag filtering | Not available | Native |
+| Compatible SDKs | Official Pusher SDKs | Sockudo client SDKs |
+
+Additional v4 changes:
+- **TOML configuration** (preferred over JSON) - `config/config.toml`
+- **Rebranded SDKs** - All server and client SDKs renamed from `pusher-*` to `sockudo-*`
+- **HTTP idempotency** - Atomic `idempotency_key` deduplication via `SET NX` (no race conditions)
+- **Replay buffer** - Per-channel message buffer with configurable TTL and max size
 
 ## Official Client SDKs
 
-Sockudo now has official clients for the main application runtimes:
-
-| Client | Repository | Distribution |
+| Client | Package | Default Protocol |
 |---|---|---|
-| JavaScript / TypeScript | `sockudo/sockudo-js` | npm: `@sockudo/client` |
-| Swift | `sockudo/sockudo-swift` | Swift Package Manager |
-| Kotlin | `sockudo/sockudo-kotlin` | Maven / Gradle |
-| Flutter / Dart | `sockudo/sockudo-flutter` | `pub.dev` |
+| JavaScript / TypeScript | `@sockudo/client` | V2 |
+| Swift | `SockudoSwift` (SPM) | V2 |
+| Kotlin | `io.sockudo:sockudo-kotlin` | V2 |
+| Flutter / Dart | `sockudo_flutter` | V2 |
 
-Shared capabilities across the official SDKs:
+All Sockudo client SDKs default to protocol V2 (`sockudo:` prefix, serial tracking, connection recovery). Set `protocolVersion: 1` to use Pusher-compatible mode. For V1 you can also use the official Pusher SDKs directly.
 
-- public, private, presence, and encrypted channels
-- channel auth and user sign-in
-- tag-filter subscription options
-- Fossil and Xdelta3/VCDIFF delta reconstruction
-- live integration coverage against Sockudo on port `6001`
+## Official Server SDKs
 
-## What This Branch Adds
+| Language | Package |
+|---|---|
+| Node.js | `sockudo` |
+| PHP | `sockudo/sockudo-php-server` |
+| Ruby | `sockudo` gem |
+| Go | `github.com/sockudo/sockudo-http-go` |
+| Rust | `sockudo-http` |
+| Java | `io.sockudo:sockudo-http-java` |
+| .NET | `SockudoServer` |
+| Swift | `Sockudo` (SPM) |
 
-This branch includes a major realtime pipeline upgrade:
-
-- Delta compression enhancements (including late-subscriber sync, cluster coordination, state cleanup hardening, and sequence/base-index improvements)
-- Channel-level and global tag-filtering optimizations
-- Conflation key support to isolate delta state per logical stream/key
-- Broadcast and adapter path optimizations (lock/contention, batching, buffer controls)
-- Expanded benchmark/soak tooling and test assets
-- Full WebSocket transport migration from `fastwebsockets` to `sockudo_ws`
-- Xdelta3 backend migration from `xdelta3` crate to `oxidelta`
-- official native/mobile client ports for Swift, Kotlin, and Flutter
-
-## Delta Compression, Conflation, and Tag Filtering
-
-### Delta Algorithms
-
-- `fossil` (fast, low overhead)
-- `xdelta3` (VCDIFF/RFC 3284) powered by `oxidelta`
-
-### Core Delta Options (`config/config.json`)
-
-```json
-{
-  "delta_compression": {
-    "enabled": true,
-    "algorithm": "Fossil",
-    "full_message_interval": 10,
-    "min_message_size": 100,
-    "max_state_age_secs": 300,
-    "max_channel_states_per_socket": 100,
-    "max_conflation_states_per_channel": 100,
-    "conflation_key_path": null,
-    "cluster_coordination": true,
-    "omit_delta_algorithm": true
-  }
-}
-```
-
-### Tag Filtering (`config/config.json`)
-
-```json
-{
-  "tag_filtering": {
-    "enabled": true,
-    "enable_tags": false
-  }
-}
-```
-
-### Channel-Level Delta Overrides
-
-Per-app/per-channel overrides are available through `channel_delta_compression` in app config.  
-Supported modes include:
-
-- Simple: `inherit`, `disabled`, `fossil`, `xdelta3`
-- Full object settings: `enabled`, `algorithm`, `conflation_key`, `max_messages_per_key`, `max_conflation_keys`, `enable_tags`
-
-### Delta + Conflation Behavior
-
-- Delta state is tracked per socket and channel
-- Conflation key extraction isolates independent state streams (for example per `asset`, `symbol`, token id, etc.)
-- Cluster coordination can synchronize full-message intervals across nodes (Redis/NATS)
-- Cache-sync and late subscriber behavior were improved for reduced warm-up overhead
-
-### Detailed Docs
-
-- `DELTA_COMPRESSION.md`
-- `docs/DELTA_COMPRESSION_BANDWIDTH_OPTIMIZATION.md`
-- `docs/DELTA_COMPRESSION_CLUSTER_COORDINATION.md`
-- `docs/DELTA_COMPRESSION_HORIZONTAL_IMPLEMENTATION.md`
-- `docs/DELTA_COMPRESSION_LATE_SUBSCRIBERS.md`
-- `docs/TAG_FILTERING.md`
-- `docs/TAG_FILTERING_QUICKSTART.md`
-
-## WebSocket Engine (`sockudo_ws`)
-
-`fastwebsockets` was fully replaced with native `sockudo_ws` APIs:
-
-- Axum integration via `sockudo_ws::axum_integration::WebSocketUpgrade`
-- Split reader/writer model via `sockudo_ws::axum_integration::WebSocket::{split}`
-- Message-based send/receive model (`Text`, `Binary`, `Close`, control handling)
-- Native websocket runtime tuning mapped into `websocket` config
-
-### WebSocket Runtime Options (`config/config.json`)
-
-```json
-{
-  "websocket": {
-    "max_messages": 1000,
-    "max_bytes": 1048576,
-    "disconnect_on_buffer_full": false,
-    "max_message_size": 67108864,
-    "max_frame_size": 16777216,
-    "write_buffer_size": 16384,
-    "max_backpressure": 1048576,
-    "auto_ping": true,
-    "ping_interval": 30,
-    "idle_timeout": 120,
-    "compression": "disabled"
-  }
-}
-```
-
-### WebSocket Environment Variables
-
-```bash
-WEBSOCKET_MAX_MESSAGES=1000
-WEBSOCKET_MAX_BYTES=1048576
-WEBSOCKET_DISCONNECT_ON_BUFFER_FULL=false
-WEBSOCKET_MAX_MESSAGE_SIZE=67108864
-WEBSOCKET_MAX_FRAME_SIZE=16777216
-WEBSOCKET_WRITE_BUFFER_SIZE=16384
-WEBSOCKET_MAX_BACKPRESSURE=1048576
-WEBSOCKET_AUTO_PING=true
-WEBSOCKET_PING_INTERVAL=30
-WEBSOCKET_IDLE_TIMEOUT=120
-WEBSOCKET_COMPRESSION=disabled
-```
-
-Compression values for `WEBSOCKET_COMPRESSION` / `websocket.compression`:
-
-- `disabled`
-- `dedicated`
-- `shared`
-- `window256b`
-- `window1kb`
-- `window2kb`
-- `window4kb`
-- `window8kb`
-- `window16kb`
-- `window32kb`
+All server SDKs support `idempotency_key` for safe publish retries.
 
 ## Quick Start
 
 ### Docker (Recommended)
 
 ```bash
-# Clone and start with Docker Compose
 git clone https://github.com/sockudo/sockudo.git
 cd sockudo
 make up
@@ -195,7 +90,6 @@ make up
 ### Kubernetes (Helm)
 
 ```bash
-# Install with defaults
 helm install sockudo ./charts/sockudo
 
 # Production with Redis adapter and autoscaling
@@ -214,10 +108,8 @@ See [`charts/sockudo/values.yaml`](charts/sockudo/values.yaml) for all configura
 ### From Source
 
 ```bash
-# Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Build and run
 git clone https://github.com/sockudo/sockudo.git
 cd sockudo
 
@@ -229,8 +121,6 @@ cargo run --release --features full
 ```
 
 ### Feature Flags
-
-Sockudo supports optional compilation of backends to speed up local development:
 
 ```bash
 # Local development (fastest - default)
@@ -246,6 +136,10 @@ cargo build --release --features full          # All backends
 
 **Available Features:**
 - `local` (default) - In-memory implementations only
+- `v2` (default) - All Sockudo V2 features (delta, tag-filtering, recovery)
+- `delta` - Delta compression (V2)
+- `tag-filtering` - Server-side tag filtering (V2)
+- `recovery` - Connection recovery with serial numbers and message IDs (V2)
 - `redis` - Redis adapter, cache, queue, rate limiter
 - `redis-cluster` - Redis Cluster support
 - `nats` - NATS adapter
@@ -253,21 +147,32 @@ cargo build --release --features full          # All backends
 - `sqs` / `lambda` - AWS integrations
 - `full` - All features enabled
 
+```bash
+# Pure Pusher-only server (no V2 features, smallest binary)
+cargo build --no-default-features
+
+# V2 with only delta compression
+cargo build --no-default-features --features delta
+
+# V2 with recovery only (serial + message_id + replay buffer)
+cargo build --no-default-features --features recovery
+```
+
 ## Basic Usage
 
-Connect using any Pusher-compatible or official Sockudo client:
+### Protocol V2 (Sockudo-native, default for Sockudo SDKs)
 
 ```javascript
-import Pusher from 'pusher-js';
+import { SockudoClient } from '@sockudo/client';
 
-const pusher = new Pusher('app-key', {
+const client = new SockudoClient('app-key', {
     wsHost: 'localhost',
     wsPort: 6001,
-    cluster: '',
-    forceTLS: false
+    forceTLS: false,
+    // protocolVersion: 2 is the default
 });
 
-const channel = pusher.subscribe('my-channel');
+const channel = client.subscribe('my-channel');
 channel.bind('my-event', (data) => {
     console.log('Received:', data);
 });
@@ -295,7 +200,47 @@ channel.bind("my-event") { data, _ in
 client.connect()
 ```
 
+### Protocol V1 (Pusher-compatible)
+
+```javascript
+import Pusher from 'pusher-js';
+
+const pusher = new Pusher('app-key', {
+    wsHost: 'localhost',
+    wsPort: 6001,
+    cluster: '',
+    forceTLS: false
+});
+
+const channel = pusher.subscribe('my-channel');
+channel.bind('my-event', (data) => {
+    console.log('Received:', data);
+});
+```
+
 ## Configuration
+
+Sockudo uses TOML configuration (preferred) with JSON as a fallback. The server tries `config/config.toml` first, then `config/config.json`.
+
+### Core Configuration (`config/config.toml`)
+
+```toml
+port = 6001
+host = "0.0.0.0"
+debug = false
+
+[app_manager]
+driver = "memory"
+
+[adapter]
+driver = "local"
+
+[cache]
+driver = "memory"
+
+[queue]
+driver = "memory"
+```
 
 ### Environment Variables
 
@@ -316,61 +261,75 @@ CACHE_DRIVER=redis           # memory, redis, redis-cluster, none
 QUEUE_DRIVER=redis           # memory, redis, redis-cluster, sqs, none
 ```
 
+### Delta Compression (`config/config.toml`)
+
+```toml
+[delta_compression]
+enabled = true
+algorithm = "Fossil"
+full_message_interval = 10
+min_message_size = 100
+max_state_age_secs = 300
+max_channel_states_per_socket = 100
+max_conflation_states_per_channel = 100
+cluster_coordination = true
+omit_delta_algorithm = true
+```
+
+### Tag Filtering (`config/config.toml`)
+
+```toml
+[tag_filtering]
+enabled = true
+enable_tags = false
+```
+
+### WebSocket Runtime (`config/config.toml`)
+
+```toml
+[websocket]
+max_messages = 1000
+max_bytes = 1048576
+disconnect_on_buffer_full = false
+max_message_size = 67108864
+max_frame_size = 16777216
+write_buffer_size = 16384
+max_backpressure = 1048576
+auto_ping = true
+ping_interval = 30
+idle_timeout = 120
+compression = "disabled"
+```
+
 ### Performance Tuning
 
 ```bash
-# Connection limits
 SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS=100000
 SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND=10000
 
-# Cleanup performance (for handling mass disconnects)
 CLEANUP_QUEUE_BUFFER_SIZE=50000
 CLEANUP_BATCH_SIZE=25
 CLEANUP_WORKER_THREADS=auto
 
-# CPU scaling
 ADAPTER_BUFFER_MULTIPLIER_PER_CPU=128
 ```
 
 ### Database Pooling
 
-- Global defaults (apply to all SQL DBs unless overridden):
+```toml
+[database_pooling]
+enabled = true
+min = 2
+max = 10
 
-```bash
-DATABASE_POOLING_ENABLED=true
-DATABASE_POOL_MIN=2
-DATABASE_POOL_MAX=10
-# Legacy cap if pooling disabled
-DATABASE_CONNECTION_POOL_SIZE=10
+[database.mysql]
+pool_min = 4
+pool_max = 32
+
+[database.postgres]
+pool_min = 2
+pool_max = 16
 ```
-
-- Per‑database overrides (take precedence over global when set):
-
-```bash
-# MySQL
-DATABASE_MYSQL_POOL_MIN=4
-DATABASE_MYSQL_POOL_MAX=32
-
-# PostgreSQL
-DATABASE_POSTGRES_POOL_MIN=2
-DATABASE_POSTGRES_POOL_MAX=16
-```
-
-- config/config.json keys:
-
-```json
-{
-  "database_pooling": { "enabled": true, "min": 2, "max": 10 },
-  "database": {
-    "mysql": { "pool_min": 2, "pool_max": 10, "connection_pool_size": 10 },
-    "postgres": { "pool_min": 2, "pool_max": 10, "connection_pool_size": 10 }
-  }
-}
-```
-
-Behavior:
-- When `database_pooling.enabled` is true, managers use per‑DB `pool_min/pool_max` if provided; otherwise they fall back to the global `database_pooling.min/max`.
-- When disabled, managers use `connection_pool_size` as the max connections for backward compatibility.
 
 ## Deployment Scenarios
 
@@ -381,7 +340,7 @@ Behavior:
 | **High Traffic** | 4vCPU/4GB+ | redis | redis | redis | 50K+ |
 | **Multi-Region** | 8vCPU/8GB+ | redis-cluster | redis-cluster | redis-cluster | 100K+ |
 
-All scenarios above can be deployed via Docker Compose or the included [Helm chart](charts/sockudo/) on Kubernetes with built-in HPA autoscaling.
+All scenarios can be deployed via Docker Compose or the included [Helm chart](charts/sockudo/) on Kubernetes with built-in HPA autoscaling.
 
 ## Architecture
 
@@ -401,21 +360,14 @@ All scenarios above can be deployed via Docker Compose or the included [Helm cha
 
 - **[Full Documentation](docs/)** - Complete setup and configuration guide
 - **[Client Overview](docs/content/3.client/1.overview.md)** - Official SDKs and runtime targets
-- **[Performance Tuning](docs/QUEUE_CONFIG.md)** - Optimize for your workload
 - **[Docker Deployment](docker-compose.yml)** - Production-ready containers
 - **[Helm Charts](charts/sockudo/)** - Kubernetes deployment with HPA, PDB, ServiceMonitor
-- **[API Reference](docs/API.md)** - WebSocket and HTTP API details
 
 ## Testing
 
 ```bash
-# Run all tests
+# Run all server tests
 make test
-
-# Run official client live integration tests against localhost:6001
-cd ../sockudo-swift && SOCKUDO_LIVE_TESTS=1 swift test
-cd ../sockudo-kotlin && SOCKUDO_LIVE_TESTS=1 ./gradlew :lib:test --tests io.sockudo.client.LiveIntegrationTest
-cd ../sockudo_flutter && SOCKUDO_LIVE_TESTS=1 flutter test
 
 # Interactive WebSocket testing
 cd test/interactive && npm install && npm start
@@ -424,6 +376,8 @@ cd test/interactive && npm install && npm start
 # Load testing
 make benchmark
 ```
+
+Client and server SDK tests are run from their respective repositories. See each SDK's README for instructions.
 
 ## Contributing
 

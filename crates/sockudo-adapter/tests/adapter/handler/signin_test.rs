@@ -36,6 +36,8 @@ async fn test_signin_request_from_message_json_format() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let request = SignInRequest::from_message(&message).unwrap();
@@ -75,6 +77,8 @@ async fn test_signin_request_from_message_structured_format() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let request = SignInRequest::from_message(&message).unwrap();
@@ -101,6 +105,8 @@ async fn test_signin_request_from_message_missing_user_data_json() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -135,6 +141,8 @@ async fn test_signin_request_from_message_missing_auth_structured() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -160,6 +168,8 @@ async fn test_signin_request_from_message_invalid_format() {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -519,5 +529,7 @@ fn create_test_app() -> App {
         enable_watchlist_events: None,
         allowed_origins: None,
         channel_delta_compression: None,
+        idempotency: None,
+        connection_recovery: None,
     }
 }

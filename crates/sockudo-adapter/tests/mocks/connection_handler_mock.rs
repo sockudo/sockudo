@@ -47,6 +47,7 @@ impl ConnectionManager for MockAdapter {
         _app_id: &str,
         _app_manager: Arc<dyn AppManager + Send + Sync>,
         _buffer_config: sockudo_core::websocket::WebSocketBufferConfig,
+        _protocol_version: sockudo_protocol::ProtocolVersion,
     ) -> Result<()> {
         Ok(())
     }
@@ -400,17 +401,15 @@ pub fn create_test_connection_handler() -> (ConnectionHandler, MockAppManager) {
         sockudo_delta::DeltaCompressionConfig::default(),
     ));
 
-    let handler = ConnectionHandler::new(
+    let handler = ConnectionHandler::builder(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
-        None, // local_adapter
         Arc::new(MockCacheManager::new()),
-        Some(Arc::new(MockMetricsInterface::new())),
-        None,
         ServerOptions::default(),
-        None,
-        delta_manager,
-    );
+    )
+    .metrics(Arc::new(MockMetricsInterface::new()))
+    .delta_compression(delta_manager)
+    .build();
 
     (handler, app_manager)
 }
@@ -422,15 +421,13 @@ pub fn create_test_connection_handler_with_app_manager(
         sockudo_delta::DeltaCompressionConfig::default(),
     ));
 
-    ConnectionHandler::new(
+    ConnectionHandler::builder(
         Arc::new(app_manager.clone()) as Arc<dyn AppManager + Send + Sync>,
         Arc::new(MockAdapter::new()) as Arc<dyn ConnectionManager + Send + Sync>,
-        None, // local_adapter
         Arc::new(MockCacheManager::new()),
-        Some(Arc::new(MockMetricsInterface::new())),
-        None,
         ServerOptions::default(),
-        None,
-        delta_manager,
     )
+    .metrics(Arc::new(MockMetricsInterface::new()))
+    .delta_compression(delta_manager)
+    .build()
 }

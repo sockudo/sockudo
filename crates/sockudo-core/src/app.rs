@@ -45,6 +45,50 @@ pub struct App {
     pub allowed_origins: Option<Vec<String>>,
     #[serde(default)]
     pub channel_delta_compression: Option<AHashMap<String, crate::delta_types::ChannelDeltaConfig>>,
+    #[serde(default)]
+    pub idempotency: Option<AppIdempotencyConfig>,
+    #[serde(default)]
+    pub connection_recovery: Option<AppConnectionRecoveryConfig>,
+}
+
+/// Per-app idempotency configuration override.
+/// Only fields that are explicitly set will override the global `IdempotencyConfig`;
+/// unset (`None`) fields fall back to the global value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppIdempotencyConfig {
+    pub enabled: Option<bool>,
+    pub ttl_seconds: Option<u64>,
+}
+
+impl Default for AppIdempotencyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            ttl_seconds: None,
+        }
+    }
+}
+
+/// Per-app connection recovery configuration override.
+/// Only fields that are explicitly set will override the global `ConnectionRecoveryConfig`;
+/// unset (`None`) fields fall back to the global value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppConnectionRecoveryConfig {
+    pub enabled: Option<bool>,
+    pub buffer_ttl_seconds: Option<u64>,
+    pub max_buffer_size: Option<usize>,
+}
+
+impl Default for AppConnectionRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            buffer_ttl_seconds: None,
+            max_buffer_size: None,
+        }
+    }
 }
 
 fn deserialize_and_validate_origins<'de, D>(

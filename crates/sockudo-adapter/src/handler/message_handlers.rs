@@ -5,6 +5,7 @@ use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
+#[cfg(feature = "delta")]
 use sonic_rs::prelude::*;
 
 impl ConnectionHandler {
@@ -39,6 +40,7 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    #[cfg(feature = "delta")]
     pub async fn handle_enable_delta_compression(&self, socket_id: &SocketId) -> Result<()> {
         tracing::info!("Enabling delta compression for socket: {}", socket_id);
 
@@ -78,6 +80,8 @@ impl ConnectionHandler {
                     tags: None,
                     sequence: None,
                     conflation_key: None,
+                message_id: None,
+                serial: None,
                 };
 
                 drop(conn_locked);
@@ -100,6 +104,7 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    #[cfg(feature = "delta")]
     /// Handle delta sync error from client - reset delta compression state for the channel
     pub async fn handle_delta_sync_error(
         &self,
@@ -284,6 +289,8 @@ impl ConnectionHandler {
             tags: None,
             sequence: None,
             conflation_key: None,
+                message_id: None,
+                serial: None,
         };
 
         self.broadcast_to_channel(app_config, &request.channel, message, Some(socket_id))

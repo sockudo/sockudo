@@ -32,6 +32,8 @@ mod origin_validation_config_integration_tests {
                 enable_watchlist_events: Some(false),
                 allowed_origins: None,
                 channel_delta_compression: None,
+                idempotency: None,
+                connection_recovery: None,
             },
             // App with specific allowed origins
             App {
@@ -60,6 +62,8 @@ mod origin_validation_config_integration_tests {
                     "http://localhost:3000".to_string(),
                 ]),
                 channel_delta_compression: None,
+                idempotency: None,
+                connection_recovery: None,
             },
             // App with wildcard allowing all origins
             App {
@@ -84,6 +88,8 @@ mod origin_validation_config_integration_tests {
                 enable_watchlist_events: Some(false),
                 allowed_origins: Some(vec!["*".to_string()]),
                 channel_delta_compression: None,
+                idempotency: None,
+                connection_recovery: None,
             },
         ];
 

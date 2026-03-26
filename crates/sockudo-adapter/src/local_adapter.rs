@@ -1,4 +1,5 @@
 use crate::ConnectionManager;
+#[cfg(feature = "tag-filtering")]
 use crate::filter_index::FilterIndex;
 use ahash::AHashMap as HashMap;
 use async_trait::async_trait;
@@ -13,10 +14,16 @@ use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
 use std::sync::Arc;
+#[cfg(feature = "delta")]
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "tag-filtering")]
+use std::sync::atomic::AtomicBool;
+#[cfg(any(feature = "tag-filtering", feature = "delta"))]
+use std::sync::atomic::Ordering;
 use tokio::sync::Semaphore;
-use tracing::{debug, error, info, warn};
+#[cfg(feature = "delta")]
+use tracing::warn;
+use tracing::{debug, error, info};
 
 pub struct LocalAdapter {
     pub namespaces: Arc<DashMap<String, Arc<Namespace>>>,
@@ -24,14 +31,19 @@ pub struct LocalAdapter {
     pub max_concurrent: usize,
     // Global semaphore to limit total concurrent broadcast operations across all channels
     broadcast_semaphore: Arc<Semaphore>,
+    #[cfg(feature = "delta")]
     // Delta compression manager for bandwidth optimization (OnceLock for lock-free reads after init)
     delta_compression: Arc<OnceLock<Arc<sockudo_delta::DeltaCompressionManager>>>,
+    #[cfg(feature = "delta")]
     // App manager for getting channel-specific delta settings (OnceLock for lock-free reads after init)
     app_manager: Arc<OnceLock<Arc<dyn AppManager + Send + Sync>>>,
+    #[cfg(feature = "tag-filtering")]
     // Server options for checking if tag filtering is enabled (AtomicBool for lock-free access)
     tag_filtering_enabled: Arc<AtomicBool>,
+    #[cfg(feature = "tag-filtering")]
     // Global setting for whether to include tags in messages (AtomicBool for lock-free access)
     enable_tags_globally: Arc<AtomicBool>,
+    #[cfg(feature = "tag-filtering")]
     // Filter index for O(1) message-to-subscriber matching (avoids O(N) iteration on broadcast)
     filter_index: Arc<FilterIndex>,
 }
@@ -44,10 +56,15 @@ impl Clone for LocalAdapter {
             buffer_multiplier_per_cpu: self.buffer_multiplier_per_cpu,
             max_concurrent: self.max_concurrent,
             broadcast_semaphore: Arc::clone(&self.broadcast_semaphore),
+            #[cfg(feature = "delta")]
             delta_compression: Arc::clone(&self.delta_compression),
+            #[cfg(feature = "delta")]
             app_manager: Arc::clone(&self.app_manager),
+            #[cfg(feature = "tag-filtering")]
             tag_filtering_enabled: Arc::clone(&self.tag_filtering_enabled),
+            #[cfg(feature = "tag-filtering")]
             enable_tags_globally: Arc::clone(&self.enable_tags_globally),
+            #[cfg(feature = "tag-filtering")]
             filter_index: Arc::clone(&self.filter_index),
         }
     }
@@ -64,21 +81,25 @@ impl LocalAdapter {
         Self::new_with_buffer_multiplier(64)
     }
 
+    #[cfg(feature = "tag-filtering")]
     /// Set whether tag filtering is enabled (lock-free atomic operation)
     pub fn set_tag_filtering_enabled(&self, enabled: bool) {
         self.tag_filtering_enabled.store(enabled, Ordering::Release);
     }
 
+    #[cfg(feature = "tag-filtering")]
     /// Get whether tag filtering is enabled (lock-free atomic operation)
     pub fn is_tag_filtering_enabled(&self) -> bool {
         self.tag_filtering_enabled.load(Ordering::Acquire)
     }
 
+    #[cfg(feature = "tag-filtering")]
     /// Set whether tags are included in messages globally (lock-free atomic operation)
     pub fn set_enable_tags_globally(&self, enabled: bool) {
         self.enable_tags_globally.store(enabled, Ordering::Release);
     }
 
+    #[cfg(feature = "tag-filtering")]
     /// Get whether tags are included in messages globally (lock-free atomic operation)
     pub fn get_enable_tags_globally(&self) -> bool {
         self.enable_tags_globally.load(Ordering::Acquire)
@@ -98,19 +119,26 @@ impl LocalAdapter {
             buffer_multiplier_per_cpu: multiplier,
             max_concurrent,
             broadcast_semaphore: Arc::new(Semaphore::new(max_concurrent * 8)),
+            #[cfg(feature = "delta")]
             delta_compression: Arc::new(OnceLock::new()),
+            #[cfg(feature = "delta")]
             app_manager: Arc::new(OnceLock::new()),
+            #[cfg(feature = "tag-filtering")]
             tag_filtering_enabled: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "tag-filtering")]
             enable_tags_globally: Arc::new(AtomicBool::new(true)), // Enabled by default
+            #[cfg(feature = "tag-filtering")]
             filter_index: Arc::new(FilterIndex::new()),
         }
     }
 
+    #[cfg(feature = "tag-filtering")]
     /// Get a reference to the filter index (for external registration of filters)
     pub fn get_filter_index(&self) -> Arc<FilterIndex> {
         Arc::clone(&self.filter_index)
     }
 
+    #[cfg(feature = "delta")]
     /// Set delta compression manager and app manager for delta compression support
     /// Note: This can only be called once; subsequent calls will be ignored (OnceLock semantics)
     pub async fn set_delta_compression(
@@ -123,12 +151,14 @@ impl LocalAdapter {
         let _ = self.app_manager.set(app_manager);
     }
 
+    #[cfg(feature = "delta")]
     /// Get the delta compression manager if available (lock-free read)
     #[inline]
     pub fn get_delta_compression(&self) -> Option<&Arc<sockudo_delta::DeltaCompressionManager>> {
         self.delta_compression.get()
     }
 
+    #[cfg(feature = "delta")]
     /// Get the app manager if available (lock-free read)
     #[inline]
     pub fn get_app_manager(&self) -> Option<&Arc<dyn AppManager + Send + Sync>> {
@@ -136,6 +166,7 @@ impl LocalAdapter {
     }
 }
 
+#[cfg(feature = "delta")]
 /// Parameters for sending a message to a socket with compression
 #[allow(dead_code)]
 struct SocketMessageParams<'a> {
@@ -149,6 +180,7 @@ struct SocketMessageParams<'a> {
     tag_filtering_enabled: bool,
 }
 
+#[cfg(feature = "delta")]
 /// Parameters for sending a message with pre-computed delta
 #[allow(dead_code)]
 struct PrecomputedDeltaParams<'a> {
@@ -227,6 +259,7 @@ impl LocalAdapter {
         results
     }
 
+    #[cfg(feature = "delta")]
     /// Send messages with delta compression support using chunked processing
     async fn send_messages_with_compression(
         &self,
@@ -599,6 +632,7 @@ impl LocalAdapter {
         results
     }
 
+    #[cfg(feature = "delta")]
     /// Send a message to a single socket with delta compression support
     ///
     /// # Arguments
@@ -789,6 +823,8 @@ impl LocalAdapter {
                     tags: None,
                     sequence: None,
                     conflation_key: None,
+                message_id: None,
+                serial: None,
                 };
 
                 let bytes = sonic_rs::to_vec(&pusher_msg).map_err(|e| {
@@ -816,6 +852,7 @@ impl LocalAdapter {
         }
     }
 
+    #[cfg(feature = "delta")]
     /// Send a message to a single socket with pre-computed delta (broadcast optimization)
     ///
     /// This is used when delta has been computed once at the broadcast level and can be
@@ -945,6 +982,8 @@ impl LocalAdapter {
                 tags: None, // Tags are handled at broadcast level or stripped
                 sequence: None,
                 conflation_key: None,
+                message_id: None,
+                serial: None,
             };
 
             let bytes = sonic_rs::to_vec(&pusher_msg)
@@ -1053,6 +1092,131 @@ impl LocalAdapter {
             .clone()
     }
 
+    /// Partition socket refs into V1 (strict Pusher) and V2 (Sockudo-native) groups.
+    fn partition_by_protocol(
+        sockets: Vec<WebSocketRef>,
+    ) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
+        sockets
+            .into_iter()
+            .partition(|s| s.protocol_version == sockudo_protocol::ProtocolVersion::V1)
+    }
+
+    /// Send a message to V1 sockets (strips serial/message_id/tags, plain Pusher format).
+    async fn send_to_v1_sockets(
+        &self,
+        sockets: Vec<WebSocketRef>,
+        message: &PusherMessage,
+    ) -> Result<()> {
+        if sockets.is_empty() {
+            return Ok(());
+        }
+        let mut v1_message = message.clone();
+        v1_message.serial = None;
+        v1_message.message_id = None;
+        v1_message.tags = None;
+        let v1_bytes = Bytes::from(
+            sonic_rs::to_vec(&v1_message)
+                .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?,
+        );
+        Self::log_send_errors(self.send_messages_concurrent(sockets, v1_bytes).await);
+        Ok(())
+    }
+
+    /// Log send errors (debug for closed connections, warn for others).
+    fn log_send_errors(results: Vec<Result<()>>) {
+        for r in results {
+            if let Err(e) = r {
+                match &e {
+                    Error::ConnectionClosed(_) => tracing::debug!("Send error: {}", e),
+                    _ => tracing::warn!("Send error: {}", e),
+                }
+            }
+        }
+    }
+
+    /// Apply tag filtering to V2 sockets. When the `tag-filtering` feature is
+    /// disabled this is a no-op that returns the input unchanged.
+    fn filter_v2_sockets(
+        &self,
+        channel: &str,
+        message: &PusherMessage,
+        v2_sockets: Vec<WebSocketRef>,
+        except: Option<&SocketId>,
+        namespace: &Namespace,
+    ) -> Vec<WebSocketRef> {
+        #[cfg(feature = "tag-filtering")]
+        {
+            crate::v2_broadcast::apply_tag_filter(
+                &self.filter_index,
+                self.tag_filtering_enabled.load(Ordering::Acquire),
+                channel,
+                message,
+                v2_sockets,
+                except,
+                namespace,
+            )
+        }
+        #[cfg(not(feature = "tag-filtering"))]
+        {
+            let _ = (channel, message, except, namespace);
+            v2_sockets
+        }
+    }
+
+    /// Apply tag filtering to V2 sockets, also verifying protocol version on
+    /// matched sockets (used by `send_with_compression` where the filter index
+    /// may contain both V1 and V2 socket IDs).
+    #[cfg(feature = "delta")]
+    fn filter_v2_sockets_strict(
+        &self,
+        channel: &str,
+        message: &PusherMessage,
+        v2_sockets: Vec<WebSocketRef>,
+        except: Option<&SocketId>,
+        namespace: &Namespace,
+    ) -> Vec<WebSocketRef> {
+        #[cfg(feature = "tag-filtering")]
+        {
+            crate::v2_broadcast::apply_tag_filter_v2_only(
+                &self.filter_index,
+                self.tag_filtering_enabled.load(Ordering::Acquire),
+                channel,
+                message,
+                v2_sockets,
+                except,
+                namespace,
+            )
+        }
+        #[cfg(not(feature = "tag-filtering"))]
+        {
+            let _ = (channel, message, except, namespace);
+            v2_sockets
+        }
+    }
+
+    /// Strip tags from message if tag inclusion is disabled for this channel.
+    /// When the `tag-filtering` feature is disabled, returns the message unchanged.
+    #[cfg(feature = "delta")]
+    fn maybe_strip_tags(
+        &self,
+        message: PusherMessage,
+        _channel_settings: Option<&sockudo_delta::ChannelDeltaSettings>,
+    ) -> PusherMessage {
+        #[cfg(feature = "tag-filtering")]
+        {
+            let global_enable_tags = self.enable_tags_globally.load(Ordering::Acquire);
+            let enable_tags = crate::v2_broadcast::should_enable_tags(
+                _channel_settings,
+                global_enable_tags,
+            );
+            crate::v2_broadcast::strip_tags_if_disabled(message, enable_tags)
+        }
+        #[cfg(not(feature = "tag-filtering"))]
+        {
+            message
+        }
+    }
+
     // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
     pub async fn get_all_connections(&self, app_id: &str) -> DashMap<SocketId, WebSocketRef> {
         let namespace = self.get_or_create_namespace(app_id).await;
@@ -1151,6 +1315,7 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         buffer_config: sockudo_core::websocket::WebSocketBufferConfig,
+        protocol_version: sockudo_protocol::ProtocolVersion,
     ) -> Result<()> {
         tracing::debug!(
             "LocalAdapter::add_socket: adding socket {} for app {}",
@@ -1160,7 +1325,7 @@ impl ConnectionManager for LocalAdapter {
         let namespace = self.get_or_create_namespace(app_id).await;
         let socket_id_clone = socket_id;
         namespace
-            .add_socket(socket_id, socket, app_manager, buffer_config)
+            .add_socket(socket_id, socket, app_manager, buffer_config, protocol_version)
             .await?;
         tracing::debug!(
             "LocalAdapter::add_socket: successfully added socket {} for app {}",
@@ -1197,7 +1362,6 @@ impl ConnectionManager for LocalAdapter {
         }
     }
 
-    // Updated to use WebSocketRef methods
     async fn send_message(
         &self,
         app_id: &str,
@@ -1209,7 +1373,20 @@ impl ConnectionManager for LocalAdapter {
             .await
             .ok_or_else(|| Error::Connection("Connection not found".to_string()))?;
 
-        connection.send_message(&message).await
+        match connection.protocol_version {
+            sockudo_protocol::ProtocolVersion::V2 => {
+                let mut rewritten = message;
+                rewritten.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+                connection.send_message(&rewritten).await
+            }
+            sockudo_protocol::ProtocolVersion::V1 => {
+                // Strict Pusher: strip serial/message_id
+                let mut v1_msg = message;
+                v1_msg.serial = None;
+                v1_msg.message_id = None;
+                connection.send_message(&v1_msg).await
+            }
+        }
     }
 
     async fn send(
@@ -1224,53 +1401,52 @@ impl ConnectionManager for LocalAdapter {
         debug!("Message: {:?}", message);
 
         // Check if delta compression is available (lock-free read via OnceLock)
-        let delta_compression = self.delta_compression.get();
-        let app_manager = self.app_manager.get();
+        #[cfg(feature = "delta")]
+        {
+            let delta_compression = self.delta_compression.get();
+            let app_manager = self.app_manager.get();
 
-        if let (Some(delta_compression), Some(app_manager)) = (delta_compression, app_manager) {
-            // Get app config to check for channel-specific delta settings
-            if let Ok(Some(app)) = app_manager.find_by_id(app_id).await {
-                // Get channel-specific delta compression settings
-                let channel_settings = app
-                    .channel_delta_compression
-                    .as_ref()
-                    .and_then(|map| map.get(channel))
-                    .and_then(|config| {
-                        use sockudo_delta::ChannelDeltaConfig;
-                        match config {
-                            ChannelDeltaConfig::Full(settings) => Some(settings.clone()),
-                            _ => None,
-                        }
-                    });
+            if let (Some(delta_compression), Some(app_manager)) = (delta_compression, app_manager) {
+                // Get app config to check for channel-specific delta settings
+                if let Ok(Some(app)) = app_manager.find_by_id(app_id).await {
+                    // Get channel-specific delta compression settings
+                    let channel_settings = app
+                        .channel_delta_compression
+                        .as_ref()
+                        .and_then(|map| map.get(channel))
+                        .and_then(|config| {
+                            use sockudo_delta::ChannelDeltaConfig;
+                            match config {
+                                ChannelDeltaConfig::Full(settings) => Some(settings.clone()),
+                                _ => None,
+                            }
+                        });
 
-                // Use compression-aware sending if we have settings with conflation key
-                if channel_settings
-                    .as_ref()
-                    .and_then(|s| s.conflation_key.as_ref())
-                    .is_some()
-                {
-                    return self
-                        .send_with_compression(
-                            channel,
-                            message,
-                            except,
-                            app_id,
-                            _start_time_ms,
-                            crate::connection_manager::CompressionParams {
-                                delta_compression: Arc::clone(delta_compression),
-                                channel_settings: channel_settings.as_ref(),
-                            },
-                        )
-                        .await;
+                    // Use compression-aware sending if we have settings with conflation key
+                    if channel_settings
+                        .as_ref()
+                        .and_then(|s| s.conflation_key.as_ref())
+                        .is_some()
+                    {
+                        return self
+                            .send_with_compression(
+                                channel,
+                                message,
+                                except,
+                                app_id,
+                                _start_time_ms,
+                                crate::connection_manager::CompressionParams {
+                                    delta_compression: Arc::clone(delta_compression),
+                                    channel_settings: channel_settings.as_ref(),
+                                },
+                            )
+                            .await;
+                    }
                 }
             }
         }
 
         // Fall back to regular sending without delta compression
-        let serialized_message = sonic_rs::to_vec(&message)
-            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
-        let message_bytes = Bytes::from(serialized_message);
-
         let namespace = self.get_namespace(app_id).await.unwrap();
 
         // Get target socket references based on channel type
@@ -1290,122 +1466,24 @@ impl ConnectionManager for LocalAdapter {
             namespace.get_channel_socket_refs_except(channel, except)
         };
 
-        // Apply tag filtering using O(1) filter index lookup
-        let tag_filtering_enabled = self.tag_filtering_enabled.load(Ordering::Acquire);
-        let filtered_socket_refs = if tag_filtering_enabled
-            && let Some(tags) = message.tags.as_ref()
-        {
-            // Use filter index for O(1) lookup instead of O(N) iteration
-            // Convert HashMap to BTreeMap for lookup (required by FilterIndex)
-            let tags_btree: std::collections::BTreeMap<String, String> =
-                tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let (v1_all_sockets, v2_target_sockets) =
+            Self::partition_by_protocol(target_socket_refs);
 
-            let lookup_result = self.filter_index.lookup(channel, &tags_btree);
+        self.send_to_v1_sockets(v1_all_sockets, &message).await?;
 
-            debug!(
-                "FilterIndex lookup: channel={}, tags={:?}, indexed_matches={}, no_filter={}, needs_evaluation={}",
-                channel,
-                tags.keys().collect::<Vec<_>>(),
-                lookup_result.indexed_matches.len(),
-                lookup_result.no_filter.len(),
-                lookup_result.needs_evaluation.len()
-            );
+        let filtered_socket_refs =
+            self.filter_v2_sockets(channel, &message, v2_target_sockets, except, &namespace);
 
-            // Combine results: indexed matches + no_filter sockets (they receive all)
-            // Skip complex filters for now (needs_evaluation) - they're rare
-            let mut result = Vec::with_capacity(
-                lookup_result.indexed_matches.len() + lookup_result.no_filter.len(),
-            );
-
-            // Resolve SocketIds to WebSocketRefs using namespace's socket registry
-            // This is the key optimization: FilterIndex stores lightweight SocketId (16 bytes, Copy)
-            // instead of heavy WebSocketRef (Arc clone), reducing allocation pressure
-
-            // Add indexed matches (sockets whose filters match the message tags)
-            for socket_id in lookup_result.indexed_matches {
-                if except.is_some_and(|e| *e == socket_id) {
-                    continue;
-                }
-                if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                    result.push(socket_ref.value().clone());
-                }
-            }
-
-            // Add sockets with no filter (they receive all messages)
-            for socket_id in lookup_result.no_filter {
-                if except.is_some_and(|e| *e == socket_id) {
-                    continue;
-                }
-                if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                    result.push(socket_ref.value().clone());
-                }
-            }
-
-            // Handle complex filters by evaluating them (rare case)
-            for socket_id in lookup_result.needs_evaluation {
-                if except.is_some_and(|e| *e == socket_id) {
-                    continue;
-                }
-                if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                    let socket_ref = socket_ref.value().clone();
-                    let channel_filter = socket_ref.get_channel_filter_sync(channel);
-                    if let Some(filter) = channel_filter {
-                        if sockudo_filter::matches(&filter, tags) {
-                            result.push(socket_ref);
-                        }
-                    } else {
-                        result.push(socket_ref); // No filter = receive all
-                    }
-                }
-            }
-
-            debug!(
-                "FilterIndex result: {} sockets to receive message",
-                result.len()
-            );
-
-            result
-        } else if tag_filtering_enabled {
-            // Tag filtering enabled but message has no tags - only no_filter sockets receive it
-            let empty_tags = std::collections::BTreeMap::new();
-            let lookup_result = self.filter_index.lookup(channel, &empty_tags);
-
-            // Resolve SocketIds to WebSocketRefs
-            lookup_result
-                .no_filter
-                .into_iter()
-                .filter(|socket_id| except != Some(socket_id))
-                .filter_map(|socket_id| {
-                    namespace.sockets.get(&socket_id).map(|r| r.value().clone())
-                })
-                .collect()
-        } else {
-            // Tag filtering disabled - send to all sockets in channel
-            target_socket_refs
-        };
-
-        // Send messages using concurrent tasks with semaphore-controlled concurrency
-        let results = self
-            .send_messages_concurrent(filtered_socket_refs, message_bytes)
-            .await;
-
-        // Handle any errors from concurrent messaging
-        for send_result in results {
-            if let Err(e) = send_result {
-                match &e {
-                    Error::ConnectionClosed(_) => {
-                        debug!("Failed to send message to closed connection: {}", e);
-                    }
-                    _ => {
-                        warn!("Failed to send message: {}", e);
-                    }
-                }
-            }
+        // Send to filtered V2 sockets (Sockudo-native: sockudo: prefix, serial + message_id)
+        if !filtered_socket_refs.is_empty() {
+            let (_v2_message, v2_bytes) = crate::v2_broadcast::prepare_v2_message(message)?;
+            Self::log_send_errors(self.send_messages_concurrent(filtered_socket_refs, v2_bytes).await);
         }
 
         Ok(())
     }
 
+    #[cfg(feature = "delta")]
     async fn send_with_compression(
         &self,
         channel: &str,
@@ -1442,133 +1520,33 @@ impl ConnectionManager for LocalAdapter {
             namespace.get_channel_socket_refs_except(channel, except)
         };
 
-        // Apply tag filtering using O(1) filter index lookup
-        let tag_filtering_enabled = self.tag_filtering_enabled.load(Ordering::Acquire);
+        let (v1_all_sockets, v2_target_sockets) =
+            Self::partition_by_protocol(target_socket_refs);
+
+        self.send_to_v1_sockets(v1_all_sockets, &message).await?;
+
         let filtered_socket_refs =
-            if tag_filtering_enabled && let Some(tags) = message.tags.as_ref() {
-                // Use filter index for O(1) lookup instead of O(N) iteration
-                // Convert HashMap to BTreeMap for lookup (required by FilterIndex)
-                let tags_btree: std::collections::BTreeMap<String, String> =
-                    tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            self.filter_v2_sockets_strict(channel, &message, v2_target_sockets, except, &namespace);
 
-                let lookup_result = self.filter_index.lookup(channel, &tags_btree);
+        let message = self.maybe_strip_tags(message, channel_settings);
 
-                // Combine results: indexed matches + no_filter sockets (they receive all)
-                let mut result = Vec::with_capacity(
-                    lookup_result.indexed_matches.len() + lookup_result.no_filter.len(),
-                );
-
-                // Resolve SocketIds to WebSocketRefs using namespace's socket registry
-                // This is the key optimization: FilterIndex stores lightweight SocketId (16 bytes, Copy)
-                // instead of heavy WebSocketRef (Arc clone), reducing allocation pressure
-
-                // Add indexed matches (sockets whose filters match the message tags)
-                for socket_id in lookup_result.indexed_matches {
-                    if except.is_some_and(|e| *e == socket_id) {
-                        continue;
-                    }
-                    if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                        result.push(socket_ref.value().clone());
-                    }
-                }
-
-                // Add sockets with no filter (they receive all messages)
-                for socket_id in lookup_result.no_filter {
-                    if except.is_some_and(|e| *e == socket_id) {
-                        continue;
-                    }
-                    if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                        result.push(socket_ref.value().clone());
-                    }
-                }
-
-                // Handle complex filters by evaluating them (rare case)
-                for socket_id in lookup_result.needs_evaluation {
-                    if except.is_some_and(|e| *e == socket_id) {
-                        continue;
-                    }
-                    if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                        let socket_ref = socket_ref.value().clone();
-                        let channel_filter = socket_ref.get_channel_filter_sync(channel);
-                        if let Some(filter) = channel_filter {
-                            if sockudo_filter::matches(&filter, tags) {
-                                result.push(socket_ref);
-                            }
-                        } else {
-                            result.push(socket_ref); // No filter = receive all
-                        }
-                    }
-                }
-
-                result
-            } else if tag_filtering_enabled {
-                // Tag filtering enabled but message has no tags - only no_filter sockets receive it
-                let empty_tags = std::collections::BTreeMap::new();
-                let lookup_result = self.filter_index.lookup(channel, &empty_tags);
-
-                // Resolve SocketIds to WebSocketRefs
-                lookup_result
-                    .no_filter
-                    .into_iter()
-                    .filter(|socket_id| except != Some(socket_id))
-                    .filter_map(|socket_id| {
-                        namespace.sockets.get(&socket_id).map(|r| r.value().clone())
-                    })
-                    .collect()
-            } else {
-                target_socket_refs
-            };
-
-        // Strip tags if disabled for this channel (bandwidth optimization)
-        // We do this AFTER filtering logic (which needs tags) but BEFORE serialization
-        // Priority: per-channel setting > global setting
-        let global_enable_tags = self.enable_tags_globally.load(Ordering::Acquire);
-        let enable_tags = channel_settings
-            .map(|s| s.enable_tags)
-            .unwrap_or(global_enable_tags);
-
-        let message = if !enable_tags && message.tags.is_some() {
-            let mut msg = message;
-            msg.tags = None;
-            msg
-        } else {
-            message
-        };
-
-        // Extract event name for delta compression before serialization
-        let event_name = message.event.as_deref().unwrap_or("").to_string();
-
-        // Serialize the base message once
-        let base_message_bytes = sonic_rs::to_vec(&message)
-            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
-
-        // Process each socket with potential delta compression (already filtered)
-        let results = self
-            .send_messages_with_compression(
-                filtered_socket_refs,
-                message,
-                base_message_bytes,
-                channel,
-                &event_name,
-                crate::connection_manager::CompressionParams {
-                    delta_compression,
-                    channel_settings,
-                },
-            )
-            .await;
-
-        // Handle any errors from concurrent messaging
-        for send_result in results {
-            if let Err(e) = send_result {
-                match &e {
-                    Error::ConnectionClosed(_) => {
-                        debug!("Failed to send message to closed connection: {}", e);
-                    }
-                    _ => {
-                        warn!("Failed to send message: {}", e);
-                    }
-                }
-            }
+        // V2 sockets get delta compression
+        if !filtered_socket_refs.is_empty() {
+            let mut v2_message = message;
+            v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+            let v2_event_name = v2_message.event.as_deref().unwrap_or("").to_string();
+            let v2_bytes = sonic_rs::to_vec(&v2_message)
+                .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+            Self::log_send_errors(
+                self.send_messages_with_compression(
+                    filtered_socket_refs, v2_message, v2_bytes, channel, &v2_event_name,
+                    crate::connection_manager::CompressionParams {
+                        delta_compression,
+                        channel_settings,
+                    },
+                )
+                .await,
+            );
         }
 
         Ok(())
@@ -1591,6 +1569,7 @@ impl ConnectionManager for LocalAdapter {
     async fn remove_channel(&self, app_id: &str, channel: &str) {
         // MEMORY LEAK FIX: Clear filter index entries for this channel
         // This must happen before removing the channel from namespace
+        #[cfg(feature = "tag-filtering")]
         self.filter_index.clear_channel(channel);
 
         let namespace = self.get_or_create_namespace(app_id).await;
@@ -1702,6 +1681,7 @@ impl ConnectionManager for LocalAdapter {
 
         // MEMORY LEAK FIX: Clean up filter index BEFORE removing from channel
         // Get the socket's filter for this channel so we can remove it from the index
+        #[cfg(feature = "tag-filtering")]
         if let Some(socket_ref) = namespace.sockets.get(socket_id) {
             let filter_node = socket_ref.get_channel_filter_sync(channel);
             self.filter_index

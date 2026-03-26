@@ -11,3 +11,4 @@ license-file.workspace = true
 ahash = { workspace = true }
 serde = { workspace = true }
 sonic-rs = { workspace = true }
+uuid = { workspace = true }
