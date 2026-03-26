@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Sockudo is a simple, fast, and secure WebSocket server for real-time applications built in Rust. It implements the Pusher protocol with support for horizontal scaling, multiple backend adapters, and real-time communication features.
+Sockudo is a simple, fast, and secure WebSocket server for real-time applications built in Rust. It supports dual protocol versioning: V1 (strict Pusher compatibility) and V2 (Sockudo-native with serial numbers, message IDs, connection recovery, delta compression, and tag filtering built-in).
 
 ## Workspace Structure
 
@@ -22,7 +22,7 @@ crates/
 ├── sockudo-metrics/         # Prometheus metrics driver
 ├── sockudo-webhook/         # Webhook integration + HTTP/Lambda senders
 ├── sockudo-delta/           # Delta compression manager (fossil_delta, xdelta3)
-├── sockudo-adapter/         # Connection management, horizontal scaling, handler logic
+├── sockudo-adapter/         # Connection management, horizontal scaling, handler logic, replay buffer
 └── sockudo-server/          # Binary: HTTP + WebSocket handlers, server bootstrap
 ```
 
@@ -43,7 +43,7 @@ sockudo-filter ────┘                  ├─→ sockudo-cache
 
 | Crate | What it contains | Key traits/types |
 |---|---|---|
-| `sockudo-protocol` | Pusher message types, constants | `PusherMessage`, `MessageData`, `ErrorData` |
+| `sockudo-protocol` | Protocol message types, constants, versioning | `PusherMessage`, `MessageData`, `ProtocolVersion`, `ErrorData` |
 | `sockudo-filter` | Tag filter evaluation, zero-alloc matching | `FilterNode`, `CompareOp`, `LogicalOp`, `TagMap` |
 | `sockudo-core` | All shared traits, types, config, error handling | `AppManager`, `CacheManager`, `QueueInterface`, `RateLimiter`, `MetricsInterface`, `App`, `SocketId`, `WebSocketRef`, `ServerOptions`, `Error`, `Result` |
 | `sockudo-app` | App storage backends | `MemoryAppManager`, `CachedAppManager`, `AppManagerFactory` |
@@ -53,7 +53,7 @@ sockudo-filter ────┘                  ├─→ sockudo-cache
 | `sockudo-metrics` | Metrics collection | `PrometheusMetricsDriver` |
 | `sockudo-webhook` | Webhook delivery | `WebhookSender`, `WebhookIntegration` |
 | `sockudo-delta` | Delta compression runtime | `DeltaCompressionManager`, `DeltaMessage` |
-| `sockudo-adapter` | Connection handling, adapters, horizontal scaling | `ConnectionHandler`, `ConnectionManager`, `LocalAdapter`, `ChannelManager`, `PresenceManager` |
+| `sockudo-adapter` | Connection handling, adapters, horizontal scaling, replay buffer | `ConnectionHandler`, `ConnectionManager`, `LocalAdapter`, `ChannelManager`, `PresenceManager`, `ReplayBuffer` |
 | `sockudo-server` | Binary entry point, HTTP/WS handlers | `main()`, `http_handler`, `ws_handler`, cleanup workers |
 
 ## Feature Flags
@@ -113,7 +113,7 @@ cargo clippy --workspace
 cargo build -p sockudo --release
 
 # Run the server
-./target/release/sockudo --config config/config.json
+./target/release/sockudo --config config/config.toml
 ```
 
 ### Docker Operations
@@ -148,16 +148,48 @@ CacheManagerFactory::create(&options) -> Arc<dyn CacheManager>
 
 **Configuration Hierarchy** (highest priority wins):
 1. Default values (hardcoded)
-2. Config file (`config/config.json`)
+2. Config file (`config/config.toml` or `config/config.json`)
 3. Command-line arguments
 4. Environment variables
 
+**Config format**: TOML (preferred) or JSON (legacy). Server tries `config.toml` first, falls back to `config.json`.
+
+### Protocol Versioning
+
+Sockudo supports dual protocol versions, negotiated per-connection via `?protocol=` query param:
+
+| | Protocol V1 (default) | Protocol V2 |
+|---|---|---|
+| Event prefix | `pusher:` / `pusher_internal:` | `sockudo:` / `sockudo_internal:` |
+| `serial` | Never sent | Always on every message |
+| `message_id` | Never sent | Always on every broadcast |
+| Connection recovery | Not available | Always available |
+| Delta compression | Not available | Native |
+| Tag filtering | Not available | Native |
+| Message idempotency | Not available | Native (`message_id` on every broadcast) |
+| Compatible SDKs | Official Pusher SDKs | Sockudo client SDKs |
+
+V1 connections receive plain Pusher-compatible messages with no extensions. All Sockudo features (delta, tag filtering, serial, message_id, recovery) are V2-only and each is individually configurable via config/env.
+
+**Key files:**
+- `crates/sockudo-protocol/src/protocol_version.rs` - `ProtocolVersion` enum, canonical event names, prefix translation
+- `crates/sockudo-server/src/ws_handler.rs` - Parses `?protocol=2` from WebSocket URL
+- `crates/sockudo-adapter/src/handler/mod.rs` - Routes events using canonical names (accepts both prefixes)
+- `crates/sockudo-adapter/src/local_adapter.rs` - V1 gets plain Pusher JSON (no delta/tags/serial), V2 gets sockudo: prefix + all features
+
 ### WebSocket Protocol
 
-Implements Pusher protocol with extensions:
 - **Channel Types**: public, private, presence, private-encrypted
 - **Authentication**: HMAC-SHA256 signatures for private/presence channels
-- **Events**: Standard pusher events plus client events on private channels
+- **Events**: Standard protocol events plus client events on private channels
+- **Connection Recovery** (V2 native): Serial-based replay buffer for exactly-once delivery on reconnect
+- **Message Idempotency** (V2 native): UUIDv4 `message_id` on every broadcast
+
+**Key files:**
+- `crates/sockudo-adapter/src/replay_buffer.rs` - Per-channel replay buffer (DashMap + VecDeque)
+- `crates/sockudo-adapter/src/handler/recovery.rs` - Resume event handler
+- `crates/sockudo-adapter/src/handler/connection_management.rs` - Serial assignment and message_id injection at broadcast time
+- `crates/sockudo-core/src/cache.rs` - `CacheManager::set_if_not_exists()` for atomic idempotency
 
 ## Testing
 
@@ -200,6 +232,22 @@ Key variables (see `.env.example` for complete list):
 - `REDIS_URL` - Override all Redis configurations with single URL
 - `LOG_OUTPUT_FORMAT` - Log format (human|json, default: human) **[Must be set at startup]**
 
+Note: All Sockudo features are V2-only, gated by both **Cargo feature flags** (compile-time) and **config** (runtime):
+
+Cargo features (on `sockudo-server` and `sockudo-adapter`):
+- `v2` (default) — meta-feature enabling all V2 features
+- `delta` — delta compression
+- `tag-filtering` — server-side tag filtering
+- `recovery` — connection recovery (serial + message_id + replay buffer)
+
+Runtime config (only applies to V2 connections):
+- `delta_compression.enabled` — delta compression
+- `tag_filtering.enabled` — tag-based filtering
+- `connection_recovery.enabled` — serial numbers + message_id + replay buffer
+
+Build without V2: `cargo build -p sockudo --no-default-features` (pure Pusher-only server).
+V1 connections get plain Pusher protocol with none of these features regardless of config.
+
 Full configuration reference: see `docs/` (Nuxt-based documentation site).
 
 ## Development Guidelines
@@ -222,8 +270,10 @@ use sockudo_core::websocket::SocketId;
 use sockudo_core::cache::CacheManager;
 
 // Protocol types
+use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
+use sockudo_protocol::protocol_version::CANONICAL_SUBSCRIBE; // canonical event names
 
 // Filter types
 use sockudo_filter::FilterNode;

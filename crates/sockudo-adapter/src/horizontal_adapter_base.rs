@@ -42,8 +42,10 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub node_timeout_ms: u64,
     pub cleanup_interval_ms: u64,
     pub enable_socket_counting: bool,
+    #[cfg(feature = "delta")]
     // Delta compression manager for bandwidth optimization
     delta_compression: Option<Arc<sockudo_delta::DeltaCompressionManager>>,
+    #[cfg(feature = "delta")]
     // App manager for getting channel-specific delta settings
     app_manager: Option<Arc<dyn AppManager + Send + Sync>>,
 }
@@ -104,11 +106,14 @@ where
             node_timeout_ms: cluster_health_defaults.node_timeout_ms,
             cleanup_interval_ms: cluster_health_defaults.cleanup_interval_ms,
             enable_socket_counting: true, // Default to enabled
+            #[cfg(feature = "delta")]
             delta_compression: None,
+            #[cfg(feature = "delta")]
             app_manager: None,
         })
     }
 
+    #[cfg(feature = "delta")]
     /// Set delta compression manager and app manager for delta compression support
     pub async fn set_delta_compression(
         &mut self,
@@ -477,12 +482,15 @@ where
                         let horizontal_lock = &horizontal_clone;
 
                         // Log tag filtering status
-                        let tag_filtering_enabled =
-                            horizontal_lock.local_adapter.is_tag_filtering_enabled();
-                        tracing::debug!(
-                            "Tag filtering enabled on this node: {}",
-                            tag_filtering_enabled
-                        );
+                        #[cfg(feature = "tag-filtering")]
+                        {
+                            let tag_filtering_enabled =
+                                horizontal_lock.local_adapter.is_tag_filtering_enabled();
+                            tracing::debug!(
+                                "Tag filtering enabled on this node: {}",
+                                tag_filtering_enabled
+                            );
+                        }
 
                         // Count local recipients for this node (adjusts for excluded socket)
                         let local_recipient_count = horizontal_lock
@@ -494,6 +502,7 @@ where
                             .await;
 
                         // Check if compression metadata is present and delta compression is enabled
+                        #[cfg(feature = "delta")]
                         let (send_result, compression_used) = if let Some(ref compression_meta) =
                             broadcast.compression_metadata
                             && compression_meta.enabled
@@ -578,7 +587,20 @@ where
                             (result, false)
                         };
 
+                        #[cfg(not(feature = "delta"))]
+                        let send_result = horizontal_lock
+                            .local_adapter
+                            .send(
+                                &broadcast.channel,
+                                message,
+                                except_id.as_ref(),
+                                &broadcast.app_id,
+                                broadcast.timestamp_ms,
+                            )
+                            .await;
+
                         // Track delta compression metrics if compression was used
+                        #[cfg(feature = "delta")]
                         if compression_used && let Some(metrics) = horizontal_lock.metrics.get() {
                             metrics.track_horizontal_delta_compression(
                                 &broadcast.app_id,
@@ -879,9 +901,10 @@ where
         app_id: &str,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         buffer_config: sockudo_core::websocket::WebSocketBufferConfig,
+        protocol_version: sockudo_protocol::ProtocolVersion,
     ) -> Result<()> {
         self.local_adapter
-            .add_socket(socket_id, socket, app_id, app_manager, buffer_config)
+            .add_socket(socket_id, socket, app_id, app_manager, buffer_config, protocol_version)
             .await
     }
 
@@ -915,6 +938,7 @@ where
         start_time_ms: Option<f64>,
     ) -> Result<()> {
         // Check if delta compression is available and configured for this channel
+        #[cfg(feature = "delta")]
         if let (Some(delta_compression), Some(app_manager)) =
             (&self.delta_compression, &self.app_manager)
         {
@@ -997,6 +1021,7 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "delta")]
     async fn send_with_compression(
         &self,
         channel: &str,

@@ -415,6 +415,8 @@ async fn test_broadcast_message_verification() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     // Send broadcast
@@ -679,6 +681,8 @@ async fn test_connection_manager_error_propagation() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
+                message_id: None,
+                serial: None,
     };
 
     // These operations should complete without error (may succeed or fail gracefully)

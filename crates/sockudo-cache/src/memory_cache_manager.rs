@@ -87,6 +87,19 @@ impl CacheManager for MemoryCacheManager {
             Ok(None)
         }
     }
+
+    async fn set_if_not_exists(&self, key: &str, value: &str, _ttl_seconds: u64) -> Result<bool> {
+        let prefixed_key = self.prefixed_key(key);
+        // Moka's `contains_key` + `insert` isn't truly atomic, but for in-memory
+        // single-process use this is sufficient since Tokio tasks on the same
+        // runtime don't preempt each other within a single .await-free block.
+        if self.cache.contains_key(&prefixed_key) {
+            Ok(false)
+        } else {
+            self.cache.insert(prefixed_key, value.to_string()).await;
+            Ok(true)
+        }
+    }
 }
 
 impl MemoryCacheManager {

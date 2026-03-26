@@ -78,6 +78,9 @@ pub struct PrometheusMetricsDriver {
     delta_compression_bandwidth_original: CounterVec,
     delta_compression_full_messages: CounterVec,
     delta_compression_delta_messages: CounterVec,
+    // Idempotency metrics
+    idempotency_publish_total: CounterVec,
+    idempotency_duplicates_total: CounterVec,
     // Redis Cluster transport metrics
     redis_cluster_channel_queue_size: GaugeVec,
     redis_cluster_channel_messages_dropped: CounterVec,
@@ -431,6 +434,25 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        // Idempotency metrics
+        let idempotency_publish_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}idempotency_publish_total"),
+                "Total number of publish requests that included an idempotency key"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let idempotency_duplicates_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}idempotency_duplicates_total"),
+                "Total number of duplicate publishes caught by idempotency deduplication"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
         // Redis Cluster transport metrics
         let redis_cluster_channel_queue_size = register_gauge_vec!(
             Opts::new(
@@ -513,6 +535,8 @@ impl PrometheusMetricsDriver {
             delta_compression_bandwidth_original,
             delta_compression_full_messages,
             delta_compression_delta_messages,
+            idempotency_publish_total,
+            idempotency_duplicates_total,
             redis_cluster_channel_queue_size,
             redis_cluster_channel_messages_dropped,
             redis_cluster_reconnections_total,
@@ -988,6 +1012,30 @@ impl MetricsInterface for PrometheusMetricsDriver {
         debug!(
             "Metrics: Broadcast latency for app {}, channel: {} ({}), recipients: {} ({}), latency: {} ms",
             app_id, channel_name, channel_type, recipient_count, bucket, latency_ms
+        );
+    }
+
+    fn mark_idempotency_publish(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.idempotency_publish_total
+            .with_label_values(&tags)
+            .inc();
+
+        debug!(
+            "Metrics: Idempotency publish for app {}",
+            app_id
+        );
+    }
+
+    fn mark_idempotency_duplicate(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.idempotency_duplicates_total
+            .with_label_values(&tags)
+            .inc();
+
+        debug!(
+            "Metrics: Idempotency duplicate caught for app {}",
+            app_id
         );
     }
 

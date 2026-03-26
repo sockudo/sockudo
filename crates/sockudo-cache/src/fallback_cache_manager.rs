@@ -336,6 +336,34 @@ impl CacheManager for FallbackCacheManager {
             }
         }
     }
+
+    async fn set_if_not_exists(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<bool> {
+        self.try_recover().await;
+
+        let _guard = self.recovery_lock.read().await;
+
+        if self.is_using_fallback() {
+            return self
+                .fallback
+                .lock()
+                .await
+                .set_if_not_exists(key, value, ttl_seconds)
+                .await;
+        }
+
+        let primary = self.primary.lock().await;
+        match primary.set_if_not_exists(key, value, ttl_seconds).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                self.switch_to_fallback(&e.to_string());
+                self.fallback
+                    .lock()
+                    .await
+                    .set_if_not_exists(key, value, ttl_seconds)
+                    .await
+            }
+        }
+    }
 }
 
 #[cfg(test)]

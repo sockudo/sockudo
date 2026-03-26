@@ -8,9 +8,13 @@ repository.workspace = true
 license-file.workspace = true
 
 [features]
-default = ["local"]
+default = ["local", "v2"]
 local = []
-full = ["redis", "redis-cluster", "nats"]
+v2 = ["delta", "tag-filtering", "recovery"]
+delta = ["dep:sockudo-delta"]
+tag-filtering = ["dep:sockudo-filter"]
+recovery = []
+full = ["redis", "redis-cluster", "nats", "v2"]
 redis = ["sockudo-core/redis", "dep:redis"]
 redis-cluster = ["redis", "sockudo-core/redis-cluster"]
 nats = ["sockudo-core/nats", "dep:async-nats"]
@@ -18,8 +22,8 @@ nats = ["sockudo-core/nats", "dep:async-nats"]
 [dependencies]
 sockudo-core = { workspace = true }
 sockudo-protocol = { workspace = true }
-sockudo-filter = { workspace = true }
-sockudo-delta = { workspace = true }
+sockudo-filter = { workspace = true, optional = true }
+sockudo-delta = { workspace = true, optional = true }
 sockudo-metrics = { workspace = true }
 sockudo-webhook = { workspace = true }
 

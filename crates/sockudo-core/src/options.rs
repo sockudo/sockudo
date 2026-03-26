@@ -333,6 +333,8 @@ pub struct ServerOptions {
     pub delta_compression: DeltaCompressionOptionsConfig,
     pub tag_filtering: TagFilteringConfig,
     pub websocket: WebSocketConfig,
+    pub connection_recovery: ConnectionRecoveryConfig,
+    pub idempotency: IdempotencyConfig,
 }
 
 // --- Configuration Sub-Structs ---
@@ -902,6 +904,31 @@ pub struct EventLimits {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct IdempotencyConfig {
+    /// Whether idempotency key support is enabled
+    pub enabled: bool,
+    /// TTL in seconds for idempotency keys (default: 120s, like Ably's 2-minute window)
+    pub ttl_seconds: u64,
+    /// Maximum length of an idempotency key
+    pub max_key_length: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConnectionRecoveryConfig {
+    /// Whether connection recovery (resume) is enabled.
+    /// When enabled, the server keeps a bounded replay buffer per channel so that
+    /// reconnecting clients can receive missed messages. Disabled by default for
+    /// Pusher protocol compatibility.
+    pub enabled: bool,
+    /// How long messages stay in the replay buffer (seconds). Default: 120 (2 min).
+    pub buffer_ttl_seconds: u64,
+    /// Maximum number of messages kept per channel. Default: 100.
+    pub max_buffer_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HttpApiConfig {
     pub request_limit_in_mb: u32,
     pub accept_traffic: AcceptTraffic,
@@ -1297,6 +1324,8 @@ impl Default for ServerOptions {
             unix_socket: UnixSocketConfig::default(),
             delta_compression: DeltaCompressionOptionsConfig::default(),
             websocket: WebSocketConfig::default(),
+            connection_recovery: ConnectionRecoveryConfig::default(),
+            idempotency: IdempotencyConfig::default(),
         }
     }
 }
@@ -1495,6 +1524,26 @@ impl Default for EventLimits {
             max_name_length: 200,
             max_payload_in_kb: 100,
             max_batch_size: 10,
+        }
+    }
+}
+
+impl Default for IdempotencyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl_seconds: 120,
+            max_key_length: 128,
+        }
+    }
+}
+
+impl Default for ConnectionRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            buffer_ttl_seconds: 120,
+            max_buffer_size: 100,
         }
     }
 }
@@ -1708,7 +1757,12 @@ impl ClusterHealthConfig {
 impl ServerOptions {
     pub async fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = tokio::fs::read_to_string(path).await?;
-        let options: Self = sonic_rs::from_str(&content)?;
+        let options: Self = if path.ends_with(".toml") {
+            toml::from_str(&content)?
+        } else {
+            // Legacy JSON support
+            sonic_rs::from_str(&content)?
+        };
         Ok(options)
     }
 
@@ -2185,6 +2239,8 @@ impl ServerOptions {
                     }
                 },
                 channel_delta_compression: None,
+                idempotency: None,
+                connection_recovery: None,
             };
 
             self.app_manager.array.apps.push(default_app);
@@ -2315,6 +2371,18 @@ impl ServerOptions {
         if let Ok(mode) = std::env::var("WEBSOCKET_COMPRESSION") {
             self.websocket.compression = mode;
         }
+
+        // Connection recovery (includes serial + message_id + replay buffer)
+        self.connection_recovery.enabled =
+            parse_bool_env("CONNECTION_RECOVERY_ENABLED", self.connection_recovery.enabled);
+        self.connection_recovery.buffer_ttl_seconds = parse_env::<u64>(
+            "CONNECTION_RECOVERY_BUFFER_TTL",
+            self.connection_recovery.buffer_ttl_seconds,
+        );
+        self.connection_recovery.max_buffer_size = parse_env::<usize>(
+            "CONNECTION_RECOVERY_MAX_BUFFER_SIZE",
+            self.connection_recovery.max_buffer_size,
+        );
 
         Ok(())
     }

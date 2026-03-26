@@ -89,9 +89,13 @@ impl ConnectionHandler {
         }
 
         // Check for reserved prefixes that clients cannot use
-        if request.event.starts_with("pusher:") || request.event.starts_with("pusher_internal:") {
+        if request.event.starts_with("pusher:")
+            || request.event.starts_with("pusher_internal:")
+            || request.event.starts_with("sockudo:")
+            || request.event.starts_with("sockudo_internal:")
+        {
             return Err(Error::InvalidEventName(
-                "Client events cannot use reserved prefixes 'pusher:' or 'pusher_internal:'".into(),
+                "Client events cannot use reserved prefixes".into(),
             ));
         }
 

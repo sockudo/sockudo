@@ -10,6 +10,7 @@ use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sockudo_filter::FilterNode;
+use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
@@ -352,6 +353,7 @@ pub struct ConnectionState {
     pub status: ConnectionStatus,
     pub disconnecting: bool,
     pub delta_compression_enabled: bool,
+    pub protocol_version: ProtocolVersion,
 }
 
 impl Default for ConnectionState {
@@ -375,6 +377,7 @@ impl ConnectionState {
             status: ConnectionStatus::Active,
             disconnecting: false,
             delta_compression_enabled: false,
+            protocol_version: ProtocolVersion::V1,
         }
     }
 
@@ -392,7 +395,13 @@ impl ConnectionState {
             status: ConnectionStatus::Active,
             disconnecting: false,
             delta_compression_enabled: false,
+            protocol_version: ProtocolVersion::V1,
         }
+    }
+
+    pub fn with_protocol_version(mut self, version: ProtocolVersion) -> Self {
+        self.protocol_version = version;
+        self
     }
 
     pub fn is_presence(&self) -> bool {
@@ -873,6 +882,7 @@ pub struct WebSocketRef {
     pub byte_counter: Option<Arc<ByteCounter>>,
     pub shutdown_token: CancellationToken,
     pub inner: Arc<Mutex<WebSocket>>,
+    pub protocol_version: ProtocolVersion,
 }
 
 impl WebSocketRef {
@@ -882,6 +892,7 @@ impl WebSocketRef {
         let buffer_config = websocket.buffer_config;
         let byte_counter = websocket.byte_counter.clone();
         let shutdown_token = websocket.shutdown_token.clone();
+        let protocol_version = websocket.state.protocol_version;
 
         let channel_filters = Arc::new(DashMap::new());
         for (channel, filter) in &websocket.state.subscribed_channels {
@@ -895,6 +906,7 @@ impl WebSocketRef {
             buffer_config,
             byte_counter,
             shutdown_token,
+            protocol_version,
             inner: Arc::new(Mutex::new(websocket)),
         }
     }

@@ -28,4 +28,15 @@ pub trait CacheManager: Send + Sync {
     }
 
     async fn ttl(&self, key: &str) -> Result<Option<Duration>>;
+
+    /// Atomically set a key only if it does not already exist. Returns `true`
+    /// if the key was set (i.e., it did not exist), `false` otherwise.
+    /// Default implementation falls back to non-atomic has+set.
+    async fn set_if_not_exists(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<bool> {
+        if self.has(key).await? {
+            return Ok(false);
+        }
+        self.set(key, value, ttl_seconds).await?;
+        Ok(true)
+    }
 }

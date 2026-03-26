@@ -9,6 +9,8 @@ pub mod signin_management;
 pub mod subscription_management;
 pub mod timeout_management;
 pub mod types;
+#[cfg(feature = "recovery")]
+pub mod recovery;
 pub mod validation;
 pub mod webhook_management;
 
@@ -23,6 +25,7 @@ use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_core::websocket::SocketId;
+use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sockudo_webhook::WebhookIntegration;
@@ -50,40 +53,130 @@ pub struct ConnectionHandler {
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
     cleanup_consecutive_failures: Arc<AtomicUsize>,
     cleanup_circuit_breaker_opened_at: Arc<AtomicU64>,
+    #[cfg(feature = "delta")]
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     /// Presence manager for race-safe presence channel operations
     pub(crate) presence_manager: Arc<PresenceManager>,
+    #[cfg(feature = "recovery")]
+    /// Replay buffer for connection recovery (enabled via config)
+    pub(crate) replay_buffer: Option<Arc<crate::replay_buffer::ReplayBuffer>>,
 }
 
-impl ConnectionHandler {
-    #[allow(clippy::too_many_arguments)]
+/// Builder for constructing a `ConnectionHandler` without feature-gated function parameters.
+pub struct ConnectionHandlerBuilder {
+    app_manager: Arc<dyn AppManager + Send + Sync>,
+    connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
+    local_adapter: Option<Arc<crate::local_adapter::LocalAdapter>>,
+    cache_manager: Arc<dyn CacheManager + Send + Sync>,
+    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+    webhook_integration: Option<Arc<WebhookIntegration>>,
+    server_options: ServerOptions,
+    cleanup_queue: Option<crate::cleanup::CleanupSender>,
+    #[cfg(feature = "delta")]
+    delta_compression: Option<Arc<sockudo_delta::DeltaCompressionManager>>,
+}
+
+impl ConnectionHandlerBuilder {
     pub fn new(
         app_manager: Arc<dyn AppManager + Send + Sync>,
         connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
-        local_adapter: Option<Arc<crate::local_adapter::LocalAdapter>>,
         cache_manager: Arc<dyn CacheManager + Send + Sync>,
-        metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
-        webhook_integration: Option<Arc<WebhookIntegration>>,
         server_options: ServerOptions,
-        cleanup_queue: Option<crate::cleanup::CleanupSender>,
-        delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     ) -> Self {
         Self {
             app_manager,
             connection_manager,
-            local_adapter,
+            local_adapter: None,
             cache_manager,
-            metrics,
-            webhook_integration,
+            metrics: None,
+            webhook_integration: None,
+            server_options,
+            cleanup_queue: None,
+            #[cfg(feature = "delta")]
+            delta_compression: None,
+        }
+    }
+
+    pub fn local_adapter(mut self, adapter: Arc<crate::local_adapter::LocalAdapter>) -> Self {
+        self.local_adapter = Some(adapter);
+        self
+    }
+
+    pub fn metrics(mut self, metrics: Arc<dyn MetricsInterface + Send + Sync>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    pub fn webhook_integration(mut self, wh: Arc<WebhookIntegration>) -> Self {
+        self.webhook_integration = Some(wh);
+        self
+    }
+
+    pub fn cleanup_queue(mut self, queue: crate::cleanup::CleanupSender) -> Self {
+        self.cleanup_queue = Some(queue);
+        self
+    }
+
+    #[cfg(feature = "delta")]
+    pub fn delta_compression(
+        mut self,
+        dc: Arc<sockudo_delta::DeltaCompressionManager>,
+    ) -> Self {
+        self.delta_compression = Some(dc);
+        self
+    }
+
+    pub fn build(self) -> ConnectionHandler {
+        #[cfg(feature = "recovery")]
+        let replay_buffer = if self.server_options.connection_recovery.enabled {
+            Some(Arc::new(crate::replay_buffer::ReplayBuffer::new(
+                self.server_options.connection_recovery.max_buffer_size,
+                std::time::Duration::from_secs(
+                    self.server_options.connection_recovery.buffer_ttl_seconds,
+                ),
+            )))
+        } else {
+            None
+        };
+
+        #[cfg(feature = "delta")]
+        let delta_compression = self.delta_compression.unwrap_or_else(|| {
+            Arc::new(sockudo_delta::DeltaCompressionManager::new(
+                sockudo_delta::DeltaCompressionConfig::default(),
+            ))
+        });
+
+        ConnectionHandler {
+            app_manager: self.app_manager,
+            connection_manager: self.connection_manager,
+            local_adapter: self.local_adapter,
+            cache_manager: self.cache_manager,
+            metrics: self.metrics,
+            webhook_integration: self.webhook_integration,
             client_event_limiters: Arc::new(DashMap::new()),
             watchlist_manager: Arc::new(WatchlistManager::new()),
-            server_options: Arc::new(server_options),
-            cleanup_queue,
+            server_options: Arc::new(self.server_options),
+            cleanup_queue: self.cleanup_queue,
             cleanup_consecutive_failures: Arc::new(AtomicUsize::new(0)),
             cleanup_circuit_breaker_opened_at: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "delta")]
             delta_compression,
             presence_manager: Arc::new(PresenceManager::new()),
+            #[cfg(feature = "recovery")]
+            replay_buffer,
         }
+    }
+}
+
+impl ConnectionHandler {
+    /// Create a new `ConnectionHandlerBuilder`.
+    pub fn builder(
+        app_manager: Arc<dyn AppManager + Send + Sync>,
+        connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
+        cache_manager: Arc<dyn CacheManager + Send + Sync>,
+        server_options: ServerOptions,
+    ) -> ConnectionHandlerBuilder {
+        ConnectionHandlerBuilder::new(app_manager, connection_manager, cache_manager, server_options)
     }
 
     /// Get a reference to the presence manager
@@ -115,11 +208,17 @@ impl ConnectionHandler {
         &self.cache_manager
     }
 
+    #[cfg(feature = "recovery")]
+    pub fn replay_buffer(&self) -> Option<&Arc<crate::replay_buffer::ReplayBuffer>> {
+        self.replay_buffer.as_ref()
+    }
+
     pub async fn handle_socket(
         &self,
         socket: WebSocket,
         app_key: String,
         origin: Option<String>,
+        protocol_version: ProtocolVersion,
     ) -> Result<()> {
         // Early validation and setup
         let app_config = match self.validate_and_get_app(&app_key).await {
@@ -197,7 +296,7 @@ impl ConnectionHandler {
 
         // Initialize socket with atomic quota check
         let socket_id = SocketId::new();
-        self.initialize_socket_with_quota_check(socket_id, socket_tx, &app_config)
+        self.initialize_socket_with_quota_check(socket_id, socket_tx, &app_config, protocol_version)
             .await?;
 
         // Setup rate limiting if needed
@@ -234,6 +333,7 @@ impl ConnectionHandler {
         socket_id: SocketId,
         socket_tx: WebSocketWriter,
         app_config: &App,
+        protocol_version: ProtocolVersion,
     ) -> Result<()> {
         // True atomic operation: quota check and socket addition under single lock
         // This is the only way to prevent race conditions
@@ -279,6 +379,7 @@ impl ConnectionHandler {
                     &app_config.id,
                     Arc::clone(&self.app_manager),
                     buffer_config,
+                    protocol_version,
                 )
                 .await?;
         } // Lock released - atomic operation complete
@@ -432,10 +533,13 @@ impl ConnectionHandler {
                 .await?;
         }
 
-        // Route message to appropriate handler
-        match event_name {
-            "pusher:ping" => self.handle_ping(&app_config.id, socket_id).await,
-            "pusher:subscribe" => {
+        // Route message to appropriate handler using canonical event names.
+        // This accepts both pusher: and sockudo: prefixes transparently.
+        use sockudo_protocol::protocol_version::*;
+        let canonical = ProtocolVersion::parse_any_protocol_event(event_name);
+        match canonical {
+            Some((CANONICAL_PING, _)) => self.handle_ping(&app_config.id, socket_id).await,
+            Some((CANONICAL_SUBSCRIBE, _)) => {
                 let t1 = t0.elapsed().as_micros();
                 let request = SubscriptionRequest::from_message(&parsed)?;
                 let result = self
@@ -450,20 +554,28 @@ impl ConnectionHandler {
                 );
                 result
             }
-            "pusher:unsubscribe" => {
+            Some((CANONICAL_UNSUBSCRIBE, _)) => {
                 self.handle_unsubscribe(socket_id, &parsed, &app_config)
                     .await
             }
-            "pusher:signin" => {
+            Some((CANONICAL_SIGNIN, _)) => {
                 let request = SignInRequest::from_message(&parsed)?;
                 self.handle_signin_request(socket_id, &app_config, request)
                     .await
             }
-            "pusher:pong" => self.handle_pong(&app_config.id, socket_id).await,
-            sockudo_protocol::constants::EVENT_ENABLE_DELTA_COMPRESSION => {
+            Some((CANONICAL_PONG, _)) => self.handle_pong(&app_config.id, socket_id).await,
+            #[cfg(feature = "delta")]
+            Some((CANONICAL_ENABLE_DELTA_COMPRESSION, _)) => {
                 self.handle_enable_delta_compression(socket_id).await
             }
-            "pusher:delta_sync_error" => self.handle_delta_sync_error(socket_id, &parsed).await,
+            #[cfg(feature = "delta")]
+            Some((CANONICAL_DELTA_SYNC_ERROR, _)) => {
+                self.handle_delta_sync_error(socket_id, &parsed).await
+            }
+            #[cfg(feature = "recovery")]
+            Some((CANONICAL_RESUME, _)) => {
+                self.handle_resume(socket_id, &app_config, &parsed).await
+            }
             _ if event_name.starts_with(CLIENT_EVENT_PREFIX) => {
                 let request = self.parse_client_event(&parsed)?;
                 self.handle_client_event_request(socket_id, &app_config, request)
@@ -471,7 +583,7 @@ impl ConnectionHandler {
             }
             _ => {
                 warn!("Unknown event '{}' from socket {}", event_name, socket_id);
-                Ok(()) // Ignore unknown events per Pusher spec
+                Ok(()) // Ignore unknown events per protocol spec
             }
         }
     }
@@ -562,6 +674,7 @@ impl ConnectionHandler {
         self.client_event_limiters.remove(socket_id);
 
         // MEMORY LEAK FIX: Clean up delta compression state for this socket
+        #[cfg(feature = "delta")]
         self.delta_compression.remove_socket(socket_id);
 
         // Clear timeouts

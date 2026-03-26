@@ -15,3 +15,8 @@ pub const EVENT_ENABLE_DELTA_COMPRESSION: &str = "pusher:enable_delta_compressio
 pub const EVENT_DELTA_COMPRESSION_ENABLED: &str = "pusher:delta_compression_enabled";
 pub const EVENT_DELTA: &str = "pusher:delta";
 pub const EVENT_DELTA_CACHE_SYNC: &str = "pusher:delta_cache_sync";
+
+// Connection recovery events
+pub const EVENT_RESUME: &str = "pusher:resume";
+pub const EVENT_RESUME_SUCCESS: &str = "pusher:resume_success";
+pub const EVENT_RESUME_FAILED: &str = "pusher:resume_failed";

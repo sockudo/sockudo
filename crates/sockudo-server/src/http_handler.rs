@@ -276,6 +276,7 @@ async fn process_single_event_parallel(
         info,
         tags,
         delta: delta_flag,
+        idempotency_key: _,
     } = event_data;
 
     let event_name_str = name
@@ -371,6 +372,12 @@ async fn process_single_event_parallel(
                 tags: tags_for_task.clone(),
                 sequence: None,
                 conflation_key: None,
+                message_id: if handler_clone.server_options().connection_recovery.enabled {
+                    Some(uuid::Uuid::new_v4().to_string())
+                } else {
+                    None
+                },
+                serial: None,
             };
             let timestamp_ms = start_time_ms;
 
@@ -502,13 +509,73 @@ async fn process_single_event_parallel(
     Ok(final_channels_info_map)
 }
 
+/// Resolve the idempotency key from the request body field or the `X-Idempotency-Key` header.
+/// Body field takes precedence. Returns `None` when idempotency is disabled or no key was
+/// provided.
+fn resolve_idempotency_key(
+    body_key: &Option<String>,
+    headers: &HeaderMap,
+    config: &sockudo_core::options::IdempotencyConfig,
+) -> Result<Option<String>, AppError> {
+    if !config.enabled {
+        return Ok(None);
+    }
+
+    let key = body_key
+        .clone()
+        .or_else(|| {
+            headers
+                .get("x-idempotency-key")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        });
+
+    if let Some(ref k) = key {
+        if k.is_empty() {
+            return Err(AppError::InvalidInput(
+                "Idempotency key must not be empty".to_string(),
+            ));
+        }
+        if k.len() > config.max_key_length {
+            return Err(AppError::InvalidInput(format!(
+                "Idempotency key exceeds maximum length of {} characters",
+                config.max_key_length
+            )));
+        }
+    }
+
+    Ok(key)
+}
+
+/// Build the cache key used for idempotency storage.
+fn idempotency_cache_key(app_id: &str, key: &str) -> String {
+    format!("app:{}:idempotency:{}", app_id, key)
+}
+
+/// Merge per-app idempotency overrides with the global config.
+/// Only fields explicitly set at the app level take precedence.
+fn resolve_app_idempotency(
+    global: &sockudo_core::options::IdempotencyConfig,
+    app: &App,
+) -> sockudo_core::options::IdempotencyConfig {
+    match &app.idempotency {
+        Some(app_config) => sockudo_core::options::IdempotencyConfig {
+            enabled: app_config.enabled.unwrap_or(global.enabled),
+            ttl_seconds: app_config.ttl_seconds.unwrap_or(global.ttl_seconds),
+            max_key_length: global.max_key_length,
+        },
+        None => global.clone(),
+    }
+}
+
 /// POST /apps/{app_id}/events
-#[instrument(skip(handler, event_payload), fields(app_id = %app_id))]
+#[instrument(skip(handler, headers, event_payload), fields(app_id = %app_id))]
 pub async fn events(
     Path(app_id): Path<String>,
     Query(_auth_q_params_struct): Query<EventQuery>,
     Extension(app): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
+    headers: HeaderMap,
     _uri: Uri,
     RawQuery(_raw_query_str_option): RawQuery,
     Json(event_payload): Json<PusherApiMessage>,
@@ -520,6 +587,109 @@ pub async fn events(
         / 1_000_000.0;
 
     let incoming_request_size_bytes = sonic_rs::to_vec(&event_payload)?.len();
+
+    let idempotency_config = resolve_app_idempotency(
+        &handler.server_options().idempotency,
+        &app,
+    );
+    let idempotency_key = resolve_idempotency_key(
+        &event_payload.idempotency_key,
+        &headers,
+        &idempotency_config,
+    )?;
+
+    // Check for cached response or claim the idempotency key atomically
+    if let Some(ref key) = idempotency_key {
+        if let Some(metrics_arc) = handler.metrics() {
+            metrics_arc.mark_idempotency_publish(&app_id);
+        }
+        let cache_key = idempotency_cache_key(&app_id, key);
+        let ttl = idempotency_config.ttl_seconds;
+
+        // First, check if there's already a completed response
+        match handler.cache_manager().get(&cache_key).await {
+            Ok(Some(cached)) if cached != "__processing__" => {
+                if let Some(metrics_arc) = handler.metrics() {
+                    metrics_arc.mark_idempotency_duplicate(&app_id);
+                }
+                debug!(idempotency_key = %key, "Returning cached idempotent response");
+                let response_payload: Value = sonic_rs::from_str(&cached)
+                    .unwrap_or_else(|_| json!({ "ok": true }));
+                let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
+                record_api_metrics(
+                    &handler,
+                    &app_id,
+                    incoming_request_size_bytes,
+                    outgoing_response_size_bytes,
+                )
+                .await;
+                return Ok((StatusCode::OK, Json(response_payload)));
+            }
+            Ok(Some(_)) => {
+                // Another request is processing — wait briefly then return cached result
+                for _ in 0..6 {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    if let Ok(Some(cached)) = handler.cache_manager().get(&cache_key).await
+                        && cached != "__processing__" {
+                            if let Some(metrics_arc) = handler.metrics() {
+                                metrics_arc.mark_idempotency_duplicate(&app_id);
+                            }
+                            let response_payload: Value = sonic_rs::from_str(&cached)
+                                .unwrap_or_else(|_| json!({ "ok": true }));
+                            let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
+                            record_api_metrics(
+                                &handler,
+                                &app_id,
+                                incoming_request_size_bytes,
+                                outgoing_response_size_bytes,
+                            )
+                            .await;
+                            return Ok((StatusCode::OK, Json(response_payload)));
+                        }
+                }
+                // Timeout waiting — proceed without dedup to avoid blocking forever
+                debug!(idempotency_key = %key, "Timeout waiting for concurrent idempotent request, proceeding");
+            }
+            Ok(None) => {
+                // Try to claim this key atomically
+                match handler.cache_manager().set_if_not_exists(&cache_key, "__processing__", ttl).await {
+                    Ok(false) => {
+                        // Another request claimed it — wait for their result
+                        for _ in 0..6 {
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            if let Ok(Some(cached)) = handler.cache_manager().get(&cache_key).await
+                                && cached != "__processing__" {
+                                    if let Some(metrics_arc) = handler.metrics() {
+                                        metrics_arc.mark_idempotency_duplicate(&app_id);
+                                    }
+                                    let response_payload: Value = sonic_rs::from_str(&cached)
+                                        .unwrap_or_else(|_| json!({ "ok": true }));
+                                    let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
+                                    record_api_metrics(
+                                        &handler,
+                                        &app_id,
+                                        incoming_request_size_bytes,
+                                        outgoing_response_size_bytes,
+                                    )
+                                    .await;
+                                    return Ok((StatusCode::OK, Json(response_payload)));
+                                }
+                        }
+                        debug!(idempotency_key = %key, "Timeout waiting for concurrent idempotent request, proceeding");
+                    }
+                    Ok(true) => {
+                        // We claimed it — proceed to process below
+                    }
+                    Err(e) => {
+                        warn!(idempotency_key = %key, error = %e, "Failed to claim idempotency key, proceeding without dedup");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(idempotency_key = %key, error = %e, "Failed to check idempotency cache, proceeding without dedup");
+            }
+        }
+    }
 
     let need_channel_info = event_payload.info.is_some();
 
@@ -540,6 +710,16 @@ pub async fn events(
         json!({ "ok": true })
     };
 
+    // Store final response in idempotency cache (overwrites __processing__ sentinel)
+    if let Some(ref key) = idempotency_key {
+        let cache_key = idempotency_cache_key(&app_id, key);
+        let ttl = idempotency_config.ttl_seconds;
+        if let Ok(serialized) = sonic_rs::to_string(&response_payload)
+            && let Err(e) = handler.cache_manager().set(&cache_key, &serialized, ttl).await {
+                warn!(idempotency_key = %key, error = %e, "Failed to store idempotency response in cache");
+            }
+    }
+
     let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
     record_api_metrics(
         &handler,
@@ -559,6 +739,7 @@ pub async fn batch_events(
     Query(_auth_q_params_struct): Query<EventQuery>,
     Extension(app_config): Extension<App>,
     State(handler): State<Arc<ConnectionHandler>>,
+    headers: HeaderMap,
     _uri: Uri,
     RawQuery(_raw_query_str_option): RawQuery,
     Json(batch_message_payload): Json<BatchPusherApiMessage>,
@@ -570,6 +751,69 @@ pub async fn batch_events(
         / 1_000_000.0;
 
     let body_bytes = sonic_rs::to_vec(&batch_message_payload)?;
+
+    // Batch-level idempotency: check X-Idempotency-Key header
+    let idempotency_config = resolve_app_idempotency(
+        &handler.server_options().idempotency,
+        &app_config,
+    );
+    let idempotency_key = resolve_idempotency_key(&None, &headers, &idempotency_config)?;
+
+    if let Some(ref key) = idempotency_key {
+        if let Some(metrics_arc) = handler.metrics() {
+            metrics_arc.mark_idempotency_publish(&app_id);
+        }
+        let cache_key = idempotency_cache_key(&app_id, key);
+        let ttl = idempotency_config.ttl_seconds;
+        match handler.cache_manager().get(&cache_key).await {
+            Ok(Some(cached)) if cached != "__processing__" => {
+                if let Some(metrics_arc) = handler.metrics() {
+                    metrics_arc.mark_idempotency_duplicate(&app_id);
+                }
+                debug!(idempotency_key = %key, "Returning cached idempotent batch response");
+                let response_payload: Value = sonic_rs::from_str(&cached)
+                    .unwrap_or_else(|_| json!({}));
+                let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
+                record_api_metrics(
+                    &handler,
+                    &app_id,
+                    body_bytes.len(),
+                    outgoing_response_size_bytes,
+                )
+                .await;
+                return Ok((StatusCode::OK, Json(response_payload)));
+            }
+            Ok(Some(_)) | Ok(None) => {
+                // Claim key atomically or wait for concurrent request
+                if let Ok(false) = handler.cache_manager().set_if_not_exists(&cache_key, "__processing__", ttl).await {
+                    for _ in 0..6 {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        if let Ok(Some(cached)) = handler.cache_manager().get(&cache_key).await
+                            && cached != "__processing__" {
+                                if let Some(metrics_arc) = handler.metrics() {
+                                    metrics_arc.mark_idempotency_duplicate(&app_id);
+                                }
+                                let response_payload: Value = sonic_rs::from_str(&cached)
+                                    .unwrap_or_else(|_| json!({}));
+                                let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
+                                record_api_metrics(
+                                    &handler,
+                                    &app_id,
+                                    body_bytes.len(),
+                                    outgoing_response_size_bytes,
+                                )
+                                .await;
+                                return Ok((StatusCode::OK, Json(response_payload)));
+                            }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(idempotency_key = %key, error = %e, "Failed to check batch idempotency cache");
+            }
+        }
+    }
+
     let batch_events_vec = batch_message_payload.batch;
     let batch_len = batch_events_vec.len();
     tracing::Span::current().record("batch_len", batch_len);
@@ -600,6 +844,23 @@ pub async fn batch_events(
     let mut processed_event_data = Vec::with_capacity(batch_len);
 
     for single_event_message in batch_events_vec {
+        // Per-event idempotency: skip events whose idempotency key has already been seen
+        if let Some(ref evt_key) = single_event_message.idempotency_key
+            && idempotency_config.enabled && !evt_key.is_empty() {
+                if let Some(metrics_arc) = handler.metrics() {
+                    metrics_arc.mark_idempotency_publish(&app_id);
+                }
+                let evt_cache_key = idempotency_cache_key(&app_id, evt_key);
+                if let Ok(Some(_)) = handler.cache_manager().get(&evt_cache_key).await {
+                    if let Some(metrics_arc) = handler.metrics() {
+                        metrics_arc.mark_idempotency_duplicate(&app_id);
+                    }
+                    debug!(idempotency_key = %evt_key, "Skipping duplicate batch event");
+                    processed_event_data.push((single_event_message, HashMap::new()));
+                    continue;
+                }
+            }
+
         let should_collect_info_for_this_event = single_event_message.info.is_some();
         let channel_info_map = process_single_event_parallel(
             &handler,
@@ -609,6 +870,14 @@ pub async fn batch_events(
             Some(start_time_ms),
         )
         .await?;
+
+        // Store per-event idempotency key
+        if let Some(ref evt_key) = single_event_message.idempotency_key
+            && idempotency_config.enabled && !evt_key.is_empty() {
+                let evt_cache_key = idempotency_cache_key(&app_id, evt_key);
+                let _ = handler.cache_manager().set(&evt_cache_key, "1", idempotency_config.ttl_seconds).await;
+            }
+
         processed_event_data.push((single_event_message, channel_info_map));
     }
 
@@ -638,6 +907,16 @@ pub async fn batch_events(
     } else {
         json!({})
     };
+
+    // Store batch response in idempotency cache
+    if let Some(ref key) = idempotency_key {
+        let cache_key = idempotency_cache_key(&app_id, key);
+        let ttl = idempotency_config.ttl_seconds;
+        if let Ok(serialized) = sonic_rs::to_string(&final_response_payload)
+            && let Err(e) = handler.cache_manager().set(&cache_key, &serialized, ttl).await {
+                warn!(idempotency_key = %key, error = %e, "Failed to store batch idempotency response in cache");
+            }
+    }
 
     let outgoing_response_size_bytes_vec = sonic_rs::to_vec(&final_response_payload)?;
     record_api_metrics(

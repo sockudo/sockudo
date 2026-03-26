@@ -45,6 +45,8 @@ fn test_app(id: &str, key: &str, secret: &str) -> App {
         enable_watchlist_events: None,
         allowed_origins: None,
         channel_delta_compression: None,
+        idempotency: None,
+        connection_recovery: None,
     }
 }
 
@@ -142,6 +144,8 @@ async fn test_validate_channel_auth_with_app_key_prefix() {
         enable_watchlist_events: None,
         allowed_origins: None,
         channel_delta_compression: None,
+        idempotency: None,
+        connection_recovery: None,
     };
 
     // Create mock app manager and configure it

@@ -4,12 +4,38 @@
 use super::ConnectionHandler;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
+#[cfg(feature = "recovery")]
+use sockudo_core::options::ConnectionRecoveryConfig;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
+#[cfg(feature = "recovery")]
+use sockudo_protocol::messages::generate_message_id;
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
+#[cfg(feature = "delta")]
 use std::sync::Arc;
 use tracing::warn;
+
+/// Merge per-app connection recovery overrides with the global config.
+/// Only fields explicitly set at the app level take precedence.
+#[cfg(feature = "recovery")]
+fn resolve_app_connection_recovery(
+    global: &ConnectionRecoveryConfig,
+    app: &App,
+) -> ConnectionRecoveryConfig {
+    match &app.connection_recovery {
+        Some(app_config) => ConnectionRecoveryConfig {
+            enabled: app_config.enabled.unwrap_or(global.enabled),
+            buffer_ttl_seconds: app_config
+                .buffer_ttl_seconds
+                .unwrap_or(global.buffer_ttl_seconds),
+            max_buffer_size: app_config
+                .max_buffer_size
+                .unwrap_or(global.max_buffer_size),
+        },
+        None => global.clone(),
+    }
+}
 
 impl ConnectionHandler {
     pub async fn send_message_to_socket(
@@ -94,25 +120,40 @@ impl ConnectionHandler {
     }
 
     /// Internal broadcast implementation with delta compression control
+    #[allow(unused_variables, unused_mut)]
     async fn broadcast_to_channel_internal(
         &self,
         app_config: &App,
         channel: &str,
-        message: PusherMessage,
+        mut message: PusherMessage,
         exclude_socket: Option<&SocketId>,
         start_time_ms: Option<f64>,
         force_full_message: bool,
     ) -> Result<()> {
+        // Connection recovery bundles serial + message_id + replay buffer (V2 feature, gated by config)
+        #[cfg(feature = "recovery")]
+        {
+            let options = self.server_options();
+            let recovery_config =
+                resolve_app_connection_recovery(&options.connection_recovery, app_config);
+            if recovery_config.enabled {
+                if message.message_id.is_none() {
+                    message.message_id = Some(generate_message_id());
+                }
+                if let Some(ref replay_buffer) = self.replay_buffer {
+                    let serial = replay_buffer.next_serial(&app_config.id, channel);
+                    message.serial = Some(serial);
+                }
+
+                if let Some(ref replay_buffer) = self.replay_buffer
+                    && let Ok(bytes) = sonic_rs::to_vec(&message) {
+                        replay_buffer.store(&app_config.id, channel, message.serial.unwrap_or(0), bytes);
+                    }
+            }
+        }
+
         // Calculate message size for metrics
         let message_size = sonic_rs::to_string(&message).unwrap_or_default().len();
-
-        // Extract channel-specific delta compression settings
-        // If force_full_message is true, we pass None to disable delta compression
-        let channel_settings = if force_full_message {
-            None
-        } else {
-            Self::get_channel_delta_settings(app_config, channel)
-        };
 
         // Get the number of sockets in the channel before sending and send the message
         let (result, target_socket_count) = {
@@ -128,33 +169,56 @@ impl ConnectionHandler {
                 socket_count
             };
 
-            let result = if force_full_message {
-                // Send without compression - bypass delta compression entirely
-                self.connection_manager
-                    .send(
-                        channel,
-                        message,
-                        exclude_socket,
-                        &app_config.id,
-                        start_time_ms,
-                    )
-                    .await
-            } else {
-                // Normal path with delta compression
-                self.connection_manager
-                    .send_with_compression(
-                        channel,
-                        message,
-                        exclude_socket,
-                        &app_config.id,
-                        start_time_ms,
-                        crate::connection_manager::CompressionParams {
-                            delta_compression: Arc::clone(&self.delta_compression),
-                            channel_settings: channel_settings.as_ref(),
-                        },
-                    )
-                    .await
+            #[cfg(feature = "delta")]
+            let result = {
+                // Extract channel-specific delta compression settings
+                // If force_full_message is true, we pass None to disable delta compression
+                let channel_settings = if force_full_message {
+                    None
+                } else {
+                    Self::get_channel_delta_settings(app_config, channel)
+                };
+
+                if force_full_message {
+                    // Send without compression - bypass delta compression entirely
+                    self.connection_manager
+                        .send(
+                            channel,
+                            message,
+                            exclude_socket,
+                            &app_config.id,
+                            start_time_ms,
+                        )
+                        .await
+                } else {
+                    // Normal path with delta compression
+                    self.connection_manager
+                        .send_with_compression(
+                            channel,
+                            message,
+                            exclude_socket,
+                            &app_config.id,
+                            start_time_ms,
+                            crate::connection_manager::CompressionParams {
+                                delta_compression: Arc::clone(&self.delta_compression),
+                                channel_settings: channel_settings.as_ref(),
+                            },
+                        )
+                        .await
+                }
             };
+
+            #[cfg(not(feature = "delta"))]
+            let result = self
+                .connection_manager
+                .send(
+                    channel,
+                    message,
+                    exclude_socket,
+                    &app_config.id,
+                    start_time_ms,
+                )
+                .await;
 
             (result, target_socket_count)
         };
@@ -252,6 +316,7 @@ impl ConnectionHandler {
         }
     }
 
+    #[cfg(feature = "delta")]
     /// Get channel-specific delta compression settings with pattern matching support
     ///
     /// Supports:
@@ -279,6 +344,7 @@ impl ConnectionHandler {
         None
     }
 
+    #[cfg(feature = "delta")]
     /// Convert ChannelDeltaConfig enum to ChannelDeltaSettings struct
     fn convert_channel_config_to_settings(
         config: &sockudo_delta::ChannelDeltaConfig,
@@ -313,6 +379,7 @@ impl ConnectionHandler {
         }
     }
 
+    #[cfg(feature = "delta")]
     /// Check if a channel name matches a pattern
     /// Supports:
     /// - Exact match: "market-data" matches "market-data"
