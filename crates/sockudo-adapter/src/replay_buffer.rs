@@ -135,7 +135,8 @@ impl ReplayBuffer {
 
         for key in empty_keys {
             // Only remove if still empty (avoid race with concurrent store)
-            self.buffers.remove_if(&key, |_, v| v.messages.lock().unwrap().is_empty());
+            self.buffers
+                .remove_if(&key, |_, v| v.messages.lock().unwrap().is_empty());
         }
     }
 }

@@ -8,13 +8,14 @@ use bytes::Bytes;
 use sockudo_core::error::{Error, Result};
 #[cfg(feature = "tag-filtering")]
 use sockudo_core::namespace::Namespace;
-#[cfg(feature = "tag-filtering")]
+use sockudo_core::utils::{is_wildcard_subscription_pattern, wildcard_pattern_matches};
 use sockudo_core::websocket::{SocketId, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
 
 /// Prepare and serialize a V2 message (rewrite prefix, keep serial/message_id).
 pub(crate) fn prepare_v2_message(mut message: PusherMessage) -> Result<(PusherMessage, Bytes)> {
     message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+    message.idempotency_key = None;
     let v2_bytes = Bytes::from(
         sonic_rs::to_vec(&message)
             .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?,
@@ -31,6 +32,68 @@ pub(crate) fn prepare_v2_message(mut message: PusherMessage) -> Result<(PusherMe
 /// Looks up the message's tags in the index and returns only the sockets that
 /// should receive the message. Sockets with no filter receive all messages.
 #[cfg(feature = "tag-filtering")]
+fn matching_channel_filter_entries(
+    socket: &WebSocketRef,
+    channel: &str,
+) -> Vec<Option<std::sync::Arc<sockudo_filter::FilterNode>>> {
+    socket
+        .channel_filters
+        .iter()
+        .filter_map(|entry| {
+            let subscribed_channel = entry.key();
+            let matches = subscribed_channel == channel
+                || (is_wildcard_subscription_pattern(subscribed_channel)
+                    && wildcard_pattern_matches(channel, subscribed_channel));
+            matches.then(|| entry.value().clone())
+        })
+        .collect()
+}
+
+#[cfg(feature = "tag-filtering")]
+fn should_deliver_for_tags(
+    socket: &WebSocketRef,
+    channel: &str,
+    tags: Option<&std::collections::BTreeMap<String, String>>,
+) -> bool {
+    let matching_filters = matching_channel_filter_entries(socket, channel);
+    if matching_filters.is_empty() {
+        return false;
+    }
+
+    matching_filters
+        .into_iter()
+        .any(|filter| match (&filter, tags) {
+            (None, _) => true,
+            (Some(filter), Some(tags)) => sockudo_filter::matches(filter, tags),
+            (Some(_), None) => false,
+        })
+}
+
+fn event_name_filter_allows(socket: &WebSocketRef, channel: &str, event_name: &str) -> bool {
+    let mut matched = false;
+
+    for entry in socket.event_name_filters.iter() {
+        let subscribed_channel = entry.key();
+        let channel_matches = subscribed_channel == channel
+            || (is_wildcard_subscription_pattern(subscribed_channel)
+                && wildcard_pattern_matches(channel, subscribed_channel));
+        if !channel_matches {
+            continue;
+        }
+
+        matched = true;
+        match entry.value() {
+            None => return true,
+            Some(names) if names.is_empty() => return true,
+            Some(names) if names.iter().any(|name| name == event_name) => return true,
+            Some(_) => {}
+        }
+    }
+
+    !matched
+}
+
+#[cfg(feature = "tag-filtering")]
 pub(crate) fn apply_tag_filter(
     filter_index: &crate::filter_index::FilterIndex,
     tag_filtering_enabled: bool,
@@ -44,78 +107,17 @@ pub(crate) fn apply_tag_filter(
         return v2_sockets;
     }
 
-    if let Some(tags) = message.tags.as_ref() {
-        let tags_btree: std::collections::BTreeMap<String, String> =
-            tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let _ = (filter_index, except, namespace);
+    let tags_btree = message.tags.as_ref().map(|tags| {
+        tags.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<std::collections::BTreeMap<String, String>>()
+    });
 
-        let lookup_result = filter_index.lookup(channel, &tags_btree);
-
-        tracing::debug!(
-            "FilterIndex lookup: channel={}, tags={:?}, indexed_matches={}, no_filter={}, needs_evaluation={}",
-            channel,
-            tags.keys().collect::<Vec<_>>(),
-            lookup_result.indexed_matches.len(),
-            lookup_result.no_filter.len(),
-            lookup_result.needs_evaluation.len()
-        );
-
-        let mut result = Vec::with_capacity(
-            lookup_result.indexed_matches.len() + lookup_result.no_filter.len(),
-        );
-
-        for socket_id in lookup_result.indexed_matches {
-            if except.is_some_and(|e| *e == socket_id) {
-                continue;
-            }
-            if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                result.push(socket_ref.value().clone());
-            }
-        }
-
-        for socket_id in lookup_result.no_filter {
-            if except.is_some_and(|e| *e == socket_id) {
-                continue;
-            }
-            if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                result.push(socket_ref.value().clone());
-            }
-        }
-
-        for socket_id in lookup_result.needs_evaluation {
-            if except.is_some_and(|e| *e == socket_id) {
-                continue;
-            }
-            if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                let socket_ref = socket_ref.value().clone();
-                let channel_filter = socket_ref.get_channel_filter_sync(channel);
-                if let Some(filter) = channel_filter {
-                    if sockudo_filter::matches(&filter, tags) {
-                        result.push(socket_ref);
-                    }
-                } else {
-                    result.push(socket_ref);
-                }
-            }
-        }
-
-        tracing::debug!(
-            "FilterIndex result: {} sockets to receive message",
-            result.len()
-        );
-
-        result
-    } else {
-        // Tag filtering enabled but message has no tags - only no_filter sockets receive it
-        let empty_tags = std::collections::BTreeMap::new();
-        let lookup_result = filter_index.lookup(channel, &empty_tags);
-
-        lookup_result
-            .no_filter
-            .into_iter()
-            .filter(|socket_id| except != Some(socket_id))
-            .filter_map(|socket_id| namespace.sockets.get(&socket_id).map(|r| r.value().clone()))
-            .collect()
-    }
+    v2_sockets
+        .into_iter()
+        .filter(|socket| should_deliver_for_tags(socket, channel, tags_btree.as_ref()))
+        .collect()
 }
 
 /// Same as `apply_tag_filter` but also verifies matched sockets are V2.
@@ -136,77 +138,37 @@ pub(crate) fn apply_tag_filter_v2_only(
         return v2_sockets;
     }
 
-    if let Some(tags) = message.tags.as_ref() {
-        let tags_btree: std::collections::BTreeMap<String, String> =
-            tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let _ = (filter_index, except, namespace);
+    let tags_btree = message.tags.as_ref().map(|tags| {
+        tags.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<std::collections::BTreeMap<String, String>>()
+    });
 
-        let lookup_result = filter_index.lookup(channel, &tags_btree);
+    v2_sockets
+        .into_iter()
+        .filter(|socket| socket.protocol_version == sockudo_protocol::ProtocolVersion::V2)
+        .filter(|socket| should_deliver_for_tags(socket, channel, tags_btree.as_ref()))
+        .collect()
+}
 
-        let mut result = Vec::with_capacity(
-            lookup_result.indexed_matches.len() + lookup_result.no_filter.len(),
-        );
+/// Apply event name filtering to a list of V2 sockets.
+/// Sockets whose subscription has an event name filter that does not include
+/// the message's event name are removed from the list.
+pub(crate) fn apply_event_name_filter(
+    channel: &str,
+    message: &PusherMessage,
+    sockets: Vec<sockudo_core::websocket::WebSocketRef>,
+) -> Vec<sockudo_core::websocket::WebSocketRef> {
+    let event_name = match message.event.as_deref() {
+        Some(name) => name,
+        None => return sockets, // no event name = deliver to all
+    };
 
-        for socket_id in lookup_result.indexed_matches {
-            if except.is_some_and(|e| *e == socket_id) {
-                continue;
-            }
-            if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                let sr = socket_ref.value().clone();
-                if sr.protocol_version == sockudo_protocol::ProtocolVersion::V2 {
-                    result.push(sr);
-                }
-            }
-        }
-
-        for socket_id in lookup_result.no_filter {
-            if except.is_some_and(|e| *e == socket_id) {
-                continue;
-            }
-            if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                let sr = socket_ref.value().clone();
-                if sr.protocol_version == sockudo_protocol::ProtocolVersion::V2 {
-                    result.push(sr);
-                }
-            }
-        }
-
-        for socket_id in lookup_result.needs_evaluation {
-            if except.is_some_and(|e| *e == socket_id) {
-                continue;
-            }
-            if let Some(socket_ref) = namespace.sockets.get(&socket_id) {
-                let socket_ref = socket_ref.value().clone();
-                if socket_ref.protocol_version != sockudo_protocol::ProtocolVersion::V2 {
-                    continue;
-                }
-                let channel_filter = socket_ref.get_channel_filter_sync(channel);
-                if let Some(filter) = channel_filter {
-                    if sockudo_filter::matches(&filter, tags) {
-                        result.push(socket_ref);
-                    }
-                } else {
-                    result.push(socket_ref);
-                }
-            }
-        }
-
-        result
-    } else {
-        let empty_tags = std::collections::BTreeMap::new();
-        let lookup_result = filter_index.lookup(channel, &empty_tags);
-
-        lookup_result
-            .no_filter
-            .into_iter()
-            .filter(|socket_id| except != Some(socket_id))
-            .filter_map(|socket_id| {
-                namespace.sockets.get(&socket_id).and_then(|r| {
-                    let sr = r.value().clone();
-                    (sr.protocol_version == sockudo_protocol::ProtocolVersion::V2).then_some(sr)
-                })
-            })
-            .collect()
-    }
+    sockets
+        .into_iter()
+        .filter(|socket| event_name_filter_allows(socket, channel, event_name))
+        .collect()
 }
 
 /// Strip tags from a message if tag inclusion is disabled for the channel.

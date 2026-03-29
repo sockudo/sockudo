@@ -8,6 +8,8 @@ use crate::mysql_app_manager::MySQLAppManager;
 use crate::pg_app_manager::PgSQLAppManager;
 #[cfg(feature = "scylladb")]
 use crate::scylla_app_manager::{ScyllaDbAppManager, ScyllaDbConfig};
+#[cfg(feature = "surrealdb")]
+use crate::surrealdb_app_manager::{SurrealDbAppManager, SurrealDbConfig};
 use sockudo_core::app::AppManager;
 use sockudo_core::cache::CacheManager;
 use sockudo_core::error::Result;
@@ -90,6 +92,34 @@ impl AppManagerFactory {
                     }
                 }
             }
+            #[cfg(feature = "surrealdb")]
+            AppManagerDriver::SurrealDb => {
+                let surreal_settings = &db_config.surrealdb;
+
+                let surreal_config = SurrealDbConfig {
+                    url: surreal_settings.url.clone(),
+                    namespace: surreal_settings.namespace.clone(),
+                    database: surreal_settings.database.clone(),
+                    username: surreal_settings.username.clone(),
+                    password: surreal_settings.password.clone(),
+                    table_name: surreal_settings.table_name.clone(),
+                    cache_ttl: surreal_settings.cache_ttl,
+                    cache_max_capacity: surreal_settings.cache_max_capacity,
+                };
+                match SurrealDbAppManager::new(surreal_config).await {
+                    Ok(manager) => Arc::new(manager),
+                    Err(e) => {
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize SurrealDB app manager: {}, falling back to memory manager",
+                                e
+                            )
+                        );
+                        Arc::new(MemoryAppManager::new())
+                    }
+                }
+            }
             #[cfg(feature = "scylladb")]
             AppManagerDriver::ScyllaDb => {
                 let scylla_settings = &db_config.scylladb;
@@ -142,6 +172,14 @@ impl AppManagerFactory {
                 warn!(
                     "{}",
                     "PostgreSQL app manager requested but not compiled in. Falling back to memory manager."
+                );
+                Arc::new(MemoryAppManager::new())
+            }
+            #[cfg(not(feature = "surrealdb"))]
+            AppManagerDriver::SurrealDb => {
+                warn!(
+                    "{}",
+                    "SurrealDB app manager requested but not compiled in. Falling back to memory manager."
                 );
                 Arc::new(MemoryAppManager::new())
             }

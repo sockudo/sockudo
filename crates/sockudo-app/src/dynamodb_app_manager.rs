@@ -1,6 +1,9 @@
 use ahash::AHashMap;
 use async_trait::async_trait;
-use sockudo_core::app::{App, AppConnectionRecoveryConfig, AppIdempotencyConfig, AppManager};
+use sockudo_core::app::{
+    App, AppChannelsPolicy, AppConnectionRecoveryConfig, AppFeaturesPolicy, AppIdempotencyConfig,
+    AppLimitsPolicy, AppManager, AppPolicy,
+};
 use sockudo_core::delta_types::ChannelDeltaConfig;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::webhook_types::Webhook;
@@ -97,113 +100,150 @@ impl DynamoDbAppManager {
                 }
             };
 
-            Ok(App {
-                id: get_string("id")?,
-                key: get_string("key")?,
-                secret: get_string("secret")?,
-                max_connections: get_u32("max_connections", Some(0)).unwrap_or(0),
-                enable_client_messages: get_bool("enable_client_messages", false),
-                enabled: get_bool("enabled", true),
-                max_backend_events_per_second: get_u32("max_backend_events_per_second", None),
-                max_client_events_per_second: get_u32("max_client_events_per_second", Some(0))
-                    .unwrap_or(0),
-                max_read_requests_per_second: get_u32("max_read_requests_per_second", None),
-                max_presence_members_per_channel: get_u32("max_presence_members_per_channel", None),
-                max_presence_member_size_in_kb: get_u32("max_presence_member_size_in_kb", None),
-                max_channel_name_length: get_u32("max_channel_name_length", None),
-                max_event_channels_at_once: get_u32("max_event_channels_at_once", None),
-                max_event_name_length: get_u32("max_event_name_length", None),
-                max_event_payload_in_kb: get_u32("max_event_payload_in_kb", None),
-                max_event_batch_size: get_u32("max_event_batch_size", None),
-                enable_user_authentication: if let Some(
-                    aws_sdk_dynamodb::types::AttributeValue::Bool(b),
-                ) = map.get("enable_user_authentication")
-                {
-                    Some(*b)
-                } else {
-                    None
-                },
-                webhooks: if let Some(aws_sdk_dynamodb::types::AttributeValue::S(json_str)) =
-                    map.get("webhooks")
-                {
-                    sonic_rs::from_str::<Vec<Webhook>>(json_str)
-                        .map_err(|e| {
-                            tracing::warn!("Failed to parse webhooks JSON: {}", e);
-                            e
-                        })
-                        .ok()
-                } else {
-                    None
-                },
-                enable_watchlist_events: if let Some(
-                    aws_sdk_dynamodb::types::AttributeValue::Bool(b),
-                ) = map.get("enable_watchlist_events")
-                {
-                    Some(*b)
-                } else {
-                    None
-                },
-                allowed_origins: if let Some(aws_sdk_dynamodb::types::AttributeValue::L(list)) =
-                    map.get("allowed_origins")
-                {
-                    let origins: Vec<String> = list
-                        .iter()
-                        .filter_map(|item| {
-                            if let aws_sdk_dynamodb::types::AttributeValue::S(s) = item {
-                                Some(s.clone())
-                            } else {
+            if let Some(aws_sdk_dynamodb::types::AttributeValue::S(json_str)) = map.get("policy") {
+                let policy = sonic_rs::from_str::<AppPolicy>(json_str).map_err(|e| {
+                    Error::Internal(format!("Failed to parse app policy from DynamoDB: {e}"))
+                })?;
+                return Ok(App::from_policy(
+                    get_string("id")?,
+                    get_string("key")?,
+                    get_string("secret")?,
+                    get_bool("enabled", true),
+                    policy,
+                ));
+            }
+
+            Ok(App::from_policy(
+                get_string("id")?,
+                get_string("key")?,
+                get_string("secret")?,
+                get_bool("enabled", true),
+                AppPolicy {
+                    limits: AppLimitsPolicy {
+                        max_connections: get_u32("max_connections", Some(0)).unwrap_or(0),
+                        max_backend_events_per_second: get_u32(
+                            "max_backend_events_per_second",
+                            None,
+                        ),
+                        max_client_events_per_second: get_u32(
+                            "max_client_events_per_second",
+                            Some(0),
+                        )
+                        .unwrap_or(0),
+                        max_read_requests_per_second: get_u32("max_read_requests_per_second", None),
+                        max_presence_members_per_channel: get_u32(
+                            "max_presence_members_per_channel",
+                            None,
+                        ),
+                        max_presence_member_size_in_kb: get_u32(
+                            "max_presence_member_size_in_kb",
+                            None,
+                        ),
+                        max_channel_name_length: get_u32("max_channel_name_length", None),
+                        max_event_channels_at_once: get_u32("max_event_channels_at_once", None),
+                        max_event_name_length: get_u32("max_event_name_length", None),
+                        max_event_payload_in_kb: get_u32("max_event_payload_in_kb", None),
+                        max_event_batch_size: get_u32("max_event_batch_size", None),
+                    },
+                    features: AppFeaturesPolicy {
+                        enable_client_messages: get_bool("enable_client_messages", false),
+                        enable_user_authentication: if let Some(
+                            aws_sdk_dynamodb::types::AttributeValue::Bool(b),
+                        ) = map.get("enable_user_authentication")
+                        {
+                            Some(*b)
+                        } else {
+                            None
+                        },
+                        enable_watchlist_events: if let Some(
+                            aws_sdk_dynamodb::types::AttributeValue::Bool(b),
+                        ) = map.get("enable_watchlist_events")
+                        {
+                            Some(*b)
+                        } else {
+                            None
+                        },
+                    },
+                    channels: AppChannelsPolicy {
+                        allowed_origins: if let Some(aws_sdk_dynamodb::types::AttributeValue::L(
+                            list,
+                        )) = map.get("allowed_origins")
+                        {
+                            let origins: Vec<String> = list
+                                .iter()
+                                .filter_map(|item| {
+                                    if let aws_sdk_dynamodb::types::AttributeValue::S(s) = item {
+                                        Some(s.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            if origins.is_empty() {
                                 None
+                            } else {
+                                Some(origins)
                             }
-                        })
-                        .collect();
-                    if origins.is_empty() {
-                        None
+                        } else {
+                            None
+                        },
+                        channel_delta_compression: if let Some(
+                            aws_sdk_dynamodb::types::AttributeValue::S(json_str),
+                        ) = map.get("channel_delta_compression")
+                        {
+                            sonic_rs::from_str::<AHashMap<String, ChannelDeltaConfig>>(json_str)
+                                .map_err(|e| {
+                                    tracing::warn!(
+                                        "Failed to parse channel_delta_compression JSON: {}",
+                                        e
+                                    );
+                                    e
+                                })
+                                .ok()
+                        } else {
+                            None
+                        },
+                        channel_namespaces: None,
+                    },
+                    webhooks: if let Some(aws_sdk_dynamodb::types::AttributeValue::S(json_str)) =
+                        map.get("webhooks")
+                    {
+                        sonic_rs::from_str::<Vec<Webhook>>(json_str)
+                            .map_err(|e| {
+                                tracing::warn!("Failed to parse webhooks JSON: {}", e);
+                                e
+                            })
+                            .ok()
                     } else {
-                        Some(origins)
-                    }
-                } else {
-                    None
+                        None
+                    },
+                    idempotency: if let Some(aws_sdk_dynamodb::types::AttributeValue::S(json_str)) =
+                        map.get("idempotency")
+                    {
+                        sonic_rs::from_str::<AppIdempotencyConfig>(json_str)
+                            .map_err(|e| {
+                                tracing::warn!("Failed to parse idempotency JSON: {}", e);
+                                e
+                            })
+                            .ok()
+                    } else {
+                        None
+                    },
+                    connection_recovery: if let Some(aws_sdk_dynamodb::types::AttributeValue::S(
+                        json_str,
+                    )) = map.get("connection_recovery")
+                    {
+                        sonic_rs::from_str::<AppConnectionRecoveryConfig>(json_str)
+                            .map_err(|e| {
+                                tracing::warn!("Failed to parse connection_recovery JSON: {}", e);
+                                e
+                            })
+                            .ok()
+                    } else {
+                        None
+                    },
                 },
-                channel_delta_compression: if let Some(
-                    aws_sdk_dynamodb::types::AttributeValue::S(json_str),
-                ) = map.get("channel_delta_compression")
-                {
-                    sonic_rs::from_str::<AHashMap<String, ChannelDeltaConfig>>(json_str)
-                        .map_err(|e| {
-                            tracing::warn!("Failed to parse channel_delta_compression JSON: {}", e);
-                            e
-                        })
-                        .ok()
-                } else {
-                    None
-                },
-                idempotency: if let Some(
-                    aws_sdk_dynamodb::types::AttributeValue::S(json_str),
-                ) = map.get("idempotency")
-                {
-                    sonic_rs::from_str::<AppIdempotencyConfig>(json_str)
-                        .map_err(|e| {
-                            tracing::warn!("Failed to parse idempotency JSON: {}", e);
-                            e
-                        })
-                        .ok()
-                } else {
-                    None
-                },
-                connection_recovery: if let Some(
-                    aws_sdk_dynamodb::types::AttributeValue::S(json_str),
-                ) = map.get("connection_recovery")
-                {
-                    sonic_rs::from_str::<AppConnectionRecoveryConfig>(json_str)
-                        .map_err(|e| {
-                            tracing::warn!("Failed to parse connection_recovery JSON: {}", e);
-                            e
-                        })
-                        .ok()
-                } else {
-                    None
-                },
-            })
+            ))
         } else {
             Err(Error::Internal("Invalid DynamoDB item format".to_string()))
         }
@@ -211,6 +251,7 @@ impl DynamoDbAppManager {
 
     /// Convert an App struct to DynamoDB item
     fn app_to_item(&self, app: &App) -> HashMap<String, aws_sdk_dynamodb::types::AttributeValue> {
+        let policy = app.policy();
         let mut item = HashMap::new();
 
         item.insert(
@@ -226,148 +267,15 @@ impl DynamoDbAppManager {
             aws_sdk_dynamodb::types::AttributeValue::S(app.secret.clone()),
         );
         item.insert(
-            "max_connections".to_string(),
-            aws_sdk_dynamodb::types::AttributeValue::N(app.max_connections.to_string()),
-        );
-        item.insert(
-            "enable_client_messages".to_string(),
-            aws_sdk_dynamodb::types::AttributeValue::Bool(app.enable_client_messages),
-        );
-        item.insert(
             "enabled".to_string(),
             aws_sdk_dynamodb::types::AttributeValue::Bool(app.enabled),
         );
+        let policy_json = sonic_rs::to_string(&policy)
+            .expect("Failed to serialize app policy to JSON. This indicates a bug.");
         item.insert(
-            "max_client_events_per_second".to_string(),
-            aws_sdk_dynamodb::types::AttributeValue::N(
-                app.max_client_events_per_second.to_string(),
-            ),
+            "policy".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::S(policy_json),
         );
-
-        if let Some(val) = app.max_backend_events_per_second {
-            item.insert(
-                "max_backend_events_per_second".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.max_read_requests_per_second {
-            item.insert(
-                "max_read_requests_per_second".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.max_presence_members_per_channel {
-            item.insert(
-                "max_presence_members_per_channel".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.max_presence_member_size_in_kb {
-            item.insert(
-                "max_presence_member_size_in_kb".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.max_channel_name_length {
-            item.insert(
-                "max_channel_name_length".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.max_event_channels_at_once {
-            item.insert(
-                "max_event_channels_at_once".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.max_event_name_length {
-            item.insert(
-                "max_event_name_length".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.max_event_payload_in_kb {
-            item.insert(
-                "max_event_payload_in_kb".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.max_event_batch_size {
-            item.insert(
-                "max_event_batch_size".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::N(val.to_string()),
-            );
-        }
-
-        if let Some(val) = app.enable_user_authentication {
-            item.insert(
-                "enable_user_authentication".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::Bool(val),
-            );
-        }
-
-        if let Some(val) = app.enable_watchlist_events {
-            item.insert(
-                "enable_watchlist_events".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::Bool(val),
-            );
-        }
-
-        if let Some(webhooks) = &app.webhooks {
-            let json_str = sonic_rs::to_string(webhooks)
-                .expect("Failed to serialize webhooks to JSON. This indicates a bug.");
-            item.insert(
-                "webhooks".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(json_str),
-            );
-        }
-
-        if let Some(origins) = &app.allowed_origins {
-            let origin_list: Vec<aws_sdk_dynamodb::types::AttributeValue> = origins
-                .iter()
-                .map(|s| aws_sdk_dynamodb::types::AttributeValue::S(s.clone()))
-                .collect();
-            item.insert(
-                "allowed_origins".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::L(origin_list),
-            );
-        }
-
-        if let Some(delta_config) = &app.channel_delta_compression {
-            let json_str = sonic_rs::to_string(delta_config).expect(
-                "Failed to serialize channel_delta_compression to JSON. This indicates a bug.",
-            );
-            item.insert(
-                "channel_delta_compression".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(json_str),
-            );
-        }
-
-        if let Some(idempotency) = &app.idempotency {
-            let json_str = sonic_rs::to_string(idempotency)
-                .expect("Failed to serialize idempotency to JSON. This indicates a bug.");
-            item.insert(
-                "idempotency".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(json_str),
-            );
-        }
-
-        if let Some(connection_recovery) = &app.connection_recovery {
-            let json_str = sonic_rs::to_string(connection_recovery)
-                .expect("Failed to serialize connection_recovery to JSON. This indicates a bug.");
-            item.insert(
-                "connection_recovery".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(json_str),
-            );
-        }
 
         item
     }

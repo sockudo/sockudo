@@ -1,6 +1,7 @@
 use crate::app::AppManager;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
+use crate::utils::wildcard_pattern_matches;
 use crate::websocket::{SocketId, WebSocket, WebSocketBufferConfig, WebSocketRef};
 use ahash::AHashMap as HashMap;
 use dashmap::{DashMap, DashSet};
@@ -15,6 +16,13 @@ pub struct Namespace {
     pub sockets: DashMap<SocketId, WebSocketRef>,
     pub channels: DashMap<String, DashSet<SocketId>>,
     pub users: DashMap<String, DashSet<WebSocketRef>>,
+}
+
+pub struct SocketInitOptions {
+    pub buffer_config: WebSocketBufferConfig,
+    pub protocol_version: sockudo_protocol::ProtocolVersion,
+    pub wire_format: sockudo_protocol::WireFormat,
+    pub echo_messages: bool,
 }
 
 impl Namespace {
@@ -32,8 +40,7 @@ impl Namespace {
         socket_id: SocketId,
         socket_writer: WebSocketWriter,
         app_manager: Arc<dyn AppManager + Send + Sync>,
-        buffer_config: WebSocketBufferConfig,
-        protocol_version: sockudo_protocol::ProtocolVersion,
+        init: SocketInitOptions,
     ) -> Result<WebSocketRef> {
         let app_config = match app_manager.find_by_id(&self.app_id).await {
             Ok(Some(app)) => app,
@@ -55,9 +62,12 @@ impl Namespace {
             }
         };
 
-        let mut websocket = WebSocket::with_buffer_config(socket_id, socket_writer, buffer_config);
+        let mut websocket =
+            WebSocket::with_buffer_config(socket_id, socket_writer, init.buffer_config);
         websocket.state.app = Some(app_config);
-        websocket.state.protocol_version = protocol_version;
+        websocket.state.protocol_version = init.protocol_version;
+        websocket.state.wire_format = init.wire_format;
+        websocket.state.echo_messages = init.echo_messages;
 
         let websocket_ref = WebSocketRef::new(websocket);
         self.sockets.insert(socket_id, websocket_ref.clone());
@@ -167,6 +177,36 @@ impl Namespace {
         }
 
         socket_refs
+    }
+
+    pub fn get_matching_channel_socket_refs_except(
+        &self,
+        channel: &str,
+        except: Option<&SocketId>,
+    ) -> Vec<WebSocketRef> {
+        let mut socket_ids = std::collections::HashSet::new();
+
+        for entry in self.channels.iter() {
+            let subscribed_channel = entry.key();
+            let matches = subscribed_channel == channel
+                || (subscribed_channel.contains('*')
+                    && wildcard_pattern_matches(channel, subscribed_channel));
+            if !matches {
+                continue;
+            }
+
+            for socket_id_entry in entry.value().iter() {
+                let socket_id = socket_id_entry.key();
+                if except != Some(socket_id) {
+                    socket_ids.insert(*socket_id);
+                }
+            }
+        }
+
+        socket_ids
+            .into_iter()
+            .filter_map(|socket_id| self.get_connection(&socket_id))
+            .collect()
     }
 
     #[inline]

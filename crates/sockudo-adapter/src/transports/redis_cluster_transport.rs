@@ -9,7 +9,10 @@ use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use redis::cluster_async::ClusterConnection;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
+use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
 type RedisPushChannelFlavor = mpsc::List<redis::PushInfo>;
@@ -41,7 +44,6 @@ impl TransportConfig for RedisClusterAdapterConfig {
 /// Per redis-rs docs: "Async cluster connections also don't require pooling and are thread-safe and reusable."
 /// We store a single connection and clone it for each operation, avoiding the overhead of
 /// creating new connections (which was causing "connection storms").
-#[derive(Clone)]
 pub struct RedisClusterTransport {
     /// Client for creating dedicated connections (e.g., health checks)
     /// Kept for potential future reconnection scenarios
@@ -56,6 +58,9 @@ pub struct RedisClusterTransport {
     response_channel: String,
     config: RedisClusterAdapterConfig,
     use_sharded_pubsub: bool,
+    shutdown: Arc<Notify>,
+    is_running: Arc<AtomicBool>,
+    owner_count: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -112,6 +117,9 @@ impl HorizontalTransport for RedisClusterTransport {
             response_channel,
             config,
             use_sharded_pubsub,
+            shutdown: Arc::new(Notify::new()),
+            is_running: Arc::new(AtomicBool::new(true)),
+            owner_count: Arc::new(AtomicUsize::new(1)),
         })
     }
 
@@ -279,6 +287,8 @@ impl HorizontalTransport for RedisClusterTransport {
         let use_sharded_pubsub = self.use_sharded_pubsub;
         // Clone the publish connection for use in handlers (cheap, thread-safe)
         let publish_connection = self.publish_connection.clone();
+        let shutdown = self.shutdown.clone();
+        let is_running = self.is_running.clone();
 
         // Spawn the main listener task with reconnection logic
         tokio::spawn(async move {
@@ -287,6 +297,9 @@ impl HorizontalTransport for RedisClusterTransport {
             let mut reconnection_count = 0u64;
 
             loop {
+                if !is_running.load(Ordering::Relaxed) {
+                    break;
+                }
                 // Create a new channel and client for each connection attempt
                 // This is necessary because the push_sender moves tx into the client,
                 // and when the channel closes, we need a fresh one for reconnection
@@ -305,7 +318,10 @@ impl HorizontalTransport for RedisClusterTransport {
                             "Failed to create PubSub client: {}, retrying in {}ms",
                             e, retry_delay
                         );
-                        tokio::time::sleep(Duration::from_millis(retry_delay)).await;
+                        tokio::select! {
+                            _ = shutdown.notified() => break,
+                            _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
+                        }
                         retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                         continue;
                     }
@@ -331,7 +347,10 @@ impl HorizontalTransport for RedisClusterTransport {
                             "Failed to get pubsub connection: {}, retrying in {}ms (attempt {})",
                             e, retry_delay, reconnection_count
                         );
-                        tokio::time::sleep(Duration::from_millis(retry_delay)).await;
+                        tokio::select! {
+                            _ = shutdown.notified() => break,
+                            _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
+                        }
                         retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                         continue;
                     }
@@ -357,7 +376,10 @@ impl HorizontalTransport for RedisClusterTransport {
                         "Failed to subscribe to channels: {}, retrying in {}ms",
                         e, retry_delay
                     );
-                    tokio::time::sleep(Duration::from_millis(retry_delay)).await;
+                    tokio::select! {
+                        _ = shutdown.notified() => break,
+                        _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
+                    }
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                     continue;
                 }
@@ -371,7 +393,20 @@ impl HorizontalTransport for RedisClusterTransport {
                 reconnection_count = 0;
 
                 // Process messages from the channel - PushInfo is the message type for RESP3
-                while let Ok(push_info) = rx.recv().await {
+                loop {
+                    if !is_running.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let recv_result = tokio::select! {
+                        _ = shutdown.notified() => break,
+                        result = tokio::time::timeout(Duration::from_millis(100), rx.recv()) => result,
+                    };
+                    let Ok(Ok(push_info)) = recv_result else {
+                        if matches!(recv_result, Ok(Err(_))) {
+                            break;
+                        }
+                        continue;
+                    };
                     // Extract channel and payload from PushInfo
                     // Handle both standard (Message) and sharded (SMessage) pub/sub messages
                     let is_message = matches!(
@@ -446,7 +481,10 @@ impl HorizontalTransport for RedisClusterTransport {
 
                 // Connection ended, reconnect with exponential backoff
                 warn!("Redis Cluster PubSub connection ended, reconnecting...");
-                tokio::time::sleep(Duration::from_millis(retry_delay)).await;
+                tokio::select! {
+                    _ = shutdown.notified() => break,
+                    _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
+                }
                 retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
             }
         });
@@ -499,6 +537,34 @@ impl HorizontalTransport for RedisClusterTransport {
             Err(Error::Redis(format!(
                 "Cluster PING returned unexpected response: {response}"
             )))
+        }
+    }
+}
+
+impl Drop for RedisClusterTransport {
+    fn drop(&mut self) {
+        if self.owner_count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.is_running.store(false, Ordering::Relaxed);
+            self.shutdown.notify_waiters();
+        }
+    }
+}
+
+impl Clone for RedisClusterTransport {
+    fn clone(&self) -> Self {
+        self.owner_count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            client: self.client.clone(),
+            publish_connection: self.publish_connection.clone(),
+            health_check_connection: self.health_check_connection.clone(),
+            broadcast_channel: self.broadcast_channel.clone(),
+            request_channel: self.request_channel.clone(),
+            response_channel: self.response_channel.clone(),
+            config: self.config.clone(),
+            use_sharded_pubsub: self.use_sharded_pubsub,
+            shutdown: self.shutdown.clone(),
+            is_running: self.is_running.clone(),
+            owner_count: self.owner_count.clone(),
         }
     }
 }

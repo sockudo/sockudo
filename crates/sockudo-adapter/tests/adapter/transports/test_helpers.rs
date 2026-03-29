@@ -71,6 +71,8 @@ pub fn create_test_broadcast(event: &str) -> BroadcastMessage {
         except_socket_id: None,
         timestamp_ms: None,
         compression_metadata: None,
+        idempotency_key: None,
+        ephemeral: false,
     }
 }
 

@@ -32,8 +32,12 @@ async fn test_single_node_skips_broadcast() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     // Send a broadcast message
@@ -84,8 +88,12 @@ async fn test_multi_node_sends_broadcast() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     // Send a broadcast message
@@ -342,8 +350,12 @@ async fn test_transition_single_to_multi_node() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     // Send broadcast in single-node mode - should be skipped

@@ -73,6 +73,8 @@ aws-sdk-sqs = { version = "1.89.0", default-features = false, features = [
   "rt-tokio",
 ] }
 async-nats = "^0.45"
+google-cloud-auth = "1.8.0"
+google-cloud-pubsub = "0.33.1"
 base64 = "0.22"
 bytes = "1.10"
 chrono = "^0.4.42"
@@ -95,6 +97,7 @@ memchr = "2.7"
 mimalloc = { version = "0.1.48", features = ["v3"] }
 mockall = "0.13.1"
 moka = { version = "0.12.11", features = ["future", "sync"] }
+lapin = { version = "4.3.0", default-features = false, features = ["rustls", "tokio"] }
 num_cpus = "1.17.0"
 oxidelta = "0.1.4"
 prometheus = "0.14.0"
@@ -111,6 +114,7 @@ redis = { version = "^1", features = [
   "connection-manager",
 ] }
 regex = "1.12.2"
+rdkafka = { version = "0.39.0", default-features = false, features = ["tokio", "cmake-build", "libz"] }
 reqwest = { version = "^0.12", default-features = false, features = [
   "json",
   "rustls-tls",
@@ -125,6 +129,8 @@ serde_urlencoded = "0.7"
 sha2 = "0.11.0-rc.3"
 sockudo-ws = { version = "1.7.4", features = ["axum-integration"] }
 sonic-rs = "0.5.6"
+surrealdb = { version = "3.0.4", default-features = false, features = ["protocol-ws", "protocol-http", "rustls"] }
+surrealdb-types = "3.0.5"
 toml = "0.8"
 sqlx = { version = "^0.8.6", features = [
   "runtime-tokio-rustls",

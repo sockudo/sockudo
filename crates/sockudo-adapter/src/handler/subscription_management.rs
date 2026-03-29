@@ -54,8 +54,12 @@ impl ConnectionHandler {
             tags: None,
             sequence: None,
             conflation_key: None,
-                message_id: None,
-                serial: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         };
         let t_after_msg_create = t_start.elapsed().as_micros();
 
@@ -328,8 +332,42 @@ impl ConnectionHandler {
             });
         }
 
+        if !sockudo_core::utils::is_meta_channel(&request.channel) {
+            let current_count = self
+                .connection_manager
+                .get_channel_socket_count(&app_config.id, &request.channel)
+                .await;
+
+            if current_count == 1 {
+                self.broadcast_metachannel_event(
+                    app_config,
+                    &request.channel,
+                    "channel_occupied",
+                    sonic_rs::json!({
+                        "channel": request.channel,
+                        "subscription_count": current_count,
+                    }),
+                )
+                .await
+                .ok();
+            }
+
+            self.broadcast_metachannel_event(
+                app_config,
+                &request.channel,
+                "subscription_count",
+                sonic_rs::json!({
+                    "channel": request.channel,
+                    "subscription_count": current_count,
+                }),
+            )
+            .await
+            .ok();
+        }
+
         // Send subscription count webhook for non-presence channels
         if !request.channel.starts_with("presence-")
+            && !sockudo_core::utils::is_meta_channel(&request.channel)
             && let Some(webhook_integration) = &self.webhook_integration
         {
             let current_count = self
@@ -364,22 +402,21 @@ impl ConnectionHandler {
             .get_connection(socket_id, &app_config.id)
             .await
         {
-            // Use WebSocketRef's lock-free filter update
-            #[cfg(feature = "tag-filtering")]
-            conn_arc
-                .subscribe_to_channel_with_filter(
-                    request.channel.clone(),
-                    request.tags_filter.clone(),
-                )
-                .await;
+            // Use WebSocketRef's lock-free filter update (tag filter + event name filter)
+            {
+                #[cfg(feature = "tag-filtering")]
+                let tag_filter = request.tags_filter.clone();
+                #[cfg(not(feature = "tag-filtering"))]
+                let tag_filter = None;
 
-            #[cfg(not(feature = "tag-filtering"))]
-            conn_arc
-                .subscribe_to_channel_with_filter(
-                    request.channel.clone(),
-                    None,
-                )
-                .await;
+                conn_arc
+                    .subscribe_to_channel_with_filters(
+                        request.channel.clone(),
+                        tag_filter,
+                        request.event_name_filter.clone(),
+                    )
+                    .await;
+            }
 
             // Register with filter index for O(1) message routing (if local adapter is available)
             #[cfg(feature = "tag-filtering")]
@@ -574,6 +611,10 @@ impl ConnectionHandler {
                 conflation_key: None,
                 message_id: None,
                 serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
             };
 
             // Get app_id from connection manager
@@ -631,8 +672,7 @@ impl ConnectionHandler {
 
         // Get channel-specific delta compression settings from app config
         let channel_settings = app_config
-            .channel_delta_compression
-            .as_ref()
+            .channel_delta_compression_ref()
             .and_then(|map| map.get(channel))
             .and_then(|config| {
                 // Convert ChannelDeltaConfig to ChannelDeltaSettings

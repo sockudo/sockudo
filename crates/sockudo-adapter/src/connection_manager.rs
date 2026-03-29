@@ -6,7 +6,7 @@ use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::Result;
 use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig, WebSocketRef};
-use sockudo_protocol::ProtocolVersion;
+use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
@@ -59,6 +59,7 @@ pub trait ConnectionManager: Send + Sync {
     async fn get_namespace(&self, app_id: &str) -> Option<Arc<Namespace>>;
 
     // WebSocket management
+    #[allow(clippy::too_many_arguments)]
     async fn add_socket(
         &self,
         socket_id: SocketId,
@@ -67,6 +68,8 @@ pub trait ConnectionManager: Send + Sync {
         app_manager: Arc<dyn AppManager + Send + Sync>,
         buffer_config: WebSocketBufferConfig,
         protocol_version: ProtocolVersion,
+        wire_format: WireFormat,
+        echo_messages: bool,
     ) -> Result<()>;
 
     async fn get_connection(&self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef>;

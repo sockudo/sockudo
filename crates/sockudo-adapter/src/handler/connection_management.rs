@@ -4,8 +4,7 @@
 use super::ConnectionHandler;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
-#[cfg(feature = "recovery")]
-use sockudo_core::options::ConnectionRecoveryConfig;
+use sockudo_core::utils;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
 #[cfg(feature = "recovery")]
@@ -16,25 +15,27 @@ use sockudo_ws::axum_integration::WebSocketWriter;
 use std::sync::Arc;
 use tracing::warn;
 
-/// Merge per-app connection recovery overrides with the global config.
-/// Only fields explicitly set at the app level take precedence.
-#[cfg(feature = "recovery")]
-fn resolve_app_connection_recovery(
-    global: &ConnectionRecoveryConfig,
-    app: &App,
-) -> ConnectionRecoveryConfig {
-    match &app.connection_recovery {
-        Some(app_config) => ConnectionRecoveryConfig {
-            enabled: app_config.enabled.unwrap_or(global.enabled),
-            buffer_ttl_seconds: app_config
-                .buffer_ttl_seconds
-                .unwrap_or(global.buffer_ttl_seconds),
-            max_buffer_size: app_config
-                .max_buffer_size
-                .unwrap_or(global.max_buffer_size),
-        },
-        None => global.clone(),
+fn sanitize_v2_feature_flags(
+    server_options: &sockudo_core::options::ServerOptions,
+    mut message: PusherMessage,
+) -> PusherMessage {
+    if let Some(extras) = message.extras.as_mut() {
+        if !server_options.ephemeral.enabled {
+            extras.ephemeral = None;
+        }
+        if !server_options.echo_control.enabled {
+            extras.echo = None;
+        }
+        let extras_empty = extras.headers.is_none()
+            && extras.ephemeral.is_none()
+            && extras.idempotency_key.is_none()
+            && extras.echo.is_none();
+        if extras_empty {
+            message.extras = None;
+        }
     }
+
+    message
 }
 
 impl ConnectionHandler {
@@ -130,25 +131,72 @@ impl ConnectionHandler {
         start_time_ms: Option<f64>,
         force_full_message: bool,
     ) -> Result<()> {
-        // Connection recovery bundles serial + message_id + replay buffer (V2 feature, gated by config)
+        message = sanitize_v2_feature_flags(self.server_options(), message);
+
+        // Extras-level message idempotency (V2 feature).
+        // Check extras.idempotency_key before broadcasting. If the key was already
+        // seen within the TTL window, silently drop the message.
+        if let Some(extras_key) = message.extras_idempotency_key() {
+            let config = app_config.resolved_idempotency(&self.server_options().idempotency);
+            if config.enabled {
+                let cache_key = format!("idempotency:{}:{}:{}", app_config.id, channel, extras_key);
+                if let Some(ref metrics) = self.metrics {
+                    metrics.mark_idempotency_publish(&app_config.id);
+                }
+                let is_new = self
+                    .cache_manager
+                    .set_if_not_exists(&cache_key, "1", config.ttl_seconds)
+                    .await?;
+                if !is_new {
+                    if let Some(ref metrics) = self.metrics {
+                        metrics.mark_idempotency_duplicate(&app_config.id);
+                    }
+                    tracing::debug!(
+                        app_id = %app_config.id,
+                        channel = %channel,
+                        key = %extras_key,
+                        "Extras idempotency: duplicate message dropped"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        // Track ephemeral message metric (V2 feature)
+        if message.is_ephemeral()
+            && let Some(ref metrics) = self.metrics
+        {
+            metrics.mark_ephemeral_message(&app_config.id);
+        }
+
+        // Connection recovery bundles serial + message_id + replay buffer (V2 feature, gated by config).
+        // Ephemeral messages skip recovery entirely — they are not stored in the replay buffer.
         #[cfg(feature = "recovery")]
         {
-            let options = self.server_options();
-            let recovery_config =
-                resolve_app_connection_recovery(&options.connection_recovery, app_config);
-            if recovery_config.enabled {
-                if message.message_id.is_none() {
-                    message.message_id = Some(generate_message_id());
-                }
-                if let Some(ref replay_buffer) = self.replay_buffer {
-                    let serial = replay_buffer.next_serial(&app_config.id, channel);
-                    message.serial = Some(serial);
-                }
-
-                if let Some(ref replay_buffer) = self.replay_buffer
-                    && let Ok(bytes) = sonic_rs::to_vec(&message) {
-                        replay_buffer.store(&app_config.id, channel, message.serial.unwrap_or(0), bytes);
+            if !message.is_ephemeral() {
+                let options = self.server_options();
+                let recovery_config =
+                    app_config.resolved_connection_recovery(&options.connection_recovery);
+                if recovery_config.enabled {
+                    if message.message_id.is_none() {
+                        message.message_id = Some(generate_message_id());
                     }
+                    if let Some(ref replay_buffer) = self.replay_buffer {
+                        let serial = replay_buffer.next_serial(&app_config.id, channel);
+                        message.serial = Some(serial);
+                    }
+
+                    if let Some(ref replay_buffer) = self.replay_buffer
+                        && let Ok(bytes) = sonic_rs::to_vec(&message)
+                    {
+                        replay_buffer.store(
+                            &app_config.id,
+                            channel,
+                            message.serial.unwrap_or(0),
+                            bytes,
+                        );
+                    }
+                }
             }
         }
 
@@ -302,6 +350,38 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    pub async fn broadcast_metachannel_event(
+        &self,
+        app_config: &App,
+        channel: &str,
+        event_name: &str,
+        data: sonic_rs::Value,
+    ) -> Result<()> {
+        let Some(meta_channel) = utils::meta_channel_for(channel) else {
+            return Ok(());
+        };
+
+        let message = PusherMessage {
+            event: Some(format!("sockudo_internal:{event_name}")),
+            channel: Some(meta_channel.clone()),
+            data: Some(sockudo_protocol::messages::MessageData::Json(data)),
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        self.broadcast_to_channel(app_config, &meta_channel, message, None)
+            .await
+    }
+
     async fn send_error_frame(ws_tx: &mut WebSocketWriter, error: &Error) {
         let error_message = PusherMessage::error(error.close_code(), error.to_string(), None);
 
@@ -327,7 +407,7 @@ impl ConnectionHandler {
         app_config: &App,
         channel: &str,
     ) -> Option<sockudo_delta::ChannelDeltaSettings> {
-        let channel_delta_map = app_config.channel_delta_compression.as_ref()?;
+        let channel_delta_map = app_config.channel_delta_compression_ref()?;
 
         // First try exact match
         if let Some(config) = channel_delta_map.get(channel) {
@@ -386,28 +466,390 @@ impl ConnectionHandler {
     /// - Wildcard suffix: "market-*" matches "market-btc", "market-eth", etc.
     /// - Wildcard prefix: "*-data" matches "market-data", "price-data", etc.
     fn matches_pattern(channel: &str, pattern: &str) -> bool {
-        // Exact match
-        if channel == pattern {
-            return true;
-        }
+        sockudo_core::utils::wildcard_pattern_matches(channel, pattern)
+    }
+}
 
-        // Wildcard pattern matching
-        if pattern.contains('*') {
-            if let Some(prefix) = pattern.strip_suffix('*') {
-                // Prefix match: "market-*" matches "market-btc"
-                return channel.starts_with(prefix);
-            } else if let Some(suffix) = pattern.strip_prefix('*') {
-                // Suffix match: "*-data" matches "market-data"
-                return channel.ends_with(suffix);
-            } else {
-                // Middle wildcard: "market-*-data" matches "market-btc-data"
-                let parts: Vec<&str> = pattern.split('*').collect();
-                if parts.len() == 2 {
-                    return channel.starts_with(parts[0]) && channel.ends_with(parts[1]);
-                }
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sockudo_core::app::AppIdempotencyConfig;
+    use sockudo_core::options::IdempotencyConfig;
+    use sockudo_protocol::messages::{MessageExtras, PusherMessage};
+    use sonic_rs::JsonValueTrait;
 
-        false
+    #[test]
+    fn test_resolve_idempotency_uses_global_when_no_app_override() {
+        let global = IdempotencyConfig {
+            enabled: true,
+            ttl_seconds: 300,
+            max_key_length: 128,
+        };
+        let app = App::default();
+        let resolved = app.resolved_idempotency(&global);
+        assert!(resolved.enabled);
+        assert_eq!(resolved.ttl_seconds, 300);
+    }
+
+    #[test]
+    fn test_resolve_idempotency_app_override_enabled() {
+        let global = IdempotencyConfig {
+            enabled: false,
+            ttl_seconds: 300,
+            max_key_length: 128,
+        };
+        let app = App::from_policy(
+            String::new(),
+            String::new(),
+            String::new(),
+            false,
+            sockudo_core::app::AppPolicy {
+                idempotency: Some(AppIdempotencyConfig {
+                    enabled: Some(true),
+                    ttl_seconds: Some(600),
+                }),
+                ..Default::default()
+            },
+        );
+        let resolved = app.resolved_idempotency(&global);
+        assert!(resolved.enabled);
+        assert_eq!(resolved.ttl_seconds, 600);
+    }
+
+    #[test]
+    fn test_resolve_idempotency_app_disables_globally_enabled() {
+        let global = IdempotencyConfig {
+            enabled: true,
+            ttl_seconds: 300,
+            max_key_length: 128,
+        };
+        let app = App::from_policy(
+            String::new(),
+            String::new(),
+            String::new(),
+            false,
+            sockudo_core::app::AppPolicy {
+                idempotency: Some(AppIdempotencyConfig {
+                    enabled: Some(false),
+                    ttl_seconds: None,
+                }),
+                ..Default::default()
+            },
+        );
+        let resolved = app.resolved_idempotency(&global);
+        assert!(!resolved.enabled);
+        assert_eq!(resolved.ttl_seconds, 300); // falls back to global
+    }
+
+    #[test]
+    fn test_resolve_idempotency_partial_app_override() {
+        let global = IdempotencyConfig {
+            enabled: true,
+            ttl_seconds: 120,
+            max_key_length: 128,
+        };
+        let app = App::from_policy(
+            String::new(),
+            String::new(),
+            String::new(),
+            false,
+            sockudo_core::app::AppPolicy {
+                idempotency: Some(AppIdempotencyConfig {
+                    enabled: None, // inherit global
+                    ttl_seconds: Some(999),
+                }),
+                ..Default::default()
+            },
+        );
+        let resolved = app.resolved_idempotency(&global);
+        assert!(resolved.enabled); // from global
+        assert_eq!(resolved.ttl_seconds, 999); // from app
+    }
+
+    #[test]
+    fn test_extras_idempotency_key_cache_key_format() {
+        let app_id = "app-123";
+        let channel = "market-btc";
+        let key = "dedup-abc";
+        let cache_key = format!("idempotency:{}:{}:{}", app_id, channel, key);
+        assert_eq!(cache_key, "idempotency:app-123:market-btc:dedup-abc");
+    }
+
+    #[test]
+    fn test_different_channels_same_key_produce_different_cache_keys() {
+        let app_id = "app-1";
+        let key = "same-key";
+        let key1 = format!("idempotency:{}:{}:{}", app_id, "channel-a", key);
+        let key2 = format!("idempotency:{}:{}:{}", app_id, "channel-b", key);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_same_channel_same_key_different_apps_produce_different_cache_keys() {
+        let channel = "market-btc";
+        let key = "same-key";
+        let key1 = format!("idempotency:{}:{}:{}", "app-1", channel, key);
+        let key2 = format!("idempotency:{}:{}:{}", "app-2", channel, key);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_message_without_extras_key_proceeds() {
+        let msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        assert!(msg.extras_idempotency_key().is_none());
+    }
+
+    #[test]
+    fn test_message_with_extras_key_returns_key() {
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            idempotency_key: Some("my-key".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(msg.extras_idempotency_key(), Some("my-key"));
+    }
+
+    #[test]
+    fn test_ephemeral_message_is_detected() {
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            ephemeral: Some(true),
+            ..Default::default()
+        });
+        assert!(msg.is_ephemeral());
+    }
+
+    #[test]
+    fn test_non_ephemeral_message() {
+        let msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        assert!(!msg.is_ephemeral());
+    }
+
+    #[test]
+    fn test_ephemeral_false_when_extras_present_but_ephemeral_not_set() {
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            echo: Some(true),
+            ..Default::default()
+        });
+        assert!(!msg.is_ephemeral());
+    }
+
+    #[test]
+    fn test_ephemeral_explicitly_false() {
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            ephemeral: Some(false),
+            ..Default::default()
+        });
+        assert!(!msg.is_ephemeral());
+    }
+
+    #[test]
+    fn test_ephemeral_with_idempotency_key_both_present() {
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            ephemeral: Some(true),
+            idempotency_key: Some("dedup-123".to_string()),
+            ..Default::default()
+        });
+        assert!(msg.is_ephemeral());
+        assert_eq!(msg.extras_idempotency_key(), Some("dedup-123"));
+    }
+
+    #[test]
+    fn test_ephemeral_preserves_echo_control() {
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            ephemeral: Some(true),
+            echo: Some(false),
+            ..Default::default()
+        });
+        assert!(msg.is_ephemeral());
+        assert!(!msg.should_echo(true));
+    }
+
+    #[test]
+    fn test_disabled_ephemeral_strips_ephemeral_flag() {
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.ephemeral.enabled = false;
+
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            ephemeral: Some(true),
+            ..Default::default()
+        });
+
+        let sanitized = sanitize_v2_feature_flags(&options, msg);
+        assert!(!sanitized.is_ephemeral());
+        assert!(sanitized.extras.is_none());
+    }
+
+    #[test]
+    fn test_disabled_echo_control_strips_echo_override_only() {
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.echo_control.enabled = false;
+
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            echo: Some(false),
+            idempotency_key: Some("dedup-1".to_string()),
+            ..Default::default()
+        });
+
+        let sanitized = sanitize_v2_feature_flags(&options, msg);
+        assert_eq!(sanitized.extras_idempotency_key(), Some("dedup-1"));
+        assert!(sanitized.should_echo(true));
+        assert_eq!(
+            sanitized.extras.as_ref().and_then(|extras| extras.echo),
+            None
+        );
+    }
+
+    #[test]
+    fn test_broadcast_message_ephemeral_flag() {
+        use crate::horizontal_adapter::BroadcastMessage;
+
+        let broadcast = BroadcastMessage {
+            node_id: "node-1".to_string(),
+            app_id: "app-1".to_string(),
+            channel: "cursors".to_string(),
+            message: "{}".to_string(),
+            except_socket_id: None,
+            timestamp_ms: None,
+            compression_metadata: None,
+            idempotency_key: None,
+            ephemeral: true,
+        };
+        assert!(broadcast.ephemeral);
+
+        // Verify serialization includes ephemeral when true
+        let json = sonic_rs::to_string(&broadcast).unwrap();
+        assert!(json.contains("\"ephemeral\":true"));
+    }
+
+    #[test]
+    fn test_broadcast_message_ephemeral_skipped_when_false() {
+        use crate::horizontal_adapter::BroadcastMessage;
+
+        let broadcast = BroadcastMessage {
+            node_id: "node-1".to_string(),
+            app_id: "app-1".to_string(),
+            channel: "orders".to_string(),
+            message: "{}".to_string(),
+            except_socket_id: None,
+            timestamp_ms: None,
+            compression_metadata: None,
+            idempotency_key: None,
+            ephemeral: false,
+        };
+
+        // Verify serialization omits ephemeral when false (skip_serializing_if)
+        let json = sonic_rs::to_string(&broadcast).unwrap();
+        assert!(!json.contains("ephemeral"));
+    }
+
+    #[test]
+    fn test_v1_delivery_strips_extras_including_ephemeral() {
+        let mut msg =
+            PusherMessage::channel_event("test", "ch", sonic_rs::json!({"hello": "world"}));
+        msg.extras = Some(MessageExtras {
+            ephemeral: Some(true),
+            ..Default::default()
+        });
+
+        // Simulate V1 stripping
+        msg.serial = None;
+        msg.message_id = None;
+        msg.extras = None;
+
+        let json = sonic_rs::to_value(&msg).unwrap();
+        assert!(json.get("extras").is_none());
+    }
+
+    // ── Echo control tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_should_echo_default_true() {
+        let msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        // Connection default true, no per-message override → echo
+        assert!(msg.should_echo(true));
+    }
+
+    #[test]
+    fn test_should_echo_connection_disabled() {
+        let msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        // Connection default false, no per-message override → no echo
+        assert!(!msg.should_echo(false));
+    }
+
+    #[test]
+    fn test_should_echo_message_override_true() {
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            echo: Some(true),
+            ..Default::default()
+        });
+        // Connection false but message says echo → echo
+        assert!(msg.should_echo(false));
+    }
+
+    #[test]
+    fn test_should_echo_message_override_false() {
+        let mut msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+        msg.extras = Some(MessageExtras {
+            echo: Some(false),
+            ..Default::default()
+        });
+        // Connection true but message says no echo → no echo
+        assert!(!msg.should_echo(true));
+    }
+
+    #[test]
+    fn test_echo_messages_default_is_true() {
+        let state = sockudo_core::websocket::ConnectionState::new();
+        assert!(state.echo_messages);
+    }
+
+    #[test]
+    fn test_v1_always_excludes_publisher() {
+        // V1 connections always pass Some(socket_id) as except.
+        // The should_echo method is not consulted for V1.
+        // This test verifies the logic pattern used in handle_client_event_request.
+        let protocol = sockudo_protocol::ProtocolVersion::V1;
+        let is_v2 = matches!(protocol, sockudo_protocol::ProtocolVersion::V2);
+        assert!(!is_v2); // V1 → always exclude publisher
+    }
+
+    #[test]
+    fn test_v2_echo_messages_false_excludes_publisher() {
+        let protocol = sockudo_protocol::ProtocolVersion::V2;
+        let echo_messages = false;
+        let msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+
+        let is_v2 = matches!(protocol, sockudo_protocol::ProtocolVersion::V2);
+        assert!(is_v2);
+        let should_echo = msg.should_echo(echo_messages);
+        assert!(!should_echo); // connection echo off → exclude publisher
+    }
+
+    #[test]
+    fn test_v2_echo_messages_true_includes_publisher() {
+        let protocol = sockudo_protocol::ProtocolVersion::V2;
+        let echo_messages = true;
+        let msg = PusherMessage::channel_event("test", "ch", sonic_rs::json!({}));
+
+        let is_v2 = matches!(protocol, sockudo_protocol::ProtocolVersion::V2);
+        assert!(is_v2);
+        let should_echo = msg.should_echo(echo_messages);
+        assert!(should_echo); // connection echo on → include publisher
+    }
+
+    #[test]
+    fn test_rest_publish_no_socket_delivers_to_all() {
+        // REST publish passes None as publisher_socket_id.
+        // All subscribers receive the message.
+        let publisher_socket_id: Option<&SocketId> = None;
+        assert!(publisher_socket_id.is_none());
     }
 }

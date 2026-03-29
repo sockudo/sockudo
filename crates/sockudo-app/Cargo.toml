@@ -10,10 +10,11 @@ license-file.workspace = true
 [features]
 default = ["local"]
 local = []
-full = ["mysql", "postgres", "dynamodb", "scylladb"]
+full = ["mysql", "postgres", "dynamodb", "surrealdb", "scylladb"]
 mysql = ["sockudo-core/mysql", "dep:sqlx", "dep:futures-util", "dep:urlencoding", "dep:regex"]
 postgres = ["sockudo-core/postgres", "dep:sqlx", "dep:futures-util", "dep:urlencoding", "dep:regex"]
 dynamodb = ["sockudo-core/dynamodb", "dep:aws-config", "dep:aws-sdk-dynamodb"]
+surrealdb = ["sockudo-core/surrealdb", "dep:surrealdb", "dep:surrealdb-types", "dep:regex"]
 scylladb = ["sockudo-core/scylladb", "dep:scylla", "dep:futures"]
 
 [dependencies]
@@ -32,6 +33,8 @@ scylla = { workspace = true, optional = true }
 serde = { workspace = true }
 sonic-rs = { workspace = true }
 sqlx = { workspace = true, optional = true }
+surrealdb = { workspace = true, optional = true }
+surrealdb-types = { workspace = true, optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 urlencoding = { workspace = true, optional = true }

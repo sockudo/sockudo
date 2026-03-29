@@ -182,6 +182,42 @@ struct UsageResponse {
     memory: MemoryStats,
 }
 
+#[derive(Serialize, Default)]
+struct OccupancyStats {
+    channels: usize,
+    subscriptions: usize,
+    presence_channels: usize,
+    presence_subscriptions: usize,
+    presence_members: usize,
+}
+
+#[derive(Serialize, Default)]
+struct AppStats {
+    app_id: String,
+    connections: usize,
+    authenticated_connections: usize,
+    users: usize,
+    connections_with_meta: usize,
+    occupancy: OccupancyStats,
+}
+
+#[derive(Serialize, Default)]
+struct GlobalStats {
+    apps: usize,
+    connections: usize,
+    authenticated_connections: usize,
+    users: usize,
+    connections_with_meta: usize,
+    occupancy: OccupancyStats,
+}
+
+#[derive(Serialize)]
+struct StatsResponse {
+    memory: MemoryStats,
+    totals: GlobalStats,
+    apps: Vec<AppStats>,
+}
+
 // --- Helper Functions ---
 
 /// Helper to build cache payload string
@@ -258,6 +294,95 @@ pub async fn usage() -> Result<impl IntoResponse, AppError> {
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
+/// GET /stats
+#[instrument(skip(handler), fields(service = "stats"))]
+pub async fn stats(
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut sys = System::new_all();
+    sys.refresh_all();
+
+    let total = sys.total_memory() * 1024;
+    let used = sys.used_memory() * 1024;
+    let free = total.saturating_sub(used);
+    let percent = if total > 0 {
+        (used as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let memory = MemoryStats {
+        free,
+        used,
+        total,
+        percent,
+    };
+
+    let mut app_stats = Vec::new();
+    let mut totals = GlobalStats::default();
+
+    for (app_id, namespace) in handler.connection_manager().get_namespaces().await? {
+        let mut app_stat = AppStats {
+            app_id,
+            connections: namespace.sockets.len(),
+            users: namespace.users.len(),
+            ..Default::default()
+        };
+
+        let channel_names: Vec<String> = namespace
+            .channels
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        app_stat.occupancy.channels = channel_names.len();
+        app_stat.occupancy.subscriptions = namespace.channels.iter().map(|entry| entry.len()).sum();
+
+        for socket in namespace.sockets.iter() {
+            if socket.value().get_user_id().await.is_some() {
+                app_stat.authenticated_connections += 1;
+            }
+            if socket.value().get_connection_meta().await.is_some() {
+                app_stat.connections_with_meta += 1;
+            }
+        }
+
+        for channel_name in channel_names {
+            if channel_name.starts_with("presence-") {
+                app_stat.occupancy.presence_channels += 1;
+                app_stat.occupancy.presence_subscriptions +=
+                    namespace.get_channel_socket_count(&channel_name);
+                app_stat.occupancy.presence_members +=
+                    namespace.get_channel_members(&channel_name).await?.len();
+            }
+        }
+
+        totals.apps += 1;
+        totals.connections += app_stat.connections;
+        totals.authenticated_connections += app_stat.authenticated_connections;
+        totals.users += app_stat.users;
+        totals.connections_with_meta += app_stat.connections_with_meta;
+        totals.occupancy.channels += app_stat.occupancy.channels;
+        totals.occupancy.subscriptions += app_stat.occupancy.subscriptions;
+        totals.occupancy.presence_channels += app_stat.occupancy.presence_channels;
+        totals.occupancy.presence_subscriptions += app_stat.occupancy.presence_subscriptions;
+        totals.occupancy.presence_members += app_stat.occupancy.presence_members;
+
+        app_stats.push(app_stat);
+    }
+
+    app_stats.sort_by(|a, b| a.app_id.cmp(&b.app_id));
+
+    Ok((
+        StatusCode::OK,
+        Json(StatsResponse {
+            memory,
+            totals,
+            apps: app_stats,
+        }),
+    ))
+}
+
 /// Helper to process a single event and return channel info if requested
 #[instrument(skip(handler, event_data, app, start_time_ms), fields(app_id = app.id, event_name = field::Empty))]
 async fn process_single_event_parallel(
@@ -266,6 +391,7 @@ async fn process_single_event_parallel(
     event_data: PusherApiMessage,
     collect_info: bool,
     start_time_ms: Option<f64>,
+    idempotency_key: Option<String>,
 ) -> Result<HashMap<String, Value>, AppError> {
     let PusherApiMessage {
         name,
@@ -277,6 +403,7 @@ async fn process_single_event_parallel(
         tags,
         delta: delta_flag,
         idempotency_key: _,
+        extras,
     } = event_data;
 
     let event_name_str = name
@@ -285,7 +412,7 @@ async fn process_single_event_parallel(
     tracing::Span::current().record("event_name", event_name_str);
 
     let max_event_name_len = app
-        .max_event_name_length
+        .event_name_limit()
         .unwrap_or(DEFAULT_EVENT_NAME_MAX_LENGTH as u32);
     if event_name_str.len() > max_event_name_len as usize {
         return Err(AppError::LimitExceeded(format!(
@@ -293,7 +420,7 @@ async fn process_single_event_parallel(
         )));
     }
 
-    if let Some(max_payload_kb) = app.max_event_payload_in_kb {
+    if let Some(max_payload_kb) = app.event_payload_limit_kb() {
         let value_for_size_calc = match &event_payload_data {
             Some(ApiMessageData::String(s)) => json!(s),
             Some(ApiMessageData::Json(j_val)) => j_val.clone(),
@@ -313,7 +440,7 @@ async fn process_single_event_parallel(
 
     let target_channels: Vec<String> = match channels {
         Some(ch_list) if !ch_list.is_empty() => {
-            if let Some(max_ch_at_once) = app.max_event_channels_at_once
+            if let Some(max_ch_at_once) = app.event_channels_at_once_limit()
                 && ch_list.len() > max_ch_at_once as usize
             {
                 return Err(AppError::LimitExceeded(format!(
@@ -348,6 +475,8 @@ async fn process_single_event_parallel(
             .clone()
             .map(|h| h.into_iter().collect());
         let delta_flag_for_task = delta_flag;
+        let idempotency_key_for_task = idempotency_key.clone();
+        let extras_for_task = extras.clone();
 
         async move {
             debug!(channel = %target_channel_str, "Processing channel for event (parallel task)");
@@ -378,6 +507,10 @@ async fn process_single_event_parallel(
                     None
                 },
                 serial: None,
+                idempotency_key: idempotency_key_for_task.clone(),
+                extras: extras_for_task.clone(),
+                delta_sequence: None,
+                delta_conflation_key: None,
             };
             let timestamp_ms = start_time_ms;
 
@@ -521,14 +654,12 @@ fn resolve_idempotency_key(
         return Ok(None);
     }
 
-    let key = body_key
-        .clone()
-        .or_else(|| {
-            headers
-                .get("x-idempotency-key")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string())
-        });
+    let key = body_key.clone().or_else(|| {
+        headers
+            .get("x-idempotency-key")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    });
 
     if let Some(ref k) = key {
         if k.is_empty() {
@@ -554,22 +685,9 @@ fn idempotency_cache_key(app_id: &str, key: &str) -> String {
 
 /// Merge per-app idempotency overrides with the global config.
 /// Only fields explicitly set at the app level take precedence.
-fn resolve_app_idempotency(
-    global: &sockudo_core::options::IdempotencyConfig,
-    app: &App,
-) -> sockudo_core::options::IdempotencyConfig {
-    match &app.idempotency {
-        Some(app_config) => sockudo_core::options::IdempotencyConfig {
-            enabled: app_config.enabled.unwrap_or(global.enabled),
-            ttl_seconds: app_config.ttl_seconds.unwrap_or(global.ttl_seconds),
-            max_key_length: global.max_key_length,
-        },
-        None => global.clone(),
-    }
-}
-
 /// POST /apps/{app_id}/events
 #[instrument(skip(handler, headers, event_payload), fields(app_id = %app_id))]
+#[allow(clippy::too_many_arguments)]
 pub async fn events(
     Path(app_id): Path<String>,
     Query(_auth_q_params_struct): Query<EventQuery>,
@@ -588,10 +706,7 @@ pub async fn events(
 
     let incoming_request_size_bytes = sonic_rs::to_vec(&event_payload)?.len();
 
-    let idempotency_config = resolve_app_idempotency(
-        &handler.server_options().idempotency,
-        &app,
-    );
+    let idempotency_config = app.resolved_idempotency(&handler.server_options().idempotency);
     let idempotency_key = resolve_idempotency_key(
         &event_payload.idempotency_key,
         &headers,
@@ -613,8 +728,8 @@ pub async fn events(
                     metrics_arc.mark_idempotency_duplicate(&app_id);
                 }
                 debug!(idempotency_key = %key, "Returning cached idempotent response");
-                let response_payload: Value = sonic_rs::from_str(&cached)
-                    .unwrap_or_else(|_| json!({ "ok": true }));
+                let response_payload: Value =
+                    sonic_rs::from_str(&cached).unwrap_or_else(|_| json!({ "ok": true }));
                 let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
                 record_api_metrics(
                     &handler,
@@ -630,50 +745,58 @@ pub async fn events(
                 for _ in 0..6 {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     if let Ok(Some(cached)) = handler.cache_manager().get(&cache_key).await
-                        && cached != "__processing__" {
-                            if let Some(metrics_arc) = handler.metrics() {
-                                metrics_arc.mark_idempotency_duplicate(&app_id);
-                            }
-                            let response_payload: Value = sonic_rs::from_str(&cached)
-                                .unwrap_or_else(|_| json!({ "ok": true }));
-                            let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
-                            record_api_metrics(
-                                &handler,
-                                &app_id,
-                                incoming_request_size_bytes,
-                                outgoing_response_size_bytes,
-                            )
-                            .await;
-                            return Ok((StatusCode::OK, Json(response_payload)));
+                        && cached != "__processing__"
+                    {
+                        if let Some(metrics_arc) = handler.metrics() {
+                            metrics_arc.mark_idempotency_duplicate(&app_id);
                         }
+                        let response_payload: Value =
+                            sonic_rs::from_str(&cached).unwrap_or_else(|_| json!({ "ok": true }));
+                        let outgoing_response_size_bytes =
+                            sonic_rs::to_vec(&response_payload)?.len();
+                        record_api_metrics(
+                            &handler,
+                            &app_id,
+                            incoming_request_size_bytes,
+                            outgoing_response_size_bytes,
+                        )
+                        .await;
+                        return Ok((StatusCode::OK, Json(response_payload)));
+                    }
                 }
                 // Timeout waiting — proceed without dedup to avoid blocking forever
                 debug!(idempotency_key = %key, "Timeout waiting for concurrent idempotent request, proceeding");
             }
             Ok(None) => {
                 // Try to claim this key atomically
-                match handler.cache_manager().set_if_not_exists(&cache_key, "__processing__", ttl).await {
+                match handler
+                    .cache_manager()
+                    .set_if_not_exists(&cache_key, "__processing__", ttl)
+                    .await
+                {
                     Ok(false) => {
                         // Another request claimed it — wait for their result
                         for _ in 0..6 {
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             if let Ok(Some(cached)) = handler.cache_manager().get(&cache_key).await
-                                && cached != "__processing__" {
-                                    if let Some(metrics_arc) = handler.metrics() {
-                                        metrics_arc.mark_idempotency_duplicate(&app_id);
-                                    }
-                                    let response_payload: Value = sonic_rs::from_str(&cached)
-                                        .unwrap_or_else(|_| json!({ "ok": true }));
-                                    let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
-                                    record_api_metrics(
-                                        &handler,
-                                        &app_id,
-                                        incoming_request_size_bytes,
-                                        outgoing_response_size_bytes,
-                                    )
-                                    .await;
-                                    return Ok((StatusCode::OK, Json(response_payload)));
+                                && cached != "__processing__"
+                            {
+                                if let Some(metrics_arc) = handler.metrics() {
+                                    metrics_arc.mark_idempotency_duplicate(&app_id);
                                 }
+                                let response_payload: Value = sonic_rs::from_str(&cached)
+                                    .unwrap_or_else(|_| json!({ "ok": true }));
+                                let outgoing_response_size_bytes =
+                                    sonic_rs::to_vec(&response_payload)?.len();
+                                record_api_metrics(
+                                    &handler,
+                                    &app_id,
+                                    incoming_request_size_bytes,
+                                    outgoing_response_size_bytes,
+                                )
+                                .await;
+                                return Ok((StatusCode::OK, Json(response_payload)));
+                            }
                         }
                         debug!(idempotency_key = %key, "Timeout waiting for concurrent idempotent request, proceeding");
                     }
@@ -699,6 +822,7 @@ pub async fn events(
         event_payload,
         need_channel_info,
         Some(start_time_ms),
+        idempotency_key.clone(),
     )
     .await?;
 
@@ -715,9 +839,13 @@ pub async fn events(
         let cache_key = idempotency_cache_key(&app_id, key);
         let ttl = idempotency_config.ttl_seconds;
         if let Ok(serialized) = sonic_rs::to_string(&response_payload)
-            && let Err(e) = handler.cache_manager().set(&cache_key, &serialized, ttl).await {
-                warn!(idempotency_key = %key, error = %e, "Failed to store idempotency response in cache");
-            }
+            && let Err(e) = handler
+                .cache_manager()
+                .set(&cache_key, &serialized, ttl)
+                .await
+        {
+            warn!(idempotency_key = %key, error = %e, "Failed to store idempotency response in cache");
+        }
     }
 
     let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
@@ -734,6 +862,7 @@ pub async fn events(
 
 /// POST /apps/{app_id}/batch_events
 #[instrument(skip_all, fields(app_id = %app_id, batch_len = field::Empty))]
+#[allow(clippy::too_many_arguments)]
 pub async fn batch_events(
     Path(app_id): Path<String>,
     Query(_auth_q_params_struct): Query<EventQuery>,
@@ -753,10 +882,7 @@ pub async fn batch_events(
     let body_bytes = sonic_rs::to_vec(&batch_message_payload)?;
 
     // Batch-level idempotency: check X-Idempotency-Key header
-    let idempotency_config = resolve_app_idempotency(
-        &handler.server_options().idempotency,
-        &app_config,
-    );
+    let idempotency_config = app_config.resolved_idempotency(&handler.server_options().idempotency);
     let idempotency_key = resolve_idempotency_key(&None, &headers, &idempotency_config)?;
 
     if let Some(ref key) = idempotency_key {
@@ -771,8 +897,8 @@ pub async fn batch_events(
                     metrics_arc.mark_idempotency_duplicate(&app_id);
                 }
                 debug!(idempotency_key = %key, "Returning cached idempotent batch response");
-                let response_payload: Value = sonic_rs::from_str(&cached)
-                    .unwrap_or_else(|_| json!({}));
+                let response_payload: Value =
+                    sonic_rs::from_str(&cached).unwrap_or_else(|_| json!({}));
                 let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
                 record_api_metrics(
                     &handler,
@@ -785,26 +911,32 @@ pub async fn batch_events(
             }
             Ok(Some(_)) | Ok(None) => {
                 // Claim key atomically or wait for concurrent request
-                if let Ok(false) = handler.cache_manager().set_if_not_exists(&cache_key, "__processing__", ttl).await {
+                if let Ok(false) = handler
+                    .cache_manager()
+                    .set_if_not_exists(&cache_key, "__processing__", ttl)
+                    .await
+                {
                     for _ in 0..6 {
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         if let Ok(Some(cached)) = handler.cache_manager().get(&cache_key).await
-                            && cached != "__processing__" {
-                                if let Some(metrics_arc) = handler.metrics() {
-                                    metrics_arc.mark_idempotency_duplicate(&app_id);
-                                }
-                                let response_payload: Value = sonic_rs::from_str(&cached)
-                                    .unwrap_or_else(|_| json!({}));
-                                let outgoing_response_size_bytes = sonic_rs::to_vec(&response_payload)?.len();
-                                record_api_metrics(
-                                    &handler,
-                                    &app_id,
-                                    body_bytes.len(),
-                                    outgoing_response_size_bytes,
-                                )
-                                .await;
-                                return Ok((StatusCode::OK, Json(response_payload)));
+                            && cached != "__processing__"
+                        {
+                            if let Some(metrics_arc) = handler.metrics() {
+                                metrics_arc.mark_idempotency_duplicate(&app_id);
                             }
+                            let response_payload: Value =
+                                sonic_rs::from_str(&cached).unwrap_or_else(|_| json!({}));
+                            let outgoing_response_size_bytes =
+                                sonic_rs::to_vec(&response_payload)?.len();
+                            record_api_metrics(
+                                &handler,
+                                &app_id,
+                                body_bytes.len(),
+                                outgoing_response_size_bytes,
+                            )
+                            .await;
+                            return Ok((StatusCode::OK, Json(response_payload)));
+                        }
                     }
                 }
             }
@@ -823,7 +955,7 @@ pub async fn batch_events(
         debug!("Batch event #{}: tags={:?}", i, event.tags);
     }
 
-    if let Some(max_batch) = app_config.max_event_batch_size
+    if let Some(max_batch) = app_config.event_batch_size_limit()
         && batch_len > max_batch as usize
     {
         return Err(AppError::LimitExceeded(format!(
@@ -846,20 +978,22 @@ pub async fn batch_events(
     for single_event_message in batch_events_vec {
         // Per-event idempotency: skip events whose idempotency key has already been seen
         if let Some(ref evt_key) = single_event_message.idempotency_key
-            && idempotency_config.enabled && !evt_key.is_empty() {
-                if let Some(metrics_arc) = handler.metrics() {
-                    metrics_arc.mark_idempotency_publish(&app_id);
-                }
-                let evt_cache_key = idempotency_cache_key(&app_id, evt_key);
-                if let Ok(Some(_)) = handler.cache_manager().get(&evt_cache_key).await {
-                    if let Some(metrics_arc) = handler.metrics() {
-                        metrics_arc.mark_idempotency_duplicate(&app_id);
-                    }
-                    debug!(idempotency_key = %evt_key, "Skipping duplicate batch event");
-                    processed_event_data.push((single_event_message, HashMap::new()));
-                    continue;
-                }
+            && idempotency_config.enabled
+            && !evt_key.is_empty()
+        {
+            if let Some(metrics_arc) = handler.metrics() {
+                metrics_arc.mark_idempotency_publish(&app_id);
             }
+            let evt_cache_key = idempotency_cache_key(&app_id, evt_key);
+            if let Ok(Some(_)) = handler.cache_manager().get(&evt_cache_key).await {
+                if let Some(metrics_arc) = handler.metrics() {
+                    metrics_arc.mark_idempotency_duplicate(&app_id);
+                }
+                debug!(idempotency_key = %evt_key, "Skipping duplicate batch event");
+                processed_event_data.push((single_event_message, HashMap::new()));
+                continue;
+            }
+        }
 
         let should_collect_info_for_this_event = single_event_message.info.is_some();
         let channel_info_map = process_single_event_parallel(
@@ -868,15 +1002,21 @@ pub async fn batch_events(
             single_event_message.clone(),
             should_collect_info_for_this_event,
             Some(start_time_ms),
+            single_event_message.idempotency_key.clone(),
         )
         .await?;
 
         // Store per-event idempotency key
         if let Some(ref evt_key) = single_event_message.idempotency_key
-            && idempotency_config.enabled && !evt_key.is_empty() {
-                let evt_cache_key = idempotency_cache_key(&app_id, evt_key);
-                let _ = handler.cache_manager().set(&evt_cache_key, "1", idempotency_config.ttl_seconds).await;
-            }
+            && idempotency_config.enabled
+            && !evt_key.is_empty()
+        {
+            let evt_cache_key = idempotency_cache_key(&app_id, evt_key);
+            let _ = handler
+                .cache_manager()
+                .set(&evt_cache_key, "1", idempotency_config.ttl_seconds)
+                .await;
+        }
 
         processed_event_data.push((single_event_message, channel_info_map));
     }
@@ -913,9 +1053,13 @@ pub async fn batch_events(
         let cache_key = idempotency_cache_key(&app_id, key);
         let ttl = idempotency_config.ttl_seconds;
         if let Ok(serialized) = sonic_rs::to_string(&final_response_payload)
-            && let Err(e) = handler.cache_manager().set(&cache_key, &serialized, ttl).await {
-                warn!(idempotency_key = %key, error = %e, "Failed to store batch idempotency response in cache");
-            }
+            && let Err(e) = handler
+                .cache_manager()
+                .set(&cache_key, &serialized, ttl)
+                .await
+        {
+            warn!(idempotency_key = %key, error = %e, "Failed to store batch idempotency response in cache");
+        }
     }
 
     let outgoing_response_size_bytes_vec = sonic_rs::to_vec(&final_response_payload)?;
@@ -1338,4 +1482,104 @@ pub async fn metrics(
         "Successfully generated Prometheus metrics"
     );
     Ok((StatusCode::OK, response_headers, plaintext_metrics_str))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use sockudo_adapter::ConnectionHandlerBuilder;
+    use sockudo_adapter::local_adapter::LocalAdapter;
+    use sockudo_app::memory_app_manager::MemoryAppManager;
+    use sockudo_cache::memory_cache_manager::MemoryCacheManager;
+    use sockudo_core::app::AppManager;
+    use sockudo_core::namespace::Namespace;
+    use sockudo_core::options::MemoryCacheOptions;
+
+    #[tokio::test]
+    async fn stats_endpoint_returns_empty_totals_for_empty_server() {
+        let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+        let adapter = Arc::new(LocalAdapter::new())
+            as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+
+        let handler = Arc::new(
+            ConnectionHandlerBuilder::new(
+                app_manager,
+                adapter,
+                cache,
+                sockudo_core::options::ServerOptions::default(),
+            )
+            .build(),
+        );
+
+        let response = stats(State(handler)).await.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stats_endpoint_reports_non_empty_occupancy_counts() {
+        let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+        let concrete_adapter = Arc::new(LocalAdapter::new());
+
+        let namespace = Arc::new(Namespace::new("app-1".to_string()));
+        namespace.add_channel_to_socket(
+            "chat:room-1",
+            &sockudo_core::websocket::SocketId::from_string("1.1").unwrap(),
+        );
+        namespace.add_channel_to_socket(
+            "chat:room-1",
+            &sockudo_core::websocket::SocketId::from_string("1.2").unwrap(),
+        );
+        namespace.add_channel_to_socket(
+            "presence-chat:room-1",
+            &sockudo_core::websocket::SocketId::from_string("2.1").unwrap(),
+        );
+
+        concrete_adapter
+            .namespaces
+            .insert("app-1".to_string(), namespace);
+
+        let adapter = concrete_adapter as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+
+        let handler = Arc::new(
+            ConnectionHandlerBuilder::new(
+                app_manager,
+                adapter,
+                cache,
+                sockudo_core::options::ServerOptions::default(),
+            )
+            .build(),
+        );
+
+        let response = stats(State(handler)).await.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+
+        assert_eq!(json["totals"]["apps"].as_u64(), Some(1));
+        assert_eq!(json["totals"]["occupancy"]["channels"].as_u64(), Some(2));
+        assert_eq!(
+            json["totals"]["occupancy"]["subscriptions"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            json["totals"]["occupancy"]["presence_channels"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            json["apps"][0]["occupancy"]["subscriptions"].as_u64(),
+            Some(3)
+        );
+    }
 }

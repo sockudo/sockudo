@@ -1,8 +1,8 @@
 use chrono::Utc;
 use sockudo_adapter::handler::types::SignInRequest;
 use sockudo_app::MemoryAppManager;
-use sockudo_core::app::App;
 use sockudo_core::app::AppManager;
+use sockudo_core::app::{App, AppPolicy};
 use sockudo_core::auth::AuthValidator;
 use sockudo_core::auth::EventQuery;
 use sockudo_core::error::Error;
@@ -23,31 +23,27 @@ async fn create_test_app_manager() -> Arc<dyn AppManager> {
 }
 
 fn test_app(id: &str, key: &str, secret: &str) -> App {
-    App {
-        id: id.to_string(),
-        key: key.to_string(),
-        secret: secret.to_string(),
-        max_connections: 1000,
-        enable_client_messages: true,
-        enabled: true,
-        max_backend_events_per_second: Some(1000),
-        max_client_events_per_second: 100,
-        max_read_requests_per_second: Some(1000),
-        max_presence_members_per_channel: None,
-        max_presence_member_size_in_kb: None,
-        max_channel_name_length: None,
-        max_event_channels_at_once: None,
-        max_event_name_length: None,
-        max_event_payload_in_kb: None,
-        max_event_batch_size: None,
-        enable_user_authentication: None,
-        webhooks: Some(vec![]),
-        enable_watchlist_events: None,
-        allowed_origins: None,
-        channel_delta_compression: None,
-        idempotency: None,
-        connection_recovery: None,
-    }
+    App::from_policy(
+        id.to_string(),
+        key.to_string(),
+        secret.to_string(),
+        true,
+        AppPolicy {
+            limits: sockudo_core::app::AppLimitsPolicy {
+                max_connections: 1000,
+                max_backend_events_per_second: Some(1000),
+                max_client_events_per_second: 100,
+                max_read_requests_per_second: Some(1000),
+                ..Default::default()
+            },
+            features: sockudo_core::app::AppFeaturesPolicy {
+                enable_client_messages: true,
+                ..Default::default()
+            },
+            webhooks: Some(vec![]),
+            ..Default::default()
+        },
+    )
 }
 
 async fn create_multi_app_manager() -> Arc<dyn AppManager> {
@@ -122,31 +118,7 @@ async fn test_validate_channel_auth_with_app_key_prefix() {
     let socket_id = SocketId::new();
 
     // Setup test app
-    let app = App {
-        id: "test-app-id".to_string(),
-        key: "test-app-key".to_string(),
-        secret: "test-app-secret".to_string(),
-        max_connections: 1000,
-        enable_client_messages: true,
-        enabled: true,
-        max_backend_events_per_second: Some(1000),
-        max_client_events_per_second: 100,
-        max_read_requests_per_second: Some(1000),
-        max_presence_members_per_channel: None,
-        max_presence_member_size_in_kb: None,
-        max_channel_name_length: None,
-        max_event_channels_at_once: None,
-        max_event_name_length: None,
-        max_event_payload_in_kb: None,
-        max_event_batch_size: None,
-        enable_user_authentication: None,
-        webhooks: Some(vec![]),
-        enable_watchlist_events: None,
-        allowed_origins: None,
-        channel_delta_compression: None,
-        idempotency: None,
-        connection_recovery: None,
-    };
+    let app = test_app("test-app-id", "test-app-key", "test-app-secret");
 
     // Create mock app manager and configure it
     let mut mock_app_manager = MockAppManager::new();

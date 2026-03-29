@@ -379,8 +379,12 @@ fn test_channel_event_with_user_id() {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
     let json = message_to_json(&message);
 
@@ -472,8 +476,12 @@ fn test_client_event_accepts_string() {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     let json = message_to_json(&message);
@@ -507,8 +515,12 @@ fn test_client_event_accepts_json() {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     let json = message_to_json(&message);
@@ -865,4 +877,258 @@ fn test_watchlist_events_format() {
         "user_ids should be an array"
     );
     assert_eq!(json["data"]["user_ids"], json!(["user1", "user2"]));
+}
+
+// ── MessageExtras tests ──────────────────────────────────────────────
+
+use sockudo_protocol::messages::{ExtrasValue, MessageExtras};
+use std::collections::HashMap;
+
+#[test]
+fn test_extras_round_trip_serialize_deserialize() {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "x-region".to_string(),
+        ExtrasValue::String("us-east".to_string()),
+    );
+    headers.insert("priority".to_string(), ExtrasValue::Number(1.0));
+    headers.insert("urgent".to_string(), ExtrasValue::Bool(true));
+
+    let extras = MessageExtras {
+        headers: Some(headers),
+        ephemeral: Some(true),
+        idempotency_key: Some("abc-123".to_string()),
+        echo: Some(false),
+    };
+
+    let json_str = sonic_rs::to_string(&extras).expect("serialize");
+    let round_tripped: MessageExtras = sonic_rs::from_str(&json_str).expect("deserialize");
+
+    assert_eq!(round_tripped.ephemeral, Some(true));
+    assert_eq!(round_tripped.idempotency_key.as_deref(), Some("abc-123"));
+    assert_eq!(round_tripped.echo, Some(false));
+    let h = round_tripped.headers.unwrap();
+    assert_eq!(
+        h.get("x-region"),
+        Some(&ExtrasValue::String("us-east".to_string()))
+    );
+    assert_eq!(h.get("priority"), Some(&ExtrasValue::Number(1.0)));
+    assert_eq!(h.get("urgent"), Some(&ExtrasValue::Bool(true)));
+}
+
+#[test]
+fn test_extras_default_is_all_none() {
+    let extras = MessageExtras::default();
+    assert!(extras.headers.is_none());
+    assert!(extras.ephemeral.is_none());
+    assert!(extras.idempotency_key.is_none());
+    assert!(extras.echo.is_none());
+}
+
+#[test]
+fn test_is_ephemeral_false_when_extras_none() {
+    let msg = PusherMessage::channel_event("test", "ch", json!({}));
+    assert!(!msg.is_ephemeral());
+}
+
+#[test]
+fn test_is_ephemeral_true_when_set() {
+    let mut msg = PusherMessage::channel_event("test", "ch", json!({}));
+    msg.extras = Some(MessageExtras {
+        ephemeral: Some(true),
+        ..Default::default()
+    });
+    assert!(msg.is_ephemeral());
+}
+
+#[test]
+fn test_is_ephemeral_false_when_extras_present_but_not_set() {
+    let mut msg = PusherMessage::channel_event("test", "ch", json!({}));
+    msg.extras = Some(MessageExtras::default());
+    assert!(!msg.is_ephemeral());
+}
+
+#[test]
+fn test_should_echo_returns_connection_default_when_extras_none() {
+    let msg = PusherMessage::channel_event("test", "ch", json!({}));
+    assert!(msg.should_echo(true));
+    assert!(!msg.should_echo(false));
+}
+
+#[test]
+fn test_should_echo_true_overrides_connection_default() {
+    let mut msg = PusherMessage::channel_event("test", "ch", json!({}));
+    msg.extras = Some(MessageExtras {
+        echo: Some(true),
+        ..Default::default()
+    });
+    assert!(msg.should_echo(false));
+    assert!(msg.should_echo(true));
+}
+
+#[test]
+fn test_should_echo_false_overrides_connection_default() {
+    let mut msg = PusherMessage::channel_event("test", "ch", json!({}));
+    msg.extras = Some(MessageExtras {
+        echo: Some(false),
+        ..Default::default()
+    });
+    assert!(!msg.should_echo(true));
+    assert!(!msg.should_echo(false));
+}
+
+#[test]
+fn test_filter_headers_returns_none_when_extras_none() {
+    let msg = PusherMessage::channel_event("test", "ch", json!({}));
+    assert!(msg.filter_headers().is_none());
+}
+
+#[test]
+fn test_filter_headers_returns_headers_when_set() {
+    let mut headers = HashMap::new();
+    headers.insert("env".to_string(), ExtrasValue::String("prod".to_string()));
+
+    let mut msg = PusherMessage::channel_event("test", "ch", json!({}));
+    msg.extras = Some(MessageExtras {
+        headers: Some(headers),
+        ..Default::default()
+    });
+
+    let h = msg.filter_headers().unwrap();
+    assert_eq!(h.get("env"), Some(&ExtrasValue::String("prod".to_string())));
+}
+
+#[test]
+fn test_v1_delivery_strips_extras() {
+    let mut msg =
+        PusherMessage::channel_event("test-event", "test-channel", json!({"hello": "world"}));
+    msg.extras = Some(MessageExtras {
+        ephemeral: Some(true),
+        echo: Some(false),
+        ..Default::default()
+    });
+    msg.serial = Some(42);
+    msg.message_id = Some("msg-123".to_string());
+
+    // Simulate V1 stripping (same as send_to_v1_sockets)
+    msg.serial = None;
+    msg.message_id = None;
+    msg.extras = None;
+
+    let json = message_to_json(&msg);
+    assert!(
+        json.get("extras").is_none(),
+        "V1 delivery must not include extras"
+    );
+    assert!(
+        json.get("serial").is_none(),
+        "V1 delivery must not include serial"
+    );
+    assert!(
+        json.get("messageId").is_none(),
+        "V1 delivery must not include message_id"
+    );
+}
+
+#[test]
+fn test_v2_delivery_includes_extras() {
+    let mut msg =
+        PusherMessage::channel_event("test-event", "test-channel", json!({"hello": "world"}));
+    msg.extras = Some(MessageExtras {
+        ephemeral: Some(true),
+        echo: Some(false),
+        ..Default::default()
+    });
+
+    let json = message_to_json(&msg);
+    assert!(
+        json.get("extras").is_some(),
+        "V2 delivery must include extras"
+    );
+    let extras = json.get("extras").unwrap();
+    assert_eq!(extras["ephemeral"], true);
+    assert_eq!(extras["echo"], false);
+}
+
+#[test]
+fn test_should_include_extras_by_protocol() {
+    use sockudo_protocol::ProtocolVersion;
+    assert!(!PusherMessage::should_include_extras(&ProtocolVersion::V1));
+    assert!(PusherMessage::should_include_extras(&ProtocolVersion::V2));
+}
+
+#[test]
+fn test_validate_headers_rejects_nested_objects() {
+    let raw = json!({
+        "extras": {
+            "headers": {
+                "valid_key": "string_value",
+                "bad_key": {"nested": true}
+            }
+        }
+    });
+    let result = MessageExtras::validate_headers_from_json(&raw);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("nested objects and arrays are not allowed")
+    );
+}
+
+#[test]
+fn test_validate_headers_rejects_arrays() {
+    let raw = json!({
+        "extras": {
+            "headers": {
+                "bad_key": [1, 2, 3]
+            }
+        }
+    });
+    let result = MessageExtras::validate_headers_from_json(&raw);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_validate_headers_accepts_flat_scalars() {
+    let raw = json!({
+        "extras": {
+            "headers": {
+                "str_key": "hello",
+                "num_key": 42,
+                "bool_key": true
+            }
+        }
+    });
+    let result = MessageExtras::validate_headers_from_json(&raw);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_validate_headers_ok_when_no_extras() {
+    let raw = json!({"name": "test-event"});
+    let result = MessageExtras::validate_headers_from_json(&raw);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_extras_skipped_in_serialization_when_none() {
+    let msg = PusherMessage::channel_event("test", "ch", json!({}));
+    let json = message_to_json(&msg);
+    assert!(
+        json.get("extras").is_none(),
+        "extras should be omitted when None"
+    );
+}
+
+#[test]
+fn test_extras_idempotency_key() {
+    let mut msg = PusherMessage::channel_event("test", "ch", json!({}));
+    assert!(msg.extras_idempotency_key().is_none());
+
+    msg.extras = Some(MessageExtras {
+        idempotency_key: Some("dedup-key-1".to_string()),
+        ..Default::default()
+    });
+    assert_eq!(msg.extras_idempotency_key(), Some("dedup-key-1"));
 }

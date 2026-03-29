@@ -14,10 +14,13 @@ v2 = ["delta", "tag-filtering", "recovery"]
 delta = ["dep:sockudo-delta"]
 tag-filtering = ["dep:sockudo-filter"]
 recovery = []
-full = ["redis", "redis-cluster", "nats", "v2"]
+full = ["redis", "redis-cluster", "nats", "rabbitmq", "google-pubsub", "kafka", "v2"]
 redis = ["sockudo-core/redis", "dep:redis"]
 redis-cluster = ["redis", "sockudo-core/redis-cluster"]
 nats = ["sockudo-core/nats", "dep:async-nats"]
+rabbitmq = ["sockudo-core/rabbitmq", "dep:lapin"]
+google-pubsub = ["sockudo-core/google-pubsub", "dep:google-cloud-auth", "dep:google-cloud-pubsub"]
+kafka = ["sockudo-core/kafka", "dep:rdkafka"]
 
 [dependencies]
 sockudo-core = { workspace = true }
@@ -36,11 +39,15 @@ crossfire = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+google-cloud-pubsub = { workspace = true, optional = true }
+google-cloud-auth = { workspace = true, optional = true }
+lapin = { workspace = true, optional = true }
 mockall = { workspace = true }
 moka = { workspace = true }
 num_cpus = { workspace = true }
 rand = { workspace = true }
 redis = { workspace = true, optional = true }
+rdkafka = { workspace = true, optional = true }
 regex = { workspace = true }
 serde = { workspace = true }
 sockudo-ws = { workspace = true }

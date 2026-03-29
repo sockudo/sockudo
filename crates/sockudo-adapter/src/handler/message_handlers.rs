@@ -80,8 +80,12 @@ impl ConnectionHandler {
                     tags: None,
                     sequence: None,
                     conflation_key: None,
-                message_id: None,
-                serial: None,
+                    message_id: None,
+                    serial: None,
+                    idempotency_key: None,
+                    extras: None,
+                    delta_sequence: None,
+                    delta_conflation_key: None,
                 };
 
                 drop(conn_locked);
@@ -165,7 +169,7 @@ impl ConnectionHandler {
 
         // Validate the request
         let t_before_validate = t_start.elapsed().as_micros();
-        self.validate_subscription_request(app_config, &request)
+        self.validate_subscription_request(socket_id, app_config, &request)
             .await?;
         let t_after_validate = t_start.elapsed().as_micros();
 
@@ -234,7 +238,7 @@ impl ConnectionHandler {
         request: SignInRequest,
     ) -> Result<()> {
         // Validate signin is enabled
-        if !app_config.enable_user_authentication.unwrap_or(false) {
+        if !app_config.user_authentication_enabled() {
             return Err(Error::Auth(
                 "User authentication is disabled for this app".into(),
             ));
@@ -269,7 +273,8 @@ impl ConnectionHandler {
         request: ClientEventRequest,
     ) -> Result<()> {
         // Validate the client event
-        self.validate_client_event(app_config, &request).await?;
+        self.validate_client_event(socket_id, app_config, &request)
+            .await?;
 
         // Check if socket is subscribed to the channel
         self.verify_channel_subscription(socket_id, app_config, &request.channel)
@@ -289,15 +294,40 @@ impl ConnectionHandler {
             tags: None,
             sequence: None,
             conflation_key: None,
-                message_id: None,
-                serial: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         };
 
-        self.broadcast_to_channel(app_config, &request.channel, message, Some(socket_id))
+        let is_ephemeral = message.is_ephemeral();
+
+        // Echo control (V2 only): resolve whether the publisher should receive
+        // their own message. V1 always hard-skips the publisher (Pusher behavior).
+        let exclude_socket = {
+            let conn = self
+                .connection_manager
+                .get_connection(socket_id, &app_config.id)
+                .await;
+            match conn {
+                Some(ref ws_ref)
+                    if ws_ref.protocol_version == sockudo_protocol::ProtocolVersion::V2 =>
+                {
+                    let should_echo = message.should_echo(ws_ref.echo_messages);
+                    if should_echo { None } else { Some(socket_id) }
+                }
+                _ => Some(socket_id), // V1 or missing: always exclude publisher
+            }
+        };
+
+        self.broadcast_to_channel(app_config, &request.channel, message, exclude_socket)
             .await?;
 
-        // Send webhook asynchronously (non-blocking for client)
-        if let Some(webhook_integration) = self.webhook_integration.clone() {
+        // Send webhook asynchronously (non-blocking for client).
+        // Ephemeral messages never generate webhooks — they are fire-and-forget.
+        if !is_ephemeral && let Some(webhook_integration) = self.webhook_integration.clone() {
             let socket_id = *socket_id;
             let app_config = app_config.clone();
             let request = request.clone();

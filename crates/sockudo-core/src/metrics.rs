@@ -113,6 +113,15 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a duplicate publish caught by idempotency deduplication
     fn mark_idempotency_duplicate(&self, _app_id: &str) {}
 
+    /// Track an ephemeral message delivery (V2 only)
+    fn mark_ephemeral_message(&self, _app_id: &str) {}
+
+    /// Track a message suppressed by event name filtering (V2 only)
+    fn mark_event_filter_suppressed(&self, _app_id: &str) {}
+
+    /// Track a message delivery skipped due to echo control (V2 only)
+    fn mark_echo_suppressed(&self, _app_id: &str) {}
+
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;
 

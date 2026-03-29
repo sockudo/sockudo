@@ -280,7 +280,7 @@ spec:
                   key: default-app-secret
             - name: SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS
               value: {{ .Values.defaultApp.maxConnections | quote }}
-            - name: SOCKUDO_ENABLE_CLIENT_MESSAGES
+            - name: SOCKUDO_DEFAULT_APP_ENABLE_CLIENT_MESSAGES
               value: {{ .Values.defaultApp.enableClientMessages | quote }}
             - name: SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION
               value: {{ .Values.defaultApp.enableUserAuthentication | quote }}

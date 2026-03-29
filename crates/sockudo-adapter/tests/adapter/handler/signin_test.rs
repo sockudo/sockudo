@@ -1,9 +1,10 @@
 use sockudo_adapter::handler::types::SignInRequest;
-use sockudo_core::app::App;
+use sockudo_core::app::{App, AppPolicy};
 use sockudo_core::auth::AuthValidator;
 use sockudo_core::token::Token;
 use sockudo_core::websocket::SocketId;
 use sonic_rs::json;
+use sonic_rs::prelude::*;
 use std::sync::Arc;
 
 use crate::mocks::connection_handler_mock::{
@@ -36,8 +37,12 @@ async fn test_signin_request_from_message_json_format() {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     let request = SignInRequest::from_message(&message).unwrap();
@@ -77,14 +82,53 @@ async fn test_signin_request_from_message_structured_format() {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     let request = SignInRequest::from_message(&message).unwrap();
 
     assert_eq!(request.user_data, user_data);
     assert_eq!(request.auth, "app-key:another_signature");
+}
+
+#[tokio::test]
+async fn test_parse_user_data_extracts_capabilities_and_meta() {
+    let mock_app_manager = MockAppManager::new();
+    let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
+
+    let parsed = handler
+        .parse_and_validate_user_data(
+            &json!({
+                "id": "user-123",
+                "capabilities": {
+                    "subscribe": ["chat:*"],
+                    "publish": ["private-chat:*"],
+                    "presence": ["presence-chat:*"]
+                },
+                "meta": {
+                    "tenant": "acme",
+                    "role": "trader"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+    assert_eq!(parsed.id, "user-123");
+    assert_eq!(
+        parsed
+            .capabilities
+            .as_ref()
+            .and_then(|caps| caps.subscribe.as_ref())
+            .unwrap(),
+        &vec!["chat:*".to_string()]
+    );
+    assert_eq!(parsed.meta.unwrap()["tenant"].as_str(), Some("acme"));
 }
 
 #[tokio::test]
@@ -105,8 +149,12 @@ async fn test_signin_request_from_message_missing_user_data_json() {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -141,8 +189,12 @@ async fn test_signin_request_from_message_missing_auth_structured() {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -168,8 +220,12 @@ async fn test_signin_request_from_message_invalid_format() {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     let result = SignInRequest::from_message(&message);
@@ -343,7 +399,7 @@ async fn test_handle_signin_request_parse_and_validate_user_data() {
 async fn test_handle_signin_request_authentication_disabled() {
     let socket_id = SocketId::new();
     let mut app = create_test_app();
-    app.enable_user_authentication = Some(false); // Disable signin
+    app.policy.features.enable_user_authentication = Some(false); // Disable signin
 
     let mock_app_manager = MockAppManager::new();
     let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
@@ -372,7 +428,7 @@ async fn test_handle_signin_request_authentication_disabled() {
 async fn test_handle_signin_request_invalid_user_data() {
     let socket_id = SocketId::new();
     let mut app = create_test_app();
-    app.enable_user_authentication = Some(true);
+    app.policy.features.enable_user_authentication = Some(true);
 
     let mock_app_manager = MockAppManager::new();
     let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
@@ -398,7 +454,7 @@ async fn test_handle_signin_request_invalid_user_data() {
 async fn test_handle_signin_request_missing_user_id() {
     let socket_id = SocketId::new();
     let mut app = create_test_app();
-    app.enable_user_authentication = Some(true);
+    app.policy.features.enable_user_authentication = Some(true);
 
     let mock_app_manager = MockAppManager::new();
     let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
@@ -435,7 +491,7 @@ async fn test_handle_signin_request_missing_user_id() {
 async fn test_handle_signin_request_invalid_signature() {
     let socket_id = SocketId::new();
     let mut app = create_test_app();
-    app.enable_user_authentication = Some(true);
+    app.policy.features.enable_user_authentication = Some(true);
 
     let mut mock_app_manager = MockAppManager::new();
     mock_app_manager.expect_find_by_key("test-app-key".to_string(), app.clone());
@@ -461,7 +517,7 @@ async fn test_handle_signin_request_early_validation_flow() {
     let mut app = create_test_app();
 
     // Test 1: Authentication disabled
-    app.enable_user_authentication = Some(false);
+    app.policy.features.enable_user_authentication = Some(false);
     let mock_app_manager = MockAppManager::new();
     let handler = create_test_connection_handler_with_app_manager(mock_app_manager);
 
@@ -485,7 +541,7 @@ async fn test_handle_signin_request_early_validation_flow() {
     );
 
     // Test 2: Invalid user data
-    app.enable_user_authentication = Some(true);
+    app.policy.features.enable_user_authentication = Some(true);
     let mock_app_manager2 = MockAppManager::new();
     let handler2 = create_test_connection_handler_with_app_manager(mock_app_manager2);
 
@@ -507,29 +563,25 @@ async fn test_handle_signin_request_early_validation_flow() {
 }
 
 fn create_test_app() -> App {
-    App {
-        id: "test-app-id".to_string(),
-        key: "test-app-key".to_string(),
-        secret: "test-app-secret".to_string(),
-        max_connections: 1000,
-        enable_client_messages: true,
-        enabled: true,
-        max_backend_events_per_second: Some(1000),
-        max_client_events_per_second: 100,
-        max_read_requests_per_second: Some(1000),
-        max_presence_members_per_channel: None,
-        max_presence_member_size_in_kb: None,
-        max_channel_name_length: None,
-        max_event_channels_at_once: None,
-        max_event_name_length: None,
-        max_event_payload_in_kb: None,
-        max_event_batch_size: None,
-        enable_user_authentication: None,
-        webhooks: Some(vec![]),
-        enable_watchlist_events: None,
-        allowed_origins: None,
-        channel_delta_compression: None,
-        idempotency: None,
-        connection_recovery: None,
-    }
+    App::from_policy(
+        "test-app-id".to_string(),
+        "test-app-key".to_string(),
+        "test-app-secret".to_string(),
+        true,
+        AppPolicy {
+            limits: sockudo_core::app::AppLimitsPolicy {
+                max_connections: 1000,
+                max_backend_events_per_second: Some(1000),
+                max_client_events_per_second: 100,
+                max_read_requests_per_second: Some(1000),
+                ..Default::default()
+            },
+            features: sockudo_core::app::AppFeaturesPolicy {
+                enable_client_messages: true,
+                ..Default::default()
+            },
+            webhooks: Some(vec![]),
+            ..Default::default()
+        },
+    )
 }

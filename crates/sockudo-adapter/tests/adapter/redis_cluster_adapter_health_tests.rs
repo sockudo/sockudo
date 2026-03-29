@@ -10,11 +10,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+use uuid::Uuid;
 
 /// Helper to check if Redis Cluster is available
 async fn is_redis_cluster_available() -> bool {
     let nodes = env::var("REDIS_CLUSTER_NODES").unwrap_or_else(|_| {
-        "redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002".to_string()
+        "redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003".to_string()
     });
 
     let node_list: Vec<String> = nodes.split(',').map(|s| s.to_string()).collect();
@@ -39,18 +40,19 @@ async fn is_redis_cluster_available() -> bool {
 
 /// Helper to create a RedisCluster adapter with cluster health enabled
 async fn create_redis_cluster_adapter(
+    test_prefix: &str,
     node_id: &str,
     cluster_config: &ClusterHealthConfig,
 ) -> RedisClusterAdapter {
     let nodes = env::var("REDIS_CLUSTER_NODES").unwrap_or_else(|_| {
-        "redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002".to_string()
+        "redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003".to_string()
     });
 
     let node_list: Vec<String> = nodes.split(',').map(|s| s.to_string()).collect();
 
     let config = RedisClusterAdapterConfig {
         nodes: node_list,
-        prefix: format!("test_cluster_health_{}", node_id),
+        prefix: format!("{test_prefix}_{node_id}"),
         request_timeout_ms: 5000,
         use_connection_manager: true,
         use_sharded_pubsub: false,
@@ -61,6 +63,36 @@ async fn create_redis_cluster_adapter(
     adapter
 }
 
+fn unique_test_prefix(test_name: &str) -> String {
+    format!("{}_{}", test_name, Uuid::new_v4().simple())
+}
+
+fn fast_cluster_health_config() -> ClusterHealthConfig {
+    ClusterHealthConfig {
+        enabled: true,
+        heartbeat_interval_ms: 40,
+        node_timeout_ms: 180,
+        cleanup_interval_ms: 60,
+    }
+}
+
+async fn wait_until<F, Fut>(timeout: Duration, poll_interval: Duration, mut condition: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if condition().await {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        sleep(poll_interval).await;
+    }
+}
+
 #[tokio::test]
 async fn test_redis_cluster_adapter_heartbeat() {
     if !is_redis_cluster_available().await {
@@ -68,24 +100,34 @@ async fn test_redis_cluster_adapter_heartbeat() {
         return;
     }
 
-    let cluster_config = ClusterHealthConfig {
-        enabled: true,
-        heartbeat_interval_ms: 100,
-        node_timeout_ms: 500,
-        cleanup_interval_ms: 200,
-    };
+    let cluster_config = fast_cluster_health_config();
+    let test_prefix = unique_test_prefix("cluster_heartbeat");
 
     // Create two adapters simulating two Sockudo nodes
-    let adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
-    let adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
+    let adapter1 =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
+    let adapter2 =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
 
-    // Allow heartbeats to establish
-    sleep(Duration::from_millis(300)).await;
-
-    // Both nodes should be aware of each other through heartbeats
+    assert!(
+        wait_until(
+            Duration::from_millis(500),
+            Duration::from_millis(20),
+            || {
+                let adapter1 = &adapter1;
+                let adapter2 = &adapter2;
+                async move {
+                    adapter1.horizontal.get_effective_node_count().await >= 2
+                        && adapter2.horizontal.get_effective_node_count().await >= 2
+                }
+            }
+        )
+        .await,
+        "Cluster heartbeats did not establish within the expected test window"
+    );
 
     drop(adapter1);
     drop(adapter2);
@@ -98,16 +140,15 @@ async fn test_redis_cluster_presence_synchronization() {
         return;
     }
 
-    let cluster_config = ClusterHealthConfig {
-        enabled: true,
-        heartbeat_interval_ms: 100,
-        node_timeout_ms: 500,
-        cleanup_interval_ms: 200,
-    };
+    let cluster_config = fast_cluster_health_config();
+    let test_prefix = unique_test_prefix("cluster_presence_sync");
 
-    let adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
-    let adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
-    let adapter3 = create_redis_cluster_adapter("cluster_node3", &cluster_config).await;
+    let adapter1 =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
+    let adapter2 =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node2", &cluster_config).await;
+    let adapter3 =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node3", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -150,15 +191,44 @@ async fn test_redis_cluster_presence_synchronization() {
         .await
         .unwrap();
 
-    // Allow time for synchronization
-    sleep(Duration::from_millis(300)).await;
-
     // Verify that all adapters see each other's presence entries
     let node1_id = adapter1.node_id.clone();
     let node2_id = adapter2.node_id.clone();
     let node3_id = adapter3.node_id.clone();
 
-    // Each adapter should have all three presence entries in their registry
+    assert!(
+        wait_until(
+            Duration::from_millis(700),
+            Duration::from_millis(20),
+            || {
+                let adapter1 = &adapter1;
+                let node1_id = node1_id.clone();
+                let node2_id = node2_id.clone();
+                let node3_id = node3_id.clone();
+                async move {
+                    let registry = adapter1.get_cluster_presence_registry().await;
+                    registry
+                        .get(&node1_id)
+                        .and_then(|n| n.get(channel))
+                        .map(|c| c.contains_key("socket1"))
+                        .unwrap_or(false)
+                        && registry
+                            .get(&node2_id)
+                            .and_then(|n| n.get(channel))
+                            .map(|c| c.contains_key("socket2"))
+                            .unwrap_or(false)
+                        && registry
+                            .get(&node3_id)
+                            .and_then(|n| n.get(channel))
+                            .map(|c| c.contains_key("socket3"))
+                            .unwrap_or(false)
+                }
+            }
+        )
+        .await,
+        "Cluster presence synchronization did not converge within the expected test window"
+    );
+
     let registry = adapter1.get_cluster_presence_registry().await;
     assert!(
         registry
@@ -202,13 +272,16 @@ async fn test_redis_cluster_dead_node_cleanup() {
 
     let cluster_config = ClusterHealthConfig {
         enabled: true,
-        heartbeat_interval_ms: 100,
-        node_timeout_ms: 300, // Short timeout for testing
-        cleanup_interval_ms: 150,
+        heartbeat_interval_ms: 40,
+        node_timeout_ms: 140,
+        cleanup_interval_ms: 40,
     };
+    let test_prefix = unique_test_prefix("cluster_dead_node_cleanup");
 
-    let adapter1 = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
-    let adapter2 = create_redis_cluster_adapter("cluster_node2", &cluster_config).await;
+    let adapter1 =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
+    let adapter2 =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node2", &cluster_config).await;
 
     adapter1.init().await;
     adapter2.init().await;
@@ -228,15 +301,50 @@ async fn test_redis_cluster_dead_node_cleanup() {
         .await
         .unwrap();
 
-    sleep(Duration::from_millis(200)).await;
+    assert!(
+        wait_until(
+            Duration::from_millis(500),
+            Duration::from_millis(20),
+            || {
+                let adapter1 = &adapter1;
+                let adapter2_node_id = adapter2.node_id.clone();
+                async move {
+                    adapter1
+                        .get_cluster_presence_registry()
+                        .await
+                        .get(&adapter2_node_id)
+                        .and_then(|n| n.get(channel))
+                        .map(|c| c.contains_key("socket_cleanup"))
+                        .unwrap_or(false)
+                }
+            }
+        )
+        .await,
+        "Dead-node test setup did not replicate presence before node shutdown"
+    );
 
     // Simulate adapter2 dying
+    let dead_node_id = adapter2.node_id.clone();
     drop(adapter2);
 
-    // Wait for dead node detection
-    sleep(Duration::from_millis(500)).await;
-
-    // Adapter1 should have cleaned up the dead node's presence data
+    assert!(
+        wait_until(
+            Duration::from_millis(700),
+            Duration::from_millis(20),
+            || {
+                let adapter1 = &adapter1;
+                let dead_node_id = dead_node_id.clone();
+                async move {
+                    !adapter1
+                        .get_cluster_presence_registry()
+                        .await
+                        .contains_key(&dead_node_id)
+                }
+            }
+        )
+        .await,
+        "Dead-node cleanup did not remove registry data within the expected test window"
+    );
 
     drop(adapter1);
 }
@@ -248,14 +356,10 @@ async fn test_redis_cluster_sharding_consistency() {
         return;
     }
 
-    let cluster_config = ClusterHealthConfig {
-        enabled: true,
-        heartbeat_interval_ms: 100,
-        node_timeout_ms: 500,
-        cleanup_interval_ms: 200,
-    };
-
-    let adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let cluster_config = fast_cluster_health_config();
+    let test_prefix = unique_test_prefix("cluster_sharding");
+    let adapter =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
     adapter.init().await;
 
     // Test presence across different shards (different channel names will hash to different slots)
@@ -277,7 +381,7 @@ async fn test_redis_cluster_sharding_consistency() {
             .unwrap();
     }
 
-    sleep(Duration::from_millis(200)).await;
+    sleep(Duration::from_millis(60)).await;
 
     // All presence data should be correctly stored across shards
 
@@ -291,14 +395,10 @@ async fn test_redis_cluster_failover_handling() {
         return;
     }
 
-    let cluster_config = ClusterHealthConfig {
-        enabled: true,
-        heartbeat_interval_ms: 100,
-        node_timeout_ms: 500,
-        cleanup_interval_ms: 200,
-    };
-
-    let adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let cluster_config = fast_cluster_health_config();
+    let test_prefix = unique_test_prefix("cluster_failover");
+    let adapter =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
     adapter.init().await;
 
     // Add presence data
@@ -316,7 +416,7 @@ async fn test_redis_cluster_failover_handling() {
     // In a real scenario, we would simulate a Redis node failover here
     // The adapter should handle reconnection and continue working
 
-    sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(40)).await;
 
     // Try to add more presence data after potential failover
     adapter
@@ -334,19 +434,19 @@ async fn test_redis_cluster_concurrent_multi_node_operations() {
         return;
     }
 
-    let cluster_config = ClusterHealthConfig {
-        enabled: true,
-        heartbeat_interval_ms: 100,
-        node_timeout_ms: 500,
-        cleanup_interval_ms: 200,
-    };
+    let cluster_config = fast_cluster_health_config();
+    let test_prefix = unique_test_prefix("cluster_concurrent");
 
     // Create multiple adapters
     let adapters = Arc::new(Mutex::new(Vec::new()));
 
     for i in 0..3 {
-        let adapter =
-            create_redis_cluster_adapter(&format!("cluster_node_{}", i), &cluster_config).await;
+        let adapter = create_redis_cluster_adapter(
+            &test_prefix,
+            &format!("cluster_node_{}", i),
+            &cluster_config,
+        )
+        .await;
         adapter.init().await;
         adapters.lock().await.push(adapter);
     }
@@ -386,7 +486,7 @@ async fn test_redis_cluster_concurrent_multi_node_operations() {
         handle.await.unwrap();
     }
 
-    sleep(Duration::from_millis(300)).await;
+    sleep(Duration::from_millis(80)).await;
 
     // All operations should have succeeded without conflicts
 }
@@ -400,12 +500,14 @@ async fn test_redis_cluster_large_presence_data() {
 
     let cluster_config = ClusterHealthConfig {
         enabled: true,
-        heartbeat_interval_ms: 200,
-        node_timeout_ms: 1000,
-        cleanup_interval_ms: 400,
+        heartbeat_interval_ms: 60,
+        node_timeout_ms: 240,
+        cleanup_interval_ms: 80,
     };
 
-    let adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let test_prefix = unique_test_prefix("cluster_large_presence");
+    let adapter =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
     adapter.init().await;
 
     // Create large user info object (near 2KB limit)
@@ -428,7 +530,7 @@ async fn test_redis_cluster_large_presence_data() {
         .await
         .unwrap();
 
-    sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(40)).await;
 
     drop(adapter);
 }
@@ -441,13 +543,13 @@ async fn test_redis_cluster_disabled_health_monitoring() {
     }
 
     let cluster_config = ClusterHealthConfig {
-        enabled: false, // Disabled
-        heartbeat_interval_ms: 100,
-        node_timeout_ms: 500,
-        cleanup_interval_ms: 200,
+        enabled: false,
+        ..fast_cluster_health_config()
     };
 
-    let adapter = create_redis_cluster_adapter("cluster_node1", &cluster_config).await;
+    let test_prefix = unique_test_prefix("cluster_health_disabled");
+    let adapter =
+        create_redis_cluster_adapter(&test_prefix, "cluster_node1", &cluster_config).await;
     adapter.init().await;
 
     // Should still handle presence operations without health monitoring
@@ -462,7 +564,7 @@ async fn test_redis_cluster_disabled_health_monitoring() {
         .unwrap();
 
     // No heartbeats should be sent
-    sleep(Duration::from_millis(300)).await;
+    sleep(Duration::from_millis(60)).await;
 
     drop(adapter);
 }

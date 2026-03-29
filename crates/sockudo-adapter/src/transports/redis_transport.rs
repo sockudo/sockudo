@@ -4,6 +4,9 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use redis::AsyncCommands;
 use sockudo_core::error::{Error, Result};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::sync::Notify;
 use tracing::{debug, error, warn};
 
 /// Redis adapter configuration
@@ -37,7 +40,6 @@ impl TransportConfig for RedisAdapterConfig {
 }
 
 /// Redis transport implementation
-#[derive(Clone)]
 pub struct RedisTransport {
     client: redis::Client,
     connection: redis::aio::ConnectionManager,
@@ -45,6 +47,9 @@ pub struct RedisTransport {
     broadcast_channel: String,
     request_channel: String,
     response_channel: String,
+    shutdown: Arc<Notify>,
+    is_running: Arc<AtomicBool>,
+    owner_count: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -87,6 +92,9 @@ impl HorizontalTransport for RedisTransport {
             broadcast_channel,
             request_channel,
             response_channel,
+            shutdown: Arc::new(Notify::new()),
+            is_running: Arc::new(AtomicBool::new(true)),
+            owner_count: Arc::new(AtomicUsize::new(1)),
         })
     }
 
@@ -173,12 +181,17 @@ impl HorizontalTransport for RedisTransport {
         let broadcast_channel = self.broadcast_channel.clone();
         let request_channel = self.request_channel.clone();
         let response_channel = self.response_channel.clone();
+        let shutdown = self.shutdown.clone();
+        let is_running = self.is_running.clone();
 
         tokio::spawn(async move {
             let mut retry_delay = 500u64; // Start with 500ms delay
             const MAX_RETRY_DELAY: u64 = 10_000; // Max 10 seconds
 
             loop {
+                if !is_running.load(Ordering::Relaxed) {
+                    break;
+                }
                 debug!("Attempting to establish pub/sub connection...");
 
                 let mut pubsub = match sub_client.get_async_pubsub().await {
@@ -192,7 +205,10 @@ impl HorizontalTransport for RedisTransport {
                             "Failed to get pubsub connection: {}, retrying in {}ms",
                             e, retry_delay
                         );
-                        tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                        tokio::select! {
+                            _ = shutdown.notified() => break,
+                            _ = tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)) => {}
+                        }
                         retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                         continue;
                     }
@@ -206,7 +222,10 @@ impl HorizontalTransport for RedisTransport {
                         "Failed to subscribe to channels: {}, retrying in {}ms",
                         e, retry_delay
                     );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                    tokio::select! {
+                        _ = shutdown.notified() => break,
+                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)) => {}
+                    }
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                     continue;
                 }
@@ -219,7 +238,17 @@ impl HorizontalTransport for RedisTransport {
                 let mut message_stream = pubsub.on_message();
                 let mut connection_broken = false;
 
-                while let Some(msg) = message_stream.next().await {
+                loop {
+                    if !is_running.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let next_msg = tokio::select! {
+                        _ = shutdown.notified() => break,
+                        msg = message_stream.next() => msg,
+                    };
+                    let Some(msg) = next_msg else {
+                        break;
+                    };
                     let channel: String = msg.get_channel_name().to_string();
                     let payload_result: redis::RedisResult<String> = msg.get_payload();
 
@@ -279,7 +308,10 @@ impl HorizontalTransport for RedisTransport {
                         "Pub/sub connection broken, reconnecting in {}ms...",
                         retry_delay
                     );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)).await;
+                    tokio::select! {
+                        _ = shutdown.notified() => break,
+                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay)) => {}
+                    }
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                 } else {
                     warn!("Pub/sub message stream ended unexpectedly, reconnecting...");
@@ -345,6 +377,32 @@ impl HorizontalTransport for RedisTransport {
             Err(Error::Redis(format!(
                 "PING returned unexpected response: {response}"
             )))
+        }
+    }
+}
+
+impl Drop for RedisTransport {
+    fn drop(&mut self) {
+        if self.owner_count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.is_running.store(false, Ordering::Relaxed);
+            self.shutdown.notify_waiters();
+        }
+    }
+}
+
+impl Clone for RedisTransport {
+    fn clone(&self) -> Self {
+        self.owner_count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            client: self.client.clone(),
+            connection: self.connection.clone(),
+            events_connection: self.events_connection.clone(),
+            broadcast_channel: self.broadcast_channel.clone(),
+            request_channel: self.request_channel.clone(),
+            response_channel: self.response_channel.clone(),
+            shutdown: self.shutdown.clone(),
+            is_running: self.is_running.clone(),
+            owner_count: self.owner_count.clone(),
         }
     }
 }

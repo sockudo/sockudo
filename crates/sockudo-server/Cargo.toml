@@ -19,9 +19,13 @@ full = [
   "redis",
   "redis-cluster",
   "nats",
+  "rabbitmq",
+  "google-pubsub",
+  "kafka",
   "mysql",
   "postgres",
   "dynamodb",
+  "surrealdb",
   "scylladb",
   "sqs",
   "sns",
@@ -45,9 +49,13 @@ redis-cluster = [
   "sockudo-rate-limiter/redis-cluster",
 ]
 nats = ["sockudo-core/nats", "sockudo-adapter/nats", "sockudo-delta?/nats"]
+rabbitmq = ["sockudo-core/rabbitmq", "sockudo-adapter/rabbitmq"]
+google-pubsub = ["sockudo-core/google-pubsub", "sockudo-adapter/google-pubsub"]
+kafka = ["sockudo-core/kafka", "sockudo-adapter/kafka"]
 mysql = ["sockudo-core/mysql", "sockudo-app/mysql"]
 postgres = ["sockudo-core/postgres", "sockudo-app/postgres"]
 dynamodb = ["sockudo-core/dynamodb", "sockudo-app/dynamodb"]
+surrealdb = ["sockudo-core/surrealdb", "sockudo-app/surrealdb"]
 scylladb = ["sockudo-core/scylladb", "sockudo-app/scylladb"]
 sqs = ["sockudo-core/sqs", "sockudo-queue/sqs"]
 sns = ["sockudo-core/sns", "sockudo-queue/sns"]

@@ -109,8 +109,12 @@ async fn test_cross_node_broadcast_redis() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     // Send broadcast from adapter1
@@ -159,8 +163,12 @@ async fn test_cross_node_broadcast_nats() -> Result<()> {
         tags: None,
         sequence: None,
         conflation_key: None,
-                message_id: None,
-                serial: None,
+        message_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
     };
 
     // Send broadcast from adapter1
