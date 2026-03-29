@@ -55,8 +55,9 @@ pub fn serialize_message(message: &PusherMessage, format: WireFormat) -> Result<
 
 pub fn deserialize_message(bytes: &[u8], format: WireFormat) -> Result<PusherMessage, String> {
     match format {
-        WireFormat::Json => sonic_rs::from_slice(bytes)
-            .map_err(|e| format!("JSON deserialization failed: {e}")),
+        WireFormat::Json => {
+            sonic_rs::from_slice(bytes).map_err(|e| format!("JSON deserialization failed: {e}"))
+        }
         WireFormat::MessagePack => {
             let msg: MsgpackPusherMessage = rmp_serde::from_slice(bytes)
                 .map_err(|e| format!("MessagePack deserialization failed: {e}"))?;
@@ -225,7 +226,10 @@ impl From<PusherMessage> for ProtoPusherMessage {
             data: value.data.map(Into::into),
             name: value.name,
             user_id: value.user_id,
-            tags: value.tags.map(|m| m.into_iter().collect()).unwrap_or_default(),
+            tags: value
+                .tags
+                .map(|m| m.into_iter().collect())
+                .unwrap_or_default(),
             sequence: value.sequence,
             conflation_key: value.conflation_key,
             message_id: value.message_id,
@@ -267,7 +271,8 @@ impl From<ProtoPusherMessage> for PusherMessage {
             data: value.data.map(Into::into),
             name: value.name,
             user_id: value.user_id,
-            tags: (!value.tags.is_empty()).then_some(value.tags.into_iter().collect::<BTreeMap<_, _>>()),
+            tags: (!value.tags.is_empty())
+                .then_some(value.tags.into_iter().collect::<BTreeMap<_, _>>()),
             sequence: value.sequence,
             conflation_key: value.conflation_key,
             message_id: value.message_id,
@@ -356,9 +361,9 @@ impl From<MessageData> for MsgpackMessageData {
                     })
                     .collect(),
             }),
-            MessageData::Json(v) => Self::Json(
-                sonic_rs::to_string(&v).unwrap_or_else(|_| "null".to_string()),
-            ),
+            MessageData::Json(v) => {
+                Self::Json(sonic_rs::to_string(&v).unwrap_or_else(|_| "null".to_string()))
+            }
         }
     }
 }
@@ -375,14 +380,15 @@ impl From<ProtoMessageData> for MessageData {
                     .extra
                     .into_iter()
                     .map(|(k, v)| {
-                        let parsed = sonic_rs::from_str(&v).unwrap_or_else(|_| Value::from(v.as_str()));
+                        let parsed =
+                            sonic_rs::from_str(&v).unwrap_or_else(|_| Value::from(v.as_str()));
                         (k, parsed)
                     })
                     .collect::<AHashMap<_, _>>(),
             },
-            Some(proto_message_data::Kind::Json(v)) => {
-                MessageData::Json(sonic_rs::from_str(&v).unwrap_or_else(|_| Value::from(v.as_str())))
-            }
+            Some(proto_message_data::Kind::Json(v)) => MessageData::Json(
+                sonic_rs::from_str(&v).unwrap_or_else(|_| Value::from(v.as_str())),
+            ),
             None => MessageData::Json(Value::new_null()),
         }
     }
@@ -406,9 +412,9 @@ impl From<MsgpackMessageData> for MessageData {
                     })
                     .collect::<AHashMap<_, _>>(),
             },
-            MsgpackMessageData::Json(v) => {
-                MessageData::Json(sonic_rs::from_str(&v).unwrap_or_else(|_| Value::from(v.as_str())))
-            }
+            MsgpackMessageData::Json(v) => MessageData::Json(
+                sonic_rs::from_str(&v).unwrap_or_else(|_| Value::from(v.as_str())),
+            ),
         }
     }
 }
@@ -432,12 +438,9 @@ impl From<MessageExtras> for ProtoMessageExtras {
 impl From<MessageExtras> for MsgpackMessageExtras {
     fn from(value: MessageExtras) -> Self {
         Self {
-            headers: value.headers.map(|headers| {
-                headers
-                    .into_iter()
-                    .map(|(k, v)| (k, v.into()))
-                    .collect()
-            }),
+            headers: value
+                .headers
+                .map(|headers| headers.into_iter().map(|(k, v)| (k, v.into())).collect()),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
             echo: value.echo,
@@ -449,7 +452,11 @@ impl From<ProtoMessageExtras> for MessageExtras {
     fn from(value: ProtoMessageExtras) -> Self {
         Self {
             headers: (!value.headers.is_empty()).then_some(
-                value.headers.into_iter().map(|(k, v)| (k, v.into())).collect(),
+                value
+                    .headers
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into()))
+                    .collect(),
             ),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
@@ -461,12 +468,9 @@ impl From<ProtoMessageExtras> for MessageExtras {
 impl From<MsgpackMessageExtras> for MessageExtras {
     fn from(value: MsgpackMessageExtras) -> Self {
         Self {
-            headers: value.headers.map(|headers| {
-                headers
-                    .into_iter()
-                    .map(|(k, v)| (k, v.into()))
-                    .collect()
-            }),
+            headers: value
+                .headers
+                .map(|headers| headers.into_iter().map(|(k, v)| (k, v.into())).collect()),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
             echo: value.echo,
@@ -543,7 +547,10 @@ mod tests {
             idempotency_key: Some("idem-1".to_string()),
             extras: Some(MessageExtras {
                 headers: Some(HashMap::from([
-                    ("priority".to_string(), ExtrasValue::String("high".to_string())),
+                    (
+                        "priority".to_string(),
+                        ExtrasValue::String("high".to_string()),
+                    ),
                     ("ttl".to_string(), ExtrasValue::Number(5.0)),
                 ])),
                 ephemeral: Some(true),
@@ -577,7 +584,10 @@ mod tests {
 
     #[test]
     fn parse_query_param_accepts_known_values() {
-        assert_eq!(WireFormat::parse_query_param(None).unwrap(), WireFormat::Json);
+        assert_eq!(
+            WireFormat::parse_query_param(None).unwrap(),
+            WireFormat::Json
+        );
         assert_eq!(
             WireFormat::parse_query_param(Some("json")).unwrap(),
             WireFormat::Json

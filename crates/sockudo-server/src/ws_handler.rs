@@ -44,8 +44,7 @@ pub async fn handle_ws_upgrade(
         match WireFormat::parse_query_param(params.format.as_deref()) {
             Ok(format) => format,
             Err(_) => {
-                return axum::http::StatusCode::BAD_REQUEST
-                    .into_response();
+                return axum::http::StatusCode::BAD_REQUEST.into_response();
             }
         }
     } else {
