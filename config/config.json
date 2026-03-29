@@ -24,7 +24,16 @@
       "cleanup_interval_ms": 10000
     }
   },
-  "database": {},
+  "database": {
+    "surrealdb": {
+      "url": "ws://127.0.0.1:8000",
+      "namespace": "sockudo",
+      "database": "sockudo",
+      "username": "root",
+      "password": "root",
+      "table_name": "applications"
+    }
+  },
   "app_manager": {
     "driver": "memory",
     "array": {
@@ -33,34 +42,60 @@
           "id": "app-id",
           "key": "app-key",
           "secret": "app-secret",
-          "max_connections": 100000,
-          "enable_client_messages": true,
-          "enable_user_authentication": true,
           "enabled": true,
-          "max_client_events_per_second": 1000,
-          "allowed_origins": ["*"],
-          "idempotency": {
-            "enabled": true,
-            "ttl_seconds": 300
-          },
-          "connection_recovery": {
-            "enabled": false
-          },
-          "channel_delta_compression": {
-            "ticker:*": {
-              "enabled": true,
-              "algorithm": "Fossil",
-              "conflation_key": "item_id",
-              "max_messages_per_key": 10,
-              "max_conflation_keys": 1000,
-              "enable_tags": false
+          "policy": {
+            "limits": {
+              "max_connections": 100000,
+              "max_client_events_per_second": 1000
             },
-            "price:*": {
+            "features": {
+              "enable_client_messages": true,
+              "enable_user_authentication": true
+            },
+            "channels": {
+              "allowed_origins": ["*"],
+              "channel_namespaces": [
+                {
+                  "name": "ticker",
+                  "channel_name_pattern": "^ticker:[A-Za-z0-9._-]+$",
+                  "max_channel_name_length": 200
+                },
+                {
+                  "name": "price",
+                  "channel_name_pattern": "^price:[A-Za-z0-9._-]+$",
+                  "max_channel_name_length": 200
+                },
+                {
+                  "name": "chat",
+                  "channel_name_pattern": "^chat:[A-Za-z0-9._-]+$",
+                  "max_channel_name_length": 200,
+                  "allow_user_limited_channels": true
+                }
+              ],
+              "channel_delta_compression": {
+                "ticker:*": {
+                  "enabled": true,
+                  "algorithm": "Fossil",
+                  "conflation_key": "item_id",
+                  "max_messages_per_key": 10,
+                  "max_conflation_keys": 1000,
+                  "enable_tags": false
+                },
+                "price:*": {
+                  "enabled": true,
+                  "algorithm": "Fossil",
+                  "conflation_key": "item_id",
+                  "max_messages_per_key": 10,
+                  "max_conflation_keys": 100
+                }
+              }
+            },
+            "idempotency": {
               "enabled": true,
-              "algorithm": "Fossil",
-              "conflation_key": "item_id",
-              "max_messages_per_key": 10,
-              "max_conflation_keys": 100
+              "ttl_seconds": 300
+            },
+            "connection_recovery": {
+              "enabled": false
             }
           }
         }
@@ -162,6 +197,18 @@
     "enabled": true,
     "ttl_seconds": 120,
     "max_key_length": 128
+  },
+  "ephemeral": {
+    "enabled": true
+  },
+  "echo_control": {
+    "enabled": true,
+    "default_echo_messages": true
+  },
+  "event_name_filtering": {
+    "enabled": true,
+    "max_events_per_filter": 50,
+    "max_event_name_length": 200
   },
   "connection_recovery": {
     "enabled": false,

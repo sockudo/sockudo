@@ -81,6 +81,12 @@ pub struct PrometheusMetricsDriver {
     // Idempotency metrics
     idempotency_publish_total: CounterVec,
     idempotency_duplicates_total: CounterVec,
+    // Ephemeral message metrics
+    ephemeral_messages_total: CounterVec,
+    // Event name filter metrics
+    event_filter_suppressed_total: CounterVec,
+    // Echo control metrics
+    echo_suppressed_total: CounterVec,
     // Redis Cluster transport metrics
     redis_cluster_channel_queue_size: GaugeVec,
     redis_cluster_channel_messages_dropped: CounterVec,
@@ -453,6 +459,33 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let ephemeral_messages_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ephemeral_messages_total"),
+                "Total number of ephemeral messages delivered (V2 only)"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let event_filter_suppressed_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}event_filter_suppressed_total"),
+                "Total number of messages suppressed by event name filtering (V2 only)"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let echo_suppressed_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}echo_suppressed_total"),
+                "Total number of message deliveries skipped due to echo control (V2 only)"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
         // Redis Cluster transport metrics
         let redis_cluster_channel_queue_size = register_gauge_vec!(
             Opts::new(
@@ -537,6 +570,9 @@ impl PrometheusMetricsDriver {
             delta_compression_delta_messages,
             idempotency_publish_total,
             idempotency_duplicates_total,
+            ephemeral_messages_total,
+            event_filter_suppressed_total,
+            echo_suppressed_total,
             redis_cluster_channel_queue_size,
             redis_cluster_channel_messages_dropped,
             redis_cluster_reconnections_total,
@@ -1021,10 +1057,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!(
-            "Metrics: Idempotency publish for app {}",
-            app_id
-        );
+        debug!("Metrics: Idempotency publish for app {}", app_id);
     }
 
     fn mark_idempotency_duplicate(&self, app_id: &str) {
@@ -1033,10 +1066,24 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .with_label_values(&tags)
             .inc();
 
-        debug!(
-            "Metrics: Idempotency duplicate caught for app {}",
-            app_id
-        );
+        debug!("Metrics: Idempotency duplicate caught for app {}", app_id);
+    }
+
+    fn mark_ephemeral_message(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.ephemeral_messages_total.with_label_values(&tags).inc();
+    }
+
+    fn mark_event_filter_suppressed(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.event_filter_suppressed_total
+            .with_label_values(&tags)
+            .inc();
+    }
+
+    fn mark_echo_suppressed(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.echo_suppressed_total.with_label_values(&tags).inc();
     }
 
     async fn get_metrics_as_plaintext(&self) -> String {

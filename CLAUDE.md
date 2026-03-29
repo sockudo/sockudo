@@ -224,7 +224,7 @@ Key variables (see `.env.example` for complete list):
 - `PORT` - Server port (default: 6001)
 - `HOST` - Server host (default: 0.0.0.0)
 - `ADAPTER_DRIVER` - Connection adapter (local|redis|redis-cluster|nats)
-- `APP_MANAGER_DRIVER` - App storage (memory|mysql|postgresql|dynamodb)
+- `APP_MANAGER_DRIVER` - App storage (memory|mysql|postgresql|dynamodb|surrealdb|scylladb)
 - `CACHE_DRIVER` - Cache backend (memory|redis|redis-cluster|none)
 - `QUEUE_DRIVER` - Queue backend (memory|redis|redis-cluster|sqs|none)
 - `RATE_LIMITER_DRIVER` - Rate limiter backend (memory|redis|redis-cluster|none)

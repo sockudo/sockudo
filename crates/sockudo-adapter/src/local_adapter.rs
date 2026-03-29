@@ -8,9 +8,9 @@ use dashmap::DashMap;
 use sockudo_core::app::AppManager;
 use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::{Error, Result};
-use sockudo_core::namespace::Namespace;
+use sockudo_core::namespace::{Namespace, SocketInitOptions};
 use sockudo_core::websocket::{SocketId, WebSocketRef};
-use sockudo_protocol::messages::PusherMessage;
+use sockudo_protocol::messages::{PusherMessage, generate_message_id};
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
 use std::sync::Arc;
@@ -200,6 +200,53 @@ struct PrecomputedDeltaParams<'a> {
 }
 
 impl LocalAdapter {
+    async fn send_protocol_messages_concurrent(
+        &self,
+        target_socket_refs: Vec<WebSocketRef>,
+        message: PusherMessage,
+    ) -> Vec<Result<()>> {
+        use futures::stream::{self, StreamExt};
+
+        let socket_count = target_socket_refs.len();
+        let target_chunks = socket_count.div_ceil(self.max_concurrent).clamp(1, 8);
+        let socket_chunk_size = (socket_count / target_chunks)
+            .min(self.max_concurrent)
+            .max(1);
+
+        let mut results = Vec::with_capacity(socket_count);
+
+        for socket_chunk in target_socket_refs.chunks(socket_chunk_size) {
+            let chunk_size = socket_chunk.len();
+            match self
+                .broadcast_semaphore
+                .acquire_many(chunk_size as u32)
+                .await
+            {
+                Ok(_permits) => {
+                    let chunk_vec: Vec<_> = socket_chunk.to_vec();
+                    let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
+                        .map(|socket_ref| {
+                            let msg = message.clone();
+                            async move { socket_ref.send_message(&msg).await }
+                        })
+                        .buffer_unordered(chunk_size)
+                        .collect()
+                        .await;
+                    results.extend(chunk_results);
+                }
+                Err(_) => {
+                    for _ in 0..chunk_size {
+                        results.push(Err(Error::Connection(
+                            "Broadcast semaphore unavailable".to_string(),
+                        )));
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
     /// Send messages using chunked processing with semaphore-controlled concurrency
     async fn send_messages_concurrent(
         &self,
@@ -295,26 +342,24 @@ impl LocalAdapter {
 
             // Check if socket has delta enabled
             if delta_compression.is_enabled_for_socket(socket_id) {
-                tracing::debug!(
+                debug!(
                     "Socket {} has delta compression enabled for channel {}",
-                    socket_id,
-                    channel
+                    socket_id, channel
                 );
                 // Extract conflation key
                 let conflation_key_path = channel_settings
                     .and_then(|s| s.conflation_key.as_ref())
                     .or(delta_compression.get_conflation_key_path());
 
-                tracing::debug!(
+                debug!(
                     "Conflation key path for socket {}: {:?}",
-                    socket_id,
-                    conflation_key_path
+                    socket_id, conflation_key_path
                 );
 
                 let conflation_key = if let Some(path) = conflation_key_path {
                     let extracted = delta_compression
                         .extract_conflation_key_from_path(&base_message_bytes, path);
-                    tracing::debug!(
+                    debug!(
                         "Extracted conflation key from path '{}': '{}' (base_message_bytes len={})",
                         path,
                         extracted,
@@ -322,7 +367,7 @@ impl LocalAdapter {
                     );
                     extracted
                 } else {
-                    tracing::debug!("No conflation key path configured");
+                    debug!("No conflation key path configured");
                     String::new()
                 };
 
@@ -334,17 +379,14 @@ impl LocalAdapter {
                 };
 
                 // Get base message for delta computation
-                tracing::debug!(
+                debug!(
                     "Looking for base message: socket={}, channel={}, cache_key='{}', event_name='{}'",
-                    socket_id,
-                    channel,
-                    cache_key,
-                    event_name
+                    socket_id, channel, cache_key, event_name
                 );
                 let base_msg =
                     delta_compression.get_last_message_for_socket(socket_id, channel, &cache_key);
                 let base_msg_opt = base_msg.await;
-                tracing::debug!(
+                debug!(
                     "Base message lookup result: socket={}, found={}",
                     socket_id,
                     base_msg_opt.is_some()
@@ -360,7 +402,7 @@ impl LocalAdapter {
                     0 // No base message = send full message
                 };
 
-                tracing::debug!(
+                debug!(
                     "Socket {} grouped with conflation_key='{}', base_hash={} (has_base={})",
                     socket_id,
                     conflation_key,
@@ -372,7 +414,7 @@ impl LocalAdapter {
                     .or_default()
                     .push(socket_ref);
             } else {
-                tracing::debug!(
+                debug!(
                     "Socket {} does NOT have delta compression enabled",
                     socket_id
                 );
@@ -385,7 +427,7 @@ impl LocalAdapter {
         type PrecomputedDelta = Option<(Arc<Vec<u8>>, u32)>;
         let mut precomputed_deltas: HashMap<(String, u64), PrecomputedDelta> = HashMap::new();
 
-        tracing::debug!(
+        debug!(
             "Pre-computing deltas for {} socket groups ({} non-delta sockets)",
             socket_groups.len(),
             non_delta_sockets.len()
@@ -394,7 +436,7 @@ impl LocalAdapter {
         for ((conflation_key, base_hash), group_sockets) in &socket_groups {
             if *base_hash == 0 {
                 // No base message, will send full message
-                tracing::debug!(
+                debug!(
                     "Group (conflation_key='{}', base_hash=0) has {} sockets - will send FULL messages (first message)",
                     conflation_key,
                     group_sockets.len()
@@ -417,7 +459,7 @@ impl LocalAdapter {
                     delta_compression.should_send_full_message(socket_id, channel, &cache_key);
 
                 if should_send_full {
-                    tracing::debug!(
+                    debug!(
                         "Group (conflation_key='{}', base_hash={}) has {} sockets - sending FULL message due to interval",
                         conflation_key,
                         base_hash,
@@ -439,7 +481,7 @@ impl LocalAdapter {
                         Ok(delta) => {
                             // Check if delta is beneficial
                             if delta.len() < base_message_bytes.len() {
-                                tracing::debug!(
+                                debug!(
                                     "Group (conflation_key='{}', base_hash={}) has {} sockets - computed delta: {} bytes (vs {} bytes original, {:.1}% savings), base_seq={}",
                                     conflation_key,
                                     base_hash,
@@ -456,7 +498,7 @@ impl LocalAdapter {
                                 );
                             } else {
                                 // Delta not beneficial
-                                tracing::debug!(
+                                debug!(
                                     "Group (conflation_key='{}', base_hash={}) has {} sockets - delta NOT beneficial ({} >= {} bytes), sending FULL",
                                     conflation_key,
                                     base_hash,
@@ -470,11 +512,9 @@ impl LocalAdapter {
                         }
                         Err(e) => {
                             // Delta computation failed
-                            tracing::warn!(
+                            warn!(
                                 "Group (conflation_key='{}', base_hash={}) delta computation FAILED: {}, sending FULL",
-                                conflation_key,
-                                base_hash,
-                                e
+                                conflation_key, base_hash, e
                             );
                             precomputed_deltas.insert((conflation_key.clone(), *base_hash), None);
                         }
@@ -642,7 +682,7 @@ impl LocalAdapter {
 
         let SocketMessageParams {
             socket_ref,
-            base_message: _,
+            base_message,
             base_message_bytes,
             channel,
             event_name,
@@ -727,17 +767,14 @@ impl LocalAdapter {
         };
 
         match compression_result {
-            CompressionResult::Uncompressed => {
-                // Send original message without compression
-                socket_ref.send_broadcast(Bytes::from(base_message_bytes))
-            }
+            CompressionResult::Uncompressed => socket_ref.send_message(&base_message).await,
             CompressionResult::FullMessage {
                 sequence,
                 conflation_key,
             } => {
                 // Store the message WITHOUT sequence/conflation_key for future delta compression
                 // The client strips these fields before storing, so we must match that behavior
-                tracing::info!(
+                info!(
                     "🔵 STORING FULL base message: seq={}, conflation_key={:?}, len={}, last50='{}'",
                     sequence,
                     conflation_key,
@@ -746,7 +783,7 @@ impl LocalAdapter {
                         &base_message_bytes[base_message_bytes.len().saturating_sub(50)..]
                     )
                 );
-                tracing::info!(
+                info!(
                     "🔵 SENDING FULL message: len={}, last100='{}'",
                     message_with_sequence.len(),
                     String::from_utf8_lossy(
@@ -767,8 +804,10 @@ impl LocalAdapter {
                     warn!("Failed to store full message for delta state: {e}");
                 }
 
-                // Send the message with sequence metadata to client
-                socket_ref.send_broadcast(Bytes::from(message_with_sequence))
+                let mut full_message = base_message;
+                full_message.delta_sequence = Some(sequence.into());
+                full_message.delta_conflation_key = conflation_key;
+                socket_ref.send_message(&full_message).await
             }
             CompressionResult::Delta {
                 delta,
@@ -778,7 +817,7 @@ impl LocalAdapter {
                 base_index,
             } => {
                 // Send delta message
-                tracing::info!(
+                info!(
                     "🔴 SENDING DELTA: seq={}, base_index={:?}, conflation_key={:?}, delta_len={}, new_msg_len={}, new_msg_last50='{}'",
                     sequence,
                     base_index,
@@ -814,7 +853,7 @@ impl LocalAdapter {
                 }
 
                 // Wrap in Pusher message format
-                let pusher_msg = PusherMessage {
+                let mut pusher_msg = PusherMessage {
                     event: Some("pusher:delta".to_string()),
                     channel: Some(channel.to_string()),
                     data: Some(sockudo_protocol::messages::MessageData::Json(delta_data)),
@@ -823,13 +862,16 @@ impl LocalAdapter {
                     tags: None,
                     sequence: None,
                     conflation_key: None,
-                message_id: None,
-                serial: None,
+                    message_id: None,
+                    serial: None,
+                    idempotency_key: None,
+                    extras: None,
+                    delta_sequence: None,
+                    delta_conflation_key: None,
                 };
-
-                let bytes = sonic_rs::to_vec(&pusher_msg).map_err(|e| {
-                    Error::InvalidMessageFormat(format!("Serialization failed: {e}"))
-                })?;
+                if socket_ref.protocol_version == sockudo_protocol::ProtocolVersion::V2 {
+                    pusher_msg.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+                }
 
                 // Store the ORIGINAL message bytes (without sequence/conflation_key metadata) for future delta computation
                 // The sequence changes every message, so it should not be part of the delta base
@@ -846,8 +888,7 @@ impl LocalAdapter {
                 {
                     warn!("Failed to store delta base message state: {e}");
                 }
-
-                socket_ref.send_broadcast(Bytes::from(bytes))
+                socket_ref.send_message(&pusher_msg).await
             }
         }
     }
@@ -862,7 +903,7 @@ impl LocalAdapter {
     ) -> Result<()> {
         let PrecomputedDeltaParams {
             socket_ref,
-            base_message: _,
+            base_message,
             base_message_bytes,
             channel,
             event_name,
@@ -932,7 +973,7 @@ impl LocalAdapter {
                 actual_base_sequence.unwrap_or(if sequence > 0 { sequence - 1 } else { 0 });
             // We have a pre-computed delta, use it
             // base_sequence is the actual sequence number of the message used to compute this delta
-            tracing::debug!(
+            debug!(
                 "Sending DELTA message to socket {} on channel {} (seq={}, base_seq={}, delta_size={} bytes)",
                 socket_id,
                 channel,
@@ -973,7 +1014,7 @@ impl LocalAdapter {
             delta_data["base_index"] = sonic_rs::Value::from(base_index as u64);
 
             // Wrap in Pusher message format
-            let pusher_msg = PusherMessage {
+            let mut pusher_msg = PusherMessage {
                 event: Some("pusher:delta".to_string()),
                 channel: Some(channel.to_string()),
                 data: Some(sockudo_protocol::messages::MessageData::Json(delta_data)),
@@ -984,10 +1025,14 @@ impl LocalAdapter {
                 conflation_key: None,
                 message_id: None,
                 serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
             };
-
-            let bytes = sonic_rs::to_vec(&pusher_msg)
-                .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+            if socket_ref.protocol_version == sockudo_protocol::ProtocolVersion::V2 {
+                pusher_msg.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+            }
 
             // CRITICAL: Store the NEW message WITHOUT metadata (base_message_bytes).
             // The client strips __delta_seq and __conflation_key before storing, so we must
@@ -1003,11 +1048,10 @@ impl LocalAdapter {
                     channel_settings,
                 )
                 .await;
-
-            socket_ref.send_broadcast(Bytes::from(bytes))
+            socket_ref.send_message(&pusher_msg).await
         } else {
             // No delta available (first message or delta not beneficial), send full message
-            tracing::debug!(
+            debug!(
                 "Sending FULL message to socket {} on channel {} (seq={}, size={} bytes)",
                 socket_id,
                 channel,
@@ -1018,7 +1062,7 @@ impl LocalAdapter {
             // IMPORTANT: Use string manipulation instead of JSON parse/re-serialize
             // to preserve exact byte ordering. JSON re-serialization can change key order,
             // causing checksum mismatches when computing deltas.
-            let msg_with_seq = if let Ok(base_str) = std::str::from_utf8(&base_message_bytes) {
+            let _msg_with_seq = if let Ok(base_str) = std::str::from_utf8(&base_message_bytes) {
                 // Find the last '}' and inject metadata before it
                 if let Some(last_brace) = base_str.rfind('}') {
                     let mut result = String::with_capacity(base_str.len() + 100);
@@ -1062,25 +1106,25 @@ impl LocalAdapter {
                 .await
             {
                 Ok(_) => {
-                    tracing::debug!(
+                    debug!(
                         "Successfully stored FULL message for socket {} on channel {} (seq={}, will be base for future deltas)",
-                        socket_id,
-                        channel,
-                        sequence
+                        socket_id, channel, sequence
                     );
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    warn!(
                         "Failed to store FULL message for socket {} on channel {}: {}",
-                        socket_id,
-                        channel,
-                        e
+                        socket_id, channel, e
                     );
                 }
             }
 
-            // Send the full message
-            socket_ref.send_broadcast(Bytes::from(msg_with_seq))
+            let mut full_message = base_message;
+            full_message.delta_sequence = Some(sequence.into());
+            if !conflation_key.is_empty() {
+                full_message.delta_conflation_key = Some(conflation_key);
+            }
+            socket_ref.send_message(&full_message).await
         }
     }
 
@@ -1093,9 +1137,7 @@ impl LocalAdapter {
     }
 
     /// Partition socket refs into V1 (strict Pusher) and V2 (Sockudo-native) groups.
-    fn partition_by_protocol(
-        sockets: Vec<WebSocketRef>,
-    ) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
+    fn partition_by_protocol(sockets: Vec<WebSocketRef>) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
         sockets
             .into_iter()
             .partition(|s| s.protocol_version == sockudo_protocol::ProtocolVersion::V1)
@@ -1114,6 +1156,8 @@ impl LocalAdapter {
         v1_message.serial = None;
         v1_message.message_id = None;
         v1_message.tags = None;
+        v1_message.idempotency_key = None;
+        v1_message.extras = None;
         let v1_bytes = Bytes::from(
             sonic_rs::to_vec(&v1_message)
                 .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?,
@@ -1127,8 +1171,8 @@ impl LocalAdapter {
         for r in results {
             if let Err(e) = r {
                 match &e {
-                    Error::ConnectionClosed(_) => tracing::debug!("Send error: {}", e),
-                    _ => tracing::warn!("Send error: {}", e),
+                    Error::ConnectionClosed(_) => debug!("Send error: {}", e),
+                    _ => warn!("Send error: {}", e),
                 }
             }
         }
@@ -1205,10 +1249,8 @@ impl LocalAdapter {
         #[cfg(feature = "tag-filtering")]
         {
             let global_enable_tags = self.enable_tags_globally.load(Ordering::Acquire);
-            let enable_tags = crate::v2_broadcast::should_enable_tags(
-                _channel_settings,
-                global_enable_tags,
-            );
+            let enable_tags =
+                crate::v2_broadcast::should_enable_tags(_channel_settings, global_enable_tags);
             crate::v2_broadcast::strip_tags_if_disabled(message, enable_tags)
         }
         #[cfg(not(feature = "tag-filtering"))]
@@ -1241,11 +1283,9 @@ impl LocalAdapter {
         // Check if socket exists
         let t_before_socket_check = t_start.elapsed().as_nanos();
         if !namespace.sockets.contains_key(socket_id) {
-            tracing::debug!(
+            debug!(
                 "PERF[FAST_PATH_FAIL] channel={} socket={} reason=socket_not_found at={}ns",
-                channel,
-                socket_id,
-                t_before_socket_check
+                channel, socket_id, t_before_socket_check
             );
             return None;
         }
@@ -1258,7 +1298,7 @@ impl LocalAdapter {
             let count = namespace.get_channel_socket_count(channel);
             let t_after_count = t_start.elapsed().as_nanos();
 
-            tracing::debug!(
+            debug!(
                 "PERF[FAST_PATH_ALREADY] channel={} socket={} total={}ns ns_get={}ns socket_check={}ns chan_check={}ns count={}ns",
                 channel,
                 socket_id,
@@ -1282,7 +1322,7 @@ impl LocalAdapter {
         let count = namespace.get_channel_socket_count(channel);
         let t_after_count = t_start.elapsed().as_nanos();
 
-        tracing::debug!(
+        debug!(
             "PERF[FAST_PATH_NEW] channel={} socket={} total={}ns ns_get={}ns socket_check={}ns chan_check={}ns add={}ns count={}ns",
             channel,
             socket_id,
@@ -1316,35 +1356,44 @@ impl ConnectionManager for LocalAdapter {
         app_manager: Arc<dyn AppManager + Send + Sync>,
         buffer_config: sockudo_core::websocket::WebSocketBufferConfig,
         protocol_version: sockudo_protocol::ProtocolVersion,
+        wire_format: sockudo_protocol::WireFormat,
+        echo_messages: bool,
     ) -> Result<()> {
-        tracing::debug!(
+        debug!(
             "LocalAdapter::add_socket: adding socket {} for app {}",
-            &socket_id,
-            app_id
+            &socket_id, app_id
         );
         let namespace = self.get_or_create_namespace(app_id).await;
         let socket_id_clone = socket_id;
         namespace
-            .add_socket(socket_id, socket, app_manager, buffer_config, protocol_version)
+            .add_socket(
+                socket_id,
+                socket,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config,
+                    protocol_version,
+                    wire_format,
+                    echo_messages,
+                },
+            )
             .await?;
-        tracing::debug!(
+        debug!(
             "LocalAdapter::add_socket: successfully added socket {} for app {}",
-            socket_id_clone,
-            app_id
+            socket_id_clone, app_id
         );
         Ok(())
     }
 
     // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
     async fn get_connection(&self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef> {
-        tracing::debug!(
+        debug!(
             "LocalAdapter::get_connection: looking for socket {} in app {}",
-            socket_id,
-            app_id
+            socket_id, app_id
         );
         let namespace = self.get_or_create_namespace(app_id).await;
         let result = namespace.get_connection(socket_id);
-        tracing::debug!(
+        debug!(
             "LocalAdapter::get_connection: socket {} in app {} found: {}",
             socket_id,
             app_id,
@@ -1376,14 +1425,18 @@ impl ConnectionManager for LocalAdapter {
         match connection.protocol_version {
             sockudo_protocol::ProtocolVersion::V2 => {
                 let mut rewritten = message;
+                if rewritten.message_id.is_none() {
+                    rewritten.message_id = Some(generate_message_id());
+                }
                 rewritten.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
                 connection.send_message(&rewritten).await
             }
             sockudo_protocol::ProtocolVersion::V1 => {
-                // Strict Pusher: strip serial/message_id
+                // Strict Pusher: strip serial/message_id/extras
                 let mut v1_msg = message;
                 v1_msg.serial = None;
                 v1_msg.message_id = None;
+                v1_msg.extras = None;
                 connection.send_message(&v1_msg).await
             }
         }
@@ -1411,8 +1464,7 @@ impl ConnectionManager for LocalAdapter {
                 if let Ok(Some(app)) = app_manager.find_by_id(app_id).await {
                     // Get channel-specific delta compression settings
                     let channel_settings = app
-                        .channel_delta_compression
-                        .as_ref()
+                        .channel_delta_compression_ref()
                         .and_then(|map| map.get(channel))
                         .and_then(|config| {
                             use sockudo_delta::ChannelDeltaConfig;
@@ -1463,21 +1515,27 @@ impl ConnectionManager for LocalAdapter {
             }
             target_refs
         } else {
-            namespace.get_channel_socket_refs_except(channel, except)
+            namespace.get_matching_channel_socket_refs_except(channel, except)
         };
 
-        let (v1_all_sockets, v2_target_sockets) =
-            Self::partition_by_protocol(target_socket_refs);
+        let (v1_all_sockets, v2_target_sockets) = Self::partition_by_protocol(target_socket_refs);
 
         self.send_to_v1_sockets(v1_all_sockets, &message).await?;
 
         let filtered_socket_refs =
             self.filter_v2_sockets(channel, &message, v2_target_sockets, except, &namespace);
 
+        // Apply event name filtering (V2 only)
+        let filtered_socket_refs =
+            crate::v2_broadcast::apply_event_name_filter(channel, &message, filtered_socket_refs);
+
         // Send to filtered V2 sockets (Sockudo-native: sockudo: prefix, serial + message_id)
         if !filtered_socket_refs.is_empty() {
-            let (_v2_message, v2_bytes) = crate::v2_broadcast::prepare_v2_message(message)?;
-            Self::log_send_errors(self.send_messages_concurrent(filtered_socket_refs, v2_bytes).await);
+            let (v2_message, _v2_bytes) = crate::v2_broadcast::prepare_v2_message(message)?;
+            Self::log_send_errors(
+                self.send_protocol_messages_concurrent(filtered_socket_refs, v2_message)
+                    .await,
+            );
         }
 
         Ok(())
@@ -1517,16 +1575,19 @@ impl ConnectionManager for LocalAdapter {
             }
             target_refs
         } else {
-            namespace.get_channel_socket_refs_except(channel, except)
+            namespace.get_matching_channel_socket_refs_except(channel, except)
         };
 
-        let (v1_all_sockets, v2_target_sockets) =
-            Self::partition_by_protocol(target_socket_refs);
+        let (v1_all_sockets, v2_target_sockets) = Self::partition_by_protocol(target_socket_refs);
 
         self.send_to_v1_sockets(v1_all_sockets, &message).await?;
 
         let filtered_socket_refs =
             self.filter_v2_sockets_strict(channel, &message, v2_target_sockets, except, &namespace);
+
+        // Apply event name filtering (V2 only)
+        let filtered_socket_refs =
+            crate::v2_broadcast::apply_event_name_filter(channel, &message, filtered_socket_refs);
 
         let message = self.maybe_strip_tags(message, channel_settings);
 
@@ -1534,12 +1595,17 @@ impl ConnectionManager for LocalAdapter {
         if !filtered_socket_refs.is_empty() {
             let mut v2_message = message;
             v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+            v2_message.idempotency_key = None;
             let v2_event_name = v2_message.event.as_deref().unwrap_or("").to_string();
             let v2_bytes = sonic_rs::to_vec(&v2_message)
                 .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
             Self::log_send_errors(
                 self.send_messages_with_compression(
-                    filtered_socket_refs, v2_message, v2_bytes, channel, &v2_event_name,
+                    filtered_socket_refs,
+                    v2_message,
+                    v2_bytes,
+                    channel,
+                    &v2_event_name,
                     crate::connection_manager::CompressionParams {
                         delta_compression,
                         channel_settings,
@@ -1580,7 +1646,7 @@ impl ConnectionManager for LocalAdapter {
             && namespace.users.is_empty()
         {
             self.namespaces.remove(app_id);
-            tracing::debug!(
+            debug!(
                 "Removed empty namespace for app_id: {} after channel removal",
                 app_id
             );
@@ -1611,7 +1677,7 @@ impl ConnectionManager for LocalAdapter {
             && namespace.users.is_empty()
         {
             self.namespaces.remove(app_id);
-            tracing::debug!("Removed empty namespace for app_id: {}", app_id);
+            debug!("Removed empty namespace for app_id: {}", app_id);
         }
     }
 
@@ -1659,7 +1725,7 @@ impl ConnectionManager for LocalAdapter {
         let result = namespace.add_channel_to_socket(channel, socket_id);
         let t_after_add = t_start.elapsed().as_micros();
 
-        tracing::debug!(
+        debug!(
             "PERF[LOCAL_ADD_CHAN] channel={} socket={} total={}μs get_ns={}μs add={}μs",
             channel,
             socket_id,

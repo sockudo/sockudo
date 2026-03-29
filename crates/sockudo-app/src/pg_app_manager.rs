@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use moka::future::Cache;
-use sockudo_core::app::{App, AppConnectionRecoveryConfig, AppIdempotencyConfig, AppManager};
+use sockudo_core::app::{
+    App, AppConnectionRecoveryConfig, AppIdempotencyConfig, AppManager, AppPolicy,
+};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::{DatabaseConnection, DatabasePooling};
 use sockudo_core::token::Token;
@@ -87,6 +89,7 @@ impl PgSQLAppManager {
                 max_event_batch_size INTEGER,
                 enable_user_authentication BOOLEAN,
                 enable_watchlist_events BOOLEAN,
+                policy JSONB,
                 webhooks JSONB,
                 allowed_origins JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -107,6 +110,7 @@ impl PgSQLAppManager {
             ("channel_delta_compression", "JSONB"),
             ("idempotency", "JSONB"),
             ("connection_recovery", "JSONB"),
+            ("policy", "JSONB"),
         ];
 
         for (column_name, column_type) in columns_to_add {
@@ -154,6 +158,7 @@ impl PgSQLAppManager {
                 max_event_batch_size,
                 enable_user_authentication,
                 enable_watchlist_events,
+                policy,
                 webhooks,
                 allowed_origins,
                 channel_delta_compression,
@@ -201,6 +206,7 @@ impl PgSQLAppManager {
                 max_event_batch_size,
                 enable_user_authentication,
                 enable_watchlist_events,
+                policy,
                 webhooks,
                 allowed_origins,
                 channel_delta_compression,
@@ -231,6 +237,7 @@ impl PgSQLAppManager {
     /// Register a new app in the database
     pub async fn create_app(&self, app: App) -> Result<()> {
         info!("Registering new app: {}", app.id);
+        let policy = app.policy();
 
         let query = format!(
             r#"INSERT INTO {} (
@@ -240,9 +247,9 @@ impl PgSQLAppManager {
                 max_presence_member_size_in_kb, max_channel_name_length,
                 max_event_channels_at_once, max_event_name_length,
                 max_event_payload_in_kb, max_event_batch_size, enable_user_authentication,
-                enable_watchlist_events, webhooks, allowed_origins,
+                enable_watchlist_events, policy, webhooks, allowed_origins,
                 channel_delta_compression, idempotency, connection_recovery
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)"#,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)"#,
             self.config.table_name
         );
 
@@ -250,26 +257,44 @@ impl PgSQLAppManager {
             .bind(&app.id)
             .bind(&app.key)
             .bind(&app.secret)
-            .bind(app.max_connections as i32)
-            .bind(app.enable_client_messages)
+            .bind(policy.limits.max_connections as i32)
+            .bind(policy.features.enable_client_messages)
             .bind(app.enabled)
-            .bind(app.max_backend_events_per_second.map(|v| v as i32))
-            .bind(app.max_client_events_per_second as i32)
-            .bind(app.max_read_requests_per_second.map(|v| v as i32))
-            .bind(app.max_presence_members_per_channel.map(|v| v as i32))
-            .bind(app.max_presence_member_size_in_kb.map(|v| v as i32))
-            .bind(app.max_channel_name_length.map(|v| v as i32))
-            .bind(app.max_event_channels_at_once.map(|v| v as i32))
-            .bind(app.max_event_name_length.map(|v| v as i32))
-            .bind(app.max_event_payload_in_kb.map(|v| v as i32))
-            .bind(app.max_event_batch_size.map(|v| v as i32))
-            .bind(app.enable_user_authentication)
-            .bind(app.enable_watchlist_events)
-            .bind(sqlx::types::Json(&app.webhooks))
-            .bind(sqlx::types::Json(&app.allowed_origins))
-            .bind(sqlx::types::Json(&app.channel_delta_compression))
-            .bind(sqlx::types::Json(&app.idempotency))
-            .bind(sqlx::types::Json(&app.connection_recovery))
+            .bind(
+                policy
+                    .limits
+                    .max_backend_events_per_second
+                    .map(|v| v as i32),
+            )
+            .bind(policy.limits.max_client_events_per_second as i32)
+            .bind(policy.limits.max_read_requests_per_second.map(|v| v as i32))
+            .bind(
+                policy
+                    .limits
+                    .max_presence_members_per_channel
+                    .map(|v| v as i32),
+            )
+            .bind(
+                policy
+                    .limits
+                    .max_presence_member_size_in_kb
+                    .map(|v| v as i32),
+            )
+            .bind(policy.limits.max_channel_name_length.map(|v| v as i32))
+            .bind(policy.limits.max_event_channels_at_once.map(|v| v as i32))
+            .bind(policy.limits.max_event_name_length.map(|v| v as i32))
+            .bind(policy.limits.max_event_payload_in_kb.map(|v| v as i32))
+            .bind(policy.limits.max_event_batch_size.map(|v| v as i32))
+            .bind(policy.features.enable_user_authentication)
+            .bind(policy.features.enable_watchlist_events)
+            .bind(sqlx::types::Json(&policy))
+            .bind(sqlx::types::Json(&policy.webhooks))
+            .bind(sqlx::types::Json(&policy.channels.allowed_origins))
+            .bind(sqlx::types::Json(
+                &policy.channels.channel_delta_compression,
+            ))
+            .bind(sqlx::types::Json(&policy.idempotency))
+            .bind(sqlx::types::Json(&policy.connection_recovery))
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -285,6 +310,7 @@ impl PgSQLAppManager {
     /// Update an existing app in the database
     pub async fn update_app(&self, app: App) -> Result<()> {
         info!("Updating app: {}", app.id);
+        let policy = app.policy();
 
         let query = format!(
             r#"UPDATE {} SET
@@ -295,38 +321,57 @@ impl PgSQLAppManager {
                 max_event_channels_at_once = $12, max_event_name_length = $13,
                 max_event_payload_in_kb = $14, max_event_batch_size = $15,
                 enable_user_authentication = $16, enable_watchlist_events = $17,
-                webhooks = $18, allowed_origins = $19,
-                channel_delta_compression = $20,
-                idempotency = $21,
-                connection_recovery = $22,
+                policy = $18,
+                webhooks = $19, allowed_origins = $20,
+                channel_delta_compression = $21,
+                idempotency = $22,
+                connection_recovery = $23,
                 updated_at = CURRENT_TIMESTAMP
-                WHERE id = $23"#,
+                WHERE id = $24"#,
             self.config.table_name
         );
 
         let result = sqlx::query(&query)
             .bind(&app.key)
             .bind(&app.secret)
-            .bind(app.max_connections as i32)
-            .bind(app.enable_client_messages)
+            .bind(policy.limits.max_connections as i32)
+            .bind(policy.features.enable_client_messages)
             .bind(app.enabled)
-            .bind(app.max_backend_events_per_second.map(|v| v as i32))
-            .bind(app.max_client_events_per_second as i32)
-            .bind(app.max_read_requests_per_second.map(|v| v as i32))
-            .bind(app.max_presence_members_per_channel.map(|v| v as i32))
-            .bind(app.max_presence_member_size_in_kb.map(|v| v as i32))
-            .bind(app.max_channel_name_length.map(|v| v as i32))
-            .bind(app.max_event_channels_at_once.map(|v| v as i32))
-            .bind(app.max_event_name_length.map(|v| v as i32))
-            .bind(app.max_event_payload_in_kb.map(|v| v as i32))
-            .bind(app.max_event_batch_size.map(|v| v as i32))
-            .bind(app.enable_user_authentication)
-            .bind(app.enable_watchlist_events)
-            .bind(sqlx::types::Json(&app.webhooks))
-            .bind(sqlx::types::Json(&app.allowed_origins))
-            .bind(sqlx::types::Json(&app.channel_delta_compression))
-            .bind(sqlx::types::Json(&app.idempotency))
-            .bind(sqlx::types::Json(&app.connection_recovery))
+            .bind(
+                policy
+                    .limits
+                    .max_backend_events_per_second
+                    .map(|v| v as i32),
+            )
+            .bind(policy.limits.max_client_events_per_second as i32)
+            .bind(policy.limits.max_read_requests_per_second.map(|v| v as i32))
+            .bind(
+                policy
+                    .limits
+                    .max_presence_members_per_channel
+                    .map(|v| v as i32),
+            )
+            .bind(
+                policy
+                    .limits
+                    .max_presence_member_size_in_kb
+                    .map(|v| v as i32),
+            )
+            .bind(policy.limits.max_channel_name_length.map(|v| v as i32))
+            .bind(policy.limits.max_event_channels_at_once.map(|v| v as i32))
+            .bind(policy.limits.max_event_name_length.map(|v| v as i32))
+            .bind(policy.limits.max_event_payload_in_kb.map(|v| v as i32))
+            .bind(policy.limits.max_event_batch_size.map(|v| v as i32))
+            .bind(policy.features.enable_user_authentication)
+            .bind(policy.features.enable_watchlist_events)
+            .bind(sqlx::types::Json(&policy))
+            .bind(sqlx::types::Json(&policy.webhooks))
+            .bind(sqlx::types::Json(&policy.channels.allowed_origins))
+            .bind(sqlx::types::Json(
+                &policy.channels.channel_delta_compression,
+            ))
+            .bind(sqlx::types::Json(&policy.idempotency))
+            .bind(sqlx::types::Json(&policy.connection_recovery))
             .bind(&app.id)
             .execute(&self.pool)
             .await
@@ -388,10 +433,12 @@ impl PgSQLAppManager {
             max_event_batch_size,
             enable_user_authentication,
             enable_watchlist_events,
+            policy,
             webhooks,
             allowed_origins,
             channel_delta_compression,
-            idempotency
+            idempotency,
+            connection_recovery
         FROM {}"#,
             self.config.table_name
         );
@@ -445,7 +492,7 @@ impl PgSQLAppManager {
     pub async fn validate_channel_name(&self, app_id: &str, channel: &str) -> Result<()> {
         let app = self.find_by_id(app_id).await?.ok_or(Error::InvalidAppKey)?;
 
-        let max_length = app.max_channel_name_length.unwrap_or(200);
+        let max_length = app.max_channel_name_limit().unwrap_or(200);
         if channel.len() > max_length as usize {
             return Err(Error::InvalidChannelName(format!(
                 "Channel name too long. Max length is {max_length}"
@@ -467,7 +514,7 @@ impl PgSQLAppManager {
         Ok(self
             .find_by_key(app_key)
             .await?
-            .map(|app| app.enable_client_messages)
+            .map(|app| app.client_messages_enabled())
             .unwrap_or(false))
     }
 
@@ -516,6 +563,8 @@ struct AppRow {
     enable_user_authentication: Option<bool>,
     enable_watchlist_events: Option<bool>,
     #[sqlx(json(nullable))]
+    policy: Option<AppPolicy>,
+    #[sqlx(json(nullable))]
     webhooks: Option<Vec<Webhook>>,
     #[sqlx(json(nullable))]
     allowed_origins: Option<Vec<String>>,
@@ -530,33 +579,52 @@ struct AppRow {
 
 impl AppRow {
     fn into_app(self) -> App {
-        App {
-            id: self.id,
-            key: self.key,
-            secret: self.secret,
-            max_connections: self.max_connections as u32,
-            enable_client_messages: self.enable_client_messages,
-            enabled: self.enabled,
-            max_backend_events_per_second: self.max_backend_events_per_second.map(|v| v as u32),
-            max_client_events_per_second: self.max_client_events_per_second as u32,
-            max_read_requests_per_second: self.max_read_requests_per_second.map(|v| v as u32),
-            max_presence_members_per_channel: self
-                .max_presence_members_per_channel
-                .map(|v| v as u32),
-            max_presence_member_size_in_kb: self.max_presence_member_size_in_kb.map(|v| v as u32),
-            max_channel_name_length: self.max_channel_name_length.map(|v| v as u32),
-            max_event_channels_at_once: self.max_event_channels_at_once.map(|v| v as u32),
-            max_event_name_length: self.max_event_name_length.map(|v| v as u32),
-            max_event_payload_in_kb: self.max_event_payload_in_kb.map(|v| v as u32),
-            max_event_batch_size: self.max_event_batch_size.map(|v| v as u32),
-            enable_user_authentication: self.enable_user_authentication,
-            webhooks: self.webhooks,
-            enable_watchlist_events: self.enable_watchlist_events,
-            allowed_origins: self.allowed_origins,
-            channel_delta_compression: self.channel_delta_compression,
-            idempotency: self.idempotency,
-            connection_recovery: self.connection_recovery,
+        if let Some(policy) = self.policy {
+            return App::from_policy(self.id, self.key, self.secret, self.enabled, policy);
         }
+
+        App::from_policy(
+            self.id,
+            self.key,
+            self.secret,
+            self.enabled,
+            sockudo_core::app::AppPolicy {
+                limits: sockudo_core::app::AppLimitsPolicy {
+                    max_connections: self.max_connections as u32,
+                    max_backend_events_per_second: self
+                        .max_backend_events_per_second
+                        .map(|v| v as u32),
+                    max_client_events_per_second: self.max_client_events_per_second as u32,
+                    max_read_requests_per_second: self
+                        .max_read_requests_per_second
+                        .map(|v| v as u32),
+                    max_presence_members_per_channel: self
+                        .max_presence_members_per_channel
+                        .map(|v| v as u32),
+                    max_presence_member_size_in_kb: self
+                        .max_presence_member_size_in_kb
+                        .map(|v| v as u32),
+                    max_channel_name_length: self.max_channel_name_length.map(|v| v as u32),
+                    max_event_channels_at_once: self.max_event_channels_at_once.map(|v| v as u32),
+                    max_event_name_length: self.max_event_name_length.map(|v| v as u32),
+                    max_event_payload_in_kb: self.max_event_payload_in_kb.map(|v| v as u32),
+                    max_event_batch_size: self.max_event_batch_size.map(|v| v as u32),
+                },
+                features: sockudo_core::app::AppFeaturesPolicy {
+                    enable_client_messages: self.enable_client_messages,
+                    enable_user_authentication: self.enable_user_authentication,
+                    enable_watchlist_events: self.enable_watchlist_events,
+                },
+                channels: sockudo_core::app::AppChannelsPolicy {
+                    allowed_origins: self.allowed_origins,
+                    channel_delta_compression: self.channel_delta_compression,
+                    channel_namespaces: None,
+                },
+                webhooks: self.webhooks,
+                idempotency: self.idempotency,
+                connection_recovery: self.connection_recovery,
+            },
+        )
     }
 }
 
@@ -637,31 +705,36 @@ mod tests {
     }
 
     fn create_test_app(id: &str) -> App {
-        App {
-            id: id.to_string(),
-            key: format!("{id}_key"),
-            secret: format!("{id}_secret"),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_backend_events_per_second: Some(1000),
-            max_client_events_per_second: 100,
-            max_read_requests_per_second: Some(1000),
-            max_presence_members_per_channel: Some(100),
-            max_presence_member_size_in_kb: Some(10),
-            max_channel_name_length: Some(200),
-            max_event_channels_at_once: Some(10),
-            max_event_name_length: Some(200),
-            max_event_payload_in_kb: Some(100),
-            max_event_batch_size: Some(10),
-            enable_user_authentication: Some(true),
-            webhooks: None,
-            enable_watchlist_events: None,
-            allowed_origins: None,
-            channel_delta_compression: None,
-            idempotency: None,
-            connection_recovery: None,
-        }
+        App::from_policy(
+            id.to_string(),
+            format!("{id}_key"),
+            format!("{id}_secret"),
+            true,
+            sockudo_core::app::AppPolicy {
+                limits: sockudo_core::app::AppLimitsPolicy {
+                    max_connections: 100,
+                    max_backend_events_per_second: Some(1000),
+                    max_client_events_per_second: 100,
+                    max_read_requests_per_second: Some(1000),
+                    max_presence_members_per_channel: Some(100),
+                    max_presence_member_size_in_kb: Some(10),
+                    max_channel_name_length: Some(200),
+                    max_event_channels_at_once: Some(10),
+                    max_event_name_length: Some(200),
+                    max_event_payload_in_kb: Some(100),
+                    max_event_batch_size: Some(10),
+                },
+                features: sockudo_core::app::AppFeaturesPolicy {
+                    enable_client_messages: true,
+                    enable_user_authentication: Some(true),
+                    enable_watchlist_events: None,
+                },
+                channels: sockudo_core::app::AppChannelsPolicy::default(),
+                webhooks: None,
+                idempotency: None,
+                connection_recovery: None,
+            },
+        )
     }
 
     #[tokio::test]
@@ -689,11 +762,11 @@ mod tests {
 
         // Test updating an app
         let mut updated_app = test_app.clone();
-        updated_app.max_connections = 200;
+        updated_app.policy.limits.max_connections = 200;
         manager.update_app(updated_app).await.unwrap();
 
         let app = manager.find_by_id("test1").await.unwrap().unwrap();
-        assert_eq!(app.max_connections, 200);
+        assert_eq!(app.policy.limits.max_connections, 200);
 
         // Test cache expiration
         tokio::time::sleep(Duration::from_secs(6)).await;
@@ -733,17 +806,19 @@ mod tests {
             ],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let mut app = create_test_app("webhook_test");
-        app.webhooks = Some(vec![webhook.clone()]);
+        app.policy.webhooks = Some(vec![webhook.clone()]);
 
         manager.create_app(app.clone()).await.unwrap();
 
         // Retrieve and verify webhooks
         let retrieved = manager.find_by_id("webhook_test").await.unwrap().unwrap();
-        assert!(retrieved.webhooks.is_some());
-        let webhooks = retrieved.webhooks.unwrap();
+        assert!(retrieved.policy.webhooks.is_some());
+        let webhooks = retrieved.policy.webhooks.unwrap();
         assert_eq!(webhooks.len(), 1);
         assert_eq!(webhooks[0].event_types, webhook.event_types);
         assert_eq!(webhooks[0].url, webhook.url);
@@ -768,6 +843,8 @@ mod tests {
             event_types: vec!["channel_occupied".to_string()],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let webhook2 = Webhook {
@@ -777,10 +854,12 @@ mod tests {
             event_types: vec!["member_added".to_string(), "member_removed".to_string()],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let mut app = create_test_app("multi_webhook_test");
-        app.webhooks = Some(vec![webhook1, webhook2]);
+        app.policy.webhooks = Some(vec![webhook1, webhook2]);
 
         manager.create_app(app.clone()).await.unwrap();
 
@@ -790,8 +869,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(retrieved.webhooks.is_some());
-        assert_eq!(retrieved.webhooks.unwrap().len(), 2);
+        assert!(retrieved.policy.webhooks.is_some());
+        assert_eq!(retrieved.policy.webhooks.unwrap().len(), 2);
 
         // Cleanup
         manager.delete_app("multi_webhook_test").await.unwrap();
@@ -807,7 +886,7 @@ mod tests {
 
         // Test with watchlist enabled
         let mut app1 = create_test_app("watchlist_enabled");
-        app1.enable_watchlist_events = Some(true);
+        app1.policy.features.enable_watchlist_events = Some(true);
         manager.create_app(app1).await.unwrap();
 
         let retrieved1 = manager
@@ -815,11 +894,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(retrieved1.enable_watchlist_events, Some(true));
+        assert_eq!(
+            retrieved1.policy.features.enable_watchlist_events,
+            Some(true)
+        );
 
         // Test with watchlist disabled
         let mut app2 = create_test_app("watchlist_disabled");
-        app2.enable_watchlist_events = Some(false);
+        app2.policy.features.enable_watchlist_events = Some(false);
         manager.create_app(app2).await.unwrap();
 
         let retrieved2 = manager
@@ -827,14 +909,17 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(retrieved2.enable_watchlist_events, Some(false));
+        assert_eq!(
+            retrieved2.policy.features.enable_watchlist_events,
+            Some(false)
+        );
 
         // Test with watchlist unset (None)
         let app3 = create_test_app("watchlist_none");
         manager.create_app(app3).await.unwrap();
 
         let retrieved3 = manager.find_by_id("watchlist_none").await.unwrap().unwrap();
-        assert_eq!(retrieved3.enable_watchlist_events, None);
+        assert_eq!(retrieved3.policy.features.enable_watchlist_events, None);
 
         // Cleanup
         manager.delete_app("watchlist_enabled").await.unwrap();
@@ -852,7 +937,7 @@ mod tests {
 
         // Test with allowed origins
         let mut app = create_test_app("origins_test");
-        app.allowed_origins = Some(vec![
+        app.policy.channels.allowed_origins = Some(vec![
             "https://example.com".to_string(),
             "https://*.example.com".to_string(),
             "http://localhost:3000".to_string(),
@@ -860,8 +945,8 @@ mod tests {
         manager.create_app(app.clone()).await.unwrap();
 
         let retrieved = manager.find_by_id("origins_test").await.unwrap().unwrap();
-        assert!(retrieved.allowed_origins.is_some());
-        let origins = retrieved.allowed_origins.unwrap();
+        assert!(retrieved.policy.channels.allowed_origins.is_some());
+        let origins = retrieved.policy.channels.allowed_origins.unwrap();
         assert_eq!(origins.len(), 3);
         assert!(origins.contains(&"https://example.com".to_string()));
         assert!(origins.contains(&"https://*.example.com".to_string()));
@@ -891,11 +976,13 @@ mod tests {
             event_types: vec!["channel_occupied".to_string()],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let mut updated_app = create_test_app("update_webhooks");
-        updated_app.webhooks = Some(vec![webhook]);
-        updated_app.enable_watchlist_events = Some(true);
+        updated_app.policy.webhooks = Some(vec![webhook]);
+        updated_app.policy.features.enable_watchlist_events = Some(true);
         manager.update_app(updated_app).await.unwrap();
 
         // Verify update
@@ -904,9 +991,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(retrieved.webhooks.is_some());
-        assert_eq!(retrieved.webhooks.unwrap().len(), 1);
-        assert_eq!(retrieved.enable_watchlist_events, Some(true));
+        assert!(retrieved.policy.webhooks.is_some());
+        assert_eq!(retrieved.policy.webhooks.unwrap().len(), 1);
+        assert_eq!(
+            retrieved.policy.features.enable_watchlist_events,
+            Some(true)
+        );
 
         // Cleanup
         manager.delete_app("update_webhooks").await.unwrap();
@@ -960,17 +1050,19 @@ mod tests {
             event_types: vec!["channel_occupied".to_string()],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let mut app = create_test_app("key_test");
-        app.webhooks = Some(vec![webhook]);
+        app.policy.webhooks = Some(vec![webhook]);
         manager.create_app(app).await.unwrap();
 
         // Find by key and verify webhooks are included
         let retrieved = manager.find_by_key("key_test_key").await.unwrap().unwrap();
         assert_eq!(retrieved.id, "key_test");
-        assert!(retrieved.webhooks.is_some());
-        assert_eq!(retrieved.webhooks.unwrap().len(), 1);
+        assert!(retrieved.policy.webhooks.is_some());
+        assert_eq!(retrieved.policy.webhooks.unwrap().len(), 1);
 
         // Cleanup
         manager.delete_app("key_test").await.unwrap();
@@ -992,14 +1084,16 @@ mod tests {
             event_types: vec!["channel_occupied".to_string()],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let mut app1 = create_test_app("all_apps_1");
-        app1.webhooks = Some(vec![webhook1]);
+        app1.policy.webhooks = Some(vec![webhook1]);
         manager.create_app(app1).await.unwrap();
 
         let mut app2 = create_test_app("all_apps_2");
-        app2.enable_watchlist_events = Some(true);
+        app2.policy.features.enable_watchlist_events = Some(true);
         manager.create_app(app2).await.unwrap();
 
         let app3 = create_test_app("all_apps_3");
@@ -1012,11 +1106,14 @@ mod tests {
         // Verify each app has correct data
         let app1_found = all_apps.iter().find(|a| a.id == "all_apps_1");
         assert!(app1_found.is_some());
-        assert!(app1_found.unwrap().webhooks.is_some());
+        assert!(app1_found.unwrap().policy.webhooks.is_some());
 
         let app2_found = all_apps.iter().find(|a| a.id == "all_apps_2");
         assert!(app2_found.is_some());
-        assert_eq!(app2_found.unwrap().enable_watchlist_events, Some(true));
+        assert_eq!(
+            app2_found.unwrap().policy.features.enable_watchlist_events,
+            Some(true)
+        );
 
         // Cleanup
         manager.delete_app("all_apps_1").await.unwrap();
@@ -1074,21 +1171,21 @@ mod tests {
 
         // Create app with all optional fields as None
         let mut app = create_test_app("null_test");
-        app.webhooks = None;
-        app.enable_watchlist_events = None;
-        app.allowed_origins = None;
-        app.max_backend_events_per_second = None;
-        app.max_read_requests_per_second = None;
-        app.enable_user_authentication = None;
+        app.policy.webhooks = None;
+        app.policy.features.enable_watchlist_events = None;
+        app.policy.channels.allowed_origins = None;
+        app.policy.limits.max_backend_events_per_second = None;
+        app.policy.limits.max_read_requests_per_second = None;
+        app.policy.features.enable_user_authentication = None;
 
         manager.create_app(app).await.unwrap();
 
         // Retrieve and verify None values are handled correctly
         let retrieved = manager.find_by_id("null_test").await.unwrap().unwrap();
-        assert_eq!(retrieved.webhooks, None);
-        assert_eq!(retrieved.enable_watchlist_events, None);
-        assert_eq!(retrieved.allowed_origins, None);
-        assert_eq!(retrieved.max_backend_events_per_second, None);
+        assert_eq!(retrieved.policy.webhooks, None);
+        assert_eq!(retrieved.policy.features.enable_watchlist_events, None);
+        assert_eq!(retrieved.policy.channels.allowed_origins, None);
+        assert_eq!(retrieved.policy.limits.max_backend_events_per_second, None);
 
         // Cleanup
         manager.delete_app("null_test").await.unwrap();
@@ -1104,13 +1201,13 @@ mod tests {
 
         // Create app with empty webhooks array
         let mut app = create_test_app("empty_webhooks");
-        app.webhooks = Some(vec![]);
+        app.policy.webhooks = Some(vec![]);
         manager.create_app(app).await.unwrap();
 
         // Retrieve and verify
         let retrieved = manager.find_by_id("empty_webhooks").await.unwrap().unwrap();
-        assert!(retrieved.webhooks.is_some());
-        assert_eq!(retrieved.webhooks.unwrap().len(), 0);
+        assert!(retrieved.policy.webhooks.is_some());
+        assert_eq!(retrieved.policy.webhooks.unwrap().len(), 0);
 
         // Cleanup
         manager.delete_app("empty_webhooks").await.unwrap();
@@ -1135,16 +1232,18 @@ mod tests {
             event_types: vec!["channel_occupied".to_string()],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let mut app = create_test_app("lambda_test");
-        app.webhooks = Some(vec![webhook]);
+        app.policy.webhooks = Some(vec![webhook]);
         manager.create_app(app).await.unwrap();
 
         // Retrieve and verify Lambda config
         let retrieved = manager.find_by_id("lambda_test").await.unwrap().unwrap();
-        assert!(retrieved.webhooks.is_some());
-        let webhooks = retrieved.webhooks.unwrap();
+        assert!(retrieved.policy.webhooks.is_some());
+        let webhooks = retrieved.policy.webhooks.unwrap();
         assert_eq!(webhooks.len(), 1);
         assert!(webhooks[0].lambda.is_some());
         assert_eq!(

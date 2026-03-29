@@ -159,8 +159,14 @@ mod tests {
 
     #[test]
     fn test_wire_event() {
-        assert_eq!(ProtocolVersion::V1.wire_event("subscribe"), "pusher:subscribe");
-        assert_eq!(ProtocolVersion::V2.wire_event("subscribe"), "sockudo:subscribe");
+        assert_eq!(
+            ProtocolVersion::V1.wire_event("subscribe"),
+            "pusher:subscribe"
+        );
+        assert_eq!(
+            ProtocolVersion::V2.wire_event("subscribe"),
+            "sockudo:subscribe"
+        );
     }
 
     #[test]
@@ -177,9 +183,15 @@ mod tests {
 
     #[test]
     fn test_parse_event_name() {
-        assert_eq!(ProtocolVersion::V1.parse_event_name("pusher:ping"), Some("ping"));
+        assert_eq!(
+            ProtocolVersion::V1.parse_event_name("pusher:ping"),
+            Some("ping")
+        );
         assert_eq!(ProtocolVersion::V1.parse_event_name("sockudo:ping"), None);
-        assert_eq!(ProtocolVersion::V2.parse_event_name("sockudo:ping"), Some("ping"));
+        assert_eq!(
+            ProtocolVersion::V2.parse_event_name("sockudo:ping"),
+            Some("ping")
+        );
         assert_eq!(ProtocolVersion::V2.parse_event_name("pusher:ping"), None);
     }
 
@@ -235,9 +247,18 @@ mod tests {
     #[test]
     fn test_from_query_param() {
         assert_eq!(ProtocolVersion::from_query_param(None), ProtocolVersion::V1);
-        assert_eq!(ProtocolVersion::from_query_param(Some(1)), ProtocolVersion::V1);
-        assert_eq!(ProtocolVersion::from_query_param(Some(2)), ProtocolVersion::V2);
-        assert_eq!(ProtocolVersion::from_query_param(Some(99)), ProtocolVersion::V1);
+        assert_eq!(
+            ProtocolVersion::from_query_param(Some(1)),
+            ProtocolVersion::V1
+        );
+        assert_eq!(
+            ProtocolVersion::from_query_param(Some(2)),
+            ProtocolVersion::V2
+        );
+        assert_eq!(
+            ProtocolVersion::from_query_param(Some(99)),
+            ProtocolVersion::V1
+        );
     }
 
     #[test]

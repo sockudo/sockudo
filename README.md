@@ -129,6 +129,10 @@ cargo build                                    # ~30-50% faster compile
 # With specific backends
 cargo build --features "redis,postgres"        # Redis + PostgreSQL
 cargo build --features "redis-cluster,mysql"   # Redis Cluster + MySQL
+cargo build --features "redis,surrealdb"       # Redis + SurrealDB 3
+cargo build --features "rabbitmq,postgres"     # RabbitMQ + PostgreSQL
+cargo build --features "google-pubsub,mysql"   # Google Pub/Sub + MySQL
+cargo build --features "kafka,postgres"        # Kafka + PostgreSQL
 
 # Full production build
 cargo build --release --features full          # All backends
@@ -143,7 +147,10 @@ cargo build --release --features full          # All backends
 - `redis` - Redis adapter, cache, queue, rate limiter
 - `redis-cluster` - Redis Cluster support
 - `nats` - NATS adapter
-- `mysql` / `postgres` / `dynamodb` - Database backends
+- `rabbitmq` - RabbitMQ adapter
+- `google-pubsub` - Google Cloud Pub/Sub adapter
+- `kafka` - Kafka adapter
+- `mysql` / `postgres` / `dynamodb` / `surrealdb` / `scylladb` - App manager backends
 - `sqs` / `lambda` - AWS integrations
 - `full` - All features enabled
 
@@ -232,6 +239,33 @@ debug = false
 [app_manager]
 driver = "memory"
 
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "app-id"
+key = "app-key"
+secret = "app-secret"
+enabled = true
+[app_manager.array.apps.policy.limits]
+max_connections = 100000
+max_client_events_per_second = 1000
+
+[app_manager.array.apps.policy.features]
+enable_client_messages = true
+
+[app_manager.array.apps.policy.channels]
+allowed_origins = ["*"]
+
+[[app_manager.array.apps.policy.channels.channel_namespaces]]
+name = "ticker"
+channel_name_pattern = "^ticker:[A-Za-z0-9._-]+$"
+max_channel_name_length = 200
+
+[[app_manager.array.apps.policy.channels.channel_namespaces]]
+name = "chat"
+channel_name_pattern = "^chat:[A-Za-z0-9._-]+$"
+max_channel_name_length = 200
+allow_user_limited_channels = true
+
 [adapter]
 driver = "local"
 
@@ -241,6 +275,10 @@ driver = "memory"
 [queue]
 driver = "memory"
 ```
+
+Per-app app-manager entries are where V2 channel semantics live, now grouped under `app.policy`: `policy.channels.allowed_origins`, `policy.channels.channel_namespaces`, app-level `policy.idempotency`, `policy.connection_recovery`, and `policy.channels.channel_delta_compression`.
+
+For existing MySQL/PostgreSQL app tables, use the explicit migration scripts under [`migrations/mysql`](/Users/radudiaconu/Desktop/Code/Rust/sockudo/migrations/mysql) and [`migrations/postgresql`](/Users/radudiaconu/Desktop/Code/Rust/sockudo/migrations/postgresql) to backfill `policy` and then drop legacy columns during a maintenance window.
 
 ### Environment Variables
 
@@ -256,9 +294,27 @@ SOCKUDO_DEFAULT_APP_KEY=app-key
 SOCKUDO_DEFAULT_APP_SECRET=app-secret
 
 # Scaling drivers
-ADAPTER_DRIVER=redis          # local, redis, redis-cluster, nats
+ADAPTER_DRIVER=redis          # local, redis, redis-cluster, nats, rabbitmq, google-pubsub, kafka
 CACHE_DRIVER=redis           # memory, redis, redis-cluster, none
 QUEUE_DRIVER=redis           # memory, redis, redis-cluster, sqs, none
+APP_MANAGER_DRIVER=surrealdb # memory, mysql, postgres, dynamodb, surrealdb, scylladb
+
+RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672/%2f
+GOOGLE_PUBSUB_PROJECT_ID=my-gcp-project
+KAFKA_BROKERS=127.0.0.1:9092
+
+DATABASE_SURREALDB_URL=ws://127.0.0.1:8000
+DATABASE_SURREALDB_NAMESPACE=sockudo
+DATABASE_SURREALDB_DATABASE=sockudo
+DATABASE_SURREALDB_USERNAME=root
+DATABASE_SURREALDB_PASSWORD=root
+DATABASE_SURREALDB_TABLE_NAME=applications
+
+# V2 feature gates
+EPHEMERAL_ENABLED=true
+ECHO_CONTROL_ENABLED=true
+ECHO_CONTROL_DEFAULT_ECHO_MESSAGES=true
+EVENT_NAME_FILTERING_ENABLED=true
 ```
 
 ### Delta Compression (`config/config.toml`)
@@ -282,6 +338,22 @@ omit_delta_algorithm = true
 [tag_filtering]
 enabled = true
 enable_tags = false
+```
+
+### V2 Message Features (`config/config.toml`)
+
+```toml
+[ephemeral]
+enabled = true
+
+[echo_control]
+enabled = true
+default_echo_messages = true
+
+[event_name_filtering]
+enabled = true
+max_events_per_filter = 50
+max_event_name_length = 200
 ```
 
 ### WebSocket Runtime (`config/config.toml`)

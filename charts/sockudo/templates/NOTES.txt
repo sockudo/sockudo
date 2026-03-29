@@ -33,4 +33,7 @@ Sockudo has been deployed successfully!
 4. Default app configured:
   App ID:  {{ .Values.defaultApp.id }}
   App Key: {{ .Values.defaultApp.key }}
+
+  Note: `defaultApp` is an env-bootstrap subset only. For full per-app policy,
+  provide `configJson` or use an external app manager backend.
 {{- end }}

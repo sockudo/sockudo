@@ -34,41 +34,46 @@
       "id": "app-id",
       "key": "app-key",
       "secret": "app-secret",
-      "max_connections": 10000,
-      "enable_client_messages": true,
       "enabled": true,
-      "max_backend_events_per_sec": 1000,
-      "max_client_events_per_sec": 100,
-      "max_read_req_per_sec": 1000,
-      "webhooks": [],
-      "channel_delta_compression": {
-        "ticker:*": {
-          "enabled": true,
-          "algorithm": "fossil",
-          "conflation_key": "symbol",
-          "max_messages_per_key": 10,
-          "max_conflation_keys": 1000
+      "policy": {
+        "limits": {
+          "max_connections": 10000
         },
-        "price:*": {
-          "enabled": true,
-          "algorithm": "fossil",
-          "conflation_key": "asset",
-          "max_messages_per_key": 5,
-          "max_conflation_keys": 500
+        "features": {
+          "enable_client_messages": true
         },
-        "live-scores:*": {
-          "enabled": true,
-          "algorithm": "fossil",
-          "conflation_key": "match_id",
-          "max_messages_per_key": 20,
-          "max_conflation_keys": 100
-        },
-        "game-updates:*": {
-          "enabled": true,
-          "algorithm": "xdelta3",
-          "conflation_key": "game_id",
-          "max_messages_per_key": 15,
-          "max_conflation_keys": 200
+        "webhooks": [],
+        "channels": {
+          "channel_delta_compression": {
+            "ticker:*": {
+              "enabled": true,
+              "algorithm": "fossil",
+              "conflation_key": "symbol",
+              "max_messages_per_key": 10,
+              "max_conflation_keys": 1000
+            },
+            "price:*": {
+              "enabled": true,
+              "algorithm": "fossil",
+              "conflation_key": "asset",
+              "max_messages_per_key": 5,
+              "max_conflation_keys": 500
+            },
+            "live-scores:*": {
+              "enabled": true,
+              "algorithm": "fossil",
+              "conflation_key": "match_id",
+              "max_messages_per_key": 20,
+              "max_conflation_keys": 100
+            },
+            "game-updates:*": {
+              "enabled": true,
+              "algorithm": "xdelta3",
+              "conflation_key": "game_id",
+              "max_messages_per_key": 15,
+              "max_conflation_keys": 200
+            }
+          }
         }
       }
     }

@@ -1,7 +1,13 @@
 use crate::ConnectionManager;
+#[cfg(feature = "google-pubsub")]
+use crate::google_pubsub_adapter::GooglePubSubAdapter;
+#[cfg(feature = "kafka")]
+use crate::kafka_adapter::KafkaAdapter;
 use crate::local_adapter::LocalAdapter;
 #[cfg(feature = "nats")]
 use crate::nats_adapter::NatsAdapter;
+#[cfg(feature = "rabbitmq")]
+use crate::rabbitmq_adapter::RabbitMqAdapter;
 #[cfg(feature = "redis")]
 use crate::redis_adapter::{RedisAdapter, RedisAdapterOptions};
 #[cfg(feature = "redis-cluster")]
@@ -9,8 +15,14 @@ use crate::redis_cluster_adapter::RedisClusterAdapter;
 use sockudo_core::error::Result;
 use std::sync::Arc;
 
+#[cfg(feature = "google-pubsub")]
+use sockudo_core::options::GooglePubSubAdapterConfig;
+#[cfg(feature = "kafka")]
+use sockudo_core::options::KafkaAdapterConfig;
 #[cfg(feature = "nats")]
 use sockudo_core::options::NatsAdapterConfig;
+#[cfg(feature = "rabbitmq")]
+use sockudo_core::options::RabbitMqAdapterConfig;
 #[cfg(feature = "redis-cluster")]
 use sockudo_core::options::RedisClusterAdapterConfig;
 use sockudo_core::options::{AdapterConfig, AdapterDriver, DatabaseConfig};
@@ -29,6 +41,12 @@ pub enum TypedAdapter {
     RedisCluster(Arc<RedisClusterAdapter>),
     #[cfg(feature = "nats")]
     Nats(Arc<NatsAdapter>),
+    #[cfg(feature = "google-pubsub")]
+    GooglePubSub(Arc<GooglePubSubAdapter>),
+    #[cfg(feature = "kafka")]
+    Kafka(Arc<KafkaAdapter>),
+    #[cfg(feature = "rabbitmq")]
+    RabbitMq(Arc<RabbitMqAdapter>),
 }
 
 impl TypedAdapter {
@@ -42,6 +60,12 @@ impl TypedAdapter {
             TypedAdapter::RedisCluster(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "nats")]
             TypedAdapter::Nats(adapter) => adapter.local_adapter.clone(),
+            #[cfg(feature = "google-pubsub")]
+            TypedAdapter::GooglePubSub(adapter) => adapter.local_adapter.clone(),
+            #[cfg(feature = "kafka")]
+            TypedAdapter::Kafka(adapter) => adapter.local_adapter.clone(),
+            #[cfg(feature = "rabbitmq")]
+            TypedAdapter::RabbitMq(adapter) => adapter.local_adapter.clone(),
         }
     }
 
@@ -71,6 +95,42 @@ impl TypedAdapter {
         self.local_adapter().set_enable_tags_globally(enabled);
     }
 
+    /// Set cache manager for cross-region idempotency deduplication
+    /// (only applicable to horizontal adapters)
+    #[allow(unused_variables)]
+    pub fn set_cache_manager(
+        &self,
+        cache_manager: Arc<dyn sockudo_core::cache::CacheManager + Send + Sync>,
+        idempotency_ttl: u64,
+    ) {
+        match self {
+            TypedAdapter::Local(_) => {}
+            #[cfg(feature = "redis")]
+            TypedAdapter::Redis(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
+            #[cfg(feature = "redis-cluster")]
+            TypedAdapter::RedisCluster(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
+            #[cfg(feature = "nats")]
+            TypedAdapter::Nats(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
+            #[cfg(feature = "google-pubsub")]
+            TypedAdapter::GooglePubSub(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
+            #[cfg(feature = "kafka")]
+            TypedAdapter::Kafka(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
+            #[cfg(feature = "rabbitmq")]
+            TypedAdapter::RabbitMq(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
+        }
+    }
 
     /// Set metrics on the adapter (only applicable to horizontal adapters)
     /// Note: This uses interior mutability through the adapter's internal RwLock
@@ -90,6 +150,12 @@ impl TypedAdapter {
             TypedAdapter::RedisCluster(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "nats")]
             TypedAdapter::Nats(adapter) => adapter.set_metrics(metrics).await,
+            #[cfg(feature = "google-pubsub")]
+            TypedAdapter::GooglePubSub(adapter) => adapter.set_metrics(metrics).await,
+            #[cfg(feature = "kafka")]
+            TypedAdapter::Kafka(adapter) => adapter.set_metrics(metrics).await,
+            #[cfg(feature = "rabbitmq")]
+            TypedAdapter::RabbitMq(adapter) => adapter.set_metrics(metrics).await,
         }
     }
 }
@@ -256,6 +322,108 @@ impl AdapterFactory {
                     }
                 }
             }
+            #[cfg(feature = "rabbitmq")]
+            AdapterDriver::RabbitMq => {
+                let rabbitmq_cfg = RabbitMqAdapterConfig {
+                    url: config.rabbitmq.url.clone(),
+                    prefix: config.rabbitmq.prefix.clone(),
+                    request_timeout_ms: config.rabbitmq.request_timeout_ms,
+                    connection_timeout_ms: config.rabbitmq.connection_timeout_ms,
+                    nodes_number: config.rabbitmq.nodes_number,
+                };
+                match RabbitMqAdapter::new(rabbitmq_cfg).await {
+                    Ok(mut adapter) => {
+                        adapter.set_cluster_health(&config.cluster_health).await?;
+                        adapter.set_socket_counting(config.enable_socket_counting);
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::RabbitMq(adapter.clone());
+                        Ok((adapter, typed))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize RabbitMQ adapter: {}, falling back to local adapter",
+                                e
+                            )
+                        );
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
+                    }
+                }
+            }
+            #[cfg(feature = "google-pubsub")]
+            AdapterDriver::GooglePubSub => {
+                let google_pubsub_cfg = GooglePubSubAdapterConfig {
+                    project_id: config.google_pubsub.project_id.clone(),
+                    prefix: config.google_pubsub.prefix.clone(),
+                    request_timeout_ms: config.google_pubsub.request_timeout_ms,
+                    emulator_host: config.google_pubsub.emulator_host.clone(),
+                    nodes_number: config.google_pubsub.nodes_number,
+                };
+                match GooglePubSubAdapter::new(google_pubsub_cfg).await {
+                    Ok(mut adapter) => {
+                        adapter.set_cluster_health(&config.cluster_health).await?;
+                        adapter.set_socket_counting(config.enable_socket_counting);
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::GooglePubSub(adapter.clone());
+                        Ok((adapter, typed))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize Google Pub/Sub adapter: {}, falling back to local adapter",
+                                e
+                            )
+                        );
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
+                    }
+                }
+            }
+            #[cfg(feature = "kafka")]
+            AdapterDriver::Kafka => {
+                let kafka_cfg = KafkaAdapterConfig {
+                    brokers: config.kafka.brokers.clone(),
+                    prefix: config.kafka.prefix.clone(),
+                    request_timeout_ms: config.kafka.request_timeout_ms,
+                    security_protocol: config.kafka.security_protocol.clone(),
+                    sasl_mechanism: config.kafka.sasl_mechanism.clone(),
+                    sasl_username: config.kafka.sasl_username.clone(),
+                    sasl_password: config.kafka.sasl_password.clone(),
+                    nodes_number: config.kafka.nodes_number,
+                };
+                match KafkaAdapter::new(kafka_cfg).await {
+                    Ok(mut adapter) => {
+                        adapter.set_cluster_health(&config.cluster_health).await?;
+                        adapter.set_socket_counting(config.enable_socket_counting);
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::Kafka(adapter.clone());
+                        Ok((adapter, typed))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize Kafka adapter: {}, falling back to local adapter",
+                                e
+                            )
+                        );
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
+                    }
+                }
+            }
             AdapterDriver::Local => {
                 info!("{}", "Using local adapter.".to_string());
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
@@ -291,6 +459,45 @@ impl AdapterFactory {
                 warn!(
                     "{}",
                     "NATS adapter requested but not compiled in. Falling back to local adapter."
+                        .to_string()
+                );
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
+            }
+            #[cfg(not(feature = "rabbitmq"))]
+            AdapterDriver::RabbitMq => {
+                warn!(
+                    "{}",
+                    "RabbitMQ adapter requested but not compiled in. Falling back to local adapter."
+                        .to_string()
+                );
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
+            }
+            #[cfg(not(feature = "google-pubsub"))]
+            AdapterDriver::GooglePubSub => {
+                warn!(
+                    "{}",
+                    "Google Pub/Sub adapter requested but not compiled in. Falling back to local adapter."
+                        .to_string()
+                );
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
+            }
+            #[cfg(not(feature = "kafka"))]
+            AdapterDriver::Kafka => {
+                warn!(
+                    "{}",
+                    "Kafka adapter requested but not compiled in. Falling back to local adapter."
                         .to_string()
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(

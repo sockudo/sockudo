@@ -1,9 +1,9 @@
 use super::ConnectionHandler;
 use bytes::Bytes;
+use serde::Deserialize;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::websocket::SocketId;
-use serde::Deserialize;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sonic_rs::json;
 use std::collections::HashMap;
@@ -44,11 +44,7 @@ impl ConnectionHandler {
             self.send_message_to_socket(
                 &app_config.id,
                 socket_id,
-                PusherMessage::error(
-                    4302,
-                    "No channel_serials provided".to_string(),
-                    None,
-                ),
+                PusherMessage::error(4302, "No channel_serials provided".to_string(), None),
             )
             .await?;
             return Ok(());
@@ -106,6 +102,10 @@ impl ConnectionHandler {
                 conflation_key: None,
                 message_id: None,
                 serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
             };
             self.send_message_to_socket(&app_config.id, socket_id, fail_msg)
                 .await
@@ -130,6 +130,10 @@ impl ConnectionHandler {
             conflation_key: None,
             message_id: None,
             serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         };
         self.send_message_to_socket(&app_config.id, socket_id, success_msg)
             .await?;
@@ -181,8 +185,6 @@ fn parse_channel_serials(message: &PusherMessage) -> Result<HashMap<String, u64>
         .map_err(|e| Error::InvalidMessageFormat(format!("Invalid resume data JSON: {e}")))?;
 
     resume_data.channel_serials.ok_or_else(|| {
-        Error::InvalidMessageFormat(
-            "Missing channel_serials in resume data".to_string(),
-        )
+        Error::InvalidMessageFormat("Missing channel_serials in resume data".to_string())
     })
 }

@@ -9,6 +9,8 @@ license-file.workspace = true
 
 [dependencies]
 ahash = { workspace = true }
+prost = "0.14.1"
+rmp-serde = "1.3.0"
 serde = { workspace = true }
 sonic-rs = { workspace = true }
 uuid = { workspace = true }

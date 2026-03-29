@@ -14,6 +14,7 @@ use sockudo_core::namespace::Namespace;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::websocket::{SocketId, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
+use sockudo_protocol::wire::WireFormat;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use sonic_rs::Value;
 use std::any::Any;
@@ -48,6 +49,8 @@ impl ConnectionManager for MockAdapter {
         _app_manager: Arc<dyn AppManager + Send + Sync>,
         _buffer_config: sockudo_core::websocket::WebSocketBufferConfig,
         _protocol_version: sockudo_protocol::ProtocolVersion,
+        _wire_format: WireFormat,
+        _echo_messages: bool,
     ) -> Result<()> {
         Ok(())
     }

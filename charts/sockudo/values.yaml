@@ -49,7 +49,7 @@ config:
 
   # -- Adapter driver: local, redis, redis-cluster, nats
   adapterDriver: local
-  # -- App manager driver: memory, mysql, postgres, dynamodb, scylladb
+  # -- App manager driver: memory, mysql, postgres, dynamodb, surrealdb, scylladb
   appManagerDriver: memory
   # -- Cache driver: memory, redis, redis-cluster, none
   cacheDriver: memory
@@ -112,12 +112,16 @@ config:
       - X-Requested-With
       - Accept
 
-# -- Config file content (JSON). If set, mounted as /app/config/config.json.
-# Takes precedence over individual config.* values above.
+# -- Full Sockudo config content (JSON). If set, mounted as /app/config/config.json.
+# Takes precedence over individual config.* values above and is the preferred
+# chart entrypoint for advanced app-manager or inline app policy configuration.
 # configJson: |
 #   { "debug": false, "port": 6001, ... }
 
-# -- Default app configuration (for development/testing)
+# -- Default app bootstrap configuration.
+# This only covers a small env-based subset of app policy. For production
+# multi-app setups or advanced per-app policy, use configJson or an external
+# app manager backend instead of extending this block.
 defaultApp:
   enabled: false
   id: ""

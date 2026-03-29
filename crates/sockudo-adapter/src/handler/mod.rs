@@ -5,12 +5,12 @@ mod core;
 pub mod message_handlers;
 pub mod origin_validation;
 pub mod rate_limiting;
+#[cfg(feature = "recovery")]
+pub mod recovery;
 pub mod signin_management;
 pub mod subscription_management;
 pub mod timeout_management;
 pub mod types;
-#[cfg(feature = "recovery")]
-pub mod recovery;
 pub mod validation;
 pub mod webhook_management;
 
@@ -25,9 +25,9 @@ use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_core::websocket::SocketId;
-use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
+use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_webhook::WebhookIntegration;
 
 use crate::handler::types::{ClientEventRequest, SignInRequest, SubscriptionRequest};
@@ -118,10 +118,7 @@ impl ConnectionHandlerBuilder {
     }
 
     #[cfg(feature = "delta")]
-    pub fn delta_compression(
-        mut self,
-        dc: Arc<sockudo_delta::DeltaCompressionManager>,
-    ) -> Self {
+    pub fn delta_compression(mut self, dc: Arc<sockudo_delta::DeltaCompressionManager>) -> Self {
         self.delta_compression = Some(dc);
         self
     }
@@ -176,7 +173,12 @@ impl ConnectionHandler {
         cache_manager: Arc<dyn CacheManager + Send + Sync>,
         server_options: ServerOptions,
     ) -> ConnectionHandlerBuilder {
-        ConnectionHandlerBuilder::new(app_manager, connection_manager, cache_manager, server_options)
+        ConnectionHandlerBuilder::new(
+            app_manager,
+            connection_manager,
+            cache_manager,
+            server_options,
+        )
     }
 
     /// Get a reference to the presence manager
@@ -219,6 +221,8 @@ impl ConnectionHandler {
         app_key: String,
         origin: Option<String>,
         protocol_version: ProtocolVersion,
+        wire_format: WireFormat,
+        echo_messages: bool,
     ) -> Result<()> {
         // Early validation and setup
         let app_config = match self.validate_and_get_app(&app_key).await {
@@ -241,7 +245,7 @@ impl ConnectionHandler {
         let (socket_rx, mut socket_tx) = socket.split();
 
         // Validate origin AFTER WebSocket establishment to allow error message sending
-        if let Some(ref allowed_origins) = app_config.allowed_origins
+        if let Some(allowed_origins) = app_config.allowed_origins_ref()
             && !allowed_origins.is_empty()
         {
             use crate::handler::origin_validation::OriginValidator;
@@ -263,8 +267,24 @@ impl ConnectionHandler {
                     None,
                 );
 
-                if let Ok(payload_str) = sonic_rs::to_string(&error_message) {
-                    if let Err(e) = socket_tx.send(Message::text(payload_str)).await {
+                if let Ok(payload) =
+                    sockudo_protocol::wire::serialize_message(&error_message, wire_format)
+                {
+                    let send_result = if wire_format.is_binary() {
+                        socket_tx.send(Message::Binary(payload.into())).await
+                    } else {
+                        let payload_str = String::from_utf8(payload).map_err(|e| {
+                            sockudo_ws::Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("invalid utf-8 payload: {e}"),
+                            ))
+                        });
+                        match payload_str {
+                            Ok(payload_str) => socket_tx.send(Message::text(payload_str)).await,
+                            Err(e) => Err(e),
+                        }
+                    };
+                    if let Err(e) = send_result {
                         warn!("Failed to send origin rejection message: {}", e);
                     }
                 } else {
@@ -296,8 +316,15 @@ impl ConnectionHandler {
 
         // Initialize socket with atomic quota check
         let socket_id = SocketId::new();
-        self.initialize_socket_with_quota_check(socket_id, socket_tx, &app_config, protocol_version)
-            .await?;
+        self.initialize_socket_with_quota_check(
+            socket_id,
+            socket_tx,
+            &app_config,
+            protocol_version,
+            wire_format,
+            echo_messages,
+        )
+        .await?;
 
         // Setup rate limiting if needed
         self.setup_rate_limiting(&socket_id, &app_config).await?;
@@ -334,12 +361,14 @@ impl ConnectionHandler {
         socket_tx: WebSocketWriter,
         app_config: &App,
         protocol_version: ProtocolVersion,
+        wire_format: WireFormat,
+        echo_messages: bool,
     ) -> Result<()> {
         // True atomic operation: quota check and socket addition under single lock
         // This is the only way to prevent race conditions
         {
             // Check quota first - this must be atomic with add_socket
-            if app_config.max_connections > 0 {
+            if app_config.max_connections_limit() > 0 {
                 let current_count = self
                     .connection_manager
                     .get_sockets_count(&app_config.id)
@@ -352,7 +381,7 @@ impl ConnectionHandler {
                         Error::Internal("Failed to check connection quota".to_string())
                     })?;
 
-                if current_count >= app_config.max_connections as usize {
+                if current_count >= app_config.max_connections_limit() as usize {
                     return Err(Error::OverConnectionQuota);
                 }
             }
@@ -380,6 +409,8 @@ impl ConnectionHandler {
                     Arc::clone(&self.app_manager),
                     buffer_config,
                     protocol_version,
+                    wire_format,
+                    echo_messages,
                 )
                 .await?;
         } // Lock released - atomic operation complete
@@ -487,7 +518,14 @@ impl ConnectionHandler {
             .await?;
 
         // Parse message
-        let parsed = match self.parse_message(&message) {
+        let wire_format = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+            .map(|conn| conn.wire_format)
+            .unwrap_or(sockudo_protocol::WireFormat::Json);
+
+        let parsed = match self.parse_message(&message, wire_format) {
             Ok(msg) => msg,
             Err(e) => {
                 // Track message parsing errors
@@ -541,7 +579,10 @@ impl ConnectionHandler {
             Some((CANONICAL_PING, _)) => self.handle_ping(&app_config.id, socket_id).await,
             Some((CANONICAL_SUBSCRIBE, _)) => {
                 let t1 = t0.elapsed().as_micros();
-                let request = SubscriptionRequest::from_message(&parsed)?;
+                let request = SubscriptionRequest::from_message(
+                    &parsed,
+                    &self.server_options.event_name_filtering,
+                )?;
                 let result = self
                     .handle_subscribe_request(socket_id, &app_config, request)
                     .await;
@@ -588,11 +629,13 @@ impl ConnectionHandler {
         }
     }
 
-    fn parse_message(&self, message: &Message) -> Result<PusherMessage> {
+    fn parse_message(
+        &self,
+        message: &Message,
+        wire_format: sockudo_protocol::WireFormat,
+    ) -> Result<PusherMessage> {
         let payload = match message {
-            Message::Text(bytes) | Message::Binary(bytes) => std::str::from_utf8(bytes)
-                .map_err(|e| Error::InvalidMessageFormat(format!("Invalid UTF-8: {e}")))?
-                .to_string(),
+            Message::Text(bytes) | Message::Binary(bytes) => bytes,
             _ => {
                 return Err(Error::InvalidMessageFormat(
                     "Unsupported WebSocket message type".to_string(),
@@ -600,8 +643,8 @@ impl ConnectionHandler {
             }
         };
 
-        sonic_rs::from_str(&payload)
-            .map_err(|e| Error::InvalidMessageFormat(format!("Invalid JSON: {e}")))
+        sockudo_protocol::wire::deserialize_message(payload, wire_format)
+            .map_err(|e| Error::InvalidMessageFormat(format!("Decode failed: {e}")))
     }
 
     fn parse_client_event(&self, message: &PusherMessage) -> Result<ClientEventRequest> {

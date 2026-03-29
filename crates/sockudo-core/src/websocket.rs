@@ -3,6 +3,7 @@
 use crate::app::App;
 use crate::channel::PresenceMemberInfo;
 use crate::error::{Error, Result};
+use crate::utils::wildcard_pattern_matches;
 use ahash::AHashMap as HashMap;
 use bytes::Bytes;
 use crossfire::{TrySendError, mpsc};
@@ -10,8 +11,8 @@ use dashmap::DashMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sockudo_filter::FilterNode;
-use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::messages::PusherMessage;
+use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use sonic_rs::Value;
@@ -285,6 +286,42 @@ pub struct UserInfo {
     pub id: String,
     pub watchlist: Option<Vec<String>>,
     pub info: Option<Value>,
+    pub capabilities: Option<ConnectionCapabilities>,
+    pub meta: Option<Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct ConnectionCapabilities {
+    pub subscribe: Option<Vec<String>>,
+    pub publish: Option<Vec<String>>,
+    pub presence: Option<Vec<String>>,
+}
+
+impl ConnectionCapabilities {
+    fn matches_any(patterns: &[String], channel: &str) -> bool {
+        patterns.iter().any(|pattern| {
+            pattern == "*" || pattern == channel || wildcard_pattern_matches(channel, pattern)
+        })
+    }
+
+    pub fn allows_subscribe(&self, channel: &str) -> bool {
+        if channel.starts_with("presence-")
+            && let Some(patterns) = self.presence.as_deref()
+        {
+            return Self::matches_any(patterns, channel);
+        }
+
+        self.subscribe
+            .as_deref()
+            .is_none_or(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_publish(&self, channel: &str) -> bool {
+        self.publish
+            .as_deref()
+            .is_none_or(|patterns| Self::matches_any(patterns, channel))
+    }
 }
 
 #[derive(Debug)]
@@ -346,6 +383,8 @@ pub struct ConnectionState {
     pub subscribed_channels: HashMap<String, Option<FilterNode>>,
     pub user_id: Option<String>,
     pub user_info: Option<UserInfo>,
+    pub connection_capabilities: Option<ConnectionCapabilities>,
+    pub connection_meta: Option<Value>,
     pub last_ping: Instant,
     pub presence: Option<HashMap<String, PresenceMemberInfo>>,
     pub user: Option<Value>,
@@ -354,6 +393,10 @@ pub struct ConnectionState {
     pub disconnecting: bool,
     pub delta_compression_enabled: bool,
     pub protocol_version: ProtocolVersion,
+    pub wire_format: WireFormat,
+    /// V2 only. Whether the publisher receives their own messages back.
+    /// Default: true (echo enabled). Set from sockudo:connect options.
+    pub echo_messages: bool,
 }
 
 impl Default for ConnectionState {
@@ -370,6 +413,8 @@ impl ConnectionState {
             subscribed_channels: HashMap::new(),
             user_id: None,
             user_info: None,
+            connection_capabilities: None,
+            connection_meta: None,
             last_ping: Instant::now(),
             presence: None,
             user: None,
@@ -378,6 +423,8 @@ impl ConnectionState {
             disconnecting: false,
             delta_compression_enabled: false,
             protocol_version: ProtocolVersion::V1,
+            wire_format: WireFormat::Json,
+            echo_messages: true,
         }
     }
 
@@ -388,6 +435,8 @@ impl ConnectionState {
             subscribed_channels: HashMap::new(),
             user_id: None,
             user_info: None,
+            connection_capabilities: None,
+            connection_meta: None,
             last_ping: Instant::now(),
             presence: None,
             user: None,
@@ -396,11 +445,18 @@ impl ConnectionState {
             disconnecting: false,
             delta_compression_enabled: false,
             protocol_version: ProtocolVersion::V1,
+            wire_format: WireFormat::Json,
+            echo_messages: true,
         }
     }
 
     pub fn with_protocol_version(mut self, version: ProtocolVersion) -> Self {
         self.protocol_version = version;
+        self
+    }
+
+    pub fn with_wire_format(mut self, format: WireFormat) -> Self {
+        self.wire_format = format;
         self
     }
 
@@ -772,7 +828,7 @@ impl WebSocket {
 
         if code >= 4000 {
             let error_message = PusherMessage::error(code, reason.clone(), None);
-            if let Err(e) = self.message_sender.send_json(&error_message) {
+            if let Err(e) = self.send_message(&error_message) {
                 warn!("Failed to send error message before close: {}", e);
             }
         }
@@ -786,7 +842,17 @@ impl WebSocket {
 
     pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
         self.ensure_can_send()?;
-        self.message_sender.send_json(message)
+        let payload = sockudo_protocol::wire::serialize_message(message, self.state.wire_format)
+            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+        if self.state.wire_format.is_binary() {
+            self.message_sender
+                .send(Message::Binary(Bytes::from(payload)))
+        } else {
+            self.message_sender
+                .send(Message::text(String::from_utf8(payload).map_err(|e| {
+                    Error::InvalidMessageFormat(format!("JSON payload is not UTF-8: {e}"))
+                })?))
+        }
     }
 
     pub fn send_text(&self, text: String) -> Result<()> {
@@ -811,6 +877,8 @@ impl WebSocket {
 
     pub fn set_user_info(&mut self, user_info: UserInfo) {
         self.state.user_id = Some(user_info.id.clone());
+        self.state.connection_capabilities = user_info.capabilities.clone();
+        self.state.connection_meta = user_info.meta.clone();
         self.state.user_info = Some(user_info.clone());
 
         if let Some(info) = &user_info.info {
@@ -877,12 +945,17 @@ impl Hash for WebSocket {
 pub struct WebSocketRef {
     pub broadcast_tx: SizedMessageSenderHandle,
     pub channel_filters: Arc<DashMap<String, Option<Arc<FilterNode>>>>,
+    /// V2 event name filters per channel. None = receive all events.
+    pub event_name_filters: Arc<DashMap<String, Option<Vec<String>>>>,
     pub socket_id: SocketId,
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
     pub shutdown_token: CancellationToken,
     pub inner: Arc<Mutex<WebSocket>>,
     pub protocol_version: ProtocolVersion,
+    pub wire_format: WireFormat,
+    /// V2 only. Connection-level echo setting. Default: true.
+    pub echo_messages: bool,
 }
 
 impl WebSocketRef {
@@ -893,20 +966,27 @@ impl WebSocketRef {
         let byte_counter = websocket.byte_counter.clone();
         let shutdown_token = websocket.shutdown_token.clone();
         let protocol_version = websocket.state.protocol_version;
+        let wire_format = websocket.state.wire_format;
+        let echo_messages = websocket.state.echo_messages;
 
         let channel_filters = Arc::new(DashMap::new());
         for (channel, filter) in &websocket.state.subscribed_channels {
             channel_filters.insert(channel.clone(), filter.clone().map(Arc::new));
         }
 
+        let event_name_filters = Arc::new(DashMap::new());
+
         Self {
             broadcast_tx,
             channel_filters,
+            event_name_filters,
             socket_id,
             buffer_config,
             byte_counter,
             shutdown_token,
             protocol_version,
+            wire_format,
+            echo_messages,
             inner: Arc::new(Mutex::new(websocket)),
         }
     }
@@ -1012,6 +1092,16 @@ impl WebSocketRef {
         ws.state.user_id.clone()
     }
 
+    pub async fn get_connection_capabilities(&self) -> Option<ConnectionCapabilities> {
+        let ws = self.inner.lock().await;
+        ws.state.connection_capabilities.clone()
+    }
+
+    pub async fn get_connection_meta(&self) -> Option<Value> {
+        let ws = self.inner.lock().await;
+        ws.state.connection_meta.clone()
+    }
+
     pub async fn update_activity(&self) {
         let mut ws = self.inner.lock().await;
         ws.update_activity();
@@ -1020,7 +1110,8 @@ impl WebSocketRef {
     pub async fn subscribe_to_channel(&self, channel: String) {
         let mut ws = self.inner.lock().await;
         ws.subscribe_to_channel(channel.clone());
-        self.channel_filters.insert(channel, None);
+        self.channel_filters.insert(channel.clone(), None);
+        self.event_name_filters.insert(channel, None);
     }
 
     pub async fn subscribe_to_channel_with_filter(
@@ -1034,13 +1125,34 @@ impl WebSocketRef {
 
         let mut ws = self.inner.lock().await;
         ws.subscribe_to_channel_with_filter(channel.clone(), filter.clone());
-        self.channel_filters.insert(channel, filter.map(Arc::new));
+        self.channel_filters
+            .insert(channel.clone(), filter.map(Arc::new));
+        self.event_name_filters.insert(channel, None);
+    }
+
+    /// Subscribe with both tag filter and event name filter (V2).
+    pub async fn subscribe_to_channel_with_filters(
+        &self,
+        channel: String,
+        mut tag_filter: Option<FilterNode>,
+        event_name_filter: Option<Vec<String>>,
+    ) {
+        if let Some(ref mut f) = tag_filter {
+            f.optimize();
+        }
+
+        let mut ws = self.inner.lock().await;
+        ws.subscribe_to_channel_with_filter(channel.clone(), tag_filter.clone());
+        self.channel_filters
+            .insert(channel.clone(), tag_filter.map(Arc::new));
+        self.event_name_filters.insert(channel, event_name_filter);
     }
 
     pub async fn unsubscribe_from_channel(&self, channel: &str) -> bool {
         let mut ws = self.inner.lock().await;
         let result = ws.unsubscribe_from_channel(channel);
         self.channel_filters.remove(channel);
+        self.event_name_filters.remove(channel);
         result
     }
 
@@ -1052,6 +1164,13 @@ impl WebSocketRef {
 
     pub fn get_channel_filter_sync(&self, channel: &str) -> Option<Arc<FilterNode>> {
         self.channel_filters
+            .get(channel)
+            .and_then(|entry| entry.value().clone())
+    }
+
+    /// Get the event name filter for a channel. Returns None if no filter (all events).
+    pub fn get_event_name_filter_sync(&self, channel: &str) -> Option<Vec<String>> {
+        self.event_name_filters
             .get(channel)
             .and_then(|entry| entry.value().clone())
     }
@@ -1136,6 +1255,28 @@ mod tests {
         assert!(state.is_subscribed("test-channel"));
         assert!(state.remove_subscription("test-channel"));
         assert!(!state.is_subscribed("test-channel"));
+    }
+
+    #[test]
+    fn test_connection_capabilities_allow_matching_channels() {
+        let capabilities = ConnectionCapabilities {
+            subscribe: Some(vec!["chat:*".to_string()]),
+            publish: Some(vec!["private-chat:*".to_string()]),
+            presence: Some(vec!["presence-chat:*".to_string()]),
+        };
+
+        assert!(capabilities.allows_subscribe("chat:room-1"));
+        assert!(capabilities.allows_subscribe("presence-chat:room-1"));
+        assert!(capabilities.allows_publish("private-chat:room-1"));
+        assert!(!capabilities.allows_publish("private-news:room-1"));
+    }
+
+    #[test]
+    fn test_connection_capabilities_default_to_unrestricted_when_missing() {
+        let capabilities = ConnectionCapabilities::default();
+
+        assert!(capabilities.allows_subscribe("chat:room-1"));
+        assert!(capabilities.allows_publish("private-chat:room-1"));
     }
 
     #[test]

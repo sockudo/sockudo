@@ -107,6 +107,14 @@ pub struct BroadcastMessage {
     pub timestamp_ms: Option<f64>, // Timestamp when broadcast was initiated (milliseconds since epoch with microsecond precision)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compression_metadata: Option<CompressionMetadata>,
+    /// Idempotency key from the original publish request.
+    /// Receiving nodes register this in their local cache for cross-region deduplication.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    /// Ephemeral flag from extras. Receiving nodes must not buffer this message
+    /// in the recovery replay buffer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ephemeral: bool,
 }
 
 /// Metadata for delta compression in broadcasts

@@ -79,6 +79,10 @@ pub enum AdapterDriver {
     #[serde(rename = "redis-cluster")]
     RedisCluster,
     Nats,
+    RabbitMq,
+    #[serde(rename = "google-pubsub")]
+    GooglePubSub,
+    Kafka,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +135,34 @@ impl Default for ScyllaDbSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SurrealDbSettings {
+    pub url: String,
+    pub namespace: String,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    pub table_name: String,
+    pub cache_ttl: u64,
+    pub cache_max_capacity: u64,
+}
+
+impl Default for SurrealDbSettings {
+    fn default() -> Self {
+        Self {
+            url: "ws://127.0.0.1:8000".to_string(),
+            namespace: "sockudo".to_string(),
+            database: "sockudo".to_string(),
+            username: "root".to_string(),
+            password: "root".to_string(),
+            table_name: "applications".to_string(),
+            cache_ttl: 300,
+            cache_max_capacity: 100,
+        }
+    }
+}
+
 impl FromStr for AdapterDriver {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -139,6 +171,9 @@ impl FromStr for AdapterDriver {
             "redis" => Ok(AdapterDriver::Redis),
             "redis-cluster" => Ok(AdapterDriver::RedisCluster),
             "nats" => Ok(AdapterDriver::Nats),
+            "rabbitmq" | "rabbit-mq" => Ok(AdapterDriver::RabbitMq),
+            "google-pubsub" | "gcp-pubsub" | "pubsub" => Ok(AdapterDriver::GooglePubSub),
+            "kafka" => Ok(AdapterDriver::Kafka),
             _ => Err(format!("Unknown adapter driver: {s}")),
         }
     }
@@ -152,6 +187,7 @@ pub enum AppManagerDriver {
     Mysql,
     Dynamodb,
     PgSql,
+    SurrealDb,
     ScyllaDb,
 }
 impl FromStr for AppManagerDriver {
@@ -162,6 +198,7 @@ impl FromStr for AppManagerDriver {
             "mysql" => Ok(AppManagerDriver::Mysql),
             "dynamodb" => Ok(AppManagerDriver::Dynamodb),
             "pgsql" | "postgres" | "postgresql" => Ok(AppManagerDriver::PgSql),
+            "surreal" | "surrealdb" => Ok(AppManagerDriver::SurrealDb),
             "scylladb" | "scylla" => Ok(AppManagerDriver::ScyllaDb),
             _ => Err(format!("Unknown app manager driver: {s}")),
         }
@@ -335,6 +372,9 @@ pub struct ServerOptions {
     pub websocket: WebSocketConfig,
     pub connection_recovery: ConnectionRecoveryConfig,
     pub idempotency: IdempotencyConfig,
+    pub ephemeral: EphemeralConfig,
+    pub echo_control: EchoControlConfig,
+    pub event_name_filtering: EventNameFilteringConfig,
 }
 
 // --- Configuration Sub-Structs ---
@@ -368,6 +408,9 @@ pub struct AdapterConfig {
     pub redis: RedisAdapterConfig,
     pub cluster: RedisClusterAdapterConfig,
     pub nats: NatsAdapterConfig,
+    pub rabbitmq: RabbitMqAdapterConfig,
+    pub google_pubsub: GooglePubSubAdapterConfig,
+    pub kafka: KafkaAdapterConfig,
     #[serde(default = "default_buffer_multiplier_per_cpu")]
     pub buffer_multiplier_per_cpu: usize,
     pub cluster_health: ClusterHealthConfig,
@@ -390,6 +433,9 @@ impl Default for AdapterConfig {
             redis: RedisAdapterConfig::default(),
             cluster: RedisClusterAdapterConfig::default(),
             nats: NatsAdapterConfig::default(),
+            rabbitmq: RabbitMqAdapterConfig::default(),
+            google_pubsub: GooglePubSubAdapterConfig::default(),
+            kafka: KafkaAdapterConfig::default(),
             buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
             cluster_health: ClusterHealthConfig::default(),
             enable_socket_counting: default_enable_socket_counting(),
@@ -428,6 +474,39 @@ pub struct NatsAdapterConfig {
     pub password: Option<String>,
     pub token: Option<String>,
     pub connection_timeout_ms: u64,
+    pub nodes_number: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RabbitMqAdapterConfig {
+    pub url: String,
+    pub prefix: String,
+    pub request_timeout_ms: u64,
+    pub connection_timeout_ms: u64,
+    pub nodes_number: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GooglePubSubAdapterConfig {
+    pub project_id: String,
+    pub prefix: String,
+    pub request_timeout_ms: u64,
+    pub emulator_host: Option<String>,
+    pub nodes_number: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KafkaAdapterConfig {
+    pub brokers: Vec<String>,
+    pub prefix: String,
+    pub request_timeout_ms: u64,
+    pub security_protocol: Option<String>,
+    pub sasl_mechanism: Option<String>,
+    pub sasl_username: Option<String>,
+    pub sasl_password: Option<String>,
     pub nodes_number: Option<u32>,
 }
 
@@ -518,6 +597,7 @@ pub struct DatabaseConfig {
     pub postgres: DatabaseConnection,
     pub redis: RedisConnection,
     pub dynamodb: DynamoDbSettings,
+    pub surrealdb: SurrealDbSettings,
     pub scylladb: ScyllaDbSettings,
 }
 
@@ -915,6 +995,33 @@ pub struct IdempotencyConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct EphemeralConfig {
+    /// Whether ephemeral message handling is enabled.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EchoControlConfig {
+    /// Whether connection-level and per-message echo control is enabled.
+    pub enabled: bool,
+    /// Default echo behavior for new V2 connections when the query param is omitted.
+    pub default_echo_messages: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventNameFilteringConfig {
+    /// Whether per-subscription event name filtering is enabled.
+    pub enabled: bool,
+    /// Maximum event names allowed in a single filter.
+    pub max_events_per_filter: usize,
+    /// Maximum length for each event name in a filter.
+    pub max_event_name_length: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ConnectionRecoveryConfig {
     /// Whether connection recovery (resume) is enabled.
     /// When enabled, the server keeps a bounded replay buffer per channel so that
@@ -1119,10 +1226,12 @@ pub struct SslConfig {
     pub http_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebhooksConfig {
     pub batching: BatchingConfig,
+    pub retry: WebhookRetryConfig,
+    pub request_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1131,6 +1240,38 @@ pub struct BatchingConfig {
     pub enabled: bool,
     pub duration: u64,
     pub size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebhookRetryConfig {
+    pub enabled: bool,
+    pub max_attempts: Option<u32>,
+    pub max_elapsed_time_ms: u64,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+impl Default for WebhooksConfig {
+    fn default() -> Self {
+        Self {
+            batching: BatchingConfig::default(),
+            retry: WebhookRetryConfig::default(),
+            request_timeout_ms: 10_000,
+        }
+    }
+}
+
+impl Default for WebhookRetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_attempts: None,
+            max_elapsed_time_ms: 300_000,
+            initial_backoff_ms: 1_000,
+            max_backoff_ms: 60_000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1326,6 +1467,9 @@ impl Default for ServerOptions {
             websocket: WebSocketConfig::default(),
             connection_recovery: ConnectionRecoveryConfig::default(),
             idempotency: IdempotencyConfig::default(),
+            ephemeral: EphemeralConfig::default(),
+            echo_control: EchoControlConfig::default(),
+            event_name_filtering: EventNameFilteringConfig::default(),
         }
     }
 }
@@ -1390,6 +1534,45 @@ impl Default for NatsAdapterConfig {
             password: None,
             token: None,
             connection_timeout_ms: 5000,
+            nodes_number: None,
+        }
+    }
+}
+
+impl Default for RabbitMqAdapterConfig {
+    fn default() -> Self {
+        Self {
+            url: "amqp://guest:guest@127.0.0.1:5672/%2f".to_string(),
+            prefix: "sockudo_adapter".to_string(),
+            request_timeout_ms: 5000,
+            connection_timeout_ms: 5000,
+            nodes_number: None,
+        }
+    }
+}
+
+impl Default for GooglePubSubAdapterConfig {
+    fn default() -> Self {
+        Self {
+            project_id: "".to_string(),
+            prefix: "sockudo-adapter".to_string(),
+            request_timeout_ms: 5000,
+            emulator_host: None,
+            nodes_number: None,
+        }
+    }
+}
+
+impl Default for KafkaAdapterConfig {
+    fn default() -> Self {
+        Self {
+            brokers: vec!["localhost:9092".to_string()],
+            prefix: "sockudo_adapter".to_string(),
+            request_timeout_ms: 5000,
+            security_protocol: None,
+            sasl_mechanism: None,
+            sasl_username: None,
+            sasl_password: None,
             nodes_number: None,
         }
     }
@@ -1534,6 +1717,31 @@ impl Default for IdempotencyConfig {
             enabled: true,
             ttl_seconds: 120,
             max_key_length: 128,
+        }
+    }
+}
+
+impl Default for EphemeralConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl Default for EchoControlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_echo_messages: true,
+        }
+    }
+}
+
+impl Default for EventNameFilteringConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_events_per_filter: 50,
+            max_event_name_length: 200,
         }
     }
 }
@@ -1915,6 +2123,26 @@ impl ServerOptions {
             self.database.dynamodb.aws_secret_access_key = Some(secret);
         }
 
+        // --- Database: SurrealDB ---
+        if let Ok(url) = std::env::var("DATABASE_SURREALDB_URL") {
+            self.database.surrealdb.url = url;
+        }
+        if let Ok(namespace) = std::env::var("DATABASE_SURREALDB_NAMESPACE") {
+            self.database.surrealdb.namespace = namespace;
+        }
+        if let Ok(database) = std::env::var("DATABASE_SURREALDB_DATABASE") {
+            self.database.surrealdb.database = database;
+        }
+        if let Ok(username) = std::env::var("DATABASE_SURREALDB_USERNAME") {
+            self.database.surrealdb.username = username;
+        }
+        if let Ok(password) = std::env::var("DATABASE_SURREALDB_PASSWORD") {
+            self.database.surrealdb.password = password;
+        }
+        if let Ok(table) = std::env::var("DATABASE_SURREALDB_TABLE_NAME") {
+            self.database.surrealdb.table_name = table;
+        }
+
         // --- Redis Cluster ---
         let apply_redis_cluster_nodes = |options: &mut Self, nodes: &str| {
             let node_list: Vec<String> = nodes
@@ -2105,6 +2333,70 @@ impl ServerOptions {
             self.adapter.nats.request_timeout_ms,
         );
 
+        // --- RabbitMQ Adapter ---
+        if let Ok(url) = std::env::var("RABBITMQ_URL") {
+            self.adapter.rabbitmq.url = url;
+        }
+        if let Ok(prefix) = std::env::var("RABBITMQ_PREFIX") {
+            self.adapter.rabbitmq.prefix = prefix;
+        }
+        self.adapter.rabbitmq.connection_timeout_ms = parse_env::<u64>(
+            "RABBITMQ_CONNECTION_TIMEOUT_MS",
+            self.adapter.rabbitmq.connection_timeout_ms,
+        );
+        self.adapter.rabbitmq.request_timeout_ms = parse_env::<u64>(
+            "RABBITMQ_REQUEST_TIMEOUT_MS",
+            self.adapter.rabbitmq.request_timeout_ms,
+        );
+        if let Some(nodes) = parse_env_optional::<u32>("RABBITMQ_NODES_NUMBER") {
+            self.adapter.rabbitmq.nodes_number = Some(nodes);
+        }
+
+        // --- Google Pub/Sub Adapter ---
+        if let Ok(project_id) = std::env::var("GOOGLE_PUBSUB_PROJECT_ID") {
+            self.adapter.google_pubsub.project_id = project_id;
+        }
+        if let Ok(prefix) = std::env::var("GOOGLE_PUBSUB_PREFIX") {
+            self.adapter.google_pubsub.prefix = prefix;
+        }
+        if let Ok(emulator_host) = std::env::var("PUBSUB_EMULATOR_HOST") {
+            self.adapter.google_pubsub.emulator_host = Some(emulator_host);
+        }
+        self.adapter.google_pubsub.request_timeout_ms = parse_env::<u64>(
+            "GOOGLE_PUBSUB_REQUEST_TIMEOUT_MS",
+            self.adapter.google_pubsub.request_timeout_ms,
+        );
+        if let Some(nodes) = parse_env_optional::<u32>("GOOGLE_PUBSUB_NODES_NUMBER") {
+            self.adapter.google_pubsub.nodes_number = Some(nodes);
+        }
+
+        // --- Kafka Adapter ---
+        if let Ok(brokers) = std::env::var("KAFKA_BROKERS") {
+            self.adapter.kafka.brokers = brokers.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(prefix) = std::env::var("KAFKA_PREFIX") {
+            self.adapter.kafka.prefix = prefix;
+        }
+        if let Ok(protocol) = std::env::var("KAFKA_SECURITY_PROTOCOL") {
+            self.adapter.kafka.security_protocol = Some(protocol);
+        }
+        if let Ok(mechanism) = std::env::var("KAFKA_SASL_MECHANISM") {
+            self.adapter.kafka.sasl_mechanism = Some(mechanism);
+        }
+        if let Ok(username) = std::env::var("KAFKA_SASL_USERNAME") {
+            self.adapter.kafka.sasl_username = Some(username);
+        }
+        if let Ok(password) = std::env::var("KAFKA_SASL_PASSWORD") {
+            self.adapter.kafka.sasl_password = Some(password);
+        }
+        self.adapter.kafka.request_timeout_ms = parse_env::<u64>(
+            "KAFKA_REQUEST_TIMEOUT_MS",
+            self.adapter.kafka.request_timeout_ms,
+        );
+        if let Some(nodes) = parse_env_optional::<u32>("KAFKA_NODES_NUMBER") {
+            self.adapter.kafka.nodes_number = Some(nodes);
+        }
+
         // --- CORS ---
         if let Ok(origins) = std::env::var("CORS_ORIGINS") {
             let parsed: Vec<String> = origins.split(',').map(|s| s.trim().to_string()).collect();
@@ -2144,6 +2436,7 @@ impl ServerOptions {
             self.channel_limits.cache_ttl = cache_ttl;
             self.database.mysql.cache_ttl = cache_ttl;
             self.database.postgres.cache_ttl = cache_ttl;
+            self.database.surrealdb.cache_ttl = cache_ttl;
             self.cache.memory.ttl = cache_ttl;
         }
         if let Some(cleanup_interval) = parse_env_optional::<u64>("CACHE_CLEANUP_INTERVAL") {
@@ -2154,6 +2447,7 @@ impl ServerOptions {
         if let Some(max_capacity) = parse_env_optional::<u64>("CACHE_MAX_CAPACITY") {
             self.database.mysql.cache_max_capacity = max_capacity;
             self.database.postgres.cache_max_capacity = max_capacity;
+            self.database.surrealdb.cache_max_capacity = max_capacity;
             self.cache.memory.max_capacity = max_capacity;
         }
 
@@ -2166,82 +2460,106 @@ impl ServerOptions {
             (default_app_id, default_app_key, default_app_secret)
             && default_app_enabled
         {
-            let default_app = App {
-                id: app_id,
-                key: app_key,
-                secret: app_secret,
-                enable_client_messages: parse_bool_env("SOCKUDO_ENABLE_CLIENT_MESSAGES", false),
-                enabled: default_app_enabled,
-                max_connections: parse_env::<u32>("SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS", 100),
-                max_client_events_per_second: parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND",
-                    100,
-                ),
-                max_read_requests_per_second: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND",
-                    100,
-                )),
-                max_presence_members_per_channel: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL",
-                    100,
-                )),
-                max_presence_member_size_in_kb: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB",
-                    100,
-                )),
-                max_channel_name_length: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH",
-                    100,
-                )),
-                max_event_channels_at_once: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE",
-                    100,
-                )),
-                max_event_name_length: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH",
-                    100,
-                )),
-                max_event_payload_in_kb: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB",
-                    100,
-                )),
-                max_event_batch_size: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE",
-                    100,
-                )),
-                enable_user_authentication: Some(parse_bool_env(
-                    "SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION",
-                    false,
-                )),
-                webhooks: None,
-                max_backend_events_per_second: Some(parse_env::<u32>(
-                    "SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND",
-                    100,
-                )),
-                enable_watchlist_events: Some(parse_bool_env(
-                    "SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS",
-                    false,
-                )),
-                allowed_origins: {
-                    if let Ok(origins_str) = std::env::var("SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS") {
-                        if !origins_str.is_empty() {
-                            Some(
-                                origins_str
-                                    .split(',')
-                                    .map(|s| s.trim().to_string())
-                                    .collect(),
+            let default_app = App::from_policy(
+                app_id,
+                app_key,
+                app_secret,
+                default_app_enabled,
+                crate::app::AppPolicy {
+                    limits: crate::app::AppLimitsPolicy {
+                        max_connections: parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS",
+                            100,
+                        ),
+                        max_backend_events_per_second: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND",
+                            100,
+                        )),
+                        max_client_events_per_second: parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND",
+                            100,
+                        ),
+                        max_read_requests_per_second: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND",
+                            100,
+                        )),
+                        max_presence_members_per_channel: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL",
+                            100,
+                        )),
+                        max_presence_member_size_in_kb: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB",
+                            100,
+                        )),
+                        max_channel_name_length: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH",
+                            100,
+                        )),
+                        max_event_channels_at_once: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE",
+                            100,
+                        )),
+                        max_event_name_length: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH",
+                            100,
+                        )),
+                        max_event_payload_in_kb: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB",
+                            100,
+                        )),
+                        max_event_batch_size: Some(parse_env::<u32>(
+                            "SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE",
+                            100,
+                        )),
+                    },
+                    features: crate::app::AppFeaturesPolicy {
+                        enable_client_messages: std::env::var(
+                            "SOCKUDO_DEFAULT_APP_ENABLE_CLIENT_MESSAGES",
+                        )
+                        .ok()
+                        .map(|value| {
+                            matches!(
+                                value.trim().to_ascii_lowercase().as_str(),
+                                "true" | "1" | "yes" | "on"
                             )
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
+                        })
+                        .unwrap_or_else(|| parse_bool_env("SOCKUDO_ENABLE_CLIENT_MESSAGES", false)),
+                        enable_user_authentication: Some(parse_bool_env(
+                            "SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION",
+                            false,
+                        )),
+                        enable_watchlist_events: Some(parse_bool_env(
+                            "SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS",
+                            false,
+                        )),
+                    },
+                    channels: crate::app::AppChannelsPolicy {
+                        allowed_origins: {
+                            if let Ok(origins_str) =
+                                std::env::var("SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS")
+                            {
+                                if !origins_str.is_empty() {
+                                    Some(
+                                        origins_str
+                                            .split(',')
+                                            .map(|s| s.trim().to_string())
+                                            .collect(),
+                                    )
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        },
+                        channel_delta_compression: None,
+                        channel_namespaces: None,
+                    },
+                    webhooks: None,
+                    idempotency: None,
+                    connection_recovery: None,
                 },
-                channel_delta_compression: None,
-                idempotency: None,
-                connection_recovery: None,
-            };
+            );
 
             self.app_manager.array.apps.push(default_app);
             info!("Successfully registered default app from env");
@@ -2373,8 +2691,10 @@ impl ServerOptions {
         }
 
         // Connection recovery (includes serial + message_id + replay buffer)
-        self.connection_recovery.enabled =
-            parse_bool_env("CONNECTION_RECOVERY_ENABLED", self.connection_recovery.enabled);
+        self.connection_recovery.enabled = parse_bool_env(
+            "CONNECTION_RECOVERY_ENABLED",
+            self.connection_recovery.enabled,
+        );
         self.connection_recovery.buffer_ttl_seconds = parse_env::<u64>(
             "CONNECTION_RECOVERY_BUFFER_TTL",
             self.connection_recovery.buffer_ttl_seconds,
@@ -2382,6 +2702,36 @@ impl ServerOptions {
         self.connection_recovery.max_buffer_size = parse_env::<usize>(
             "CONNECTION_RECOVERY_MAX_BUFFER_SIZE",
             self.connection_recovery.max_buffer_size,
+        );
+
+        self.idempotency.enabled = parse_bool_env("IDEMPOTENCY_ENABLED", self.idempotency.enabled);
+        self.idempotency.ttl_seconds =
+            parse_env::<u64>("IDEMPOTENCY_TTL_SECONDS", self.idempotency.ttl_seconds);
+        self.idempotency.max_key_length = parse_env::<usize>(
+            "IDEMPOTENCY_MAX_KEY_LENGTH",
+            self.idempotency.max_key_length,
+        );
+
+        self.ephemeral.enabled = parse_bool_env("EPHEMERAL_ENABLED", self.ephemeral.enabled);
+
+        self.echo_control.enabled =
+            parse_bool_env("ECHO_CONTROL_ENABLED", self.echo_control.enabled);
+        self.echo_control.default_echo_messages = parse_bool_env(
+            "ECHO_CONTROL_DEFAULT_ECHO_MESSAGES",
+            self.echo_control.default_echo_messages,
+        );
+
+        self.event_name_filtering.enabled = parse_bool_env(
+            "EVENT_NAME_FILTERING_ENABLED",
+            self.event_name_filtering.enabled,
+        );
+        self.event_name_filtering.max_events_per_filter = parse_env::<usize>(
+            "EVENT_NAME_FILTERING_MAX_EVENTS_PER_FILTER",
+            self.event_name_filtering.max_events_per_filter,
+        );
+        self.event_name_filtering.max_event_name_length = parse_env::<usize>(
+            "EVENT_NAME_FILTERING_MAX_EVENT_NAME_LENGTH",
+            self.event_name_filtering.max_event_name_length,
         );
 
         Ok(())

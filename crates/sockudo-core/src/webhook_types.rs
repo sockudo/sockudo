@@ -17,6 +17,10 @@ pub struct Webhook {
     pub filter: Option<WebhookFilter>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<WebhookHeaders>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry: Option<WebhookRetryPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +33,17 @@ pub struct WebhookFilter {
     pub channel_prefix: Option<String>,
     pub channel_suffix: Option<String>,
     pub channel_pattern: Option<String>,
+    pub channel_namespace: Option<String>,
+    pub channel_namespaces: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct WebhookRetryPolicy {
+    pub enabled: Option<bool>,
+    pub max_attempts: Option<u32>,
+    pub max_elapsed_time_ms: Option<u64>,
+    pub initial_backoff_ms: Option<u64>,
+    pub max_backoff_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

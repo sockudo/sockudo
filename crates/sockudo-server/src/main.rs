@@ -40,7 +40,7 @@ use tokio::signal;
 // Factory imports
 use crate::cleanup::{CleanupConfig, CleanupSender};
 use crate::http_handler::{
-    batch_events, channel, channel_users, channels, events, fallback_404, metrics,
+    batch_events, channel, channel_users, channels, events, fallback_404, metrics, stats,
     terminate_user_connections, up, usage,
 };
 use sockudo_adapter::factory::AdapterFactory;
@@ -586,6 +586,8 @@ impl SockudoServer {
                 duration: config.webhooks.batching.duration,
                 size: config.webhooks.batching.size,
             },
+            retry: config.webhooks.retry.clone(),
+            request_timeout_ms: config.webhooks.request_timeout_ms,
             process_id: config.instance.process_id.clone(),
             debug: config.debug,
         };
@@ -671,7 +673,9 @@ impl SockudoServer {
                 full_message_interval: config.delta_compression.full_message_interval,
                 min_message_size: config.delta_compression.min_message_size,
                 max_state_age: Duration::from_secs(config.delta_compression.max_state_age_secs),
-                max_channel_states_per_socket: config.delta_compression.max_channel_states_per_socket,
+                max_channel_states_per_socket: config
+                    .delta_compression
+                    .max_channel_states_per_socket,
                 min_compression_ratio: 0.9,
                 max_conflation_states_per_channel: config
                     .delta_compression
@@ -680,7 +684,8 @@ impl SockudoServer {
                 cluster_coordination: config.delta_compression.cluster_coordination,
                 omit_delta_algorithm: config.delta_compression.omit_delta_algorithm,
             };
-            let delta_compression_manager = sockudo_delta::DeltaCompressionManager::new(delta_config);
+            let delta_compression_manager =
+                sockudo_delta::DeltaCompressionManager::new(delta_config);
 
             // Setup cluster coordination if enabled and adapter supports it
             let delta_compression_manager = {
@@ -747,6 +752,15 @@ impl SockudoServer {
             delta_compression_manager
         };
 
+        // Set cache manager for cross-region idempotency deduplication on horizontal adapters
+        if config.idempotency.enabled {
+            typed_adapter.set_cache_manager(cache_manager.clone(), config.idempotency.ttl_seconds);
+            info!(
+                "Cross-region idempotency deduplication configured for adapter: {:?} (TTL: {}s)",
+                config.adapter.driver, config.idempotency.ttl_seconds
+            );
+        }
+
         let state = ServerState {
             app_manager: app_manager.clone(),
             connection_manager: connection_manager.clone(),
@@ -810,21 +824,22 @@ impl SockudoServer {
         // Start replay buffer eviction task (only when connection recovery is enabled)
         #[cfg(feature = "recovery")]
         if config.connection_recovery.enabled
-            && let Some(replay_buf) = handler.replay_buffer().cloned() {
-                let eviction_interval =
-                    std::time::Duration::from_secs(config.connection_recovery.buffer_ttl_seconds / 4);
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(eviction_interval);
-                    loop {
-                        interval.tick().await;
-                        replay_buf.evict_expired();
-                    }
-                });
-                info!(
-                    "Connection recovery replay buffer eviction task started (interval: {}s)",
-                    eviction_interval.as_secs()
-                );
-            }
+            && let Some(replay_buf) = handler.replay_buffer().cloned()
+        {
+            let eviction_interval =
+                std::time::Duration::from_secs(config.connection_recovery.buffer_ttl_seconds / 4);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(eviction_interval);
+                loop {
+                    interval.tick().await;
+                    replay_buf.evict_expired();
+                }
+            });
+            info!(
+                "Connection recovery replay buffer eviction task started (interval: {}s)",
+                eviction_interval.as_secs()
+            );
+        }
 
         // Set metrics for adapters using TypedAdapter (lock-free configuration)
         if let Some(metrics_instance_arc) = &metrics {
@@ -1152,6 +1167,7 @@ impl SockudoServer {
 
         if self.config.http_api.usage_enabled {
             router = router.route("/usage", get(usage));
+            router = router.route("/stats", get(stats));
         }
 
         // Return plain text 404 for unmatched routes.

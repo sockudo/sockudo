@@ -4,7 +4,10 @@ use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::prepared::PreparedStatement;
 use scylla::{DeserializeRow, SerializeRow};
-use sockudo_core::app::{App, AppConnectionRecoveryConfig, AppIdempotencyConfig, AppManager};
+use sockudo_core::app::{
+    App, AppChannelsPolicy, AppConnectionRecoveryConfig, AppFeaturesPolicy, AppIdempotencyConfig,
+    AppLimitsPolicy, AppManager, AppPolicy,
+};
 use sockudo_core::error::{Error, Result};
 use sockudo_core::webhook_types::Webhook;
 use std::sync::Arc;
@@ -70,32 +73,14 @@ impl ScyllaDbAppManager {
 
         let insert_query = format!(
             r#"INSERT INTO {}.{} (
-                id, key, secret, max_connections, enable_client_messages, enabled,
-                max_backend_events_per_second, max_client_events_per_second,
-                max_read_requests_per_second, max_presence_members_per_channel,
-                max_presence_member_size_in_kb, max_channel_name_length,
-                max_event_channels_at_once, max_event_name_length,
-                max_event_payload_in_kb, max_event_batch_size,
-                enable_user_authentication, enable_watchlist_events,
-                webhooks, allowed_origins, channel_delta_compression,
-                idempotency, connection_recovery, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, toTimestamp(now()), toTimestamp(now()))"#,
+                id, key, secret, enabled, policy, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, toTimestamp(now()), toTimestamp(now()))"#,
             config.keyspace, config.table_name
         );
 
         let update_query = format!(
             r#"UPDATE {}.{} SET
-                key = ?, secret = ?, max_connections = ?, enable_client_messages = ?, enabled = ?,
-                max_backend_events_per_second = ?, max_client_events_per_second = ?,
-                max_read_requests_per_second = ?, max_presence_members_per_channel = ?,
-                max_presence_member_size_in_kb = ?, max_channel_name_length = ?,
-                max_event_channels_at_once = ?, max_event_name_length = ?,
-                max_event_payload_in_kb = ?, max_event_batch_size = ?,
-                enable_user_authentication = ?, enable_watchlist_events = ?,
-                webhooks = ?, allowed_origins = ?,
-                channel_delta_compression = ?,
-                idempotency = ?,
-                connection_recovery = ?,
+                key = ?, secret = ?, enabled = ?, policy = ?,
                 updated_at = toTimestamp(now())
             WHERE id = ?"#,
             config.keyspace, config.table_name
@@ -171,6 +156,9 @@ impl ScyllaDbAppManager {
                 webhooks text,
                 allowed_origins text,
                 channel_delta_compression text,
+                idempotency text,
+                connection_recovery text,
+                policy text,
                 created_at timestamp,
                 updated_at timestamp
             )"#,
@@ -212,29 +200,19 @@ impl ScyllaDbAppManager {
             }
         }
 
-        let alter_query = format!(
-            "ALTER TABLE {}.{} ADD idempotency text",
-            config.keyspace, config.table_name
-        );
-        if let Err(e) = session.query_unpaged(alter_query, &[]).await {
-            let err_str = e.to_string();
-            if !err_str.contains("already exist") && !err_str.contains("conflicts") {
-                return Err(Error::Internal(format!(
-                    "Failed to add idempotency column: {e}"
-                )));
-            }
-        }
-
-        let alter_query = format!(
-            "ALTER TABLE {}.{} ADD connection_recovery text",
-            config.keyspace, config.table_name
-        );
-        if let Err(e) = session.query_unpaged(alter_query, &[]).await {
-            let err_str = e.to_string();
-            if !err_str.contains("already exist") && !err_str.contains("conflicts") {
-                return Err(Error::Internal(format!(
-                    "Failed to add connection_recovery column: {e}"
-                )));
+        for column in ["idempotency", "connection_recovery", "policy"] {
+            let alter_query = format!(
+                "ALTER TABLE {}.{} ADD {} text",
+                config.keyspace, config.table_name, column
+            );
+            if let Err(e) = session.query_unpaged(alter_query, &[]).await {
+                let err_str = e.to_string();
+                if !err_str.contains("already exist") && !err_str.contains("conflicts") {
+                    return Err(Error::Internal(format!(
+                        "Failed to add {} column: {e}",
+                        column
+                    )));
+                }
             }
         }
 
@@ -242,17 +220,18 @@ impl ScyllaDbAppManager {
     }
 }
 
-/// Struct for ScyllaDB app row (both serialization and deserialization)
-#[derive(SerializeRow, DeserializeRow)]
+/// Struct for ScyllaDB app row used for reads, including legacy compatibility columns.
+#[derive(DeserializeRow)]
 struct AppRow {
     id: String,
     key: String,
     secret: String,
-    max_connections: i32,
-    enable_client_messages: bool,
     enabled: bool,
+    policy: Option<String>,
+    max_connections: Option<i32>,
+    enable_client_messages: Option<bool>,
     max_backend_events_per_second: Option<i32>,
-    max_client_events_per_second: i32,
+    max_client_events_per_second: Option<i32>,
     max_read_requests_per_second: Option<i32>,
     max_presence_members_per_channel: Option<i32>,
     max_presence_member_size_in_kb: Option<i32>,
@@ -268,6 +247,16 @@ struct AppRow {
     channel_delta_compression: Option<String>,
     idempotency: Option<String>,
     connection_recovery: Option<String>,
+}
+
+/// Struct for INSERT.
+#[derive(SerializeRow)]
+struct InsertRow {
+    id: String,
+    key: String,
+    secret: String,
+    enabled: bool,
+    policy: String,
 }
 
 /// Struct for UPDATE (SET fields first, then id for WHERE)
@@ -275,258 +264,134 @@ struct AppRow {
 struct UpdateRow {
     key: String,
     secret: String,
-    max_connections: i32,
-    enable_client_messages: bool,
     enabled: bool,
-    max_backend_events_per_second: Option<i32>,
-    max_client_events_per_second: i32,
-    max_read_requests_per_second: Option<i32>,
-    max_presence_members_per_channel: Option<i32>,
-    max_presence_member_size_in_kb: Option<i32>,
-    max_channel_name_length: Option<i32>,
-    max_event_channels_at_once: Option<i32>,
-    max_event_name_length: Option<i32>,
-    max_event_payload_in_kb: Option<i32>,
-    max_event_batch_size: Option<i32>,
-    enable_user_authentication: Option<bool>,
-    enable_watchlist_events: Option<bool>,
-    webhooks: Option<String>,
-    allowed_origins: Option<String>,
-    channel_delta_compression: Option<String>,
-    idempotency: Option<String>,
-    connection_recovery: Option<String>,
+    policy: String,
     id: String,
+}
+
+impl InsertRow {
+    fn from_app(app: &App) -> Result<Self> {
+        Ok(Self {
+            id: app.id.clone(),
+            key: app.key.clone(),
+            secret: app.secret.clone(),
+            enabled: app.enabled,
+            policy: sonic_rs::to_string(&app.policy)
+                .map_err(|e| Error::Internal(format!("Failed to serialize app policy: {}", e)))?,
+        })
+    }
 }
 
 impl UpdateRow {
     fn from_app(app: &App) -> Result<Self> {
-        let webhooks = app
-            .webhooks
-            .as_ref()
-            .map(|w| {
-                sonic_rs::to_string(w)
-                    .map_err(|e| Error::Internal(format!("Failed to serialize webhooks: {}", e)))
-            })
-            .transpose()?;
-
-        let allowed_origins = app
-            .allowed_origins
-            .as_ref()
-            .map(|o| {
-                sonic_rs::to_string(o).map_err(|e| {
-                    Error::Internal(format!("Failed to serialize allowed_origins: {}", e))
-                })
-            })
-            .transpose()?;
-
-        let channel_delta_compression = app
-            .channel_delta_compression
-            .as_ref()
-            .map(|c| {
-                sonic_rs::to_string(c).map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to serialize channel_delta_compression: {}",
-                        e
-                    ))
-                })
-            })
-            .transpose()?;
-
-        let idempotency = app
-            .idempotency
-            .as_ref()
-            .map(|i| {
-                sonic_rs::to_string(i).map_err(|e| {
-                    Error::Internal(format!("Failed to serialize idempotency: {}", e))
-                })
-            })
-            .transpose()?;
-
         Ok(Self {
             key: app.key.clone(),
             secret: app.secret.clone(),
-            max_connections: app.max_connections as i32,
-            enable_client_messages: app.enable_client_messages,
             enabled: app.enabled,
-            max_backend_events_per_second: app.max_backend_events_per_second.map(|v| v as i32),
-            max_client_events_per_second: app.max_client_events_per_second as i32,
-            max_read_requests_per_second: app.max_read_requests_per_second.map(|v| v as i32),
-            max_presence_members_per_channel: app
-                .max_presence_members_per_channel
-                .map(|v| v as i32),
-            max_presence_member_size_in_kb: app.max_presence_member_size_in_kb.map(|v| v as i32),
-            max_channel_name_length: app.max_channel_name_length.map(|v| v as i32),
-            max_event_channels_at_once: app.max_event_channels_at_once.map(|v| v as i32),
-            max_event_name_length: app.max_event_name_length.map(|v| v as i32),
-            max_event_payload_in_kb: app.max_event_payload_in_kb.map(|v| v as i32),
-            max_event_batch_size: app.max_event_batch_size.map(|v| v as i32),
-            enable_user_authentication: app.enable_user_authentication,
-            enable_watchlist_events: app.enable_watchlist_events,
-            webhooks,
-            allowed_origins,
-            channel_delta_compression,
-            idempotency,
-            connection_recovery,
+            policy: sonic_rs::to_string(&app.policy)
+                .map_err(|e| Error::Internal(format!("Failed to serialize app policy: {}", e)))?,
             id: app.id.clone(),
         })
     }
 }
 
 impl AppRow {
-    fn from_app(app: &App) -> Result<Self> {
-        let webhooks = app
-            .webhooks
-            .as_ref()
-            .map(|w| {
-                sonic_rs::to_string(w)
-                    .map_err(|e| Error::Internal(format!("Failed to serialize webhooks: {}", e)))
-            })
-            .transpose()?;
-
-        let allowed_origins = app
-            .allowed_origins
-            .as_ref()
-            .map(|o| {
-                sonic_rs::to_string(o).map_err(|e| {
-                    Error::Internal(format!("Failed to serialize allowed_origins: {}", e))
-                })
-            })
-            .transpose()?;
-
-        let channel_delta_compression = app
-            .channel_delta_compression
-            .as_ref()
-            .map(|c| {
-                sonic_rs::to_string(c).map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to serialize channel_delta_compression: {}",
-                        e
-                    ))
-                })
-            })
-            .transpose()?;
-
-        let idempotency = app
-            .idempotency
-            .as_ref()
-            .map(|i| {
-                sonic_rs::to_string(i).map_err(|e| {
-                    Error::Internal(format!("Failed to serialize idempotency: {}", e))
-                })
-            })
-            .transpose()?;
-
-        let connection_recovery = app
-            .connection_recovery
-            .as_ref()
-            .map(|c| {
-                sonic_rs::to_string(c).map_err(|e| {
-                    Error::Internal(format!("Failed to serialize connection_recovery: {}", e))
-                })
-            })
-            .transpose()?;
-
-        Ok(Self {
-            id: app.id.clone(),
-            key: app.key.clone(),
-            secret: app.secret.clone(),
-            max_connections: app.max_connections as i32,
-            enable_client_messages: app.enable_client_messages,
-            enabled: app.enabled,
-            max_backend_events_per_second: app.max_backend_events_per_second.map(|v| v as i32),
-            max_client_events_per_second: app.max_client_events_per_second as i32,
-            max_read_requests_per_second: app.max_read_requests_per_second.map(|v| v as i32),
-            max_presence_members_per_channel: app
-                .max_presence_members_per_channel
-                .map(|v| v as i32),
-            max_presence_member_size_in_kb: app.max_presence_member_size_in_kb.map(|v| v as i32),
-            max_channel_name_length: app.max_channel_name_length.map(|v| v as i32),
-            max_event_channels_at_once: app.max_event_channels_at_once.map(|v| v as i32),
-            max_event_name_length: app.max_event_name_length.map(|v| v as i32),
-            max_event_payload_in_kb: app.max_event_payload_in_kb.map(|v| v as i32),
-            max_event_batch_size: app.max_event_batch_size.map(|v| v as i32),
-            enable_user_authentication: app.enable_user_authentication,
-            enable_watchlist_events: app.enable_watchlist_events,
-            webhooks,
-            allowed_origins,
-            channel_delta_compression,
-            idempotency,
-            connection_recovery,
-        })
-    }
-
     fn into_app(self) -> App {
-        App {
-            id: self.id.clone(),
-            key: self.key,
-            secret: self.secret,
-            max_connections: self.max_connections as u32,
-            enable_client_messages: self.enable_client_messages,
-            enabled: self.enabled,
-            max_backend_events_per_second: self.max_backend_events_per_second.map(|v| v as u32),
-            max_client_events_per_second: self.max_client_events_per_second as u32,
-            max_read_requests_per_second: self.max_read_requests_per_second.map(|v| v as u32),
-            max_presence_members_per_channel: self
-                .max_presence_members_per_channel
-                .map(|v| v as u32),
-            max_presence_member_size_in_kb: self.max_presence_member_size_in_kb.map(|v| v as u32),
-            max_channel_name_length: self.max_channel_name_length.map(|v| v as u32),
-            max_event_channels_at_once: self.max_event_channels_at_once.map(|v| v as u32),
-            max_event_name_length: self.max_event_name_length.map(|v| v as u32),
-            max_event_payload_in_kb: self.max_event_payload_in_kb.map(|v| v as u32),
-            max_event_batch_size: self.max_event_batch_size.map(|v| v as u32),
-            enable_user_authentication: self.enable_user_authentication,
-            enable_watchlist_events: self.enable_watchlist_events,
-            webhooks: self.webhooks.and_then(|json| {
-                sonic_rs::from_str::<Vec<Webhook>>(&json)
-                    .map_err(|e| {
-                        error!("Failed to deserialize webhooks for app {}: {}", self.id, e)
-                    })
-                    .ok()
-            }),
-            allowed_origins: self.allowed_origins.and_then(|json| {
-                sonic_rs::from_str::<Vec<String>>(&json)
-                    .map_err(|e| {
-                        error!(
-                            "Failed to deserialize allowed_origins for app {}: {}",
-                            self.id, e
-                        )
-                    })
-                    .ok()
-            }),
-            channel_delta_compression: self.channel_delta_compression.and_then(|json| {
-                sonic_rs::from_str::<
-                    ahash::AHashMap<String, sockudo_core::delta_types::ChannelDeltaConfig>,
-                >(&json)
-                .map_err(|e| {
-                    error!(
-                        "Failed to deserialize channel_delta_compression for app {}: {}",
-                        self.id, e
-                    )
-                })
-                .ok()
-            }),
-            idempotency: self.idempotency.and_then(|json| {
-                sonic_rs::from_str::<AppIdempotencyConfig>(&json)
-                    .map_err(|e| {
-                        error!(
-                            "Failed to deserialize idempotency for app {}: {}",
-                            self.id, e
-                        )
-                    })
-                    .ok()
-            }),
-            connection_recovery: self.connection_recovery.and_then(|json| {
-                sonic_rs::from_str::<AppConnectionRecoveryConfig>(&json)
-                    .map_err(|e| {
-                        error!(
-                            "Failed to deserialize connection_recovery for app {}: {}",
-                            self.id, e
-                        )
-                    })
-                    .ok()
-            }),
+        if let Some(policy_json) = self.policy
+            && let Ok(policy) = sonic_rs::from_str::<AppPolicy>(&policy_json)
+        {
+            return App::from_policy(self.id, self.key, self.secret, self.enabled, policy);
         }
+
+        App::from_policy(
+            self.id.clone(),
+            self.key,
+            self.secret,
+            self.enabled,
+            AppPolicy {
+                limits: AppLimitsPolicy {
+                    max_connections: self.max_connections.unwrap_or_default() as u32,
+                    max_backend_events_per_second: self
+                        .max_backend_events_per_second
+                        .map(|v| v as u32),
+                    max_client_events_per_second: self
+                        .max_client_events_per_second
+                        .unwrap_or_default()
+                        as u32,
+                    max_read_requests_per_second: self
+                        .max_read_requests_per_second
+                        .map(|v| v as u32),
+                    max_presence_members_per_channel: self
+                        .max_presence_members_per_channel
+                        .map(|v| v as u32),
+                    max_presence_member_size_in_kb: self
+                        .max_presence_member_size_in_kb
+                        .map(|v| v as u32),
+                    max_channel_name_length: self.max_channel_name_length.map(|v| v as u32),
+                    max_event_channels_at_once: self.max_event_channels_at_once.map(|v| v as u32),
+                    max_event_name_length: self.max_event_name_length.map(|v| v as u32),
+                    max_event_payload_in_kb: self.max_event_payload_in_kb.map(|v| v as u32),
+                    max_event_batch_size: self.max_event_batch_size.map(|v| v as u32),
+                },
+                features: AppFeaturesPolicy {
+                    enable_client_messages: self.enable_client_messages.unwrap_or(false),
+                    enable_user_authentication: self.enable_user_authentication,
+                    enable_watchlist_events: self.enable_watchlist_events,
+                },
+                channels: AppChannelsPolicy {
+                    allowed_origins: self.allowed_origins.and_then(|json| {
+                        sonic_rs::from_str::<Vec<String>>(&json)
+                            .map_err(|e| {
+                                error!(
+                                    "Failed to deserialize allowed_origins for app {}: {}",
+                                    self.id, e
+                                )
+                            })
+                            .ok()
+                    }),
+                    channel_delta_compression: self.channel_delta_compression.and_then(|json| {
+                        sonic_rs::from_str::<
+                            ahash::AHashMap<String, sockudo_core::delta_types::ChannelDeltaConfig>,
+                        >(&json)
+                        .map_err(|e| {
+                            error!(
+                                "Failed to deserialize channel_delta_compression for app {}: {}",
+                                self.id, e
+                            )
+                        })
+                        .ok()
+                    }),
+                    channel_namespaces: None,
+                },
+                webhooks: self.webhooks.and_then(|json| {
+                    sonic_rs::from_str::<Vec<Webhook>>(&json)
+                        .map_err(|e| {
+                            error!("Failed to deserialize webhooks for app {}: {}", self.id, e)
+                        })
+                        .ok()
+                }),
+                idempotency: self.idempotency.and_then(|json| {
+                    sonic_rs::from_str::<AppIdempotencyConfig>(&json)
+                        .map_err(|e| {
+                            error!(
+                                "Failed to deserialize idempotency for app {}: {}",
+                                self.id, e
+                            )
+                        })
+                        .ok()
+                }),
+                connection_recovery: self.connection_recovery.and_then(|json| {
+                    sonic_rs::from_str::<AppConnectionRecoveryConfig>(&json)
+                        .map_err(|e| {
+                            error!(
+                                "Failed to deserialize connection_recovery for app {}: {}",
+                                self.id, e
+                            )
+                        })
+                        .ok()
+                }),
+            },
+        )
     }
 }
 
@@ -537,7 +402,7 @@ impl AppManager for ScyllaDbAppManager {
     }
 
     async fn create_app(&self, app: App) -> Result<()> {
-        let values = AppRow::from_app(&app)?;
+        let values = InsertRow::from_app(&app)?;
 
         self.session
             .execute_unpaged(&self.insert_stmt, values)
@@ -578,7 +443,7 @@ impl AppManager for ScyllaDbAppManager {
 
     async fn get_apps(&self) -> Result<Vec<App>> {
         let query = format!(
-            r#"SELECT id, key, secret, max_connections, enable_client_messages, enabled,
+            r#"SELECT id, key, secret, enabled, policy, max_connections, enable_client_messages,
                 max_backend_events_per_second, max_client_events_per_second,
                 max_read_requests_per_second, max_presence_members_per_channel,
                 max_presence_member_size_in_kb, max_channel_name_length,
@@ -615,14 +480,15 @@ impl AppManager for ScyllaDbAppManager {
         debug!("Fetching app by key {} from ScyllaDB", key);
 
         let query = format!(
-            r#"SELECT id, key, secret, max_connections, enable_client_messages, enabled,
+            r#"SELECT id, key, secret, enabled, policy, max_connections, enable_client_messages,
                 max_backend_events_per_second, max_client_events_per_second,
                 max_read_requests_per_second, max_presence_members_per_channel,
                 max_presence_member_size_in_kb, max_channel_name_length,
                 max_event_channels_at_once, max_event_name_length,
                 max_event_payload_in_kb, max_event_batch_size,
                 enable_user_authentication, enable_watchlist_events,
-                webhooks, allowed_origins, channel_delta_compression
+                webhooks, allowed_origins, channel_delta_compression,
+                idempotency, connection_recovery
             FROM {}.{} WHERE key = ?"#,
             self.config.keyspace, self.config.table_name
         );
@@ -654,14 +520,15 @@ impl AppManager for ScyllaDbAppManager {
         debug!("Fetching app {} from ScyllaDB", app_id);
 
         let query = format!(
-            r#"SELECT id, key, secret, max_connections, enable_client_messages, enabled,
+            r#"SELECT id, key, secret, enabled, policy, max_connections, enable_client_messages,
                 max_backend_events_per_second, max_client_events_per_second,
                 max_read_requests_per_second, max_presence_members_per_channel,
                 max_presence_member_size_in_kb, max_channel_name_length,
                 max_event_channels_at_once, max_event_name_length,
                 max_event_payload_in_kb, max_event_batch_size,
                 enable_user_authentication, enable_watchlist_events,
-                webhooks, allowed_origins, channel_delta_compression
+                webhooks, allowed_origins, channel_delta_compression,
+                idempotency, connection_recovery
             FROM {}.{} WHERE id = ?"#,
             self.config.keyspace, self.config.table_name
         );
@@ -733,31 +600,36 @@ mod tests {
     }
 
     fn create_test_app(id: &str) -> App {
-        App {
-            id: id.to_string(),
-            key: format!("{}_key", id),
-            secret: format!("{}_secret", id),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_backend_events_per_second: Some(100),
-            max_client_events_per_second: 100,
-            max_read_requests_per_second: Some(100),
-            max_presence_members_per_channel: Some(100),
-            max_presence_member_size_in_kb: Some(2),
-            max_channel_name_length: Some(200),
-            max_event_channels_at_once: Some(10),
-            max_event_name_length: Some(200),
-            max_event_payload_in_kb: Some(10),
-            max_event_batch_size: Some(10),
-            enable_user_authentication: Some(true),
-            webhooks: None,
-            enable_watchlist_events: None,
-            allowed_origins: None,
-            channel_delta_compression: None,
-            idempotency: None,
-            connection_recovery: None,
-        }
+        App::from_policy(
+            id.to_string(),
+            format!("{}_key", id),
+            format!("{}_secret", id),
+            true,
+            sockudo_core::app::AppPolicy {
+                limits: sockudo_core::app::AppLimitsPolicy {
+                    max_connections: 100,
+                    max_backend_events_per_second: Some(100),
+                    max_client_events_per_second: 100,
+                    max_read_requests_per_second: Some(100),
+                    max_presence_members_per_channel: Some(100),
+                    max_presence_member_size_in_kb: Some(2),
+                    max_channel_name_length: Some(200),
+                    max_event_channels_at_once: Some(10),
+                    max_event_name_length: Some(200),
+                    max_event_payload_in_kb: Some(10),
+                    max_event_batch_size: Some(10),
+                },
+                features: sockudo_core::app::AppFeaturesPolicy {
+                    enable_client_messages: true,
+                    enable_user_authentication: Some(true),
+                    enable_watchlist_events: None,
+                },
+                channels: sockudo_core::app::AppChannelsPolicy::default(),
+                webhooks: None,
+                idempotency: None,
+                connection_recovery: None,
+            },
+        )
     }
 
     fn create_test_app_with_webhooks(id: &str) -> App {
@@ -772,6 +644,8 @@ mod tests {
                 event_types: vec!["channel_occupied".to_string()],
                 filter: None,
                 headers: None,
+                retry: None,
+                request_timeout_ms: None,
             },
             Webhook {
                 url: Some(Url::parse("https://example.com/webhook2").unwrap()),
@@ -782,39 +656,52 @@ mod tests {
                     channel_prefix: Some("private-".to_string()),
                     channel_suffix: None,
                     channel_pattern: None,
+                    channel_namespace: None,
+                    channel_namespaces: None,
                 }),
                 headers: None,
+                retry: None,
+                request_timeout_ms: None,
             },
         ];
 
-        App {
-            id: id.to_string(),
-            key: format!("{}_key", id),
-            secret: format!("{}_secret", id),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_backend_events_per_second: Some(100),
-            max_client_events_per_second: 100,
-            max_read_requests_per_second: Some(100),
-            max_presence_members_per_channel: Some(100),
-            max_presence_member_size_in_kb: Some(2),
-            max_channel_name_length: Some(200),
-            max_event_channels_at_once: Some(10),
-            max_event_name_length: Some(200),
-            max_event_payload_in_kb: Some(10),
-            max_event_batch_size: Some(10),
-            enable_user_authentication: Some(true),
-            webhooks: Some(webhooks),
-            enable_watchlist_events: Some(true),
-            allowed_origins: Some(vec![
-                "https://example.com".to_string(),
-                "https://app.example.com".to_string(),
-            ]),
-            channel_delta_compression: None,
-            idempotency: None,
-            connection_recovery: None,
-        }
+        App::from_policy(
+            id.to_string(),
+            format!("{}_key", id),
+            format!("{}_secret", id),
+            true,
+            sockudo_core::app::AppPolicy {
+                limits: sockudo_core::app::AppLimitsPolicy {
+                    max_connections: 100,
+                    max_backend_events_per_second: Some(100),
+                    max_client_events_per_second: 100,
+                    max_read_requests_per_second: Some(100),
+                    max_presence_members_per_channel: Some(100),
+                    max_presence_member_size_in_kb: Some(2),
+                    max_channel_name_length: Some(200),
+                    max_event_channels_at_once: Some(10),
+                    max_event_name_length: Some(200),
+                    max_event_payload_in_kb: Some(10),
+                    max_event_batch_size: Some(10),
+                },
+                features: sockudo_core::app::AppFeaturesPolicy {
+                    enable_client_messages: true,
+                    enable_user_authentication: Some(true),
+                    enable_watchlist_events: Some(true),
+                },
+                channels: sockudo_core::app::AppChannelsPolicy {
+                    allowed_origins: Some(vec![
+                        "https://example.com".to_string(),
+                        "https://app.example.com".to_string(),
+                    ]),
+                    channel_delta_compression: None,
+                    channel_namespaces: None,
+                },
+                webhooks: Some(webhooks),
+                idempotency: None,
+                connection_recovery: None,
+            },
+        )
     }
 
     #[tokio::test]
@@ -831,7 +718,7 @@ mod tests {
         assert_eq!(found_app.id, "test_app_create");
         assert_eq!(found_app.key, "test_app_create_key");
         assert_eq!(found_app.secret, "test_app_create_secret");
-        assert_eq!(found_app.max_connections, 100);
+        assert_eq!(found_app.policy.limits.max_connections, 100);
 
         manager.delete_app("test_app_create").await.unwrap();
     }
@@ -849,8 +736,8 @@ mod tests {
         let found_app = found.unwrap();
 
         // Verify webhooks
-        assert!(found_app.webhooks.is_some());
-        let webhooks = found_app.webhooks.unwrap();
+        assert!(found_app.policy.webhooks.is_some());
+        let webhooks = found_app.policy.webhooks.unwrap();
         assert_eq!(webhooks.len(), 2);
         assert_eq!(
             webhooks[0].url.as_ref().unwrap().as_str(),
@@ -864,11 +751,14 @@ mod tests {
         assert_eq!(webhooks[1].event_types.len(), 2);
 
         // Verify enable_watchlist_events
-        assert_eq!(found_app.enable_watchlist_events, Some(true));
+        assert_eq!(
+            found_app.policy.features.enable_watchlist_events,
+            Some(true)
+        );
 
         // Verify allowed_origins
-        assert!(found_app.allowed_origins.is_some());
-        let origins = found_app.allowed_origins.unwrap();
+        assert!(found_app.policy.channels.allowed_origins.is_some());
+        let origins = found_app.policy.channels.allowed_origins.unwrap();
         assert_eq!(origins.len(), 2);
         assert_eq!(origins[0], "https://example.com");
 
@@ -887,16 +777,18 @@ mod tests {
         // Update app with webhooks
         use url::Url;
 
-        app.max_connections = 200;
-        app.webhooks = Some(vec![Webhook {
+        app.policy.limits.max_connections = 200;
+        app.policy.webhooks = Some(vec![Webhook {
             url: Some(Url::parse("https://updated.com/webhook").unwrap()),
             lambda_function: None,
             lambda: None,
             event_types: vec!["channel_occupied".to_string()],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         }]);
-        app.enable_watchlist_events = Some(true);
+        app.policy.features.enable_watchlist_events = Some(true);
 
         manager.update_app(app.clone()).await.unwrap();
 
@@ -904,17 +796,20 @@ mod tests {
         let found = manager.find_by_id("test_app_update").await.unwrap();
         assert!(found.is_some());
         let found_app = found.unwrap();
-        assert_eq!(found_app.max_connections, 200);
-        assert!(found_app.webhooks.is_some());
+        assert_eq!(found_app.policy.limits.max_connections, 200);
+        assert!(found_app.policy.webhooks.is_some());
         assert_eq!(
-            found_app.webhooks.unwrap()[0]
+            found_app.policy.webhooks.unwrap()[0]
                 .url
                 .as_ref()
                 .unwrap()
                 .as_str(),
             "https://updated.com/webhook"
         );
-        assert_eq!(found_app.enable_watchlist_events, Some(true));
+        assert_eq!(
+            found_app.policy.features.enable_watchlist_events,
+            Some(true)
+        );
 
         manager.delete_app("test_app_update").await.unwrap();
     }
@@ -996,16 +891,19 @@ mod tests {
         manager.create_app(app.clone()).await.unwrap();
 
         // Update to remove webhooks
-        app.webhooks = None;
-        app.enable_watchlist_events = Some(false);
+        app.policy.webhooks = None;
+        app.policy.features.enable_watchlist_events = Some(false);
         manager.update_app(app.clone()).await.unwrap();
 
         // Verify webhooks are removed
         let found = manager.find_by_id("test_app_webhooks_none").await.unwrap();
         assert!(found.is_some());
         let found_app = found.unwrap();
-        assert!(found_app.webhooks.is_none());
-        assert_eq!(found_app.enable_watchlist_events, Some(false));
+        assert!(found_app.policy.webhooks.is_none());
+        assert_eq!(
+            found_app.policy.features.enable_watchlist_events,
+            Some(false)
+        );
 
         manager.delete_app("test_app_webhooks_none").await.unwrap();
     }

@@ -2,21 +2,41 @@
 mod client_event_validation_tests {
     use crate::mocks::connection_handler_mock::create_test_connection_handler;
     use sockudo_adapter::handler::types::ClientEventRequest;
-    use sockudo_core::app::App;
+    use sockudo_core::app::{App, AppFeaturesPolicy, AppLimitsPolicy, AppPolicy};
+    use sockudo_core::websocket::SocketId;
     use sonic_rs::json;
 
     fn setup_test_app() -> App {
-        App {
-            id: "test-app".to_string(),
-            key: "test-key".to_string(),
-            secret: "test-secret".to_string(),
-            enabled: true,
-            enable_client_messages: true,
-            max_event_name_length: Some(200),
-            max_channel_name_length: Some(200),
-            max_event_payload_in_kb: Some(10),
-            ..Default::default()
-        }
+        App::from_policy(
+            "test-app".to_string(),
+            "test-key".to_string(),
+            "test-secret".to_string(),
+            true,
+            AppPolicy {
+                limits: AppLimitsPolicy {
+                    max_event_name_length: Some(200),
+                    max_channel_name_length: Some(200),
+                    max_event_payload_in_kb: Some(10),
+                    ..Default::default()
+                },
+                features: AppFeaturesPolicy {
+                    enable_client_messages: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    }
+
+    async fn validate(
+        handler: &sockudo_adapter::handler::ConnectionHandler,
+        app: &App,
+        request: &ClientEventRequest,
+    ) -> sockudo_core::error::Result<()> {
+        let socket_id = SocketId::new();
+        handler
+            .validate_client_event(&socket_id, app, request)
+            .await
     }
 
     #[tokio::test]
@@ -30,7 +50,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -51,7 +71,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -72,7 +92,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -93,7 +113,7 @@ mod client_event_validation_tests {
             data: json!({"user": "alice", "status": "typing"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_ok());
     }
 
@@ -101,7 +121,7 @@ mod client_event_validation_tests {
     async fn test_client_events_disabled_for_app() {
         let (handler, _app_manager) = create_test_connection_handler();
         let mut app = setup_test_app();
-        app.enable_client_messages = false;
+        app.policy.features.enable_client_messages = false;
 
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
@@ -109,7 +129,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -127,7 +147,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -148,7 +168,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_ok());
     }
 
@@ -163,7 +183,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_ok());
     }
 
@@ -171,7 +191,7 @@ mod client_event_validation_tests {
     async fn test_client_event_name_length_limit() {
         let (handler, _app_manager) = create_test_connection_handler();
         let mut app = setup_test_app();
-        app.max_event_name_length = Some(20);
+        app.policy.limits.max_event_name_length = Some(20);
 
         let request = ClientEventRequest {
             event: "client-this-is-a-very-long-event-name-that-exceeds-limit".to_string(),
@@ -179,7 +199,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -190,7 +210,7 @@ mod client_event_validation_tests {
     async fn test_client_event_payload_size_limit() {
         let (handler, _app_manager) = create_test_connection_handler();
         let mut app = setup_test_app();
-        app.max_event_payload_in_kb = Some(1); // 1KB limit
+        app.policy.limits.max_event_payload_in_kb = Some(1); // 1KB limit
 
         // Create a large payload over 1KB
         let large_data = "x".repeat(2000); // 2000 bytes > 1KB
@@ -200,7 +220,7 @@ mod client_event_validation_tests {
             data: json!({"message": large_data}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -211,7 +231,7 @@ mod client_event_validation_tests {
     async fn test_client_event_channel_name_length_limit() {
         let (handler, _app_manager) = create_test_connection_handler();
         let mut app = setup_test_app();
-        app.max_channel_name_length = Some(20);
+        app.policy.limits.max_channel_name_length = Some(20);
 
         let request = ClientEventRequest {
             event: "client-typing".to_string(),
@@ -219,7 +239,7 @@ mod client_event_validation_tests {
             data: json!({"message": "test"}),
         };
 
-        let result = handler.validate_client_event(&app, &request).await;
+        let result = validate(&handler, &app, &request).await;
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -256,7 +276,7 @@ mod client_event_validation_tests {
                 data: json!({"message": "test"}),
             };
 
-            let result = handler.validate_client_event(&app, &request).await;
+            let result = validate(&handler, &app, &request).await;
             assert!(
                 result.is_err(),
                 "Event '{}' should have been rejected but wasn't",
@@ -283,7 +303,7 @@ mod client_event_validation_tests {
             channel: "private-channel".to_string(),
             data: json!({"message": "test"}),
         };
-        assert!(handler.validate_client_event(&app, &request).await.is_ok());
+        assert!(validate(&handler, &app, &request).await.is_ok());
 
         // Test event that starts with 'client-pusher_internal:' (should pass after prefix check)
         let request = ClientEventRequest {
@@ -291,7 +311,7 @@ mod client_event_validation_tests {
             channel: "private-channel".to_string(),
             data: json!({"message": "test"}),
         };
-        assert!(handler.validate_client_event(&app, &request).await.is_ok());
+        assert!(validate(&handler, &app, &request).await.is_ok());
 
         // Test empty event name
         let request = ClientEventRequest {
@@ -299,7 +319,7 @@ mod client_event_validation_tests {
             channel: "private-channel".to_string(),
             data: json!({"message": "test"}),
         };
-        assert!(handler.validate_client_event(&app, &request).await.is_err());
+        assert!(validate(&handler, &app, &request).await.is_err());
 
         // Test with only 'client-' prefix (should pass)
         let request = ClientEventRequest {
@@ -307,6 +327,6 @@ mod client_event_validation_tests {
             channel: "private-channel".to_string(),
             data: json!({"message": "test"}),
         };
-        assert!(handler.validate_client_event(&app, &request).await.is_ok());
+        assert!(validate(&handler, &app, &request).await.is_ok());
     }
 }

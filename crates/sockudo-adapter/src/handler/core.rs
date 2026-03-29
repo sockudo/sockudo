@@ -126,7 +126,9 @@ impl ConnectionHandler {
             }
         } else {
             // Send subscription count webhook for non-presence channels
-            if let Some(webhook_integration) = &self.webhook_integration {
+            if !sockudo_core::utils::is_meta_channel(&channel_name)
+                && let Some(webhook_integration) = &self.webhook_integration
+            {
                 webhook_integration
                     .send_subscription_count_changed(app_config, &channel_name, current_sub_count)
                     .await
@@ -134,9 +136,29 @@ impl ConnectionHandler {
             }
         }
 
+        if !sockudo_core::utils::is_meta_channel(&channel_name) {
+            let event_name = if current_sub_count == 0 {
+                "channel_vacated"
+            } else {
+                "subscription_count"
+            };
+            self.broadcast_metachannel_event(
+                app_config,
+                &channel_name,
+                event_name,
+                sonic_rs::json!({
+                    "channel": channel_name,
+                    "subscription_count": current_sub_count,
+                }),
+            )
+            .await
+            .ok();
+        }
+
         // Send channel_vacated webhook if no subscribers left (with 3-second delay)
         // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects
         if current_sub_count == 0
+            && !sockudo_core::utils::is_meta_channel(&channel_name)
             && let Some(webhook_integration) = &self.webhook_integration
         {
             let wi = Arc::clone(webhook_integration);
@@ -669,7 +691,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         user_watchlist: Option<Vec<String>>,
     ) -> Result<()> {
-        if app_config.enable_watchlist_events.unwrap_or(false) && user_watchlist.is_some() {
+        if app_config.watchlist_events_enabled() && user_watchlist.is_some() {
             info!(
                 "Processing watchlist disconnect for user {} on socket {}",
                 user_id_str, socket_id
