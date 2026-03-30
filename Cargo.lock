@@ -6432,7 +6432,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "axum",
@@ -6477,7 +6477,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-adapter"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "async-nats",
@@ -6518,7 +6518,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-app"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -6545,7 +6545,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-cache"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -6558,7 +6558,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-core"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -6593,7 +6593,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-delta"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "async-nats",
@@ -6613,7 +6613,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-filter"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "criterion",
@@ -6625,7 +6625,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-metrics"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6639,7 +6639,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-protocol"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "prost",
@@ -6651,7 +6651,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-queue"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -6670,7 +6670,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-rate-limiter"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -6691,7 +6691,7 @@ dependencies = [
 
 [[package]]
 name = "sockudo-webhook"
-version = "3.4.2"
+version = "4.0.0"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
