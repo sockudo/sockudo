@@ -122,6 +122,35 @@ impl PresenceManager {
             )
             .await?;
 
+            let _ = Self::broadcast_to_channel(
+                Arc::clone(&connection_manager),
+                &app_config.id,
+                &format!("[meta]{channel}"),
+                sockudo_protocol::messages::PusherMessage {
+                    event: Some("sockudo_internal:member_added".to_string()),
+                    channel: Some(format!("[meta]{channel}")),
+                    data: Some(sockudo_protocol::messages::MessageData::Json(
+                        sonic_rs::json!({
+                            "channel": channel,
+                            "user_id": user_id,
+                        }),
+                    )),
+                    name: None,
+                    user_id: None,
+                    tags: None,
+                    sequence: None,
+                    conflation_key: None,
+                    message_id: None,
+                    serial: None,
+                    idempotency_key: None,
+                    extras: None,
+                    delta_sequence: None,
+                    delta_conflation_key: None,
+                },
+                None,
+            )
+            .await;
+
             debug!(
                 "Successfully processed member_added for user {} in channel {}",
                 user_id, channel
@@ -257,6 +286,35 @@ impl PresenceManager {
                 excluding_socket,
             )
             .await?;
+
+            let _ = Self::broadcast_to_channel(
+                Arc::clone(connection_manager),
+                &app_config.id,
+                &format!("[meta]{channel}"),
+                PusherMessage {
+                    event: Some("sockudo_internal:member_removed".to_string()),
+                    channel: Some(format!("[meta]{channel}")),
+                    data: Some(sockudo_protocol::messages::MessageData::Json(
+                        sonic_rs::json!({
+                            "channel": channel,
+                            "user_id": user_id,
+                        }),
+                    )),
+                    name: None,
+                    user_id: None,
+                    tags: None,
+                    sequence: None,
+                    conflation_key: None,
+                    message_id: None,
+                    serial: None,
+                    idempotency_key: None,
+                    extras: None,
+                    delta_sequence: None,
+                    delta_conflation_key: None,
+                },
+                None,
+            )
+            .await;
 
             debug!(
                 "Successfully processed member_removed for user {} in channel {}",

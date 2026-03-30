@@ -5,7 +5,7 @@ use super::ConnectionHandler;
 use super::types::*;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
-use sockudo_core::websocket::{SocketId, UserInfo};
+use sockudo_core::websocket::{ConnectionCapabilities, SocketId, UserInfo};
 use sockudo_protocol::messages::PusherMessage;
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
@@ -31,10 +31,21 @@ impl ConnectionHandler {
                     .collect::<Vec<String>>()
             });
 
+        let capabilities = user_info_val
+            .get("capabilities")
+            .cloned()
+            .map(|value| sonic_rs::from_value::<ConnectionCapabilities>(&value))
+            .transpose()
+            .map_err(|e| Error::Auth(format!("Invalid capabilities in user_data: {e}")))?;
+
+        let meta = user_info_val.get("meta").cloned();
+
         Ok(UserInfo {
             id: user_id,
             watchlist,
             info: Some(user_info_val),
+            capabilities,
+            meta,
         })
     }
 
@@ -76,7 +87,7 @@ impl ConnectionHandler {
         let mut watchlist_events = Vec::new();
         let mut watchers_to_notify = Vec::new();
 
-        if app_config.enable_watchlist_events.unwrap_or(false)
+        if app_config.watchlist_events_enabled()
             && let Some(watchlist) = user_info.watchlist.as_ref()
         {
             info!(

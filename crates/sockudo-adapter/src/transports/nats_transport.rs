@@ -6,8 +6,9 @@ use futures::StreamExt;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::NatsAdapterConfig;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
+use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
 /// Metrics for tracking message processing and drops
@@ -49,7 +50,6 @@ impl TransportMetrics {
 }
 
 /// NATS transport implementation
-#[derive(Clone)]
 pub struct NatsTransport {
     client: NatsClient,
     broadcast_subject: String,
@@ -58,6 +58,9 @@ pub struct NatsTransport {
     config: NatsAdapterConfig,
     /// Metrics for tracking message processing
     metrics: Arc<TransportMetrics>,
+    shutdown: Arc<Notify>,
+    is_running: Arc<AtomicBool>,
+    owner_count: Arc<AtomicUsize>,
 }
 
 impl NatsTransport {
@@ -126,6 +129,9 @@ impl HorizontalTransport for NatsTransport {
             response_subject,
             config,
             metrics: Arc::new(TransportMetrics::new()),
+            shutdown: Arc::new(Notify::new()),
+            is_running: Arc::new(AtomicBool::new(true)),
+            owner_count: Arc::new(AtomicUsize::new(1)),
         })
     }
 
@@ -186,6 +192,12 @@ impl HorizontalTransport for NatsTransport {
         let metrics_broadcast = self.metrics.clone();
         let metrics_request = self.metrics.clone();
         let metrics_response = self.metrics.clone();
+        let shutdown_broadcast = self.shutdown.clone();
+        let shutdown_request = self.shutdown.clone();
+        let shutdown_response = self.shutdown.clone();
+        let running_broadcast = self.is_running.clone();
+        let running_request = self.is_running.clone();
+        let running_response = self.is_running.clone();
 
         // Subscribe to broadcast channel
         let mut broadcast_subscription = client
@@ -217,7 +229,17 @@ impl HorizontalTransport for NatsTransport {
         // Spawn a task to handle broadcast messages
         let broadcast_handler = handlers.on_broadcast.clone();
         tokio::spawn(async move {
-            while let Some(msg) = broadcast_subscription.next().await {
+            loop {
+                if !running_broadcast.load(Ordering::Relaxed) {
+                    break;
+                }
+                let msg = tokio::select! {
+                    _ = shutdown_broadcast.notified() => break,
+                    msg = broadcast_subscription.next() => msg,
+                };
+                let Some(msg) = msg else {
+                    break;
+                };
                 metrics_broadcast.record_received();
                 match sonic_rs::from_slice::<BroadcastMessage>(&msg.payload) {
                     Ok(broadcast) => {
@@ -241,7 +263,17 @@ impl HorizontalTransport for NatsTransport {
         // Spawn a task to handle request messages
         let request_handler = handlers.on_request.clone();
         tokio::spawn(async move {
-            while let Some(msg) = request_subscription.next().await {
+            loop {
+                if !running_request.load(Ordering::Relaxed) {
+                    break;
+                }
+                let msg = tokio::select! {
+                    _ = shutdown_request.notified() => break,
+                    msg = request_subscription.next() => msg,
+                };
+                let Some(msg) = msg else {
+                    break;
+                };
                 metrics_request.record_received();
                 match sonic_rs::from_slice::<RequestBody>(&msg.payload) {
                     Ok(request) => {
@@ -277,7 +309,17 @@ impl HorizontalTransport for NatsTransport {
         // Spawn a task to handle response messages
         let response_handler = handlers.on_response.clone();
         tokio::spawn(async move {
-            while let Some(msg) = response_subscription.next().await {
+            loop {
+                if !running_response.load(Ordering::Relaxed) {
+                    break;
+                }
+                let msg = tokio::select! {
+                    _ = shutdown_response.notified() => break,
+                    msg = response_subscription.next() => msg,
+                };
+                let Some(msg) = msg else {
+                    break;
+                };
                 metrics_response.record_received();
                 match sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
                     Ok(response) => {
@@ -324,6 +366,32 @@ impl HorizontalTransport for NatsTransport {
             other_state => Err(sockudo_core::error::Error::Connection(format!(
                 "NATS client in transitional state: {other_state:?}"
             ))),
+        }
+    }
+}
+
+impl Drop for NatsTransport {
+    fn drop(&mut self) {
+        if self.owner_count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.is_running.store(false, Ordering::Relaxed);
+            self.shutdown.notify_waiters();
+        }
+    }
+}
+
+impl Clone for NatsTransport {
+    fn clone(&self) -> Self {
+        self.owner_count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            client: self.client.clone(),
+            broadcast_subject: self.broadcast_subject.clone(),
+            request_subject: self.request_subject.clone(),
+            response_subject: self.response_subject.clone(),
+            config: self.config.clone(),
+            metrics: self.metrics.clone(),
+            shutdown: self.shutdown.clone(),
+            is_running: self.is_running.clone(),
+            owner_count: self.owner_count.clone(),
         }
     }
 }

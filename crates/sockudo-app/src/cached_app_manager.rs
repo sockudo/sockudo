@@ -225,16 +225,24 @@ mod tests {
     use sockudo_core::options::MemoryCacheOptions;
 
     fn create_test_app(id: &str) -> App {
-        App {
-            id: id.to_string(),
-            key: format!("{}_key", id),
-            secret: format!("{}_secret", id),
-            max_connections: 100,
-            enable_client_messages: false,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        }
+        App::from_policy(
+            id.to_string(),
+            format!("{}_key", id),
+            format!("{}_secret", id),
+            true,
+            sockudo_core::app::AppPolicy {
+                limits: sockudo_core::app::AppLimitsPolicy {
+                    max_connections: 100,
+                    max_client_events_per_second: 100,
+                    ..Default::default()
+                },
+                features: sockudo_core::app::AppFeaturesPolicy {
+                    enable_client_messages: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
     }
 
     async fn create_test_manager() -> CachedAppManager {
@@ -290,13 +298,13 @@ mod tests {
         manager.create_app(app.clone()).await.unwrap();
 
         let found = manager.find_by_id("test3").await.unwrap().unwrap();
-        assert_eq!(found.max_connections, 100);
+        assert_eq!(found.max_connections_limit(), 100);
 
-        app.max_connections = 200;
+        app.policy.limits.max_connections = 200;
         manager.update_app(app).await.unwrap();
 
         let found_updated = manager.find_by_id("test3").await.unwrap().unwrap();
-        assert_eq!(found_updated.max_connections, 200);
+        assert_eq!(found_updated.max_connections_limit(), 200);
     }
 
     #[tokio::test]

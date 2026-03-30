@@ -51,8 +51,8 @@ async fn test_publish_broadcast() -> Result<()> {
     let handlers = create_test_handlers(collector.clone());
     transport.start_listeners(handlers).await?;
 
-    // Give listener time to subscribe
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    // Give listener time to subscribe.
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Publish a broadcast
     let broadcast = create_test_broadcast("test-event");
@@ -571,11 +571,15 @@ async fn test_concurrent_operations() -> Result<()> {
         task.await.unwrap()?;
     }
 
-    // Give time for all messages to be processed
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Poll for all messages to be processed instead of assuming a fixed delay.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    let mut broadcasts = collector.get_broadcasts().await;
+    while broadcasts.len() < 8 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+        broadcasts = collector.get_broadcasts().await;
+    }
 
     // Should have received all 10 broadcasts (or most due to async timing)
-    let broadcasts = collector.get_broadcasts().await;
     assert!(
         broadcasts.len() >= 8,
         "Expected at least 8 broadcasts, got {}",

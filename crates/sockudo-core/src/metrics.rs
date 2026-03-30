@@ -107,6 +107,21 @@ pub trait MetricsInterface: Send + Sync {
     /// Track delta compression delta message sends
     fn track_delta_compression_delta_message(&self, app_id: &str, channel_name: &str);
 
+    /// Track a publish request that includes an idempotency key
+    fn mark_idempotency_publish(&self, _app_id: &str) {}
+
+    /// Track a duplicate publish caught by idempotency deduplication
+    fn mark_idempotency_duplicate(&self, _app_id: &str) {}
+
+    /// Track an ephemeral message delivery (V2 only)
+    fn mark_ephemeral_message(&self, _app_id: &str) {}
+
+    /// Track a message suppressed by event name filtering (V2 only)
+    fn mark_event_filter_suppressed(&self, _app_id: &str) {}
+
+    /// Track a message delivery skipped due to echo control (V2 only)
+    fn mark_echo_suppressed(&self, _app_id: &str) {}
+
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;
 

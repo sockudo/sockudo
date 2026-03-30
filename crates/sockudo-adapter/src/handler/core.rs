@@ -62,6 +62,7 @@ impl ConnectionHandler {
         // This prevents race condition where a message broadcast arrives between unsubscribe
         // and clear_channel_state, which would send a delta based on stale state.
         // By clearing first, any in-flight messages will be sent as FULL (no base state).
+        #[cfg(feature = "delta")]
         self.delta_compression
             .clear_channel_state(socket_id, &channel_name);
 
@@ -125,7 +126,9 @@ impl ConnectionHandler {
             }
         } else {
             // Send subscription count webhook for non-presence channels
-            if let Some(webhook_integration) = &self.webhook_integration {
+            if !sockudo_core::utils::is_meta_channel(&channel_name)
+                && let Some(webhook_integration) = &self.webhook_integration
+            {
                 webhook_integration
                     .send_subscription_count_changed(app_config, &channel_name, current_sub_count)
                     .await
@@ -133,9 +136,29 @@ impl ConnectionHandler {
             }
         }
 
+        if !sockudo_core::utils::is_meta_channel(&channel_name) {
+            let event_name = if current_sub_count == 0 {
+                "channel_vacated"
+            } else {
+                "subscription_count"
+            };
+            self.broadcast_metachannel_event(
+                app_config,
+                &channel_name,
+                event_name,
+                sonic_rs::json!({
+                    "channel": channel_name,
+                    "subscription_count": current_sub_count,
+                }),
+            )
+            .await
+            .ok();
+        }
+
         // Send channel_vacated webhook if no subscribers left (with 3-second delay)
         // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects
         if current_sub_count == 0
+            && !sockudo_core::utils::is_meta_channel(&channel_name)
             && let Some(webhook_integration) = &self.webhook_integration
         {
             let wi = Arc::clone(webhook_integration);
@@ -346,6 +369,7 @@ impl ConnectionHandler {
         }
 
         // Step 3.5: MEMORY LEAK FIX - Clean up delta compression state for this socket
+        #[cfg(feature = "delta")]
         self.delta_compression.remove_socket(socket_id);
 
         // Step 4: Queue cleanup work (non-blocking)
@@ -440,6 +464,7 @@ impl ConnectionHandler {
         }
 
         // MEMORY LEAK FIX: Clean up delta compression state for this socket
+        #[cfg(feature = "delta")]
         self.delta_compression.remove_socket(socket_id);
 
         // Get app configuration
@@ -666,7 +691,7 @@ impl ConnectionHandler {
         socket_id: &SocketId,
         user_watchlist: Option<Vec<String>>,
     ) -> Result<()> {
-        if app_config.enable_watchlist_events.unwrap_or(false) && user_watchlist.is_some() {
+        if app_config.watchlist_events_enabled() && user_watchlist.is_some() {
             info!(
                 "Processing watchlist disconnect for user {} on socket {}",
                 user_id_str, socket_id
@@ -776,6 +801,7 @@ impl ConnectionHandler {
             .await
         {
             // Remove from filter index for O(1) message routing (if local adapter is available)
+            #[cfg(feature = "tag-filtering")]
             if let Some(ref local_adapter) = self.local_adapter {
                 let filter_index = local_adapter.get_filter_index();
                 // Get the filter before removing it
