@@ -2,8 +2,77 @@ use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
+
+use crate::protocol_version::ProtocolVersion;
+
+/// Allowed value types for extras.headers.
+/// Flat only — no Object or Array variant so nesting is structurally impossible.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ExtrasValue {
+    String(String),
+    Number(f64),
+    Bool(bool),
+}
+
+/// Structured metadata envelope for V2-specific message features.
+///
+/// Present on the wire for V2 connections only. V1 connections receive messages
+/// with extras stripped entirely. Pusher SDKs ignore unknown fields so the
+/// field is safe to carry through internal pipelines even when the publisher
+/// is V1.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageExtras {
+    /// Flat metadata for server-side event name filtering.
+    /// Must be a flat object — no nested objects, no arrays.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, ExtrasValue>>,
+
+    /// If true: skip connection recovery buffer and webhook forwarding.
+    /// Deliver to currently connected V2 subscribers only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ephemeral: Option<bool>,
+
+    /// Server-side deduplication key. If the same key arrives again within
+    /// the app's idempotency TTL window, the message is silently dropped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+
+    /// Per-message echo control. Overrides the connection-level echo setting
+    /// when explicitly set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub echo: Option<bool>,
+}
+
+impl MessageExtras {
+    /// Validate that headers (if present) contain only flat scalar values.
+    /// This is structurally guaranteed by `ExtrasValue` having no Object/Array
+    /// variants, but this method provides an explicit check with a clear error
+    /// when validating raw JSON before deserialization.
+    pub fn validate_headers_from_json(raw: &Value) -> Result<(), String> {
+        if let Some(extras) = raw.get("extras")
+            && let Some(headers) = extras.get("headers")
+            && let Some(obj) = headers.as_object()
+        {
+            for (key, val) in obj.iter() {
+                if val.is_object() || val.is_array() {
+                    return Err(format!(
+                        "extras.headers must be a flat object — nested objects and arrays are not allowed (key: '{key}')"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Generate a unique message ID (UUIDv4) for client-side deduplication.
+pub fn generate_message_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceData {
@@ -101,6 +170,30 @@ pub struct PusherMessage {
     /// Delta compression conflation key for message grouping
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflation_key: Option<String>,
+    /// Unique message ID for client-side deduplication
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// Monotonically increasing serial for connection recovery.
+    /// Assigned per-channel at broadcast time when connection recovery is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<u64>,
+    /// Idempotency key for cross-region deduplication.
+    /// Threaded from the HTTP publish request through the broadcast pipeline
+    /// so that receiving nodes can register it in their local cache.
+    /// Never sent to WebSocket clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    /// V2 message extras envelope. Carries ephemeral flag, per-message echo
+    /// control, header-based filtering metadata, and extras-level idempotency.
+    /// Stripped from V1 deliveries; included in V2 wire format.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<MessageExtras>,
+    /// Delta sequence marker for full messages in V2 delta streams.
+    #[serde(rename = "__delta_seq", skip_serializing_if = "Option::is_none")]
+    pub delta_sequence: Option<u64>,
+    /// Delta conflation key marker for full messages in V2 delta streams.
+    #[serde(rename = "__conflation_key", skip_serializing_if = "Option::is_none")]
+    pub delta_conflation_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +218,14 @@ pub struct PusherApiMessage {
     /// - `None`: Use default behavior based on channel/global configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delta: Option<bool>,
+    /// Idempotency key for deduplicating publish requests.
+    /// If the same key is seen within the TTL window, the server returns the
+    /// cached response without re-broadcasting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    /// V2 extras envelope. Passed through to PusherMessage for V2 delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<MessageExtras>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +303,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
     pub fn subscription_succeeded(channel: String, presence_data: Option<PresenceData>) -> Self {
@@ -226,6 +333,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -242,6 +355,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -255,6 +374,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
     pub fn channel_event<S: Into<String>>(event: S, channel: S, data: Value) -> Self {
@@ -267,6 +392,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -287,6 +418,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -306,6 +443,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -320,6 +463,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -391,6 +540,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -406,6 +561,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -419,6 +580,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -434,6 +601,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 
@@ -465,7 +638,55 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
+    }
+
+    /// Rewrite the event name prefix to match the given protocol version.
+    /// This is the single translation point between V1 (`pusher:`) and V2 (`sockudo:`) wire formats.
+    pub fn rewrite_prefix(&mut self, version: ProtocolVersion) {
+        if let Some(ref event) = self.event {
+            self.event = Some(version.rewrite_event_prefix(event));
+        }
+    }
+
+    /// Returns true if this message is ephemeral (skip recovery buffer and webhooks).
+    pub fn is_ephemeral(&self) -> bool {
+        self.extras
+            .as_ref()
+            .and_then(|e| e.ephemeral)
+            .unwrap_or(false)
+    }
+
+    /// Returns the extras-level idempotency key, if set.
+    pub fn extras_idempotency_key(&self) -> Option<&str> {
+        self.extras
+            .as_ref()
+            .and_then(|e| e.idempotency_key.as_deref())
+    }
+
+    /// Resolve whether this message should be echoed back to the publishing socket.
+    /// Message-level `extras.echo` takes precedence over the connection default.
+    pub fn should_echo(&self, connection_default: bool) -> bool {
+        self.extras
+            .as_ref()
+            .and_then(|e| e.echo)
+            .unwrap_or(connection_default)
+    }
+
+    /// Returns the extras headers for server-side filtering, if present.
+    pub fn filter_headers(&self) -> Option<&HashMap<String, ExtrasValue>> {
+        self.extras.as_ref().and_then(|e| e.headers.as_ref())
+    }
+
+    /// Returns true if the given protocol version should receive extras in delivered messages.
+    pub fn should_include_extras(protocol: &ProtocolVersion) -> bool {
+        matches!(protocol, ProtocolVersion::V2)
     }
 
     /// Add base sequence marker to a full message for delta tracking
@@ -494,6 +715,12 @@ impl PusherMessage {
             sequence: None,
             conflation_key: None,
             tags: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         }
     }
 }

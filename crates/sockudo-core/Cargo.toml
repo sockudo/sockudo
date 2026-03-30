@@ -10,13 +10,17 @@ license-file.workspace = true
 [features]
 default = ["local"]
 local = []
-full = ["redis", "redis-cluster", "nats", "mysql", "postgres", "dynamodb", "scylladb", "sqs", "sns", "lambda"]
+full = ["redis", "redis-cluster", "nats", "rabbitmq", "google-pubsub", "kafka", "mysql", "postgres", "dynamodb", "surrealdb", "scylladb", "sqs", "sns", "lambda"]
 redis = ["dep:redis"]
 redis-cluster = ["redis"]
 nats = []
+rabbitmq = []
+google-pubsub = []
+kafka = []
 mysql = []
 postgres = []
 dynamodb = []
+surrealdb = []
 scylladb = []
 sqs = []
 sns = []
@@ -46,6 +50,7 @@ sha2 = { workspace = true }
 sockudo-ws = { workspace = true }
 sonic-rs = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

@@ -3,6 +3,7 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::connection_manager::{
@@ -42,10 +43,18 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub node_timeout_ms: u64,
     pub cleanup_interval_ms: u64,
     pub enable_socket_counting: bool,
+    #[cfg(feature = "delta")]
     // Delta compression manager for bandwidth optimization
     delta_compression: Option<Arc<sockudo_delta::DeltaCompressionManager>>,
+    #[cfg(feature = "delta")]
     // App manager for getting channel-specific delta settings
     app_manager: Option<Arc<dyn AppManager + Send + Sync>>,
+    // Cache manager for cross-region idempotency deduplication (set once via OnceLock)
+    cache_manager: Arc<OnceLock<Arc<dyn sockudo_core::cache::CacheManager + Send + Sync>>>,
+    // Idempotency TTL (seconds) used when registering keys from remote broadcasts
+    idempotency_ttl: AtomicU64,
+    // Shared run flag for background loops so dropping the adapter stops heartbeats/cleanup tasks.
+    is_running: Arc<AtomicBool>,
 }
 
 /// Check if we should skip horizontal communication (single node optimization)
@@ -70,6 +79,12 @@ impl<T: HorizontalTransport> HorizontalAdapterBase<T> {
     pub async fn should_skip_horizontal_communication(&self) -> bool {
         should_skip_horizontal_communication_impl(self.cluster_health_enabled, &self.horizontal)
             .await
+    }
+}
+
+impl<T: HorizontalTransport> Drop for HorizontalAdapterBase<T> {
+    fn drop(&mut self) {
+        self.is_running.store(false, Ordering::Relaxed);
     }
 }
 
@@ -104,11 +119,17 @@ where
             node_timeout_ms: cluster_health_defaults.node_timeout_ms,
             cleanup_interval_ms: cluster_health_defaults.cleanup_interval_ms,
             enable_socket_counting: true, // Default to enabled
+            #[cfg(feature = "delta")]
             delta_compression: None,
+            #[cfg(feature = "delta")]
             app_manager: None,
+            cache_manager: Arc::new(OnceLock::new()),
+            idempotency_ttl: AtomicU64::new(120),
+            is_running: Arc::new(AtomicBool::new(true)),
         })
     }
 
+    #[cfg(feature = "delta")]
     /// Set delta compression manager and app manager for delta compression support
     pub async fn set_delta_compression(
         &mut self,
@@ -132,6 +153,17 @@ where
     ) -> Result<()> {
         self.horizontal.set_metrics(metrics);
         Ok(())
+    }
+
+    /// Set the cache manager used for cross-region idempotency deduplication.
+    pub fn set_cache_manager(
+        &self,
+        cache_manager: Arc<dyn sockudo_core::cache::CacheManager + Send + Sync>,
+        idempotency_ttl: u64,
+    ) {
+        let _ = self.cache_manager.set(cache_manager);
+        self.idempotency_ttl
+            .store(idempotency_ttl, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn set_event_bus(&self, event_sender: DeadNodeEventBusSender) {
@@ -448,15 +480,32 @@ where
         let request_horizontal = horizontal_arc.clone();
         let response_horizontal = horizontal_arc.clone();
         let transport_for_request = self.transport.clone();
+        let broadcast_cache_manager = self.cache_manager.clone();
+        let broadcast_idempotency_ttl = self
+            .idempotency_ttl
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         let handlers = TransportHandlers {
             on_broadcast: Arc::new(move |broadcast| {
                 let horizontal_clone = broadcast_horizontal.clone();
+                let cache_manager_clone = broadcast_cache_manager.clone();
+                let idempotency_ttl = broadcast_idempotency_ttl;
                 Box::pin(async move {
                     let node_id = horizontal_clone.node_id.clone();
 
                     if broadcast.node_id == node_id {
                         return;
+                    }
+
+                    // Register the idempotency key in local cache so duplicate
+                    // publishes arriving at this node are caught.
+                    if let Some(ref key) = broadcast.idempotency_key
+                        && let Some(cache) = cache_manager_clone.get()
+                    {
+                        let cache_key = format!("app:{}:idempotency:{}", broadcast.app_id, key);
+                        let _ = cache
+                            .set_if_not_exists(&cache_key, "cross_region", idempotency_ttl)
+                            .await;
                     }
 
                     if let Ok(message) = sonic_rs::from_str::<PusherMessage>(&broadcast.message) {
@@ -477,12 +526,15 @@ where
                         let horizontal_lock = &horizontal_clone;
 
                         // Log tag filtering status
-                        let tag_filtering_enabled =
-                            horizontal_lock.local_adapter.is_tag_filtering_enabled();
-                        tracing::debug!(
-                            "Tag filtering enabled on this node: {}",
-                            tag_filtering_enabled
-                        );
+                        #[cfg(feature = "tag-filtering")]
+                        {
+                            let tag_filtering_enabled =
+                                horizontal_lock.local_adapter.is_tag_filtering_enabled();
+                            tracing::debug!(
+                                "Tag filtering enabled on this node: {}",
+                                tag_filtering_enabled
+                            );
+                        }
 
                         // Count local recipients for this node (adjusts for excluded socket)
                         let local_recipient_count = horizontal_lock
@@ -494,6 +546,7 @@ where
                             .await;
 
                         // Check if compression metadata is present and delta compression is enabled
+                        #[cfg(feature = "delta")]
                         let (send_result, compression_used) = if let Some(ref compression_meta) =
                             broadcast.compression_metadata
                             && compression_meta.enabled
@@ -511,8 +564,7 @@ where
                                 let channel_settings = if let Ok(Some(app)) =
                                     app_manager.find_by_id(&broadcast.app_id).await
                                 {
-                                    app.channel_delta_compression
-                                        .as_ref()
+                                    app.channel_delta_compression_ref()
                                         .and_then(|map| map.get(&broadcast.channel))
                                         .and_then(|config| {
                                             use sockudo_delta::ChannelDeltaConfig;
@@ -578,7 +630,20 @@ where
                             (result, false)
                         };
 
+                        #[cfg(not(feature = "delta"))]
+                        let send_result = horizontal_lock
+                            .local_adapter
+                            .send(
+                                &broadcast.channel,
+                                message,
+                                except_id.as_ref(),
+                                &broadcast.app_id,
+                                broadcast.timestamp_ms,
+                            )
+                            .await;
+
                         // Track delta compression metrics if compression was used
+                        #[cfg(feature = "delta")]
                         if compression_used && let Some(metrics) = horizontal_lock.metrics.get() {
                             metrics.track_horizontal_delta_compression(
                                 &broadcast.app_id,
@@ -692,12 +757,16 @@ where
         let transport = self.transport.clone();
         let node_id = self.node_id.clone();
         let heartbeat_interval_ms = self.heartbeat_interval_ms;
+        let is_running = self.is_running.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
 
             loop {
                 interval.tick().await;
+                if !is_running.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 let heartbeat_request = RequestBody {
                     request_id: generate_request_id(),
@@ -729,12 +798,16 @@ where
         let cleanup_interval_ms = self.cleanup_interval_ms;
         let node_timeout_ms = self.node_timeout_ms;
         let cluster_health_enabled = self.cluster_health_enabled;
+        let is_running = self.is_running.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(cleanup_interval_ms));
 
             loop {
                 interval.tick().await;
+                if !is_running.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 let dead_nodes = horizontal.get_dead_nodes(node_timeout_ms).await;
 
@@ -879,9 +952,21 @@ where
         app_id: &str,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         buffer_config: sockudo_core::websocket::WebSocketBufferConfig,
+        protocol_version: sockudo_protocol::ProtocolVersion,
+        wire_format: sockudo_protocol::WireFormat,
+        echo_messages: bool,
     ) -> Result<()> {
         self.local_adapter
-            .add_socket(socket_id, socket, app_id, app_manager, buffer_config)
+            .add_socket(
+                socket_id,
+                socket,
+                app_id,
+                app_manager,
+                buffer_config,
+                protocol_version,
+                wire_format,
+                echo_messages,
+            )
             .await
     }
 
@@ -915,6 +1000,7 @@ where
         start_time_ms: Option<f64>,
     ) -> Result<()> {
         // Check if delta compression is available and configured for this channel
+        #[cfg(feature = "delta")]
         if let (Some(delta_compression), Some(app_manager)) =
             (&self.delta_compression, &self.app_manager)
         {
@@ -922,8 +1008,7 @@ where
             if let Ok(Some(app)) = app_manager.find_by_id(app_id).await {
                 // Get channel-specific delta compression settings
                 let channel_settings = app
-                    .channel_delta_compression
-                    .as_ref()
+                    .channel_delta_compression_ref()
                     .and_then(|map| map.get(channel))
                     .and_then(|config| {
                         use sockudo_delta::ChannelDeltaConfig;
@@ -987,6 +1072,8 @@ where
                 )
             }),
             compression_metadata: None,
+            idempotency_key: message.idempotency_key.clone(),
+            ephemeral: message.is_ephemeral(),
         };
 
         // Skip broadcasting to other nodes if we're in single-node mode
@@ -997,6 +1084,7 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "delta")]
     async fn send_with_compression(
         &self,
         channel: &str,
@@ -1106,6 +1194,8 @@ where
                 is_full_message, // Determined by cluster coordination or defaults to true
                 event_name,
             }),
+            idempotency_key: message.idempotency_key.clone(),
+            ephemeral: message.is_ephemeral(),
         };
 
         // Skip broadcasting to other nodes if we're in single-node mode

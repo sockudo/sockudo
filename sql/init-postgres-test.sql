@@ -38,8 +38,17 @@ CREATE TABLE IF NOT EXISTS applications (
     -- Webhooks (JSONB column for webhook configurations)
     webhooks JSONB DEFAULT NULL,
 
-    -- Allowed origins (JSONB array for CORS-like origin validation)
+    -- Allowed origins (JSONB array for origin validation)
     allowed_origins JSONB DEFAULT NULL,
+
+    -- Per-app delta compression (JSONB object: channel patterns → config)
+    channel_delta_compression JSONB DEFAULT NULL,
+
+    -- Per-app idempotency override (JSONB object: { enabled, ttl_seconds })
+    idempotency JSONB DEFAULT NULL,
+
+    -- Per-app connection recovery override (JSONB object: { enabled, buffer_ttl_seconds, max_buffer_size })
+    connection_recovery JSONB DEFAULT NULL,
 
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

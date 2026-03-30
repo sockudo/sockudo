@@ -34,6 +34,18 @@ CREATE TABLE IF NOT EXISTS applications (
     -- Webhooks (JSON column for webhook configurations)
     webhooks JSON DEFAULT NULL,
 
+    -- Allowed origins (JSON array for origin validation)
+    allowed_origins JSON DEFAULT NULL,
+
+    -- Per-app delta compression (JSON object: channel patterns → config)
+    channel_delta_compression JSON DEFAULT NULL,
+
+    -- Per-app idempotency override (JSON object: { enabled, ttl_seconds })
+    idempotency JSON DEFAULT NULL,
+
+    -- Per-app connection recovery override (JSON object: { enabled, buffer_ttl_seconds, max_buffer_size })
+    connection_recovery JSON DEFAULT NULL,
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -19,6 +19,8 @@ use tracing::{error, info, warn};
 pub struct WebhookConfig {
     pub enabled: bool,
     pub batching: BatchingConfig,
+    pub retry: sockudo_core::options::WebhookRetryConfig,
+    pub request_timeout_ms: u64,
     pub process_id: String,
     pub debug: bool,
 }
@@ -28,6 +30,8 @@ impl Default for WebhookConfig {
         Self {
             enabled: true,
             batching: BatchingConfig::default(),
+            retry: sockudo_core::options::WebhookRetryConfig::default(),
+            request_timeout_ms: 10_000,
             process_id: uuid::Uuid::new_v4().to_string(),
             debug: false,
         }
@@ -124,7 +128,11 @@ impl WebhookIntegration {
     }
 
     async fn setup_webhook_processor(&mut self, queue_manager: Arc<QueueManager>) -> Result<()> {
-        let webhook_sender = Arc::new(WebhookSender::new(self.app_manager.clone()));
+        let webhook_sender = Arc::new(WebhookSender::new(
+            self.app_manager.clone(),
+            self.config.retry.clone(),
+            self.config.request_timeout_ms,
+        ));
         let queue_name = "webhooks".to_string();
         let sender_clone = webhook_sender.clone();
 
@@ -318,7 +326,7 @@ impl WebhookIntegration {
         if !self.is_enabled() {
             return false;
         }
-        app.webhooks.as_ref().is_some_and(|webhooks| {
+        app.webhooks_ref().is_some_and(|webhooks| {
             webhooks
                 .iter()
                 .any(|wh_config| wh_config.event_types.contains(&event_type_name.to_string()))
@@ -471,6 +479,7 @@ impl WebhookIntegration {
 mod tests {
     use super::*;
     use sockudo_app::memory_app_manager::MemoryAppManager;
+    use sockudo_core::app::{AppFeaturesPolicy, AppLimitsPolicy, AppPolicy};
     use sockudo_core::webhook_types::{JobData, JobPayload};
     use sockudo_queue::manager::QueueManagerFactory;
 
@@ -481,18 +490,30 @@ mod tests {
         Arc::new(QueueManager::new(driver))
     }
 
+    fn test_app() -> App {
+        App::from_policy(
+            "test_app".to_string(),
+            "test_key".to_string(),
+            "test_secret".to_string(),
+            true,
+            AppPolicy {
+                limits: AppLimitsPolicy {
+                    max_connections: 100,
+                    max_client_events_per_second: 100,
+                    ..Default::default()
+                },
+                features: AppFeaturesPolicy {
+                    enable_client_messages: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    }
+
     #[tokio::test]
     async fn test_send_cache_missed() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()
@@ -508,16 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_subscription_count_changed() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()
@@ -556,6 +568,8 @@ mod tests {
                 duration: 1000,
                 size: 50,
             },
+            retry: sockudo_core::options::WebhookRetryConfig::default(),
+            request_timeout_ms: 10_000,
             process_id: "test-process".to_string(),
             debug: false,
         };
@@ -583,16 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_integration_send_event() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()
@@ -617,16 +622,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_integration_send_client_event() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()
@@ -651,16 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_integration_send_member_added() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()
@@ -678,16 +665,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_integration_send_member_removed() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()
@@ -705,16 +683,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_integration_send_channel_occupied() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()
@@ -732,16 +701,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_integration_send_channel_vacated() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()
@@ -757,16 +717,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_webhook_integration_send_subscription_count_changed() {
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         let app_manager = Arc::new(MemoryAppManager::new());
         let config = WebhookConfig {
             ..Default::default()

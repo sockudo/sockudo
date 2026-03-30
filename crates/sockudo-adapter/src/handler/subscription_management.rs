@@ -6,6 +6,7 @@ use crate::channel_manager::JoinResponse;
 use sockudo_core::app::App;
 use sockudo_core::channel::{ChannelType, PresenceMemberInfo};
 use sockudo_core::error::Result;
+#[cfg(feature = "delta")]
 use sockudo_delta::DeltaCompressionManager;
 
 use ahash::AHashMap;
@@ -53,6 +54,12 @@ impl ConnectionHandler {
             tags: None,
             sequence: None,
             conflation_key: None,
+            message_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
         };
         let t_after_msg_create = t_start.elapsed().as_micros();
 
@@ -285,22 +292,25 @@ impl ConnectionHandler {
 
         // Apply per-subscription delta settings if provided
         // This allows clients to negotiate delta compression on a per-channel basis
-        self.apply_subscription_delta_settings(socket_id, &request.channel, &request.delta)
-            .await;
+        #[cfg(feature = "delta")]
+        {
+            self.apply_subscription_delta_settings(socket_id, &request.channel, &request.delta)
+                .await;
 
-        // Send delta compression cache sync if enabled for this socket and channel
-        tracing::debug!(
-            "About to call send_delta_cache_sync_if_needed for socket {} channel {}",
-            socket_id,
-            request.channel
-        );
-        self.send_delta_cache_sync_if_needed(socket_id, app_config, &request.channel)
-            .await?;
-        tracing::debug!(
-            "send_delta_cache_sync_if_needed completed successfully for socket {} channel {}",
-            socket_id,
-            request.channel
-        );
+            // Send delta compression cache sync if enabled for this socket and channel
+            tracing::debug!(
+                "About to call send_delta_cache_sync_if_needed for socket {} channel {}",
+                socket_id,
+                request.channel
+            );
+            self.send_delta_cache_sync_if_needed(socket_id, app_config, &request.channel)
+                .await?;
+            tracing::debug!(
+                "send_delta_cache_sync_if_needed completed successfully for socket {} channel {}",
+                socket_id,
+                request.channel
+            );
+        }
 
         // Send webhooks after subscription success response (non-blocking for client)
         if subscription_result.channel_connections == Some(1)
@@ -322,8 +332,42 @@ impl ConnectionHandler {
             });
         }
 
+        if !sockudo_core::utils::is_meta_channel(&request.channel) {
+            let current_count = self
+                .connection_manager
+                .get_channel_socket_count(&app_config.id, &request.channel)
+                .await;
+
+            if current_count == 1 {
+                self.broadcast_metachannel_event(
+                    app_config,
+                    &request.channel,
+                    "channel_occupied",
+                    sonic_rs::json!({
+                        "channel": request.channel,
+                        "subscription_count": current_count,
+                    }),
+                )
+                .await
+                .ok();
+            }
+
+            self.broadcast_metachannel_event(
+                app_config,
+                &request.channel,
+                "subscription_count",
+                sonic_rs::json!({
+                    "channel": request.channel,
+                    "subscription_count": current_count,
+                }),
+            )
+            .await
+            .ok();
+        }
+
         // Send subscription count webhook for non-presence channels
         if !request.channel.starts_with("presence-")
+            && !sockudo_core::utils::is_meta_channel(&request.channel)
             && let Some(webhook_integration) = &self.webhook_integration
         {
             let current_count = self
@@ -358,15 +402,24 @@ impl ConnectionHandler {
             .get_connection(socket_id, &app_config.id)
             .await
         {
-            // Use WebSocketRef's lock-free filter update
-            conn_arc
-                .subscribe_to_channel_with_filter(
-                    request.channel.clone(),
-                    request.tags_filter.clone(),
-                )
-                .await;
+            // Use WebSocketRef's lock-free filter update (tag filter + event name filter)
+            {
+                #[cfg(feature = "tag-filtering")]
+                let tag_filter = request.tags_filter.clone();
+                #[cfg(not(feature = "tag-filtering"))]
+                let tag_filter = None;
+
+                conn_arc
+                    .subscribe_to_channel_with_filters(
+                        request.channel.clone(),
+                        tag_filter,
+                        request.event_name_filter.clone(),
+                    )
+                    .await;
+            }
 
             // Register with filter index for O(1) message routing (if local adapter is available)
+            #[cfg(feature = "tag-filtering")]
             if let Some(ref local_adapter) = self.local_adapter {
                 let filter_index = local_adapter.get_filter_index();
                 // Get the filter we just stored on the socket
@@ -487,6 +540,7 @@ impl ConnectionHandler {
     /// Formats supported in subscription:
     /// - `"delta": "fossil"` - Enable with Fossil algorithm
     /// - `"delta": "xdelta3"` - Enable with Xdelta3 algorithm
+    #[cfg(feature = "delta")]
     /// - `"delta": true` - Enable with server default algorithm
     /// - `"delta": false` - Disable delta compression for this channel
     /// - `"delta": { "enabled": true, "algorithm": "fossil" }` - Full object format
@@ -555,6 +609,12 @@ impl ConnectionHandler {
                 tags: None,
                 sequence: None,
                 conflation_key: None,
+                message_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
             };
 
             // Get app_id from connection manager
@@ -584,6 +644,7 @@ impl ConnectionHandler {
         }
     }
 
+    #[cfg(feature = "delta")]
     async fn send_delta_cache_sync_if_needed(
         &self,
         socket_id: &SocketId,
@@ -611,8 +672,7 @@ impl ConnectionHandler {
 
         // Get channel-specific delta compression settings from app config
         let channel_settings = app_config
-            .channel_delta_compression
-            .as_ref()
+            .channel_delta_compression_ref()
             .and_then(|map| map.get(channel))
             .and_then(|config| {
                 // Convert ChannelDeltaConfig to ChannelDeltaSettings

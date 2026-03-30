@@ -20,7 +20,7 @@ impl ConnectionHandler {
         self.set_activity_timeout(&app_config.id, socket_id).await?;
 
         // Set user authentication timeout if required
-        if app_config.enable_user_authentication.unwrap_or(false) {
+        if app_config.user_authentication_enabled() {
             let auth_timeout = self.server_options.user_authentication_timeout;
             self.set_user_authentication_timeout(&app_config.id, socket_id, auth_timeout)
                 .await?;
@@ -33,8 +33,8 @@ impl ConnectionHandler {
         let socket_id_clone = *socket_id;
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
+        let handler = self.clone();
         let activity_timeout = self.server_options.activity_timeout;
-        let metrics = self.metrics.clone();
 
         // Clear any existing timeout
         self.clear_activity_timeout(app_id, socket_id).await?;
@@ -84,9 +84,14 @@ impl ConnectionHandler {
                     if !ws.is_connected() {
                         debug!("Connection {} already closed, cleaning up", socket_id_clone);
                         drop(ws);
-                        conn_manager.cleanup_connection(&app_id_clone, conn).await;
-                        if let Some(ref m) = metrics {
-                            m.mark_disconnection(&app_id_clone, &socket_id_clone);
+                        if let Err(e) = handler
+                            .handle_disconnect(&app_id_clone, &socket_id_clone)
+                            .await
+                        {
+                            warn!(
+                                "Failed to handle disconnect for already closed socket {}: {}",
+                                socket_id_clone, e
+                            );
                         }
                         break;
                     }
@@ -130,9 +135,14 @@ impl ConnectionHandler {
                                     .close(4201, "Pong reply not received in time".to_string())
                                     .await;
                                 drop(ws);
-                                conn_manager.cleanup_connection(&app_id_clone, conn).await;
-                                if let Some(ref m) = metrics {
-                                    m.mark_disconnection(&app_id_clone, &socket_id_clone);
+                                if let Err(e) = handler
+                                    .handle_disconnect(&app_id_clone, &socket_id_clone)
+                                    .await
+                                {
+                                    warn!(
+                                        "Failed to handle timeout disconnect for socket {}: {}",
+                                        socket_id_clone, e
+                                    );
                                 }
                                 break;
                             }
@@ -149,11 +159,14 @@ impl ConnectionHandler {
                             socket_id_clone, e
                         );
 
-                        // Clean up the connection since it's broken
-                        // Note: cleanup_connection expects the connection to still exist
-                        conn_manager.cleanup_connection(&app_id_clone, conn).await;
-                        if let Some(ref m) = metrics {
-                            m.mark_disconnection(&app_id_clone, &socket_id_clone);
+                        if let Err(e) = handler
+                            .handle_disconnect(&app_id_clone, &socket_id_clone)
+                            .await
+                        {
+                            warn!(
+                                "Failed to handle disconnect after ping failure for socket {}: {}",
+                                socket_id_clone, e
+                            );
                         }
                         break; // Exit the loop after cleanup
                     }

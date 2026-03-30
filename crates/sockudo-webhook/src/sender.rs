@@ -1,14 +1,16 @@
 use sockudo_core::app::App;
 use sockudo_core::app::AppManager;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::options::WebhookRetryConfig;
 
 #[cfg(feature = "lambda")]
 use crate::lambda_sender::LambdaWebhookSender;
 use ahash::AHashMap;
 use reqwest::{Client, header};
 use sockudo_core::token::Token;
+use sockudo_core::utils::channel_namespace_name;
 use sockudo_core::webhook_types::{
-    JobData, JobPayload, PusherWebhookPayload, Webhook, WebhookFilter,
+    JobData, JobPayload, PusherWebhookPayload, Webhook, WebhookFilter, WebhookRetryPolicy,
 };
 use sonic_rs::Value;
 #[cfg(feature = "lambda")]
@@ -34,20 +36,25 @@ struct HttpWebhookTaskParams {
 pub struct WebhookSender {
     client: Client,
     app_manager: Arc<dyn AppManager + Send + Sync>,
+    retry_config: WebhookRetryConfig,
+    request_timeout_ms: u64,
     #[cfg(feature = "lambda")]
     lambda_sender: LambdaWebhookSender,
     webhook_semaphore: Arc<Semaphore>,
 }
 
 impl WebhookSender {
-    pub fn new(app_manager: Arc<dyn AppManager + Send + Sync>) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
+    pub fn new(
+        app_manager: Arc<dyn AppManager + Send + Sync>,
+        retry_config: WebhookRetryConfig,
+        request_timeout_ms: u64,
+    ) -> Self {
+        let client = Client::builder().build().unwrap_or_default();
         Self {
             client,
             app_manager,
+            retry_config,
+            request_timeout_ms,
             #[cfg(feature = "lambda")]
             lambda_sender: LambdaWebhookSender::new(),
             webhook_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_WEBHOOKS)),
@@ -122,6 +129,22 @@ impl WebhookSender {
             }
         }
 
+        let namespace = channel_namespace_name(channel);
+
+        if let Some(expected_namespace) = &filter.channel_namespace
+            && namespace != Some(expected_namespace.as_str())
+        {
+            return false;
+        }
+
+        if let Some(expected_namespaces) = &filter.channel_namespaces
+            && !expected_namespaces
+                .iter()
+                .any(|candidate| namespace == Some(candidate.as_str()))
+        {
+            return false;
+        }
+
         true
     }
 
@@ -177,7 +200,7 @@ impl WebhookSender {
 
         let app_config = self.get_app_config(&app_id).await?;
 
-        let webhook_configs = match &app_config.webhooks {
+        let webhook_configs = match app_config.webhooks_ref() {
             Some(hooks) => hooks,
             None => {
                 debug!("No webhooks configured for app: {}", app_id);
@@ -293,6 +316,12 @@ impl WebhookSender {
     ) -> tokio::task::JoinHandle<()> {
         let client = self.client.clone();
         let url_str = params.url.to_string();
+        let retry_policy =
+            resolve_retry_policy(&self.retry_config, params.webhook_config.retry.as_ref());
+        let request_timeout_ms = params
+            .webhook_config
+            .request_timeout_ms
+            .unwrap_or(self.request_timeout_ms);
         let custom_headers = params
             .webhook_config
             .headers
@@ -304,11 +333,15 @@ impl WebhookSender {
             let _permit = params.permit;
             if let Err(e) = send_pusher_webhook(
                 &client,
-                &url_str,
-                &params.app_key,
-                &params.signature,
-                params.body_to_send,
-                custom_headers,
+                PusherWebhookRequest {
+                    url: url_str.clone(),
+                    app_key: params.app_key.clone(),
+                    signature: params.signature.clone(),
+                    json_body: params.body_to_send,
+                    custom_headers,
+                    request_timeout_ms,
+                    retry_config: retry_policy,
+                },
             )
             .await
             {
@@ -350,6 +383,8 @@ impl Clone for WebhookSender {
         Self {
             client: self.client.clone(),
             app_manager: self.app_manager.clone(),
+            retry_config: self.retry_config.clone(),
+            request_timeout_ms: self.request_timeout_ms,
             #[cfg(feature = "lambda")]
             lambda_sender: self.lambda_sender.clone(),
             webhook_semaphore: self.webhook_semaphore.clone(),
@@ -357,50 +392,89 @@ impl Clone for WebhookSender {
     }
 }
 
-/// Maximum total retry duration (5 minutes) per Pusher spec.
-const MAX_RETRY_DURATION: Duration = Duration::from_secs(300);
+fn resolve_retry_policy(
+    global: &WebhookRetryConfig,
+    override_policy: Option<&WebhookRetryPolicy>,
+) -> WebhookRetryConfig {
+    let Some(policy) = override_policy else {
+        return global.clone();
+    };
 
-/// Initial retry delay.
-const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
+    WebhookRetryConfig {
+        enabled: policy.enabled.unwrap_or(global.enabled),
+        max_attempts: policy.max_attempts.or(global.max_attempts),
+        max_elapsed_time_ms: policy
+            .max_elapsed_time_ms
+            .unwrap_or(global.max_elapsed_time_ms),
+        initial_backoff_ms: policy
+            .initial_backoff_ms
+            .unwrap_or(global.initial_backoff_ms),
+        max_backoff_ms: policy.max_backoff_ms.unwrap_or(global.max_backoff_ms),
+    }
+}
+
+fn should_retry_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || matches!(status.as_u16(), 408 | 409 | 425 | 429)
+}
+
+struct PusherWebhookRequest {
+    url: String,
+    app_key: String,
+    signature: String,
+    json_body: String,
+    custom_headers: AHashMap<String, String>,
+    request_timeout_ms: u64,
+    retry_config: WebhookRetryConfig,
+}
 
 /// Helper function to send a Pusher-formatted webhook with retry and exponential backoff.
 ///
 /// On non-2XX responses or network errors, retries with exponential backoff
 /// for up to 5 minutes (per Pusher protocol spec).
-async fn send_pusher_webhook(
-    client: &Client,
-    url: &str,
-    app_key: &str,
-    signature: &str,
-    json_body: String,
-    custom_headers_config: AHashMap<String, String>,
-) -> Result<()> {
-    debug!("Sending Pusher webhook to URL: {}", url);
+async fn send_pusher_webhook(client: &Client, request: PusherWebhookRequest) -> Result<()> {
+    debug!("Sending Pusher webhook to URL: {}", request.url);
 
     let start = tokio::time::Instant::now();
-    let mut delay = INITIAL_RETRY_DELAY;
+    let request_timeout = Duration::from_millis(request.request_timeout_ms.max(1));
+    let max_retry_duration = Duration::from_millis(request.retry_config.max_elapsed_time_ms.max(1));
+    let mut delay = Duration::from_millis(request.retry_config.initial_backoff_ms.max(1));
     let mut attempt = 0u32;
 
     loop {
         attempt += 1;
         let result = send_pusher_webhook_once(
             client,
-            url,
-            app_key,
-            signature,
-            &json_body,
-            &custom_headers_config,
+            &request.url,
+            &request.app_key,
+            &request.signature,
+            &request.json_body,
+            &request.custom_headers,
+            request_timeout,
         )
         .await;
 
         match result {
             Ok(()) => return Ok(()),
             Err(e) => {
+                if matches!(e, Error::Protocol(_)) {
+                    return Err(e);
+                }
+
+                if !request.retry_config.enabled {
+                    return Err(e);
+                }
+
+                if let Some(max_attempts) = request.retry_config.max_attempts
+                    && attempt >= max_attempts
+                {
+                    return Err(e);
+                }
+
                 let elapsed = start.elapsed();
-                if elapsed + delay > MAX_RETRY_DURATION {
+                if elapsed + delay > max_retry_duration {
                     error!(
                         "Webhook to {} failed after {} attempts over {:.1}s, giving up: {}",
-                        url,
+                        request.url,
                         attempt,
                         elapsed.as_secs_f64(),
                         e
@@ -410,13 +484,15 @@ async fn send_pusher_webhook(
 
                 warn!(
                     "Webhook to {} failed (attempt {}), retrying in {:.1}s: {}",
-                    url,
+                    request.url,
                     attempt,
                     delay.as_secs_f64(),
                     e
                 );
                 tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(Duration::from_secs(60));
+                delay = (delay * 2).min(Duration::from_millis(
+                    request.retry_config.max_backoff_ms.max(1),
+                ));
             }
         }
     }
@@ -430,12 +506,14 @@ async fn send_pusher_webhook_once(
     signature: &str,
     json_body: &str,
     custom_headers_config: &AHashMap<String, String>,
+    request_timeout: Duration,
 ) -> Result<()> {
     let mut request_builder = client
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header("X-Pusher-Key", app_key)
-        .header("X-Pusher-Signature", signature);
+        .header("X-Pusher-Signature", signature)
+        .timeout(request_timeout);
 
     for (key, value) in custom_headers_config {
         request_builder = request_builder.header(key, value);
@@ -456,8 +534,15 @@ async fn send_pusher_webhook_once(
                     "Pusher webhook to {} failed with status {}: {}",
                     url, status, error_text
                 );
+                let retryability = if should_retry_status(status) {
+                    "retryable"
+                } else {
+                    return Err(Error::Protocol(format!(
+                        "Webhook to {url} failed with non-retryable status {status}"
+                    )));
+                };
                 Err(Error::Other(format!(
-                    "Webhook to {url} failed with status {status}"
+                    "Webhook to {url} failed with {retryability} status {status}"
                 )))
             }
         }
@@ -480,14 +565,39 @@ fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPay
 #[cfg(test)]
 mod tests {
     use sockudo_app::memory_app_manager::MemoryAppManager;
-    use sockudo_core::app::{App, AppManager};
+    use sockudo_core::app::{App, AppFeaturesPolicy, AppLimitsPolicy, AppManager, AppPolicy};
     use sockudo_core::webhook_types::JobPayload;
 
     use super::*;
 
+    fn test_app() -> App {
+        App::from_policy(
+            "test_app".to_string(),
+            "test_key".to_string(),
+            "test_secret".to_string(),
+            true,
+            AppPolicy {
+                limits: AppLimitsPolicy {
+                    max_connections: 100,
+                    max_client_events_per_second: 100,
+                    ..Default::default()
+                },
+                features: AppFeaturesPolicy {
+                    enable_client_messages: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    }
+
     #[tokio::test]
     async fn test_creating_webhook_sender() {
-        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        let webhook_sender = WebhookSender::new(
+            Arc::new(MemoryAppManager::new()),
+            WebhookRetryConfig::default(),
+            10_000,
+        );
         assert!(webhook_sender.webhook_semaphore.available_permits() > 0);
         assert!(webhook_sender.app_manager.get_apps().await.is_ok());
     }
@@ -495,18 +605,10 @@ mod tests {
     #[tokio::test]
     async fn test_process_webhook_job_no_events() {
         let app_manager = Arc::new(MemoryAppManager::new());
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         app_manager.create_app(app).await.unwrap();
-        let webhook_sender = WebhookSender::new(app_manager.clone());
+        let webhook_sender =
+            WebhookSender::new(app_manager.clone(), WebhookRetryConfig::default(), 10_000);
 
         let job = JobData {
             app_id: "test_app".to_string(),
@@ -526,18 +628,10 @@ mod tests {
     #[tokio::test]
     async fn test_process_webhook_job_with_events() {
         let app_manager = Arc::new(MemoryAppManager::new());
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         app_manager.create_app(app).await.unwrap();
-        let webhook_sender = WebhookSender::new(app_manager.clone());
+        let webhook_sender =
+            WebhookSender::new(app_manager.clone(), WebhookRetryConfig::default(), 10_000);
 
         let job = JobData {
             app_id: "test_app".to_string(),
@@ -560,7 +654,8 @@ mod tests {
     #[tokio::test]
     async fn test_process_webhook_job_invalid_app() {
         let app_manager = Arc::new(MemoryAppManager::new());
-        let webhook_sender = WebhookSender::new(app_manager.clone());
+        let webhook_sender =
+            WebhookSender::new(app_manager.clone(), WebhookRetryConfig::default(), 10_000);
 
         let job = JobData {
             app_id: "non_existent_app".to_string(),
@@ -580,18 +675,13 @@ mod tests {
     #[tokio::test]
     async fn test_process_webhook_job_concurrent_requests() {
         let app_manager = Arc::new(MemoryAppManager::new());
-        let app = App {
-            id: "test_app".to_string(),
-            key: "test_key".to_string(),
-            secret: "test_secret".to_string(),
-            max_connections: 100,
-            enable_client_messages: true,
-            enabled: true,
-            max_client_events_per_second: 100,
-            ..Default::default()
-        };
+        let app = test_app();
         app_manager.create_app(app).await.unwrap();
-        let webhook_sender = Arc::new(WebhookSender::new(app_manager.clone()));
+        let webhook_sender = Arc::new(WebhookSender::new(
+            app_manager.clone(),
+            WebhookRetryConfig::default(),
+            10_000,
+        ));
 
         let mut handles = vec![];
         for i in 0..10 {
@@ -623,7 +713,11 @@ mod tests {
 
     #[test]
     fn test_filter_events_for_webhook_respects_channel_prefix() {
-        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        let webhook_sender = WebhookSender::new(
+            Arc::new(MemoryAppManager::new()),
+            WebhookRetryConfig::default(),
+            10_000,
+        );
         let webhook = Webhook {
             url: Some(url::Url::parse("http://localhost/webhook").unwrap()),
             lambda_function: None,
@@ -633,8 +727,12 @@ mod tests {
                 channel_prefix: Some("#server-to-user".to_string()),
                 channel_suffix: None,
                 channel_pattern: None,
+                channel_namespace: None,
+                channel_namespaces: None,
             }),
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let filtered = webhook_sender.filter_events_for_webhook(
@@ -660,7 +758,11 @@ mod tests {
 
     #[test]
     fn test_find_relevant_webhooks_splits_events_per_endpoint() {
-        let webhook_sender = WebhookSender::new(Arc::new(MemoryAppManager::new()));
+        let webhook_sender = WebhookSender::new(
+            Arc::new(MemoryAppManager::new()),
+            WebhookRetryConfig::default(),
+            10_000,
+        );
         let prefixed = Webhook {
             url: Some(url::Url::parse("http://localhost/prefix").unwrap()),
             lambda_function: None,
@@ -670,8 +772,12 @@ mod tests {
                 channel_prefix: Some("#server-to-user".to_string()),
                 channel_suffix: None,
                 channel_pattern: None,
+                channel_namespace: None,
+                channel_namespaces: None,
             }),
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
         let catch_all = Webhook {
             url: Some(url::Url::parse("http://localhost/all").unwrap()),
@@ -680,6 +786,8 @@ mod tests {
             event_types: vec!["channel_occupied".to_string()],
             filter: None,
             headers: None,
+            retry: None,
+            request_timeout_ms: None,
         };
 
         let webhooks = [prefixed.clone(), catch_all.clone()];

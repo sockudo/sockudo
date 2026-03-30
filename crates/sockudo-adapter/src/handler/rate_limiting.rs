@@ -9,15 +9,16 @@ use tracing::{debug, warn};
 
 impl ConnectionHandler {
     pub async fn setup_rate_limiting(&self, socket_id: &SocketId, app_config: &App) -> Result<()> {
-        if app_config.max_client_events_per_second > 0 {
+        if app_config.client_events_per_second_limit() > 0 {
             let limiter = Arc::new(MemoryRateLimiter::new(
-                app_config.max_client_events_per_second,
+                app_config.client_events_per_second_limit(),
                 1, // Per second
             ));
             self.client_event_limiters.insert(*socket_id, limiter);
             debug!(
                 "Initialized client event rate limiter for socket {}: {} events/sec",
-                socket_id, app_config.max_client_events_per_second
+                socket_id,
+                app_config.client_events_per_second_limit()
             );
         }
         Ok(())
@@ -50,7 +51,7 @@ impl ConnectionHandler {
                 );
                 return Err(Error::ClientEventRateLimit);
             }
-        } else if app_config.max_client_events_per_second > 0 {
+        } else if app_config.client_events_per_second_limit() > 0 {
             warn!(
                 "Client event rate limiter not found for socket {} though app config expects one",
                 socket_id
