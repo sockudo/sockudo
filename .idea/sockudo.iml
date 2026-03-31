@@ -9,6 +9,24 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/xdelta3/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/benchmarks/sender/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-adapter/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-adapter/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-app/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-app/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-cache/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-core/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-delta/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-delta/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-filter/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-filter/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-metrics/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-protocol/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-protocol/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-queue/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-rate-limiter/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-server/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-webhook/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/benchmark/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/xdelta3/target" />
