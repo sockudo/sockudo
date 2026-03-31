@@ -269,15 +269,32 @@ spec:
             {{- if .Values.defaultApp.enabled }}
             - name: SOCKUDO_DEFAULT_APP_ENABLED
               value: "true"
+            {{- if .Values.defaultApp.existingSecret }}
+            - name: SOCKUDO_DEFAULT_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.defaultApp.existingSecret }}
+                  key: default-app-id
+                  optional: true
+            - name: SOCKUDO_DEFAULT_APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.defaultApp.existingSecret }}
+                  key: default-app-key
+                  optional: true
+            {{- else }}
             - name: SOCKUDO_DEFAULT_APP_ID
               value: {{ .Values.defaultApp.id | quote }}
             - name: SOCKUDO_DEFAULT_APP_KEY
               value: {{ .Values.defaultApp.key | quote }}
+            {{- end }}
+            {{- if or .Values.defaultApp.existingSecret .Values.defaultApp.secret }}
             - name: SOCKUDO_DEFAULT_APP_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "sockudo.secretName" . }}
+                  name: {{ .Values.defaultApp.existingSecret | default (include "sockudo.secretName" .) }}
                   key: default-app-secret
+            {{- end }}
             - name: SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS
               value: {{ .Values.defaultApp.maxConnections | quote }}
             - name: SOCKUDO_DEFAULT_APP_ENABLE_CLIENT_MESSAGES
