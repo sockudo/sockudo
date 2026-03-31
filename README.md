@@ -97,11 +97,14 @@ helm install sockudo ./charts/sockudo \
   --set config.adapterDriver=redis \
   --set redis.host=redis-master \
   --set redis.existingSecret=my-redis-secret \
+  --set defaultApp.existingSecret=my-default-app-secret \
   --set autoscaling.enabled=true \
   --set pdb.enabled=true \
   --set ingress.enabled=true \
   --set serviceMonitor.enabled=true
 ```
+
+When `defaultApp.existingSecret` is set, the Secret must contain `default-app-secret` and can optionally include `default-app-id` and `default-app-key`.
 
 See [`charts/sockudo/values.yaml`](charts/sockudo/values.yaml) for all configurable options.
 
