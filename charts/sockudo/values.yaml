@@ -127,6 +127,10 @@ defaultApp:
   id: ""
   key: ""
   secret: ""
+  # -- Use an existing secret for the default app secret
+  # Must contain key: default-app-secret
+  # Can optionally contain keys: default-app-id, default-app-key
+  existingSecret: ""
   maxConnections: 1000
   enableClientMessages: true
   enableUserAuthentication: false
