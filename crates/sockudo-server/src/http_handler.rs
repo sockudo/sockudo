@@ -6,7 +6,6 @@ use axum::{
     response::{IntoResponse, Response as AxumResponse},
 };
 use futures_util::future::join_all;
-use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::channel_manager::ChannelManager;
@@ -19,7 +18,6 @@ use sockudo_protocol::messages::{
     ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MessageData, PusherApiMessage,
     PusherMessage,
 };
-use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use sysinfo::System;
@@ -135,12 +133,15 @@ impl<'de> Deserialize<'de> for ChannelQuery {
     where
         D: serde::Deserializer<'de>,
     {
-        let mut obj = sonic_rs::Object::deserialize(deserializer)?;
-        let info = obj
-            .remove(&"info")
-            .and_then(|v| v.as_str().map(ToString::to_string));
-        let auth_params: EventQuery = sonic_rs::from_value(&obj.into_value())
-            .map_err(|e| D::Error::custom(format!("invalid auth query params: {e}")))?;
+        let mut map = std::collections::HashMap::<String, String>::deserialize(deserializer)?;
+        let info = map.remove("info");
+        let auth_params = EventQuery {
+            auth_key: map.remove("auth_key").unwrap_or_default(),
+            auth_timestamp: map.remove("auth_timestamp").unwrap_or_default(),
+            auth_version: map.remove("auth_version").unwrap_or_default(),
+            body_md5: map.remove("body_md5").unwrap_or_default(),
+            auth_signature: map.remove("auth_signature").unwrap_or_default(),
+        };
         Ok(Self { info, auth_params })
     }
 }
@@ -150,15 +151,16 @@ impl<'de> Deserialize<'de> for ChannelsQuery {
     where
         D: serde::Deserializer<'de>,
     {
-        let mut obj = sonic_rs::Object::deserialize(deserializer)?;
-        let filter_by_prefix = obj
-            .remove(&"filter_by_prefix")
-            .and_then(|v| v.as_str().map(ToString::to_string));
-        let info = obj
-            .remove(&"info")
-            .and_then(|v| v.as_str().map(ToString::to_string));
-        let auth_params: EventQuery = sonic_rs::from_value(&obj.into_value())
-            .map_err(|e| D::Error::custom(format!("invalid auth query params: {e}")))?;
+        let mut map = std::collections::HashMap::<String, String>::deserialize(deserializer)?;
+        let filter_by_prefix = map.remove("filter_by_prefix");
+        let info = map.remove("info");
+        let auth_params = EventQuery {
+            auth_key: map.remove("auth_key").unwrap_or_default(),
+            auth_timestamp: map.remove("auth_timestamp").unwrap_or_default(),
+            auth_version: map.remove("auth_version").unwrap_or_default(),
+            body_md5: map.remove("body_md5").unwrap_or_default(),
+            auth_signature: map.remove("auth_signature").unwrap_or_default(),
+        };
         Ok(Self {
             filter_by_prefix,
             info,
@@ -1495,6 +1497,7 @@ mod tests {
     use sockudo_core::app::AppManager;
     use sockudo_core::namespace::Namespace;
     use sockudo_core::options::MemoryCacheOptions;
+    use sonic_rs::JsonValueTrait;
 
     #[tokio::test]
     async fn stats_endpoint_returns_empty_totals_for_empty_server() {
