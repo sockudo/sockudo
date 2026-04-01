@@ -48,6 +48,7 @@ pub struct ConnectionHandler {
     pub(crate) metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
+    message_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
     watchlist_manager: Arc<WatchlistManager>,
     server_options: Arc<ServerOptions>,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
@@ -151,6 +152,7 @@ impl ConnectionHandlerBuilder {
             metrics: self.metrics,
             webhook_integration: self.webhook_integration,
             client_event_limiters: Arc::new(DashMap::new()),
+            message_limiters: Arc::new(DashMap::new()),
             watchlist_manager: Arc::new(WatchlistManager::new()),
             server_options: Arc::new(self.server_options),
             cleanup_queue: self.cleanup_queue,
@@ -328,6 +330,8 @@ impl ConnectionHandler {
 
         // Setup rate limiting if needed
         self.setup_rate_limiting(&socket_id, &app_config).await?;
+        self.setup_message_rate_limiting(&socket_id, &app_config)
+            .await?;
 
         // Get the cancellation token so the reader loop can be cancelled
         // when the connection is cleaned up (e.g., ghost connection timeout)
@@ -565,6 +569,10 @@ impl ConnectionHandler {
             message
         );
 
+        // Check all-message rate limit first
+        self.check_message_rate_limit(socket_id, &app_config)
+            .await?;
+
         // Handle rate limiting for client events
         if event_name.starts_with(CLIENT_EVENT_PREFIX) {
             self.check_client_event_rate_limit(socket_id, &app_config, event_name)
@@ -713,8 +721,9 @@ impl ConnectionHandler {
     }
 
     async fn cleanup_socket(&self, socket_id: &SocketId, app_config: &App) {
-        // Remove rate limiter
+        // Remove rate limiters
         self.client_event_limiters.remove(socket_id);
+        self.message_limiters.remove(socket_id);
 
         // MEMORY LEAK FIX: Clean up delta compression state for this socket
         #[cfg(feature = "delta")]
