@@ -1490,7 +1490,6 @@ pub async fn metrics(
 mod tests {
     use super::*;
     use axum::response::IntoResponse;
-    use sonic_rs::JsonValueTrait;
     use sockudo_adapter::ConnectionHandlerBuilder;
     use sockudo_adapter::local_adapter::LocalAdapter;
     use sockudo_app::memory_app_manager::MemoryAppManager;
@@ -1498,6 +1497,7 @@ mod tests {
     use sockudo_core::app::AppManager;
     use sockudo_core::namespace::Namespace;
     use sockudo_core::options::MemoryCacheOptions;
+    use sonic_rs::JsonValueTrait;
 
     #[tokio::test]
     async fn stats_endpoint_returns_empty_totals_for_empty_server() {
