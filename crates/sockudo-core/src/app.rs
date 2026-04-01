@@ -19,6 +19,29 @@ pub struct AppPolicy {
     pub connection_recovery: Option<AppConnectionRecoveryConfig>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppMessageRateLimitConfig {
+    pub enabled: bool,
+    /// Maximum number of inbound WebSocket messages allowed within `decay_seconds`.
+    pub max_attempts: u32,
+    /// Sliding window size in seconds. Defaults to 60.
+    pub decay_seconds: u64,
+    /// If true, the connection is closed when the limit is exceeded.
+    pub terminate_on_limit: bool,
+}
+
+impl Default for AppMessageRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_attempts: 60,
+            decay_seconds: 60,
+            terminate_on_limit: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AppLimitsPolicy {
@@ -51,6 +74,9 @@ pub struct AppLimitsPolicy {
     /// If false (default), the event is rejected but the connection remains open.
     #[serde(default)]
     pub terminate_on_limit: bool,
+    /// Rate limit applied to all inbound WebSocket messages (not just client events).
+    #[serde(default)]
+    pub message_rate_limit: Option<AppMessageRateLimitConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -95,6 +121,7 @@ pub struct AppLimitsPolicyRef {
     pub max_event_batch_size: Option<u32>,
     pub decay_seconds: Option<u64>,
     pub terminate_on_limit: bool,
+    pub message_rate_limit: Option<AppMessageRateLimitConfig>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -164,6 +191,7 @@ impl App {
                 max_event_batch_size: self.policy.limits.max_event_batch_size,
                 decay_seconds: self.policy.limits.decay_seconds,
                 terminate_on_limit: self.policy.limits.terminate_on_limit,
+                message_rate_limit: self.policy.limits.message_rate_limit,
             },
             features: AppFeaturesPolicyRef {
                 enable_client_messages: self.policy.features.enable_client_messages,
@@ -256,6 +284,11 @@ impl App {
     #[inline]
     pub fn terminate_on_limit(&self) -> bool {
         self.policy.limits.terminate_on_limit
+    }
+
+    #[inline]
+    pub fn message_rate_limit(&self) -> Option<&AppMessageRateLimitConfig> {
+        self.policy.limits.message_rate_limit.as_ref()
     }
 
     #[inline]
@@ -392,6 +425,8 @@ struct AppSerde {
     decay_seconds: Option<u64>,
     #[serde(default)]
     terminate_on_limit: bool,
+    #[serde(default)]
+    message_rate_limit: Option<AppMessageRateLimitConfig>,
 }
 
 impl<'de> Deserialize<'de> for App {
@@ -431,6 +466,7 @@ impl<'de> Deserialize<'de> for App {
                     max_event_batch_size: app.max_event_batch_size,
                     decay_seconds: app.decay_seconds,
                     terminate_on_limit: app.terminate_on_limit,
+                    message_rate_limit: app.message_rate_limit,
                 },
                 features: AppFeaturesPolicy {
                     enable_client_messages: app.enable_client_messages,
@@ -685,6 +721,12 @@ mod tests {
                 max_event_batch_size: Some(10),
                 decay_seconds: Some(60),
                 terminate_on_limit: true,
+                message_rate_limit: Some(AppMessageRateLimitConfig {
+                    enabled: true,
+                    max_attempts: 100,
+                    decay_seconds: 60,
+                    terminate_on_limit: true,
+                }),
             },
             features: AppFeaturesPolicy {
                 enable_client_messages: true,
