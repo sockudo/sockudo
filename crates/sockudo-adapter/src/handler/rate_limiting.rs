@@ -12,13 +12,14 @@ impl ConnectionHandler {
         if app_config.client_events_per_second_limit() > 0 {
             let limiter = Arc::new(MemoryRateLimiter::new(
                 app_config.client_events_per_second_limit(),
-                1, // Per second
+                app_config.client_event_decay_seconds(),
             ));
             self.client_event_limiters.insert(*socket_id, limiter);
             debug!(
-                "Initialized client event rate limiter for socket {}: {} events/sec",
+                "Initialized client event rate limiter for socket {}: {} events per {}s",
                 socket_id,
-                app_config.client_events_per_second_limit()
+                app_config.client_events_per_second_limit(),
+                app_config.client_event_decay_seconds(),
             );
         }
         Ok(())
@@ -31,7 +32,6 @@ impl ConnectionHandler {
         event_name: &str,
     ) -> Result<()> {
         if let Some(limiter_arc) = self.client_event_limiters.get(socket_id) {
-            // Track rate limit check
             if let Some(ref metrics) = self.metrics {
                 metrics.mark_rate_limit_check(&app_config.id, "client_events");
             }
@@ -40,7 +40,6 @@ impl ConnectionHandler {
             let limit_result = limiter.increment(&socket_id.to_string()).await?;
 
             if !limit_result.allowed {
-                // Track rate limit trigger
                 if let Some(ref metrics) = self.metrics {
                     metrics.mark_rate_limit_triggered(&app_config.id, "client_events");
                 }
@@ -49,6 +48,10 @@ impl ConnectionHandler {
                     "Client event rate limit exceeded for socket {}: event '{}'",
                     socket_id, event_name
                 );
+
+                if app_config.terminate_on_limit() {
+                    return Err(Error::ClientEventRateLimitTerminate);
+                }
                 return Err(Error::ClientEventRateLimit);
             }
         } else if app_config.client_events_per_second_limit() > 0 {
