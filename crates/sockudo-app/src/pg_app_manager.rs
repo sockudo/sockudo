@@ -609,6 +609,9 @@ impl AppRow {
                     max_event_name_length: self.max_event_name_length.map(|v| v as u32),
                     max_event_payload_in_kb: self.max_event_payload_in_kb.map(|v| v as u32),
                     max_event_batch_size: self.max_event_batch_size.map(|v| v as u32),
+                    decay_seconds: None,
+                    terminate_on_limit: false,
+                    message_rate_limit: None,
                 },
                 features: sockudo_core::app::AppFeaturesPolicy {
                     enable_client_messages: self.enable_client_messages,
