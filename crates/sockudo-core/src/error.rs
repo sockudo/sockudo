@@ -51,6 +51,9 @@ pub enum Error {
     #[error("Client event rejected due to rate limit")]
     ClientEventRateLimit,
 
+    #[error("Connection closed due to client event rate limit")]
+    ClientEventRateLimitTerminate,
+
     #[error("Watchlist limit exceeded")]
     WatchlistLimitExceeded,
 
@@ -198,6 +201,7 @@ impl Error {
 
             // 4300-4399: Other errors
             Error::ClientEventRateLimit => 4301,
+            Error::ClientEventRateLimitTerminate => 4301,
             Error::WatchlistLimitExceeded => 4302,
 
             Error::Broadcast(_) => 4303,
@@ -233,6 +237,7 @@ impl Error {
                 | Error::UnsupportedProtocolVersion(_)
                 | Error::NoProtocolVersion
                 | Error::Unauthorized
+                | Error::ClientEventRateLimitTerminate
         )
     }
 
