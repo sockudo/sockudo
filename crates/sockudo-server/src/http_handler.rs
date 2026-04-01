@@ -1490,6 +1490,7 @@ pub async fn metrics(
 mod tests {
     use super::*;
     use axum::response::IntoResponse;
+    use sonic_rs::JsonValueTrait;
     use sockudo_adapter::ConnectionHandlerBuilder;
     use sockudo_adapter::local_adapter::LocalAdapter;
     use sockudo_app::memory_app_manager::MemoryAppManager;
