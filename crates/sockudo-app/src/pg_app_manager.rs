@@ -726,6 +726,9 @@ mod tests {
                     max_event_name_length: Some(200),
                     max_event_payload_in_kb: Some(100),
                     max_event_batch_size: Some(10),
+                    decay_seconds: None,
+                    terminate_on_limit: false,
+                    message_rate_limit: None,
                 },
                 features: sockudo_core::app::AppFeaturesPolicy {
                     enable_client_messages: true,
