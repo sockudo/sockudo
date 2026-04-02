@@ -144,6 +144,9 @@ impl DynamoDbAppManager {
                         max_event_name_length: get_u32("max_event_name_length", None),
                         max_event_payload_in_kb: get_u32("max_event_payload_in_kb", None),
                         max_event_batch_size: get_u32("max_event_batch_size", None),
+                        decay_seconds: None,
+                        terminate_on_limit: false,
+                        message_rate_limit: None,
                     },
                     features: AppFeaturesPolicy {
                         enable_client_messages: get_bool("enable_client_messages", false),

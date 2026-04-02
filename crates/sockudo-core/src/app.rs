@@ -19,6 +19,29 @@ pub struct AppPolicy {
     pub connection_recovery: Option<AppConnectionRecoveryConfig>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppMessageRateLimitConfig {
+    pub enabled: bool,
+    /// Maximum number of inbound WebSocket messages allowed within `decay_seconds`.
+    pub max_attempts: u32,
+    /// Sliding window size in seconds. Defaults to 60.
+    pub decay_seconds: u64,
+    /// If true, the connection is closed when the limit is exceeded.
+    pub terminate_on_limit: bool,
+}
+
+impl Default for AppMessageRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_attempts: 60,
+            decay_seconds: 60,
+            terminate_on_limit: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AppLimitsPolicy {
@@ -44,6 +67,16 @@ pub struct AppLimitsPolicy {
     pub max_event_payload_in_kb: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_event_batch_size: Option<u32>,
+    /// Sliding window size in seconds for client event rate limiting. Defaults to 1.
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub decay_seconds: Option<u64>,
+    /// If true, the connection is closed when the client event rate limit is exceeded.
+    /// If false (default), the event is rejected but the connection remains open.
+    #[serde(default)]
+    pub terminate_on_limit: bool,
+    /// Rate limit applied to all inbound WebSocket messages (not just client events).
+    #[serde(default)]
+    pub message_rate_limit: Option<AppMessageRateLimitConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -86,6 +119,9 @@ pub struct AppLimitsPolicyRef {
     pub max_event_name_length: Option<u32>,
     pub max_event_payload_in_kb: Option<u32>,
     pub max_event_batch_size: Option<u32>,
+    pub decay_seconds: Option<u64>,
+    pub terminate_on_limit: bool,
+    pub message_rate_limit: Option<AppMessageRateLimitConfig>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,6 +189,9 @@ impl App {
                 max_event_name_length: self.policy.limits.max_event_name_length,
                 max_event_payload_in_kb: self.policy.limits.max_event_payload_in_kb,
                 max_event_batch_size: self.policy.limits.max_event_batch_size,
+                decay_seconds: self.policy.limits.decay_seconds,
+                terminate_on_limit: self.policy.limits.terminate_on_limit,
+                message_rate_limit: self.policy.limits.message_rate_limit,
             },
             features: AppFeaturesPolicyRef {
                 enable_client_messages: self.policy.features.enable_client_messages,
@@ -235,6 +274,21 @@ impl App {
     #[inline]
     pub fn client_events_per_second_limit(&self) -> u32 {
         self.policy.limits.max_client_events_per_second
+    }
+
+    #[inline]
+    pub fn client_event_decay_seconds(&self) -> u64 {
+        self.policy.limits.decay_seconds.unwrap_or(1)
+    }
+
+    #[inline]
+    pub fn terminate_on_limit(&self) -> bool {
+        self.policy.limits.terminate_on_limit
+    }
+
+    #[inline]
+    pub fn message_rate_limit(&self) -> Option<&AppMessageRateLimitConfig> {
+        self.policy.limits.message_rate_limit.as_ref()
     }
 
     #[inline]
@@ -367,6 +421,12 @@ struct AppSerde {
     connection_recovery: Option<AppConnectionRecoveryConfig>,
     #[serde(default)]
     channel_namespaces: Option<Vec<ChannelNamespace>>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    decay_seconds: Option<u64>,
+    #[serde(default)]
+    terminate_on_limit: bool,
+    #[serde(default)]
+    message_rate_limit: Option<AppMessageRateLimitConfig>,
 }
 
 impl<'de> Deserialize<'de> for App {
@@ -404,6 +464,9 @@ impl<'de> Deserialize<'de> for App {
                     max_event_name_length: app.max_event_name_length,
                     max_event_payload_in_kb: app.max_event_payload_in_kb,
                     max_event_batch_size: app.max_event_batch_size,
+                    decay_seconds: app.decay_seconds,
+                    terminate_on_limit: app.terminate_on_limit,
+                    message_rate_limit: app.message_rate_limit,
                 },
                 features: AppFeaturesPolicy {
                     enable_client_messages: app.enable_client_messages,
@@ -656,6 +719,14 @@ mod tests {
                 max_event_name_length: Some(80),
                 max_event_payload_in_kb: Some(64),
                 max_event_batch_size: Some(10),
+                decay_seconds: Some(60),
+                terminate_on_limit: true,
+                message_rate_limit: Some(AppMessageRateLimitConfig {
+                    enabled: true,
+                    max_attempts: 100,
+                    decay_seconds: 60,
+                    terminate_on_limit: true,
+                }),
             },
             features: AppFeaturesPolicy {
                 enable_client_messages: true,
@@ -706,5 +777,34 @@ mod tests {
             app.policy().connection_recovery.unwrap().max_buffer_size,
             Some(50)
         );
+        assert_eq!(app.policy().limits.decay_seconds, Some(60));
+        assert!(app.policy().limits.terminate_on_limit);
+    }
+
+    #[test]
+    fn deserialize_decay_seconds_and_terminate_on_limit() {
+        let json = test_app_json(r#","decay_seconds":30,"terminate_on_limit":true"#, "");
+        let app: App = sonic_rs::from_str(&json).unwrap();
+        assert_eq!(app.policy.limits.decay_seconds, Some(30));
+        assert!(app.policy.limits.terminate_on_limit);
+        assert_eq!(app.client_event_decay_seconds(), 30);
+        assert!(app.terminate_on_limit());
+    }
+
+    #[test]
+    fn decay_seconds_defaults_to_one_when_absent() {
+        let json = test_app_json("", "");
+        let app: App = sonic_rs::from_str(&json).unwrap();
+        assert_eq!(app.policy.limits.decay_seconds, None);
+        assert_eq!(app.client_event_decay_seconds(), 1);
+        assert!(!app.terminate_on_limit());
+    }
+
+    #[test]
+    fn deserialize_decay_seconds_from_string() {
+        let json = test_app_json(r#","decay_seconds":"60""#, "");
+        let app: App = sonic_rs::from_str(&json).unwrap();
+        assert_eq!(app.policy.limits.decay_seconds, Some(60));
+        assert_eq!(app.client_event_decay_seconds(), 60);
     }
 }

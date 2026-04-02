@@ -2511,6 +2511,9 @@ impl ServerOptions {
                             "SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE",
                             100,
                         )),
+                        decay_seconds: None,
+                        terminate_on_limit: false,
+                        message_rate_limit: None,
                     },
                     features: crate::app::AppFeaturesPolicy {
                         enable_client_messages: std::env::var(
