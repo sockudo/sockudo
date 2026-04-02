@@ -26,6 +26,9 @@ mod origin_validation_config_integration_tests {
                     max_event_name_length: Some(200),
                     max_event_payload_in_kb: Some(100),
                     max_event_batch_size: Some(10),
+                    decay_seconds: None,
+                    terminate_on_limit: false,
+                    message_rate_limit: None,
                 },
                 features: AppFeaturesPolicy {
                     enable_client_messages: true,
