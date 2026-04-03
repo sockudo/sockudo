@@ -4,6 +4,8 @@ pub mod google_pubsub_transport;
 pub mod kafka_transport;
 #[cfg(feature = "nats")]
 pub mod nats_transport;
+#[cfg(feature = "pulsar")]
+pub mod pulsar_transport;
 #[cfg(feature = "rabbitmq")]
 pub mod rabbitmq_transport;
 #[cfg(feature = "redis-cluster")]
@@ -17,6 +19,8 @@ pub use google_pubsub_transport::GooglePubSubTransport;
 pub use kafka_transport::KafkaTransport;
 #[cfg(feature = "nats")]
 pub use nats_transport::NatsTransport;
+#[cfg(feature = "pulsar")]
+pub use pulsar_transport::PulsarTransport;
 #[cfg(feature = "rabbitmq")]
 pub use rabbitmq_transport::RabbitMqTransport;
 #[cfg(feature = "redis-cluster")]

@@ -10,10 +10,27 @@ license-file.workspace = true
 [features]
 default = ["local"]
 local = []
-full = ["redis", "redis-cluster", "nats", "rabbitmq", "google-pubsub", "kafka", "mysql", "postgres", "dynamodb", "surrealdb", "scylladb", "sqs", "sns", "lambda"]
+full = [
+  "redis",
+  "redis-cluster",
+  "nats",
+  "pulsar",
+  "rabbitmq",
+  "google-pubsub",
+  "kafka",
+  "mysql",
+  "postgres",
+  "dynamodb",
+  "surrealdb",
+  "scylladb",
+  "sqs",
+  "sns",
+  "lambda",
+]
 redis = ["dep:redis"]
 redis-cluster = ["redis"]
 nats = []
+pulsar = []
 rabbitmq = []
 google-pubsub = []
 kafka = []

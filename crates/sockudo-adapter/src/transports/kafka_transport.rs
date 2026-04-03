@@ -115,7 +115,7 @@ impl HorizontalTransport for KafkaTransport {
     }
 
     async fn get_node_count(&self) -> Result<usize> {
-        Ok(self.config.nodes_number.unwrap_or(2) as usize)
+        Ok(self.config.nodes_number.unwrap_or(1) as usize)
     }
 
     async fn check_health(&self) -> Result<()> {

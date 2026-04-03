@@ -11,6 +11,49 @@
   "adapter": {
     "driver": "local",
     "enable_socket_counting": true,
+    "nats": {
+      "servers": ["nats://127.0.0.1:4222"],
+      "prefix": "sockudo_adapter:",
+      "request_timeout_ms": 5000,
+      "username": null,
+      "password": null,
+      "token": null,
+      "connection_timeout_ms": 5000,
+      "nodes_number": null,
+      "discovery_max_wait_ms": 1000,
+      "discovery_idle_wait_ms": 150
+    },
+    "pulsar": {
+      "url": "pulsar://127.0.0.1:6650",
+      "prefix": "sockudo-adapter",
+      "request_timeout_ms": 5000,
+      "token": null,
+      "nodes_number": null
+    },
+    "rabbitmq": {
+      "url": "amqp://guest:guest@127.0.0.1:5672/%2f",
+      "prefix": "sockudo_adapter",
+      "request_timeout_ms": 5000,
+      "connection_timeout_ms": 5000,
+      "nodes_number": null
+    },
+    "google_pubsub": {
+      "project_id": "",
+      "prefix": "sockudo-adapter",
+      "request_timeout_ms": 5000,
+      "emulator_host": null,
+      "nodes_number": null
+    },
+    "kafka": {
+      "brokers": ["127.0.0.1:9092"],
+      "prefix": "sockudo_adapter",
+      "request_timeout_ms": 5000,
+      "security_protocol": null,
+      "sasl_mechanism": null,
+      "sasl_username": null,
+      "sasl_password": null,
+      "nodes_number": null
+    },
     "cluster": {
       "nodes": [],
       "prefix": "sockudo_adapter:",

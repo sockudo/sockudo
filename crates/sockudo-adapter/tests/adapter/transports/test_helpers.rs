@@ -49,7 +49,9 @@ pub fn get_nats_config() -> NatsAdapterConfig {
             "nats://127.0.0.1:14223".to_string(),
         ],
         prefix: format!("test_{}", Uuid::new_v4().to_string().replace('-', "")),
-        request_timeout_ms: 1000,    // Reduced timeout
+        request_timeout_ms: 1000, // Reduced timeout
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000, // Reduced timeout
         username: None,
         password: None,
