@@ -102,7 +102,7 @@ Built for teams that need control, performance, and advanced features beyond bas
   Blazing Fast
   
   #description
-  Written in Rust with async I/O. Handle millions of concurrent connections with minimal resource usage. Scales horizontally with Redis, NATS, or Redis Cluster.
+  Written in Rust with async I/O. Handle millions of concurrent connections with minimal resource usage. Scales horizontally with Redis, Redis Cluster, NATS, Pulsar, RabbitMQ, Google Pub/Sub, or Kafka.
   :::
 
   :::u-page-feature
@@ -226,7 +226,7 @@ Everything you need to build production-grade realtime applications.
   Horizontal Scaling
   
   #description
-  Scale across multiple nodes with Redis, Redis Cluster, or NATS adapters. Cluster health monitoring and automatic dead node detection included.
+  Scale across multiple nodes with Redis, Redis Cluster, NATS, Pulsar, RabbitMQ, Google Pub/Sub, or Kafka adapters. Cluster health monitoring and automatic dead node detection included.
   :::
 
   :::u-page-feature
@@ -303,7 +303,7 @@ Three ways to run Sockudo, from Docker compose to production clusters.
   Precompiled Binary
   
   #description
-  Install with `cargo binstall sockudo` for instant setup. Choose feature flags for Redis, MySQL, NATS, and more. No compilation required.
+  Install with `cargo binstall sockudo` for instant setup. Choose feature flags for Redis, NATS, Pulsar, SQL backends, and more. No compilation required.
   :::
 
   :::u-page-feature
@@ -428,10 +428,10 @@ Connect Sockudo with your existing tools and frameworks.
   to: /server/scaling
   ---
   #title
-  Redis & NATS
+  Horizontal Adapters
   
   #description
-  Horizontal scaling with Redis, Redis Cluster, or NATS adapters. Shared pub/sub for multi-node deployments with cluster health monitoring.
+  Horizontal scaling with Redis, Redis Cluster, NATS, Pulsar, RabbitMQ, Google Pub/Sub, or Kafka adapters. Shared pub/sub for multi-node deployments with cluster health monitoring.
   :::
 
   :::u-page-feature
