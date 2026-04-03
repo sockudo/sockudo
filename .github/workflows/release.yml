@@ -228,12 +228,11 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform.arch }}
           push: true
+          pull: true
           provenance: false
           tags: |
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.lowercase_image_name }}:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}-temp
             sockudo/sockudo:${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}-temp
-          cache-from: type=gha,scope=docker-${{ matrix.platform.name }}
-          cache-to: type=gha,mode=max,scope=docker-${{ matrix.platform.name }}
 
   # =============================================================================
   # Create Multi-Platform Manifests
