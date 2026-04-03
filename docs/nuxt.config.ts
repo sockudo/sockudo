@@ -1,4 +1,6 @@
 export default defineNuxtConfig({
+  css: ["~/assets/css/brand.css"],
+
   image: {
     provider: "none",
   },
@@ -11,9 +13,9 @@ export default defineNuxtConfig({
     defaults: {
       component: "Sockudo",
       props: {
-        title: "Sockudo Documentation",
+        title: "Sockudo Docs",
         description:
-          "Drop-in Pusher replacement built in Rust. Own your WebSocket infrastructure with enterprise-grade performance.",
+          "Open-source realtime infrastructure for Pusher-compatible apps.",
       },
     },
   },
@@ -21,7 +23,7 @@ export default defineNuxtConfig({
   app: {
     head: {
       link: [{ rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
-      meta: [{ name: "theme-color", content: "#646cff" }],
+      meta: [{ name: "theme-color", content: "#7938d3" }],
       script: [
         {
           src: "https://cdn.databuddy.cc/databuddy.js",

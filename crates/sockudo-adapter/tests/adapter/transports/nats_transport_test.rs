@@ -23,6 +23,8 @@ async fn test_nats_transport_new_with_invalid_url() {
         servers: vec!["nats://127.0.0.1:19999/".to_string()],
         prefix: "test".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000,
         username: None,
         password: None,
@@ -168,9 +170,9 @@ async fn test_get_node_count_default() -> Result<()> {
     config.nodes_number = None; // Test default behavior
     let transport = NatsTransport::new(config.clone()).await?;
 
-    // Without explicit nodes_number, should return at least 1
+    // Without explicit nodes_number, system discovery may or may not be available.
     let count = transport.get_node_count().await?;
-    assert_eq!(count, 1);
+    assert!(count >= 1);
 
     Ok(())
 }
@@ -195,6 +197,8 @@ async fn test_subject_names() -> Result<()> {
         ],
         prefix: "custom_prefix".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000,
         username: None,
         password: None,
@@ -312,6 +316,8 @@ async fn test_nats_with_no_credentials() -> Result<()> {
         ],
         prefix: "test_creds".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000,
         username: None,
         password: None,
@@ -332,6 +338,8 @@ async fn test_nats_with_username_but_no_password() -> Result<()> {
         servers: vec!["nats://127.0.0.1:14222".to_string()],
         prefix: "test_partial_creds".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000,
         username: Some("testuser".to_string()),
         password: None, // Missing password
@@ -353,6 +361,8 @@ async fn test_nats_with_password_but_no_username() -> Result<()> {
         servers: vec!["nats://127.0.0.1:14222".to_string()],
         prefix: "test_partial_creds2".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000,
         username: None, // Missing username
         password: Some("testpass".to_string()),
@@ -374,6 +384,8 @@ async fn test_nats_token_takes_precedence_over_username_password() -> Result<()>
         servers: vec!["nats://127.0.0.1:14222".to_string()],
         prefix: "test_token_precedence".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000,
         username: Some("user".to_string()),
         password: Some("pass".to_string()),
@@ -400,6 +412,8 @@ async fn test_nats_empty_string_credentials() -> Result<()> {
         servers: vec!["nats://127.0.0.1:14222".to_string()],
         prefix: "test_empty_creds".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000,
         username: Some("".to_string()), // Empty string
         password: Some("".to_string()), // Empty string
@@ -422,6 +436,8 @@ async fn test_nats_connection_timeout() -> Result<()> {
         servers: vec!["nats://127.0.0.1:19999".to_string()],
         prefix: "test_timeout".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 100, // Very short timeout
         username: None,
         password: None,
@@ -443,6 +459,8 @@ async fn test_nats_config_edge_cases() -> Result<()> {
         servers: vec!["nats://127.0.0.1:14222".to_string()],
         prefix: "".to_string(), // Empty prefix
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 1000,
         username: None,
         password: None,
@@ -457,7 +475,9 @@ async fn test_nats_config_edge_cases() -> Result<()> {
     let config = NatsAdapterConfig {
         servers: vec!["nats://127.0.0.1:14222".to_string()],
         prefix: "test_short_timeouts".to_string(),
-        request_timeout_ms: 1,      // Very short timeout
+        request_timeout_ms: 1, // Very short timeout
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 500, // Short but reasonable timeout
         username: None,
         password: None,
@@ -474,6 +494,8 @@ async fn test_nats_config_edge_cases() -> Result<()> {
         servers: vec!["nats://127.0.0.1:14222".to_string()],
         prefix: "test_large_timeouts".to_string(),
         request_timeout_ms: u64::MAX,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: u64::MAX,
         username: None,
         password: None,
@@ -497,6 +519,8 @@ async fn test_nats_invalid_config() {
         servers: vec!["nats://127.0.0.1:19999".to_string()], // Non-existent server
         prefix: "test".to_string(),
         request_timeout_ms: 1000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         connection_timeout_ms: 100, // Short timeout
         username: None,
         password: None,
@@ -521,6 +545,8 @@ async fn test_nats_invalid_config() {
             servers: vec![server.clone()],
             prefix: "test".to_string(),
             request_timeout_ms: 1000,
+            discovery_max_wait_ms: 1000,
+            discovery_idle_wait_ms: 150,
             connection_timeout_ms: 500, // Short timeout
             username: None,
             password: None,

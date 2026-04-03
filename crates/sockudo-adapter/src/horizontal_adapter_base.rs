@@ -228,10 +228,14 @@ where
         user_id: Option<&str>,
     ) -> Result<ResponseBody> {
         let should_skip_horizontal = self.should_skip_horizontal_communication().await;
+        let discovered_node_count = self.horizontal.get_effective_node_count().await;
         let node_count = if should_skip_horizontal {
             1
         } else {
-            self.transport.get_node_count().await?
+            std::cmp::max(
+                discovered_node_count,
+                self.transport.get_node_count().await?,
+            )
         };
 
         // Create the request

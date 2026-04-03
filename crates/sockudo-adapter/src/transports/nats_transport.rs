@@ -2,6 +2,7 @@ use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use async_nats::{Client as NatsClient, ConnectOptions as NatsOptions, Subject};
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::StreamExt;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::NatsAdapterConfig;
@@ -10,6 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
+
+const NATS_SYS_SERVER_PING_SUBJECT: &str = "$SYS.REQ.SERVER.PING";
 
 /// Metrics for tracking message processing and drops
 #[derive(Debug, Default)]
@@ -67,6 +70,64 @@ impl NatsTransport {
     /// Get transport metrics for monitoring
     pub fn get_metrics(&self) -> Arc<TransportMetrics> {
         self.metrics.clone()
+    }
+
+    async fn discover_node_count_via_system_ping(&self) -> Result<Option<usize>> {
+        let reply_subject = self.client.new_inbox();
+        let mut responses = self
+            .client
+            .subscribe(reply_subject.clone())
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to subscribe for NATS discovery: {e}")))?;
+
+        self.client
+            .publish_with_reply(
+                Subject::from(NATS_SYS_SERVER_PING_SUBJECT),
+                reply_subject,
+                Bytes::new(),
+            )
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to publish NATS discovery request: {e}"))
+            })?;
+
+        let max_wait_ms = self.config.request_timeout_ms.clamp(
+            self.config.discovery_idle_wait_ms,
+            self.config.discovery_max_wait_ms,
+        );
+        let max_wait = Duration::from_millis(max_wait_ms);
+        let idle_wait = Duration::from_millis(self.config.discovery_idle_wait_ms);
+        let start = tokio::time::Instant::now();
+        let mut count = 0usize;
+
+        loop {
+            let elapsed = start.elapsed();
+            if elapsed >= max_wait {
+                break;
+            }
+
+            let remaining = max_wait.saturating_sub(elapsed);
+            let wait_for = if count == 0 {
+                remaining
+            } else {
+                remaining.min(idle_wait)
+            };
+
+            match tokio::time::timeout(wait_for, responses.next()).await {
+                Ok(Some(_message)) => count += 1,
+                Ok(None) | Err(_) => break,
+            }
+        }
+
+        if count > 0 {
+            debug!("Detected {} NATS server(s) via system ping", count);
+            Ok(Some(count))
+        } else {
+            debug!(
+                "NATS system discovery returned no responses; falling back to configured/default node count"
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -349,9 +410,17 @@ impl HorizontalTransport for NatsTransport {
             return Ok(nodes as usize);
         }
 
-        // NATS doesn't provide an easy way to count subscriptions like Redis
-        // For now, we'll assume at least 1 node (ourselves)
-        Ok(1)
+        match self.discover_node_count_via_system_ping().await {
+            Ok(Some(nodes)) => Ok(nodes.max(1)),
+            Ok(None) => Ok(1),
+            Err(error) => {
+                warn!(
+                    "NATS node discovery via system ping failed: {}. Falling back to 1 node",
+                    error
+                );
+                Ok(1)
+            }
+        }
     }
 
     async fn check_health(&self) -> Result<()> {
