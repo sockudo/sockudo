@@ -1,4 +1,8 @@
+import { defineOrganization } from "nuxt-schema-org/schema";
+
 export default defineNuxtConfig({
+  modules: ["@nuxtjs/sitemap", "nuxt-schema-org", "nuxt-link-checker"],
+
   css: ["~/assets/css/brand.css"],
 
   image: {
@@ -7,6 +11,37 @@ export default defineNuxtConfig({
 
   site: {
     url: "https://sockudo.io",
+    name: "Sockudo Docs",
+    description:
+      "Open-source realtime infrastructure for Pusher-compatible apps, with production docs for Sockudo server and clients.",
+    defaultLocale: "en",
+  },
+
+  robots: {
+    credits: false,
+  },
+
+  sitemap: {
+    sortEntries: true,
+  },
+
+  schemaOrg: {
+    identity: defineOrganization({
+      name: "Sockudo",
+      url: "https://sockudo.io",
+      logo: "/logo.svg",
+      sameAs: [
+        "https://github.com/sockudo/sockudo",
+        "https://www.npmjs.com/package/@sockudo/client",
+        "https://x.com/sockudorealtime",
+      ],
+    }),
+  },
+
+  linkChecker: {
+    report: {
+      html: true,
+    },
   },
 
   ogImage: {

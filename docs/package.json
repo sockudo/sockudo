@@ -8,9 +8,13 @@
     "@nuxt/fonts": "0.13.0",
     "@nuxt/hints": "1.0.0-alpha.6",
     "@nuxt/icon": "2.2.1",
+    "@nuxtjs/sitemap": "^7.0.0",
     "@vueuse/core": "^14.2.1",
     "@vueuse/nuxt": "^14.2.1",
     "docus": "latest",
-    "nuxt": "^4.2.2"
+    "nuxt": "^4.2.2",
+    "nuxt-link-checker": "^4.0.0",
+    "nuxt-schema-org": "^5.0.0",
+    "nuxt-site-config": "^3.2.11"
   }
 }
