@@ -6,6 +6,8 @@ use crate::kafka_adapter::KafkaAdapter;
 use crate::local_adapter::LocalAdapter;
 #[cfg(feature = "nats")]
 use crate::nats_adapter::NatsAdapter;
+#[cfg(feature = "pulsar")]
+use crate::pulsar_adapter::PulsarAdapter;
 #[cfg(feature = "rabbitmq")]
 use crate::rabbitmq_adapter::RabbitMqAdapter;
 #[cfg(feature = "redis")]
@@ -21,6 +23,8 @@ use sockudo_core::options::GooglePubSubAdapterConfig;
 use sockudo_core::options::KafkaAdapterConfig;
 #[cfg(feature = "nats")]
 use sockudo_core::options::NatsAdapterConfig;
+#[cfg(feature = "pulsar")]
+use sockudo_core::options::PulsarAdapterConfig;
 #[cfg(feature = "rabbitmq")]
 use sockudo_core::options::RabbitMqAdapterConfig;
 #[cfg(feature = "redis-cluster")]
@@ -41,6 +45,8 @@ pub enum TypedAdapter {
     RedisCluster(Arc<RedisClusterAdapter>),
     #[cfg(feature = "nats")]
     Nats(Arc<NatsAdapter>),
+    #[cfg(feature = "pulsar")]
+    Pulsar(Arc<PulsarAdapter>),
     #[cfg(feature = "google-pubsub")]
     GooglePubSub(Arc<GooglePubSubAdapter>),
     #[cfg(feature = "kafka")]
@@ -60,6 +66,8 @@ impl TypedAdapter {
             TypedAdapter::RedisCluster(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "nats")]
             TypedAdapter::Nats(adapter) => adapter.local_adapter.clone(),
+            #[cfg(feature = "pulsar")]
+            TypedAdapter::Pulsar(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "google-pubsub")]
             TypedAdapter::GooglePubSub(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "kafka")]
@@ -117,6 +125,10 @@ impl TypedAdapter {
             TypedAdapter::Nats(adapter) => {
                 adapter.set_cache_manager(cache_manager, idempotency_ttl);
             }
+            #[cfg(feature = "pulsar")]
+            TypedAdapter::Pulsar(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
             #[cfg(feature = "google-pubsub")]
             TypedAdapter::GooglePubSub(adapter) => {
                 adapter.set_cache_manager(cache_manager, idempotency_ttl);
@@ -150,6 +162,8 @@ impl TypedAdapter {
             TypedAdapter::RedisCluster(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "nats")]
             TypedAdapter::Nats(adapter) => adapter.set_metrics(metrics).await,
+            #[cfg(feature = "pulsar")]
+            TypedAdapter::Pulsar(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "google-pubsub")]
             TypedAdapter::GooglePubSub(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "kafka")]
@@ -322,6 +336,39 @@ impl AdapterFactory {
                     }
                 }
             }
+            #[cfg(feature = "pulsar")]
+            AdapterDriver::Pulsar => {
+                let pulsar_cfg = PulsarAdapterConfig {
+                    url: config.pulsar.url.clone(),
+                    prefix: config.pulsar.prefix.clone(),
+                    request_timeout_ms: config.pulsar.request_timeout_ms,
+                    token: config.pulsar.token.clone(),
+                    nodes_number: config.pulsar.nodes_number,
+                };
+                match PulsarAdapter::new(pulsar_cfg).await {
+                    Ok(mut adapter) => {
+                        adapter.set_cluster_health(&config.cluster_health).await?;
+                        adapter.set_socket_counting(config.enable_socket_counting);
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::Pulsar(adapter.clone());
+                        Ok((adapter, typed))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "{}",
+                            format!(
+                                "Failed to initialize Pulsar adapter: {}, falling back to local adapter",
+                                e
+                            )
+                        );
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
+                    }
+                }
+            }
             #[cfg(feature = "rabbitmq")]
             AdapterDriver::RabbitMq => {
                 let rabbitmq_cfg = RabbitMqAdapterConfig {
@@ -459,6 +506,19 @@ impl AdapterFactory {
                 warn!(
                     "{}",
                     "NATS adapter requested but not compiled in. Falling back to local adapter."
+                        .to_string()
+                );
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
+            }
+            #[cfg(not(feature = "pulsar"))]
+            AdapterDriver::Pulsar => {
+                warn!(
+                    "{}",
+                    "Pulsar adapter requested but not compiled in. Falling back to local adapter."
                         .to_string()
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(

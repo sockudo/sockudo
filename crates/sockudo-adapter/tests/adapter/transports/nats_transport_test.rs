@@ -168,9 +168,9 @@ async fn test_get_node_count_default() -> Result<()> {
     config.nodes_number = None; // Test default behavior
     let transport = NatsTransport::new(config.clone()).await?;
 
-    // Without explicit nodes_number, should return at least 1
+    // Without explicit nodes_number, system discovery may or may not be available.
     let count = transport.get_node_count().await?;
-    assert_eq!(count, 1);
+    assert!(count >= 1);
 
     Ok(())
 }

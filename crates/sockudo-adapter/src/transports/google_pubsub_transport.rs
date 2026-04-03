@@ -7,18 +7,20 @@ use google_cloud_pubsub::model::Message;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::options::GooglePubSubAdapterConfig;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, error, info, warn};
 
-#[derive(Clone)]
 pub struct GooglePubSubTransport {
     broadcast_publisher: Publisher,
     request_publisher: Publisher,
     response_publisher: Publisher,
     subscriber: Subscriber,
+    subscription_admin: SubscriptionAdmin,
     broadcast_subscription: String,
     request_subscription: String,
     response_subscription: String,
     config: GooglePubSubAdapterConfig,
+    owner_count: Arc<AtomicUsize>,
 }
 
 impl TransportConfig for GooglePubSubAdapterConfig {
@@ -85,10 +87,12 @@ impl HorizontalTransport for GooglePubSubTransport {
             request_publisher,
             response_publisher,
             subscriber,
+            subscription_admin,
             broadcast_subscription,
             request_subscription,
             response_subscription,
             config,
+            owner_count: Arc::new(AtomicUsize::new(1)),
         })
     }
 
@@ -126,7 +130,7 @@ impl HorizontalTransport for GooglePubSubTransport {
     }
 
     async fn get_node_count(&self) -> Result<usize> {
-        Ok(self.config.nodes_number.unwrap_or(2) as usize)
+        Ok(self.config.nodes_number.unwrap_or(1) as usize)
     }
 
     async fn check_health(&self) -> Result<()> {
@@ -232,6 +236,59 @@ impl GooglePubSubTransport {
 
             warn!("Google Pub/Sub request consumer loop ended");
         });
+    }
+}
+
+impl Drop for GooglePubSubTransport {
+    fn drop(&mut self) {
+        if self.owner_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+
+        let subscription_admin = self.subscription_admin.clone();
+        let subscriptions = vec![
+            self.broadcast_subscription.clone(),
+            self.request_subscription.clone(),
+            self.response_subscription.clone(),
+        ];
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                for subscription in subscriptions {
+                    if let Err(error) = subscription_admin
+                        .delete_subscription()
+                        .set_subscription(&subscription)
+                        .send()
+                        .await
+                    {
+                        warn!(
+                            "Failed to delete Google Pub/Sub subscription '{}': {}",
+                            subscription, error
+                        );
+                    }
+                }
+            });
+        } else {
+            warn!("No Tokio runtime available to clean up Google Pub/Sub subscriptions");
+        }
+    }
+}
+
+impl Clone for GooglePubSubTransport {
+    fn clone(&self) -> Self {
+        self.owner_count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            broadcast_publisher: self.broadcast_publisher.clone(),
+            request_publisher: self.request_publisher.clone(),
+            response_publisher: self.response_publisher.clone(),
+            subscriber: self.subscriber.clone(),
+            subscription_admin: self.subscription_admin.clone(),
+            broadcast_subscription: self.broadcast_subscription.clone(),
+            request_subscription: self.request_subscription.clone(),
+            response_subscription: self.response_subscription.clone(),
+            config: self.config.clone(),
+            owner_count: self.owner_count.clone(),
+        }
     }
 }
 
