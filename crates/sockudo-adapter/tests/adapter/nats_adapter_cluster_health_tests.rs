@@ -30,6 +30,8 @@ async fn create_nats_adapter(node_id: &str, cluster_config: &ClusterHealthConfig
         servers: nats_servers,
         prefix: format!("test_cluster_health_{}", node_id),
         request_timeout_ms: 5000,
+        discovery_max_wait_ms: 1000,
+        discovery_idle_wait_ms: 150,
         username: env::var("NATS_USERNAME").ok(),
         password: env::var("NATS_PASSWORD").ok(),
         token: env::var("NATS_TOKEN").ok(),

@@ -17,6 +17,8 @@ servers = ["nats://127.0.0.1:4222"]
 prefix = "sockudo_adapter:"
 request_timeout_ms = 5000
 connection_timeout_ms = 5000
+discovery_max_wait_ms = 1000
+discovery_idle_wait_ms = 150
 
 [adapter.pulsar]
 url = "pulsar://127.0.0.1:6650"

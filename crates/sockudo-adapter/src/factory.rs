@@ -311,6 +311,8 @@ impl AdapterFactory {
                     token: config.nats.token.clone(),
                     connection_timeout_ms: config.nats.connection_timeout_ms,
                     nodes_number: config.nats.nodes_number,
+                    discovery_max_wait_ms: config.nats.discovery_max_wait_ms,
+                    discovery_idle_wait_ms: config.nats.discovery_idle_wait_ms,
                 };
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(mut adapter) => {
