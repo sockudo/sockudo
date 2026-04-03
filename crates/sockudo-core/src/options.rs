@@ -79,6 +79,7 @@ pub enum AdapterDriver {
     #[serde(rename = "redis-cluster")]
     RedisCluster,
     Nats,
+    Pulsar,
     RabbitMq,
     #[serde(rename = "google-pubsub")]
     GooglePubSub,
@@ -171,6 +172,7 @@ impl FromStr for AdapterDriver {
             "redis" => Ok(AdapterDriver::Redis),
             "redis-cluster" => Ok(AdapterDriver::RedisCluster),
             "nats" => Ok(AdapterDriver::Nats),
+            "pulsar" => Ok(AdapterDriver::Pulsar),
             "rabbitmq" | "rabbit-mq" => Ok(AdapterDriver::RabbitMq),
             "google-pubsub" | "gcp-pubsub" | "pubsub" => Ok(AdapterDriver::GooglePubSub),
             "kafka" => Ok(AdapterDriver::Kafka),
@@ -408,6 +410,7 @@ pub struct AdapterConfig {
     pub redis: RedisAdapterConfig,
     pub cluster: RedisClusterAdapterConfig,
     pub nats: NatsAdapterConfig,
+    pub pulsar: PulsarAdapterConfig,
     pub rabbitmq: RabbitMqAdapterConfig,
     pub google_pubsub: GooglePubSubAdapterConfig,
     pub kafka: KafkaAdapterConfig,
@@ -433,6 +436,7 @@ impl Default for AdapterConfig {
             redis: RedisAdapterConfig::default(),
             cluster: RedisClusterAdapterConfig::default(),
             nats: NatsAdapterConfig::default(),
+            pulsar: PulsarAdapterConfig::default(),
             rabbitmq: RabbitMqAdapterConfig::default(),
             google_pubsub: GooglePubSubAdapterConfig::default(),
             kafka: KafkaAdapterConfig::default(),
@@ -474,6 +478,16 @@ pub struct NatsAdapterConfig {
     pub password: Option<String>,
     pub token: Option<String>,
     pub connection_timeout_ms: u64,
+    pub nodes_number: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PulsarAdapterConfig {
+    pub url: String,
+    pub prefix: String,
+    pub request_timeout_ms: u64,
+    pub token: Option<String>,
     pub nodes_number: Option<u32>,
 }
 
@@ -1539,6 +1553,18 @@ impl Default for NatsAdapterConfig {
     }
 }
 
+impl Default for PulsarAdapterConfig {
+    fn default() -> Self {
+        Self {
+            url: "pulsar://127.0.0.1:6650".to_string(),
+            prefix: "sockudo-adapter".to_string(),
+            request_timeout_ms: 5000,
+            token: None,
+            nodes_number: None,
+        }
+    }
+}
+
 impl Default for RabbitMqAdapterConfig {
     fn default() -> Self {
         Self {
@@ -2324,6 +2350,9 @@ impl ServerOptions {
         if let Ok(token) = std::env::var("NATS_TOKEN") {
             self.adapter.nats.token = Some(token);
         }
+        if let Ok(prefix) = std::env::var("NATS_PREFIX") {
+            self.adapter.nats.prefix = prefix;
+        }
         self.adapter.nats.connection_timeout_ms = parse_env::<u64>(
             "NATS_CONNECTION_TIMEOUT_MS",
             self.adapter.nats.connection_timeout_ms,
@@ -2332,6 +2361,27 @@ impl ServerOptions {
             "NATS_REQUEST_TIMEOUT_MS",
             self.adapter.nats.request_timeout_ms,
         );
+        if let Some(nodes) = parse_env_optional::<u32>("NATS_NODES_NUMBER") {
+            self.adapter.nats.nodes_number = Some(nodes);
+        }
+
+        // --- Pulsar Adapter ---
+        if let Ok(url) = std::env::var("PULSAR_URL") {
+            self.adapter.pulsar.url = url;
+        }
+        if let Ok(prefix) = std::env::var("PULSAR_PREFIX") {
+            self.adapter.pulsar.prefix = prefix;
+        }
+        if let Ok(token) = std::env::var("PULSAR_TOKEN") {
+            self.adapter.pulsar.token = Some(token);
+        }
+        self.adapter.pulsar.request_timeout_ms = parse_env::<u64>(
+            "PULSAR_REQUEST_TIMEOUT_MS",
+            self.adapter.pulsar.request_timeout_ms,
+        );
+        if let Some(nodes) = parse_env_optional::<u32>("PULSAR_NODES_NUMBER") {
+            self.adapter.pulsar.nodes_number = Some(nodes);
+        }
 
         // --- RabbitMQ Adapter ---
         if let Ok(url) = std::env::var("RABBITMQ_URL") {

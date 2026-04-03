@@ -12,6 +12,33 @@ activity_timeout = 120
 driver = "local"
 enable_socket_counting = true
 
+[adapter.nats]
+servers = ["nats://127.0.0.1:4222"]
+prefix = "sockudo_adapter:"
+request_timeout_ms = 5000
+connection_timeout_ms = 5000
+
+[adapter.pulsar]
+url = "pulsar://127.0.0.1:6650"
+prefix = "sockudo-adapter"
+request_timeout_ms = 5000
+
+[adapter.rabbitmq]
+url = "amqp://guest:guest@127.0.0.1:5672/%2f"
+prefix = "sockudo_adapter"
+request_timeout_ms = 5000
+connection_timeout_ms = 5000
+
+[adapter.google_pubsub]
+project_id = ""
+prefix = "sockudo-adapter"
+request_timeout_ms = 5000
+
+[adapter.kafka]
+brokers = ["127.0.0.1:9092"]
+prefix = "sockudo_adapter"
+request_timeout_ms = 5000
+
 [adapter.cluster]
 nodes = []
 prefix = "sockudo_adapter:"

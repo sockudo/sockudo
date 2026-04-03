@@ -19,6 +19,7 @@ full = [
   "redis",
   "redis-cluster",
   "nats",
+  "pulsar",
   "rabbitmq",
   "google-pubsub",
   "kafka",
@@ -49,6 +50,7 @@ redis-cluster = [
   "sockudo-rate-limiter/redis-cluster",
 ]
 nats = ["sockudo-core/nats", "sockudo-adapter/nats", "sockudo-delta?/nats"]
+pulsar = ["sockudo-core/pulsar", "sockudo-adapter/pulsar"]
 rabbitmq = ["sockudo-core/rabbitmq", "sockudo-adapter/rabbitmq"]
 google-pubsub = ["sockudo-core/google-pubsub", "sockudo-adapter/google-pubsub"]
 kafka = ["sockudo-core/kafka", "sockudo-adapter/kafka"]
