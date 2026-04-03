@@ -46,8 +46,8 @@ watch(() => navigation?.value, () => {
 })
 
 defineOgImageComponent('Sockudo', {
-  title: title || 'Sockudo Documentation',
-  description: description || 'Drop-in Pusher replacement built in Rust.',
+  title: title || 'Sockudo Docs',
+  description: description || 'Open-source realtime infrastructure for Pusher-compatible apps.',
 })
 
 const github = computed(() => appConfig.github ? appConfig.github : null)
