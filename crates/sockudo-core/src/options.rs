@@ -479,6 +479,8 @@ pub struct NatsAdapterConfig {
     pub token: Option<String>,
     pub connection_timeout_ms: u64,
     pub nodes_number: Option<u32>,
+    pub discovery_max_wait_ms: u64,
+    pub discovery_idle_wait_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1549,6 +1551,8 @@ impl Default for NatsAdapterConfig {
             token: None,
             connection_timeout_ms: 5000,
             nodes_number: None,
+            discovery_max_wait_ms: 1000,
+            discovery_idle_wait_ms: 150,
         }
     }
 }
@@ -2360,6 +2364,14 @@ impl ServerOptions {
         self.adapter.nats.request_timeout_ms = parse_env::<u64>(
             "NATS_REQUEST_TIMEOUT_MS",
             self.adapter.nats.request_timeout_ms,
+        );
+        self.adapter.nats.discovery_max_wait_ms = parse_env::<u64>(
+            "NATS_DISCOVERY_MAX_WAIT_MS",
+            self.adapter.nats.discovery_max_wait_ms,
+        );
+        self.adapter.nats.discovery_idle_wait_ms = parse_env::<u64>(
+            "NATS_DISCOVERY_IDLE_WAIT_MS",
+            self.adapter.nats.discovery_idle_wait_ms,
         );
         if let Some(nodes) = parse_env_optional::<u32>("NATS_NODES_NUMBER") {
             self.adapter.nats.nodes_number = Some(nodes);

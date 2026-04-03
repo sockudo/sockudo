@@ -13,8 +13,6 @@ use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
 const NATS_SYS_SERVER_PING_SUBJECT: &str = "$SYS.REQ.SERVER.PING";
-const NATS_SYS_DISCOVERY_MAX_WAIT_MS: u64 = 1_000;
-const NATS_SYS_DISCOVERY_IDLE_WAIT_MS: u64 = 150;
 
 /// Metrics for tracking message processing and drops
 #[derive(Debug, Default)]
@@ -93,13 +91,12 @@ impl NatsTransport {
                 Error::Internal(format!("Failed to publish NATS discovery request: {e}"))
             })?;
 
-        let max_wait_ms = self
-            .config
-            .request_timeout_ms
-            .min(NATS_SYS_DISCOVERY_MAX_WAIT_MS)
-            .max(NATS_SYS_DISCOVERY_IDLE_WAIT_MS);
+        let max_wait_ms = self.config.request_timeout_ms.clamp(
+            self.config.discovery_idle_wait_ms,
+            self.config.discovery_max_wait_ms,
+        );
         let max_wait = Duration::from_millis(max_wait_ms);
-        let idle_wait = Duration::from_millis(NATS_SYS_DISCOVERY_IDLE_WAIT_MS);
+        let idle_wait = Duration::from_millis(self.config.discovery_idle_wait_ms);
         let start = tokio::time::Instant::now();
         let mut count = 0usize;
 
