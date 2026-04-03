@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libmariadb-dev \
     cmake \
+    protobuf-compiler \
     libclang-dev \
     clang \
     && rm -rf /var/lib/apt/lists/*

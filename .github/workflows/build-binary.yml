@@ -62,7 +62,7 @@ jobs:
         if: runner.os == 'Linux' && runner.arch == 'X64' && !contains(inputs.target_triple, 'musl')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake
+          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake protobuf-compiler
           sudo apt-get install -y libssl-dev libcurl4-openssl-dev
 
       - name: Build musl binary (Linux x86_64)
@@ -76,7 +76,7 @@ jobs:
             rust:1.93-alpine \
             sh -c '
               apk add --no-cache musl-dev pkgconf \
-                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers
+                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc
               mkdir -p .cargo
               printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
               cargo build -p sockudo --release --features full --target x86_64-unknown-linux-musl
@@ -86,29 +86,16 @@ jobs:
         if: runner.os == 'Linux' && runner.arch == 'ARM64' && !contains(inputs.target_triple, 'musl')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake
+          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake protobuf-compiler
           sudo apt-get install -y libssl-dev libcurl4-openssl-dev
 
       - name: Install system dependencies (Windows x86_64)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          if (-not $vcpkgRoot) {
-            $vcpkgRoot = "C:\vcpkg"
-          }
-
-          if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-            throw "vcpkg.exe not found at $vcpkgRoot"
-          }
-
-          & "$vcpkgRoot\vcpkg.exe" install zlib:x64-windows
-
-          "CMAKE_TOOLCHAIN_FILE=$vcpkgRoot\scripts\buildsystems\vcpkg.cmake" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "VCPKG_TARGET_TRIPLET=x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CMAKE_PREFIX_PATH=$vcpkgRoot\installed\x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ZLIB_INCLUDE_DIR=$vcpkgRoot\installed\x64-windows\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ZLIB_LIBRARY=$vcpkgRoot\installed\x64-windows\lib\zlib.lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          choco install protoc -y
+          $protoc = (Get-Command protoc).Source
+          "PROTOC=$protoc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build musl binary (Linux ARM64)
         if: runner.os == 'Linux' && runner.arch == 'ARM64' && contains(inputs.target_triple, 'musl')
@@ -121,7 +108,7 @@ jobs:
             rust:1.93-alpine \
             sh -c '
               apk add --no-cache musl-dev pkgconf \
-                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers
+                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc
               mkdir -p .cargo
               printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
               cargo build -p sockudo --release --features full --target aarch64-unknown-linux-musl
