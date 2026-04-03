@@ -67,10 +67,10 @@ export default defineAppConfig({
     },
     pageFeature: {
       slots: {
-        root: "border border-gray-200/20 dark:border-gray-800/50 rounded-xl p-6 md:p-7 transition-all duration-300 hover:border-violet-500/40 hover:shadow-lg hover:shadow-violet-500/10 hover:-translate-y-1",
+        root: "border border-default rounded-xl p-6 md:p-7 transition-all duration-300 hover:border-[#7938d3]/40 hover:shadow-lg hover:shadow-[#7938d3]/10 hover:-translate-y-1",
         wrapper: "flex flex-col items-center text-center h-full",
         leading: "mb-3 p-0",
-        leadingIcon: "size-5 md:size-6 text-violet-400/90",
+        leadingIcon: "size-5 md:size-6 text-[#7938d3]",
         title: "text-base font-semibold text-highlighted",
         description:
           "mt-2 text-sm md:text-base text-muted leading-relaxed max-w-prose",

@@ -1,4 +1,6 @@
 export default defineNuxtConfig({
+  css: ["~/assets/css/brand.css"],
+
   image: {
     provider: "none",
   },
