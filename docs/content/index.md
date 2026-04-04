@@ -1,15 +1,15 @@
 ---
 title: Sockudo Docs
-description: Open-source realtime infrastructure for Pusher-compatible apps, with production docs for Sockudo server and clients.
+description: Drop-in Pusher replacement built in Rust with production-ready docs for setup, scaling, security, APIs, and official clients.
 navigation: false
 seo:
-  title: "Sockudo Docs — Open-Source Realtime Infrastructure"
-  description: Run Sockudo with production-ready docs for setup, scaling, security, APIs, and official clients.
+  title: "Sockudo — Production-Ready Realtime Infrastructure"
+  description: Drop-in Pusher replacement built in Rust. Own your WebSocket infrastructure with delta compression, tag filtering, multi-region scaling, and official clients.
 ogImage:
   component: Sockudo
   props:
-    title: "Sockudo Docs"
-    description: "Open-source realtime infrastructure for Pusher-compatible apps."
+    title: "Sockudo — Production-Ready Realtime Infrastructure"
+    description: "Drop-in Pusher replacement built in Rust with delta compression, tag filtering, multi-region scaling, and official clients."
 ---
 
 ::u-page-hero
