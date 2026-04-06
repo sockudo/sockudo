@@ -658,10 +658,22 @@ impl ConnectionHandler {
                 .await?;
 
             // Get current members and send presence data to new member
-            let members_map = self
+            let mut members_map = self
                 .connection_manager
                 .get_channel_members(&app_config.id, &request.channel)
                 .await?;
+
+            // Ensure the subscribing member is included even if
+            // update_connection_subscription_state hasn't run yet.
+            if !members_map.contains_key(&presence_member.user_id) {
+                members_map.insert(
+                    presence_member.user_id.clone(),
+                    PresenceMemberInfo {
+                        user_id: presence_member.user_id.clone(),
+                        user_info: Some(presence_member.user_info.clone()),
+                    },
+                );
+            }
 
             let presence_data = PresenceData {
                 ids: members_map.keys().cloned().collect::<Vec<String>>(),
@@ -1043,5 +1055,82 @@ mod rewind_tests {
         let reordered = normalize_rewind_items_for_delivery(&SubscriptionRewind::Count(2), items);
         assert_eq!(reordered[0].serial, 4);
         assert_eq!(reordered[1].serial, 5);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_presence_subscription_includes_self() {
+        let mut members_map: AHashMap<String, PresenceMemberInfo> = AHashMap::new();
+
+        let presence_member = PresenceMember {
+            user_id: "user-123".to_string(),
+            user_info: sonic_rs::json!({"name": "Alice"}),
+        };
+
+        if !members_map.contains_key(&presence_member.user_id) {
+            members_map.insert(
+                presence_member.user_id.clone(),
+                PresenceMemberInfo {
+                    user_id: presence_member.user_id.clone(),
+                    user_info: Some(presence_member.user_info.clone()),
+                },
+            );
+        }
+
+        let presence_data = PresenceData {
+            ids: members_map.keys().cloned().collect::<Vec<String>>(),
+            hash: members_map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.user_info.clone()))
+                .collect::<AHashMap<String, Option<Value>>>(),
+            count: members_map.len(),
+        };
+
+        assert_eq!(presence_data.count, 1);
+        assert!(presence_data.ids.contains(&"user-123".to_string()));
+        assert!(presence_data.hash.contains_key("user-123"));
+    }
+
+    #[test]
+    fn test_presence_subscription_no_double_counting() {
+        let mut members_map: AHashMap<String, PresenceMemberInfo> = AHashMap::new();
+        members_map.insert(
+            "user-123".to_string(),
+            PresenceMemberInfo {
+                user_id: "user-123".to_string(),
+                user_info: Some(sonic_rs::json!({"name": "Alice"})),
+            },
+        );
+
+        let presence_member = PresenceMember {
+            user_id: "user-123".to_string(),
+            user_info: sonic_rs::json!({"name": "Alice Updated"}),
+        };
+
+        if !members_map.contains_key(&presence_member.user_id) {
+            members_map.insert(
+                presence_member.user_id.clone(),
+                PresenceMemberInfo {
+                    user_id: presence_member.user_id.clone(),
+                    user_info: Some(presence_member.user_info.clone()),
+                },
+            );
+        }
+
+        let presence_data = PresenceData {
+            ids: members_map.keys().cloned().collect::<Vec<String>>(),
+            hash: members_map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.user_info.clone()))
+                .collect::<AHashMap<String, Option<Value>>>(),
+            count: members_map.len(),
+        };
+
+        assert_eq!(presence_data.count, 1);
+        assert_eq!(presence_data.ids.len(), 1);
     }
 }
