@@ -23,32 +23,11 @@ Production-Ready Realtime Infrastructure
 Drop-in Pusher replacement built in Rust. Own your WebSocket infrastructure with enterprise features like delta compression, tag filtering, and multi-region scaling.
 
 #default
-  :::div{class="flex items-center justify-center"}
-    ::::img{src="/sockudo-logo/sockudo-icon-color.svg" alt="Sockudo Ninja" class="w-80 h-80 hover:scale-110 transition-all duration-300" style="filter: drop-shadow(0 0 40px rgba(121, 56, 211, 0.6)) drop-shadow(0 0 80px rgba(121, 56, 211, 0.4)); animation: pulse-glow 3s ease-in-out infinite;"}
-  :::
-  
-  :::style
-  @keyframes pulse-glow {
-    0%, 100% {
-      filter: drop-shadow(0 0 40px rgba(121, 56, 211, 0.6)) drop-shadow(0 0 80px rgba(121, 56, 211, 0.4));
-    }
-    50% {
-      filter: drop-shadow(0 0 60px rgba(121, 56, 211, 0.8)) drop-shadow(0 0 120px rgba(121, 56, 211, 0.6));
-    }
-  }
+  :::HeroCodeShowcase
   :::
 
 #links
-  :::u-button
-  ---
-  color: primary
-  size: xl
-  to: /getting-started/installation
-  trailing-icon: i-lucide-rocket
-  ui:
-    leadingIcon: scale-80
-    trailingIcon: scale-80
-  ---
+  :::ViteButton{to="/getting-started/installation" icon="i-lucide-rocket"}
   Get Started
   :::
 
@@ -92,77 +71,25 @@ Why Sockudo?
 #description
 Built for teams that need control, performance, and advanced features beyond basic pub/sub.
 
-#features
-  :::u-page-feature
-  ---
-  icon: i-lucide-zap
-  orientation: vertical
-  ---
-  #title
-  Blazing Fast
-  
-  #description
-  Written in Rust with async I/O. Handle millions of concurrent connections with minimal resource usage. Scales horizontally with Redis, Redis Cluster, NATS, Pulsar, RabbitMQ, Google Pub/Sub, or Kafka.
-  :::
+#default
+  :::div{class="asymmetric-grid grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-6xl mx-auto"}
+    ::::FeatureCard{title="Blazing Fast" description="Written in Rust with async I/O. Handle millions of concurrent connections with minimal resource usage. Scales horizontally with Redis, Redis Cluster, NATS, Pulsar, RabbitMQ, Google Pub/Sub, or Kafka." icon="i-lucide-zap" gradient="true"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-repeat
-  orientation: vertical
-  ---
-  #title
-  Drop-in Compatible
-  
-  #description
-  Keep your existing Pusher integrations. Works seamlessly with pusher-js, Laravel Echo, and all official Pusher SDKs. Migrate without changing client code.
-  :::
+    ::::FeatureCard{title="Drop-in Compatible" description="Keep your existing Pusher integrations. Works seamlessly with pusher-js, Laravel Echo, and all official Pusher SDKs. Migrate without changing client code." icon="i-lucide-repeat"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-sparkles
-  orientation: vertical
-  ---
-  #title
-  Advanced Features
-  
-  #description
-  Delta compression with conflation keys reduces bandwidth by 80-95%. Server-side tag filtering sends only relevant messages to clients.
-  :::
+    ::::FeatureCard{title="Advanced Features" description="Delta compression with conflation keys reduces bandwidth by 80-95%. Server-side tag filtering sends only relevant messages to clients." icon="i-lucide-sparkles"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-shield-check
-  orientation: vertical
-  ---
-  #title
-  Production Ready
-  
-  #description
-  Built-in rate limiting, origin validation, per-app quotas, health checks, Prometheus metrics, and webhook batching. Deploy with confidence.
-  :::
+    ::::FeatureCard{title="Production Ready" description="Built-in rate limiting, origin validation, per-app quotas, health checks, Prometheus metrics, and webhook batching. Deploy with confidence." icon="i-lucide-shield-check" gradient="true"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-database
-  orientation: vertical
-  ---
-  #title
-  Flexible Storage
-  
-  #description
-  Store app configs in memory, MySQL, PostgreSQL, DynamoDB, ScyllaDB, or Redis. Choose what fits your infrastructure.
-  :::
+    ::::FeatureCard{title="Flexible Storage" description="Store app configs in memory, MySQL, PostgreSQL, DynamoDB, ScyllaDB, or Redis. Choose what fits your infrastructure." icon="i-lucide-database" gradient="true"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-code-2
-  orientation: vertical
-  ---
-  #title
-  Multi-Client SDKs
-  
-  #description
-  Official JavaScript, Swift, Kotlin, and Flutter clients with filter subscriptions, encrypted channels, and delta reconstruction.
+    ::::FeatureCard{title="Multi-Client SDKs" description="Official JavaScript, Swift, Kotlin, and Flutter clients with filter subscriptions, encrypted channels, and delta reconstruction." icon="i-lucide-code-2"}
+    ::::
   :::
 ::
 
@@ -176,96 +103,70 @@ Core Features
 #description
 Everything you need to build production-grade realtime applications.
 
-#features
-  :::u-page-feature
-  ---
-  icon: i-lucide-layers
-  orientation: vertical
-  to: /getting-started/introduction
-  ---
-  #title
-  Pusher Protocol Compatible
-  
-  #description
-  Public, private, and presence channels. Client events. HTTP API with signed requests. Works with existing Pusher clients and server libraries.
-  :::
+#default
+  :::div{class="asymmetric-grid grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-6xl mx-auto"}
+    ::::FeatureCard{title="Lightning Fast Websockets" description="Written in Rust with async I/O. Handle millions of concurrent connections with minimal resource usage." icon="i-lucide-layers" gradient="true" compact-demo="true"}
+    :::::CodePanel
+    ---
+    language: Bash
+    label: Server startup
+    compact: true
+    code: |
+      $ sockudo --config config.toml
+      [INFO] Listening on :6001
+      [INFO] Ready for websocket traffic
+    ---
+    :::::
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-diff
-  orientation: vertical
-  to: /server/delta-compression
-  ---
-  #title
-  Delta Compression
-  
-  #description
-  Send only message differences instead of full payloads. Conflation keys group messages by entity for 80-95% bandwidth savings on high-frequency updates.
-  :::
+    ::::FeatureCard{title="Drop-in Pusher Replacement" description="Keep your existing Pusher integrations. Works seamlessly with pusher-js, Laravel Echo, and all official SDKs." icon="i-lucide-plug" compact-demo="true"}
+    :::::CodePanel
+    ---
+    language: JavaScript
+    label: pusher-js
+    compact: true
+    code: |
+      const pusher = new Pusher("app-key", {
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+      });
+    ---
+    :::::
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-filter
-  orientation: vertical
-  to: /server/tag-filtering
-  ---
-  #title
-  Tag Filtering
-  
-  #description
-  Server-side message filtering with tags. Clients subscribe with filter expressions and receive only matching messages. Reduce bandwidth and client load.
-  :::
+    ::::FeatureCard{title="Delta Compression" description="Send only message differences instead of full payloads. Conflation keys group messages by entity for 80-95% bandwidth savings." icon="i-lucide-diff" compact-demo="true"}
+    :::::CodePanel
+    ---
+    language: TypeScript
+    label: Delta options
+    compact: true
+    code: |
+      client.subscribe("ticker:btc", {
+        delta: {
+          enabled: true,
+          algorithm: "xdelta3",
+        },
+      });
+    ---
+    :::::
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-gauge
-  orientation: vertical
-  to: /server/scaling
-  ---
-  #title
-  Horizontal Scaling
-  
-  #description
-  Scale across multiple nodes with Redis, Redis Cluster, NATS, Pulsar, RabbitMQ, Google Pub/Sub, or Kafka adapters. Cluster health monitoring and automatic dead node detection included.
-  :::
-
-  :::u-page-feature
-  ---
-  icon: i-lucide-lock
-  orientation: vertical
-  to: /server/security
-  ---
-  #title
-  Security & Rate Limiting
-  
-  #description
-  Origin validation, API authentication, per-app connection limits, and rate limiting for both WebSocket and HTTP traffic. Memory-based or Redis-backed.
-  :::
-
-  :::u-page-feature
-  ---
-  icon: i-lucide-activity
-  orientation: vertical
-  to: /server/observability
-  ---
-  #title
-  Observability
-  
-  #description
-  Prometheus metrics endpoint with detailed WebSocket, pub/sub, and delta compression stats. Health checks for readiness and liveness probes.
-  :::
-
-  :::u-page-feature
-  ---
-  icon: i-lucide-smartphone
-  orientation: vertical
-  to: /client/overview
-  ---
-  #title
-  Official Client SDKs
-  
-  #description
-  Use the JavaScript client in web runtimes, Swift on Apple platforms, Kotlin on Android and JVM, or Flutter across mobile and desktop.
+    ::::FeatureCard{title="Tag Filtering" description="Server-side message filtering with tags. Clients subscribe with filter expressions and receive only matching messages." icon="i-lucide-filter" gradient="true" compact-demo="true"}
+    :::::CodePanel
+    ---
+    language: TypeScript
+    label: Filter expressions
+    compact: true
+    code: |
+      client.subscribe("market", {
+        filter: Filter.and(
+          Filter.eq("event", "trade"),
+          Filter.gte("price", "100"),
+        ),
+      });
+    ---
+    :::::
+    ::::
   :::
 ::
 
@@ -279,44 +180,16 @@ Get Started in Minutes
 #description
 Three ways to run Sockudo, from Docker compose to production clusters.
 
-#features
-  :::u-page-feature
-  ---
-  icon: i-simple-icons-docker
-  orientation: vertical
-  to: /getting-started/installation#option-1-docker-fastest
-  ---
-  #title
-  Docker Compose
-  
-  #description
-  Clone the repo and run `docker compose up`. Perfect for local development and testing. Health checks and metrics included.
-  :::
+#default
+  :::div{class="asymmetric-grid grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-6xl mx-auto"}
+    ::::FeatureCard{title="Docker Compose" description="Clone the repo and run `docker compose up`. Perfect for local development and testing. Health checks and metrics included." icon="i-simple-icons-docker" gradient="true"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-simple-icons-rust
-  orientation: vertical
-  to: /getting-started/installation#option-2-cargo-binstall-precompiled-binary
-  ---
-  #title
-  Precompiled Binary
-  
-  #description
-  Install with `cargo binstall sockudo` for instant setup. Choose feature flags for Redis, NATS, Pulsar, SQL backends, and more. No compilation required.
-  :::
+    ::::FeatureCard{title="Precompiled Binary" description="Install with `cargo binstall sockudo` for instant setup. Choose feature flags for Redis, NATS, SQL backends. No compilation required." icon="i-simple-icons-rust"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-code
-  orientation: vertical
-  to: /getting-started/installation#option-3-build-from-source
-  ---
-  #title
-  Build from Source
-  
-  #description
-  Compile with custom features using Cargo. Full control over dependencies. Supports all backends and integrations.
+    ::::FeatureCard{title="Build from Source" description="Compile with custom features using Cargo. Full control over dependencies. Supports all backends and integrations." icon="i-lucide-code"}
+    ::::
   :::
 ::
 
@@ -330,44 +203,16 @@ Official JavaScript Client
 #description
 `@sockudo/client` extends Pusher's API with advanced features while maintaining full compatibility.
 
-#features
-  :::u-page-feature
-  ---
-  icon: i-lucide-filter
-  orientation: vertical
-  to: /client/official-client-features#tag-filtering-subscribe-api
-  ---
-  #title
-  Filter API
-  
-  #description
-  Subscribe with server-side filters using a fluent API. Supports equality, comparison, set membership, pattern matching, and complex AND/OR combinations.
-  :::
+#default
+  :::div{class="asymmetric-grid grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-6xl mx-auto"}
+    ::::FeatureCard{title="Filter API" description="Subscribe with server-side filters using a fluent API. Supports equality, pattern matching, and complex combinations." icon="i-lucide-filter" gradient="true"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-package
-  orientation: vertical
-  to: /client/official-client-features#delta-compression-global-enable
-  ---
-  #title
-  Delta Reconstruction
-  
-  #description
-  Automatic delta decoding with cache management. Track bandwidth savings with stats hooks. Per-subscription delta negotiation and error handling.
-  :::
+    ::::FeatureCard{title="Delta Reconstruction" description="Automatic delta decoding with cache management. Track bandwidth savings with stats hooks. Per-subscription configuration." icon="i-lucide-package"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-plug
-  orientation: vertical
-  to: /integrations/laravel-echo
-  ---
-  #title
-  Framework Integration
-  
-  #description
-  Works with Laravel Echo, React, Vue, Svelte, and vanilla JavaScript. Custom connector for Echo with full feature support.
+    ::::FeatureCard{title="Framework Integration" description="Works with Laravel Echo, React, Vue, Svelte, and vanilla JavaScript. Custom connector for Echo with full feature support." icon="i-lucide-plug"}
+    ::::
   :::
 ::
 
@@ -381,83 +226,25 @@ Integrations & Ecosystem
 #description
 Connect Sockudo with your existing tools and frameworks.
 
-#features
-  :::u-page-feature
-  ---
-  icon: i-simple-icons-laravel
-  orientation: vertical
-  to: /integrations/laravel-echo
-  ---
-  #title
-  Laravel Echo
-  
-  #description
-  Drop-in replacement for Pusher with Laravel Broadcasting. Use `@sockudo/client` connector for advanced features or standard pusher-js for basic pub/sub.
-  :::
+#default
+  :::div{class="asymmetric-grid grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-6xl mx-auto"}
+    ::::FeatureCard{title="Laravel Echo" description="Drop-in replacement for Pusher with Laravel Broadcasting. Use `@sockudo/client` connector for advanced features." icon="i-simple-icons-laravel" gradient="true"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-radio-tower
-  orientation: vertical
-  to: /integrations/pusher-js
-  ---
-  #title
-  Pusher-JS
-  
-  #description
-  Standard pusher-js works out of the box. No code changes needed. Point `wsHost` to your Sockudo server and you're ready.
-  :::
+    ::::FeatureCard{title="Pusher-JS" description="Standard pusher-js works out of the box. No code changes needed. Point wsHost to your Sockudo server and you're ready." icon="i-lucide-radio-tower"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-webhook
-  orientation: vertical
-  to: /integrations/backend-sdks
-  ---
-  #title
-  Backend SDKs
-  
-  #description
-  Use official Pusher server libraries in PHP, Node.js, Python, Ruby, Go, and .NET. Configure endpoint URL and credentials, then publish events.
-  :::
+    ::::FeatureCard{title="Backend SDKs" description="Use official Pusher server libraries in PHP, Node.js, Python, Ruby, Go, and .NET. Publish events with ease." icon="i-lucide-webhook"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-container
-  orientation: vertical
-  to: /server/scaling
-  ---
-  #title
-  Horizontal Adapters
-  
-  #description
-  Horizontal scaling with Redis, Redis Cluster, NATS, Pulsar, RabbitMQ, Google Pub/Sub, or Kafka adapters. Shared pub/sub for multi-node deployments with cluster health monitoring.
-  :::
+    ::::FeatureCard{title="Horizontal Adapters" description="Scale with Redis, Redis Cluster, NATS, Pulsar, RabbitMQ, Google Pub/Sub, or Kafka adapters with health monitoring." icon="i-lucide-container" gradient="true"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-database
-  orientation: vertical
-  to: /server/app-managers
-  ---
-  #title
-  Database Support
-  
-  #description
-  Store application configs in MySQL, PostgreSQL, DynamoDB, ScyllaDB, or Redis. In-memory mode for development.
-  :::
+    ::::FeatureCard{title="Database Support" description="Store application configs in MySQL, PostgreSQL, DynamoDB, ScyllaDB, or Redis. In-memory mode for development." icon="i-lucide-database" gradient="true"}
+    ::::
 
-  :::u-page-feature
-  ---
-  icon: i-lucide-cloud
-  orientation: vertical
-  to: /server/queue
-  ---
-  #title
-  Queue & Webhooks
-  
-  #description
-  Process webhooks asynchronously with Redis queues or AWS SQS. Automatic batching and retry logic included.
+    ::::FeatureCard{title="Queue & Webhooks" description="Process webhooks asynchronously with Redis queues or AWS SQS. Automatic batching and retry logic included." icon="i-lucide-cloud"}
+    ::::
   :::
 ::
 
@@ -472,13 +259,7 @@ Ready to Get Started?
 Install Sockudo, connect your first client, and start building realtime features in under 5 minutes.
 
 #links
-  :::u-button
-  ---
-  color: primary
-  size: xl
-  to: /getting-started/installation
-  trailing-icon: i-lucide-rocket
-  ---
+  :::ViteButton{to="/getting-started/installation" icon="i-lucide-rocket"}
   Quick Start
   :::
 
