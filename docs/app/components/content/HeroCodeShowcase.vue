@@ -63,12 +63,6 @@ const currentSnippet = computed(() => snippets[activeSnippet.value]);
 <template>
     <div class="hero-snippet-shell">
         <div class="hero-snippet-frame">
-            <div class="hero-snippet-topbar">
-                <div class="hero-snippet-pill">
-                    Install in minutes
-                </div>
-            </div>
-
             <div class="hero-snippet-tabs" role="tablist" aria-label="Code examples">
                 <button
                     v-for="id in order"
@@ -132,37 +126,19 @@ const currentSnippet = computed(() => snippets[activeSnippet.value]);
     box-shadow:
         0 30px 80px rgba(3, 8, 18, 0.52),
         inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    padding-top: 0.35rem;
 }
 
-.hero-snippet-topbar,
 .hero-snippet-tabs,
 .hero-snippet-intro {
     position: relative;
     z-index: 1;
 }
 
-.hero-snippet-topbar {
-    display: flex;
-    justify-content: flex-end;
-    padding: 1rem 1.6rem 0 1.25rem;
-}
-
-.hero-snippet-pill {
-    border: 1px solid rgba(148, 163, 184, 0.16);
-    border-radius: 999px;
-    padding: 0.3rem 0.65rem;
-    background: rgba(15, 23, 42, 0.72);
-    color: rgba(203, 213, 225, 0.88);
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-}
-
 .hero-snippet-tabs {
     display: flex;
-    gap: 0.75rem;
-    padding: 1rem 1.6rem 0.25rem 1.25rem;
+    gap: 0.65rem;
+    padding: 1rem 1.25rem 0.35rem;
     overflow-x: auto;
 }
 
@@ -170,10 +146,10 @@ const currentSnippet = computed(() => snippets[activeSnippet.value]);
     flex: 0 0 auto;
     border: 1px solid rgba(148, 163, 184, 0.14);
     border-radius: 999px;
-    padding: 0.5rem 0.85rem;
+    padding: 0.48rem 0.82rem;
     background: rgba(15, 23, 42, 0.58);
     color: rgba(191, 219, 254, 0.78);
-    font-size: 0.82rem;
+    font-size: 0.8rem;
     font-weight: 600;
     transition:
         border-color 0.2s ease,
@@ -197,7 +173,7 @@ const currentSnippet = computed(() => snippets[activeSnippet.value]);
 }
 
 .hero-snippet-intro {
-    padding: 0.9rem 1.6rem 0.4rem 1.25rem;
+    padding: 0.75rem 1.25rem 0.35rem;
 }
 
 .hero-snippet-kicker {
@@ -218,14 +194,13 @@ const currentSnippet = computed(() => snippets[activeSnippet.value]);
 }
 
 :deep(.code-panel) {
-    margin: 0 1.6rem 1.25rem 1.25rem;
+    margin: 0 1.25rem 1.25rem;
     background:
         linear-gradient(180deg, rgba(5, 10, 27, 0.98), rgba(10, 16, 32, 0.98));
     border-color: rgba(71, 85, 105, 0.6);
 }
 
 @media (max-width: 640px) {
-    .hero-snippet-topbar,
     .hero-snippet-tabs,
     .hero-snippet-intro {
         padding-left: 0.9rem;
