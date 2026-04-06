@@ -5,6 +5,14 @@ export default defineNuxtConfig({
 
   css: ["~/assets/css/brand.css"],
 
+  components: [
+    {
+      path: "~~/components/content",
+      pathPrefix: false,
+      global: true,
+    },
+  ],
+
   image: {
     provider: "none",
   },

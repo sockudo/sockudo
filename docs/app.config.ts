@@ -48,10 +48,6 @@ export default defineAppConfig({
   },
   github: false,
   ui: {
-    colors: {
-      primary: "violet",
-      neutral: "slate",
-    },
     contentNavigation: {
       slots: {
         linkLeadingIcon: "size-4 mr-1",
@@ -67,7 +63,7 @@ export default defineAppConfig({
     },
     pageFeature: {
       slots: {
-        root: "border border-default rounded-xl p-6 md:p-7 transition-all duration-300 hover:border-[#7938d3]/40 hover:shadow-lg hover:shadow-[#7938d3]/10 hover:-translate-y-1",
+        root: "glowing-card rounded-xl p-6 md:p-7",
         wrapper: "flex flex-col items-center text-center h-full",
         leading: "mb-3 p-0",
         leadingIcon: "size-5 md:size-6 text-[#7938d3]",
