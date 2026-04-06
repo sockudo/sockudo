@@ -16,6 +16,12 @@ ogImage:
 ---
 orientation: horizontal
 ---
+#headline
+<div class="hero-brand-lockup">
+  <img src="/sockudo-logo/sockudo-icon-color.svg" alt="Sockudo" class="hero-brand-icon" />
+  <span>Sockudo</span>
+</div>
+
 #title
 Production-Ready Realtime Infrastructure
 

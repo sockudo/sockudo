@@ -79,6 +79,28 @@
 }
 
 @layer components {
+    .hero-brand-lockup {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.8rem;
+        padding: 0.55rem 0.9rem;
+        border: 1px solid color-mix(in srgb, var(--ui-primary) 22%, transparent);
+        border-radius: 9999px;
+        background: color-mix(in srgb, var(--ui-primary) 10%, transparent);
+        color: var(--ui-text-highlighted);
+        font-size: 0.95rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+
+    .hero-brand-icon {
+        width: 1.8rem;
+        height: 1.8rem;
+        object-fit: contain;
+        filter: drop-shadow(0 8px 20px rgba(121, 56, 211, 0.25));
+    }
+
     /* Vite-like Animated Button */
     .vite-btn {
         position: relative;
