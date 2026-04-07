@@ -91,15 +91,17 @@ struct ProtoPusherMessage {
     conflation_key: Option<String>,
     #[prost(string, optional, tag = "9")]
     message_id: Option<String>,
-    #[prost(uint64, optional, tag = "10")]
+    #[prost(string, optional, tag = "10")]
+    stream_id: Option<String>,
+    #[prost(uint64, optional, tag = "11")]
     serial: Option<u64>,
-    #[prost(string, optional, tag = "11")]
+    #[prost(string, optional, tag = "12")]
     idempotency_key: Option<String>,
-    #[prost(message, optional, tag = "12")]
+    #[prost(message, optional, tag = "13")]
     extras: Option<ProtoMessageExtras>,
-    #[prost(uint64, optional, tag = "13")]
+    #[prost(uint64, optional, tag = "14")]
     delta_sequence: Option<u64>,
-    #[prost(string, optional, tag = "14")]
+    #[prost(string, optional, tag = "15")]
     delta_conflation_key: Option<String>,
 }
 
@@ -114,6 +116,7 @@ struct MsgpackPusherMessage {
     sequence: Option<u64>,
     conflation_key: Option<String>,
     message_id: Option<String>,
+    stream_id: Option<String>,
     serial: Option<u64>,
     idempotency_key: Option<String>,
     extras: Option<MsgpackMessageExtras>,
@@ -233,6 +236,7 @@ impl From<PusherMessage> for ProtoPusherMessage {
             sequence: value.sequence,
             conflation_key: value.conflation_key,
             message_id: value.message_id,
+            stream_id: value.stream_id,
             serial: value.serial,
             idempotency_key: value.idempotency_key,
             extras: value.extras.map(Into::into),
@@ -254,6 +258,7 @@ impl From<PusherMessage> for MsgpackPusherMessage {
             sequence: value.sequence,
             conflation_key: value.conflation_key,
             message_id: value.message_id,
+            stream_id: value.stream_id,
             serial: value.serial,
             idempotency_key: value.idempotency_key,
             extras: value.extras.map(Into::into),
@@ -276,6 +281,7 @@ impl From<ProtoPusherMessage> for PusherMessage {
             sequence: value.sequence,
             conflation_key: value.conflation_key,
             message_id: value.message_id,
+            stream_id: value.stream_id,
             serial: value.serial,
             idempotency_key: value.idempotency_key,
             extras: value.extras.map(Into::into),
@@ -297,6 +303,7 @@ impl From<MsgpackPusherMessage> for PusherMessage {
             sequence: value.sequence,
             conflation_key: value.conflation_key,
             message_id: value.message_id,
+            stream_id: value.stream_id,
             serial: value.serial,
             idempotency_key: value.idempotency_key,
             extras: value.extras.map(Into::into),
@@ -543,6 +550,7 @@ mod tests {
             sequence: Some(7),
             conflation_key: Some("room".to_string()),
             message_id: Some("mid-1".to_string()),
+            stream_id: Some("stream-1".to_string()),
             serial: Some(9),
             idempotency_key: Some("idem-1".to_string()),
             extras: Some(MessageExtras {

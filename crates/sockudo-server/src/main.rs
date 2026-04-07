@@ -797,6 +797,7 @@ impl SockudoServer {
             &config.database.postgres,
             &config.database_pooling,
             state.metrics.clone(),
+            Some(state.cache_manager.clone()),
         )
         .await?;
         builder = builder.history_store(history_store);
