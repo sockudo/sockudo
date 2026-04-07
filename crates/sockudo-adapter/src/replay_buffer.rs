@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -5,8 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 struct BufferedMessage {
+    stream_id: Option<String>,
     serial: u64,
-    message_bytes: Vec<u8>,
+    message_bytes: Bytes,
     timestamp: Instant,
 }
 
@@ -52,7 +54,14 @@ impl ReplayBuffer {
     }
 
     /// Store a serialized message in the replay buffer.
-    pub fn store(&self, app_id: &str, channel: &str, serial: u64, message_bytes: Vec<u8>) {
+    pub fn store(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: Option<&str>,
+        serial: u64,
+        message_bytes: Bytes,
+    ) {
         let key = Self::buffer_key(app_id, channel);
         let entry = self.buffers.entry(key).or_insert_with(|| ChannelBuffer {
             messages: Mutex::new(VecDeque::with_capacity(self.max_buffer_size)),
@@ -65,6 +74,7 @@ impl ReplayBuffer {
             messages.pop_front();
         }
         messages.push_back(BufferedMessage {
+            stream_id: stream_id.map(ToString::to_string),
             serial,
             message_bytes,
             timestamp: Instant::now(),
@@ -81,7 +91,7 @@ impl ReplayBuffer {
         app_id: &str,
         channel: &str,
         last_serial: u64,
-    ) -> Option<Vec<Vec<u8>>> {
+    ) -> Option<Vec<Bytes>> {
         let key = Self::buffer_key(app_id, channel);
         let entry = self.buffers.get(&key)?;
         let messages = entry.messages.lock().unwrap();
@@ -105,10 +115,13 @@ impl ReplayBuffer {
         }
 
         let now = Instant::now();
-        let result: Vec<Vec<u8>> = messages
+        let result: Vec<Bytes> = messages
             .iter()
             .filter(|m| m.serial > last_serial && now.duration_since(m.timestamp) < self.buffer_ttl)
-            .map(|m| m.message_bytes.clone())
+            .map(|m| {
+                let _ = &m.stream_id;
+                m.message_bytes.clone()
+            })
             .collect();
 
         Some(result)

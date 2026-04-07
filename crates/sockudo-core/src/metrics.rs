@@ -122,6 +122,21 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a message delivery skipped due to echo control (V2 only)
     fn mark_echo_suppressed(&self, _app_id: &str) {}
 
+    /// Track a successful durable history write.
+    fn mark_history_write(&self, _app_id: &str) {}
+
+    /// Track durable history write latency.
+    fn track_history_write_latency(&self, _app_id: &str, _latency_ms: f64) {}
+
+    /// Track a durable history write failure.
+    fn mark_history_write_failure(&self, _app_id: &str) {}
+
+    /// Update retained durable history counts for an app.
+    fn update_history_retained(&self, _app_id: &str, _messages: u64, _bytes: u64) {}
+
+    /// Track evictions performed by the durable history store.
+    fn mark_history_eviction(&self, _app_id: &str, _messages: u64, _bytes: u64) {}
+
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;
 

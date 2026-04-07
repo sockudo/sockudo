@@ -373,6 +373,7 @@ pub struct ServerOptions {
     pub tag_filtering: TagFilteringConfig,
     pub websocket: WebSocketConfig,
     pub connection_recovery: ConnectionRecoveryConfig,
+    pub history: HistoryConfig,
     pub idempotency: IdempotencyConfig,
     pub ephemeral: EphemeralConfig,
     pub echo_control: EchoControlConfig,
@@ -1050,6 +1051,76 @@ pub struct ConnectionRecoveryConfig {
     pub max_buffer_size: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryBackend {
+    Postgres,
+    Memory,
+}
+
+impl Default for HistoryBackend {
+    fn default() -> Self {
+        Self::Postgres
+    }
+}
+
+impl FromStr for HistoryBackend {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "postgres" | "postgresql" | "pgsql" => Ok(Self::Postgres),
+            "memory" => Ok(Self::Memory),
+            _ => Err(format!("Unknown history backend: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PostgresHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for PostgresHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryConfig {
+    pub enabled: bool,
+    pub backend: HistoryBackend,
+    pub retention_window_seconds: u64,
+    pub max_page_size: usize,
+    pub max_messages_per_channel: Option<usize>,
+    pub max_bytes_per_channel: Option<u64>,
+    pub writer_shards: usize,
+    pub writer_queue_capacity: usize,
+    pub postgres: PostgresHistoryConfig,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: HistoryBackend::Postgres,
+            retention_window_seconds: 86400,
+            max_page_size: 100,
+            max_messages_per_channel: None,
+            max_bytes_per_channel: None,
+            writer_shards: 16,
+            writer_queue_capacity: 4096,
+            postgres: PostgresHistoryConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HttpApiConfig {
@@ -1482,6 +1553,7 @@ impl Default for ServerOptions {
             delta_compression: DeltaCompressionOptionsConfig::default(),
             websocket: WebSocketConfig::default(),
             connection_recovery: ConnectionRecoveryConfig::default(),
+            history: HistoryConfig::default(),
             idempotency: IdempotencyConfig::default(),
             ephemeral: EphemeralConfig::default(),
             echo_control: EchoControlConfig::default(),
@@ -2769,6 +2841,44 @@ impl ServerOptions {
             self.connection_recovery.max_buffer_size,
         );
 
+        self.history.enabled = parse_bool_env("HISTORY_ENABLED", self.history.enabled);
+        self.history.retention_window_seconds = parse_env::<u64>(
+            "HISTORY_RETENTION_WINDOW_SECONDS",
+            self.history.retention_window_seconds,
+        );
+        self.history.max_page_size =
+            parse_env::<usize>("HISTORY_MAX_PAGE_SIZE", self.history.max_page_size);
+        self.history.writer_shards =
+            parse_env::<usize>("HISTORY_WRITER_SHARDS", self.history.writer_shards);
+        self.history.writer_queue_capacity = parse_env::<usize>(
+            "HISTORY_WRITER_QUEUE_CAPACITY",
+            self.history.writer_queue_capacity,
+        );
+        if let Ok(backend) = std::env::var("HISTORY_BACKEND") {
+            self.history.backend = HistoryBackend::from_str(&backend)?;
+        }
+        if let Ok(max_messages) = std::env::var("HISTORY_MAX_MESSAGES_PER_CHANNEL") {
+            self.history.max_messages_per_channel = Some(
+                max_messages
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid HISTORY_MAX_MESSAGES_PER_CHANNEL: {e}"))?,
+            );
+        }
+        if let Ok(max_bytes) = std::env::var("HISTORY_MAX_BYTES_PER_CHANNEL") {
+            self.history.max_bytes_per_channel = Some(
+                max_bytes
+                    .parse::<u64>()
+                    .map_err(|e| format!("Invalid HISTORY_MAX_BYTES_PER_CHANNEL: {e}"))?,
+            );
+        }
+        if let Ok(table_prefix) = std::env::var("HISTORY_POSTGRES_TABLE_PREFIX") {
+            self.history.postgres.table_prefix = table_prefix;
+        }
+        self.history.postgres.write_timeout_ms = parse_env::<u64>(
+            "HISTORY_POSTGRES_WRITE_TIMEOUT_MS",
+            self.history.postgres.write_timeout_ms,
+        );
+
         self.idempotency.enabled = parse_bool_env("IDEMPOTENCY_ENABLED", self.idempotency.enabled);
         self.idempotency.ttl_seconds =
             parse_env::<u64>("IDEMPOTENCY_TTL_SECONDS", self.idempotency.ttl_seconds);
@@ -2828,6 +2938,24 @@ impl ServerOptions {
 
         if let Err(e) = self.cleanup.validate() {
             return Err(format!("Invalid cleanup configuration: {}", e));
+        }
+
+        if self.history.enabled {
+            if self.history.max_page_size == 0 {
+                return Err("history.max_page_size must be greater than 0".to_string());
+            }
+            if self.history.writer_shards == 0 {
+                return Err("history.writer_shards must be greater than 0".to_string());
+            }
+            if self.history.writer_queue_capacity == 0 {
+                return Err("history.writer_queue_capacity must be greater than 0".to_string());
+            }
+            if self.history.retention_window_seconds == 0 {
+                return Err("history.retention_window_seconds must be greater than 0".to_string());
+            }
+            if self.history.postgres.table_prefix.trim().is_empty() {
+                return Err("history.postgres.table_prefix must not be empty".to_string());
+            }
         }
 
         Ok(())

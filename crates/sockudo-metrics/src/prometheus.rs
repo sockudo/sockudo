@@ -87,6 +87,14 @@ pub struct PrometheusMetricsDriver {
     event_filter_suppressed_total: CounterVec,
     // Echo control metrics
     echo_suppressed_total: CounterVec,
+    // History metrics
+    history_writes_total: CounterVec,
+    history_write_failures_total: CounterVec,
+    history_write_latency_ms: HistogramVec,
+    history_retained_messages: GaugeVec,
+    history_retained_bytes: GaugeVec,
+    history_evictions_total: CounterVec,
+    history_evicted_bytes_total: CounterVec,
     // Redis Cluster transport metrics
     redis_cluster_channel_queue_size: GaugeVec,
     redis_cluster_channel_messages_dropped: CounterVec,
@@ -486,6 +494,70 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let history_writes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_writes_total"),
+                "Total number of durable history writes"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_write_failures_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_write_failures_total"),
+                "Total number of durable history write failures"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_write_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}history_write_latency_ms"),
+                "Durable history write latency in milliseconds",
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_retained_messages = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_retained_messages"),
+                "Current number of retained durable history messages"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_retained_bytes = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_retained_bytes"),
+                "Current number of retained durable history bytes"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_evictions_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_evictions_total"),
+                "Total number of durable history messages evicted"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_evicted_bytes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_evicted_bytes_total"),
+                "Total number of durable history bytes evicted"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
         // Redis Cluster transport metrics
         let redis_cluster_channel_queue_size = register_gauge_vec!(
             Opts::new(
@@ -517,6 +589,8 @@ impl PrometheusMetricsDriver {
         // Reset gauge metrics to 0 on startup - they represent current state, not historical
         connected_sockets.reset();
         active_channels.reset();
+        history_retained_messages.reset();
+        history_retained_bytes.reset();
         redis_cluster_channel_queue_size.reset();
 
         // Set process start time
@@ -573,6 +647,13 @@ impl PrometheusMetricsDriver {
             ephemeral_messages_total,
             event_filter_suppressed_total,
             echo_suppressed_total,
+            history_writes_total,
+            history_write_failures_total,
+            history_write_latency_ms,
+            history_retained_messages,
+            history_retained_bytes,
+            history_evictions_total,
+            history_evicted_bytes_total,
             redis_cluster_channel_queue_size,
             redis_cluster_channel_messages_dropped,
             redis_cluster_reconnections_total,
@@ -1084,6 +1165,45 @@ impl MetricsInterface for PrometheusMetricsDriver {
     fn mark_echo_suppressed(&self, app_id: &str) {
         let tags = self.get_tags(app_id);
         self.echo_suppressed_total.with_label_values(&tags).inc();
+    }
+
+    fn mark_history_write(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.history_writes_total.with_label_values(&tags).inc();
+    }
+
+    fn track_history_write_latency(&self, app_id: &str, latency_ms: f64) {
+        let tags = self.get_tags(app_id);
+        self.history_write_latency_ms
+            .with_label_values(&tags)
+            .observe(latency_ms);
+    }
+
+    fn mark_history_write_failure(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.history_write_failures_total
+            .with_label_values(&tags)
+            .inc();
+    }
+
+    fn update_history_retained(&self, app_id: &str, messages: u64, bytes: u64) {
+        let tags = self.get_tags(app_id);
+        self.history_retained_messages
+            .with_label_values(&tags)
+            .set(messages as f64);
+        self.history_retained_bytes
+            .with_label_values(&tags)
+            .set(bytes as f64);
+    }
+
+    fn mark_history_eviction(&self, app_id: &str, messages: u64, bytes: u64) {
+        let tags = self.get_tags(app_id);
+        self.history_evictions_total
+            .with_label_values(&tags)
+            .inc_by(messages as f64);
+        self.history_evicted_bytes_total
+            .with_label_values(&tags)
+            .inc_by(bytes as f64);
     }
 
     async fn get_metrics_as_plaintext(&self) -> String {

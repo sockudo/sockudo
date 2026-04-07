@@ -146,14 +146,14 @@ impl ConnectionHandler {
         &self,
         socket_id: &SocketId,
         app_id: &str,
-        bytes: Vec<u8>,
+        bytes: Bytes,
     ) -> Result<()> {
         if let Some(conn) = self
             .connection_manager
             .get_connection(socket_id, app_id)
             .await
         {
-            conn.send_broadcast(Bytes::from(bytes))
+            conn.send_broadcast(bytes)
         } else {
             Err(Error::ConnectionClosed(format!(
                 "Socket {} not found during replay",

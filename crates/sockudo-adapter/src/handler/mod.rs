@@ -21,6 +21,7 @@ use sockudo_core::app::App;
 use sockudo_core::app::AppManager;
 use sockudo_core::cache::CacheManager;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::history::{HistoryStore, NoopHistoryStore};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::rate_limiter::RateLimiter;
@@ -46,6 +47,7 @@ pub struct ConnectionHandler {
     pub(crate) local_adapter: Option<Arc<crate::local_adapter::LocalAdapter>>,
     pub(crate) cache_manager: Arc<dyn CacheManager + Send + Sync>,
     pub(crate) metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+    pub(crate) history_store: Arc<dyn HistoryStore + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
     message_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
@@ -70,6 +72,7 @@ pub struct ConnectionHandlerBuilder {
     local_adapter: Option<Arc<crate::local_adapter::LocalAdapter>>,
     cache_manager: Arc<dyn CacheManager + Send + Sync>,
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+    history_store: Option<Arc<dyn HistoryStore + Send + Sync>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     server_options: ServerOptions,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
@@ -90,6 +93,7 @@ impl ConnectionHandlerBuilder {
             local_adapter: None,
             cache_manager,
             metrics: None,
+            history_store: None,
             webhook_integration: None,
             server_options,
             cleanup_queue: None,
@@ -105,6 +109,11 @@ impl ConnectionHandlerBuilder {
 
     pub fn metrics(mut self, metrics: Arc<dyn MetricsInterface + Send + Sync>) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    pub fn history_store(mut self, history_store: Arc<dyn HistoryStore + Send + Sync>) -> Self {
+        self.history_store = Some(history_store);
         self
     }
 
@@ -150,6 +159,9 @@ impl ConnectionHandlerBuilder {
             local_adapter: self.local_adapter,
             cache_manager: self.cache_manager,
             metrics: self.metrics,
+            history_store: self
+                .history_store
+                .unwrap_or_else(|| Arc::new(NoopHistoryStore)),
             webhook_integration: self.webhook_integration,
             client_event_limiters: Arc::new(DashMap::new()),
             message_limiters: Arc::new(DashMap::new()),
@@ -210,6 +222,10 @@ impl ConnectionHandler {
 
     pub fn cache_manager(&self) -> &Arc<dyn CacheManager + Send + Sync> {
         &self.cache_manager
+    }
+
+    pub fn history_store(&self) -> &Arc<dyn HistoryStore + Send + Sync> {
+        &self.history_store
     }
 
     #[cfg(feature = "recovery")]
