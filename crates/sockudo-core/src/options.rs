@@ -419,9 +419,15 @@ pub struct AdapterConfig {
     pub cluster_health: ClusterHealthConfig,
     #[serde(default = "default_enable_socket_counting")]
     pub enable_socket_counting: bool,
+    #[serde(default = "default_fallback_to_local")]
+    pub fallback_to_local: bool,
 }
 
 fn default_enable_socket_counting() -> bool {
+    true
+}
+
+fn default_fallback_to_local() -> bool {
     true
 }
 
@@ -443,6 +449,7 @@ impl Default for AdapterConfig {
             buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
             cluster_health: ClusterHealthConfig::default(),
             enable_socket_counting: default_enable_socket_counting(),
+            fallback_to_local: default_fallback_to_local(),
         }
     }
 }
@@ -2046,6 +2053,8 @@ impl ServerOptions {
             "ADAPTER_ENABLE_SOCKET_COUNTING",
             self.adapter.enable_socket_counting,
         );
+        self.adapter.fallback_to_local =
+            parse_env::<bool>("ADAPTER_FALLBACK_TO_LOCAL", self.adapter.fallback_to_local);
         if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
             self.cache.driver = parse_driver_enum(driver_str, self.cache.driver.clone(), "Cache");
         }
