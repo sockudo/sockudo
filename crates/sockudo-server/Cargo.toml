@@ -87,6 +87,7 @@ axum-server = { workspace = true }
 clap = { workspace = true }
 cmake = { workspace = true }
 crossfire = { workspace = true }
+dashmap = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }

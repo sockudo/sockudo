@@ -515,10 +515,12 @@ where
                     if let Ok(message) = sonic_rs::from_str::<PusherMessage>(&broadcast.message) {
                         // Debug log for tag filtering diagnostics
                         tracing::debug!(
-                            "Received broadcast from node {}: channel={}, event={:?}, tags={:?}",
+                            "Received broadcast from node {}: channel={}, event={:?}, stream_id={:?}, serial={:?}, tags={:?}",
                             broadcast.node_id,
                             broadcast.channel,
                             message.event,
+                            message.stream_id,
+                            message.serial,
                             message.tags
                         );
 

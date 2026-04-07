@@ -95,6 +95,10 @@ pub struct PrometheusMetricsDriver {
     history_retained_bytes: GaugeVec,
     history_evictions_total: CounterVec,
     history_evicted_bytes_total: CounterVec,
+    history_queue_depth: GaugeVec,
+    history_degraded_channels: GaugeVec,
+    history_recovery_success_total: CounterVec,
+    history_recovery_failures_total: CounterVec,
     // Redis Cluster transport metrics
     redis_cluster_channel_queue_size: GaugeVec,
     redis_cluster_channel_messages_dropped: CounterVec,
@@ -558,6 +562,42 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let history_queue_depth = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_queue_depth"),
+                "Current durable history writer queue depth"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_degraded_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_degraded_channels"),
+                "Current number of degraded durable history channels"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_recovery_success_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_recovery_success_total"),
+                "Total number of successful recovery attempts"
+            ),
+            &["app_id", "port", "source"]
+        )
+        .unwrap();
+
+        let history_recovery_failures_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_recovery_failures_total"),
+                "Total number of failed recovery attempts"
+            ),
+            &["app_id", "port", "code"]
+        )
+        .unwrap();
+
         // Redis Cluster transport metrics
         let redis_cluster_channel_queue_size = register_gauge_vec!(
             Opts::new(
@@ -591,6 +631,8 @@ impl PrometheusMetricsDriver {
         active_channels.reset();
         history_retained_messages.reset();
         history_retained_bytes.reset();
+        history_queue_depth.reset();
+        history_degraded_channels.reset();
         redis_cluster_channel_queue_size.reset();
 
         // Set process start time
@@ -654,6 +696,10 @@ impl PrometheusMetricsDriver {
             history_retained_bytes,
             history_evictions_total,
             history_evicted_bytes_total,
+            history_queue_depth,
+            history_degraded_channels,
+            history_recovery_success_total,
+            history_recovery_failures_total,
             redis_cluster_channel_queue_size,
             redis_cluster_channel_messages_dropped,
             redis_cluster_reconnections_total,
@@ -1204,6 +1250,32 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.history_evicted_bytes_total
             .with_label_values(&tags)
             .inc_by(bytes as f64);
+    }
+
+    fn update_history_queue_depth(&self, app_id: &str, depth: usize) {
+        let tags = self.get_tags(app_id);
+        self.history_queue_depth
+            .with_label_values(&tags)
+            .set(depth as f64);
+    }
+
+    fn update_history_degraded_channels(&self, app_id: &str, count: usize) {
+        let tags = self.get_tags(app_id);
+        self.history_degraded_channels
+            .with_label_values(&tags)
+            .set(count as f64);
+    }
+
+    fn mark_history_recovery_success(&self, app_id: &str, source: &str) {
+        self.history_recovery_success_total
+            .with_label_values(&[app_id, &self.port.to_string(), source])
+            .inc();
+    }
+
+    fn mark_history_recovery_failure(&self, app_id: &str, code: &str) {
+        self.history_recovery_failures_total
+            .with_label_values(&[app_id, &self.port.to_string(), code])
+            .inc();
     }
 
     async fn get_metrics_as_plaintext(&self) -> String {

@@ -15,6 +15,13 @@ struct BufferedMessage {
 struct ChannelBuffer {
     messages: Mutex<VecDeque<BufferedMessage>>,
     next_serial: AtomicU64,
+    current_stream_id: Mutex<Option<String>>,
+}
+
+pub enum ReplayLookup {
+    Recovered(Vec<Bytes>),
+    Expired,
+    StreamReset { current_stream_id: Option<String> },
 }
 
 /// Per-channel replay buffer for connection recovery.
@@ -49,6 +56,7 @@ impl ReplayBuffer {
         let entry = self.buffers.entry(key).or_insert_with(|| ChannelBuffer {
             messages: Mutex::new(VecDeque::with_capacity(self.max_buffer_size)),
             next_serial: AtomicU64::new(1),
+            current_stream_id: Mutex::new(None),
         });
         entry.next_serial.fetch_add(1, Ordering::Relaxed)
     }
@@ -66,7 +74,13 @@ impl ReplayBuffer {
         let entry = self.buffers.entry(key).or_insert_with(|| ChannelBuffer {
             messages: Mutex::new(VecDeque::with_capacity(self.max_buffer_size)),
             next_serial: AtomicU64::new(serial + 1),
+            current_stream_id: Mutex::new(stream_id.map(ToString::to_string)),
         });
+
+        {
+            let mut current_stream_id = entry.current_stream_id.lock().unwrap();
+            *current_stream_id = stream_id.map(ToString::to_string);
+        }
 
         let mut messages = entry.messages.lock().unwrap();
         // Evict oldest if at capacity
@@ -92,18 +106,43 @@ impl ReplayBuffer {
         channel: &str,
         last_serial: u64,
     ) -> Option<Vec<Bytes>> {
+        match self.get_messages_after_position(app_id, channel, None, last_serial) {
+            ReplayLookup::Recovered(messages) => Some(messages),
+            ReplayLookup::Expired | ReplayLookup::StreamReset { .. } => None,
+        }
+    }
+
+    pub fn get_messages_after_position(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: Option<&str>,
+        last_serial: u64,
+    ) -> ReplayLookup {
         let key = Self::buffer_key(app_id, channel);
-        let entry = self.buffers.get(&key)?;
+        let Some(entry) = self.buffers.get(&key) else {
+            return ReplayLookup::Expired;
+        };
+        let current_stream_id = entry.current_stream_id.lock().unwrap().clone();
+
+        if let Some(expected_stream_id) = stream_id
+            && current_stream_id.as_deref() != Some(expected_stream_id)
+        {
+            return ReplayLookup::StreamReset { current_stream_id };
+        }
         let messages = entry.messages.lock().unwrap();
 
         if messages.is_empty() {
+            if stream_id.is_some() {
+                return ReplayLookup::Expired;
+            }
             // No buffered messages — client is either up-to-date or buffer was evicted.
             // If the requested serial matches or exceeds the next serial, they're caught up.
             let next = entry.next_serial.load(Ordering::Relaxed);
             return if last_serial >= next.saturating_sub(1) {
-                Some(Vec::new())
+                ReplayLookup::Recovered(Vec::new())
             } else {
-                None
+                ReplayLookup::Expired
             };
         }
 
@@ -111,7 +150,7 @@ impl ReplayBuffer {
         let oldest_serial = messages.front().map(|m| m.serial).unwrap_or(0);
         if last_serial > 0 && last_serial < oldest_serial.saturating_sub(1) {
             // The client missed messages that were already evicted
-            return None;
+            return ReplayLookup::Expired;
         }
 
         let now = Instant::now();
@@ -124,7 +163,7 @@ impl ReplayBuffer {
             })
             .collect();
 
-        Some(result)
+        ReplayLookup::Recovered(result)
     }
 
     /// Evict messages older than `buffer_ttl` and remove empty channel buffers.

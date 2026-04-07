@@ -137,6 +137,18 @@ pub trait MetricsInterface: Send + Sync {
     /// Track evictions performed by the durable history store.
     fn mark_history_eviction(&self, _app_id: &str, _messages: u64, _bytes: u64) {}
 
+    /// Update the current durable history writer queue depth for an app.
+    fn update_history_queue_depth(&self, _app_id: &str, _depth: usize) {}
+
+    /// Update the number of degraded durable history channels for an app.
+    fn update_history_degraded_channels(&self, _app_id: &str, _count: usize) {}
+
+    /// Track a recovery success sourced from hot or cold history.
+    fn mark_history_recovery_success(&self, _app_id: &str, _source: &str) {}
+
+    /// Track a recovery failure code.
+    fn mark_history_recovery_failure(&self, _app_id: &str, _code: &str) {}
+
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;
 

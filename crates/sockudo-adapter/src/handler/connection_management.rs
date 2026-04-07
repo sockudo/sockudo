@@ -191,7 +191,8 @@ impl ConnectionHandler {
                         .history_store()
                         .reserve_publish_position(&app_config.id, channel)
                         .await?;
-                    history_stream_id = Some(reservation.stream_id);
+                    history_stream_id = Some(reservation.stream_id.clone());
+                    message.stream_id = Some(reservation.stream_id);
                     message.serial = Some(reservation.serial);
                 } else {
                     #[cfg(feature = "recovery")]
@@ -200,7 +201,11 @@ impl ConnectionHandler {
                     }
                 }
 
-                let serialized = sonic_rs::to_vec(&message)
+                let mut stored_v2_message = message.clone();
+                stored_v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+                stored_v2_message.idempotency_key = None;
+
+                let serialized = sonic_rs::to_vec(&stored_v2_message)
                     .map(Bytes::from)
                     .map_err(|e| Error::Serialization(format!("Failed to serialize history payload: {e}")))?;
 
@@ -417,6 +422,7 @@ impl ConnectionHandler {
             sequence: None,
             conflation_key: None,
             message_id: None,
+            stream_id: None,
             serial: None,
             idempotency_key: None,
             extras: None,

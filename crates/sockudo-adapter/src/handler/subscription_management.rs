@@ -5,6 +5,7 @@ use crate::channel_manager::ChannelManager;
 use crate::channel_manager::JoinResponse;
 use sockudo_core::app::App;
 use sockudo_core::channel::{ChannelType, PresenceMemberInfo};
+use sockudo_core::history::{HistoryDirection, HistoryItem, HistoryReadRequest, now_ms};
 use sockudo_core::error::Result;
 #[cfg(feature = "delta")]
 use sockudo_delta::DeltaCompressionManager;
@@ -14,6 +15,7 @@ use sockudo_core::utils::is_cache_channel;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::{MessageData, PresenceData, PusherMessage};
 use sonic_rs::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -55,6 +57,7 @@ impl ConnectionHandler {
             sequence: None,
             conflation_key: None,
             message_id: None,
+            stream_id: None,
             serial: None,
             idempotency_key: None,
             extras: None,
@@ -260,35 +263,63 @@ impl ConnectionHandler {
         request: &SubscriptionRequest,
         subscription_result: &SubscriptionResult,
     ) -> Result<()> {
-        // CRITICAL: Send subscription success to client FIRST (before any other work)
-        // This ensures the client gets immediate feedback
         let channel_type = ChannelType::from_name(&request.channel);
-        match channel_type {
-            ChannelType::Presence => {
-                // For presence, we need member list first, so can't optimize this path easily
-                self.handle_presence_subscription_success(
-                    socket_id,
-                    app_config,
-                    request,
-                    subscription_result,
-                )
-                .await?;
-            }
-            _ => {
-                // For non-presence channels, send success immediately
-                self.send_subscription_succeeded(socket_id, app_config, &request.channel, None)
-                    .await?;
-            }
-        }
+        if request.rewind.is_some() {
+            self.update_connection_subscription_state(
+                socket_id,
+                app_config,
+                request,
+                subscription_result,
+            )
+            .await?;
 
-        // Update connection state AFTER sending response (non-critical for client acknowledgment)
-        self.update_connection_subscription_state(
-            socket_id,
-            app_config,
-            request,
-            subscription_result,
-        )
-        .await?;
+            match channel_type {
+                ChannelType::Presence => {
+                    self.handle_presence_subscription_success(
+                        socket_id,
+                        app_config,
+                        request,
+                        subscription_result,
+                    )
+                    .await?;
+                }
+                _ => {
+                    self.send_subscription_succeeded(socket_id, app_config, &request.channel, None)
+                        .await?;
+                }
+            }
+
+            self.rewind_subscription(socket_id, app_config, request).await?;
+        } else {
+            // CRITICAL: Send subscription success to client FIRST (before any other work)
+            // This ensures the client gets immediate feedback
+            match channel_type {
+                ChannelType::Presence => {
+                    // For presence, we need member list first, so can't optimize this path easily
+                    self.handle_presence_subscription_success(
+                        socket_id,
+                        app_config,
+                        request,
+                        subscription_result,
+                    )
+                    .await?;
+                }
+                _ => {
+                    // For non-presence channels, send success immediately
+                    self.send_subscription_succeeded(socket_id, app_config, &request.channel, None)
+                        .await?;
+                }
+            }
+
+            // Update connection state AFTER sending response (non-critical for client acknowledgment)
+            self.update_connection_subscription_state(
+                socket_id,
+                app_config,
+                request,
+                subscription_result,
+            )
+            .await?;
+        }
 
         // Apply per-subscription delta settings if provided
         // This allows clients to negotiate delta compression on a per-channel basis
@@ -388,6 +419,134 @@ impl ConnectionHandler {
         }
 
         Ok(())
+    }
+
+    async fn rewind_subscription(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        request: &SubscriptionRequest,
+    ) -> Result<()> {
+        let Some(rewind) = request.rewind.as_ref() else {
+            return Ok(());
+        };
+
+        let connection = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+            .ok_or(sockudo_core::error::Error::ConnectionNotFound)?;
+
+        let max_page_size = self.server_options().history.max_page_size;
+        let page = self
+            .history_store()
+            .read_page(build_rewind_history_read_request(
+                &app_config.id,
+                &request.channel,
+                rewind,
+                max_page_size,
+            ))
+            .await?;
+
+        let items = normalize_rewind_items_for_delivery(rewind, page.items);
+
+        let history_head_serial = items.last().map(|item| item.serial).or(page.retained.newest_serial);
+        let delivered_message_ids = items
+            .iter()
+            .filter_map(|item| item.message_id.clone())
+            .collect::<HashSet<_>>();
+
+        self.send_rewind_history_items(socket_id, app_config, &items).await?;
+
+        let buffered = connection.finish_rewind_gate(&request.channel).await;
+        let live_messages = filter_buffered_rewind_messages(
+            buffered,
+            history_head_serial,
+            &delivered_message_ids,
+        );
+        let live_count = live_messages.len();
+        for message in live_messages {
+            self.send_message_to_socket(&app_config.id, socket_id, message)
+                .await?;
+        }
+
+        let truncated_by_limit = match rewind {
+            SubscriptionRewind::Count(count) => *count > max_page_size,
+            SubscriptionRewind::Seconds(_) => page.has_more,
+        };
+        let rewind_complete = !page.truncated_by_retention && !truncated_by_limit;
+
+        self.send_rewind_complete(
+            socket_id,
+            app_config,
+            &request.channel,
+            items.len(),
+            live_count,
+            rewind_complete,
+            page.truncated_by_retention,
+            truncated_by_limit,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn send_rewind_history_items(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        items: &[HistoryItem],
+    ) -> Result<()> {
+        for item in items {
+            let message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
+                .map_err(|e| {
+                    sockudo_core::error::Error::InvalidMessageFormat(format!(
+                        "Invalid stored history payload: {e}"
+                    ))
+                })?;
+            self.send_message_to_socket(&app_config.id, socket_id, message)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn send_rewind_complete(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        channel: &str,
+        historical_count: usize,
+        live_count: usize,
+        complete: bool,
+        truncated_by_retention: bool,
+        truncated_by_limit: bool,
+    ) -> Result<()> {
+        let message = PusherMessage {
+            event: Some("sockudo:rewind_complete".to_string()),
+            channel: Some(channel.to_string()),
+            data: Some(MessageData::Json(sonic_rs::json!({
+                "historical_count": historical_count,
+                "live_count": live_count,
+                "complete": complete,
+                "truncated_by_retention": truncated_by_retention,
+                "truncated_by_limit": truncated_by_limit,
+            }))),
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        self.send_message_to_socket(&app_config.id, socket_id, message)
+            .await
     }
 
     async fn update_connection_subscription_state(
@@ -610,6 +769,7 @@ impl ConnectionHandler {
                 sequence: None,
                 conflation_key: None,
                 message_id: None,
+                stream_id: None,
                 serial: None,
                 idempotency_key: None,
                 extras: None,
@@ -713,5 +873,166 @@ impl ConnectionHandler {
             "send_delta_cache_sync_if_needed: skipping cache sync (causes sequence mismatch on resubscribe)"
         );
         Ok(())
+    }
+}
+
+fn filter_buffered_rewind_messages(
+    mut buffered: Vec<sockudo_core::websocket::BufferedRewindMessage>,
+    history_head_serial: Option<u64>,
+    delivered_message_ids: &HashSet<String>,
+) -> Vec<PusherMessage> {
+    buffered.sort_by_key(|message| message.serial.unwrap_or(u64::MAX));
+    buffered
+        .into_iter()
+        .filter(|message| {
+            let after_history_head = history_head_serial.is_none_or(|head| {
+                message.serial.is_none_or(|serial| serial > head)
+            });
+            let not_duplicate = message
+                .message_id
+                .as_ref()
+                .is_none_or(|message_id| !delivered_message_ids.contains(message_id));
+            after_history_head && not_duplicate
+        })
+        .map(|message| message.message)
+        .collect()
+}
+
+fn build_rewind_history_read_request(
+    app_id: &str,
+    channel: &str,
+    rewind: &SubscriptionRewind,
+    max_page_size: usize,
+) -> HistoryReadRequest {
+    HistoryReadRequest {
+        app_id: app_id.to_string(),
+        channel: channel.to_string(),
+        direction: match rewind {
+            SubscriptionRewind::Count(_) => HistoryDirection::NewestFirst,
+            SubscriptionRewind::Seconds(_) => HistoryDirection::OldestFirst,
+        },
+        limit: rewind.limit().min(max_page_size),
+        cursor: None,
+        bounds: rewind.to_history_bounds(now_ms()),
+    }
+}
+
+fn normalize_rewind_items_for_delivery(
+    rewind: &SubscriptionRewind,
+    mut items: Vec<HistoryItem>,
+) -> Vec<HistoryItem> {
+    if matches!(rewind, SubscriptionRewind::Count(_)) {
+        items.reverse();
+    }
+    items
+}
+
+#[cfg(test)]
+mod rewind_tests {
+    use super::*;
+    use bytes::Bytes;
+
+    fn test_message(event: &str) -> PusherMessage {
+        PusherMessage {
+            event: Some(event.to_string()),
+            channel: None,
+            data: None,
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        }
+    }
+
+    #[test]
+    fn buffered_rewind_messages_drop_duplicates_and_preserve_gap_free_order() {
+        let delivered = HashSet::from(["msg-3".to_string()]);
+        let buffered = vec![
+            sockudo_core::websocket::BufferedRewindMessage {
+                serial: Some(3),
+                message_id: Some("msg-3".to_string()),
+                message: test_message("three"),
+            },
+            sockudo_core::websocket::BufferedRewindMessage {
+                serial: Some(4),
+                message_id: Some("msg-4".to_string()),
+                message: test_message("four"),
+            },
+            sockudo_core::websocket::BufferedRewindMessage {
+                serial: Some(5),
+                message_id: Some("msg-5".to_string()),
+                message: test_message("five"),
+            },
+        ];
+
+        let filtered = filter_buffered_rewind_messages(buffered, Some(3), &delivered);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].event.as_deref(), Some("four"));
+        assert_eq!(filtered[1].event.as_deref(), Some("five"));
+    }
+
+    #[test]
+    fn rewind_count_builds_newest_first_request() {
+        let request = build_rewind_history_read_request(
+            "app",
+            "chat",
+            &SubscriptionRewind::Count(10),
+            100,
+        );
+        assert_eq!(request.direction, HistoryDirection::NewestFirst);
+        assert_eq!(request.limit, 10);
+        assert_eq!(request.bounds.start_time_ms, None);
+    }
+
+    #[test]
+    fn rewind_duration_builds_time_bounded_request() {
+        let request = build_rewind_history_read_request(
+            "app",
+            "chat",
+            &SubscriptionRewind::Seconds(30),
+            100,
+        );
+        assert_eq!(request.direction, HistoryDirection::OldestFirst);
+        assert_eq!(request.limit, 100);
+        assert!(request.bounds.start_time_ms.is_some());
+    }
+
+    #[test]
+    fn rewind_count_items_are_reordered_oldest_to_newest_for_delivery() {
+        let items = vec![
+            HistoryItem {
+                stream_id: "stream".to_string(),
+                serial: 5,
+                published_at_ms: 5,
+                message_id: None,
+                event_name: None,
+                operation_kind: "append".to_string(),
+                payload_size_bytes: 0,
+                payload_bytes: Bytes::new(),
+            },
+            HistoryItem {
+                stream_id: "stream".to_string(),
+                serial: 4,
+                published_at_ms: 4,
+                message_id: None,
+                event_name: None,
+                operation_kind: "append".to_string(),
+                payload_size_bytes: 0,
+                payload_bytes: Bytes::new(),
+            },
+        ];
+
+        let reordered =
+            normalize_rewind_items_for_delivery(&SubscriptionRewind::Count(2), items);
+        assert_eq!(reordered[0].serial, 4);
+        assert_eq!(reordered[1].serial, 5);
     }
 }

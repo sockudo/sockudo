@@ -41,6 +41,7 @@ impl ConnectionHandler {
             sequence: None,
             conflation_key: None,
             message_id: None,
+            stream_id: None,
             serial: None,
             idempotency_key: None,
             extras: None,

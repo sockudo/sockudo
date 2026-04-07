@@ -118,6 +118,17 @@ impl ConnectionHandler {
             utils::validate_channel_name(app_config, &request.channel).await?;
         }
 
+        if request.rewind.is_some() && !is_v2 {
+            return Err(Error::Channel(
+                "Channel rewind is only supported on protocol V2".into(),
+            ));
+        }
+        if request.rewind.is_some() && !self.server_options().history.enabled {
+            return Err(Error::Channel(
+                "Channel rewind requires durable history to be enabled".into(),
+            ));
+        }
+
         // Check if authentication is required and provided
         let requires_auth =
             request.channel.starts_with("presence-") || request.channel.starts_with("private-");

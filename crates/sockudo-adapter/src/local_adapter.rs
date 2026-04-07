@@ -863,6 +863,7 @@ impl LocalAdapter {
                     sequence: None,
                     conflation_key: None,
                     message_id: None,
+                    stream_id: None,
                     serial: None,
                     idempotency_key: None,
                     extras: None,
@@ -1024,6 +1025,7 @@ impl LocalAdapter {
                 sequence: None,
                 conflation_key: None,
                 message_id: None,
+                stream_id: None,
                 serial: None,
                 idempotency_key: None,
                 extras: None,
@@ -1155,6 +1157,7 @@ impl LocalAdapter {
         let mut v1_message = message.clone();
         v1_message.serial = None;
         v1_message.message_id = None;
+        v1_message.stream_id = None;
         v1_message.tags = None;
         v1_message.idempotency_key = None;
         v1_message.extras = None;
@@ -1257,6 +1260,22 @@ impl LocalAdapter {
         {
             message
         }
+    }
+
+    async fn split_rewind_gated_sockets(
+        &self,
+        channel: &str,
+        message: &PusherMessage,
+        sockets: Vec<WebSocketRef>,
+    ) -> Vec<WebSocketRef> {
+        let mut ungated = Vec::with_capacity(sockets.len());
+        for socket in sockets {
+            if socket.buffer_rewind_message(channel, message).await {
+                continue;
+            }
+            ungated.push(socket);
+        }
+        ungated
     }
 
     // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
@@ -1436,6 +1455,7 @@ impl ConnectionManager for LocalAdapter {
                 let mut v1_msg = message;
                 v1_msg.serial = None;
                 v1_msg.message_id = None;
+                v1_msg.stream_id = None;
                 v1_msg.extras = None;
                 connection.send_message(&v1_msg).await
             }
@@ -1529,6 +1549,10 @@ impl ConnectionManager for LocalAdapter {
         let filtered_socket_refs =
             crate::v2_broadcast::apply_event_name_filter(channel, &message, filtered_socket_refs);
 
+        let filtered_socket_refs = self
+            .split_rewind_gated_sockets(channel, &message, filtered_socket_refs)
+            .await;
+
         // Send to filtered V2 sockets (Sockudo-native: sockudo: prefix, serial + message_id)
         if !filtered_socket_refs.is_empty() {
             let (v2_message, _v2_bytes) = crate::v2_broadcast::prepare_v2_message(message)?;
@@ -1588,6 +1612,10 @@ impl ConnectionManager for LocalAdapter {
         // Apply event name filtering (V2 only)
         let filtered_socket_refs =
             crate::v2_broadcast::apply_event_name_filter(channel, &message, filtered_socket_refs);
+
+        let filtered_socket_refs = self
+            .split_rewind_gated_sockets(channel, &message, filtered_socket_refs)
+            .await;
 
         let message = self.maybe_strip_tags(message, channel_settings);
 
