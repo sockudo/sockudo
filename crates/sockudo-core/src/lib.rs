@@ -4,6 +4,7 @@ pub mod cache;
 pub mod channel;
 pub mod delta_types;
 pub mod error;
+pub mod history;
 pub mod metrics;
 pub mod namespace;
 pub mod options;

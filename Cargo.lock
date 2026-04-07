@@ -6633,6 +6633,7 @@ name = "sockudo"
 version = "4.1.0"
 dependencies = [
  "ahash 0.8.12",
+ "async-trait",
  "axum",
  "axum-server",
  "clap",
@@ -6661,6 +6662,7 @@ dependencies = [
  "sockudo-webhook",
  "sockudo-ws",
  "sonic-rs",
+ "sqlx",
  "sysinfo",
  "thiserror 2.0.18",
  "tokio",
@@ -6670,6 +6672,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "urlencoding",
  "uuid",
 ]
 
@@ -6761,6 +6764,7 @@ version = "4.1.0"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
+ "base64",
  "bytes",
  "chrono",
  "crossfire",

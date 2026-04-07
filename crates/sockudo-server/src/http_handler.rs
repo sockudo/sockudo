@@ -11,6 +11,7 @@ use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::channel_manager::ChannelManager;
 use sockudo_core::app::App;
 use sockudo_core::error::{HEALTH_CHECK_TIMEOUT_MS, HealthStatus};
+use sockudo_core::history::{HistoryCursor, HistoryDirection, HistoryReadRequest};
 use sockudo_core::utils::{self, validate_channel_name};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
@@ -126,6 +127,13 @@ pub struct ChannelsQuery {
     pub filter_by_prefix: Option<String>,
     pub info: Option<String>,
     pub auth_params: EventQuery,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HistoryQuery {
+    pub limit: Option<usize>,
+    pub direction: Option<String>,
+    pub cursor: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for ChannelQuery {
@@ -1252,6 +1260,95 @@ pub async fn channel_users(
     Ok((StatusCode::OK, Json(response_payload_val)))
 }
 
+/// GET /apps/{app_id}/channels/{channel_name}/history
+#[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
+pub async fn channel_history(
+    Path((app_id, channel_name)): Path<(String, String)>,
+    Query(query_params): Query<HistoryQuery>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+
+    if !handler.server_options().history.enabled {
+        return Err(AppError::InvalidInput(
+            "Durable history is not enabled".to_string(),
+        ));
+    }
+
+    let direction = match query_params
+        .direction
+        .as_deref()
+        .unwrap_or("newest_first")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "newest_first" | "backwards" | "reverse" => HistoryDirection::NewestFirst,
+        "oldest_first" | "forwards" | "forward" => HistoryDirection::OldestFirst,
+        other => {
+            return Err(AppError::InvalidInput(format!(
+                "Invalid history direction: {other}"
+            )));
+        }
+    };
+
+    let limit = query_params
+        .limit
+        .unwrap_or(handler.server_options().history.max_page_size)
+        .min(handler.server_options().history.max_page_size);
+    if limit == 0 {
+        return Err(AppError::InvalidInput(
+            "History limit must be greater than 0".to_string(),
+        ));
+    }
+
+    let cursor = match query_params.cursor.as_deref() {
+        Some(encoded) => Some(HistoryCursor::decode(encoded)?),
+        None => None,
+    };
+
+    let page = handler
+        .history_store()
+        .read_page(HistoryReadRequest {
+            app_id: app_id.clone(),
+            channel: channel_name.clone(),
+            direction,
+            limit,
+            cursor,
+        })
+        .await?;
+
+    let mut items = Vec::with_capacity(page.items.len());
+    for item in page.items {
+        let message: Value = sonic_rs::from_slice(item.payload_bytes.as_ref())
+            .map_err(|e| AppError::InternalError(format!("Failed to decode history payload: {e}")))?;
+        items.push(json!({
+            "stream_id": item.stream_id,
+            "serial": item.serial,
+            "published_at_ms": item.published_at_ms,
+            "message_id": item.message_id,
+            "event_name": item.event_name,
+            "operation_kind": item.operation_kind,
+            "payload_size_bytes": item.payload_size_bytes,
+            "message": message,
+        }));
+    }
+
+    let response_payload = json!({
+        "items": items,
+        "direction": direction.as_str(),
+        "limit": limit,
+        "next_cursor": page.next_cursor.and_then(|cursor| cursor.encode().ok()),
+        "retained_messages": page.retained.retained_messages,
+        "retained_bytes": page.retained.retained_bytes,
+        "oldest_serial": page.retained.oldest_serial,
+        "newest_serial": page.retained.newest_serial,
+    });
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
 /// POST /apps/{app_id}/users/{user_id}/terminate_connections
 #[instrument(skip(handler), fields(app_id = %app_id, user_id = %user_id))]
 pub async fn terminate_user_connections(
@@ -1494,9 +1591,13 @@ mod tests {
     use sockudo_adapter::local_adapter::LocalAdapter;
     use sockudo_app::memory_app_manager::MemoryAppManager;
     use sockudo_cache::memory_cache_manager::MemoryCacheManager;
+    use sockudo_core::app::App;
     use sockudo_core::app::AppManager;
+    use sockudo_core::history::{MemoryHistoryStore, MemoryHistoryStoreConfig};
     use sockudo_core::namespace::Namespace;
     use sockudo_core::options::MemoryCacheOptions;
+    use sockudo_protocol::messages::{MessageData, PusherMessage};
+    use sonic_rs::JsonContainerTrait;
     use sonic_rs::JsonValueTrait;
 
     #[tokio::test]
@@ -1584,5 +1685,85 @@ mod tests {
             json["apps"][0]["occupancy"]["subscriptions"].as_u64(),
             Some(3)
         );
+    }
+
+    #[tokio::test]
+    async fn channel_history_returns_published_messages() {
+        let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+        let adapter = Arc::new(LocalAdapter::new())
+            as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let history_store = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.history.enabled = true;
+
+        let handler = Arc::new(
+            ConnectionHandlerBuilder::new(app_manager, adapter, cache, options)
+                .history_store(history_store)
+                .build(),
+        );
+
+        let app = App::from_policy(
+            "app-1".to_string(),
+            "key".to_string(),
+            "secret".to_string(),
+            true,
+            Default::default(),
+        );
+
+        handler
+            .broadcast_to_channel(
+                &app,
+                "public-room",
+                PusherMessage {
+                    event: Some("message-created".to_string()),
+                    channel: Some("public-room".to_string()),
+                    data: Some(MessageData::String("{\"text\":\"hello\"}".to_string())),
+                    name: None,
+                    user_id: None,
+                    tags: None,
+                    sequence: None,
+                    conflation_key: None,
+                    message_id: None,
+                    serial: None,
+                    idempotency_key: None,
+                    extras: None,
+                    delta_sequence: None,
+                    delta_conflation_key: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let response = channel_history(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("newest_first".to_string()),
+                cursor: None,
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["items"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            json["items"][0]["message"]["event"].as_str(),
+            Some("message-created")
+        );
+        assert_eq!(json["items"][0]["serial"].as_u64(), Some(1));
     }
 }

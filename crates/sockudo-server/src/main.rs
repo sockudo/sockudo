@@ -3,6 +3,7 @@
 #![allow(unused_assignments)]
 
 pub mod cleanup;
+mod history;
 mod http_handler;
 mod middleware;
 mod ws_handler;
@@ -39,9 +40,10 @@ use tokio::signal;
 
 // Factory imports
 use crate::cleanup::{CleanupConfig, CleanupSender};
+use crate::history::create_history_store;
 use crate::http_handler::{
-    batch_events, channel, channel_users, channels, events, fallback_404, metrics, stats,
-    terminate_user_connections, up, usage,
+    batch_events, channel, channel_history, channel_users, channels, events, fallback_404,
+    metrics, stats, terminate_user_connections, up, usage,
 };
 use sockudo_adapter::factory::AdapterFactory;
 use sockudo_app::AppManagerFactory;
@@ -790,6 +792,15 @@ impl SockudoServer {
         )
         .webhook_integration(webhook_integration);
 
+        let history_store = create_history_store(
+            &config.history,
+            &config.database.postgres,
+            &config.database_pooling,
+            state.metrics.clone(),
+        )
+        .await?;
+        builder = builder.history_store(history_store);
+
         if let Some(adapter) = state.local_adapter.clone() {
             builder = builder.local_adapter(adapter);
         }
@@ -1123,6 +1134,13 @@ impl SockudoServer {
             .route(
                 "/apps/{appId}/channels/{channelName}",
                 get(channel).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/history",
+                get(channel_history).route_layer(axum_middleware::from_fn_with_state(
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),
