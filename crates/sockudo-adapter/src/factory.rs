@@ -14,7 +14,7 @@ use crate::rabbitmq_adapter::RabbitMqAdapter;
 use crate::redis_adapter::{RedisAdapter, RedisAdapterOptions};
 #[cfg(feature = "redis-cluster")]
 use crate::redis_cluster_adapter::RedisClusterAdapter;
-use sockudo_core::error::Result;
+use sockudo_core::error::{Error, Result};
 use std::sync::Arc;
 
 #[cfg(feature = "google-pubsub")]
@@ -232,12 +232,13 @@ impl AdapterFactory {
                         Ok((adapter, typed))
                     }
                     Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!("Failed to initialize Redis adapter: {}", e);
+                            return Err(e);
+                        }
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize Redis adapter: {}, falling back to local adapter",
-                                e
-                            )
+                            "Failed to initialize Redis adapter: {}, falling back to local adapter",
+                            e
                         );
                         let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
@@ -259,7 +260,14 @@ impl AdapterFactory {
                 };
 
                 if nodes.is_empty() {
-                    warn!("{}", "Redis Cluster Adapter selected, but no nodes configured. Falling back to local adapter.".to_string());
+                    if !config.fallback_to_local {
+                        return Err(Error::HorizontalAdapter(
+                            "Redis Cluster adapter selected but no nodes configured".to_string(),
+                        ));
+                    }
+                    warn!(
+                        "Redis Cluster adapter selected, but no nodes configured. Falling back to local adapter."
+                    );
                     let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                         config.buffer_multiplier_per_cpu,
                     ));
@@ -284,12 +292,13 @@ impl AdapterFactory {
                         Ok((adapter, typed))
                     }
                     Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!("Failed to initialize Redis Cluster adapter: {}", e);
+                            return Err(e);
+                        }
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize Redis Cluster adapter: {}, falling back to local adapter",
-                                e
-                            )
+                            "Failed to initialize Redis Cluster adapter: {}, falling back to local adapter",
+                            e
                         );
                         let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
@@ -323,12 +332,13 @@ impl AdapterFactory {
                         Ok((adapter, typed))
                     }
                     Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!("Failed to initialize NATS adapter: {}", e);
+                            return Err(e);
+                        }
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize NATS adapter: {}, falling back to local adapter",
-                                e
-                            )
+                            "Failed to initialize NATS adapter: {}, falling back to local adapter",
+                            e
                         );
                         let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
@@ -356,12 +366,13 @@ impl AdapterFactory {
                         Ok((adapter, typed))
                     }
                     Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!("Failed to initialize Pulsar adapter: {}", e);
+                            return Err(e);
+                        }
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize Pulsar adapter: {}, falling back to local adapter",
-                                e
-                            )
+                            "Failed to initialize Pulsar adapter: {}, falling back to local adapter",
+                            e
                         );
                         let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
@@ -389,12 +400,13 @@ impl AdapterFactory {
                         Ok((adapter, typed))
                     }
                     Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!("Failed to initialize RabbitMQ adapter: {}", e);
+                            return Err(e);
+                        }
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize RabbitMQ adapter: {}, falling back to local adapter",
-                                e
-                            )
+                            "Failed to initialize RabbitMQ adapter: {}, falling back to local adapter",
+                            e
                         );
                         let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
@@ -422,12 +434,13 @@ impl AdapterFactory {
                         Ok((adapter, typed))
                     }
                     Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!("Failed to initialize Google Pub/Sub adapter: {}", e);
+                            return Err(e);
+                        }
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize Google Pub/Sub adapter: {}, falling back to local adapter",
-                                e
-                            )
+                            "Failed to initialize Google Pub/Sub adapter: {}, falling back to local adapter",
+                            e
                         );
                         let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
@@ -458,12 +471,13 @@ impl AdapterFactory {
                         Ok((adapter, typed))
                     }
                     Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!("Failed to initialize Kafka adapter: {}", e);
+                            return Err(e);
+                        }
                         warn!(
-                            "{}",
-                            format!(
-                                "Failed to initialize Kafka adapter: {}, falling back to local adapter",
-                                e
-                            )
+                            "Failed to initialize Kafka adapter: {}, falling back to local adapter",
+                            e
                         );
                         let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                             config.buffer_multiplier_per_cpu,
@@ -483,10 +497,13 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "redis"))]
             AdapterDriver::Redis => {
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "Redis adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features redis or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
                 warn!(
-                    "{}",
                     "Redis adapter requested but not compiled in. Falling back to local adapter."
-                        .to_string()
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
@@ -496,7 +513,14 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "redis-cluster"))]
             AdapterDriver::RedisCluster => {
-                warn!("{}", "Redis Cluster adapter requested but not compiled in. Falling back to local adapter.".to_string());
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "Redis Cluster adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features redis-cluster or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
+                warn!(
+                    "Redis Cluster adapter requested but not compiled in. Falling back to local adapter."
+                );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
                 ));
@@ -505,11 +529,12 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "nats"))]
             AdapterDriver::Nats => {
-                warn!(
-                    "{}",
-                    "NATS adapter requested but not compiled in. Falling back to local adapter."
-                        .to_string()
-                );
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "NATS adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features nats or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
+                warn!("NATS adapter requested but not compiled in. Falling back to local adapter.");
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
                 ));
@@ -518,10 +543,13 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "pulsar"))]
             AdapterDriver::Pulsar => {
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "Pulsar adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features pulsar or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
                 warn!(
-                    "{}",
                     "Pulsar adapter requested but not compiled in. Falling back to local adapter."
-                        .to_string()
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
@@ -531,10 +559,13 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "rabbitmq"))]
             AdapterDriver::RabbitMq => {
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "RabbitMQ adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features rabbitmq or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
                 warn!(
-                    "{}",
                     "RabbitMQ adapter requested but not compiled in. Falling back to local adapter."
-                        .to_string()
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
@@ -544,10 +575,13 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "google-pubsub"))]
             AdapterDriver::GooglePubSub => {
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "Google Pub/Sub adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features google-pubsub or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
                 warn!(
-                    "{}",
                     "Google Pub/Sub adapter requested but not compiled in. Falling back to local adapter."
-                        .to_string()
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
@@ -557,10 +591,13 @@ impl AdapterFactory {
             }
             #[cfg(not(feature = "kafka"))]
             AdapterDriver::Kafka => {
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "Kafka adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features kafka or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
                 warn!(
-                    "{}",
                     "Kafka adapter requested but not compiled in. Falling back to local adapter."
-                        .to_string()
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,
