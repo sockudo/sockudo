@@ -170,7 +170,8 @@ impl ConnectionHandler {
             metrics.mark_ephemeral_message(&app_config.id);
         }
 
-        let history_enabled = self.server_options().history.enabled;
+        let history_policy = app_config.resolved_history(channel, &self.server_options().history);
+        let history_enabled = history_policy.enabled;
         let mut history_stream_id: Option<String> = None;
 
         if !message.is_ephemeral() {
@@ -207,12 +208,12 @@ impl ConnectionHandler {
 
                 let serialized = sonic_rs::to_vec(&stored_v2_message)
                     .map(Bytes::from)
-                    .map_err(|e| Error::Serialization(format!("Failed to serialize history payload: {e}")))?;
+                    .map_err(|e| {
+                        Error::Serialization(format!("Failed to serialize history payload: {e}"))
+                    })?;
 
                 #[cfg(feature = "recovery")]
-                if recovery_enabled
-                    && let Some(ref replay_buffer) = self.replay_buffer
-                {
+                if recovery_enabled && let Some(ref replay_buffer) = self.replay_buffer {
                     replay_buffer.store(
                         &app_config.id,
                         channel,
@@ -227,14 +228,11 @@ impl ConnectionHandler {
                         .append(HistoryAppendRecord {
                             app_id: app_config.id.clone(),
                             channel: channel.to_string(),
-                            stream_id: history_stream_id
-                                .clone()
-                                .ok_or_else(|| {
-                                    Error::Internal(
-                                        "History store did not return a stream identifier"
-                                            .to_string(),
-                                    )
-                                })?,
+                            stream_id: history_stream_id.clone().ok_or_else(|| {
+                                Error::Internal(
+                                    "History store did not return a stream identifier".to_string(),
+                                )
+                            })?,
                             serial: message.serial.ok_or_else(|| {
                                 Error::Internal(
                                     "History store did not return a channel serial".to_string(),
@@ -245,6 +243,7 @@ impl ConnectionHandler {
                             event_name: message.event.clone(),
                             operation_kind: "append".to_string(),
                             payload_bytes: serialized,
+                            retention: history_policy.retention(),
                         })
                         .await?;
                 }

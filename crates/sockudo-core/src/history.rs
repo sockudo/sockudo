@@ -89,6 +89,14 @@ pub struct HistoryAppendRecord {
     pub event_name: Option<String>,
     pub operation_kind: String,
     pub payload_bytes: Bytes,
+    pub retention: HistoryRetentionPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryRetentionPolicy {
+    pub retention_window_seconds: u64,
+    pub max_messages_per_channel: Option<usize>,
+    pub max_bytes_per_channel: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -283,6 +291,7 @@ struct MemoryHistoryChannel {
     next_serial: u64,
     retained_bytes: u64,
     records: VecDeque<HistoryAppendRecord>,
+    retention: Option<HistoryRetentionPolicy>,
 }
 
 impl Default for MemoryHistoryChannel {
@@ -292,6 +301,7 @@ impl Default for MemoryHistoryChannel {
             next_serial: 1,
             retained_bytes: 0,
             records: VecDeque::new(),
+            retention: None,
         }
     }
 }
@@ -314,8 +324,16 @@ impl MemoryHistoryStore {
         format!("{app_id}\0{channel}")
     }
 
-    fn evict_channel(config: &MemoryHistoryStoreConfig, channel: &mut MemoryHistoryChannel) {
-        let cutoff_ms = now_ms().saturating_sub(config.retention_window.as_millis() as i64);
+    fn default_retention(config: &MemoryHistoryStoreConfig) -> HistoryRetentionPolicy {
+        HistoryRetentionPolicy {
+            retention_window_seconds: config.retention_window.as_secs(),
+            max_messages_per_channel: config.max_messages_per_channel,
+            max_bytes_per_channel: config.max_bytes_per_channel,
+        }
+    }
+
+    fn evict_channel(retention: &HistoryRetentionPolicy, channel: &mut MemoryHistoryChannel) {
+        let cutoff_ms = now_ms().saturating_sub((retention.retention_window_seconds * 1000) as i64);
 
         while let Some(front) = channel.records.front() {
             if front.published_at_ms < cutoff_ms {
@@ -328,7 +346,7 @@ impl MemoryHistoryStore {
             }
         }
 
-        if let Some(max_messages) = config.max_messages_per_channel {
+        if let Some(max_messages) = retention.max_messages_per_channel {
             while channel.records.len() > max_messages {
                 if let Some(front) = channel.records.pop_front() {
                     channel.retained_bytes = channel
@@ -338,7 +356,7 @@ impl MemoryHistoryStore {
             }
         }
 
-        if let Some(max_bytes) = config.max_bytes_per_channel {
+        if let Some(max_bytes) = retention.max_bytes_per_channel {
             while channel.retained_bytes > max_bytes {
                 if let Some(front) = channel.records.pop_front() {
                     channel.retained_bytes = channel
@@ -380,11 +398,16 @@ impl HistoryStore for MemoryHistoryStore {
         channel_state.next_serial = channel_state
             .next_serial
             .max(record.serial.saturating_add(1));
+        channel_state.retention = Some(record.retention.clone());
         channel_state.retained_bytes = channel_state
             .retained_bytes
             .saturating_add(record.payload_bytes.len() as u64);
         channel_state.records.push_back(record);
-        Self::evict_channel(&self.config, channel_state);
+        let retention = channel_state
+            .retention
+            .clone()
+            .unwrap_or_else(|| Self::default_retention(&self.config));
+        Self::evict_channel(&retention, channel_state);
         Ok(())
     }
 
@@ -393,7 +416,11 @@ impl HistoryStore for MemoryHistoryStore {
         let key = Self::channel_key(&request.app_id, &request.channel);
         let mut channels = self.channels.write().await;
         let channel_state = channels.entry(key).or_default();
-        Self::evict_channel(&self.config, channel_state);
+        let retention = channel_state
+            .retention
+            .clone()
+            .unwrap_or_else(|| Self::default_retention(&self.config));
+        Self::evict_channel(&retention, channel_state);
 
         let retained = HistoryRetentionStats {
             stream_id: Some(channel_state.stream_id.clone()),
@@ -443,14 +470,17 @@ impl HistoryStore for MemoryHistoryStore {
                     .bounds
                     .end_time_ms
                     .is_none_or(|end| record.published_at_ms <= end)
-                && request.cursor.as_ref().is_none_or(|cursor| match request.direction {
-                    HistoryDirection::NewestFirst => {
-                        record.stream_id == cursor.stream_id && record.serial < cursor.serial
-                    }
-                    HistoryDirection::OldestFirst => {
-                        record.stream_id == cursor.stream_id && record.serial > cursor.serial
-                    }
-                })
+                && request
+                    .cursor
+                    .as_ref()
+                    .is_none_or(|cursor| match request.direction {
+                        HistoryDirection::NewestFirst => {
+                            record.stream_id == cursor.stream_id && record.serial < cursor.serial
+                        }
+                        HistoryDirection::OldestFirst => {
+                            record.stream_id == cursor.stream_id && record.serial > cursor.serial
+                        }
+                    })
         };
 
         let collected: Vec<&HistoryAppendRecord> = match request.direction {
@@ -521,7 +551,10 @@ impl HistoryStore for MemoryHistoryStore {
     }
 }
 
-fn is_truncated_by_retention(bounds: &HistoryQueryBounds, retained: &HistoryRetentionStats) -> bool {
+fn is_truncated_by_retention(
+    bounds: &HistoryQueryBounds,
+    retained: &HistoryRetentionStats,
+) -> bool {
     if let (Some(start_serial), Some(oldest_serial)) = (bounds.start_serial, retained.oldest_serial)
         && start_serial < oldest_serial
     {
@@ -535,7 +568,9 @@ fn is_truncated_by_retention(bounds: &HistoryQueryBounds, retained: &HistoryRete
     }
     bounds.start_serial.is_none()
         && bounds.start_time_ms.is_none()
-        && retained.oldest_serial.is_some_and(|oldest_serial| oldest_serial > 1)
+        && retained
+            .oldest_serial
+            .is_some_and(|oldest_serial| oldest_serial > 1)
 }
 
 pub fn now_ms() -> i64 {
@@ -567,6 +602,11 @@ mod tests {
             event_name: Some("event".to_string()),
             operation_kind: "append".to_string(),
             payload_bytes: Bytes::from(payload.to_string()),
+            retention: HistoryRetentionPolicy {
+                retention_window_seconds: 3600,
+                max_messages_per_channel: None,
+                max_bytes_per_channel: None,
+            },
         }
     }
 
@@ -620,7 +660,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(first_page.items.iter().map(|item| item.serial).collect::<Vec<_>>(), vec![3, 2]);
+        assert_eq!(
+            first_page
+                .items
+                .iter()
+                .map(|item| item.serial)
+                .collect::<Vec<_>>(),
+            vec![3, 2]
+        );
 
         let second_page = store
             .read_page(HistoryReadRequest {
@@ -680,7 +727,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(first_page.items.iter().map(|item| item.serial).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            first_page
+                .items
+                .iter()
+                .map(|item| item.serial)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
 
         let second_page = store
             .read_page(HistoryReadRequest {
@@ -727,7 +781,14 @@ mod tests {
             .await
             .unwrap();
         store
-            .append(make_record("app", "chat", &stream_id, 3, now_ms(), "newest"))
+            .append(make_record(
+                "app",
+                "chat",
+                &stream_id,
+                3,
+                now_ms(),
+                "newest",
+            ))
             .await
             .unwrap();
 
@@ -743,7 +804,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(page.items.iter().map(|item| item.serial).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|item| item.serial)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
         assert_eq!(page.retained.retained_messages, 2);
     }
 
@@ -789,7 +856,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            page.items.iter().map(|item| item.serial).collect::<Vec<_>>(),
+            page.items
+                .iter()
+                .map(|item| item.serial)
+                .collect::<Vec<_>>(),
             vec![2, 3, 4]
         );
     }

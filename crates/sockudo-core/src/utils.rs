@@ -584,6 +584,7 @@ mod tests {
                         allow_subscribe_for_client: None,
                         allow_publish_for_client: None,
                         allow_presence_for_client: None,
+                        history: None,
                     }]),
                     ..Default::default()
                 },
@@ -631,6 +632,7 @@ mod tests {
                         allow_subscribe_for_client: None,
                         allow_publish_for_client: None,
                         allow_presence_for_client: None,
+                        history: None,
                     }]),
                     ..Default::default()
                 },
@@ -667,6 +669,7 @@ mod tests {
                         allow_subscribe_for_client: None,
                         allow_publish_for_client: None,
                         allow_presence_for_client: None,
+                        history: None,
                     }]),
                     ..Default::default()
                 },

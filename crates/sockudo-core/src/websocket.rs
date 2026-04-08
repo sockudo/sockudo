@@ -1196,7 +1196,11 @@ impl WebSocketRef {
     }
 
     pub async fn buffer_rewind_message(&self, channel: &str, message: &PusherMessage) -> bool {
-        let Some(gate) = self.rewind_gates.get(channel).map(|entry| entry.value().clone()) else {
+        let Some(gate) = self
+            .rewind_gates
+            .get(channel)
+            .map(|entry| entry.value().clone())
+        else {
             return false;
         };
 

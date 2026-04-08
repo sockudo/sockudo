@@ -11,7 +11,9 @@ use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::channel_manager::ChannelManager;
 use sockudo_core::app::App;
 use sockudo_core::error::{HEALTH_CHECK_TIMEOUT_MS, HealthStatus};
-use sockudo_core::history::{HistoryCursor, HistoryDirection, HistoryQueryBounds, HistoryReadRequest};
+use sockudo_core::history::{
+    HistoryCursor, HistoryDirection, HistoryQueryBounds, HistoryReadRequest,
+};
 use sockudo_core::utils::{self, validate_channel_name};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
@@ -1296,10 +1298,12 @@ pub async fn channel_history(
 ) -> Result<impl IntoResponse, AppError> {
     validate_channel_name(&app, &channel_name).await?;
 
-    if !handler.server_options().history.enabled {
-        return Err(AppError::InvalidInput(
-            "Durable history is not enabled".to_string(),
-        ));
+    let history_policy = app.resolved_history(&channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::InvalidInput(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            channel_name
+        )));
     }
 
     let direction = match query_params
@@ -1320,8 +1324,8 @@ pub async fn channel_history(
 
     let limit = query_params
         .limit
-        .unwrap_or(handler.server_options().history.max_page_size)
-        .min(handler.server_options().history.max_page_size);
+        .unwrap_or(history_policy.max_page_size)
+        .min(history_policy.max_page_size);
     if limit == 0 {
         return Err(AppError::InvalidInput(
             "History limit must be greater than 0".to_string(),
@@ -1353,8 +1357,9 @@ pub async fn channel_history(
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
-        let message: Value = sonic_rs::from_slice(item.payload_bytes.as_ref())
-            .map_err(|e| AppError::InternalError(format!("Failed to decode history payload: {e}")))?;
+        let message: Value = sonic_rs::from_slice(item.payload_bytes.as_ref()).map_err(|e| {
+            AppError::InternalError(format!("Failed to decode history payload: {e}"))
+        })?;
         items.push(json!({
             "stream_id": item.stream_id,
             "serial": item.serial,
@@ -1638,8 +1643,11 @@ mod tests {
     use sockudo_adapter::local_adapter::LocalAdapter;
     use sockudo_app::memory_app_manager::MemoryAppManager;
     use sockudo_cache::memory_cache_manager::MemoryCacheManager;
-    use sockudo_core::app::App;
     use sockudo_core::app::AppManager;
+    use sockudo_core::app::{
+        App, AppChannelsPolicy, AppHistoryConfig, AppPolicy, ChannelNamespace,
+        NamespaceHistoryConfig,
+    };
     use sockudo_core::history::{MemoryHistoryStore, MemoryHistoryStoreConfig};
     use sockudo_core::namespace::Namespace;
     use sockudo_core::options::MemoryCacheOptions;
@@ -1649,12 +1657,16 @@ mod tests {
     use std::time::Instant;
 
     fn test_app() -> App {
+        test_app_with_policy(Default::default())
+    }
+
+    fn test_app_with_policy(policy: AppPolicy) -> App {
         App::from_policy(
             "app-1".to_string(),
             "key".to_string(),
             "secret".to_string(),
             true,
-            Default::default(),
+            policy,
         )
     }
 
@@ -1832,7 +1844,9 @@ mod tests {
         assert_eq!(json["items"][0]["serial"].as_u64(), Some(1));
         assert_eq!(json["has_more"].as_bool(), Some(false));
         assert_eq!(
-            json["continuity"]["stream_id"].as_str().map(|value| !value.is_empty()),
+            json["continuity"]["stream_id"]
+                .as_str()
+                .map(|value| !value.is_empty()),
             Some(true)
         );
     }
@@ -1844,7 +1858,12 @@ mod tests {
 
         for index in 1..=4 {
             handler
-                .broadcast_to_channel(&app, "public-room", test_history_message("public-room", index), None)
+                .broadcast_to_channel(
+                    &app,
+                    "public-room",
+                    test_history_message("public-room", index),
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -1867,7 +1886,9 @@ mod tests {
         .unwrap()
         .into_response();
         let newest_json: Value = sonic_rs::from_slice(
-            &axum::body::to_bytes(newest.into_body(), usize::MAX).await.unwrap(),
+            &axum::body::to_bytes(newest.into_body(), usize::MAX)
+                .await
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(newest_json["items"][0]["serial"].as_u64(), Some(4));
@@ -1918,7 +1939,9 @@ mod tests {
         .unwrap()
         .into_response();
         let oldest_json: Value = sonic_rs::from_slice(
-            &axum::body::to_bytes(oldest.into_body(), usize::MAX).await.unwrap(),
+            &axum::body::to_bytes(oldest.into_body(), usize::MAX)
+                .await
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(oldest_json["items"][0]["serial"].as_u64(), Some(1));
@@ -1931,7 +1954,12 @@ mod tests {
         let app = test_app();
 
         handler
-            .broadcast_to_channel(&app, "public-room", test_history_message("public-room", 1), None)
+            .broadcast_to_channel(
+                &app,
+                "public-room",
+                test_history_message("public-room", 1),
+                None,
+            )
             .await
             .unwrap();
 
@@ -1966,7 +1994,12 @@ mod tests {
 
         for index in 1..=5 {
             handler
-                .broadcast_to_channel(&app, "public-room", test_history_message("public-room", index), None)
+                .broadcast_to_channel(
+                    &app,
+                    "public-room",
+                    test_history_message("public-room", index),
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -2009,7 +2042,12 @@ mod tests {
 
         for index in 1..=250 {
             handler
-                .broadcast_to_channel(&app, "public-room", test_history_message("public-room", index), None)
+                .broadcast_to_channel(
+                    &app,
+                    "public-room",
+                    test_history_message("public-room", index),
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -2043,5 +2081,148 @@ mod tests {
         assert_eq!(json["items"].as_array().unwrap().len(), 100);
         assert_eq!(json["has_more"].as_bool(), Some(true));
         assert!(elapsed.as_secs_f64() < 2.0);
+    }
+
+    #[tokio::test]
+    async fn channel_history_rejects_when_history_is_disabled_by_app_policy() {
+        let handler = test_history_handler(100);
+        let app = test_app_with_policy(AppPolicy {
+            history: Some(AppHistoryConfig {
+                enabled: Some(false),
+                rewind_enabled: None,
+                retention_window_seconds: None,
+                max_messages_per_channel: None,
+                max_bytes_per_channel: None,
+            }),
+            ..Default::default()
+        });
+
+        let response = channel_history(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("newest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await;
+
+        let response = match response {
+            Ok(_) => panic!("expected policy-disabled history request to fail"),
+            Err(err) => err.into_response(),
+        };
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn namespace_history_retention_override_beats_app_default() {
+        let handler = test_history_handler(100);
+        let app = test_app_with_policy(AppPolicy {
+            history: Some(AppHistoryConfig {
+                enabled: Some(true),
+                rewind_enabled: None,
+                retention_window_seconds: None,
+                max_messages_per_channel: Some(1),
+                max_bytes_per_channel: None,
+            }),
+            channels: AppChannelsPolicy {
+                channel_namespaces: Some(vec![ChannelNamespace {
+                    name: "chat".to_string(),
+                    channel_name_pattern: None,
+                    max_channel_name_length: None,
+                    allow_user_limited_channels: None,
+                    allow_subscribe_for_client: None,
+                    allow_publish_for_client: None,
+                    allow_presence_for_client: None,
+                    history: Some(NamespaceHistoryConfig {
+                        rewind_enabled: None,
+                        retention_window_seconds: None,
+                        max_messages_per_channel: Some(3),
+                        max_bytes_per_channel: None,
+                    }),
+                }]),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        for index in 1..=3 {
+            handler
+                .broadcast_to_channel(
+                    &app,
+                    "public-room",
+                    test_history_message("public-room", index),
+                    None,
+                )
+                .await
+                .unwrap();
+            handler
+                .broadcast_to_channel(
+                    &app,
+                    "chat:room-1",
+                    test_history_message("chat:room-1", index),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let public_response = channel_history(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("oldest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let public_json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(public_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        let namespaced_response = channel_history(
+            Path(("app-1".to_string(), "chat:room-1".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("oldest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let namespaced_json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(namespaced_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(public_json["items"].as_array().unwrap().len(), 1);
+        assert_eq!(namespaced_json["items"].as_array().unwrap().len(), 3);
     }
 }

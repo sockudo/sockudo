@@ -1095,6 +1095,7 @@ impl Default for PostgresHistoryConfig {
 #[serde(default)]
 pub struct HistoryConfig {
     pub enabled: bool,
+    pub rewind_enabled: bool,
     pub backend: HistoryBackend,
     pub retention_window_seconds: u64,
     pub max_page_size: usize,
@@ -1109,6 +1110,7 @@ impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            rewind_enabled: true,
             backend: HistoryBackend::Postgres,
             retention_window_seconds: 86400,
             max_page_size: 100,
@@ -2695,6 +2697,7 @@ impl ServerOptions {
                     webhooks: None,
                     idempotency: None,
                     connection_recovery: None,
+                    history: None,
                 },
             );
 
@@ -2842,6 +2845,8 @@ impl ServerOptions {
         );
 
         self.history.enabled = parse_bool_env("HISTORY_ENABLED", self.history.enabled);
+        self.history.rewind_enabled =
+            parse_bool_env("HISTORY_REWIND_ENABLED", self.history.rewind_enabled);
         self.history.retention_window_seconds = parse_env::<u64>(
             "HISTORY_RETENTION_WINDOW_SECONDS",
             self.history.retention_window_seconds,

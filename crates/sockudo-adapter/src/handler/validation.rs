@@ -4,6 +4,7 @@ use super::types::*;
 use sockudo_core::app::{App, ChannelNamespace};
 use sockudo_core::channel::ChannelType;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::options::HistoryConfig;
 use sockudo_core::utils;
 use sockudo_core::websocket::ConnectionCapabilities;
 use sockudo_protocol::ProtocolVersion;
@@ -63,6 +64,31 @@ fn validate_capability_permission(
     }
 }
 
+fn validate_rewind_request(
+    app_config: &App,
+    channel: &str,
+    is_v2: bool,
+    global_history: &HistoryConfig,
+) -> Result<()> {
+    if !is_v2 {
+        return Err(Error::Channel(
+            "Channel rewind is only supported on protocol V2".into(),
+        ));
+    }
+
+    if !app_config
+        .resolved_history(channel, global_history)
+        .rewind_allowed()
+    {
+        return Err(Error::Channel(format!(
+            "Channel rewind is disabled by policy for channel '{}'",
+            channel
+        )));
+    }
+
+    Ok(())
+}
+
 impl ConnectionHandler {
     pub async fn validate_subscription_request(
         &self,
@@ -118,15 +144,13 @@ impl ConnectionHandler {
             utils::validate_channel_name(app_config, &request.channel).await?;
         }
 
-        if request.rewind.is_some() && !is_v2 {
-            return Err(Error::Channel(
-                "Channel rewind is only supported on protocol V2".into(),
-            ));
-        }
-        if request.rewind.is_some() && !self.server_options().history.enabled {
-            return Err(Error::Channel(
-                "Channel rewind requires durable history to be enabled".into(),
-            ));
+        if request.rewind.is_some() {
+            validate_rewind_request(
+                app_config,
+                &request.channel,
+                is_v2,
+                &self.server_options().history,
+            )?;
         }
 
         // Check if authentication is required and provided
@@ -406,6 +430,9 @@ impl ConnectionHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sockudo_core::app::{
+        AppChannelsPolicy, AppHistoryConfig, AppPolicy, NamespaceHistoryConfig,
+    };
 
     #[test]
     fn namespace_permission_denies_subscribe_when_flag_disabled() {
@@ -417,6 +444,7 @@ mod tests {
             allow_subscribe_for_client: Some(false),
             allow_publish_for_client: None,
             allow_presence_for_client: None,
+            history: None,
         };
 
         let err =
@@ -437,6 +465,7 @@ mod tests {
             allow_subscribe_for_client: None,
             allow_publish_for_client: Some(false),
             allow_presence_for_client: None,
+            history: None,
         };
 
         let err = validate_namespace_permission(&namespace, "private-chat:room-1", "publish")
@@ -491,5 +520,75 @@ mod tests {
             validate_capability_permission(&capabilities, "presence-chat:room-1", "subscribe")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn rewind_validation_rejects_disabled_policy() {
+        let app = App::from_policy(
+            "app".to_string(),
+            "key".to_string(),
+            "secret".to_string(),
+            true,
+            AppPolicy {
+                history: Some(AppHistoryConfig {
+                    enabled: Some(true),
+                    rewind_enabled: Some(false),
+                    retention_window_seconds: None,
+                    max_messages_per_channel: None,
+                    max_bytes_per_channel: None,
+                }),
+                ..Default::default()
+            },
+        );
+        let mut global = HistoryConfig::default();
+        global.enabled = true;
+
+        let err = validate_rewind_request(&app, "chat:room-1", true, &global).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Channel rewind is disabled by policy for channel 'chat:room-1'")
+        );
+    }
+
+    #[test]
+    fn rewind_validation_namespace_override_beats_app_default() {
+        let app = App::from_policy(
+            "app".to_string(),
+            "key".to_string(),
+            "secret".to_string(),
+            true,
+            AppPolicy {
+                history: Some(AppHistoryConfig {
+                    enabled: Some(true),
+                    rewind_enabled: Some(false),
+                    retention_window_seconds: None,
+                    max_messages_per_channel: None,
+                    max_bytes_per_channel: None,
+                }),
+                channels: AppChannelsPolicy {
+                    channel_namespaces: Some(vec![ChannelNamespace {
+                        name: "chat".to_string(),
+                        channel_name_pattern: None,
+                        max_channel_name_length: None,
+                        allow_user_limited_channels: None,
+                        allow_subscribe_for_client: None,
+                        allow_publish_for_client: None,
+                        allow_presence_for_client: None,
+                        history: Some(NamespaceHistoryConfig {
+                            rewind_enabled: Some(true),
+                            retention_window_seconds: None,
+                            max_messages_per_channel: None,
+                            max_bytes_per_channel: None,
+                        }),
+                    }]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let mut global = HistoryConfig::default();
+        global.enabled = true;
+
+        assert!(validate_rewind_request(&app, "chat:room-1", true, &global).is_ok());
     }
 }

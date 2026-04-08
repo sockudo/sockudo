@@ -73,7 +73,11 @@ impl ConnectionHandler {
             self.send_message_to_socket(
                 &app_config.id,
                 socket_id,
-                PusherMessage::error(4302, "No channel recovery positions provided".to_string(), None),
+                PusherMessage::error(
+                    4302,
+                    "No channel recovery positions provided".to_string(),
+                    None,
+                ),
             )
             .await?;
             return Ok(());
@@ -218,7 +222,8 @@ impl ConnectionHandler {
             });
         }
 
-        if !self.server_options().history.enabled {
+        let history_policy = app_config.resolved_history(channel, &self.server_options().history);
+        if !history_policy.enabled {
             return ResumeOutcome::Failed(ResumeFailure {
                 code: "position_expired",
                 reason: "hot_replay_expired_and_durable_history_disabled",
@@ -230,7 +235,12 @@ impl ConnectionHandler {
         }
 
         match self
-            .collect_resume_from_history(app_config, channel, position)
+            .collect_resume_from_history(
+                app_config,
+                channel,
+                position,
+                history_policy.max_page_size,
+            )
             .await
         {
             Ok(messages) => ResumeOutcome::Recovered {
@@ -247,6 +257,7 @@ impl ConnectionHandler {
         app_config: &App,
         channel: &str,
         position: &ResumePosition,
+        max_page_size: usize,
     ) -> std::result::Result<Vec<Bytes>, ResumeFailure> {
         let mut cursor = None;
         let mut recovered_messages = Vec::new();
@@ -265,7 +276,7 @@ impl ConnectionHandler {
                     app_id: app_config.id.clone(),
                     channel: channel.to_string(),
                     direction: HistoryDirection::OldestFirst,
-                    limit: self.server_options().history.max_page_size,
+                    limit: max_page_size,
                     cursor: cursor.clone(),
                     bounds: bounds.clone(),
                 })
@@ -302,6 +313,13 @@ impl ConnectionHandler {
                         oldest_available_serial: page.retained.oldest_serial,
                         newest_available_serial: page.retained.newest_serial,
                     });
+                }
+
+                if let Some(newest_serial) = page.retained.newest_serial
+                    && newest_serial > position.serial
+                {
+                    let gap = newest_serial.saturating_sub(position.serial) as usize;
+                    recovered_messages.reserve(gap.min(max_page_size * 4));
                 }
             }
 
@@ -410,7 +428,10 @@ async fn send_replayed_bytes_impl(
     messages: Vec<Bytes>,
 ) -> std::result::Result<(), ResumeFailure> {
     for bytes in messages {
-        if let Err(err) = handler.send_raw_bytes_to_socket(socket_id, app_id, bytes).await {
+        if let Err(err) = handler
+            .send_raw_bytes_to_socket(socket_id, app_id, bytes)
+            .await
+        {
             warn!("Failed to replay message to socket {}: {}", socket_id, err);
             return Err(ResumeFailure {
                 code: "persistence_unavailable",
@@ -497,14 +518,16 @@ fn parse_resume_positions(message: &PusherMessage) -> Result<HashMap<String, Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use bytes::Bytes;
     use crate::ConnectionManager;
     use crate::local_adapter::LocalAdapter;
+    use async_trait::async_trait;
+    use bytes::Bytes;
     use sockudo_app::memory_app_manager::MemoryAppManager;
     use sockudo_core::app::AppManager;
     use sockudo_core::cache::CacheManager;
-    use sockudo_core::history::{HistoryAppendRecord, MemoryHistoryStore, MemoryHistoryStoreConfig};
+    use sockudo_core::history::{
+        HistoryAppendRecord, MemoryHistoryStore, MemoryHistoryStoreConfig,
+    };
     use sockudo_core::metrics::MetricsInterface;
     use sockudo_core::options::ServerOptions;
     use sonic_rs::Value;
@@ -515,45 +538,107 @@ mod tests {
 
     #[async_trait]
     impl CacheManager for TestCache {
-        async fn has(&self, _key: &str) -> Result<bool> { Ok(false) }
-        async fn get(&self, _key: &str) -> Result<Option<String>> { Ok(None) }
-        async fn set(&self, _key: &str, _value: &str, _ttl_seconds: u64) -> Result<()> { Ok(()) }
-        async fn remove(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn disconnect(&self) -> Result<()> { Ok(()) }
-        async fn ttl(&self, _key: &str) -> Result<Option<Duration>> { Ok(None) }
+        async fn has(&self, _key: &str) -> Result<bool> {
+            Ok(false)
+        }
+        async fn get(&self, _key: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn set(&self, _key: &str, _value: &str, _ttl_seconds: u64) -> Result<()> {
+            Ok(())
+        }
+        async fn remove(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn ttl(&self, _key: &str) -> Result<Option<Duration>> {
+            Ok(None)
+        }
     }
 
     struct TestMetrics;
 
     #[async_trait]
     impl MetricsInterface for TestMetrics {
-        async fn init(&self) -> Result<()> { Ok(()) }
+        async fn init(&self) -> Result<()> {
+            Ok(())
+        }
         fn mark_new_connection(&self, _app_id: &str, _socket_id: &SocketId) {}
         fn mark_disconnection(&self, _app_id: &str, _socket_id: &SocketId) {}
         fn mark_connection_error(&self, _app_id: &str, _error_type: &str) {}
         fn mark_rate_limit_check(&self, _app_id: &str, _limiter_type: &str) {}
-        fn mark_rate_limit_check_with_context(&self, _app_id: &str, _limiter_type: &str, _request_context: &str) {}
+        fn mark_rate_limit_check_with_context(
+            &self,
+            _app_id: &str,
+            _limiter_type: &str,
+            _request_context: &str,
+        ) {
+        }
         fn mark_rate_limit_triggered(&self, _app_id: &str, _limiter_type: &str) {}
-        fn mark_rate_limit_triggered_with_context(&self, _app_id: &str, _limiter_type: &str, _request_context: &str) {}
+        fn mark_rate_limit_triggered_with_context(
+            &self,
+            _app_id: &str,
+            _limiter_type: &str,
+            _request_context: &str,
+        ) {
+        }
         fn mark_channel_subscription(&self, _app_id: &str, _channel_type: &str) {}
         fn mark_channel_unsubscription(&self, _app_id: &str, _channel_type: &str) {}
         fn update_active_channels(&self, _app_id: &str, _channel_type: &str, _count: i64) {}
-        fn mark_api_message(&self, _app_id: &str, _incoming_message_size: usize, _sent_message_size: usize) {}
+        fn mark_api_message(
+            &self,
+            _app_id: &str,
+            _incoming_message_size: usize,
+            _sent_message_size: usize,
+        ) {
+        }
         fn mark_ws_message_sent(&self, _app_id: &str, _sent_message_size: usize) {}
-        fn mark_ws_messages_sent_batch(&self, _app_id: &str, _sent_message_size: usize, _count: usize) {}
+        fn mark_ws_messages_sent_batch(
+            &self,
+            _app_id: &str,
+            _sent_message_size: usize,
+            _count: usize,
+        ) {
+        }
         fn mark_ws_message_received(&self, _app_id: &str, _message_size: usize) {}
         fn track_horizontal_adapter_resolve_time(&self, _app_id: &str, _time_ms: f64) {}
         fn track_horizontal_adapter_resolved_promises(&self, _app_id: &str, _resolved: bool) {}
         fn mark_horizontal_adapter_request_sent(&self, _app_id: &str) {}
         fn mark_horizontal_adapter_request_received(&self, _app_id: &str) {}
         fn mark_horizontal_adapter_response_received(&self, _app_id: &str) {}
-        fn track_broadcast_latency(&self, _app_id: &str, _channel_name: &str, _recipient_count: usize, _latency_ms: f64) {}
-        fn track_horizontal_delta_compression(&self, _app_id: &str, _channel_name: &str, _enabled: bool) {}
-        fn track_delta_compression_bandwidth(&self, _app_id: &str, _channel_name: &str, _original_bytes: usize, _compressed_bytes: usize) {}
+        fn track_broadcast_latency(
+            &self,
+            _app_id: &str,
+            _channel_name: &str,
+            _recipient_count: usize,
+            _latency_ms: f64,
+        ) {
+        }
+        fn track_horizontal_delta_compression(
+            &self,
+            _app_id: &str,
+            _channel_name: &str,
+            _enabled: bool,
+        ) {
+        }
+        fn track_delta_compression_bandwidth(
+            &self,
+            _app_id: &str,
+            _channel_name: &str,
+            _original_bytes: usize,
+            _compressed_bytes: usize,
+        ) {
+        }
         fn track_delta_compression_full_message(&self, _app_id: &str, _channel_name: &str) {}
         fn track_delta_compression_delta_message(&self, _app_id: &str, _channel_name: &str) {}
-        async fn get_metrics_as_plaintext(&self) -> String { String::new() }
-        async fn get_metrics_as_json(&self) -> Value { sonic_rs::json!({}) }
+        async fn get_metrics_as_plaintext(&self) -> String {
+            String::new()
+        }
+        async fn get_metrics_as_json(&self) -> Value {
+            sonic_rs::json!({})
+        }
         async fn clear(&self) {}
     }
 
@@ -624,6 +709,11 @@ mod tests {
                         })
                         .unwrap(),
                     ),
+                    retention: sockudo_core::history::HistoryRetentionPolicy {
+                        retention_window_seconds: 3600,
+                        max_messages_per_channel: None,
+                        max_bytes_per_channel: None,
+                    },
                 })
                 .await
                 .unwrap();
@@ -695,8 +785,20 @@ mod tests {
     async fn hot_recovery_success_uses_replay_buffer() {
         let handler = build_handler(true);
         let replay_buffer = handler.replay_buffer().unwrap().clone();
-        replay_buffer.store("app", "chat", Some("stream-1"), 2, Bytes::from_static(b"two"));
-        replay_buffer.store("app", "chat", Some("stream-1"), 3, Bytes::from_static(b"three"));
+        replay_buffer.store(
+            "app",
+            "chat",
+            Some("stream-1"),
+            2,
+            Bytes::from_static(b"two"),
+        );
+        replay_buffer.store(
+            "app",
+            "chat",
+            Some("stream-1"),
+            3,
+            Bytes::from_static(b"three"),
+        );
         let app = test_app("app");
 
         let outcome = handler
@@ -814,7 +916,13 @@ mod tests {
     async fn per_channel_recovery_outcomes_are_independent() {
         let handler = build_handler(true);
         let replay_buffer = handler.replay_buffer().unwrap().clone();
-        replay_buffer.store("app", "good", Some("stream-good"), 2, Bytes::from_static(b"two"));
+        replay_buffer.store(
+            "app",
+            "good",
+            Some("stream-good"),
+            2,
+            Bytes::from_static(b"two"),
+        );
         append_history(&handler, "app", "bad", &[5, 6], "stream-bad").await;
         let app = test_app("app");
 
@@ -853,8 +961,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_history_store_allows_cross_node_cold_recovery() {
-        let shared_history =
-            Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let shared_history = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
         let node_a = build_handler_with_history_store(true, shared_history.clone());
         let node_b = build_handler_with_history_store(true, shared_history);
         let app = test_app("app");

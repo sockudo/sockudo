@@ -172,7 +172,9 @@ impl SubscriptionRequest {
         message: &PusherMessage,
         event_name_filtering: &EventNameFilteringConfig,
     ) -> sockudo_core::error::Result<Self> {
-        let (channel, auth, channel_data, _tags_filter_raw, _delta_raw, rewind_raw) = match &message.data {
+        let (channel, auth, channel_data, _tags_filter_raw, _delta_raw, rewind_raw) = match &message
+            .data
+        {
             Some(MessageData::Structured {
                 channel,
                 extra,
