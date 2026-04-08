@@ -1,4 +1,5 @@
-use crate::options::{ConnectionRecoveryConfig, IdempotencyConfig};
+use crate::history::HistoryRetentionPolicy;
+use crate::options::{ConnectionRecoveryConfig, HistoryConfig, IdempotencyConfig};
 use crate::webhook_types::Webhook;
 use ahash::AHashMap;
 use async_trait::async_trait;
@@ -17,6 +18,7 @@ pub struct AppPolicy {
     pub webhooks: Option<Vec<Webhook>>,
     pub idempotency: Option<AppIdempotencyConfig>,
     pub connection_recovery: Option<AppConnectionRecoveryConfig>,
+    pub history: Option<AppHistoryConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -96,6 +98,31 @@ pub struct AppChannelsPolicy {
     pub channel_namespaces: Option<Vec<ChannelNamespace>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct AppHistoryConfig {
+    pub enabled: Option<bool>,
+    pub rewind_enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub retention_window_seconds: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub max_messages_per_channel: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub max_bytes_per_channel: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct NamespaceHistoryConfig {
+    pub rewind_enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub retention_window_seconds: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub max_messages_per_channel: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub max_bytes_per_channel: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct AppPolicyRef<'a> {
     pub limits: AppLimitsPolicyRef,
@@ -104,6 +131,33 @@ pub struct AppPolicyRef<'a> {
     pub webhooks: Option<&'a [Webhook]>,
     pub idempotency: Option<&'a AppIdempotencyConfig>,
     pub connection_recovery: Option<&'a AppConnectionRecoveryConfig>,
+    pub history: Option<&'a AppHistoryConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedHistoryPolicy {
+    pub enabled: bool,
+    pub rewind_enabled: bool,
+    pub max_page_size: usize,
+    pub retention_window_seconds: u64,
+    pub max_messages_per_channel: Option<usize>,
+    pub max_bytes_per_channel: Option<u64>,
+}
+
+impl ResolvedHistoryPolicy {
+    #[inline]
+    pub fn rewind_allowed(self) -> bool {
+        self.enabled && self.rewind_enabled
+    }
+
+    #[inline]
+    pub fn retention(self) -> HistoryRetentionPolicy {
+        HistoryRetentionPolicy {
+            retention_window_seconds: self.retention_window_seconds,
+            max_messages_per_channel: self.max_messages_per_channel,
+            max_bytes_per_channel: self.max_bytes_per_channel,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -207,6 +261,7 @@ impl App {
             webhooks: self.policy.webhooks.as_deref(),
             idempotency: self.policy.idempotency.as_ref(),
             connection_recovery: self.policy.connection_recovery.as_ref(),
+            history: self.policy.history.as_ref(),
         }
     }
 
@@ -344,6 +399,19 @@ impl App {
     }
 
     #[inline]
+    pub fn history_override(&self) -> Option<&AppHistoryConfig> {
+        self.policy.history.as_ref()
+    }
+
+    #[inline]
+    pub fn namespace_for_channel(&self, channel: &str) -> Option<&ChannelNamespace> {
+        let namespace_name = crate::utils::channel_namespace_name(channel)?;
+        self.namespaces()?
+            .iter()
+            .find(|namespace| namespace.name == namespace_name)
+    }
+
+    #[inline]
     pub fn resolved_idempotency(&self, global: &IdempotencyConfig) -> IdempotencyConfig {
         match self.idempotency_override() {
             Some(app_config) => IdempotencyConfig {
@@ -369,6 +437,37 @@ impl App {
                 max_buffer_size: app_config.max_buffer_size.unwrap_or(global.max_buffer_size),
             },
             None => global.clone(),
+        }
+    }
+
+    #[inline]
+    pub fn resolved_history(&self, channel: &str, global: &HistoryConfig) -> ResolvedHistoryPolicy {
+        let app_config = self.history_override();
+        let namespace_config = self
+            .namespace_for_channel(channel)
+            .and_then(|namespace| namespace.history.as_ref());
+
+        ResolvedHistoryPolicy {
+            enabled: app_config
+                .and_then(|config| config.enabled)
+                .unwrap_or(global.enabled),
+            rewind_enabled: namespace_config
+                .and_then(|config| config.rewind_enabled)
+                .or_else(|| app_config.and_then(|config| config.rewind_enabled))
+                .unwrap_or(global.rewind_enabled),
+            max_page_size: global.max_page_size,
+            retention_window_seconds: namespace_config
+                .and_then(|config| config.retention_window_seconds)
+                .or_else(|| app_config.and_then(|config| config.retention_window_seconds))
+                .unwrap_or(global.retention_window_seconds),
+            max_messages_per_channel: namespace_config
+                .and_then(|config| config.max_messages_per_channel)
+                .or_else(|| app_config.and_then(|config| config.max_messages_per_channel))
+                .or(global.max_messages_per_channel),
+            max_bytes_per_channel: namespace_config
+                .and_then(|config| config.max_bytes_per_channel)
+                .or_else(|| app_config.and_then(|config| config.max_bytes_per_channel))
+                .or(global.max_bytes_per_channel),
         }
     }
 }
@@ -481,6 +580,7 @@ impl<'de> Deserialize<'de> for App {
                 webhooks: app.webhooks,
                 idempotency: app.idempotency,
                 connection_recovery: app.connection_recovery,
+                history: None,
             },
         ))
     }
@@ -500,6 +600,8 @@ pub struct ChannelNamespace {
     pub allow_publish_for_client: Option<bool>,
     #[serde(default)]
     pub allow_presence_for_client: Option<bool>,
+    #[serde(default)]
+    pub history: Option<NamespaceHistoryConfig>,
 }
 
 impl ChannelNamespace {
@@ -700,6 +802,7 @@ mod tests {
             allow_subscribe_for_client: None,
             allow_publish_for_client: None,
             allow_presence_for_client: None,
+            history: None,
         };
         assert!(ns.validate().is_err());
     }
@@ -744,6 +847,7 @@ mod tests {
                     allow_subscribe_for_client: Some(true),
                     allow_publish_for_client: Some(true),
                     allow_presence_for_client: Some(true),
+                    history: None,
                 }]),
             },
             webhooks: None,
@@ -755,6 +859,13 @@ mod tests {
                 enabled: Some(true),
                 buffer_ttl_seconds: Some(120),
                 max_buffer_size: Some(50),
+            }),
+            history: Some(AppHistoryConfig {
+                enabled: Some(true),
+                rewind_enabled: Some(false),
+                retention_window_seconds: Some(120),
+                max_messages_per_channel: Some(10),
+                max_bytes_per_channel: Some(1024),
             }),
         };
 
@@ -777,8 +888,112 @@ mod tests {
             app.policy().connection_recovery.unwrap().max_buffer_size,
             Some(50)
         );
+        assert_eq!(
+            app.policy().history.unwrap().max_messages_per_channel,
+            Some(10)
+        );
         assert_eq!(app.policy().limits.decay_seconds, Some(60));
         assert!(app.policy().limits.terminate_on_limit);
+    }
+
+    #[test]
+    fn resolved_history_uses_global_defaults_without_overrides() {
+        let app = App::default();
+        let global = HistoryConfig::default();
+
+        let resolved = app.resolved_history("chat:room-1", &global);
+
+        assert_eq!(
+            resolved,
+            ResolvedHistoryPolicy {
+                enabled: false,
+                rewind_enabled: true,
+                max_page_size: 100,
+                retention_window_seconds: 86400,
+                max_messages_per_channel: None,
+                max_bytes_per_channel: None,
+            }
+        );
+        assert!(!resolved.rewind_allowed());
+    }
+
+    #[test]
+    fn resolved_history_applies_app_overrides() {
+        let app = App::from_policy(
+            "app".to_string(),
+            "key".to_string(),
+            "secret".to_string(),
+            true,
+            AppPolicy {
+                history: Some(AppHistoryConfig {
+                    enabled: Some(true),
+                    rewind_enabled: Some(false),
+                    retention_window_seconds: Some(30),
+                    max_messages_per_channel: Some(5),
+                    max_bytes_per_channel: Some(512),
+                }),
+                ..Default::default()
+            },
+        );
+        let global = HistoryConfig::default();
+
+        let resolved = app.resolved_history("chat:room-1", &global);
+
+        assert!(resolved.enabled);
+        assert!(!resolved.rewind_enabled);
+        assert_eq!(resolved.retention_window_seconds, 30);
+        assert_eq!(resolved.max_messages_per_channel, Some(5));
+        assert_eq!(resolved.max_bytes_per_channel, Some(512));
+        assert!(!resolved.rewind_allowed());
+    }
+
+    #[test]
+    fn resolved_history_namespace_overrides_beat_app_and_global() {
+        let app = App::from_policy(
+            "app".to_string(),
+            "key".to_string(),
+            "secret".to_string(),
+            true,
+            AppPolicy {
+                history: Some(AppHistoryConfig {
+                    enabled: Some(true),
+                    rewind_enabled: Some(false),
+                    retention_window_seconds: Some(60),
+                    max_messages_per_channel: Some(2),
+                    max_bytes_per_channel: Some(256),
+                }),
+                channels: AppChannelsPolicy {
+                    channel_namespaces: Some(vec![ChannelNamespace {
+                        name: "chat".to_string(),
+                        channel_name_pattern: None,
+                        max_channel_name_length: None,
+                        allow_user_limited_channels: None,
+                        allow_subscribe_for_client: None,
+                        allow_publish_for_client: None,
+                        allow_presence_for_client: None,
+                        history: Some(NamespaceHistoryConfig {
+                            rewind_enabled: Some(true),
+                            retention_window_seconds: Some(600),
+                            max_messages_per_channel: Some(8),
+                            max_bytes_per_channel: Some(4096),
+                        }),
+                    }]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let mut global = HistoryConfig::default();
+        global.enabled = false;
+
+        let resolved = app.resolved_history("chat:room-1", &global);
+
+        assert!(resolved.enabled);
+        assert!(resolved.rewind_enabled);
+        assert_eq!(resolved.retention_window_seconds, 600);
+        assert_eq!(resolved.max_messages_per_channel, Some(8));
+        assert_eq!(resolved.max_bytes_per_channel, Some(4096));
+        assert!(resolved.rewind_allowed());
     }
 
     #[test]

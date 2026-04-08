@@ -245,6 +245,7 @@ impl DynamoDbAppManager {
                     } else {
                         None
                     },
+                    history: None,
                 },
             ))
         } else {

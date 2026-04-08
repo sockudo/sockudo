@@ -50,6 +50,20 @@ impl ReplayBuffer {
         format!("{}\0{}", app_id, channel)
     }
 
+    fn prune_expired_locked(
+        messages: &mut VecDeque<BufferedMessage>,
+        buffer_ttl: Duration,
+        now: Instant,
+    ) {
+        while let Some(front) = messages.front() {
+            if now.duration_since(front.timestamp) >= buffer_ttl {
+                messages.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
     /// Atomically increment and return the next serial for a channel.
     pub fn next_serial(&self, app_id: &str, channel: &str) -> u64 {
         let key = Self::buffer_key(app_id, channel);
@@ -130,7 +144,9 @@ impl ReplayBuffer {
         {
             return ReplayLookup::StreamReset { current_stream_id };
         }
-        let messages = entry.messages.lock().unwrap();
+        let now = Instant::now();
+        let mut messages = entry.messages.lock().unwrap();
+        Self::prune_expired_locked(&mut messages, self.buffer_ttl, now);
 
         if messages.is_empty() {
             if stream_id.is_some() {
@@ -146,6 +162,11 @@ impl ReplayBuffer {
             };
         }
 
+        let newest_serial = messages.back().map(|m| m.serial).unwrap_or(0);
+        if last_serial >= newest_serial {
+            return ReplayLookup::Recovered(Vec::new());
+        }
+
         // Check if the buffer goes back far enough
         let oldest_serial = messages.front().map(|m| m.serial).unwrap_or(0);
         if last_serial > 0 && last_serial < oldest_serial.saturating_sub(1) {
@@ -153,15 +174,13 @@ impl ReplayBuffer {
             return ReplayLookup::Expired;
         }
 
-        let now = Instant::now();
-        let result: Vec<Bytes> = messages
-            .iter()
-            .filter(|m| m.serial > last_serial && now.duration_since(m.timestamp) < self.buffer_ttl)
-            .map(|m| {
-                let _ = &m.stream_id;
-                m.message_bytes.clone()
-            })
-            .collect();
+        let contiguous = messages.make_contiguous();
+        let start_idx = contiguous.partition_point(|message| message.serial <= last_serial);
+        let mut result = Vec::with_capacity(contiguous.len().saturating_sub(start_idx));
+        for message in &contiguous[start_idx..] {
+            let _ = &message.stream_id;
+            result.push(message.message_bytes.clone());
+        }
 
         ReplayLookup::Recovered(result)
     }
@@ -173,13 +192,7 @@ impl ReplayBuffer {
 
         for entry in self.buffers.iter() {
             let mut messages = entry.value().messages.lock().unwrap();
-            while let Some(front) = messages.front() {
-                if now.duration_since(front.timestamp) >= self.buffer_ttl {
-                    messages.pop_front();
-                } else {
-                    break;
-                }
-            }
+            Self::prune_expired_locked(&mut messages, self.buffer_ttl, now);
             if messages.is_empty() {
                 empty_keys.push(entry.key().clone());
             }

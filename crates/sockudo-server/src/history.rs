@@ -1,3 +1,6 @@
+#[cfg(feature = "postgres")]
+use dashmap::DashMap;
+use sockudo_core::cache::CacheManager;
 use sockudo_core::error::{Error, Result};
 #[cfg(feature = "postgres")]
 use sockudo_core::history::{
@@ -5,30 +8,27 @@ use sockudo_core::history::{
     HistoryQueryBounds, HistoryReadRequest, HistoryRetentionStats, HistoryRuntimeStatus,
     HistoryWriteReservation,
 };
-use sockudo_core::cache::CacheManager;
 use sockudo_core::history::{HistoryStore, MemoryHistoryStore, MemoryHistoryStoreConfig};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::{DatabaseConnection, DatabasePooling, HistoryBackend, HistoryConfig};
 use std::sync::Arc;
 #[cfg(feature = "postgres")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(feature = "postgres")]
-use std::time::{Duration, Instant};
 #[cfg(not(feature = "postgres"))]
 use std::time::Duration;
+#[cfg(feature = "postgres")]
+use std::time::{Duration, Instant};
 #[cfg(feature = "postgres")]
 use tokio::sync::mpsc;
 #[cfg(feature = "postgres")]
 use tracing::error;
-#[cfg(feature = "postgres")]
-use dashmap::DashMap;
 
 #[cfg(feature = "postgres")]
-use sqlx::{PgPool, Row, postgres::PgPoolOptions};
+use sonic_rs::JsonValueTrait;
 #[cfg(feature = "postgres")]
 use sonic_rs::json;
 #[cfg(feature = "postgres")]
-use sonic_rs::JsonValueTrait;
+use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 
 pub async fn create_history_store(
     history_config: &HistoryConfig,
@@ -42,23 +42,24 @@ pub async fn create_history_store(
     }
 
     match history_config.backend {
-        HistoryBackend::Memory => Ok(Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig {
-            retention_window: Duration::from_secs(history_config.retention_window_seconds),
-            max_messages_per_channel: history_config.max_messages_per_channel,
-            max_bytes_per_channel: history_config.max_bytes_per_channel,
-        }))),
+        HistoryBackend::Memory => Ok(Arc::new(MemoryHistoryStore::new(
+            MemoryHistoryStoreConfig {
+                retention_window: Duration::from_secs(history_config.retention_window_seconds),
+                max_messages_per_channel: history_config.max_messages_per_channel,
+                max_bytes_per_channel: history_config.max_bytes_per_channel,
+            },
+        ))),
         HistoryBackend::Postgres => {
             #[cfg(feature = "postgres")]
             {
-                let store =
-                    PostgresHistoryStore::new(
-                        db_config,
-                        pooling,
-                        history_config.clone(),
-                        metrics,
-                        cache_manager,
-                    )
-                        .await?;
+                let store = PostgresHistoryStore::new(
+                    db_config,
+                    pooling,
+                    history_config.clone(),
+                    metrics,
+                    cache_manager,
+                )
+                .await?;
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "postgres"))]
@@ -138,7 +139,11 @@ impl PostgresHistoryStore {
             .idle_timeout(Duration::from_secs(180))
             .connect(&connection_string)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to connect history store to PostgreSQL: {e}")))?;
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to connect history store to PostgreSQL: {e}"
+                ))
+            })?;
 
         let tables = HistoryTables {
             streams: format!("{}_streams", config.postgres.table_prefix),
@@ -230,10 +235,9 @@ impl PostgresHistoryStore {
             add_oldest_time,
             add_newest_time,
         ] {
-            sqlx::query(&sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to initialize history tables: {e}")))?;
+            sqlx::query(&sql).execute(&self.pool).await.map_err(|e| {
+                Error::Internal(format!("Failed to initialize history tables: {e}"))
+            })?;
         }
 
         Ok(())
@@ -241,10 +245,10 @@ impl PostgresHistoryStore {
 
     fn start_writers(&mut self) {
         for shard in 0..self.config.writer_shards {
-            let (tx, mut rx) = mpsc::channel::<HistoryAppendRecord>(self.config.writer_queue_capacity);
+            let (tx, mut rx) =
+                mpsc::channel::<HistoryAppendRecord>(self.config.writer_queue_capacity);
             let pool = self.pool.clone();
             let tables = self.tables.clone();
-            let config = self.config.clone();
             let metrics = self.metrics.clone();
             let cache_manager = self.cache_manager.clone();
             let degraded_channels = self.degraded_channels.clone();
@@ -253,19 +257,21 @@ impl PostgresHistoryStore {
             tokio::spawn(async move {
                 while let Some(record) = rx.recv().await {
                     queue_depth_total.fetch_sub(1, Ordering::Relaxed);
-                    decrement_app_queue_depth(&queue_depth_by_app, &record.app_id, metrics.as_deref());
+                    decrement_app_queue_depth(
+                        &queue_depth_by_app,
+                        &record.app_id,
+                        metrics.as_deref(),
+                    );
                     let started = Instant::now();
-                    if let Err(err) =
-                        Self::persist_record(
-                            &pool,
-                            &tables,
-                            &config,
-                            &record,
-                            metrics.clone(),
-                            cache_manager.clone(),
-                            degraded_channels.clone(),
-                        )
-                        .await
+                    if let Err(err) = Self::persist_record(
+                        &pool,
+                        &tables,
+                        &record,
+                        metrics.clone(),
+                        cache_manager.clone(),
+                        degraded_channels.clone(),
+                    )
+                    .await
                     {
                         error!(
                             shard,
@@ -303,7 +309,6 @@ impl PostgresHistoryStore {
     async fn persist_record(
         pool: &PgPool,
         tables: &HistoryTables,
-        config: &HistoryConfig,
         record: &HistoryAppendRecord,
         metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
         cache_manager: Option<Arc<dyn CacheManager + Send + Sync>>,
@@ -341,7 +346,7 @@ impl PostgresHistoryStore {
 
         let cutoff_ms = record
             .published_at_ms
-            .saturating_sub((config.retention_window_seconds * 1000) as i64);
+            .saturating_sub((record.retention.retention_window_seconds * 1000) as i64);
         let age_delete = format!(
             r#"
             DELETE FROM {}
@@ -364,7 +369,7 @@ impl PostgresHistoryStore {
             .map(|row| row.get::<i64, _>("payload_size_bytes") as u64)
             .sum::<u64>();
 
-        if let Some(max_messages) = config.max_messages_per_channel {
+        if let Some(max_messages) = record.retention.max_messages_per_channel {
             let count_sql = format!(
                 "SELECT COUNT(*) AS count FROM {} WHERE app_id = $1 AND channel = $2",
                 tables.entries
@@ -410,7 +415,7 @@ impl PostgresHistoryStore {
             }
         }
 
-        if let Some(max_bytes) = config.max_bytes_per_channel {
+        if let Some(max_bytes) = record.retention.max_bytes_per_channel {
             let size_sql = format!(
                 "SELECT serial, payload_size_bytes FROM {} WHERE app_id = $1 AND channel = $2 ORDER BY serial ASC",
                 tables.entries
@@ -434,8 +439,8 @@ impl PostgresHistoryStore {
                     if removed >= overflow_bytes {
                         break;
                     }
-                    removed = removed
-                        .saturating_add(row.get::<i64, _>("payload_size_bytes") as u64);
+                    removed =
+                        removed.saturating_add(row.get::<i64, _>("payload_size_bytes") as u64);
                     serials.push(row.get::<i64, _>("serial"));
                 }
                 if !serials.is_empty() {
@@ -486,8 +491,12 @@ impl PostgresHistoryStore {
 
         let retained_messages = aggregates.get::<i64, _>("retained_messages") as u64;
         let retained_bytes = aggregates.get::<i64, _>("retained_bytes") as u64;
-        let oldest_serial = aggregates.try_get::<Option<i64>, _>("oldest_serial").unwrap_or(None);
-        let newest_serial = aggregates.try_get::<Option<i64>, _>("newest_serial").unwrap_or(None);
+        let oldest_serial = aggregates
+            .try_get::<Option<i64>, _>("oldest_serial")
+            .unwrap_or(None);
+        let newest_serial = aggregates
+            .try_get::<Option<i64>, _>("newest_serial")
+            .unwrap_or(None);
         let oldest_published_at_ms = aggregates
             .try_get::<Option<i64>, _>("oldest_published_at_ms")
             .unwrap_or(None);
@@ -521,7 +530,9 @@ impl PostgresHistoryStore {
             .bind(record.published_at_ms)
             .execute(&mut *tx)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to update history stream metadata: {e}")))?;
+            .map_err(|e| {
+                Error::Internal(format!("Failed to update history stream metadata: {e}"))
+            })?;
 
         tx.commit()
             .await
@@ -552,8 +563,7 @@ impl PostgresHistoryStore {
         } else {
             let next = self.next_writer.fetch_add(1, Ordering::Relaxed);
             ((ahash::random_state::RandomState::with_seeds(1, 2, 3, 4)
-                .hash_one(format!("{app_id}\0{channel}"))
-                as usize)
+                .hash_one(format!("{app_id}\0{channel}")) as usize)
                 .wrapping_add(next))
                 % self.writers.len()
         };
@@ -636,7 +646,11 @@ impl HistoryStore for PostgresHistoryStore {
 
     async fn append(&self, record: HistoryAppendRecord) -> Result<()> {
         self.queue_depth_total.fetch_add(1, Ordering::Relaxed);
-        increment_app_queue_depth(&self.queue_depth_by_app, &record.app_id, self.metrics.as_deref());
+        increment_app_queue_depth(
+            &self.queue_depth_by_app,
+            &record.app_id,
+            self.metrics.as_deref(),
+        );
         let send_result = self
             .select_writer(&record.app_id, &record.channel)
             .tx
@@ -644,7 +658,11 @@ impl HistoryStore for PostgresHistoryStore {
 
         if let Err(e) = send_result {
             self.queue_depth_total.fetch_sub(1, Ordering::Relaxed);
-            decrement_app_queue_depth(&self.queue_depth_by_app, &record.app_id, self.metrics.as_deref());
+            decrement_app_queue_depth(
+                &self.queue_depth_by_app,
+                &record.app_id,
+                self.metrics.as_deref(),
+            );
             mark_channel_degraded(
                 &self.degraded_channels,
                 self.cache_manager.as_ref(),
@@ -655,15 +673,22 @@ impl HistoryStore for PostgresHistoryStore {
                 None,
             )
             .await;
-            return Err(Error::Internal(format!("History writer queue is full: {e}")));
+            return Err(Error::Internal(format!(
+                "History writer queue is full: {e}"
+            )));
         }
 
         Ok(())
     }
 
     async fn read_page(&self, request: HistoryReadRequest) -> Result<HistoryPage> {
-        if let Some(state) =
-            get_channel_degraded(&self.degraded_channels, self.cache_manager.as_ref(), &request.app_id, &request.channel).await?
+        if let Some(state) = get_channel_degraded(
+            &self.degraded_channels,
+            self.cache_manager.as_ref(),
+            &request.app_id,
+            &request.channel,
+        )
+        .await?
         {
             return Err(Error::Internal(format!(
                 "History stream is degraded for {}/{}: {}",
@@ -672,7 +697,9 @@ impl HistoryStore for PostgresHistoryStore {
         }
 
         request.validate()?;
-        let retained = self.retained_stats(&request.app_id, &request.channel).await?;
+        let retained = self
+            .retained_stats(&request.app_id, &request.channel)
+            .await?;
 
         if let Some(cursor) = request.cursor.as_ref() {
             if let Some(stream_id) = retained.stream_id.as_ref()
@@ -752,7 +779,9 @@ impl HistoryStore for PostgresHistoryStore {
             order,
             request.limit + 1
         );
-        let mut query = sqlx::query(&sql).bind(&request.app_id).bind(&request.channel);
+        let mut query = sqlx::query(&sql)
+            .bind(&request.app_id)
+            .bind(&request.channel);
         if let Some(stream_id) = bind_stream {
             query = query.bind(stream_id);
         }
@@ -784,8 +813,12 @@ impl HistoryStore for PostgresHistoryStore {
                 stream_id: row.get::<String, _>("stream_id"),
                 serial: row.get::<i64, _>("serial") as u64,
                 published_at_ms: row.get::<i64, _>("published_at_ms"),
-                message_id: row.try_get::<Option<String>, _>("message_id").unwrap_or(None),
-                event_name: row.try_get::<Option<String>, _>("event_name").unwrap_or(None),
+                message_id: row
+                    .try_get::<Option<String>, _>("message_id")
+                    .unwrap_or(None),
+                event_name: row
+                    .try_get::<Option<String>, _>("event_name")
+                    .unwrap_or(None),
                 operation_kind: row.get::<String, _>("operation_kind"),
                 payload_size_bytes: row.get::<i64, _>("payload_size_bytes") as usize,
                 payload_bytes: row.get::<Vec<u8>, _>("payload_bytes").into(),
@@ -829,7 +862,10 @@ impl HistoryStore for PostgresHistoryStore {
 }
 
 #[cfg(feature = "postgres")]
-fn is_truncated_by_retention(bounds: &HistoryQueryBounds, retained: &HistoryRetentionStats) -> bool {
+fn is_truncated_by_retention(
+    bounds: &HistoryQueryBounds,
+    retained: &HistoryRetentionStats,
+) -> bool {
     if let (Some(start_serial), Some(oldest_serial)) = (bounds.start_serial, retained.oldest_serial)
         && start_serial < oldest_serial
     {
@@ -843,7 +879,9 @@ fn is_truncated_by_retention(bounds: &HistoryQueryBounds, retained: &HistoryRete
     }
     bounds.start_serial.is_none()
         && bounds.start_time_ms.is_none()
-        && retained.oldest_serial.is_some_and(|oldest_serial| oldest_serial > 1)
+        && retained
+            .oldest_serial
+            .is_some_and(|oldest_serial| oldest_serial > 1)
 }
 
 #[cfg(feature = "postgres")]

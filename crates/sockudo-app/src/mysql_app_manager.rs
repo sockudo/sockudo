@@ -663,6 +663,7 @@ impl AppRow {
                 webhooks: self.webhooks,
                 idempotency: self.idempotency,
                 connection_recovery: self.connection_recovery,
+                history: None,
             },
         )
     }
@@ -721,6 +722,7 @@ impl Clone for MySQLAppManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sockudo_core::app::AppHistoryConfig;
     use std::time::Duration;
 
     fn create_test_app(id: &str) -> App {
@@ -755,6 +757,7 @@ mod tests {
                 webhooks: None,
                 idempotency: None,
                 connection_recovery: None,
+                history: None,
             },
         )
     }
@@ -837,5 +840,50 @@ mod tests {
 
         // Cleanup
         manager.delete_app("test2").await.unwrap();
+    }
+
+    #[test]
+    fn app_row_policy_blob_round_trip_preserves_history_policy() {
+        let row = AppRow {
+            id: "app".to_string(),
+            key: "key".to_string(),
+            secret: "secret".to_string(),
+            max_connections: 1,
+            enable_client_messages: false,
+            enabled: true,
+            max_backend_events_per_second: None,
+            max_client_events_per_second: 1,
+            max_read_requests_per_second: None,
+            max_presence_members_per_channel: None,
+            max_presence_member_size_in_kb: None,
+            max_channel_name_length: None,
+            max_event_channels_at_once: None,
+            max_event_name_length: None,
+            max_event_payload_in_kb: None,
+            max_event_batch_size: None,
+            enable_user_authentication: None,
+            enable_watchlist_events: None,
+            policy: Some(sockudo_core::app::AppPolicy {
+                history: Some(AppHistoryConfig {
+                    enabled: Some(true),
+                    rewind_enabled: Some(false),
+                    retention_window_seconds: Some(45),
+                    max_messages_per_channel: Some(5),
+                    max_bytes_per_channel: Some(2048),
+                }),
+                ..Default::default()
+            }),
+            webhooks: None,
+            allowed_origins: None,
+            channel_delta_compression: None,
+            idempotency: None,
+            connection_recovery: None,
+        };
+
+        let app = row.into_app();
+        let history = app.policy.history.unwrap();
+        assert_eq!(history.enabled, Some(true));
+        assert_eq!(history.rewind_enabled, Some(false));
+        assert_eq!(history.max_messages_per_channel, Some(5));
     }
 }

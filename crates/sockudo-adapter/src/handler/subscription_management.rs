@@ -5,8 +5,8 @@ use crate::channel_manager::ChannelManager;
 use crate::channel_manager::JoinResponse;
 use sockudo_core::app::App;
 use sockudo_core::channel::{ChannelType, PresenceMemberInfo};
-use sockudo_core::history::{HistoryDirection, HistoryItem, HistoryReadRequest, now_ms};
 use sockudo_core::error::Result;
+use sockudo_core::history::{HistoryDirection, HistoryItem, HistoryReadRequest, now_ms};
 #[cfg(feature = "delta")]
 use sockudo_delta::DeltaCompressionManager;
 
@@ -289,7 +289,8 @@ impl ConnectionHandler {
                 }
             }
 
-            self.rewind_subscription(socket_id, app_config, request).await?;
+            self.rewind_subscription(socket_id, app_config, request)
+                .await?;
         } else {
             // CRITICAL: Send subscription success to client FIRST (before any other work)
             // This ensures the client gets immediate feedback
@@ -437,7 +438,16 @@ impl ConnectionHandler {
             .await
             .ok_or(sockudo_core::error::Error::ConnectionNotFound)?;
 
-        let max_page_size = self.server_options().history.max_page_size;
+        let history_policy =
+            app_config.resolved_history(&request.channel, &self.server_options().history);
+        if !history_policy.rewind_allowed() {
+            return Err(sockudo_core::error::Error::Channel(format!(
+                "Channel rewind is disabled by policy for channel '{}'",
+                request.channel
+            )));
+        }
+
+        let max_page_size = history_policy.max_page_size;
         let page = self
             .history_store()
             .read_page(build_rewind_history_read_request(
@@ -450,20 +460,21 @@ impl ConnectionHandler {
 
         let items = normalize_rewind_items_for_delivery(rewind, page.items);
 
-        let history_head_serial = items.last().map(|item| item.serial).or(page.retained.newest_serial);
+        let history_head_serial = items
+            .last()
+            .map(|item| item.serial)
+            .or(page.retained.newest_serial);
         let delivered_message_ids = items
             .iter()
             .filter_map(|item| item.message_id.clone())
             .collect::<HashSet<_>>();
 
-        self.send_rewind_history_items(socket_id, app_config, &items).await?;
+        self.send_rewind_history_items(socket_id, app_config, &items)
+            .await?;
 
         let buffered = connection.finish_rewind_gate(&request.channel).await;
-        let live_messages = filter_buffered_rewind_messages(
-            buffered,
-            history_head_serial,
-            &delivered_message_ids,
-        );
+        let live_messages =
+            filter_buffered_rewind_messages(buffered, history_head_serial, &delivered_message_ids);
         let live_count = live_messages.len();
         for message in live_messages {
             self.send_message_to_socket(&app_config.id, socket_id, message)
@@ -885,9 +896,8 @@ fn filter_buffered_rewind_messages(
     buffered
         .into_iter()
         .filter(|message| {
-            let after_history_head = history_head_serial.is_none_or(|head| {
-                message.serial.is_none_or(|serial| serial > head)
-            });
+            let after_history_head = history_head_serial
+                .is_none_or(|head| message.serial.is_none_or(|serial| serial > head));
             let not_duplicate = message
                 .message_id
                 .as_ref()
@@ -981,12 +991,8 @@ mod rewind_tests {
 
     #[test]
     fn rewind_count_builds_newest_first_request() {
-        let request = build_rewind_history_read_request(
-            "app",
-            "chat",
-            &SubscriptionRewind::Count(10),
-            100,
-        );
+        let request =
+            build_rewind_history_read_request("app", "chat", &SubscriptionRewind::Count(10), 100);
         assert_eq!(request.direction, HistoryDirection::NewestFirst);
         assert_eq!(request.limit, 10);
         assert_eq!(request.bounds.start_time_ms, None);
@@ -994,12 +1000,8 @@ mod rewind_tests {
 
     #[test]
     fn rewind_duration_builds_time_bounded_request() {
-        let request = build_rewind_history_read_request(
-            "app",
-            "chat",
-            &SubscriptionRewind::Seconds(30),
-            100,
-        );
+        let request =
+            build_rewind_history_read_request("app", "chat", &SubscriptionRewind::Seconds(30), 100);
         assert_eq!(request.direction, HistoryDirection::OldestFirst);
         assert_eq!(request.limit, 100);
         assert!(request.bounds.start_time_ms.is_some());
@@ -1030,8 +1032,7 @@ mod rewind_tests {
             },
         ];
 
-        let reordered =
-            normalize_rewind_items_for_delivery(&SubscriptionRewind::Count(2), items);
+        let reordered = normalize_rewind_items_for_delivery(&SubscriptionRewind::Count(2), items);
         assert_eq!(reordered[0].serial, 4);
         assert_eq!(reordered[1].serial, 5);
     }

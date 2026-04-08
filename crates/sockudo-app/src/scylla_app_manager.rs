@@ -393,6 +393,7 @@ impl AppRow {
                         })
                         .ok()
                 }),
+                history: None,
             },
         )
     }
@@ -572,6 +573,7 @@ impl AppManager for ScyllaDbAppManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sockudo_core::app::AppHistoryConfig;
     use std::env;
 
     fn create_test_config() -> ScyllaDbConfig {
@@ -634,6 +636,7 @@ mod tests {
                 webhooks: None,
                 idempotency: None,
                 connection_recovery: None,
+                history: None,
             },
         )
     }
@@ -709,6 +712,7 @@ mod tests {
                 webhooks: Some(webhooks),
                 idempotency: None,
                 connection_recovery: None,
+                history: None,
             },
         )
     }
@@ -924,5 +928,53 @@ mod tests {
 
         let result = manager.check_health().await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn app_row_policy_blob_round_trip_preserves_history_policy() {
+        let row = AppRow {
+            id: "app".to_string(),
+            key: "key".to_string(),
+            secret: "secret".to_string(),
+            enabled: true,
+            policy: Some(
+                sonic_rs::to_string(&AppPolicy {
+                    history: Some(AppHistoryConfig {
+                        enabled: Some(true),
+                        rewind_enabled: Some(false),
+                        retention_window_seconds: Some(45),
+                        max_messages_per_channel: Some(5),
+                        max_bytes_per_channel: Some(2048),
+                    }),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            max_connections: None,
+            enable_client_messages: None,
+            max_backend_events_per_second: None,
+            max_client_events_per_second: None,
+            max_read_requests_per_second: None,
+            max_presence_members_per_channel: None,
+            max_presence_member_size_in_kb: None,
+            max_channel_name_length: None,
+            max_event_channels_at_once: None,
+            max_event_name_length: None,
+            max_event_payload_in_kb: None,
+            max_event_batch_size: None,
+            enable_user_authentication: None,
+            enable_watchlist_events: None,
+            webhooks: None,
+            allowed_origins: None,
+            channel_delta_compression: None,
+            idempotency: None,
+            connection_recovery: None,
+        };
+
+        let app = row.into_app();
+        let history = app.policy.history.unwrap();
+        assert_eq!(history.enabled, Some(true));
+        assert_eq!(history.rewind_enabled, Some(false));
+        assert_eq!(history.max_messages_per_channel, Some(5));
     }
 }

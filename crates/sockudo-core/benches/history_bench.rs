@@ -1,8 +1,8 @@
 use bytes::Bytes;
 use criterion::{Criterion, criterion_group, criterion_main};
 use sockudo_core::history::{
-    HistoryAppendRecord, HistoryDirection, HistoryQueryBounds, HistoryReadRequest,
-    HistoryStore, MemoryHistoryStore, MemoryHistoryStoreConfig,
+    HistoryAppendRecord, HistoryDirection, HistoryQueryBounds, HistoryReadRequest, HistoryStore,
+    MemoryHistoryStore, MemoryHistoryStoreConfig,
 };
 use tokio::runtime::Runtime;
 
@@ -24,6 +24,11 @@ fn seed_history(store: &MemoryHistoryStore, rt: &Runtime, count: u64) {
             event_name: Some("evt".to_string()),
             operation_kind: "append".to_string(),
             payload_bytes: Bytes::from_static(br#"{"event":"evt","data":"payload"}"#),
+            retention: sockudo_core::history::HistoryRetentionPolicy {
+                retention_window_seconds: 3600,
+                max_messages_per_channel: None,
+                max_bytes_per_channel: None,
+            },
         }))
         .expect("append");
     }
@@ -59,6 +64,25 @@ fn bench_history_reads(c: &mut Criterion) {
                 limit: 100,
                 cursor: None,
                 bounds: HistoryQueryBounds::default(),
+            }))
+            .expect("read page")
+        });
+    });
+
+    group.bench_function("oldest_first_large_gap_page_100", |b| {
+        b.iter(|| {
+            rt.block_on(store.read_page(HistoryReadRequest {
+                app_id: "bench-app".to_string(),
+                channel: "bench-channel".to_string(),
+                direction: HistoryDirection::OldestFirst,
+                limit: 100,
+                cursor: None,
+                bounds: HistoryQueryBounds {
+                    start_serial: Some(9_000),
+                    end_serial: None,
+                    start_time_ms: None,
+                    end_time_ms: None,
+                },
             }))
             .expect("read page")
         });
