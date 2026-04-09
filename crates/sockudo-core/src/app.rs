@@ -1,5 +1,8 @@
 use crate::history::HistoryRetentionPolicy;
-use crate::options::{ConnectionRecoveryConfig, HistoryConfig, IdempotencyConfig};
+use crate::options::{
+    ConnectionRecoveryConfig, HistoryConfig, IdempotencyConfig, PresenceHistoryConfig,
+};
+use crate::presence_history::PresenceHistoryRetentionPolicy;
 use crate::webhook_types::Webhook;
 use ahash::AHashMap;
 use async_trait::async_trait;
@@ -19,6 +22,7 @@ pub struct AppPolicy {
     pub idempotency: Option<AppIdempotencyConfig>,
     pub connection_recovery: Option<AppConnectionRecoveryConfig>,
     pub history: Option<AppHistoryConfig>,
+    pub presence_history: Option<AppPresenceHistoryConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -123,6 +127,30 @@ pub struct NamespaceHistoryConfig {
     pub max_bytes_per_channel: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct AppPresenceHistoryConfig {
+    pub enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub retention_window_seconds: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub max_events_per_channel: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub max_bytes_per_channel: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct NamespacePresenceHistoryConfig {
+    pub enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub retention_window_seconds: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub max_events_per_channel: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
+    pub max_bytes_per_channel: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct AppPolicyRef<'a> {
     pub limits: AppLimitsPolicyRef,
@@ -132,6 +160,7 @@ pub struct AppPolicyRef<'a> {
     pub idempotency: Option<&'a AppIdempotencyConfig>,
     pub connection_recovery: Option<&'a AppConnectionRecoveryConfig>,
     pub history: Option<&'a AppHistoryConfig>,
+    pub presence_history: Option<&'a AppPresenceHistoryConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +184,26 @@ impl ResolvedHistoryPolicy {
         HistoryRetentionPolicy {
             retention_window_seconds: self.retention_window_seconds,
             max_messages_per_channel: self.max_messages_per_channel,
+            max_bytes_per_channel: self.max_bytes_per_channel,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedPresenceHistoryPolicy {
+    pub enabled: bool,
+    pub max_page_size: usize,
+    pub retention_window_seconds: u64,
+    pub max_events_per_channel: Option<usize>,
+    pub max_bytes_per_channel: Option<u64>,
+}
+
+impl ResolvedPresenceHistoryPolicy {
+    #[inline]
+    pub fn retention(self) -> PresenceHistoryRetentionPolicy {
+        PresenceHistoryRetentionPolicy {
+            retention_window_seconds: self.retention_window_seconds,
+            max_events_per_channel: self.max_events_per_channel,
             max_bytes_per_channel: self.max_bytes_per_channel,
         }
     }
@@ -262,6 +311,7 @@ impl App {
             idempotency: self.policy.idempotency.as_ref(),
             connection_recovery: self.policy.connection_recovery.as_ref(),
             history: self.policy.history.as_ref(),
+            presence_history: self.policy.presence_history.as_ref(),
         }
     }
 
@@ -404,6 +454,11 @@ impl App {
     }
 
     #[inline]
+    pub fn presence_history_override(&self) -> Option<&AppPresenceHistoryConfig> {
+        self.policy.presence_history.as_ref()
+    }
+
+    #[inline]
     pub fn namespace_for_channel(&self, channel: &str) -> Option<&ChannelNamespace> {
         let namespace_name = crate::utils::channel_namespace_name(channel)?;
         self.namespaces()?
@@ -464,6 +519,38 @@ impl App {
                 .and_then(|config| config.max_messages_per_channel)
                 .or_else(|| app_config.and_then(|config| config.max_messages_per_channel))
                 .or(global.max_messages_per_channel),
+            max_bytes_per_channel: namespace_config
+                .and_then(|config| config.max_bytes_per_channel)
+                .or_else(|| app_config.and_then(|config| config.max_bytes_per_channel))
+                .or(global.max_bytes_per_channel),
+        }
+    }
+
+    #[inline]
+    pub fn resolved_presence_history(
+        &self,
+        channel: &str,
+        global: &PresenceHistoryConfig,
+    ) -> ResolvedPresenceHistoryPolicy {
+        let app_config = self.presence_history_override();
+        let namespace_config = self
+            .namespace_for_channel(channel)
+            .and_then(|namespace| namespace.presence_history.as_ref());
+
+        ResolvedPresenceHistoryPolicy {
+            enabled: namespace_config
+                .and_then(|config| config.enabled)
+                .or_else(|| app_config.and_then(|config| config.enabled))
+                .unwrap_or(global.enabled),
+            max_page_size: global.max_page_size,
+            retention_window_seconds: namespace_config
+                .and_then(|config| config.retention_window_seconds)
+                .or_else(|| app_config.and_then(|config| config.retention_window_seconds))
+                .unwrap_or(global.retention_window_seconds),
+            max_events_per_channel: namespace_config
+                .and_then(|config| config.max_events_per_channel)
+                .or_else(|| app_config.and_then(|config| config.max_events_per_channel))
+                .or(global.max_events_per_channel),
             max_bytes_per_channel: namespace_config
                 .and_then(|config| config.max_bytes_per_channel)
                 .or_else(|| app_config.and_then(|config| config.max_bytes_per_channel))
@@ -581,6 +668,7 @@ impl<'de> Deserialize<'de> for App {
                 idempotency: app.idempotency,
                 connection_recovery: app.connection_recovery,
                 history: None,
+                presence_history: None,
             },
         ))
     }
@@ -602,6 +690,8 @@ pub struct ChannelNamespace {
     pub allow_presence_for_client: Option<bool>,
     #[serde(default)]
     pub history: Option<NamespaceHistoryConfig>,
+    #[serde(default)]
+    pub presence_history: Option<NamespacePresenceHistoryConfig>,
 }
 
 impl ChannelNamespace {
@@ -803,6 +893,7 @@ mod tests {
             allow_publish_for_client: None,
             allow_presence_for_client: None,
             history: None,
+            presence_history: None,
         };
         assert!(ns.validate().is_err());
     }
@@ -848,6 +939,7 @@ mod tests {
                     allow_publish_for_client: Some(true),
                     allow_presence_for_client: Some(true),
                     history: None,
+                    presence_history: None,
                 }]),
             },
             webhooks: None,
@@ -867,6 +959,7 @@ mod tests {
                 max_messages_per_channel: Some(10),
                 max_bytes_per_channel: Some(1024),
             }),
+            presence_history: None,
         };
 
         let app = App::from_policy(
@@ -977,6 +1070,7 @@ mod tests {
                             max_messages_per_channel: Some(8),
                             max_bytes_per_channel: Some(4096),
                         }),
+                        presence_history: None,
                     }]),
                     ..Default::default()
                 },

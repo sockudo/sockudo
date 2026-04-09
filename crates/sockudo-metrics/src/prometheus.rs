@@ -100,6 +100,16 @@ pub struct PrometheusMetricsDriver {
     history_reset_required_channels: GaugeVec,
     history_recovery_success_total: CounterVec,
     history_recovery_failures_total: CounterVec,
+    presence_history_writes_total: CounterVec,
+    presence_history_write_failures_total: CounterVec,
+    presence_history_write_latency_ms: HistogramVec,
+    presence_history_retained_events: GaugeVec,
+    presence_history_retained_bytes: GaugeVec,
+    presence_history_evictions_total: CounterVec,
+    presence_history_evicted_bytes_total: CounterVec,
+    presence_history_queue_depth: GaugeVec,
+    presence_history_degraded_channels: GaugeVec,
+    presence_history_reset_required_channels: GaugeVec,
     // Redis Cluster transport metrics
     redis_cluster_channel_queue_size: GaugeVec,
     redis_cluster_channel_messages_dropped: CounterVec,
@@ -608,6 +618,97 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let presence_history_writes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_writes_total"),
+                "Total number of presence-history writes"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_write_failures_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_write_failures_total"),
+                "Total number of presence-history write failures"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_write_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}presence_history_write_latency_ms"),
+                "Presence-history write latency in milliseconds",
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_retained_events = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_retained_events"),
+                "Current number of retained presence-history events"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_retained_bytes = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_retained_bytes"),
+                "Current number of retained presence-history bytes"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_evictions_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_evictions_total"),
+                "Total number of presence-history events evicted"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_evicted_bytes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_evicted_bytes_total"),
+                "Total number of presence-history bytes evicted"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_queue_depth = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_queue_depth"),
+                "Current presence-history writer queue depth"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_degraded_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_degraded_channels"),
+                "Current number of degraded presence-history channels"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_reset_required_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_reset_required_channels"),
+                "Current number of reset-required presence-history channels"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
         // Redis Cluster transport metrics
         let redis_cluster_channel_queue_size = register_gauge_vec!(
             Opts::new(
@@ -644,6 +745,11 @@ impl PrometheusMetricsDriver {
         history_queue_depth.reset();
         history_degraded_channels.reset();
         history_reset_required_channels.reset();
+        presence_history_retained_events.reset();
+        presence_history_retained_bytes.reset();
+        presence_history_queue_depth.reset();
+        presence_history_degraded_channels.reset();
+        presence_history_reset_required_channels.reset();
         redis_cluster_channel_queue_size.reset();
 
         // Set process start time
@@ -712,6 +818,16 @@ impl PrometheusMetricsDriver {
             history_reset_required_channels,
             history_recovery_success_total,
             history_recovery_failures_total,
+            presence_history_writes_total,
+            presence_history_write_failures_total,
+            presence_history_write_latency_ms,
+            presence_history_retained_events,
+            presence_history_retained_bytes,
+            presence_history_evictions_total,
+            presence_history_evicted_bytes_total,
+            presence_history_queue_depth,
+            presence_history_degraded_channels,
+            presence_history_reset_required_channels,
             redis_cluster_channel_queue_size,
             redis_cluster_channel_messages_dropped,
             redis_cluster_reconnections_total,
@@ -1295,6 +1411,68 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.history_recovery_failures_total
             .with_label_values(&[app_id, &self.port.to_string(), code])
             .inc();
+    }
+
+    fn mark_presence_history_write(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_writes_total
+            .with_label_values(&tags)
+            .inc();
+    }
+
+    fn track_presence_history_write_latency(&self, app_id: &str, latency_ms: f64) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_write_latency_ms
+            .with_label_values(&tags)
+            .observe(latency_ms);
+    }
+
+    fn mark_presence_history_write_failure(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_write_failures_total
+            .with_label_values(&tags)
+            .inc();
+    }
+
+    fn update_presence_history_retained(&self, app_id: &str, events: u64, bytes: u64) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_retained_events
+            .with_label_values(&tags)
+            .set(events as f64);
+        self.presence_history_retained_bytes
+            .with_label_values(&tags)
+            .set(bytes as f64);
+    }
+
+    fn mark_presence_history_eviction(&self, app_id: &str, events: u64, bytes: u64) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_evictions_total
+            .with_label_values(&tags)
+            .inc_by(events as f64);
+        self.presence_history_evicted_bytes_total
+            .with_label_values(&tags)
+            .inc_by(bytes as f64);
+    }
+
+    fn update_presence_history_queue_depth(&self, app_id: &str, depth: usize) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_queue_depth
+            .with_label_values(&tags)
+            .set(depth as f64);
+    }
+
+    fn update_presence_history_degraded_channels(&self, app_id: &str, count: usize) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_degraded_channels
+            .with_label_values(&tags)
+            .set(count as f64);
+    }
+
+    fn update_presence_history_reset_required_channels(&self, app_id: &str, count: usize) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_reset_required_channels
+            .with_label_values(&tags)
+            .set(count as f64);
     }
 
     async fn get_metrics_as_plaintext(&self) -> String {

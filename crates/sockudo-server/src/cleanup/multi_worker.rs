@@ -2,6 +2,8 @@ use super::{CleanupConfig, CleanupSenderHandle, WorkerThreadsResolve, worker::Cl
 use crossfire::mpsc;
 use sockudo_adapter::connection_manager::ConnectionManager;
 use sockudo_core::app::AppManager;
+use sockudo_core::options::PresenceHistoryConfig;
+use sockudo_core::presence_history::PresenceHistoryStore;
 use sockudo_webhook::WebhookIntegration;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -18,6 +20,8 @@ impl MultiWorkerCleanupSystem {
         connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
+        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+        presence_history_config: PresenceHistoryConfig,
         config: CleanupConfig,
     ) -> Self {
         let num_workers = config.worker_threads.resolve();
@@ -39,6 +43,8 @@ impl MultiWorkerCleanupSystem {
                 connection_manager.clone(),
                 app_manager.clone(),
                 webhook_integration.clone(),
+                presence_history_store.clone(),
+                presence_history_config.clone(),
                 worker_config.clone(),
             );
 

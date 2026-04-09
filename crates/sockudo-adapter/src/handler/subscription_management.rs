@@ -636,16 +636,24 @@ impl ConnectionHandler {
         subscription_result: &SubscriptionResult,
     ) -> Result<()> {
         if let Some(ref presence_member) = subscription_result.member {
+            let presence_history_policy = app_config.resolved_presence_history(
+                &request.channel,
+                &self.server_options().presence_history,
+            );
             // Use centralized presence member addition logic (instance method for race safety)
             self.presence_manager
                 .handle_member_added(
                     Arc::clone(&self.connection_manager),
+                    Arc::clone(self.presence_history_store()),
+                    presence_history_policy.enabled,
                     self.webhook_integration.as_ref(),
+                    self.metrics.as_ref(),
                     app_config,
                     &request.channel,
                     &presence_member.user_id,
                     Some(&presence_member.user_info),
                     Some(socket_id),
+                    Some(presence_history_policy.retention()),
                 )
                 .await?;
 

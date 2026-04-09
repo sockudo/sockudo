@@ -445,6 +445,7 @@ mod tests {
             allow_publish_for_client: None,
             allow_presence_for_client: None,
             history: None,
+            presence_history: None,
         };
 
         let err =
@@ -466,6 +467,7 @@ mod tests {
             allow_publish_for_client: Some(false),
             allow_presence_for_client: None,
             history: None,
+            presence_history: None,
         };
 
         let err = validate_namespace_permission(&namespace, "private-chat:room-1", "publish")
@@ -580,6 +582,7 @@ mod tests {
                             max_messages_per_channel: None,
                             max_bytes_per_channel: None,
                         }),
+                        presence_history: None,
                     }]),
                     ..Default::default()
                 },

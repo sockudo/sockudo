@@ -15,6 +15,11 @@ use sockudo_core::history::{
     HistoryCursor, HistoryDirection, HistoryPurgeMode, HistoryPurgeRequest, HistoryQueryBounds,
     HistoryReadRequest,
 };
+use sockudo_core::presence_history::{
+    PresenceHistoryCursor, PresenceHistoryDirection, PresenceHistoryQueryBounds,
+    PresenceHistoryReadRequest, PresenceHistoryResetResult, PresenceHistoryStreamInspection,
+    PresenceHistoryStreamRuntimeState, PresenceSnapshotRequest,
+};
 use sockudo_core::utils::{self, validate_channel_name};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
@@ -55,41 +60,50 @@ pub enum AppError {
     PayloadTooLarge(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+    #[error("Feature disabled: {0}")]
+    FeatureDisabled(String),
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> AxumResponse {
-        let (status, error_message) = match &self {
-            AppError::AppNotFound(msg) => (StatusCode::NOT_FOUND, json!({ "error": msg })),
+        let (status, code, msg) = match &self {
+            AppError::AppNotFound(msg) => (StatusCode::NOT_FOUND, "app_not_found", msg.clone()),
             AppError::AppValidationFailed(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
+                (StatusCode::INTERNAL_SERVER_ERROR, "app_validation_failed", msg.clone())
             }
-            AppError::ApiAuthFailed(msg) => (StatusCode::UNAUTHORIZED, json!({ "error": msg })),
+            AppError::ApiAuthFailed(msg) => (StatusCode::UNAUTHORIZED, "auth_failed", msg.clone()),
             AppError::MissingChannelInfo => (
                 StatusCode::BAD_REQUEST,
-                json!({ "error": "Request must contain 'channels' (list) or 'channel' (string)" }),
+                "missing_channel_info",
+                "Request must contain 'channels' (list) or 'channel' (string)".to_string(),
             ),
             AppError::TerminationFailed(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
+                (StatusCode::INTERNAL_SERVER_ERROR, "termination_failed", msg.clone())
             }
             AppError::SerializationError(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("Internal error during serialization: {}", e) }),
+                "serialization_error",
+                format!("Internal error during serialization: {e}"),
             ),
             AppError::HeaderBuildError(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("Internal error building response: {}", e) }),
+                "header_build_error",
+                format!("Internal error building response: {e}"),
             ),
             AppError::InternalError(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": msg }))
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg.clone())
             }
-            AppError::LimitExceeded(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
+            AppError::LimitExceeded(msg) => (StatusCode::BAD_REQUEST, "limit_exceeded", msg.clone()),
             AppError::PayloadTooLarge(msg) => {
-                (StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": msg }))
+                (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", msg.clone())
             }
-            AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, json!({ "error": msg })),
+            AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, "invalid_input", msg.clone()),
+            AppError::FeatureDisabled(msg) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "feature_disabled", msg.clone())
+            }
         };
         error!(error.message = %self, status_code = %status, "HTTP request failed");
+        let error_message = json!({ "error": msg, "code": code, "status": status.as_u16() });
         (status, Json(error_message)).into_response()
     }
 }
@@ -133,7 +147,8 @@ pub struct ChannelsQuery {
     pub auth_params: EventQuery,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub struct HistoryQuery {
     pub limit: Option<usize>,
     pub direction: Option<String>,
@@ -142,6 +157,37 @@ pub struct HistoryQuery {
     pub end_serial: Option<u64>,
     pub start_time_ms: Option<i64>,
     pub end_time_ms: Option<i64>,
+    /// Ably-compatible alias for `start_time_ms`
+    pub start: Option<i64>,
+    /// Ably-compatible alias for `end_time_ms`
+    pub end: Option<i64>,
+}
+
+impl HistoryQuery {
+    pub fn resolved_start_time_ms(&self) -> Option<i64> {
+        self.start_time_ms.or(self.start)
+    }
+
+    pub fn resolved_end_time_ms(&self) -> Option<i64> {
+        self.end_time_ms.or(self.end)
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct PresenceSnapshotQuery {
+    /// Reconstruct membership as of this timestamp (inclusive)
+    pub at_time_ms: Option<i64>,
+    /// Ably-compatible alias for `at_time_ms`
+    pub at: Option<i64>,
+    /// Reconstruct membership as of this serial (inclusive)
+    pub at_serial: Option<u64>,
+}
+
+impl PresenceSnapshotQuery {
+    pub fn resolved_at_time_ms(&self) -> Option<i64> {
+        self.at_time_ms.or(self.at)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,12 +298,23 @@ struct GlobalStats {
 struct StatsResponse {
     memory: MemoryStats,
     history: HistoryStatusResponse,
+    presence_history: PresenceHistoryStatusResponse,
     totals: GlobalStats,
     apps: Vec<AppStats>,
 }
 
 #[derive(Serialize, Default)]
 struct HistoryStatusResponse {
+    enabled: bool,
+    backend: String,
+    state_authority: String,
+    degraded_channels: usize,
+    reset_required_channels: usize,
+    queue_depth: usize,
+}
+
+#[derive(Serialize, Default)]
+struct PresenceHistoryStatusResponse {
     enabled: bool,
     backend: String,
     state_authority: String,
@@ -301,6 +358,61 @@ fn build_history_stream_inspection_payload(
         },
         "state": build_history_stream_state_payload(&inspection.state),
     })
+}
+
+fn build_presence_history_stream_state_payload(state: &PresenceHistoryStreamRuntimeState) -> Value {
+    json!({
+        "stream_id": state.stream_id,
+        "durable_state": state.durable_state.as_str(),
+        "continuity_proven": state.continuity_proven,
+        "reset_required": state.reset_required,
+        "reason": state.reason,
+        "node_id": state.node_id,
+        "last_transition_at_ms": state.last_transition_at_ms,
+        "authoritative_source": state.authoritative_source,
+        "observed_source": state.observed_source,
+    })
+}
+
+fn build_presence_history_stream_inspection_payload(
+    inspection: &PresenceHistoryStreamInspection,
+) -> Value {
+    json!({
+        "stream_id": inspection.stream_id,
+        "next_serial": inspection.next_serial,
+        "retained": {
+            "stream_id": inspection.retained.stream_id,
+            "retained_events": inspection.retained.retained_events,
+            "retained_bytes": inspection.retained.retained_bytes,
+            "oldest_available_serial": inspection.retained.oldest_serial,
+            "newest_available_serial": inspection.retained.newest_serial,
+            "oldest_available_published_at_ms": inspection.retained.oldest_published_at_ms,
+            "newest_available_published_at_ms": inspection.retained.newest_published_at_ms,
+        },
+        "state": build_presence_history_stream_state_payload(&inspection.state),
+    })
+}
+
+fn parse_history_direction(raw: Option<&str>) -> Result<HistoryDirection, AppError> {
+    match raw.unwrap_or("newest_first").to_ascii_lowercase().as_str() {
+        "newest_first" | "backwards" | "reverse" => Ok(HistoryDirection::NewestFirst),
+        "oldest_first" | "forwards" | "forward" => Ok(HistoryDirection::OldestFirst),
+        other => Err(AppError::InvalidInput(format!(
+            "Invalid direction '{other}'. Accepted values: newest_first, oldest_first, backwards, forwards"
+        ))),
+    }
+}
+
+fn parse_presence_history_direction(
+    raw: Option<&str>,
+) -> Result<PresenceHistoryDirection, AppError> {
+    match raw.unwrap_or("newest_first").to_ascii_lowercase().as_str() {
+        "newest_first" | "backwards" | "reverse" => Ok(PresenceHistoryDirection::NewestFirst),
+        "oldest_first" | "forwards" | "forward" => Ok(PresenceHistoryDirection::OldestFirst),
+        other => Err(AppError::InvalidInput(format!(
+            "Invalid direction '{other}'. Accepted values: newest_first, oldest_first, backwards, forwards"
+        ))),
+    }
 }
 
 fn validate_history_destructive_request(
@@ -430,6 +542,11 @@ pub async fn stats(
         .runtime_status()
         .await
         .unwrap_or_default();
+    let presence_history_status = handler
+        .presence_history_store()
+        .runtime_status()
+        .await
+        .unwrap_or_default();
 
     let mut app_stats = Vec::new();
     let mut totals = GlobalStats::default();
@@ -497,6 +614,14 @@ pub async fn stats(
                 degraded_channels: history_status.degraded_channels,
                 reset_required_channels: history_status.reset_required_channels,
                 queue_depth: history_status.queue_depth,
+            },
+            presence_history: PresenceHistoryStatusResponse {
+                enabled: presence_history_status.enabled,
+                backend: presence_history_status.backend,
+                state_authority: presence_history_status.state_authority,
+                degraded_channels: presence_history_status.degraded_channels,
+                reset_required_channels: presence_history_status.reset_required_channels,
+                queue_depth: presence_history_status.queue_depth,
             },
             totals,
             apps: app_stats,
@@ -1384,27 +1509,12 @@ pub async fn channel_history(
 
     let history_policy = app.resolved_history(&channel_name, &handler.server_options().history);
     if !history_policy.enabled {
-        return Err(AppError::InvalidInput(format!(
-            "Durable history is disabled by policy for channel '{}'",
-            channel_name
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{channel_name}'"
         )));
     }
 
-    let direction = match query_params
-        .direction
-        .as_deref()
-        .unwrap_or("newest_first")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "newest_first" | "backwards" | "reverse" => HistoryDirection::NewestFirst,
-        "oldest_first" | "forwards" | "forward" => HistoryDirection::OldestFirst,
-        other => {
-            return Err(AppError::InvalidInput(format!(
-                "Invalid history direction: {other}"
-            )));
-        }
-    };
+    let direction = parse_history_direction(query_params.direction.as_deref())?;
 
     let limit = query_params
         .limit
@@ -1423,8 +1533,8 @@ pub async fn channel_history(
     let bounds = HistoryQueryBounds {
         start_serial: query_params.start_serial,
         end_serial: query_params.end_serial,
-        start_time_ms: query_params.start_time_ms,
-        end_time_ms: query_params.end_time_ms,
+        start_time_ms: query_params.resolved_start_time_ms(),
+        end_time_ms: query_params.resolved_end_time_ms(),
     };
     let stream_state = handler
         .history_store()
@@ -1490,6 +1600,290 @@ pub async fn channel_history(
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
+/// GET /apps/{app_id}/channels/{channel_name}/presence/history
+#[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
+pub async fn channel_presence_history(
+    Path((app_id, channel_name)): Path<(String, String)>,
+    Query(query_params): Query<HistoryQuery>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+
+    if !channel_name.starts_with("presence-") {
+        return Err(AppError::InvalidInput(
+            "Only presence channels support this endpoint".to_string(),
+        ));
+    }
+
+    let history_policy =
+        app.resolved_presence_history(&channel_name, &handler.server_options().presence_history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Presence history is disabled by policy for channel '{channel_name}'"
+        )));
+    }
+
+    let direction = parse_presence_history_direction(query_params.direction.as_deref())?;
+
+    let limit = query_params
+        .limit
+        .unwrap_or(history_policy.max_page_size)
+        .min(history_policy.max_page_size);
+    if limit == 0 {
+        return Err(AppError::InvalidInput(
+            "Presence history limit must be greater than 0".to_string(),
+        ));
+    }
+
+    let cursor = match query_params.cursor.as_deref() {
+        Some(encoded) => Some(PresenceHistoryCursor::decode(encoded)?),
+        None => None,
+    };
+    let bounds = PresenceHistoryQueryBounds {
+        start_serial: query_params.start_serial,
+        end_serial: query_params.end_serial,
+        start_time_ms: query_params.resolved_start_time_ms(),
+        end_time_ms: query_params.resolved_end_time_ms(),
+    };
+    let stream_state = handler
+        .presence_history_store()
+        .stream_runtime_state(&app_id, &channel_name)
+        .await?;
+
+    let page = handler
+        .presence_history_store()
+        .read_page(PresenceHistoryReadRequest {
+            app_id: app_id.clone(),
+            channel: channel_name.clone(),
+            direction,
+            limit,
+            cursor,
+            bounds: bounds.clone(),
+        })
+        .await?;
+
+    let mut items = Vec::with_capacity(page.items.len());
+    for item in page.items {
+        let presence_event: Value =
+            sonic_rs::from_slice(item.payload_bytes.as_ref()).map_err(|e| {
+                AppError::InternalError(format!("Failed to decode presence history payload: {e}"))
+            })?;
+        items.push(json!({
+            "stream_id": item.stream_id,
+            "serial": item.serial,
+            "published_at_ms": item.published_at_ms,
+            "event": item.event.as_str(),
+            "cause": item.cause.as_str(),
+            "user_id": item.user_id,
+            "connection_id": item.connection_id,
+            "dead_node_id": item.dead_node_id,
+            "payload_size_bytes": item.payload_size_bytes,
+            "presence_event": presence_event,
+        }));
+    }
+
+    let response_payload = json!({
+        "items": items,
+        "direction": direction.as_str(),
+        "limit": limit,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor.and_then(|cursor| cursor.encode().ok()),
+        "bounds": {
+            "start_serial": bounds.start_serial,
+            "end_serial": bounds.end_serial,
+            "start_time_ms": bounds.start_time_ms,
+            "end_time_ms": bounds.end_time_ms,
+        },
+        "continuity": {
+            "stream_id": page.retained.stream_id,
+            "oldest_available_serial": page.retained.oldest_serial,
+            "newest_available_serial": page.retained.newest_serial,
+            "oldest_available_published_at_ms": page.retained.oldest_published_at_ms,
+            "newest_available_published_at_ms": page.retained.newest_published_at_ms,
+            "retained_events": page.retained.retained_events,
+            "retained_bytes": page.retained.retained_bytes,
+            "degraded": page.degraded,
+            "complete": page.complete,
+            "truncated_by_retention": page.truncated_by_retention,
+        },
+        "stream_state": build_presence_history_stream_state_payload(&stream_state),
+    });
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
+/// GET /apps/{app_id}/channels/{channel_name}/presence/history/state
+#[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
+pub async fn channel_presence_history_state(
+    Path((app_id, channel_name)): Path<(String, String)>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+
+    if !channel_name.starts_with("presence-") {
+        return Err(AppError::InvalidInput(
+            "Only presence channels support this endpoint".to_string(),
+        ));
+    }
+
+    let history_policy =
+        app.resolved_presence_history(&channel_name, &handler.server_options().presence_history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Presence history is disabled by policy for channel '{channel_name}'"
+        )));
+    }
+
+    let stream_inspection = handler
+        .presence_history_store()
+        .stream_inspection(&app_id, &channel_name)
+        .await?;
+    let response_payload = json!({
+        "channel": channel_name,
+        "stream": build_presence_history_stream_inspection_payload(&stream_inspection),
+    });
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
+/// POST /apps/{app_id}/channels/{channel_name}/presence/history/reset
+#[instrument(skip(handler, body), fields(app_id = %app_id, channel = %channel_name))]
+pub async fn channel_presence_history_reset(
+    Path((app_id, channel_name)): Path<(String, String)>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    Json(body): Json<HistoryResetRequestBody>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+
+    if !channel_name.starts_with("presence-") {
+        return Err(AppError::InvalidInput(
+            "Only presence channels support this endpoint".to_string(),
+        ));
+    }
+
+    let history_policy =
+        app.resolved_presence_history(&channel_name, &handler.server_options().presence_history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Presence history is disabled by policy for channel '{channel_name}'"
+        )));
+    }
+
+    validate_history_destructive_request(
+        &channel_name,
+        &body.confirm_channel,
+        &body.confirm_operation,
+        "reset",
+        &body.reason,
+    )?;
+
+    let result: PresenceHistoryResetResult = handler
+        .presence_history_store()
+        .reset_stream(
+            &app_id,
+            &channel_name,
+            &body.reason,
+            body.requested_by.as_deref(),
+        )
+        .await?;
+
+    let response_payload = json!({
+        "ok": true,
+        "operation": "reset",
+        "channel": channel_name,
+        "reason": body.reason,
+        "requested_by": body.requested_by,
+        "previous_stream_id": result.previous_stream_id,
+        "new_stream_id": result.new_stream_id,
+        "purged_events": result.purged_events,
+        "purged_bytes": result.purged_bytes,
+        "stream": build_presence_history_stream_inspection_payload(&result.inspection),
+    });
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
+/// GET /apps/{app_id}/channels/{channel_name}/presence/history/snapshot
+///
+/// Reconstructs effective presence membership at a point in time by replaying
+/// retained history events. Without query params, returns the latest state
+/// derived from the retained event stream.
+#[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
+pub async fn channel_presence_history_snapshot(
+    Path((app_id, channel_name)): Path<(String, String)>,
+    Query(query_params): Query<PresenceSnapshotQuery>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+
+    if !channel_name.starts_with("presence-") {
+        return Err(AppError::InvalidInput(
+            "Only presence channels support this endpoint".to_string(),
+        ));
+    }
+
+    let history_policy =
+        app.resolved_presence_history(&channel_name, &handler.server_options().presence_history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Presence history is disabled by policy for channel '{channel_name}'"
+        )));
+    }
+
+    let snapshot = handler
+        .presence_history_store()
+        .snapshot_at(PresenceSnapshotRequest {
+            app_id: app_id.clone(),
+            channel: channel_name.clone(),
+            at_time_ms: query_params.resolved_at_time_ms(),
+            at_serial: query_params.at_serial,
+        })
+        .await?;
+
+    let members: Vec<Value> = snapshot
+        .members
+        .iter()
+        .map(|m| {
+            json!({
+                "user_id": m.user_id,
+                "last_event": m.last_event.as_str(),
+                "last_event_serial": m.last_event_serial,
+                "last_event_at_ms": m.last_event_at_ms,
+            })
+        })
+        .collect();
+
+    let response_payload = json!({
+        "channel": channel_name,
+        "members": members,
+        "member_count": snapshot.members.len(),
+        "events_replayed": snapshot.events_replayed,
+        "snapshot_serial": snapshot.snapshot_serial,
+        "snapshot_time_ms": snapshot.snapshot_time_ms,
+        "continuity": {
+            "stream_id": snapshot.retained.stream_id,
+            "oldest_available_serial": snapshot.retained.oldest_serial,
+            "newest_available_serial": snapshot.retained.newest_serial,
+            "oldest_available_published_at_ms": snapshot.retained.oldest_published_at_ms,
+            "newest_available_published_at_ms": snapshot.retained.newest_published_at_ms,
+            "retained_events": snapshot.retained.retained_events,
+            "retained_bytes": snapshot.retained.retained_bytes,
+            "complete": snapshot.complete,
+            "truncated_by_retention": snapshot.truncated_by_retention,
+        },
+    });
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
 /// GET /apps/{app_id}/channels/{channel_name}/history/state
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
 pub async fn channel_history_state(
@@ -1501,9 +1895,8 @@ pub async fn channel_history_state(
 
     let history_policy = app.resolved_history(&channel_name, &handler.server_options().history);
     if !history_policy.enabled {
-        return Err(AppError::InvalidInput(format!(
-            "Durable history is disabled by policy for channel '{}'",
-            channel_name
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{channel_name}'"
         )));
     }
 
@@ -1531,9 +1924,8 @@ pub async fn channel_history_reset(
     validate_channel_name(&app, &channel_name).await?;
     let history_policy = app.resolved_history(&channel_name, &handler.server_options().history);
     if !history_policy.enabled {
-        return Err(AppError::InvalidInput(format!(
-            "Durable history is disabled by policy for channel '{}'",
-            channel_name
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{channel_name}'"
         )));
     }
 
@@ -1583,9 +1975,8 @@ pub async fn channel_history_purge(
     validate_channel_name(&app, &channel_name).await?;
     let history_policy = app.resolved_history(&channel_name, &handler.server_options().history);
     if !history_policy.enabled {
-        return Err(AppError::InvalidInput(format!(
-            "Durable history is disabled by policy for channel '{}'",
-            channel_name
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{channel_name}'"
         )));
     }
 
@@ -1886,6 +2277,13 @@ mod tests {
     };
     use sockudo_core::namespace::Namespace;
     use sockudo_core::options::MemoryCacheOptions;
+    use sockudo_core::presence_history::{
+        MemoryPresenceHistoryStore, PresenceHistoryDurableState, PresenceHistoryEventCause,
+        PresenceHistoryEventKind, PresenceHistoryResetResult, PresenceHistoryRetentionPolicy,
+        PresenceHistoryRuntimeStatus, PresenceHistoryStore, PresenceHistoryStreamInspection,
+        PresenceHistoryStreamRuntimeState, PresenceHistoryTransitionRecord,
+        TrackingPresenceHistoryStore,
+    };
     use sockudo_protocol::messages::{MessageData, PusherMessage};
     use sonic_rs::JsonContainerTrait;
     use sonic_rs::JsonValueTrait;
@@ -1964,6 +2362,85 @@ mod tests {
                 .history_store(history_store)
                 .build(),
         )
+    }
+
+    fn test_presence_history_handler(max_page_size: usize) -> Arc<ConnectionHandler> {
+        test_presence_history_handler_with_store(
+            max_page_size,
+            Arc::new(MemoryPresenceHistoryStore::new(Default::default())),
+        )
+    }
+
+    fn test_presence_history_handler_with_memory_store(
+        max_page_size: usize,
+    ) -> (Arc<ConnectionHandler>, Arc<MemoryPresenceHistoryStore>) {
+        let store = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
+        (
+            test_presence_history_handler_with_store(max_page_size, store.clone()),
+            store,
+        )
+    }
+
+    fn test_presence_history_handler_with_store(
+        max_page_size: usize,
+        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+    ) -> Arc<ConnectionHandler> {
+        let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+        let adapter = Arc::new(LocalAdapter::new())
+            as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.presence_history.enabled = true;
+        options.presence_history.max_page_size = max_page_size;
+
+        Arc::new(
+            ConnectionHandlerBuilder::new(app_manager, adapter, cache, options)
+                .presence_history_store(presence_history_store)
+                .build(),
+        )
+    }
+
+    async fn seed_presence_history(
+        store: &Arc<MemoryPresenceHistoryStore>,
+        app_id: &str,
+        channel: &str,
+        count: usize,
+        base_ts: i64,
+    ) {
+        for index in 1..=count {
+            store
+                .record_transition(PresenceHistoryTransitionRecord {
+                    app_id: app_id.to_string(),
+                    channel: channel.to_string(),
+                    event_kind: if index % 2 == 0 {
+                        PresenceHistoryEventKind::MemberRemoved
+                    } else {
+                        PresenceHistoryEventKind::MemberAdded
+                    },
+                    cause: if index % 2 == 0 {
+                        PresenceHistoryEventCause::Disconnect
+                    } else {
+                        PresenceHistoryEventCause::Join
+                    },
+                    user_id: format!("user-{index}"),
+                    connection_id: Some(format!("socket-{index}")),
+                    user_info: Some(sonic_rs::json!({ "n": index })),
+                    dead_node_id: None,
+                    dedupe_key: format!("transition-{index}"),
+                    published_at_ms: base_ts + index as i64,
+                    retention: PresenceHistoryRetentionPolicy {
+                        retention_window_seconds: 3600,
+                        max_events_per_channel: None,
+                        max_bytes_per_channel: None,
+                    },
+                })
+                .await
+                .unwrap();
+        }
     }
 
     #[derive(Clone)]
@@ -2069,6 +2546,97 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct InspectablePresenceHistoryStore {
+        inner: Arc<MemoryPresenceHistoryStore>,
+        state: PresenceHistoryStreamRuntimeState,
+    }
+
+    #[async_trait]
+    impl PresenceHistoryStore for InspectablePresenceHistoryStore {
+        async fn record_transition(
+            &self,
+            record: PresenceHistoryTransitionRecord,
+        ) -> sockudo_core::error::Result<()> {
+            self.inner.record_transition(record).await
+        }
+
+        async fn read_page(
+            &self,
+            request: PresenceHistoryReadRequest,
+        ) -> sockudo_core::error::Result<sockudo_core::presence_history::PresenceHistoryPage>
+        {
+            let mut page = self.inner.read_page(request).await?;
+            if !self.state.continuity_proven {
+                page.complete = false;
+                page.degraded = true;
+            }
+            Ok(page)
+        }
+
+        async fn runtime_status(
+            &self,
+        ) -> sockudo_core::error::Result<PresenceHistoryRuntimeStatus> {
+            Ok(PresenceHistoryRuntimeStatus {
+                enabled: true,
+                backend: "memory".to_string(),
+                state_authority: "test_state".to_string(),
+                degraded_channels: usize::from(
+                    self.state.durable_state != PresenceHistoryDurableState::Healthy,
+                ),
+                reset_required_channels: usize::from(self.state.reset_required),
+                queue_depth: 0,
+            })
+        }
+
+        async fn stream_runtime_state(
+            &self,
+            _app_id: &str,
+            _channel: &str,
+        ) -> sockudo_core::error::Result<PresenceHistoryStreamRuntimeState> {
+            Ok(self.state.clone())
+        }
+
+        async fn stream_inspection(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<PresenceHistoryStreamInspection> {
+            Ok(PresenceHistoryStreamInspection {
+                app_id: app_id.to_string(),
+                channel: channel.to_string(),
+                stream_id: self.state.stream_id.clone(),
+                next_serial: Some(10),
+                retained: self
+                    .inner
+                    .read_page(PresenceHistoryReadRequest {
+                        app_id: app_id.to_string(),
+                        channel: channel.to_string(),
+                        direction: PresenceHistoryDirection::NewestFirst,
+                        limit: 1,
+                        cursor: None,
+                        bounds: PresenceHistoryQueryBounds::default(),
+                    })
+                    .await
+                    .map(|page| page.retained)
+                    .unwrap_or_default(),
+                state: self.state.clone(),
+            })
+        }
+
+        async fn reset_stream(
+            &self,
+            app_id: &str,
+            channel: &str,
+            reason: &str,
+            requested_by: Option<&str>,
+        ) -> sockudo_core::error::Result<PresenceHistoryResetResult> {
+            self.inner
+                .reset_stream(app_id, channel, reason, requested_by)
+                .await
+        }
+    }
+
     #[tokio::test]
     async fn stats_endpoint_returns_empty_totals_for_empty_server() {
         let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
@@ -2159,6 +2727,70 @@ mod tests {
             Some("disabled")
         );
         assert_eq!(json["history"]["reset_required_channels"].as_u64(), Some(0));
+        assert_eq!(
+            json["presence_history"]["state_authority"].as_str(),
+            Some("disabled")
+        );
+        assert_eq!(
+            json["presence_history"]["reset_required_channels"].as_u64(),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn stats_endpoint_reports_presence_history_health_summary() {
+        let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+        let adapter = Arc::new(LocalAdapter::new())
+            as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let inner = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
+        let presence_store = Arc::new(InspectablePresenceHistoryStore {
+            inner,
+            state: PresenceHistoryStreamRuntimeState {
+                app_id: "app-1".to_string(),
+                channel: "presence-room".to_string(),
+                stream_id: Some("presence-stream-9".to_string()),
+                durable_state: PresenceHistoryDurableState::ResetRequired,
+                continuity_proven: false,
+                reset_required: true,
+                reason: Some("presence_history_reset_required_after_write_failure".to_string()),
+                node_id: Some("node-a".to_string()),
+                last_transition_at_ms: Some(4321),
+                authoritative_source: "test_state".to_string(),
+                observed_source: "test_state".to_string(),
+            },
+        });
+
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.presence_history.enabled = true;
+
+        let handler = Arc::new(
+            ConnectionHandlerBuilder::new(app_manager, adapter, cache, options)
+                .presence_history_store(presence_store)
+                .build(),
+        );
+
+        let response = stats(State(handler)).await.unwrap().into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+
+        assert_eq!(
+            json["presence_history"]["state_authority"].as_str(),
+            Some("test_state")
+        );
+        assert_eq!(
+            json["presence_history"]["degraded_channels"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            json["presence_history"]["reset_required_channels"].as_u64(),
+            Some(1)
+        );
     }
 
     #[tokio::test]
@@ -2214,6 +2846,283 @@ mod tests {
             Some("shared_cache_hint")
         );
         assert_eq!(json["stream"]["next_serial"].as_u64(), Some(10));
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_state_endpoint_returns_authoritative_stream_state() {
+        let inner = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
+        seed_presence_history(
+            &inner,
+            "app-1",
+            "presence-room",
+            2,
+            sockudo_core::history::now_ms(),
+        )
+        .await;
+        let stateful_store = Arc::new(InspectablePresenceHistoryStore {
+            inner,
+            state: PresenceHistoryStreamRuntimeState {
+                app_id: "app-1".to_string(),
+                channel: "presence-room".to_string(),
+                stream_id: Some("presence-stream-9".to_string()),
+                durable_state: PresenceHistoryDurableState::ResetRequired,
+                continuity_proven: false,
+                reset_required: true,
+                reason: Some("presence_history_reset_required_after_write_failure".to_string()),
+                node_id: Some("node-a".to_string()),
+                last_transition_at_ms: Some(4321),
+                authoritative_source: "test_state".to_string(),
+                observed_source: "test_state".to_string(),
+            },
+        });
+        let handler = test_presence_history_handler_with_store(100, stateful_store);
+        let app = test_app();
+
+        let response = channel_presence_history_state(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+
+        assert_eq!(
+            json["stream"]["state"]["durable_state"].as_str(),
+            Some("reset_required")
+        );
+        assert_eq!(
+            json["stream"]["state"]["continuity_proven"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            json["stream"]["state"]["reset_required"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            json["stream"]["state"]["reason"].as_str(),
+            Some("presence_history_reset_required_after_write_failure")
+        );
+        assert_eq!(json["stream"]["next_serial"].as_u64(), Some(10));
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_reports_degraded_stream_fail_closed() {
+        let inner = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
+        seed_presence_history(
+            &inner,
+            "app-1",
+            "presence-room",
+            2,
+            sockudo_core::history::now_ms(),
+        )
+        .await;
+        let stateful_store = Arc::new(InspectablePresenceHistoryStore {
+            inner,
+            state: PresenceHistoryStreamRuntimeState {
+                app_id: "app-1".to_string(),
+                channel: "presence-room".to_string(),
+                stream_id: Some("presence-stream-9".to_string()),
+                durable_state: PresenceHistoryDurableState::Degraded,
+                continuity_proven: false,
+                reset_required: false,
+                reason: Some("presence_history_write_failed".to_string()),
+                node_id: Some("node-a".to_string()),
+                last_transition_at_ms: Some(1234),
+                authoritative_source: "test_state".to_string(),
+                observed_source: "test_state".to_string(),
+            },
+        });
+        let handler = test_presence_history_handler_with_store(100, stateful_store);
+        let app = test_app();
+
+        let response = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("newest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["continuity"]["degraded"].as_bool(), Some(true));
+        assert_eq!(json["continuity"]["complete"].as_bool(), Some(false));
+        assert_eq!(
+            json["stream_state"]["durable_state"].as_str(),
+            Some("degraded")
+        );
+        assert_eq!(
+            json["stream_state"]["continuity_proven"].as_bool(),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_reset_rotates_stream_and_purges_history() {
+        let inner = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
+        seed_presence_history(
+            &inner,
+            "app-1",
+            "presence-room",
+            2,
+            sockudo_core::history::now_ms(),
+        )
+        .await;
+        let tracked = Arc::new(TrackingPresenceHistoryStore::new(
+            inner.clone(),
+            None,
+            "in_memory",
+        ));
+        let handler = test_presence_history_handler_with_store(100, tracked.clone());
+        let app = test_app();
+
+        let before = tracked
+            .stream_inspection("app-1", "presence-room")
+            .await
+            .unwrap();
+        let previous_stream_id = before.stream_id.clone().unwrap();
+
+        let response = channel_presence_history_reset(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Extension(app),
+            State(handler),
+            Json(HistoryResetRequestBody {
+                confirm_channel: "presence-room".to_string(),
+                confirm_operation: "reset".to_string(),
+                reason: "operator cleanup".to_string(),
+                requested_by: Some("ops".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["operation"].as_str(), Some("reset"));
+        assert_eq!(
+            json["previous_stream_id"].as_str(),
+            Some(previous_stream_id.as_str())
+        );
+        assert_ne!(
+            json["new_stream_id"].as_str(),
+            Some(previous_stream_id.as_str())
+        );
+        assert_eq!(json["purged_events"].as_u64(), Some(2));
+        assert_eq!(
+            json["stream"]["retained"]["retained_events"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            json["stream"]["state"]["durable_state"].as_str(),
+            Some("healthy")
+        );
+    }
+
+    #[tokio::test]
+    async fn dead_node_cleanup_replay_does_not_duplicate_presence_history_rows() {
+        let app = test_app();
+        let app_manager = Arc::new(MemoryAppManager::new());
+        app_manager.create_app(app.clone()).await.unwrap();
+        let adapter = Arc::new(LocalAdapter::new())
+            as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let store = Arc::new(MemoryPresenceHistoryStore::new(Default::default()));
+
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.presence_history.enabled = true;
+
+        let handler = Arc::new(
+            ConnectionHandlerBuilder::new(app_manager, adapter, cache, options)
+                .presence_history_store(store.clone())
+                .build(),
+        );
+
+        store
+            .record_transition(PresenceHistoryTransitionRecord {
+                app_id: "app-1".to_string(),
+                channel: "presence-room".to_string(),
+                event_kind: PresenceHistoryEventKind::MemberAdded,
+                cause: PresenceHistoryEventCause::Join,
+                user_id: "user-1".to_string(),
+                connection_id: Some("socket-1".to_string()),
+                user_info: Some(sonic_rs::json!({ "name": "Ada" })),
+                dead_node_id: None,
+                dedupe_key: "join-1".to_string(),
+                published_at_ms: sockudo_core::history::now_ms(),
+                retention: PresenceHistoryRetentionPolicy {
+                    retention_window_seconds: 3600,
+                    max_events_per_channel: None,
+                    max_bytes_per_channel: None,
+                },
+            })
+            .await
+            .unwrap();
+
+        let cleanup_event = sockudo_adapter::horizontal_adapter::DeadNodeEvent {
+            dead_node_id: "dead-node".to_string(),
+            orphaned_members: vec![sockudo_adapter::horizontal_adapter::OrphanedMember {
+                app_id: "app-1".to_string(),
+                channel: "presence-room".to_string(),
+                user_id: "user-1".to_string(),
+                user_info: Some(sonic_rs::json!({ "name": "Ada" })),
+            }],
+        };
+
+        handler
+            .handle_dead_node_cleanup(cleanup_event.clone())
+            .await
+            .unwrap();
+        handler
+            .handle_dead_node_cleanup(cleanup_event)
+            .await
+            .unwrap();
+
+        let page = store
+            .read_page(PresenceHistoryReadRequest {
+                app_id: "app-1".to_string(),
+                channel: "presence-room".to_string(),
+                direction: PresenceHistoryDirection::OldestFirst,
+                limit: 10,
+                cursor: None,
+                bounds: PresenceHistoryQueryBounds::default(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].event, PresenceHistoryEventKind::MemberAdded);
+        assert_eq!(page.items[1].event, PresenceHistoryEventKind::MemberRemoved);
+        assert_eq!(
+            page.items[1].cause,
+            PresenceHistoryEventCause::OrphanCleanup
+        );
     }
 
     #[tokio::test]
@@ -2415,6 +3324,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app),
             State(handler),
@@ -2470,6 +3380,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app.clone()),
             State(handler.clone()),
@@ -2497,6 +3408,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app.clone()),
             State(handler.clone()),
@@ -2523,6 +3435,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app),
             State(handler),
@@ -2565,6 +3478,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app),
             State(handler),
@@ -2606,6 +3520,7 @@ mod tests {
                 end_serial: Some(4),
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app),
             State(handler),
@@ -2655,6 +3570,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app),
             State(handler),
@@ -2699,6 +3615,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app),
             State(handler),
@@ -2710,7 +3627,7 @@ mod tests {
             Err(err) => err.into_response(),
         };
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
@@ -2739,6 +3656,7 @@ mod tests {
                         max_messages_per_channel: Some(3),
                         max_bytes_per_channel: None,
                     }),
+                    presence_history: None,
                 }]),
                 ..Default::default()
             },
@@ -2776,6 +3694,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app.clone()),
             State(handler.clone()),
@@ -2800,6 +3719,7 @@ mod tests {
                 end_serial: None,
                 start_time_ms: None,
                 end_time_ms: None,
+                ..Default::default()
             }),
             Extension(app),
             State(handler),
@@ -2816,5 +3736,445 @@ mod tests {
 
         assert_eq!(public_json["items"].as_array().unwrap().len(), 1);
         assert_eq!(namespaced_json["items"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_returns_presence_events() {
+        let (handler, store) = test_presence_history_handler_with_memory_store(100);
+        let app = test_app();
+        let base_ts = sockudo_core::history::now_ms();
+        seed_presence_history(&store, "app-1", "presence-room", 2, base_ts).await;
+
+        let response = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("newest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["items"].as_array().unwrap().len(), 2);
+        assert_eq!(json["items"][0]["event"].as_str(), Some("member_removed"));
+        assert_eq!(
+            json["items"][0]["presence_event"]["user_id"].as_str(),
+            Some("user-2")
+        );
+        assert_eq!(
+            json["continuity"]["stream_id"]
+                .as_str()
+                .map(|value| !value.is_empty()),
+            Some(true)
+        );
+        assert_eq!(json["continuity"]["retained_events"].as_u64(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_paginates_newest_first_and_oldest_first() {
+        let (handler, store) = test_presence_history_handler_with_memory_store(2);
+        let app = test_app();
+        let base_ts = sockudo_core::history::now_ms();
+        seed_presence_history(&store, "app-1", "presence-room", 4, base_ts).await;
+
+        let newest = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(2),
+                direction: Some("newest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+                ..Default::default()
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let newest_json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(newest.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(newest_json["items"][0]["serial"].as_u64(), Some(4));
+        assert_eq!(newest_json["items"][1]["serial"].as_u64(), Some(3));
+        let newest_cursor = newest_json["next_cursor"].as_str().unwrap().to_string();
+
+        let newest_page_2 = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(2),
+                direction: Some("newest_first".to_string()),
+                cursor: Some(newest_cursor),
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+                ..Default::default()
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let newest_page_2_json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(newest_page_2.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(newest_page_2_json["items"][0]["serial"].as_u64(), Some(2));
+        assert_eq!(newest_page_2_json["items"][1]["serial"].as_u64(), Some(1));
+
+        let oldest = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(2),
+                direction: Some("oldest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let oldest_json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(oldest.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(oldest_json["items"][0]["serial"].as_u64(), Some(1));
+        assert_eq!(oldest_json["items"][1]["serial"].as_u64(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_filters_by_serial_and_time() {
+        let (handler, store) = test_presence_history_handler_with_memory_store(100);
+        let app = test_app();
+        let base_ts = sockudo_core::history::now_ms();
+        seed_presence_history(&store, "app-1", "presence-room", 5, base_ts).await;
+
+        let response = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("oldest_first".to_string()),
+                cursor: None,
+                start_serial: Some(2),
+                end_serial: Some(4),
+                start_time_ms: Some(base_ts + 2),
+                end_time_ms: Some(base_ts + 4),
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(json["items"].as_array().unwrap().len(), 3);
+        assert_eq!(json["items"][0]["serial"].as_u64(), Some(2));
+        assert_eq!(json["items"][2]["serial"].as_u64(), Some(4));
+        assert_eq!(json["bounds"]["start_serial"].as_u64(), Some(2));
+        assert_eq!(json["bounds"]["end_serial"].as_u64(), Some(4));
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_rejects_non_presence_channels() {
+        let handler = test_presence_history_handler(100);
+        let app = test_app();
+
+        let response = channel_presence_history(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("newest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await;
+
+        let response = match response {
+            Ok(_) => panic!("expected non-presence channel request to fail"),
+            Err(err) => err.into_response(),
+        };
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_rejects_cursor_with_mismatched_bounds() {
+        let (handler, store) = test_presence_history_handler_with_memory_store(2);
+        let app = test_app();
+        let base_ts = sockudo_core::history::now_ms();
+        seed_presence_history(&store, "app-1", "presence-room", 3, base_ts).await;
+
+        let first_page = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(2),
+                direction: Some("newest_first".to_string()),
+                cursor: None,
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+                ..Default::default()
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let first_page_json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(first_page.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let cursor = first_page_json["next_cursor"].as_str().unwrap().to_string();
+
+        let response = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(2),
+                direction: Some("newest_first".to_string()),
+                cursor: Some(cursor),
+                start_serial: Some(2),
+                end_serial: None,
+                start_time_ms: None,
+                end_time_ms: None,
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await;
+
+        let response = match response {
+            Ok(_) => panic!("expected mismatched cursor bounds to fail"),
+            Err(err) => err.into_response(),
+        };
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_snapshot_reconstructs_membership() {
+        let (handler, store) = test_presence_history_handler_with_memory_store(100);
+        let app = test_app();
+        let base_ts = sockudo_core::history::now_ms();
+
+        // Seed: u1 joins, u2 joins, u1 leaves
+        seed_presence_history(&store, "app-1", "presence-room", 3, base_ts).await;
+
+        let response = channel_presence_history_snapshot(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(PresenceSnapshotQuery::default()),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 64)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["channel"].as_str(), Some("presence-room"));
+        assert!(json["member_count"].as_u64().unwrap() > 0);
+        assert!(json["events_replayed"].as_u64().unwrap() > 0);
+        assert!(json["continuity"]["stream_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_snapshot_at_serial_bound() {
+        let (handler, store) = test_presence_history_handler_with_memory_store(100);
+        let app = test_app();
+        let base_ts = sockudo_core::history::now_ms();
+
+        // Seed: alternating joins/leaves for u1, u2
+        seed_presence_history(&store, "app-1", "presence-room", 4, base_ts).await;
+
+        // Snapshot at serial 2 only replays events with serial <= 2
+        let response = channel_presence_history_snapshot(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(PresenceSnapshotQuery {
+                at_serial: Some(2),
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 64)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["snapshot_serial"].as_u64(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn channel_presence_history_snapshot_rejects_non_presence_channel() {
+        let handler = test_presence_history_handler(100);
+        let app = test_app();
+
+        let response = channel_presence_history_snapshot(
+            Path(("app-1".to_string(), "private-room".to_string())),
+            Query(PresenceSnapshotQuery::default()),
+            Extension(app),
+            State(handler),
+        )
+        .await;
+
+        let response = match response {
+            Ok(_) => panic!("expected non-presence channel to fail"),
+            Err(err) => err.into_response(),
+        };
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn error_responses_include_code_and_status_fields() {
+        let handler = test_presence_history_handler(100);
+        let app = test_app();
+
+        // Non-presence channel triggers BAD_REQUEST
+        let response = channel_presence_history(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Query(HistoryQuery::default()),
+            Extension(app),
+            State(handler),
+        )
+        .await;
+
+        let response = match response {
+            Ok(_) => panic!("expected error"),
+            Err(err) => err.into_response(),
+        };
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert!(json["code"].as_str().is_some(), "error must include 'code' field");
+        assert!(json["status"].as_u64().is_some(), "error must include 'status' field");
+        assert!(json["error"].as_str().is_some(), "error must include 'error' field");
+    }
+
+    #[tokio::test]
+    async fn continuity_includes_degraded_field() {
+        let (handler, store) = test_presence_history_handler_with_memory_store(100);
+        let app = test_app();
+        let base_ts = sockudo_core::history::now_ms();
+        seed_presence_history(&store, "app-1", "presence-room", 3, base_ts).await;
+
+        let response = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("newest_first".to_string()),
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert!(
+            json["continuity"]["degraded"].is_boolean(),
+            "continuity must include 'degraded' boolean field"
+        );
+    }
+
+    #[tokio::test]
+    async fn ably_time_aliases_resolve_correctly() {
+        let (handler, store) = test_presence_history_handler_with_memory_store(100);
+        let app = test_app();
+        let base_ts = sockudo_core::history::now_ms();
+        seed_presence_history(&store, "app-1", "presence-room", 5, base_ts).await;
+
+        // Use start/end (Ably aliases) instead of start_time_ms/end_time_ms
+        let response = channel_presence_history(
+            Path(("app-1".to_string(), "presence-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("oldest_first".to_string()),
+                start: Some(base_ts + 2),
+                end: Some(base_ts + 4),
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        let items = json["items"].as_array().unwrap();
+        // All returned items should fall within the time bounds
+        for item in items {
+            let ts = item["published_at_ms"].as_i64().unwrap();
+            assert!(ts >= base_ts + 2 && ts <= base_ts + 4,
+                "item at ts={ts} outside Ably alias bounds [{}, {}]", base_ts + 2, base_ts + 4);
+        }
     }
 }

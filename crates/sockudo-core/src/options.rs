@@ -374,6 +374,7 @@ pub struct ServerOptions {
     pub websocket: WebSocketConfig,
     pub connection_recovery: ConnectionRecoveryConfig,
     pub history: HistoryConfig,
+    pub presence_history: PresenceHistoryConfig,
     pub idempotency: IdempotencyConfig,
     pub ephemeral: EphemeralConfig,
     pub echo_control: EchoControlConfig,
@@ -1068,6 +1069,29 @@ impl Default for HistoryBackend {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PresenceHistoryBackend {
+    Memory,
+}
+
+impl Default for PresenceHistoryBackend {
+    fn default() -> Self {
+        Self::Memory
+    }
+}
+
+impl FromStr for PresenceHistoryBackend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "memory" => Ok(Self::Memory),
+            other => Err(format!("Unsupported presence history backend '{other}'")),
+        }
+    }
+}
+
 impl FromStr for HistoryBackend {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -1199,6 +1223,30 @@ impl Default for HistoryConfig {
             dynamodb: DynamoDbHistoryConfig::default(),
             surrealdb: SurrealDbHistoryConfig::default(),
             scylladb: ScyllaDbHistoryConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PresenceHistoryConfig {
+    pub enabled: bool,
+    pub backend: PresenceHistoryBackend,
+    pub retention_window_seconds: u64,
+    pub max_page_size: usize,
+    pub max_events_per_channel: Option<usize>,
+    pub max_bytes_per_channel: Option<u64>,
+}
+
+impl Default for PresenceHistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: PresenceHistoryBackend::Memory,
+            retention_window_seconds: 86400,
+            max_page_size: 100,
+            max_events_per_channel: None,
+            max_bytes_per_channel: None,
         }
     }
 }
@@ -1636,6 +1684,7 @@ impl Default for ServerOptions {
             websocket: WebSocketConfig::default(),
             connection_recovery: ConnectionRecoveryConfig::default(),
             history: HistoryConfig::default(),
+            presence_history: PresenceHistoryConfig::default(),
             idempotency: IdempotencyConfig::default(),
             ephemeral: EphemeralConfig::default(),
             echo_control: EchoControlConfig::default(),
@@ -2778,6 +2827,7 @@ impl ServerOptions {
                     idempotency: None,
                     connection_recovery: None,
                     history: None,
+                    presence_history: None,
                 },
             );
 
@@ -2964,6 +3014,33 @@ impl ServerOptions {
             self.history.postgres.write_timeout_ms,
         );
 
+        self.presence_history.enabled =
+            parse_bool_env("PRESENCE_HISTORY_ENABLED", self.presence_history.enabled);
+        self.presence_history.retention_window_seconds = parse_env::<u64>(
+            "PRESENCE_HISTORY_RETENTION_WINDOW_SECONDS",
+            self.presence_history.retention_window_seconds,
+        );
+        self.presence_history.max_page_size = parse_env::<usize>(
+            "PRESENCE_HISTORY_MAX_PAGE_SIZE",
+            self.presence_history.max_page_size,
+        );
+        if let Ok(backend) = std::env::var("PRESENCE_HISTORY_BACKEND") {
+            self.presence_history.backend = PresenceHistoryBackend::from_str(&backend)?;
+        }
+        if let Ok(max_events) = std::env::var("PRESENCE_HISTORY_MAX_EVENTS_PER_CHANNEL") {
+            self.presence_history.max_events_per_channel =
+                Some(max_events.parse::<usize>().map_err(|e| {
+                    format!("Invalid PRESENCE_HISTORY_MAX_EVENTS_PER_CHANNEL: {e}")
+                })?);
+        }
+        if let Ok(max_bytes) = std::env::var("PRESENCE_HISTORY_MAX_BYTES_PER_CHANNEL") {
+            self.presence_history.max_bytes_per_channel = Some(
+                max_bytes
+                    .parse::<u64>()
+                    .map_err(|e| format!("Invalid PRESENCE_HISTORY_MAX_BYTES_PER_CHANNEL: {e}"))?,
+            );
+        }
+
         self.idempotency.enabled = parse_bool_env("IDEMPOTENCY_ENABLED", self.idempotency.enabled);
         self.idempotency.ttl_seconds =
             parse_env::<u64>("IDEMPOTENCY_TTL_SECONDS", self.idempotency.ttl_seconds);
@@ -3040,6 +3117,17 @@ impl ServerOptions {
             }
             if self.history.postgres.table_prefix.trim().is_empty() {
                 return Err("history.postgres.table_prefix must not be empty".to_string());
+            }
+        }
+
+        if self.presence_history.enabled {
+            if self.presence_history.max_page_size == 0 {
+                return Err("presence_history.max_page_size must be greater than 0".to_string());
+            }
+            if self.presence_history.retention_window_seconds == 0 {
+                return Err(
+                    "presence_history.retention_window_seconds must be greater than 0".to_string(),
+                );
             }
         }
 

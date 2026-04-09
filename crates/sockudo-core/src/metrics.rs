@@ -152,6 +152,30 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a recovery failure code.
     fn mark_history_recovery_failure(&self, _app_id: &str, _code: &str) {}
 
+    /// Track a successful presence-history write.
+    fn mark_presence_history_write(&self, _app_id: &str) {}
+
+    /// Track presence-history write latency.
+    fn track_presence_history_write_latency(&self, _app_id: &str, _latency_ms: f64) {}
+
+    /// Track a presence-history write failure.
+    fn mark_presence_history_write_failure(&self, _app_id: &str) {}
+
+    /// Update retained presence-history counts for an app.
+    fn update_presence_history_retained(&self, _app_id: &str, _events: u64, _bytes: u64) {}
+
+    /// Track evictions performed by the presence-history store.
+    fn mark_presence_history_eviction(&self, _app_id: &str, _events: u64, _bytes: u64) {}
+
+    /// Update the current presence-history writer queue depth for an app.
+    fn update_presence_history_queue_depth(&self, _app_id: &str, _depth: usize) {}
+
+    /// Update the number of degraded presence-history channels for an app.
+    fn update_presence_history_degraded_channels(&self, _app_id: &str, _count: usize) {}
+
+    /// Update the number of reset-required presence-history channels for an app.
+    fn update_presence_history_reset_required_channels(&self, _app_id: &str, _count: usize) {}
+
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;
 

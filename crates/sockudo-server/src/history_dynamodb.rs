@@ -694,12 +694,14 @@ impl DynamoDbHistoryStore {
         let partition = Self::stream_partition(&request.app_id, &request.channel, stream_id);
         let lower_serial = match request.direction {
             HistoryDirection::NewestFirst => request.bounds.start_serial,
-            HistoryDirection::OldestFirst => match (request.bounds.start_serial, request.cursor.as_ref()) {
-                (Some(value), Some(cursor)) => Some(value.max(cursor.serial + 1)),
-                (Some(value), None) => Some(value),
-                (None, Some(cursor)) => Some(cursor.serial + 1),
-                (None, None) => None,
-            },
+            HistoryDirection::OldestFirst => {
+                match (request.bounds.start_serial, request.cursor.as_ref()) {
+                    (Some(value), Some(cursor)) => Some(value.max(cursor.serial + 1)),
+                    (Some(value), None) => Some(value),
+                    (None, Some(cursor)) => Some(cursor.serial + 1),
+                    (None, None) => None,
+                }
+            }
         };
         let upper_serial = match request.direction {
             HistoryDirection::NewestFirst => {
@@ -896,13 +898,11 @@ impl DynamoDbHistoryStore {
             }
             (Some(lower), None) => {
                 key_condition.push_str(" AND #ts >= :lower_ts");
-                query =
-                    query.expression_attribute_values(":lower_ts", Self::attr_string(lower));
+                query = query.expression_attribute_values(":lower_ts", Self::attr_string(lower));
             }
             (None, Some(upper)) => {
                 key_condition.push_str(" AND #ts <= :upper_ts");
-                query =
-                    query.expression_attribute_values(":upper_ts", Self::attr_string(upper));
+                query = query.expression_attribute_values(":upper_ts", Self::attr_string(upper));
             }
             (None, None) => {}
         }
@@ -938,7 +938,8 @@ impl DynamoDbHistoryStore {
             for item in response.items() {
                 let entry = Self::entry_from_item(item.clone())?;
                 if let Some(cursor_key) = &cursor_time_key
-                    && Self::published_at_serial_key(entry.published_at_ms, entry.serial) == *cursor_key
+                    && Self::published_at_serial_key(entry.published_at_ms, entry.serial)
+                        == *cursor_key
                 {
                     continue;
                 }
