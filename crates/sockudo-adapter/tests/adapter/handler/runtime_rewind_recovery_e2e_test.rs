@@ -11,8 +11,8 @@ use sockudo_app::memory_app_manager::MemoryAppManager;
 use sockudo_core::app::{App, AppManager};
 use sockudo_core::history::{
     HistoryAppendRecord, HistoryPage, HistoryReadRequest, HistoryRetentionPolicy,
-    HistoryRuntimeStatus, HistoryStore, HistoryWriteReservation, MemoryHistoryStore,
-    MemoryHistoryStoreConfig,
+    HistoryRuntimeStatus, HistoryStore, HistoryStreamRuntimeState, HistoryWriteReservation,
+    MemoryHistoryStore, MemoryHistoryStoreConfig,
 };
 use sockudo_core::options::ServerOptions;
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
@@ -94,6 +94,56 @@ impl HistoryStore for GateHistoryStore {
     async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
         self.inner.runtime_status().await
     }
+
+    async fn stream_runtime_state(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> sockudo_core::error::Result<HistoryStreamRuntimeState> {
+        self.inner.stream_runtime_state(app_id, channel).await
+    }
+}
+
+#[derive(Clone)]
+struct RejectingAppendHistoryStore {
+    inner: Arc<MemoryHistoryStore>,
+    error_message: &'static str,
+}
+
+#[async_trait]
+impl HistoryStore for RejectingAppendHistoryStore {
+    async fn reserve_publish_position(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> sockudo_core::error::Result<HistoryWriteReservation> {
+        self.inner.reserve_publish_position(app_id, channel).await
+    }
+
+    async fn append(&self, _record: HistoryAppendRecord) -> sockudo_core::error::Result<()> {
+        Err(sockudo_core::error::Error::Internal(
+            self.error_message.to_string(),
+        ))
+    }
+
+    async fn read_page(
+        &self,
+        request: HistoryReadRequest,
+    ) -> sockudo_core::error::Result<HistoryPage> {
+        self.inner.read_page(request).await
+    }
+
+    async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
+        self.inner.runtime_status().await
+    }
+
+    async fn stream_runtime_state(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> sockudo_core::error::Result<HistoryStreamRuntimeState> {
+        self.inner.stream_runtime_state(app_id, channel).await
+    }
 }
 
 struct TestHarness {
@@ -137,6 +187,40 @@ async fn build_harness(options: ServerOptions) -> TestHarness {
         adapter,
         history_store,
     }
+}
+
+async fn build_harness_with_store(
+    options: ServerOptions,
+    history_store: Arc<dyn HistoryStore + Send + Sync>,
+) -> (
+    ConnectionHandler,
+    App,
+    Arc<MemoryAppManager>,
+    Arc<LocalAdapter>,
+) {
+    let app_manager = Arc::new(MemoryAppManager::new());
+    let app = App::from_policy(
+        "app".to_string(),
+        "key".to_string(),
+        "secret".to_string(),
+        true,
+        Default::default(),
+    );
+    app_manager.create_app(app.clone()).await.unwrap();
+
+    let adapter = Arc::new(LocalAdapter::new());
+    let handler = ConnectionHandler::builder(
+        app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
+        adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
+        Arc::new(MockCacheManager::new()),
+        options,
+    )
+    .local_adapter(adapter.clone())
+    .history_store(history_store)
+    .metrics(Arc::new(MockMetricsInterface::new()))
+    .build();
+
+    (handler, app, app_manager, adapter)
 }
 
 async fn connect_v2_socket(harness: &TestHarness) -> (SocketId, ClientReader) {
@@ -279,6 +363,18 @@ async fn recv_until_event(reader: &mut ClientReader, event_name: &str) -> Vec<Pu
         if matches {
             return messages;
         }
+    }
+}
+
+async fn expect_no_message(reader: &mut ClientReader, wait_for: Duration) {
+    let result = timeout(wait_for, reader.next()).await;
+    match result {
+        Err(_) => {}
+        Ok(None) => {}
+        Ok(Some(Ok(frame))) => {
+            panic!("unexpected websocket message after rejected publish: {frame:?}")
+        }
+        Ok(Some(Err(err))) => panic!("unexpected websocket read error: {err:?}"),
     }
 }
 
@@ -747,4 +843,88 @@ async fn partial_per_channel_recovery_results_surface_real_deliveries_e2e() {
             .map(|v| v.len()),
         Some(1)
     );
+}
+
+#[tokio::test]
+async fn writer_queue_full_fault_rejects_publish_without_live_delivery() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    let rejecting_store = Arc::new(RejectingAppendHistoryStore {
+        inner: Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default())),
+        error_message: "History writer queue is full: simulated fault",
+    });
+    let (handler, app, app_manager, adapter) =
+        build_harness_with_store(options, rejecting_store).await;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = sockudo_ws::handshake::server_handshake(&mut stream)
+            .await
+            .unwrap();
+        let ws = WebSocket::from_tcp(stream, WsConfig::default());
+        let (_reader, writer) = ws.split();
+        writer
+    });
+    let client_stream = TcpStream::connect(addr).await.unwrap();
+    let client = WebSocketClient::<Http1>::new(WsConfig::default());
+    let (client_ws, _): (WebSocketStream<WsStream<Http1>>, _) = client
+        .connect(client_stream, &addr.to_string(), "/", None)
+        .await
+        .unwrap();
+    let (mut reader, _writer) = client_ws.split();
+    let socket_id = SocketId::new();
+    adapter
+        .add_socket(
+            socket_id,
+            server_task.await.unwrap(),
+            &app.id,
+            app_manager as Arc<dyn AppManager + Send + Sync>,
+            WebSocketBufferConfig::default(),
+            ProtocolVersion::V2,
+            WireFormat::Json,
+            true,
+        )
+        .await
+        .unwrap();
+
+    handler
+        .handle_subscribe_request(
+            &socket_id,
+            &app,
+            SubscriptionRequest {
+                channel: "chat".to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind: None,
+                event_name_filter: None,
+            },
+        )
+        .await
+        .unwrap();
+    let _ = recv_message(&mut reader).await;
+
+    let publish_result = handler
+        .broadcast_to_channel(
+            &app,
+            "chat",
+            live_message("chat", "should-not-send", "queue-full-msg"),
+            None,
+        )
+        .await;
+
+    match publish_result {
+        Ok(_) => panic!("expected queue-full fault to reject publish"),
+        Err(sockudo_core::error::Error::Internal(message)) => {
+            assert!(message.contains("History writer queue is full"));
+        }
+        Err(other) => panic!("unexpected publish error: {other:?}"),
+    }
+
+    expect_no_message(&mut reader, Duration::from_millis(200)).await;
 }

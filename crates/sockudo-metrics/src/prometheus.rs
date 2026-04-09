@@ -97,6 +97,7 @@ pub struct PrometheusMetricsDriver {
     history_evicted_bytes_total: CounterVec,
     history_queue_depth: GaugeVec,
     history_degraded_channels: GaugeVec,
+    history_reset_required_channels: GaugeVec,
     history_recovery_success_total: CounterVec,
     history_recovery_failures_total: CounterVec,
     // Redis Cluster transport metrics
@@ -580,6 +581,15 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let history_reset_required_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_reset_required_channels"),
+                "Current number of reset-required durable history channels"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
         let history_recovery_success_total = register_counter_vec!(
             Opts::new(
                 format!("{prefix}history_recovery_success_total"),
@@ -633,6 +643,7 @@ impl PrometheusMetricsDriver {
         history_retained_bytes.reset();
         history_queue_depth.reset();
         history_degraded_channels.reset();
+        history_reset_required_channels.reset();
         redis_cluster_channel_queue_size.reset();
 
         // Set process start time
@@ -698,6 +709,7 @@ impl PrometheusMetricsDriver {
             history_evicted_bytes_total,
             history_queue_depth,
             history_degraded_channels,
+            history_reset_required_channels,
             history_recovery_success_total,
             history_recovery_failures_total,
             redis_cluster_channel_queue_size,
@@ -1262,6 +1274,13 @@ impl MetricsInterface for PrometheusMetricsDriver {
     fn update_history_degraded_channels(&self, app_id: &str, count: usize) {
         let tags = self.get_tags(app_id);
         self.history_degraded_channels
+            .with_label_values(&tags)
+            .set(count as f64);
+    }
+
+    fn update_history_reset_required_channels(&self, app_id: &str, count: usize) {
+        let tags = self.get_tags(app_id);
+        self.history_reset_required_channels
             .with_label_values(&tags)
             .set(count as f64);
     }

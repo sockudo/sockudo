@@ -1,184 +1,33 @@
-#[cfg(feature = "postgres")]
 use dashmap::DashMap;
 use sockudo_core::cache::CacheManager;
 use sockudo_core::error::{Error, Result};
-#[cfg(feature = "postgres")]
 use sockudo_core::history::{
     HistoryAppendRecord, HistoryCursor, HistoryDirection, HistoryDurableState, HistoryItem,
     HistoryPage, HistoryPurgeMode, HistoryPurgeRequest, HistoryPurgeResult, HistoryQueryBounds,
     HistoryReadRequest, HistoryResetResult, HistoryRetentionStats, HistoryRuntimeStatus,
-    HistoryStreamInspection, HistoryStreamRuntimeState, HistoryWriteReservation,
+    HistoryStore, HistoryStreamInspection, HistoryStreamRuntimeState, HistoryWriteReservation,
 };
-use sockudo_core::history::{HistoryStore, MemoryHistoryStore, MemoryHistoryStoreConfig};
 use sockudo_core::metrics::MetricsInterface;
-#[cfg(any(feature = "postgres", feature = "mysql"))]
-use sockudo_core::options::DatabaseConnection;
-use sockudo_core::options::{DatabaseConfig, DatabasePooling, HistoryBackend, HistoryConfig};
+use sockudo_core::options::{DatabaseConnection, DatabasePooling, HistoryConfig};
+use sonic_rs::JsonValueTrait;
+use sqlx::{MySqlPool, Row, mysql::MySqlPoolOptions};
 use std::sync::Arc;
-#[cfg(feature = "postgres")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(not(feature = "postgres"))]
-use std::time::Duration;
-#[cfg(feature = "postgres")]
 use std::time::{Duration, Instant};
-#[cfg(feature = "postgres")]
 use tokio::sync::mpsc;
-#[cfg(feature = "postgres")]
 use tracing::{error, info};
 
-#[cfg(feature = "postgres")]
-use sonic_rs::JsonValueTrait;
-#[cfg(feature = "postgres")]
-use sonic_rs::json;
-#[cfg(feature = "postgres")]
-use sqlx::{PgPool, Row, postgres::PgPoolOptions};
-#[cfg(feature = "dynamodb")]
-#[path = "history_dynamodb.rs"]
-mod history_dynamodb;
-#[cfg(feature = "mysql")]
-#[path = "history_mysql.rs"]
-mod history_mysql;
-#[cfg(feature = "scylladb")]
-#[path = "history_scylla.rs"]
-mod history_scylla;
-#[cfg(feature = "surrealdb")]
-#[path = "history_surreal.rs"]
-mod history_surreal;
-
-pub async fn create_history_store(
-    history_config: &HistoryConfig,
-    db_config: &DatabaseConfig,
-    pooling: &DatabasePooling,
-    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
-    cache_manager: Option<Arc<dyn CacheManager + Send + Sync>>,
-) -> Result<Arc<dyn HistoryStore + Send + Sync>> {
-    if !history_config.enabled {
-        return Ok(Arc::new(sockudo_core::history::NoopHistoryStore));
-    }
-
-    match history_config.backend {
-        HistoryBackend::Memory => Ok(Arc::new(MemoryHistoryStore::new(
-            MemoryHistoryStoreConfig {
-                retention_window: Duration::from_secs(history_config.retention_window_seconds),
-                max_messages_per_channel: history_config.max_messages_per_channel,
-                max_bytes_per_channel: history_config.max_bytes_per_channel,
-            },
-        ))),
-        HistoryBackend::Mysql => {
-            #[cfg(feature = "mysql")]
-            {
-                history_mysql::create_mysql_history_store(
-                    &db_config.mysql,
-                    pooling,
-                    history_config.clone(),
-                    metrics,
-                    cache_manager,
-                )
-                .await
-            }
-            #[cfg(not(feature = "mysql"))]
-            {
-                let _ = (db_config, pooling, metrics, cache_manager);
-                Err(Error::Configuration(
-                    "History backend 'mysql' requires the 'mysql' feature".to_string(),
-                ))
-            }
-        }
-        HistoryBackend::DynamoDb => {
-            #[cfg(feature = "dynamodb")]
-            {
-                history_dynamodb::create_dynamodb_history_store(
-                    &db_config.dynamodb,
-                    history_config.clone(),
-                    metrics,
-                    cache_manager,
-                )
-                .await
-            }
-            #[cfg(not(feature = "dynamodb"))]
-            {
-                let _ = (db_config, pooling, metrics, cache_manager);
-                Err(Error::Configuration(
-                    "History backend 'dynamodb' requires the 'dynamodb' feature".to_string(),
-                ))
-            }
-        }
-        HistoryBackend::SurrealDb => {
-            #[cfg(feature = "surrealdb")]
-            {
-                history_surreal::create_surreal_history_store(
-                    &db_config.surrealdb,
-                    history_config.clone(),
-                    metrics,
-                    cache_manager,
-                )
-                .await
-            }
-            #[cfg(not(feature = "surrealdb"))]
-            {
-                let _ = (db_config, pooling, metrics, cache_manager);
-                Err(Error::Configuration(
-                    "History backend 'surrealdb' requires the 'surrealdb' feature".to_string(),
-                ))
-            }
-        }
-        HistoryBackend::Postgres => {
-            #[cfg(feature = "postgres")]
-            {
-                let store = PostgresHistoryStore::new(
-                    &db_config.postgres,
-                    pooling,
-                    history_config.clone(),
-                    metrics,
-                    cache_manager,
-                )
-                .await?;
-                Ok(Arc::new(store))
-            }
-            #[cfg(not(feature = "postgres"))]
-            {
-                let _ = (db_config, pooling, metrics, cache_manager);
-                Err(Error::Configuration(
-                    "History backend 'postgres' requires the 'postgres' feature".to_string(),
-                ))
-            }
-        }
-        HistoryBackend::ScyllaDb => {
-            #[cfg(feature = "scylladb")]
-            {
-                history_scylla::create_scylla_history_store(
-                    &db_config.scylladb,
-                    history_config.clone(),
-                    metrics,
-                    cache_manager,
-                )
-                .await
-            }
-            #[cfg(not(feature = "scylladb"))]
-            {
-                let _ = (db_config, pooling, metrics, cache_manager);
-                Err(Error::Configuration(
-                    "History backend 'scylladb' requires the 'scylladb' feature".to_string(),
-                ))
-            }
-        }
-    }
-}
-
-#[cfg(feature = "postgres")]
 #[derive(Clone)]
 struct HistoryTables {
     streams: String,
     entries: String,
 }
 
-#[cfg(feature = "postgres")]
 #[derive(Clone)]
 struct WriterHandle {
     tx: mpsc::Sender<HistoryAppendRecord>,
 }
 
-#[cfg(feature = "postgres")]
 #[derive(Debug, Clone)]
 struct HistoryDegradedState {
     app_id: String,
@@ -190,7 +39,6 @@ struct HistoryDegradedState {
     observed_source: &'static str,
 }
 
-#[cfg(feature = "postgres")]
 #[derive(Debug, Clone)]
 struct HistoryStreamRecord {
     stream_id: String,
@@ -207,7 +55,6 @@ struct HistoryStreamRecord {
     durable_state_changed_at_ms: Option<i64>,
 }
 
-#[cfg(feature = "postgres")]
 impl HistoryStreamRecord {
     fn retention_stats(&self) -> HistoryRetentionStats {
         HistoryRetentionStats {
@@ -259,9 +106,8 @@ impl HistoryStreamRecord {
     }
 }
 
-#[cfg(feature = "postgres")]
-pub struct PostgresHistoryStore {
-    pool: PgPool,
+pub struct MySqlHistoryStore {
+    pool: MySqlPool,
     config: HistoryConfig,
     tables: HistoryTables,
     writers: Vec<WriterHandle>,
@@ -273,8 +119,56 @@ pub struct PostgresHistoryStore {
     queue_depth_by_app: Arc<DashMap<String, usize>>,
 }
 
-#[cfg(feature = "postgres")]
-impl PostgresHistoryStore {
+pub async fn create_mysql_history_store(
+    db_config: &DatabaseConnection,
+    pooling: &DatabasePooling,
+    config: HistoryConfig,
+    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+    cache_manager: Option<Arc<dyn CacheManager + Send + Sync>>,
+) -> Result<Arc<dyn HistoryStore + Send + Sync>> {
+    let store = MySqlHistoryStore::new(db_config, pooling, config, metrics, cache_manager).await?;
+    Ok(Arc::new(store))
+}
+
+impl MySqlHistoryStore {
+    async fn add_column_if_not_exists(
+        &self,
+        table_name: &str,
+        column_name: &str,
+        column_type: &str,
+    ) -> Result<()> {
+        let check_query = format!(
+            r#"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = '{}'
+               AND COLUMN_NAME = '{}'"#,
+            table_name, column_name
+        );
+        let exists: Option<(String,)> = sqlx::query_as(&check_query)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to inspect MySQL history column {column_name}: {e}"
+                ))
+            })?;
+        if exists.is_none() {
+            let alter_query = format!(
+                "ALTER TABLE {} ADD COLUMN {} {}",
+                table_name, column_name, column_type
+            );
+            sqlx::query(&alter_query)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to add MySQL history column {column_name}: {e}"
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
     async fn new(
         db_config: &DatabaseConnection,
         pooling: &DatabasePooling,
@@ -284,11 +178,11 @@ impl PostgresHistoryStore {
     ) -> Result<Self> {
         let password = urlencoding::encode(&db_config.password);
         let connection_string = format!(
-            "postgresql://{}:{}@{}:{}/{}",
+            "mysql://{}:{}@{}:{}/{}",
             db_config.username, password, db_config.host, db_config.port, db_config.database
         );
 
-        let mut opts = PgPoolOptions::new();
+        let mut opts = MySqlPoolOptions::new();
         opts = if pooling.enabled {
             let min = db_config.pool_min.unwrap_or(pooling.min);
             let max = db_config.pool_max.unwrap_or(pooling.max);
@@ -303,14 +197,12 @@ impl PostgresHistoryStore {
             .connect(&connection_string)
             .await
             .map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to connect history store to PostgreSQL: {e}"
-                ))
+                Error::Internal(format!("Failed to connect history store to MySQL: {e}"))
             })?;
 
         let tables = HistoryTables {
-            streams: format!("{}_streams", config.postgres.table_prefix),
-            entries: format!("{}_entries", config.postgres.table_prefix),
+            streams: format!("{}_streams", config.mysql.table_prefix),
+            entries: format!("{}_entries", config.mysql.table_prefix),
         };
 
         let store = Self {
@@ -327,8 +219,6 @@ impl PostgresHistoryStore {
         };
 
         store.ensure_tables().await?;
-        let mut store = store;
-        store.start_writers();
         Ok(store)
     }
 
@@ -336,13 +226,13 @@ impl PostgresHistoryStore {
         let create_streams = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                stream_id TEXT NOT NULL,
+                app_id VARCHAR(255) NOT NULL,
+                channel VARCHAR(255) NOT NULL,
+                stream_id VARCHAR(255) NOT NULL,
                 next_serial BIGINT NOT NULL,
-                durable_state TEXT NOT NULL DEFAULT 'healthy',
+                durable_state VARCHAR(32) NOT NULL DEFAULT 'healthy',
                 durable_state_reason TEXT NULL,
-                durable_state_node_id TEXT NULL,
+                durable_state_node_id VARCHAR(255) NULL,
                 durable_state_changed_at_ms BIGINT NULL,
                 retained_messages BIGINT NOT NULL DEFAULT 0,
                 retained_bytes BIGINT NOT NULL DEFAULT 0,
@@ -352,79 +242,80 @@ impl PostgresHistoryStore {
                 newest_available_published_at_ms BIGINT NULL,
                 updated_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (app_id, channel)
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             "#,
             self.tables.streams
         );
         let create_entries = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                stream_id TEXT NOT NULL,
+                app_id VARCHAR(255) NOT NULL,
+                channel VARCHAR(255) NOT NULL,
+                stream_id VARCHAR(255) NOT NULL,
                 serial BIGINT NOT NULL,
                 published_at_ms BIGINT NOT NULL,
-                message_id TEXT NULL,
-                event_name TEXT NULL,
-                operation_kind TEXT NOT NULL,
-                payload_bytes BYTEA NOT NULL,
+                message_id VARCHAR(255) NULL,
+                event_name VARCHAR(255) NULL,
+                operation_kind VARCHAR(64) NOT NULL,
+                payload_bytes LONGBLOB NOT NULL,
                 payload_size_bytes BIGINT NOT NULL,
-                metadata JSONB NULL,
+                metadata JSON NULL,
                 tombstone BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (app_id, channel, stream_id, serial)
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             "#,
             self.tables.entries
         );
         let index_serial = format!(
-            "CREATE INDEX IF NOT EXISTS {0}_app_channel_serial_idx ON {0} (app_id, channel, serial DESC)",
+            "CREATE INDEX {0}_app_channel_serial_idx ON {0} (app_id, channel, serial DESC)",
             self.tables.entries
         );
         let index_time = format!(
-            "CREATE INDEX IF NOT EXISTS {0}_app_channel_time_idx ON {0} (app_id, channel, published_at_ms DESC, serial DESC)",
+            "CREATE INDEX {0}_app_channel_time_idx ON {0} (app_id, channel, published_at_ms DESC, serial DESC)",
             self.tables.entries
         );
-        let add_oldest_time = format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS oldest_available_published_at_ms BIGINT NULL",
-            self.tables.streams
-        );
-        let add_newest_time = format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS newest_available_published_at_ms BIGINT NULL",
-            self.tables.streams
-        );
-        let add_durable_state = format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS durable_state TEXT NOT NULL DEFAULT 'healthy'",
-            self.tables.streams
-        );
-        let add_durable_reason = format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS durable_state_reason TEXT NULL",
-            self.tables.streams
-        );
-        let add_durable_node_id = format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS durable_state_node_id TEXT NULL",
-            self.tables.streams
-        );
-        let add_durable_changed_at = format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS durable_state_changed_at_ms BIGINT NULL",
-            self.tables.streams
-        );
-
-        for sql in [
-            create_streams,
-            create_entries,
-            index_serial,
-            index_time,
-            add_oldest_time,
-            add_newest_time,
-            add_durable_state,
-            add_durable_reason,
-            add_durable_node_id,
-            add_durable_changed_at,
-        ] {
+        for sql in [create_streams, create_entries] {
             sqlx::query(&sql).execute(&self.pool).await.map_err(|e| {
-                Error::Internal(format!("Failed to initialize history tables: {e}"))
+                Error::Internal(format!("Failed to initialize MySQL history tables: {e}"))
             })?;
+        }
+
+        self.add_column_if_not_exists(
+            &self.tables.streams,
+            "oldest_available_published_at_ms",
+            "BIGINT NULL",
+        )
+        .await?;
+        self.add_column_if_not_exists(
+            &self.tables.streams,
+            "newest_available_published_at_ms",
+            "BIGINT NULL",
+        )
+        .await?;
+        self.add_column_if_not_exists(
+            &self.tables.streams,
+            "durable_state",
+            "VARCHAR(32) NOT NULL DEFAULT 'healthy'",
+        )
+        .await?;
+        self.add_column_if_not_exists(&self.tables.streams, "durable_state_reason", "TEXT NULL")
+            .await?;
+        self.add_column_if_not_exists(
+            &self.tables.streams,
+            "durable_state_node_id",
+            "VARCHAR(255) NULL",
+        )
+        .await?;
+        self.add_column_if_not_exists(
+            &self.tables.streams,
+            "durable_state_changed_at_ms",
+            "BIGINT NULL",
+        )
+        .await?;
+
+        for sql in [index_serial, index_time] {
+            let _ = sqlx::query(&sql).execute(&self.pool).await;
         }
 
         Ok(())
@@ -453,13 +344,7 @@ impl PostgresHistoryStore {
                     if let Err(err) =
                         Self::persist_record(&pool, &tables, &record, metrics.clone()).await
                     {
-                        error!(
-                            shard,
-                            app_id = %record.app_id,
-                            channel = %record.channel,
-                            serial = record.serial,
-                            "History write failed: {err}"
-                        );
+                        error!(shard, app_id = %record.app_id, channel = %record.channel, serial = record.serial, "History write failed: {err}");
                         if let Some(metrics) = metrics.as_ref() {
                             metrics.mark_history_write_failure(&record.app_id);
                         }
@@ -489,24 +374,17 @@ impl PostgresHistoryStore {
     }
 
     async fn persist_record(
-        pool: &PgPool,
+        pool: &MySqlPool,
         tables: &HistoryTables,
         record: &HistoryAppendRecord,
         metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     ) -> Result<()> {
-        let mut tx = pool
-            .begin()
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to begin history transaction: {e}")))?;
+        let mut tx = pool.begin().await.map_err(|e| {
+            Error::Internal(format!("Failed to begin MySQL history transaction: {e}"))
+        })?;
 
         let insert_sql = format!(
-            r#"
-            INSERT INTO {} (
-                app_id, channel, stream_id, serial, published_at_ms, message_id, event_name,
-                operation_kind, payload_bytes, payload_size_bytes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            ON CONFLICT DO NOTHING
-            "#,
+            "INSERT IGNORE INTO {} (app_id, channel, stream_id, serial, published_at_ms, message_id, event_name, operation_kind, payload_bytes, payload_size_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             tables.entries
         );
         sqlx::query(&insert_sql)
@@ -522,36 +400,45 @@ impl PostgresHistoryStore {
             .bind(record.payload_bytes.len() as i64)
             .execute(&mut *tx)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to insert history row: {e}")))?;
+            .map_err(|e| Error::Internal(format!("Failed to insert MySQL history row: {e}")))?;
 
         let cutoff_ms = record
             .published_at_ms
             .saturating_sub((record.retention.retention_window_seconds * 1000) as i64);
-        let age_delete = format!(
-            r#"
-            DELETE FROM {}
-            WHERE app_id = $1 AND channel = $2 AND published_at_ms < $3
-            RETURNING payload_size_bytes
-            "#,
+
+        let age_stats_sql = format!(
+            "SELECT COUNT(*) AS count, CAST(COALESCE(SUM(payload_size_bytes), 0) AS SIGNED) AS bytes FROM {} WHERE app_id = ? AND channel = ? AND published_at_ms < ?",
             tables.entries
         );
-        let age_rows = sqlx::query(&age_delete)
+        let age_stats = sqlx::query(&age_stats_sql)
             .bind(&record.app_id)
             .bind(&record.channel)
             .bind(cutoff_ms)
-            .fetch_all(&mut *tx)
+            .fetch_one(&mut *tx)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to evict aged history rows: {e}")))?;
+            .map_err(|e| {
+                Error::Internal(format!("Failed to inspect aged MySQL history rows: {e}"))
+            })?;
+        let mut evicted_messages = age_stats.get::<i64, _>("count") as u64;
+        let mut evicted_bytes = age_stats.get::<i64, _>("bytes") as u64;
 
-        let mut evicted_messages = age_rows.len() as u64;
-        let mut evicted_bytes = age_rows
-            .iter()
-            .map(|row| row.get::<i64, _>("payload_size_bytes") as u64)
-            .sum::<u64>();
+        let age_delete = format!(
+            "DELETE FROM {} WHERE app_id = ? AND channel = ? AND published_at_ms < ?",
+            tables.entries
+        );
+        sqlx::query(&age_delete)
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .bind(cutoff_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to evict aged MySQL history rows: {e}"))
+            })?;
 
         if let Some(max_messages) = record.retention.max_messages_per_channel {
             let count_sql = format!(
-                "SELECT COUNT(*) AS count FROM {} WHERE app_id = $1 AND channel = $2",
+                "SELECT COUNT(*) AS count FROM {} WHERE app_id = ? AND channel = ?",
                 tables.entries
             );
             let row = sqlx::query(&count_sql)
@@ -559,45 +446,45 @@ impl PostgresHistoryStore {
                 .bind(&record.channel)
                 .fetch_one(&mut *tx)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to count history rows: {e}")))?;
+                .map_err(|e| Error::Internal(format!("Failed to count MySQL history rows: {e}")))?;
             let retained_messages = row.get::<i64, _>("count") as usize;
             if retained_messages > max_messages {
                 let overflow = retained_messages - max_messages;
-                let trim_sql = format!(
-                    r#"
-                    DELETE FROM {entries}
-                    WHERE (app_id, channel, stream_id, serial) IN (
-                        SELECT app_id, channel, stream_id, serial
-                        FROM {entries}
-                        WHERE app_id = $1 AND channel = $2
-                        ORDER BY serial ASC
-                        LIMIT {overflow}
-                    )
-                    RETURNING payload_size_bytes
-                    "#,
-                    entries = tables.entries
+                let trim_stats_sql = format!(
+                    "SELECT COUNT(*) AS count, CAST(COALESCE(SUM(payload_size_bytes), 0) AS SIGNED) AS bytes FROM (SELECT payload_size_bytes FROM {} WHERE app_id = ? AND channel = ? ORDER BY serial ASC LIMIT {}) t",
+                    tables.entries, overflow
                 );
-                let trim_rows = sqlx::query(&trim_sql)
+                let trim_stats = sqlx::query(&trim_stats_sql)
                     .bind(&record.app_id)
                     .bind(&record.channel)
-                    .fetch_all(&mut *tx)
+                    .fetch_one(&mut *tx)
                     .await
                     .map_err(|e| {
-                        Error::Internal(format!("Failed to evict history rows by count: {e}"))
+                        Error::Internal(format!("Failed to inspect MySQL trim rows: {e}"))
                     })?;
-                evicted_messages = evicted_messages.saturating_add(trim_rows.len() as u64);
-                evicted_bytes = evicted_bytes.saturating_add(
-                    trim_rows
-                        .iter()
-                        .map(|row| row.get::<i64, _>("payload_size_bytes") as u64)
-                        .sum::<u64>(),
+                evicted_messages =
+                    evicted_messages.saturating_add(trim_stats.get::<i64, _>("count") as u64);
+                evicted_bytes =
+                    evicted_bytes.saturating_add(trim_stats.get::<i64, _>("bytes") as u64);
+
+                let trim_sql = format!(
+                    "DELETE e FROM {0} e JOIN (SELECT app_id, channel, stream_id, serial FROM {0} WHERE app_id = ? AND channel = ? ORDER BY serial ASC LIMIT {1}) old ON e.app_id = old.app_id AND e.channel = old.channel AND e.stream_id = old.stream_id AND e.serial = old.serial",
+                    tables.entries, overflow
                 );
+                sqlx::query(&trim_sql)
+                    .bind(&record.app_id)
+                    .bind(&record.channel)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to trim MySQL history rows by count: {e}"))
+                    })?;
             }
         }
 
         if let Some(max_bytes) = record.retention.max_bytes_per_channel {
             let size_sql = format!(
-                "SELECT serial, payload_size_bytes FROM {} WHERE app_id = $1 AND channel = $2 ORDER BY serial ASC",
+                "SELECT serial, payload_size_bytes FROM {} WHERE app_id = ? AND channel = ? ORDER BY serial ASC",
                 tables.entries
             );
             let rows = sqlx::query(&size_sql)
@@ -605,8 +492,9 @@ impl PostgresHistoryStore {
                 .bind(&record.channel)
                 .fetch_all(&mut *tx)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to inspect history bytes: {e}")))?;
-
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to inspect MySQL history bytes: {e}"))
+                })?;
             let retained_bytes = rows
                 .iter()
                 .map(|row| row.get::<i64, _>("payload_size_bytes") as u64)
@@ -624,123 +512,80 @@ impl PostgresHistoryStore {
                     serials.push(row.get::<i64, _>("serial"));
                 }
                 if !serials.is_empty() {
-                    let trim_sql = format!(
-                        "DELETE FROM {} WHERE app_id = $1 AND channel = $2 AND serial = ANY($3) RETURNING payload_size_bytes",
-                        tables.entries
+                    let placeholders = vec!["?"; serials.len()].join(", ");
+                    let bytes_sql = format!(
+                        "SELECT CAST(COALESCE(SUM(payload_size_bytes), 0) AS SIGNED) AS bytes FROM {} WHERE app_id = ? AND channel = ? AND serial IN ({})",
+                        tables.entries, placeholders
                     );
-                    let trim_rows = sqlx::query(&trim_sql)
+                    let mut bytes_query = sqlx::query(&bytes_sql)
                         .bind(&record.app_id)
-                        .bind(&record.channel)
-                        .bind(&serials)
-                        .fetch_all(&mut *tx)
-                        .await
-                        .map_err(|e| {
-                            Error::Internal(format!("Failed to evict history rows by bytes: {e}"))
-                        })?;
-                    evicted_messages = evicted_messages.saturating_add(trim_rows.len() as u64);
-                    evicted_bytes = evicted_bytes.saturating_add(
-                        trim_rows
-                            .iter()
-                            .map(|row| row.get::<i64, _>("payload_size_bytes") as u64)
-                            .sum::<u64>(),
+                        .bind(&record.channel);
+                    for serial in &serials {
+                        bytes_query = bytes_query.bind(*serial);
+                    }
+                    let bytes_row = bytes_query.fetch_one(&mut *tx).await.map_err(|e| {
+                        Error::Internal(format!("Failed to inspect MySQL byte trims: {e}"))
+                    })?;
+                    evicted_messages = evicted_messages.saturating_add(serials.len() as u64);
+                    evicted_bytes =
+                        evicted_bytes.saturating_add(bytes_row.get::<i64, _>("bytes") as u64);
+
+                    let delete_sql = format!(
+                        "DELETE FROM {} WHERE app_id = ? AND channel = ? AND serial IN ({})",
+                        tables.entries, placeholders
                     );
+                    let mut delete_query = sqlx::query(&delete_sql)
+                        .bind(&record.app_id)
+                        .bind(&record.channel);
+                    for serial in &serials {
+                        delete_query = delete_query.bind(*serial);
+                    }
+                    delete_query.execute(&mut *tx).await.map_err(|e| {
+                        Error::Internal(format!("Failed to trim MySQL history rows by bytes: {e}"))
+                    })?;
                 }
             }
         }
 
-        let aggregates_sql = format!(
-            r#"
-            SELECT
-                COUNT(*) AS retained_messages,
-                CAST(COALESCE(SUM(payload_size_bytes), 0) AS BIGINT) AS retained_bytes,
-                MIN(serial) AS oldest_serial,
-                MAX(serial) AS newest_serial,
-                MIN(published_at_ms) AS oldest_published_at_ms,
-                MAX(published_at_ms) AS newest_published_at_ms
-            FROM {}
-            WHERE app_id = $1 AND channel = $2
-            "#,
-            tables.entries
-        );
-        let aggregates = sqlx::query(&aggregates_sql)
-            .bind(&record.app_id)
-            .bind(&record.channel)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to aggregate history rows: {e}")))?;
-
-        let retained_messages = aggregates.get::<i64, _>("retained_messages") as u64;
-        let retained_bytes = aggregates.get::<i64, _>("retained_bytes") as u64;
-        let oldest_serial = aggregates
-            .try_get::<Option<i64>, _>("oldest_serial")
-            .unwrap_or(None);
-        let newest_serial = aggregates
-            .try_get::<Option<i64>, _>("newest_serial")
-            .unwrap_or(None);
-        let oldest_published_at_ms = aggregates
-            .try_get::<Option<i64>, _>("oldest_published_at_ms")
-            .unwrap_or(None);
-        let newest_published_at_ms = aggregates
-            .try_get::<Option<i64>, _>("newest_published_at_ms")
-            .unwrap_or(None);
-
-        let update_sql = format!(
-            r#"
-            UPDATE {}
-            SET retained_messages = $3,
-                retained_bytes = $4,
-                oldest_available_serial = $5,
-                newest_available_serial = $6,
-                oldest_available_published_at_ms = $7,
-                newest_available_published_at_ms = $8,
-                updated_at_ms = $9
-            WHERE app_id = $1 AND channel = $2
-            "#,
-            tables.streams
-        );
-        sqlx::query(&update_sql)
-            .bind(&record.app_id)
-            .bind(&record.channel)
-            .bind(retained_messages as i64)
-            .bind(retained_bytes as i64)
-            .bind(oldest_serial)
-            .bind(newest_serial)
-            .bind(oldest_published_at_ms)
-            .bind(newest_published_at_ms)
-            .bind(record.published_at_ms)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to update history stream metadata: {e}"))
-            })?;
+        let retained = Self::update_stream_retention_from_entries(
+            &mut tx,
+            tables,
+            &record.app_id,
+            &record.channel,
+            record.published_at_ms,
+        )
+        .await?;
 
         let next_serial_sql = format!(
-            "UPDATE {} SET next_serial = GREATEST(next_serial, $3) WHERE app_id = $1 AND channel = $2",
+            "UPDATE {} SET next_serial = GREATEST(next_serial, ?) WHERE app_id = ? AND channel = ?",
             tables.streams
         );
         sqlx::query(&next_serial_sql)
+            .bind(record.serial.saturating_add(1) as i64)
             .bind(&record.app_id)
             .bind(&record.channel)
-            .bind(record.serial.saturating_add(1) as i64)
             .execute(&mut *tx)
             .await
             .map_err(|e| {
                 Error::Internal(format!(
-                    "Failed to advance history next_serial from append evidence: {e}"
+                    "Failed to advance MySQL history next_serial from append evidence: {e}"
                 ))
             })?;
 
-        tx.commit()
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to commit history transaction: {e}")))?;
+        tx.commit().await.map_err(|e| {
+            Error::Internal(format!("Failed to commit MySQL history transaction: {e}"))
+        })?;
 
         if let Some(metrics) = metrics.as_ref() {
-            metrics.update_history_retained(&record.app_id, retained_messages, retained_bytes);
+            metrics.update_history_retained(
+                &record.app_id,
+                retained.retained_messages,
+                retained.retained_bytes,
+            );
             if evicted_messages > 0 || evicted_bytes > 0 {
                 metrics.mark_history_eviction(&record.app_id, evicted_messages, evicted_bytes);
             }
         }
-
         Ok(())
     }
 
@@ -763,7 +608,7 @@ impl PostgresHistoryStore {
         channel: &str,
     ) -> Result<Option<HistoryStreamRecord>> {
         let sql = format!(
-            "SELECT stream_id, next_serial, retained_messages, retained_bytes, oldest_available_serial, newest_available_serial, oldest_available_published_at_ms, newest_available_published_at_ms, durable_state, durable_state_reason, durable_state_node_id, durable_state_changed_at_ms FROM {} WHERE app_id = $1 AND channel = $2",
+            "SELECT stream_id, next_serial, retained_messages, retained_bytes, oldest_available_serial, newest_available_serial, oldest_available_published_at_ms, newest_available_published_at_ms, durable_state, durable_state_reason, durable_state_node_id, durable_state_changed_at_ms FROM {} WHERE app_id = ? AND channel = ?",
             self.tables.streams
         );
         let row = sqlx::query(&sql)
@@ -771,7 +616,9 @@ impl PostgresHistoryStore {
             .bind(channel)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to read history retention stats: {e}")))?;
+            .map_err(|e| {
+                Error::Internal(format!("Failed to read MySQL history retention stats: {e}"))
+            })?;
 
         Ok(row.map(|row| HistoryStreamRecord {
             stream_id: row.get::<String, _>("stream_id"),
@@ -811,7 +658,7 @@ impl PostgresHistoryStore {
         Ok(self
             .load_stream_record(app_id, channel)
             .await?
-            .map(|record| record.retention_stats())
+            .map(|r| r.retention_stats())
             .unwrap_or_default())
     }
 
@@ -833,7 +680,6 @@ impl PostgresHistoryStore {
             .map(|entry| entry.value().clone());
         let cache_hint =
             get_cached_channel_degraded(self.cache_manager.as_ref(), app_id, channel).await?;
-
         Ok(resolve_runtime_state(durable_state, local_hint, cache_hint))
     }
 
@@ -845,14 +691,7 @@ impl PostgresHistoryStore {
         let durable_record = self.load_stream_record(app_id, channel).await?;
         let runtime_state = self.resolved_stream_runtime_state(app_id, channel).await?;
         Ok(match durable_record {
-            Some(record) => HistoryStreamInspection {
-                app_id: app_id.to_string(),
-                channel: channel.to_string(),
-                stream_id: Some(record.stream_id.clone()),
-                next_serial: Some(record.next_serial),
-                retained: record.retention_stats(),
-                state: runtime_state,
-            },
+            Some(record) => record.inspection(app_id, channel, &runtime_state.observed_source),
             None => HistoryStreamInspection {
                 app_id: app_id.to_string(),
                 channel: channel.to_string(),
@@ -865,24 +704,14 @@ impl PostgresHistoryStore {
     }
 
     async fn update_stream_retention_from_entries(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
         tables: &HistoryTables,
         app_id: &str,
         channel: &str,
         updated_at_ms: i64,
     ) -> Result<HistoryRetentionStats> {
         let aggregates_sql = format!(
-            r#"
-            SELECT
-                COUNT(*) AS retained_messages,
-                CAST(COALESCE(SUM(payload_size_bytes), 0) AS BIGINT) AS retained_bytes,
-                MIN(serial) AS oldest_serial,
-                MAX(serial) AS newest_serial,
-                MIN(published_at_ms) AS oldest_published_at_ms,
-                MAX(published_at_ms) AS newest_published_at_ms
-            FROM {}
-            WHERE app_id = $1 AND channel = $2
-            "#,
+            "SELECT COUNT(*) AS retained_messages, CAST(COALESCE(SUM(payload_size_bytes), 0) AS SIGNED) AS retained_bytes, MIN(serial) AS oldest_serial, MAX(serial) AS newest_serial, MIN(published_at_ms) AS oldest_published_at_ms, MAX(published_at_ms) AS newest_published_at_ms FROM {} WHERE app_id = ? AND channel = ?",
             tables.entries
         );
         let aggregates = sqlx::query(&aggregates_sql)
@@ -890,7 +719,7 @@ impl PostgresHistoryStore {
             .bind(channel)
             .fetch_one(&mut **tx)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to aggregate history rows: {e}")))?;
+            .map_err(|e| Error::Internal(format!("Failed to aggregate MySQL history rows: {e}")))?;
 
         let retained = HistoryRetentionStats {
             stream_id: None,
@@ -899,11 +728,11 @@ impl PostgresHistoryStore {
             oldest_serial: aggregates
                 .try_get::<Option<i64>, _>("oldest_serial")
                 .unwrap_or(None)
-                .map(|value| value as u64),
+                .map(|v| v as u64),
             newest_serial: aggregates
                 .try_get::<Option<i64>, _>("newest_serial")
                 .unwrap_or(None)
-                .map(|value| value as u64),
+                .map(|v| v as u64),
             oldest_published_at_ms: aggregates
                 .try_get::<Option<i64>, _>("oldest_published_at_ms")
                 .unwrap_or(None),
@@ -913,95 +742,107 @@ impl PostgresHistoryStore {
         };
 
         let update_sql = format!(
-            r#"
-            UPDATE {}
-            SET retained_messages = $3,
-                retained_bytes = $4,
-                oldest_available_serial = $5,
-                newest_available_serial = $6,
-                oldest_available_published_at_ms = $7,
-                newest_available_published_at_ms = $8,
-                updated_at_ms = $9
-            WHERE app_id = $1 AND channel = $2
-            "#,
+            "UPDATE {} SET retained_messages = ?, retained_bytes = ?, oldest_available_serial = ?, newest_available_serial = ?, oldest_available_published_at_ms = ?, newest_available_published_at_ms = ?, updated_at_ms = ? WHERE app_id = ? AND channel = ?",
             tables.streams
         );
         sqlx::query(&update_sql)
-            .bind(app_id)
-            .bind(channel)
             .bind(retained.retained_messages as i64)
             .bind(retained.retained_bytes as i64)
-            .bind(retained.oldest_serial.map(|value| value as i64))
-            .bind(retained.newest_serial.map(|value| value as i64))
+            .bind(retained.oldest_serial.map(|v| v as i64))
+            .bind(retained.newest_serial.map(|v| v as i64))
             .bind(retained.oldest_published_at_ms)
             .bind(retained.newest_published_at_ms)
             .bind(updated_at_ms)
+            .bind(app_id)
+            .bind(channel)
             .execute(&mut **tx)
             .await
             .map_err(|e| {
-                Error::Internal(format!("Failed to update history stream metadata: {e}"))
+                Error::Internal(format!(
+                    "Failed to update MySQL history stream metadata: {e}"
+                ))
             })?;
 
         Ok(retained)
     }
 }
 
-#[cfg(feature = "postgres")]
 #[async_trait::async_trait]
-impl HistoryStore for PostgresHistoryStore {
+impl HistoryStore for MySqlHistoryStore {
     async fn reserve_publish_position(
         &self,
         app_id: &str,
         channel: &str,
     ) -> Result<HistoryWriteReservation> {
-        let now_ms = sockudo_core::history::now_ms();
-        let sql = format!(
-            r#"
-            INSERT INTO {} (app_id, channel, stream_id, next_serial, updated_at_ms)
-            VALUES ($1, $2, $3, 2, $4)
-            ON CONFLICT (app_id, channel)
-            DO UPDATE SET
-                next_serial = {}.next_serial + 1,
-                updated_at_ms = EXCLUDED.updated_at_ms
-            RETURNING stream_id, next_serial - 1 AS serial
-            "#,
-            self.tables.streams, self.tables.streams
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            Error::Internal(format!("Failed to begin MySQL reserve transaction: {e}"))
+        })?;
+        let select_sql = format!(
+            "SELECT stream_id, next_serial FROM {} WHERE app_id = ? AND channel = ? FOR UPDATE",
+            self.tables.streams
         );
-        let stream_id = uuid::Uuid::new_v4().to_string();
-        let row = sqlx::query(&sql)
+        if let Some(row) = sqlx::query(&select_sql)
             .bind(app_id)
             .bind(channel)
-            .bind(stream_id)
-            .bind(now_ms)
-            .fetch_one(&self.pool)
+            .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to reserve history position: {e}")))?;
+            .map_err(|e| {
+                Error::Internal(format!("Failed to reserve MySQL history position: {e}"))
+            })?
+        {
+            let stream_id = row.get::<String, _>("stream_id");
+            let serial = row.get::<i64, _>("next_serial") as u64;
+            let update_sql = format!(
+                "UPDATE {} SET next_serial = ?, updated_at_ms = ? WHERE app_id = ? AND channel = ?",
+                self.tables.streams
+            );
+            let now_ms = sockudo_core::history::now_ms();
+            sqlx::query(&update_sql)
+                .bind((serial + 1) as i64)
+                .bind(now_ms)
+                .bind(app_id)
+                .bind(channel)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to advance MySQL history serial: {e}"))
+                })?;
+            tx.commit().await.map_err(|e| {
+                Error::Internal(format!("Failed to commit MySQL reserve transaction: {e}"))
+            })?;
+            return Ok(HistoryWriteReservation { stream_id, serial });
+        }
 
+        let stream_id = uuid::Uuid::new_v4().to_string();
+        let now_ms = sockudo_core::history::now_ms();
+        let insert_sql = format!(
+            "INSERT INTO {} (app_id, channel, stream_id, next_serial, updated_at_ms) VALUES (?, ?, ?, 2, ?)",
+            self.tables.streams
+        );
+        sqlx::query(&insert_sql)
+            .bind(app_id)
+            .bind(channel)
+            .bind(&stream_id)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to create MySQL history stream row: {e}"))
+            })?;
+        tx.commit().await.map_err(|e| {
+            Error::Internal(format!("Failed to commit MySQL reserve transaction: {e}"))
+        })?;
         Ok(HistoryWriteReservation {
-            stream_id: row.get::<String, _>("stream_id"),
-            serial: row.get::<i64, _>("serial") as u64,
+            stream_id,
+            serial: 1,
         })
     }
 
     async fn append(&self, record: HistoryAppendRecord) -> Result<()> {
-        self.queue_depth_total.fetch_add(1, Ordering::Relaxed);
-        increment_app_queue_depth(
-            &self.queue_depth_by_app,
-            &record.app_id,
-            self.metrics.as_deref(),
-        );
-        let send_result = self
-            .select_writer(&record.app_id, &record.channel)
-            .tx
-            .try_send(record.clone());
-
-        if let Err(e) = send_result {
-            self.queue_depth_total.fetch_sub(1, Ordering::Relaxed);
-            decrement_app_queue_depth(
-                &self.queue_depth_by_app,
-                &record.app_id,
-                self.metrics.as_deref(),
-            );
+        let started = Instant::now();
+        if let Err(err) =
+            Self::persist_record(&self.pool, &self.tables, &record, self.metrics.clone()).await
+        {
             mark_channel_degraded(
                 &self.pool,
                 &self.tables,
@@ -1010,15 +851,22 @@ impl HistoryStore for PostgresHistoryStore {
                 self.metrics.as_deref(),
                 &record.app_id,
                 &record.channel,
-                "history_writer_queue_full",
+                "durable_history_write_failed",
                 None,
             )
             .await;
-            return Err(Error::Internal(format!(
-                "History writer queue is full: {e}"
-            )));
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.mark_history_write_failure(&record.app_id);
+            }
+            return Err(err);
         }
-
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.mark_history_write(&record.app_id);
+            metrics.track_history_write_latency(
+                &record.app_id,
+                started.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
         Ok(())
     }
 
@@ -1040,7 +888,6 @@ impl HistoryStore for PostgresHistoryStore {
         let retained = self
             .retained_stats(&request.app_id, &request.channel)
             .await?;
-
         if let Some(cursor) = request.cursor.as_ref() {
             if let Some(stream_id) = retained.stream_id.as_ref()
                 && cursor.stream_id != *stream_id
@@ -1070,29 +917,25 @@ impl HistoryStore for PostgresHistoryStore {
             bind_stream = Some(cursor.stream_id.clone());
             bind_serial = Some(cursor.serial as i64);
             clauses.push(match request.direction {
-                HistoryDirection::NewestFirst => "stream_id = $3 AND serial < $4".to_string(),
-                HistoryDirection::OldestFirst => "stream_id = $3 AND serial > $4".to_string(),
+                HistoryDirection::NewestFirst => "stream_id = ? AND serial < ?".to_string(),
+                HistoryDirection::OldestFirst => "stream_id = ? AND serial > ?".to_string(),
             });
         }
-        let mut next_bind = if request.cursor.is_some() { 5 } else { 3 };
         if let Some(start_serial) = request.bounds.start_serial {
             bind_start_serial = Some(start_serial as i64);
-            clauses.push(format!("serial >= ${next_bind}"));
-            next_bind += 1;
+            clauses.push("serial >= ?".to_string());
         }
         if let Some(end_serial) = request.bounds.end_serial {
             bind_end_serial = Some(end_serial as i64);
-            clauses.push(format!("serial <= ${next_bind}"));
-            next_bind += 1;
+            clauses.push("serial <= ?".to_string());
         }
         if let Some(start_time_ms) = request.bounds.start_time_ms {
             bind_start_time = Some(start_time_ms);
-            clauses.push(format!("published_at_ms >= ${next_bind}"));
-            next_bind += 1;
+            clauses.push("published_at_ms >= ?".to_string());
         }
         if let Some(end_time_ms) = request.bounds.end_time_ms {
             bind_end_time = Some(end_time_ms);
-            clauses.push(format!("published_at_ms <= ${next_bind}"));
+            clauses.push("published_at_ms <= ?".to_string());
         }
 
         let where_clause = if clauses.is_empty() {
@@ -1104,16 +947,8 @@ impl HistoryStore for PostgresHistoryStore {
             HistoryDirection::NewestFirst => "DESC",
             HistoryDirection::OldestFirst => "ASC",
         };
-
         let sql = format!(
-            r#"
-            SELECT stream_id, serial, published_at_ms, message_id, event_name, operation_kind, payload_bytes, payload_size_bytes
-            FROM {}
-            WHERE app_id = $1 AND channel = $2
-            {}
-            ORDER BY serial {}
-            LIMIT {}
-            "#,
+            "SELECT stream_id, serial, published_at_ms, message_id, event_name, operation_kind, payload_bytes, payload_size_bytes FROM {} WHERE app_id = ? AND channel = ?{} ORDER BY serial {} LIMIT {}",
             self.tables.entries,
             where_clause,
             order,
@@ -1143,7 +978,7 @@ impl HistoryStore for PostgresHistoryStore {
         let rows = query
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to read history page: {e}")))?;
+            .map_err(|e| Error::Internal(format!("Failed to read MySQL history page: {e}")))?;
 
         let has_more = rows.len() > request.limit;
         let items: Vec<HistoryItem> = rows
@@ -1164,7 +999,6 @@ impl HistoryStore for PostgresHistoryStore {
                 payload_bytes: row.get::<Vec<u8>, _>("payload_bytes").into(),
             })
             .collect();
-
         let next_cursor = if has_more {
             items.last().map(|item| HistoryCursor {
                 version: 1,
@@ -1178,9 +1012,7 @@ impl HistoryStore for PostgresHistoryStore {
         } else {
             None
         };
-
         let truncated_by_retention = is_truncated_by_retention(&request.bounds, &retained);
-
         Ok(HistoryPage {
             items,
             next_cursor,
@@ -1193,22 +1025,15 @@ impl HistoryStore for PostgresHistoryStore {
 
     async fn runtime_status(&self) -> Result<HistoryRuntimeStatus> {
         let sql = format!(
-            r#"
-            SELECT
-                COALESCE(SUM(CASE WHEN durable_state <> 'healthy' THEN 1 ELSE 0 END), 0) AS degraded_channels,
-                COALESCE(SUM(CASE WHEN durable_state = 'reset_required' THEN 1 ELSE 0 END), 0) AS reset_required_channels
-            FROM {}
-            "#,
+            "SELECT COALESCE(SUM(CASE WHEN durable_state <> 'healthy' THEN 1 ELSE 0 END), 0) AS degraded_channels, COALESCE(SUM(CASE WHEN durable_state = 'reset_required' THEN 1 ELSE 0 END), 0) AS reset_required_channels FROM {}",
             self.tables.streams
         );
-        let row = sqlx::query(&sql)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to read history runtime status: {e}")))?;
-
+        let row = sqlx::query(&sql).fetch_one(&self.pool).await.map_err(|e| {
+            Error::Internal(format!("Failed to read MySQL history runtime status: {e}"))
+        })?;
         Ok(HistoryRuntimeStatus {
             enabled: true,
-            backend: "postgres".to_string(),
+            backend: "mysql".to_string(),
             state_authority: "durable_store".to_string(),
             degraded_channels: row.get::<i64, _>("degraded_channels") as usize,
             reset_required_channels: row.get::<i64, _>("reset_required_channels") as usize,
@@ -1244,58 +1069,49 @@ impl HistoryStore for PostgresHistoryStore {
                 "Reset reason must not be empty".to_string(),
             ));
         }
-
         let inspection_before = self.resolved_stream_inspection(app_id, channel).await?;
         let previous_stream_id = inspection_before.stream_id.clone();
         let new_stream_id = uuid::Uuid::new_v4().to_string();
         let now_ms = sockudo_core::history::now_ms();
-
         let mut tx = self.pool.begin().await.map_err(|e| {
-            Error::Internal(format!("Failed to begin history reset transaction: {e}"))
+            Error::Internal(format!(
+                "Failed to begin MySQL history reset transaction: {e}"
+            ))
         })?;
-
-        let delete_sql = format!(
-            "DELETE FROM {} WHERE app_id = $1 AND channel = $2 RETURNING payload_size_bytes",
+        let stats_sql = format!(
+            "SELECT COUNT(*) AS count, CAST(COALESCE(SUM(payload_size_bytes), 0) AS SIGNED) AS bytes FROM {} WHERE app_id = ? AND channel = ?",
             self.tables.entries
         );
-        let deleted_rows = sqlx::query(&delete_sql)
+        let stats = sqlx::query(&stats_sql)
             .bind(app_id)
             .bind(channel)
-            .fetch_all(&mut *tx)
+            .fetch_one(&mut *tx)
             .await
             .map_err(|e| {
-                Error::Internal(format!("Failed to purge history rows during reset: {e}"))
+                Error::Internal(format!(
+                    "Failed to inspect MySQL history rows during reset: {e}"
+                ))
             })?;
-        let purged_messages = deleted_rows.len() as u64;
-        let purged_bytes = deleted_rows
-            .iter()
-            .map(|row| row.get::<i64, _>("payload_size_bytes") as u64)
-            .sum::<u64>();
+        let purged_messages = stats.get::<i64, _>("count") as u64;
+        let purged_bytes = stats.get::<i64, _>("bytes") as u64;
+
+        let delete_sql = format!(
+            "DELETE FROM {} WHERE app_id = ? AND channel = ?",
+            self.tables.entries
+        );
+        sqlx::query(&delete_sql)
+            .bind(app_id)
+            .bind(channel)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to purge MySQL history rows during reset: {e}"
+                ))
+            })?;
 
         let upsert_sql = format!(
-            r#"
-            INSERT INTO {} (
-                app_id, channel, stream_id, next_serial, durable_state, durable_state_reason,
-                durable_state_node_id, durable_state_changed_at_ms, retained_messages, retained_bytes,
-                oldest_available_serial, newest_available_serial, oldest_available_published_at_ms,
-                newest_available_published_at_ms, updated_at_ms
-            ) VALUES ($1, $2, $3, 1, 'healthy', NULL, NULL, $4, 0, 0, NULL, NULL, NULL, NULL, $4)
-            ON CONFLICT (app_id, channel)
-            DO UPDATE SET
-                stream_id = EXCLUDED.stream_id,
-                next_serial = 1,
-                durable_state = 'healthy',
-                durable_state_reason = NULL,
-                durable_state_node_id = NULL,
-                durable_state_changed_at_ms = EXCLUDED.durable_state_changed_at_ms,
-                retained_messages = 0,
-                retained_bytes = 0,
-                oldest_available_serial = NULL,
-                newest_available_serial = NULL,
-                oldest_available_published_at_ms = NULL,
-                newest_available_published_at_ms = NULL,
-                updated_at_ms = EXCLUDED.updated_at_ms
-            "#,
+            "INSERT INTO {} (app_id, channel, stream_id, next_serial, durable_state, durable_state_reason, durable_state_node_id, durable_state_changed_at_ms, retained_messages, retained_bytes, oldest_available_serial, newest_available_serial, oldest_available_published_at_ms, newest_available_published_at_ms, updated_at_ms) VALUES (?, ?, ?, 1, 'healthy', NULL, NULL, ?, 0, 0, NULL, NULL, NULL, NULL, ?) ON DUPLICATE KEY UPDATE stream_id = VALUES(stream_id), next_serial = 1, durable_state = 'healthy', durable_state_reason = NULL, durable_state_node_id = NULL, durable_state_changed_at_ms = VALUES(durable_state_changed_at_ms), retained_messages = 0, retained_bytes = 0, oldest_available_serial = NULL, newest_available_serial = NULL, oldest_available_published_at_ms = NULL, newest_available_published_at_ms = NULL, updated_at_ms = VALUES(updated_at_ms)",
             self.tables.streams
         );
         sqlx::query(&upsert_sql)
@@ -1303,14 +1119,15 @@ impl HistoryStore for PostgresHistoryStore {
             .bind(channel)
             .bind(&new_stream_id)
             .bind(now_ms)
+            .bind(now_ms)
             .execute(&mut *tx)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to rotate history stream: {e}")))?;
-
+            .map_err(|e| Error::Internal(format!("Failed to rotate MySQL history stream: {e}")))?;
         tx.commit().await.map_err(|e| {
-            Error::Internal(format!("Failed to commit history reset transaction: {e}"))
+            Error::Internal(format!(
+                "Failed to commit MySQL history reset transaction: {e}"
+            ))
         })?;
-
         self.degraded_channels
             .remove(&degraded_channel_key(app_id, channel));
         if let Some(cache) = self.cache_manager.as_ref() {
@@ -1319,19 +1136,7 @@ impl HistoryStore for PostgresHistoryStore {
         if let Some(metrics) = self.metrics.as_deref() {
             let _ = refresh_history_state_metrics(&self.pool, &self.tables, metrics, app_id).await;
         }
-
-        info!(
-            app_id = %app_id,
-            channel = %channel,
-            previous_stream_id = ?previous_stream_id,
-            new_stream_id = %new_stream_id,
-            purged_messages,
-            purged_bytes,
-            reason = %reason,
-            requested_by = ?requested_by,
-            "Operator reset durable history stream"
-        );
-
+        info!(app_id = %app_id, channel = %channel, previous_stream_id = ?previous_stream_id, new_stream_id = %new_stream_id, purged_messages, purged_bytes, reason = %reason, requested_by = ?requested_by, "Operator reset durable history stream");
         let inspection = self.resolved_stream_inspection(app_id, channel).await?;
         Ok(HistoryResetResult {
             app_id: app_id.to_string(),
@@ -1352,45 +1157,69 @@ impl HistoryStore for PostgresHistoryStore {
     ) -> Result<HistoryPurgeResult> {
         request.validate()?;
         let now_ms = sockudo_core::history::now_ms();
-
         let mut tx = self.pool.begin().await.map_err(|e| {
-            Error::Internal(format!("Failed to begin history purge transaction: {e}"))
+            Error::Internal(format!(
+                "Failed to begin MySQL history purge transaction: {e}"
+            ))
         })?;
-
-        let delete_sql = match request.mode {
+        let stats_sql = match request.mode {
             HistoryPurgeMode::All => format!(
-                "DELETE FROM {} WHERE app_id = $1 AND channel = $2 RETURNING payload_size_bytes",
+                "SELECT COUNT(*) AS count, CAST(COALESCE(SUM(payload_size_bytes), 0) AS SIGNED) AS bytes FROM {} WHERE app_id = ? AND channel = ?",
                 self.tables.entries
             ),
             HistoryPurgeMode::BeforeSerial => format!(
-                "DELETE FROM {} WHERE app_id = $1 AND channel = $2 AND serial < $3 RETURNING payload_size_bytes",
+                "SELECT COUNT(*) AS count, CAST(COALESCE(SUM(payload_size_bytes), 0) AS SIGNED) AS bytes FROM {} WHERE app_id = ? AND channel = ? AND serial < ?",
                 self.tables.entries
             ),
             HistoryPurgeMode::BeforeTimeMs => format!(
-                "DELETE FROM {} WHERE app_id = $1 AND channel = $2 AND published_at_ms < $3 RETURNING payload_size_bytes",
+                "SELECT COUNT(*) AS count, CAST(COALESCE(SUM(payload_size_bytes), 0) AS SIGNED) AS bytes FROM {} WHERE app_id = ? AND channel = ? AND published_at_ms < ?",
                 self.tables.entries
             ),
         };
-        let mut query = sqlx::query(&delete_sql).bind(app_id).bind(channel);
+        let mut stats_query = sqlx::query(&stats_sql).bind(app_id).bind(channel);
         match request.mode {
             HistoryPurgeMode::All => {}
             HistoryPurgeMode::BeforeSerial => {
-                query = query.bind(request.before_serial.unwrap_or_default() as i64);
+                stats_query = stats_query.bind(request.before_serial.unwrap_or_default() as i64)
             }
             HistoryPurgeMode::BeforeTimeMs => {
-                query = query.bind(request.before_time_ms.unwrap_or_default());
+                stats_query = stats_query.bind(request.before_time_ms.unwrap_or_default())
             }
         }
+        let stats = stats_query.fetch_one(&mut *tx).await.map_err(|e| {
+            Error::Internal(format!("Failed to inspect MySQL history purge rows: {e}"))
+        })?;
+        let purged_messages = stats.get::<i64, _>("count") as u64;
+        let purged_bytes = stats.get::<i64, _>("bytes") as u64;
 
-        let deleted_rows = query
-            .fetch_all(&mut *tx)
+        let delete_sql = match request.mode {
+            HistoryPurgeMode::All => format!(
+                "DELETE FROM {} WHERE app_id = ? AND channel = ?",
+                self.tables.entries
+            ),
+            HistoryPurgeMode::BeforeSerial => format!(
+                "DELETE FROM {} WHERE app_id = ? AND channel = ? AND serial < ?",
+                self.tables.entries
+            ),
+            HistoryPurgeMode::BeforeTimeMs => format!(
+                "DELETE FROM {} WHERE app_id = ? AND channel = ? AND published_at_ms < ?",
+                self.tables.entries
+            ),
+        };
+        let mut delete_query = sqlx::query(&delete_sql).bind(app_id).bind(channel);
+        match request.mode {
+            HistoryPurgeMode::All => {}
+            HistoryPurgeMode::BeforeSerial => {
+                delete_query = delete_query.bind(request.before_serial.unwrap_or_default() as i64)
+            }
+            HistoryPurgeMode::BeforeTimeMs => {
+                delete_query = delete_query.bind(request.before_time_ms.unwrap_or_default())
+            }
+        }
+        delete_query
+            .execute(&mut *tx)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to purge history rows: {e}")))?;
-        let purged_messages = deleted_rows.len() as u64;
-        let purged_bytes = deleted_rows
-            .iter()
-            .map(|row| row.get::<i64, _>("payload_size_bytes") as u64)
-            .sum::<u64>();
+            .map_err(|e| Error::Internal(format!("Failed to purge MySQL history rows: {e}")))?;
 
         let retained = Self::update_stream_retention_from_entries(
             &mut tx,
@@ -1400,11 +1229,11 @@ impl HistoryStore for PostgresHistoryStore {
             now_ms,
         )
         .await?;
-
         tx.commit().await.map_err(|e| {
-            Error::Internal(format!("Failed to commit history purge transaction: {e}"))
+            Error::Internal(format!(
+                "Failed to commit MySQL history purge transaction: {e}"
+            ))
         })?;
-
         if let Some(metrics) = self.metrics.as_ref() {
             metrics.update_history_retained(
                 app_id,
@@ -1415,20 +1244,7 @@ impl HistoryStore for PostgresHistoryStore {
                 refresh_history_state_metrics(&self.pool, &self.tables, metrics.as_ref(), app_id)
                     .await;
         }
-
-        info!(
-            app_id = %app_id,
-            channel = %channel,
-            mode = %request.mode.as_str(),
-            before_serial = request.before_serial,
-            before_time_ms = request.before_time_ms,
-            purged_messages,
-            purged_bytes,
-            reason = %request.reason,
-            requested_by = ?request.requested_by,
-            "Operator purged durable history rows"
-        );
-
+        info!(app_id = %app_id, channel = %channel, mode = %request.mode.as_str(), before_serial = request.before_serial, before_time_ms = request.before_time_ms, purged_messages, purged_bytes, reason = %request.reason, requested_by = ?request.requested_by, "Operator purged durable history rows");
         let inspection = self.resolved_stream_inspection(app_id, channel).await?;
         Ok(HistoryPurgeResult {
             app_id: app_id.to_string(),
@@ -1443,7 +1259,6 @@ impl HistoryStore for PostgresHistoryStore {
     }
 }
 
-#[cfg(feature = "postgres")]
 fn is_truncated_by_retention(
     bounds: &HistoryQueryBounds,
     retained: &HistoryRetentionStats,
@@ -1466,7 +1281,6 @@ fn is_truncated_by_retention(
             .is_some_and(|oldest_serial| oldest_serial > 1)
 }
 
-#[cfg(feature = "postgres")]
 fn parse_history_durable_state(raw: &str) -> HistoryDurableState {
     match raw {
         "healthy" => HistoryDurableState::Healthy,
@@ -1476,17 +1290,14 @@ fn parse_history_durable_state(raw: &str) -> HistoryDurableState {
     }
 }
 
-#[cfg(feature = "postgres")]
 fn degraded_channel_key(app_id: &str, channel: &str) -> String {
     format!("{app_id}\0{channel}")
 }
 
-#[cfg(feature = "postgres")]
 fn degraded_cache_key(app_id: &str, channel: &str) -> String {
     format!("history:degraded:{app_id}:{channel}")
 }
 
-#[cfg(feature = "postgres")]
 fn resolve_runtime_state(
     durable_state: HistoryStreamRuntimeState,
     local_hint: Option<HistoryDegradedState>,
@@ -1519,7 +1330,6 @@ fn resolve_runtime_state(
     durable_state
 }
 
-#[cfg(feature = "postgres")]
 fn increment_app_queue_depth(
     queue_depth_by_app: &DashMap<String, usize>,
     app_id: &str,
@@ -1537,7 +1347,6 @@ fn increment_app_queue_depth(
     }
 }
 
-#[cfg(feature = "postgres")]
 fn decrement_app_queue_depth(
     queue_depth_by_app: &DashMap<String, usize>,
     app_id: &str,
@@ -1560,9 +1369,8 @@ fn decrement_app_queue_depth(
     }
 }
 
-#[cfg(feature = "postgres")]
 async fn mark_channel_degraded(
-    pool: &PgPool,
+    pool: &MySqlPool,
     tables: &HistoryTables,
     degraded_channels: &DashMap<String, HistoryDegradedState>,
     cache_manager: Option<&Arc<dyn CacheManager + Send + Sync>>,
@@ -1587,7 +1395,7 @@ async fn mark_channel_degraded(
         let _ = cache
             .set(
                 &degraded_cache_key(app_id, channel),
-                &sonic_rs::to_string(&json!({
+                &sonic_rs::to_string(&sonic_rs::json!({
                     "app_id": state.app_id,
                     "channel": state.channel,
                     "durable_state": state.durable_state.as_str(),
@@ -1600,43 +1408,28 @@ async fn mark_channel_degraded(
             )
             .await;
     }
-
     let update_sql = format!(
-        r#"
-        UPDATE {}
-        SET durable_state = $3,
-            durable_state_reason = $4,
-            durable_state_node_id = $5,
-            durable_state_changed_at_ms = $6
-        WHERE app_id = $1
-          AND channel = $2
-          AND COALESCE(durable_state_changed_at_ms, 0) <= $6
-        "#,
+        "UPDATE {} SET durable_state = ?, durable_state_reason = ?, durable_state_node_id = ?, durable_state_changed_at_ms = ? WHERE app_id = ? AND channel = ? AND IFNULL(durable_state_changed_at_ms, 0) <= ?",
         tables.streams
     );
     if let Err(err) = sqlx::query(&update_sql)
-        .bind(app_id)
-        .bind(channel)
         .bind(state.durable_state.as_str())
         .bind(&state.reason)
         .bind(&state.node_id)
         .bind(state.last_transition_at_ms)
+        .bind(app_id)
+        .bind(channel)
+        .bind(state.last_transition_at_ms)
         .execute(pool)
         .await
     {
-        error!(
-            app_id = %app_id,
-            channel = %channel,
-            "Failed to persist history degraded state: {err}"
-        );
+        error!(app_id = %app_id, channel = %channel, "Failed to persist MySQL history degraded state: {err}");
     }
-
     if let Some(metrics) = metrics {
         let _ = refresh_history_state_metrics(pool, tables, metrics, app_id).await;
     }
 }
 
-#[cfg(feature = "postgres")]
 async fn get_cached_channel_degraded(
     cache_manager: Option<&Arc<dyn CacheManager + Send + Sync>>,
     app_id: &str,
@@ -1645,8 +1438,9 @@ async fn get_cached_channel_degraded(
     if let Some(cache) = cache_manager
         && let Some(raw) = cache.get(&degraded_cache_key(app_id, channel)).await?
     {
-        let value: sonic_rs::Value = sonic_rs::from_str(&raw)
-            .map_err(|e| Error::Internal(format!("Failed to parse degraded history state: {e}")))?;
+        let value: sonic_rs::Value = sonic_rs::from_str(&raw).map_err(|e| {
+            Error::Internal(format!("Failed to parse degraded MySQL history state: {e}"))
+        })?;
         return Ok(Some(HistoryDegradedState {
             app_id: value
                 .get("app_id")
@@ -1679,26 +1473,28 @@ async fn get_cached_channel_degraded(
             observed_source: "shared_cache_hint",
         }));
     }
-
     Ok(None)
 }
 
-#[cfg(feature = "postgres")]
 async fn refresh_history_state_metrics(
-    pool: &PgPool,
+    pool: &MySqlPool,
     tables: &HistoryTables,
     metrics: &(dyn MetricsInterface + Send + Sync),
     app_id: &str,
 ) -> Result<()> {
     let sql = format!(
-        "SELECT COALESCE(SUM(CASE WHEN durable_state <> 'healthy' THEN 1 ELSE 0 END), 0) AS degraded_channels, COALESCE(SUM(CASE WHEN durable_state = 'reset_required' THEN 1 ELSE 0 END), 0) AS reset_required_channels FROM {} WHERE app_id = $1",
+        "SELECT COALESCE(SUM(CASE WHEN durable_state <> 'healthy' THEN 1 ELSE 0 END), 0) AS degraded_channels, COALESCE(SUM(CASE WHEN durable_state = 'reset_required' THEN 1 ELSE 0 END), 0) AS reset_required_channels FROM {} WHERE app_id = ?",
         tables.streams
     );
     let row = sqlx::query(&sql)
         .bind(app_id)
         .fetch_one(pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to refresh history state metrics: {e}")))?;
+        .map_err(|e| {
+            Error::Internal(format!(
+                "Failed to refresh MySQL history state metrics: {e}"
+            ))
+        })?;
     metrics
         .update_history_degraded_channels(app_id, row.get::<i64, _>("degraded_channels") as usize);
     metrics.update_history_reset_required_channels(
@@ -1706,4 +1502,70 @@ async fn refresh_history_state_metrics(
         row.get::<i64, _>("reset_required_channels") as usize,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sockudo_core::history_conformance::HistoryStoreConformance;
+
+    async fn is_mysql_available() -> bool {
+        let url = "mysql://root:root123@127.0.0.1:13306/sockudo";
+        MySqlPoolOptions::new()
+            .max_connections(1)
+            .connect(url)
+            .await
+            .is_ok()
+    }
+
+    async fn build_store() -> Arc<dyn HistoryStore + Send + Sync> {
+        let db = DatabaseConnection {
+            host: "127.0.0.1".to_string(),
+            port: 13306,
+            username: "root".to_string(),
+            password: "root123".to_string(),
+            database: "sockudo".to_string(),
+            ..Default::default()
+        };
+        let pooling = DatabasePooling::default();
+        let mut config = HistoryConfig::default();
+        config.enabled = true;
+        config.backend = sockudo_core::options::HistoryBackend::Mysql;
+        config.mysql.table_prefix =
+            format!("sockudo_history_test_{}", uuid::Uuid::new_v4().simple());
+
+        create_mysql_history_store(&db, &pooling, config, None, None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mysql_history_store_conformance_serial_and_stream_continuity() {
+        if !is_mysql_available().await {
+            eprintln!("Skipping test: MySQL not available");
+            return;
+        }
+        let store = build_store().await;
+        HistoryStoreConformance::assert_serial_monotonicity(store.clone())
+            .await
+            .unwrap();
+        HistoryStoreConformance::assert_stream_id_continuity(store)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_history_store_conformance_pagination_and_reset_semantics() {
+        if !is_mysql_available().await {
+            eprintln!("Skipping test: MySQL not available");
+            return;
+        }
+        let store = build_store().await;
+        HistoryStoreConformance::assert_cursor_pagination(store.clone())
+            .await
+            .unwrap();
+        HistoryStoreConformance::assert_purge_and_reset_semantics(store)
+            .await
+            .unwrap();
+    }
 }

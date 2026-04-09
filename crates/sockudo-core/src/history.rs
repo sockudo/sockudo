@@ -143,11 +143,174 @@ pub struct HistoryPage {
     pub truncated_by_retention: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryDurableState {
+    #[default]
+    Healthy,
+    Degraded,
+    ResetRequired,
+}
+
+impl HistoryDurableState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::ResetRequired => "reset_required",
+        }
+    }
+
+    pub fn recovery_allowed(self) -> bool {
+        matches!(self, Self::Healthy)
+    }
+
+    pub fn reset_required(self) -> bool {
+        matches!(self, Self::ResetRequired)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryStreamRuntimeState {
+    pub app_id: String,
+    pub channel: String,
+    pub stream_id: Option<String>,
+    pub durable_state: HistoryDurableState,
+    pub recovery_allowed: bool,
+    pub reset_required: bool,
+    pub reason: Option<String>,
+    pub node_id: Option<String>,
+    pub last_transition_at_ms: Option<i64>,
+    pub authoritative_source: String,
+    pub observed_source: String,
+}
+
+impl HistoryStreamRuntimeState {
+    pub fn healthy(
+        app_id: impl Into<String>,
+        channel: impl Into<String>,
+        stream_id: Option<String>,
+        source: &str,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            channel: channel.into(),
+            stream_id,
+            durable_state: HistoryDurableState::Healthy,
+            recovery_allowed: true,
+            reset_required: false,
+            reason: None,
+            node_id: None,
+            last_transition_at_ms: None,
+            authoritative_source: source.to_string(),
+            observed_source: source.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryStreamInspection {
+    pub app_id: String,
+    pub channel: String,
+    pub stream_id: Option<String>,
+    pub next_serial: Option<u64>,
+    pub retained: HistoryRetentionStats,
+    pub state: HistoryStreamRuntimeState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryPurgeMode {
+    All,
+    BeforeSerial,
+    BeforeTimeMs,
+}
+
+impl HistoryPurgeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::BeforeSerial => "before_serial",
+            Self::BeforeTimeMs => "before_time_ms",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryPurgeRequest {
+    pub mode: HistoryPurgeMode,
+    pub before_serial: Option<u64>,
+    pub before_time_ms: Option<i64>,
+    pub reason: String,
+    pub requested_by: Option<String>,
+}
+
+impl HistoryPurgeRequest {
+    pub fn validate(&self) -> Result<()> {
+        if self.reason.trim().is_empty() {
+            return Err(Error::InvalidMessageFormat(
+                "Purge reason must not be empty".to_string(),
+            ));
+        }
+
+        match self.mode {
+            HistoryPurgeMode::All => {
+                if self.before_serial.is_some() || self.before_time_ms.is_some() {
+                    return Err(Error::InvalidMessageFormat(
+                        "Purge mode 'all' does not accept bounds".to_string(),
+                    ));
+                }
+            }
+            HistoryPurgeMode::BeforeSerial => {
+                if self.before_serial.is_none() || self.before_time_ms.is_some() {
+                    return Err(Error::InvalidMessageFormat(
+                        "Purge mode 'before_serial' requires before_serial only".to_string(),
+                    ));
+                }
+            }
+            HistoryPurgeMode::BeforeTimeMs => {
+                if self.before_time_ms.is_none() || self.before_serial.is_some() {
+                    return Err(Error::InvalidMessageFormat(
+                        "Purge mode 'before_time_ms' requires before_time_ms only".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryResetResult {
+    pub app_id: String,
+    pub channel: String,
+    pub previous_stream_id: Option<String>,
+    pub new_stream_id: String,
+    pub purged_messages: u64,
+    pub purged_bytes: u64,
+    pub inspection: HistoryStreamInspection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryPurgeResult {
+    pub app_id: String,
+    pub channel: String,
+    pub mode: HistoryPurgeMode,
+    pub before_serial: Option<u64>,
+    pub before_time_ms: Option<i64>,
+    pub purged_messages: u64,
+    pub purged_bytes: u64,
+    pub inspection: HistoryStreamInspection,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HistoryRuntimeStatus {
     pub enabled: bool,
     pub backend: String,
+    pub state_authority: String,
     pub degraded_channels: usize,
+    pub reset_required_channels: usize,
     pub queue_depth: usize,
 }
 
@@ -156,7 +319,9 @@ impl Default for HistoryRuntimeStatus {
         Self {
             enabled: false,
             backend: "disabled".to_string(),
+            state_authority: "disabled".to_string(),
             degraded_channels: 0,
+            reset_required_channels: 0,
             queue_depth: 0,
         }
     }
@@ -231,6 +396,55 @@ pub trait HistoryStore: Send + Sync {
 
     async fn read_page(&self, request: HistoryReadRequest) -> Result<HistoryPage>;
 
+    async fn stream_runtime_state(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HistoryStreamRuntimeState> {
+        Ok(HistoryStreamRuntimeState::healthy(
+            app_id, channel, None, "disabled",
+        ))
+    }
+
+    async fn stream_inspection(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HistoryStreamInspection> {
+        Ok(HistoryStreamInspection {
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            stream_id: None,
+            next_serial: None,
+            retained: HistoryRetentionStats::default(),
+            state: self.stream_runtime_state(app_id, channel).await?,
+        })
+    }
+
+    async fn reset_stream(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        _reason: &str,
+        _requested_by: Option<&str>,
+    ) -> Result<HistoryResetResult> {
+        Err(Error::Configuration(
+            "Durable history reset is not supported by this store".to_string(),
+        ))
+    }
+
+    async fn purge_stream(
+        &self,
+        _app_id: &str,
+        _channel: &str,
+        request: HistoryPurgeRequest,
+    ) -> Result<HistoryPurgeResult> {
+        request.validate()?;
+        Err(Error::Configuration(
+            "Durable history purge is not supported by this store".to_string(),
+        ))
+    }
+
     async fn runtime_status(&self) -> Result<HistoryRuntimeStatus> {
         Ok(HistoryRuntimeStatus::default())
     }
@@ -263,8 +477,43 @@ impl HistoryStore for NoopHistoryStore {
         ))
     }
 
+    async fn stream_runtime_state(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HistoryStreamRuntimeState> {
+        Ok(HistoryStreamRuntimeState {
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            stream_id: None,
+            durable_state: HistoryDurableState::ResetRequired,
+            recovery_allowed: false,
+            reset_required: true,
+            reason: Some("durable_history_disabled".to_string()),
+            node_id: None,
+            last_transition_at_ms: None,
+            authoritative_source: "disabled".to_string(),
+            observed_source: "disabled".to_string(),
+        })
+    }
+
     async fn runtime_status(&self) -> Result<HistoryRuntimeStatus> {
         Ok(HistoryRuntimeStatus::default())
+    }
+
+    async fn stream_inspection(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HistoryStreamInspection> {
+        Ok(HistoryStreamInspection {
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            stream_id: None,
+            next_serial: None,
+            retained: HistoryRetentionStats::default(),
+            state: self.stream_runtime_state(app_id, channel).await?,
+        })
     }
 }
 
@@ -368,6 +617,24 @@ impl MemoryHistoryStore {
             }
         }
     }
+
+    fn retained_from_channel(channel_state: &MemoryHistoryChannel) -> HistoryRetentionStats {
+        HistoryRetentionStats {
+            stream_id: Some(channel_state.stream_id.clone()),
+            retained_messages: channel_state.records.len() as u64,
+            retained_bytes: channel_state.retained_bytes,
+            oldest_serial: channel_state.records.front().map(|record| record.serial),
+            newest_serial: channel_state.records.back().map(|record| record.serial),
+            oldest_published_at_ms: channel_state
+                .records
+                .front()
+                .map(|record| record.published_at_ms),
+            newest_published_at_ms: channel_state
+                .records
+                .back()
+                .map(|record| record.published_at_ms),
+        }
+    }
 }
 
 #[async_trait]
@@ -422,21 +689,7 @@ impl HistoryStore for MemoryHistoryStore {
             .unwrap_or_else(|| Self::default_retention(&self.config));
         Self::evict_channel(&retention, channel_state);
 
-        let retained = HistoryRetentionStats {
-            stream_id: Some(channel_state.stream_id.clone()),
-            retained_messages: channel_state.records.len() as u64,
-            retained_bytes: channel_state.retained_bytes,
-            oldest_serial: channel_state.records.front().map(|record| record.serial),
-            newest_serial: channel_state.records.back().map(|record| record.serial),
-            oldest_published_at_ms: channel_state
-                .records
-                .front()
-                .map(|record| record.published_at_ms),
-            newest_published_at_ms: channel_state
-                .records
-                .back()
-                .map(|record| record.published_at_ms),
-        };
+        let retained = Self::retained_from_channel(channel_state);
 
         if let Some(cursor) = request.cursor.as_ref() {
             if cursor.stream_id != channel_state.stream_id {
@@ -545,8 +798,167 @@ impl HistoryStore for MemoryHistoryStore {
         Ok(HistoryRuntimeStatus {
             enabled: true,
             backend: "memory".to_string(),
+            state_authority: "in_memory".to_string(),
             degraded_channels: 0,
+            reset_required_channels: 0,
             queue_depth: 0,
+        })
+    }
+
+    async fn stream_runtime_state(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HistoryStreamRuntimeState> {
+        let key = Self::channel_key(app_id, channel);
+        let mut channels = self.channels.write().await;
+        let channel_state = channels.entry(key).or_default();
+        let retention = channel_state
+            .retention
+            .clone()
+            .unwrap_or_else(|| Self::default_retention(&self.config));
+        Self::evict_channel(&retention, channel_state);
+
+        Ok(HistoryStreamRuntimeState::healthy(
+            app_id,
+            channel,
+            Some(channel_state.stream_id.clone()),
+            "in_memory",
+        ))
+    }
+
+    async fn stream_inspection(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HistoryStreamInspection> {
+        let key = Self::channel_key(app_id, channel);
+        let mut channels = self.channels.write().await;
+        let channel_state = channels.entry(key).or_default();
+        let retention = channel_state
+            .retention
+            .clone()
+            .unwrap_or_else(|| Self::default_retention(&self.config));
+        Self::evict_channel(&retention, channel_state);
+
+        Ok(HistoryStreamInspection {
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            stream_id: Some(channel_state.stream_id.clone()),
+            next_serial: Some(channel_state.next_serial),
+            retained: Self::retained_from_channel(channel_state),
+            state: HistoryStreamRuntimeState::healthy(
+                app_id,
+                channel,
+                Some(channel_state.stream_id.clone()),
+                "in_memory",
+            ),
+        })
+    }
+
+    async fn reset_stream(
+        &self,
+        app_id: &str,
+        channel: &str,
+        _reason: &str,
+        _requested_by: Option<&str>,
+    ) -> Result<HistoryResetResult> {
+        let key = Self::channel_key(app_id, channel);
+        let mut channels = self.channels.write().await;
+        let channel_state = channels.entry(key).or_default();
+        let previous_stream_id = Some(channel_state.stream_id.clone());
+        let purged_messages = channel_state.records.len() as u64;
+        let purged_bytes = channel_state.retained_bytes;
+        channel_state.records.clear();
+        channel_state.retained_bytes = 0;
+        channel_state.next_serial = 1;
+        channel_state.stream_id = uuid::Uuid::new_v4().to_string();
+
+        let inspection = HistoryStreamInspection {
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            stream_id: Some(channel_state.stream_id.clone()),
+            next_serial: Some(channel_state.next_serial),
+            retained: Self::retained_from_channel(channel_state),
+            state: HistoryStreamRuntimeState::healthy(
+                app_id,
+                channel,
+                Some(channel_state.stream_id.clone()),
+                "in_memory",
+            ),
+        };
+
+        Ok(HistoryResetResult {
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            previous_stream_id,
+            new_stream_id: inspection.stream_id.clone().unwrap_or_default(),
+            purged_messages,
+            purged_bytes,
+            inspection,
+        })
+    }
+
+    async fn purge_stream(
+        &self,
+        app_id: &str,
+        channel: &str,
+        request: HistoryPurgeRequest,
+    ) -> Result<HistoryPurgeResult> {
+        request.validate()?;
+        let key = Self::channel_key(app_id, channel);
+        let mut channels = self.channels.write().await;
+        let channel_state = channels.entry(key).or_default();
+
+        let previous_records = channel_state.records.len();
+        let previous_bytes = channel_state.retained_bytes;
+        let retained: VecDeque<_> = match request.mode {
+            HistoryPurgeMode::All => VecDeque::new(),
+            HistoryPurgeMode::BeforeSerial => channel_state
+                .records
+                .iter()
+                .filter(|record| record.serial >= request.before_serial.unwrap_or_default())
+                .cloned()
+                .collect(),
+            HistoryPurgeMode::BeforeTimeMs => channel_state
+                .records
+                .iter()
+                .filter(|record| {
+                    record.published_at_ms >= request.before_time_ms.unwrap_or_default()
+                })
+                .cloned()
+                .collect(),
+        };
+        channel_state.records = retained;
+        channel_state.retained_bytes = channel_state
+            .records
+            .iter()
+            .map(|record| record.payload_bytes.len() as u64)
+            .sum();
+
+        let inspection = HistoryStreamInspection {
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            stream_id: Some(channel_state.stream_id.clone()),
+            next_serial: Some(channel_state.next_serial),
+            retained: Self::retained_from_channel(channel_state),
+            state: HistoryStreamRuntimeState::healthy(
+                app_id,
+                channel,
+                Some(channel_state.stream_id.clone()),
+                "in_memory",
+            ),
+        };
+
+        Ok(HistoryPurgeResult {
+            app_id: app_id.to_string(),
+            channel: channel.to_string(),
+            mode: request.mode,
+            before_serial: request.before_serial,
+            before_time_ms: request.before_time_ms,
+            purged_messages: previous_records.saturating_sub(channel_state.records.len()) as u64,
+            purged_bytes: previous_bytes.saturating_sub(channel_state.retained_bytes),
+            inspection,
         })
     }
 }
