@@ -1,0 +1,121 @@
+groups:
+  - name: sockudo-history-slo
+    interval: 30s
+    rules:
+      - alert: SockudoHistoryDegradedChannels
+        expr: max_over_time(sum by (app_id) (sockudo_history_degraded_channels)[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: sockudo
+          category: history
+        annotations:
+          summary: "Sockudo durable history is degraded"
+          description: "At least one durable history channel is degraded for app {{ $labels.app_id }} for more than 5 minutes. Cold history and recovery are failing closed."
+
+      - alert: SockudoHistoryResetRequiredChannels
+        expr: max_over_time(sum by (app_id) (sockudo_history_reset_required_channels)[2m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: sockudo
+          category: history
+        annotations:
+          summary: "Sockudo durable stream reset required"
+          description: "At least one channel for app {{ $labels.app_id }} is in reset_required state. Operator repair or stream reset is required before cold recovery can resume."
+
+      - alert: SockudoHistoryQueueDepthSustained
+        expr: max_over_time(sum by (app_id) (sockudo_history_queue_depth)[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: sockudo
+          category: history
+        annotations:
+          summary: "Sockudo history writer queue is not draining"
+          description: "The durable history writer queue for app {{ $labels.app_id }} stayed above zero for 10 minutes. Investigate store latency or burst pressure before it causes degraded channels."
+
+      - alert: SockudoHistoryQueueDepthCritical
+        expr: max_over_time(sum by (app_id) (sockudo_history_queue_depth)[5m]) > 100
+        for: 5m
+        labels:
+          severity: critical
+          service: sockudo
+          category: history
+        annotations:
+          summary: "Sockudo history writer queue depth is critical"
+          description: "The durable history writer queue for app {{ $labels.app_id }} exceeded 100 messages for 5 minutes. This is close to writer backpressure and continuity degradation."
+
+      - alert: SockudoHistoryWriteSuccessSLOBurn
+        expr: |
+          (
+            sum by (app_id) (rate(sockudo_history_write_failures_total[5m]))
+            /
+            clamp_min(
+              sum by (app_id) (rate(sockudo_history_writes_total[5m]) + rate(sockudo_history_write_failures_total[5m])),
+              0.001
+            )
+          ) > 0.001
+          and
+          sum by (app_id) (rate(sockudo_history_writes_total[5m]) + rate(sockudo_history_write_failures_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: sockudo
+          category: history
+        annotations:
+          summary: "Sockudo durable history write SLO is burning"
+          description: "History write failure ratio for app {{ $labels.app_id }} exceeded 0.1% over 10 minutes while the service was active."
+
+      - alert: SockudoHistoryWriteSuccessSLOCritical
+        expr: |
+          (
+            sum by (app_id) (rate(sockudo_history_write_failures_total[5m]))
+            /
+            clamp_min(
+              sum by (app_id) (rate(sockudo_history_writes_total[5m]) + rate(sockudo_history_write_failures_total[5m])),
+              0.001
+            )
+          ) > 0.01
+          and
+          sum by (app_id) (rate(sockudo_history_writes_total[5m]) + rate(sockudo_history_write_failures_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          service: sockudo
+          category: history
+        annotations:
+          summary: "Sockudo durable history write path is failing"
+          description: "History write failure ratio for app {{ $labels.app_id }} exceeded 1% over 5 minutes while the service was active."
+
+      - alert: SockudoHistoryRecoveryPersistenceFailures
+        expr: sum by (app_id, code) (rate(sockudo_history_recovery_failures_total{code="persistence_unavailable"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: sockudo
+          category: recovery
+        annotations:
+          summary: "Sockudo cold recovery is failing due to persistence"
+          description: "Recovery failures with code={{ $labels.code }} are occurring for app {{ $labels.app_id }}. Investigate durable store health or degraded stream state."
+
+      - alert: SockudoHistoryRecoveryFailureRateCritical
+        expr: |
+          (
+            sum by (app_id) (rate(sockudo_history_recovery_failures_total{code="persistence_unavailable"}[15m]))
+            /
+            clamp_min(
+              sum by (app_id) (rate(sockudo_history_recovery_success_total[15m]) + rate(sockudo_history_recovery_failures_total{code="persistence_unavailable"}[15m])),
+              0.001
+            )
+          ) > 0.05
+          and
+          sum by (app_id) (rate(sockudo_history_recovery_success_total[15m]) + rate(sockudo_history_recovery_failures_total{code="persistence_unavailable"}[15m])) > 0.05
+        for: 15m
+        labels:
+          severity: critical
+          service: sockudo
+          category: recovery
+        annotations:
+          summary: "Sockudo recovery SLO is failing"
+          description: "Persistence-related recovery failure ratio for app {{ $labels.app_id }} exceeded 5% over 15 minutes."

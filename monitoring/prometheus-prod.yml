@@ -12,6 +12,8 @@ global:
 # Rules for alerting
 rule_files:
   - "/etc/prometheus/rules/*.yml"
+  # Repo example:
+  # - history-recovery-alerts.yml
 
 # Alert manager configuration
 alerting:

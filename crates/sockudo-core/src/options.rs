@@ -1055,6 +1055,10 @@ pub struct ConnectionRecoveryConfig {
 #[serde(rename_all = "lowercase")]
 pub enum HistoryBackend {
     Postgres,
+    Mysql,
+    DynamoDb,
+    SurrealDb,
+    ScyllaDb,
     Memory,
 }
 
@@ -1069,6 +1073,10 @@ impl FromStr for HistoryBackend {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "postgres" | "postgresql" | "pgsql" => Ok(Self::Postgres),
+            "mysql" => Ok(Self::Mysql),
+            "dynamodb" => Ok(Self::DynamoDb),
+            "surrealdb" | "surreal" => Ok(Self::SurrealDb),
+            "scylladb" | "scylla" => Ok(Self::ScyllaDb),
             "memory" => Ok(Self::Memory),
             _ => Err(format!("Unknown history backend: {s}")),
         }
@@ -1093,6 +1101,70 @@ impl Default for PostgresHistoryConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct MySqlHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for MySqlHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DynamoDbHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for DynamoDbHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SurrealDbHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for SurrealDbHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScyllaDbHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for ScyllaDbHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HistoryConfig {
     pub enabled: bool,
     pub rewind_enabled: bool,
@@ -1104,6 +1176,10 @@ pub struct HistoryConfig {
     pub writer_shards: usize,
     pub writer_queue_capacity: usize,
     pub postgres: PostgresHistoryConfig,
+    pub mysql: MySqlHistoryConfig,
+    pub dynamodb: DynamoDbHistoryConfig,
+    pub surrealdb: SurrealDbHistoryConfig,
+    pub scylladb: ScyllaDbHistoryConfig,
 }
 
 impl Default for HistoryConfig {
@@ -1119,6 +1195,10 @@ impl Default for HistoryConfig {
             writer_shards: 16,
             writer_queue_capacity: 4096,
             postgres: PostgresHistoryConfig::default(),
+            mysql: MySqlHistoryConfig::default(),
+            dynamodb: DynamoDbHistoryConfig::default(),
+            surrealdb: SurrealDbHistoryConfig::default(),
+            scylladb: ScyllaDbHistoryConfig::default(),
         }
     }
 }

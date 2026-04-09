@@ -143,6 +143,9 @@ pub trait MetricsInterface: Send + Sync {
     /// Update the number of degraded durable history channels for an app.
     fn update_history_degraded_channels(&self, _app_id: &str, _count: usize) {}
 
+    /// Update the number of reset-required durable history channels for an app.
+    fn update_history_reset_required_channels(&self, _app_id: &str, _count: usize) {}
+
     /// Track a recovery success sourced from hot or cold history.
     fn mark_history_recovery_success(&self, _app_id: &str, _source: &str) {}
 

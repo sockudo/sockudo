@@ -12,7 +12,8 @@ use sockudo_adapter::channel_manager::ChannelManager;
 use sockudo_core::app::App;
 use sockudo_core::error::{HEALTH_CHECK_TIMEOUT_MS, HealthStatus};
 use sockudo_core::history::{
-    HistoryCursor, HistoryDirection, HistoryQueryBounds, HistoryReadRequest,
+    HistoryCursor, HistoryDirection, HistoryPurgeMode, HistoryPurgeRequest, HistoryQueryBounds,
+    HistoryReadRequest,
 };
 use sockudo_core::utils::{self, validate_channel_name};
 use sockudo_core::websocket::SocketId;
@@ -143,6 +144,25 @@ pub struct HistoryQuery {
     pub end_time_ms: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct HistoryResetRequestBody {
+    pub confirm_channel: String,
+    pub confirm_operation: String,
+    pub reason: String,
+    pub requested_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HistoryPurgeRequestBody {
+    pub confirm_channel: String,
+    pub confirm_operation: String,
+    pub mode: HistoryPurgeMode,
+    pub before_serial: Option<u64>,
+    pub before_time_ms: Option<i64>,
+    pub reason: String,
+    pub requested_by: Option<String>,
+}
+
 impl<'de> Deserialize<'de> for ChannelQuery {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -240,11 +260,73 @@ struct StatsResponse {
 struct HistoryStatusResponse {
     enabled: bool,
     backend: String,
+    state_authority: String,
     degraded_channels: usize,
+    reset_required_channels: usize,
     queue_depth: usize,
 }
 
 // --- Helper Functions ---
+
+fn build_history_stream_state_payload(
+    state: &sockudo_core::history::HistoryStreamRuntimeState,
+) -> Value {
+    json!({
+        "stream_id": state.stream_id,
+        "durable_state": state.durable_state.as_str(),
+        "recovery_allowed": state.recovery_allowed,
+        "reset_required": state.reset_required,
+        "reason": state.reason,
+        "node_id": state.node_id,
+        "last_transition_at_ms": state.last_transition_at_ms,
+        "authoritative_source": state.authoritative_source,
+        "observed_source": state.observed_source,
+    })
+}
+
+fn build_history_stream_inspection_payload(
+    inspection: &sockudo_core::history::HistoryStreamInspection,
+) -> Value {
+    json!({
+        "stream_id": inspection.stream_id,
+        "next_serial": inspection.next_serial,
+        "retained": {
+            "stream_id": inspection.retained.stream_id,
+            "retained_messages": inspection.retained.retained_messages,
+            "retained_bytes": inspection.retained.retained_bytes,
+            "oldest_available_serial": inspection.retained.oldest_serial,
+            "newest_available_serial": inspection.retained.newest_serial,
+            "oldest_available_published_at_ms": inspection.retained.oldest_published_at_ms,
+            "newest_available_published_at_ms": inspection.retained.newest_published_at_ms,
+        },
+        "state": build_history_stream_state_payload(&inspection.state),
+    })
+}
+
+fn validate_history_destructive_request(
+    path_channel: &str,
+    confirm_channel: &str,
+    confirm_operation: &str,
+    expected_operation: &str,
+    reason: &str,
+) -> Result<(), AppError> {
+    if confirm_channel != path_channel {
+        return Err(AppError::InvalidInput(
+            "confirm_channel must exactly match the channel path".to_string(),
+        ));
+    }
+    if confirm_operation != expected_operation {
+        return Err(AppError::InvalidInput(format!(
+            "confirm_operation must be '{expected_operation}'"
+        )));
+    }
+    if reason.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "reason must not be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 /// Helper to build cache payload string
 fn build_cache_payload(
@@ -411,7 +493,9 @@ pub async fn stats(
             history: HistoryStatusResponse {
                 enabled: history_status.enabled,
                 backend: history_status.backend,
+                state_authority: history_status.state_authority,
                 degraded_channels: history_status.degraded_channels,
+                reset_required_channels: history_status.reset_required_channels,
                 queue_depth: history_status.queue_depth,
             },
             totals,
@@ -1342,6 +1426,10 @@ pub async fn channel_history(
         start_time_ms: query_params.start_time_ms,
         end_time_ms: query_params.end_time_ms,
     };
+    let stream_state = handler
+        .history_store()
+        .stream_runtime_state(&app_id, &channel_name)
+        .await?;
 
     let page = handler
         .history_store()
@@ -1395,6 +1483,147 @@ pub async fn channel_history(
             "complete": page.complete,
             "truncated_by_retention": page.truncated_by_retention,
         },
+        "stream_state": build_history_stream_state_payload(&stream_state),
+    });
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
+/// GET /apps/{app_id}/channels/{channel_name}/history/state
+#[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
+pub async fn channel_history_state(
+    Path((app_id, channel_name)): Path<(String, String)>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+
+    let history_policy = app.resolved_history(&channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::InvalidInput(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            channel_name
+        )));
+    }
+
+    let stream_inspection = handler
+        .history_store()
+        .stream_inspection(&app_id, &channel_name)
+        .await?;
+    let response_payload = json!({
+        "channel": channel_name,
+        "stream": build_history_stream_inspection_payload(&stream_inspection),
+    });
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
+/// POST /apps/{app_id}/channels/{channel_name}/history/reset
+#[instrument(skip(handler, body), fields(app_id = %app_id, channel = %channel_name))]
+pub async fn channel_history_reset(
+    Path((app_id, channel_name)): Path<(String, String)>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    Json(body): Json<HistoryResetRequestBody>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+    let history_policy = app.resolved_history(&channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::InvalidInput(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            channel_name
+        )));
+    }
+
+    validate_history_destructive_request(
+        &channel_name,
+        &body.confirm_channel,
+        &body.confirm_operation,
+        "reset",
+        &body.reason,
+    )?;
+
+    let result = handler
+        .history_store()
+        .reset_stream(
+            &app_id,
+            &channel_name,
+            &body.reason,
+            body.requested_by.as_deref(),
+        )
+        .await?;
+
+    let response_payload = json!({
+        "ok": true,
+        "operation": "reset",
+        "channel": channel_name,
+        "reason": body.reason,
+        "requested_by": body.requested_by,
+        "previous_stream_id": result.previous_stream_id,
+        "new_stream_id": result.new_stream_id,
+        "purged_messages": result.purged_messages,
+        "purged_bytes": result.purged_bytes,
+        "stream": build_history_stream_inspection_payload(&result.inspection),
+    });
+    let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(response_payload)))
+}
+
+/// POST /apps/{app_id}/channels/{channel_name}/history/purge
+#[instrument(skip(handler, body), fields(app_id = %app_id, channel = %channel_name))]
+pub async fn channel_history_purge(
+    Path((app_id, channel_name)): Path<(String, String)>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    Json(body): Json<HistoryPurgeRequestBody>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &channel_name).await?;
+    let history_policy = app.resolved_history(&channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::InvalidInput(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            channel_name
+        )));
+    }
+
+    validate_history_destructive_request(
+        &channel_name,
+        &body.confirm_channel,
+        &body.confirm_operation,
+        "purge",
+        &body.reason,
+    )?;
+
+    let result = handler
+        .history_store()
+        .purge_stream(
+            &app_id,
+            &channel_name,
+            HistoryPurgeRequest {
+                mode: body.mode,
+                before_serial: body.before_serial,
+                before_time_ms: body.before_time_ms,
+                reason: body.reason.clone(),
+                requested_by: body.requested_by.clone(),
+            },
+        )
+        .await?;
+
+    let response_payload = json!({
+        "ok": true,
+        "operation": "purge",
+        "channel": channel_name,
+        "mode": result.mode.as_str(),
+        "before_serial": result.before_serial,
+        "before_time_ms": result.before_time_ms,
+        "reason": body.reason,
+        "requested_by": body.requested_by,
+        "purged_messages": result.purged_messages,
+        "purged_bytes": result.purged_bytes,
+        "stream": build_history_stream_inspection_payload(&result.inspection),
     });
     let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
@@ -1638,6 +1867,7 @@ pub async fn metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use axum::response::IntoResponse;
     use sockudo_adapter::ConnectionHandlerBuilder;
     use sockudo_adapter::local_adapter::LocalAdapter;
@@ -1648,12 +1878,18 @@ mod tests {
         App, AppChannelsPolicy, AppHistoryConfig, AppPolicy, ChannelNamespace,
         NamespaceHistoryConfig,
     };
-    use sockudo_core::history::{MemoryHistoryStore, MemoryHistoryStoreConfig};
+    use sockudo_core::history::{
+        HistoryDurableState, HistoryPage, HistoryPurgeRequest, HistoryPurgeResult,
+        HistoryReadRequest, HistoryResetResult, HistoryRuntimeStatus, HistoryStore,
+        HistoryStreamInspection, HistoryStreamRuntimeState, HistoryWriteReservation,
+        MemoryHistoryStore, MemoryHistoryStoreConfig,
+    };
     use sockudo_core::namespace::Namespace;
     use sockudo_core::options::MemoryCacheOptions;
     use sockudo_protocol::messages::{MessageData, PusherMessage};
     use sonic_rs::JsonContainerTrait;
     use sonic_rs::JsonValueTrait;
+    use std::sync::Arc;
     use std::time::Instant;
 
     fn test_app() -> App {
@@ -1691,6 +1927,26 @@ mod tests {
     }
 
     fn test_history_handler(max_page_size: usize) -> Arc<ConnectionHandler> {
+        test_history_handler_with_store(
+            max_page_size,
+            Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default())),
+        )
+    }
+
+    fn test_history_handler_with_memory_store(
+        max_page_size: usize,
+    ) -> (Arc<ConnectionHandler>, Arc<MemoryHistoryStore>) {
+        let store = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        (
+            test_history_handler_with_store(max_page_size, store.clone()),
+            store,
+        )
+    }
+
+    fn test_history_handler_with_store(
+        max_page_size: usize,
+        history_store: Arc<dyn HistoryStore + Send + Sync>,
+    ) -> Arc<ConnectionHandler> {
         let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
         let adapter = Arc::new(LocalAdapter::new())
             as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
@@ -1698,7 +1954,6 @@ mod tests {
             "test".to_string(),
             MemoryCacheOptions::default(),
         ));
-        let history_store = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
 
         let mut options = sockudo_core::options::ServerOptions::default();
         options.history.enabled = true;
@@ -1709,6 +1964,109 @@ mod tests {
                 .history_store(history_store)
                 .build(),
         )
+    }
+
+    #[derive(Clone)]
+    struct InspectableHistoryStore {
+        inner: Arc<MemoryHistoryStore>,
+        state: HistoryStreamRuntimeState,
+    }
+
+    #[async_trait]
+    impl HistoryStore for InspectableHistoryStore {
+        async fn reserve_publish_position(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryWriteReservation> {
+            self.inner.reserve_publish_position(app_id, channel).await
+        }
+
+        async fn append(
+            &self,
+            record: sockudo_core::history::HistoryAppendRecord,
+        ) -> sockudo_core::error::Result<()> {
+            self.inner.append(record).await
+        }
+
+        async fn read_page(
+            &self,
+            request: HistoryReadRequest,
+        ) -> sockudo_core::error::Result<HistoryPage> {
+            if !self.state.recovery_allowed {
+                return Err(sockudo_core::error::Error::Internal(
+                    "history_stream_state_blocks_reads".to_string(),
+                ));
+            }
+            self.inner.read_page(request).await
+        }
+
+        async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
+            Ok(HistoryRuntimeStatus {
+                enabled: true,
+                backend: "memory".to_string(),
+                state_authority: "test_state".to_string(),
+                degraded_channels: usize::from(!self.state.recovery_allowed),
+                reset_required_channels: usize::from(self.state.reset_required),
+                queue_depth: 0,
+            })
+        }
+
+        async fn stream_runtime_state(
+            &self,
+            _app_id: &str,
+            _channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamRuntimeState> {
+            Ok(self.state.clone())
+        }
+
+        async fn stream_inspection(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamInspection> {
+            Ok(HistoryStreamInspection {
+                app_id: app_id.to_string(),
+                channel: channel.to_string(),
+                stream_id: self.state.stream_id.clone(),
+                next_serial: Some(10),
+                retained: self
+                    .inner
+                    .read_page(HistoryReadRequest {
+                        app_id: app_id.to_string(),
+                        channel: channel.to_string(),
+                        direction: HistoryDirection::NewestFirst,
+                        limit: 1,
+                        cursor: None,
+                        bounds: HistoryQueryBounds::default(),
+                    })
+                    .await
+                    .map(|page| page.retained)
+                    .unwrap_or_default(),
+                state: self.state.clone(),
+            })
+        }
+
+        async fn reset_stream(
+            &self,
+            app_id: &str,
+            channel: &str,
+            reason: &str,
+            requested_by: Option<&str>,
+        ) -> sockudo_core::error::Result<HistoryResetResult> {
+            self.inner
+                .reset_stream(app_id, channel, reason, requested_by)
+                .await
+        }
+
+        async fn purge_stream(
+            &self,
+            app_id: &str,
+            channel: &str,
+            request: HistoryPurgeRequest,
+        ) -> sockudo_core::error::Result<HistoryPurgeResult> {
+            self.inner.purge_stream(app_id, channel, request).await
+        }
     }
 
     #[tokio::test]
@@ -1796,6 +2154,240 @@ mod tests {
             json["apps"][0]["occupancy"]["subscriptions"].as_u64(),
             Some(3)
         );
+        assert_eq!(
+            json["history"]["state_authority"].as_str(),
+            Some("disabled")
+        );
+        assert_eq!(json["history"]["reset_required_channels"].as_u64(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn channel_history_state_endpoint_returns_authoritative_stream_state() {
+        let stateful_store = Arc::new(InspectableHistoryStore {
+            inner: Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default())),
+            state: HistoryStreamRuntimeState {
+                app_id: "app-1".to_string(),
+                channel: "public-room".to_string(),
+                stream_id: Some("stream-9".to_string()),
+                durable_state: HistoryDurableState::Degraded,
+                recovery_allowed: false,
+                reset_required: false,
+                reason: Some("durable_history_write_failed".to_string()),
+                node_id: Some("node-a".to_string()),
+                last_transition_at_ms: Some(1234),
+                authoritative_source: "durable_store".to_string(),
+                observed_source: "shared_cache_hint".to_string(),
+            },
+        });
+        let handler = test_history_handler_with_store(100, stateful_store);
+        let app = test_app();
+
+        let response = channel_history_state(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+
+        assert_eq!(
+            json["stream"]["state"]["durable_state"].as_str(),
+            Some("degraded")
+        );
+        assert_eq!(
+            json["stream"]["state"]["recovery_allowed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            json["stream"]["state"]["authoritative_source"].as_str(),
+            Some("durable_store")
+        );
+        assert_eq!(
+            json["stream"]["state"]["observed_source"].as_str(),
+            Some("shared_cache_hint")
+        );
+        assert_eq!(json["stream"]["next_serial"].as_u64(), Some(10));
+    }
+
+    #[tokio::test]
+    async fn channel_history_reset_rotates_stream_and_purges_history() {
+        let (handler, store) = test_history_handler_with_memory_store(100);
+        let app = test_app();
+
+        handler
+            .broadcast_to_channel(
+                &app,
+                "public-room",
+                test_history_message("public-room", 1),
+                None,
+            )
+            .await
+            .unwrap();
+        handler
+            .broadcast_to_channel(
+                &app,
+                "public-room",
+                test_history_message("public-room", 2),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let before = store
+            .stream_inspection("app-1", "public-room")
+            .await
+            .unwrap();
+        let previous_stream_id = before.stream_id.clone().unwrap();
+        let response = channel_history_reset(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Extension(app.clone()),
+            State(handler.clone()),
+            Json(HistoryResetRequestBody {
+                confirm_channel: "public-room".to_string(),
+                confirm_operation: "reset".to_string(),
+                reason: "operator cleanup".to_string(),
+                requested_by: Some("ops".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["operation"].as_str(), Some("reset"));
+        assert_eq!(
+            json["previous_stream_id"].as_str(),
+            Some(previous_stream_id.as_str())
+        );
+        assert_ne!(
+            json["new_stream_id"].as_str(),
+            Some(previous_stream_id.as_str())
+        );
+        assert_eq!(json["purged_messages"].as_u64(), Some(2));
+        assert_eq!(
+            json["stream"]["retained"]["retained_messages"].as_u64(),
+            Some(0)
+        );
+
+        handler
+            .broadcast_to_channel(
+                &app,
+                "public-room",
+                test_history_message("public-room", 3),
+                None,
+            )
+            .await
+            .unwrap();
+        let after = store
+            .stream_inspection("app-1", "public-room")
+            .await
+            .unwrap();
+        assert_ne!(
+            after.stream_id.as_deref(),
+            Some(previous_stream_id.as_str())
+        );
+        assert_eq!(after.next_serial, Some(2));
+        assert_eq!(after.retained.retained_messages, 1);
+    }
+
+    #[tokio::test]
+    async fn channel_history_purge_before_serial_advances_retained_floor_without_rotation() {
+        let (handler, store) = test_history_handler_with_memory_store(100);
+        let app = test_app();
+
+        for index in 1..=4 {
+            handler
+                .broadcast_to_channel(
+                    &app,
+                    "public-room",
+                    test_history_message("public-room", index),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let before = store
+            .stream_inspection("app-1", "public-room")
+            .await
+            .unwrap();
+        let response = channel_history_purge(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Extension(app),
+            State(handler),
+            Json(HistoryPurgeRequestBody {
+                confirm_channel: "public-room".to_string(),
+                confirm_operation: "purge".to_string(),
+                mode: HistoryPurgeMode::BeforeSerial,
+                before_serial: Some(3),
+                before_time_ms: None,
+                reason: "trim old backlog".to_string(),
+                requested_by: Some("ops".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["operation"].as_str(), Some("purge"));
+        assert_eq!(json["mode"].as_str(), Some("before_serial"));
+        assert_eq!(json["purged_messages"].as_u64(), Some(2));
+        assert_eq!(
+            json["stream"]["retained"]["oldest_available_serial"].as_u64(),
+            Some(3)
+        );
+
+        let after = store
+            .stream_inspection("app-1", "public-room")
+            .await
+            .unwrap();
+        assert_eq!(after.stream_id, before.stream_id);
+        assert_eq!(after.retained.oldest_serial, Some(3));
+        assert_eq!(after.retained.newest_serial, Some(4));
+        assert_eq!(after.next_serial, before.next_serial);
+    }
+
+    #[tokio::test]
+    async fn channel_history_reset_rejects_mismatched_confirmation() {
+        let handler = test_history_handler(100);
+        let app = test_app();
+
+        let result = channel_history_reset(
+            Path(("app-1".to_string(), "public-room".to_string())),
+            Extension(app),
+            State(handler),
+            Json(HistoryResetRequestBody {
+                confirm_channel: "wrong-room".to_string(),
+                confirm_operation: "reset".to_string(),
+                reason: "operator cleanup".to_string(),
+                requested_by: None,
+            }),
+        )
+        .await;
+
+        match result {
+            Ok(_) => panic!("expected mismatched confirmation to fail"),
+            Err(AppError::InvalidInput(message)) => {
+                assert!(message.contains("confirm_channel"));
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[tokio::test]

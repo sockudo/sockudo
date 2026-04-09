@@ -1,6 +1,6 @@
-# Grafana Dashboard for Sockudo WebSocket Monitoring
+# Grafana Dashboards for Sockudo Monitoring
 
-This directory contains a pre-configured Grafana dashboard for monitoring your Sockudo WebSocket server infrastructure.
+This directory contains pre-configured Grafana dashboards for monitoring your Sockudo server infrastructure.
 
 ## Dashboard Features
 
@@ -42,12 +42,21 @@ The dashboard provides comprehensive monitoring across several key areas:
 - Node-to-node request success rates
 - Horizontal adapter performance
 
+### 📚 Durable History And Recovery
+- History write success ratio and latency
+- Recovery success ratio for persistence-backed recovery
+- Writer queue depth
+- Degraded channel count
+- Reset-required channel count
+- Recovery failures by code and successes by source
+
 ## Setup Instructions
 
 ### 1. Import Dashboard
 1. Open Grafana → Dashboards → Import
-2. Upload `websocket-dashboard-example.json`
-3. Configure the required variables (see below)
+2. Upload `websocket-dashboard-example.json` for general WebSocket/server monitoring
+3. Upload `history-recovery-dashboard-example.json` for durable history and recovery operations
+4. Configure the required variables (see below)
 
 ### 2. Configure Dashboard Variables
 
@@ -142,6 +151,10 @@ Some panels may show no data if certain features aren't enabled:
 - **Connection Error Rate** > 5%
 - **Inter-node Success Rate** < 95% (multi-node setups)
 - **Rate Limit Trigger Rate** > 10%
+- **Degraded Channels** > 0 for more than 5 minutes
+- **Reset-Required Channels** > 0 for more than 2 minutes
+- **History Write Failure Ratio** > 1% for 5 minutes
+- **Persistence Recovery Failure Ratio** > 5% for 15 minutes
 
 ### 📈 Performance Indicators
 - **Current Connections**: Monitor capacity planning
@@ -160,3 +173,8 @@ Some panels may show no data if certain features aren't enabled:
 - **Auto-refresh**: Enabled for real-time monitoring
 
 For more information about Sockudo metrics, see the main project documentation.
+
+Related monitoring assets:
+
+- `history-recovery-dashboard-example.json`
+- `../monitoring/rules/history-recovery-alerts.yml`

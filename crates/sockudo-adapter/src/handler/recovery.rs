@@ -40,6 +40,41 @@ enum ResumeOutcome {
     Failed(ResumeFailure),
 }
 
+fn map_history_read_error(position: &ResumePosition, error: Error) -> ResumeFailure {
+    match error {
+        Error::InvalidMessageFormat(message) if message.contains("channel stream changed") => {
+            ResumeFailure {
+                code: "stream_reset",
+                reason: "durable_stream_changed_during_reconnect",
+                expected_stream_id: position.stream_id.clone(),
+                current_stream_id: None,
+                oldest_available_serial: None,
+                newest_available_serial: None,
+            }
+        }
+        Error::InvalidMessageFormat(message)
+            if message.contains("cursor points before retained history") =>
+        {
+            ResumeFailure {
+                code: "position_expired",
+                reason: "retention_boundary_crossed_during_reconnect",
+                expected_stream_id: position.stream_id.clone(),
+                current_stream_id: None,
+                oldest_available_serial: None,
+                newest_available_serial: None,
+            }
+        }
+        _ => ResumeFailure {
+            code: "persistence_unavailable",
+            reason: "durable_history_read_failed",
+            expected_stream_id: position.stream_id.clone(),
+            current_stream_id: None,
+            oldest_available_serial: None,
+            newest_available_serial: None,
+        },
+    }
+}
+
 impl ConnectionHandler {
     /// Handle a `pusher:resume` event from a reconnecting client.
     ///
@@ -234,6 +269,42 @@ impl ConnectionHandler {
             });
         }
 
+        let stream_runtime = match self
+            .history_store()
+            .stream_runtime_state(&app_config.id, channel)
+            .await
+        {
+            Ok(state) => state,
+            Err(_) => {
+                return ResumeOutcome::Failed(ResumeFailure {
+                    code: "persistence_unavailable",
+                    reason: "durable_history_state_unavailable",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: None,
+                    oldest_available_serial: None,
+                    newest_available_serial: None,
+                });
+            }
+        };
+        if !stream_runtime.recovery_allowed {
+            return ResumeOutcome::Failed(ResumeFailure {
+                code: if stream_runtime.reset_required {
+                    "stream_reset"
+                } else {
+                    "persistence_unavailable"
+                },
+                reason: if stream_runtime.reset_required {
+                    "durable_stream_reset_required"
+                } else {
+                    "history_stream_degraded"
+                },
+                expected_stream_id: position.stream_id.clone(),
+                current_stream_id: stream_runtime.stream_id.clone(),
+                oldest_available_serial: None,
+                newest_available_serial: None,
+            });
+        }
+
         match self
             .collect_resume_from_history(
                 app_config,
@@ -281,14 +352,7 @@ impl ConnectionHandler {
                     bounds: bounds.clone(),
                 })
                 .await
-                .map_err(|_| ResumeFailure {
-                    code: "persistence_unavailable",
-                    reason: "durable_history_read_failed",
-                    expected_stream_id: position.stream_id.clone(),
-                    current_stream_id: None,
-                    oldest_available_serial: None,
-                    newest_available_serial: None,
-                })?;
+                .map_err(|error| map_history_read_error(position, error))?;
 
             if first_page {
                 first_page = false;
@@ -526,13 +590,18 @@ mod tests {
     use sockudo_core::app::AppManager;
     use sockudo_core::cache::CacheManager;
     use sockudo_core::history::{
-        HistoryAppendRecord, MemoryHistoryStore, MemoryHistoryStoreConfig,
+        HistoryAppendRecord, HistoryDurableState, HistoryPage, HistoryReadRequest,
+        HistoryRuntimeStatus, HistoryStore, HistoryStreamRuntimeState, HistoryWriteReservation,
+        MemoryHistoryStore, MemoryHistoryStoreConfig,
     };
     use sockudo_core::metrics::MetricsInterface;
     use sockudo_core::options::ServerOptions;
     use sonic_rs::Value;
+    use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+    use tokio::sync::RwLock;
 
     struct TestCache;
 
@@ -642,10 +711,188 @@ mod tests {
         async fn clear(&self) {}
     }
 
+    #[derive(Clone)]
+    struct StatefulHistoryStore {
+        inner: Arc<MemoryHistoryStore>,
+        states: Arc<RwLock<HashMap<String, HistoryStreamRuntimeState>>>,
+    }
+
+    impl StatefulHistoryStore {
+        fn new(inner: Arc<MemoryHistoryStore>) -> Self {
+            Self {
+                inner,
+                states: Arc::new(RwLock::new(HashMap::new())),
+            }
+        }
+
+        fn key(app_id: &str, channel: &str) -> String {
+            format!("{app_id}\0{channel}")
+        }
+
+        async fn set_state(&self, app_id: &str, channel: &str, state: HistoryStreamRuntimeState) {
+            self.states
+                .write()
+                .await
+                .insert(Self::key(app_id, channel), state);
+        }
+    }
+
+    #[async_trait]
+    impl HistoryStore for StatefulHistoryStore {
+        async fn reserve_publish_position(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryWriteReservation> {
+            self.inner.reserve_publish_position(app_id, channel).await
+        }
+
+        async fn append(&self, record: HistoryAppendRecord) -> sockudo_core::error::Result<()> {
+            self.inner.append(record).await
+        }
+
+        async fn read_page(
+            &self,
+            request: HistoryReadRequest,
+        ) -> sockudo_core::error::Result<HistoryPage> {
+            let state = self
+                .stream_runtime_state(&request.app_id, &request.channel)
+                .await?;
+            if !state.recovery_allowed {
+                return Err(sockudo_core::error::Error::Internal(
+                    "history_stream_state_blocks_reads".to_string(),
+                ));
+            }
+            self.inner.read_page(request).await
+        }
+
+        async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
+            let states = self.states.read().await;
+            let degraded_channels = states
+                .values()
+                .filter(|state| !state.recovery_allowed)
+                .count();
+            let reset_required_channels =
+                states.values().filter(|state| state.reset_required).count();
+            Ok(HistoryRuntimeStatus {
+                enabled: true,
+                backend: "memory".to_string(),
+                state_authority: "shared_test_state".to_string(),
+                degraded_channels,
+                reset_required_channels,
+                queue_depth: 0,
+            })
+        }
+
+        async fn stream_runtime_state(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamRuntimeState> {
+            if let Some(state) = self
+                .states
+                .read()
+                .await
+                .get(&Self::key(app_id, channel))
+                .cloned()
+            {
+                return Ok(state);
+            }
+            self.inner.stream_runtime_state(app_id, channel).await
+        }
+    }
+
+    #[derive(Clone)]
+    struct FaultyStateHistoryStore {
+        inner: Arc<MemoryHistoryStore>,
+    }
+
+    #[async_trait]
+    impl HistoryStore for FaultyStateHistoryStore {
+        async fn reserve_publish_position(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryWriteReservation> {
+            self.inner.reserve_publish_position(app_id, channel).await
+        }
+
+        async fn append(&self, record: HistoryAppendRecord) -> sockudo_core::error::Result<()> {
+            self.inner.append(record).await
+        }
+
+        async fn read_page(
+            &self,
+            request: HistoryReadRequest,
+        ) -> sockudo_core::error::Result<HistoryPage> {
+            self.inner.read_page(request).await
+        }
+
+        async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
+            self.inner.runtime_status().await
+        }
+
+        async fn stream_runtime_state(
+            &self,
+            _app_id: &str,
+            _channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamRuntimeState> {
+            Err(Error::Cache(
+                "simulated_cache_marker_read_failed".to_string(),
+            ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct CursorExpiryHistoryStore {
+        inner: Arc<MemoryHistoryStore>,
+        read_count: Arc<AtomicUsize>,
+        expire_reason: &'static str,
+    }
+
+    #[async_trait]
+    impl HistoryStore for CursorExpiryHistoryStore {
+        async fn reserve_publish_position(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryWriteReservation> {
+            self.inner.reserve_publish_position(app_id, channel).await
+        }
+
+        async fn append(&self, record: HistoryAppendRecord) -> sockudo_core::error::Result<()> {
+            self.inner.append(record).await
+        }
+
+        async fn read_page(
+            &self,
+            request: HistoryReadRequest,
+        ) -> sockudo_core::error::Result<HistoryPage> {
+            let current = self.read_count.fetch_add(1, Ordering::Relaxed);
+            if current >= 1 && request.cursor.is_some() {
+                return Err(Error::InvalidMessageFormat(self.expire_reason.to_string()));
+            }
+            self.inner.read_page(request).await
+        }
+
+        async fn runtime_status(&self) -> sockudo_core::error::Result<HistoryRuntimeStatus> {
+            self.inner.runtime_status().await
+        }
+
+        async fn stream_runtime_state(
+            &self,
+            app_id: &str,
+            channel: &str,
+        ) -> sockudo_core::error::Result<HistoryStreamRuntimeState> {
+            self.inner.stream_runtime_state(app_id, channel).await
+        }
+    }
+
     fn build_handler(history_enabled: bool) -> ConnectionHandler {
-        build_handler_with_history_store(
+        build_handler_with_history_store_and_page_size(
             history_enabled,
             Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default())),
+            100,
         )
     }
 
@@ -653,10 +900,18 @@ mod tests {
         history_enabled: bool,
         history_store: Arc<dyn sockudo_core::history::HistoryStore + Send + Sync>,
     ) -> ConnectionHandler {
+        build_handler_with_history_store_and_page_size(history_enabled, history_store, 100)
+    }
+
+    fn build_handler_with_history_store_and_page_size(
+        history_enabled: bool,
+        history_store: Arc<dyn sockudo_core::history::HistoryStore + Send + Sync>,
+        max_page_size: usize,
+    ) -> ConnectionHandler {
         let mut options = ServerOptions::default();
         options.connection_recovery.enabled = true;
         options.history.enabled = history_enabled;
-        options.history.max_page_size = 100;
+        options.history.max_page_size = max_page_size;
 
         ConnectionHandler::builder(
             Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>,
@@ -989,6 +1244,262 @@ mod tests {
                 assert_eq!(count, 2);
             }
             other => panic!("expected shared-store cold recovery, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_degraded_state_blocks_cross_node_cold_recovery() {
+        let shared_history = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let shared_state = Arc::new(StatefulHistoryStore::new(shared_history));
+        let node_a = build_handler_with_history_store(
+            true,
+            shared_state.clone() as Arc<dyn HistoryStore + Send + Sync>,
+        );
+        let node_b = build_handler_with_history_store(
+            true,
+            shared_state.clone() as Arc<dyn HistoryStore + Send + Sync>,
+        );
+        let app = test_app("app");
+
+        append_history(&node_a, "app", "chat", &[2, 3], "stream-1").await;
+        shared_state
+            .set_state(
+                "app",
+                "chat",
+                HistoryStreamRuntimeState {
+                    app_id: "app".to_string(),
+                    channel: "chat".to_string(),
+                    stream_id: Some("stream-1".to_string()),
+                    durable_state: HistoryDurableState::Degraded,
+                    recovery_allowed: false,
+                    reset_required: false,
+                    reason: Some("durable_history_write_failed".to_string()),
+                    node_id: Some("node-a".to_string()),
+                    last_transition_at_ms: Some(sockudo_core::history::now_ms()),
+                    authoritative_source: "shared_test_state".to_string(),
+                    observed_source: "shared_test_state".to_string(),
+                },
+            )
+            .await;
+
+        let outcome = node_b
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                node_b.replay_buffer().unwrap(),
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "persistence_unavailable");
+                assert_eq!(failure.reason, "history_stream_degraded");
+                assert_eq!(failure.current_stream_id.as_deref(), Some("stream-1"));
+            }
+            other => panic!("expected degraded-state failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_required_state_fails_cold_recovery_as_stream_reset() {
+        let shared_history = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let shared_state = Arc::new(StatefulHistoryStore::new(shared_history));
+        let handler = build_handler_with_history_store(
+            true,
+            shared_state.clone() as Arc<dyn HistoryStore + Send + Sync>,
+        );
+        let app = test_app("app");
+
+        append_history(&handler, "app", "chat", &[2, 3], "stream-2").await;
+        shared_state
+            .set_state(
+                "app",
+                "chat",
+                HistoryStreamRuntimeState {
+                    app_id: "app".to_string(),
+                    channel: "chat".to_string(),
+                    stream_id: Some("stream-2".to_string()),
+                    durable_state: HistoryDurableState::ResetRequired,
+                    recovery_allowed: false,
+                    reset_required: true,
+                    reason: Some("operator_reset_required".to_string()),
+                    node_id: Some("ops".to_string()),
+                    last_transition_at_ms: Some(sockudo_core::history::now_ms()),
+                    authoritative_source: "shared_test_state".to_string(),
+                    observed_source: "shared_test_state".to_string(),
+                },
+            )
+            .await;
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                handler.replay_buffer().unwrap(),
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-2".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "stream_reset");
+                assert_eq!(failure.reason, "durable_stream_reset_required");
+            }
+            other => panic!("expected reset-required failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn history_state_lookup_failure_fails_closed_as_persistence_unavailable() {
+        let store = Arc::new(FaultyStateHistoryStore {
+            inner: Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default())),
+        });
+        let handler = build_handler_with_history_store(true, store.clone());
+        append_history(&handler, "app", "chat", &[2, 3], "stream-1").await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "persistence_unavailable");
+                assert_eq!(failure.reason, "durable_history_state_unavailable");
+            }
+            other => panic!("expected state lookup failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn retention_boundary_crossed_mid_reconnect_fails_as_position_expired() {
+        let inner = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let store = Arc::new(CursorExpiryHistoryStore {
+            inner,
+            read_count: Arc::new(AtomicUsize::new(0)),
+            expire_reason: "Expired history cursor: cursor points before retained history",
+        });
+        let handler = build_handler_with_history_store_and_page_size(true, store.clone(), 1);
+        append_history(&handler, "app", "chat", &[2, 3], "stream-1").await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "position_expired");
+                assert_eq!(
+                    failure.reason,
+                    "retention_boundary_crossed_during_reconnect"
+                );
+            }
+            other => panic!("expected retention-boundary failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_change_mid_reconnect_fails_as_stream_reset() {
+        let inner = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let store = Arc::new(CursorExpiryHistoryStore {
+            inner,
+            read_count: Arc::new(AtomicUsize::new(0)),
+            expire_reason: "Expired history cursor: channel stream changed",
+        });
+        let handler = build_handler_with_history_store_and_page_size(true, store.clone(), 1);
+        append_history(&handler, "app", "chat", &[2, 3], "stream-1").await;
+        let replay_buffer = handler.replay_buffer().unwrap().clone();
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                &replay_buffer,
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Failed(failure) => {
+                assert_eq!(failure.code, "stream_reset");
+                assert_eq!(failure.reason, "durable_stream_changed_during_reconnect");
+            }
+            other => panic!("expected stream-change failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_buffer_loss_falls_back_to_cold_history() {
+        let handler = build_handler(true);
+        append_history(&handler, "app", "chat", &[2, 3], "stream-1").await;
+        let app = test_app("app");
+
+        let outcome = handler
+            .resume_channel(
+                &SocketId::new(),
+                &app,
+                handler.replay_buffer().unwrap(),
+                "chat",
+                &ResumePosition {
+                    serial: 1,
+                    stream_id: Some("stream-1".to_string()),
+                    last_message_id: None,
+                    legacy_serial_only: false,
+                },
+            )
+            .await;
+
+        match outcome {
+            ResumeOutcome::Recovered { source, count, .. } => {
+                assert_eq!(source, "cold");
+                assert_eq!(count, 2);
+            }
+            other => panic!("expected cold fallback after replay-buffer loss, got {other:?}"),
         }
     }
 }

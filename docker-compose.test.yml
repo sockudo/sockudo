@@ -159,6 +159,32 @@ services:
       retries: 3
       start_period: 5s
 
+  # SurrealDB for testing
+  surrealdb-test:
+    image: surrealdb/surrealdb:latest
+    command:
+      - start
+      - --no-banner
+      - --bind
+      - 0.0.0.0:8000
+      - --user
+      - root
+      - --pass
+      - root
+      - memory
+    ports:
+      - "18001:8000"
+    networks:
+      - sockudo-network
+    mem_limit: 512m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "ws://localhost:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 networks:
   sockudo-network:
     driver: bridge

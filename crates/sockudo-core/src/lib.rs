@@ -5,6 +5,8 @@ pub mod channel;
 pub mod delta_types;
 pub mod error;
 pub mod history;
+#[doc(hidden)]
+pub mod history_conformance;
 pub mod metrics;
 pub mod namespace;
 pub mod options;

@@ -42,8 +42,9 @@ use tokio::signal;
 use crate::cleanup::{CleanupConfig, CleanupSender};
 use crate::history::create_history_store;
 use crate::http_handler::{
-    batch_events, channel, channel_history, channel_users, channels, events, fallback_404, metrics,
-    stats, terminate_user_connections, up, usage,
+    batch_events, channel, channel_history, channel_history_purge, channel_history_reset,
+    channel_history_state, channel_users, channels, events, fallback_404, metrics, stats,
+    terminate_user_connections, up, usage,
 };
 use sockudo_adapter::factory::AdapterFactory;
 use sockudo_app::AppManagerFactory;
@@ -794,7 +795,7 @@ impl SockudoServer {
 
         let history_store = create_history_store(
             &config.history,
-            &config.database.postgres,
+            &config.database,
             &config.database_pooling,
             state.metrics.clone(),
             Some(state.cache_manager.clone()),
@@ -1142,6 +1143,27 @@ impl SockudoServer {
             .route(
                 "/apps/{appId}/channels/{channelName}/history",
                 get(channel_history).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/history/state",
+                get(channel_history_state).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/history/reset",
+                post(channel_history_reset).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/history/purge",
+                post(channel_history_purge).route_layer(axum_middleware::from_fn_with_state(
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),
