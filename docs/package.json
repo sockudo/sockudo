@@ -18,7 +18,6 @@
     "nuxt-site-config": "^4.0.8"
   },
   "overrides": {
-    "@nuxtjs/robots": "latest",
-    "nuxt-og-image": "latest"
+    "@nuxtjs/robots": "latest"
   }
 }
