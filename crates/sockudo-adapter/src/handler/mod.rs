@@ -24,6 +24,7 @@ use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryStore, NoopHistoryStore};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
+use sockudo_core::presence_history::{NoopPresenceHistoryStore, PresenceHistoryStore};
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
@@ -48,6 +49,7 @@ pub struct ConnectionHandler {
     pub(crate) cache_manager: Arc<dyn CacheManager + Send + Sync>,
     pub(crate) metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     pub(crate) history_store: Arc<dyn HistoryStore + Send + Sync>,
+    pub(crate) presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
     message_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
@@ -73,6 +75,7 @@ pub struct ConnectionHandlerBuilder {
     cache_manager: Arc<dyn CacheManager + Send + Sync>,
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     history_store: Option<Arc<dyn HistoryStore + Send + Sync>>,
+    presence_history_store: Option<Arc<dyn PresenceHistoryStore + Send + Sync>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     server_options: ServerOptions,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
@@ -94,6 +97,7 @@ impl ConnectionHandlerBuilder {
             cache_manager,
             metrics: None,
             history_store: None,
+            presence_history_store: None,
             webhook_integration: None,
             server_options,
             cleanup_queue: None,
@@ -114,6 +118,14 @@ impl ConnectionHandlerBuilder {
 
     pub fn history_store(mut self, history_store: Arc<dyn HistoryStore + Send + Sync>) -> Self {
         self.history_store = Some(history_store);
+        self
+    }
+
+    pub fn presence_history_store(
+        mut self,
+        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+    ) -> Self {
+        self.presence_history_store = Some(presence_history_store);
         self
     }
 
@@ -162,6 +174,9 @@ impl ConnectionHandlerBuilder {
             history_store: self
                 .history_store
                 .unwrap_or_else(|| Arc::new(NoopHistoryStore)),
+            presence_history_store: self
+                .presence_history_store
+                .unwrap_or_else(|| Arc::new(NoopPresenceHistoryStore)),
             webhook_integration: self.webhook_integration,
             client_event_limiters: Arc::new(DashMap::new()),
             message_limiters: Arc::new(DashMap::new()),
@@ -226,6 +241,10 @@ impl ConnectionHandler {
 
     pub fn history_store(&self) -> &Arc<dyn HistoryStore + Send + Sync> {
         &self.history_store
+    }
+
+    pub fn presence_history_store(&self) -> &Arc<dyn PresenceHistoryStore + Send + Sync> {
+        &self.presence_history_store
     }
 
     #[cfg(feature = "recovery")]

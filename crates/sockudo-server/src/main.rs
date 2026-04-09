@@ -6,6 +6,7 @@ pub mod cleanup;
 mod history;
 mod http_handler;
 mod middleware;
+mod presence_history;
 mod ws_handler;
 
 #[cfg(unix)]
@@ -43,9 +44,11 @@ use crate::cleanup::{CleanupConfig, CleanupSender};
 use crate::history::create_history_store;
 use crate::http_handler::{
     batch_events, channel, channel_history, channel_history_purge, channel_history_reset,
-    channel_history_state, channel_users, channels, events, fallback_404, metrics, stats,
-    terminate_user_connections, up, usage,
+    channel_history_state, channel_presence_history, channel_presence_history_reset,
+    channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
+    events, fallback_404, metrics, stats, terminate_user_connections, up, usage,
 };
+use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::factory::AdapterFactory;
 use sockudo_app::AppManagerFactory;
 use sockudo_cache::CacheManagerFactory;
@@ -625,6 +628,9 @@ impl SockudoServer {
             }
         };
 
+        let presence_history_store =
+            create_presence_history_store(&config.presence_history, metrics.clone()).await;
+
         // Initialize cleanup queue if enabled
         let cleanup_config = config.cleanup.clone();
 
@@ -642,6 +648,8 @@ impl SockudoServer {
                 connection_manager.clone(),
                 app_manager.clone(),
                 Some(webhook_integration.clone()),
+                presence_history_store.clone(),
+                config.presence_history.clone(),
                 cleanup_config.clone(),
             );
 
@@ -802,6 +810,7 @@ impl SockudoServer {
         )
         .await?;
         builder = builder.history_store(history_store);
+        builder = builder.presence_history_store(presence_history_store);
 
         if let Some(adapter) = state.local_adapter.clone() {
             builder = builder.local_adapter(adapter);
@@ -1146,6 +1155,40 @@ impl SockudoServer {
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/presence/history",
+                get(channel_presence_history).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/presence/history/state",
+                get(channel_presence_history_state).route_layer(
+                    axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    ),
+                ),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/presence/history/reset",
+                post(channel_presence_history_reset).route_layer(
+                    axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    ),
+                ),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/presence/history/snapshot",
+                get(channel_presence_history_snapshot).route_layer(
+                    axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    ),
+                ),
             )
             .route(
                 "/apps/{appId}/channels/{channelName}/history/state",

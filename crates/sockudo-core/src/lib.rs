@@ -11,6 +11,7 @@ pub mod metrics;
 pub mod namespace;
 pub mod options;
 pub mod origin_validation;
+pub mod presence_history;
 pub mod queue;
 pub mod rate_limiter;
 pub mod token;
