@@ -207,7 +207,7 @@ services:
 
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./ops/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./ops/grafana:/etc/grafana/provisioning/dashboards:ro
       - ./ops/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
 
     deploy:
