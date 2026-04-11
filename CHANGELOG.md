@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.2.0] - 2026-04-11
+
+### Added
+
+- Durable channel history, rewind, and persistence-backed recovery across the HTTP API, runtime, metrics, and operator docs.
+- Presence history and presence snapshot APIs, including retention/continuity metadata and multi-node history operations.
+- Queue and app-manager coverage needed by the new history/recovery stack across Redis, SQL, DynamoDB, ScyllaDB, SurrealDB, and broker-backed deployments.
+- Official client and server SDK support for presence history and presence snapshots, with proxy-backed client access and typed server-side helpers.
+
+### Changed
+
+- Docker, migration, and monitoring references were moved under `ops/` to match the repository layout used by the new history/recovery documentation.
+- Release workflows now trigger from `master` as well as `main`.
+
 ## [4.0.0] - 2026-03-30
 
 ### Breaking Changes
