@@ -810,7 +810,9 @@ impl DurablePresenceHistoryStore {
 
     fn decode_payload(bytes: &[u8]) -> Result<DurablePresenceHistoryPayload> {
         sonic_rs::from_slice(bytes).map_err(|e| {
-            Error::Serialization(format!("Failed to decode durable presence history payload: {e}"))
+            Error::Serialization(format!(
+                "Failed to decode durable presence history payload: {e}"
+            ))
         })
     }
 
@@ -827,11 +829,15 @@ impl DurablePresenceHistoryStore {
         })
         .map(Bytes::from)
         .map_err(|e| {
-            Error::Serialization(format!("Failed to encode durable presence history payload: {e}"))
+            Error::Serialization(format!(
+                "Failed to encode durable presence history payload: {e}"
+            ))
         })
     }
 
-    fn decode_item(item: crate::history::HistoryItem) -> Result<(PresenceHistoryItem, DurablePresenceHistoryPayload)> {
+    fn decode_item(
+        item: crate::history::HistoryItem,
+    ) -> Result<(PresenceHistoryItem, DurablePresenceHistoryPayload)> {
         let payload = Self::decode_payload(item.payload_bytes.as_ref())?;
         Ok((
             PresenceHistoryItem {
@@ -873,9 +879,15 @@ impl DurablePresenceHistoryStore {
             channel: channel.to_string(),
             stream_id: state.stream_id,
             durable_state: match state.durable_state {
-                crate::history::HistoryDurableState::Healthy => PresenceHistoryDurableState::Healthy,
-                crate::history::HistoryDurableState::Degraded => PresenceHistoryDurableState::Degraded,
-                crate::history::HistoryDurableState::ResetRequired => PresenceHistoryDurableState::ResetRequired,
+                crate::history::HistoryDurableState::Healthy => {
+                    PresenceHistoryDurableState::Healthy
+                }
+                crate::history::HistoryDurableState::Degraded => {
+                    PresenceHistoryDurableState::Degraded
+                }
+                crate::history::HistoryDurableState::ResetRequired => {
+                    PresenceHistoryDurableState::ResetRequired
+                }
             },
             continuity_proven: state.recovery_allowed,
             reset_required: state.reset_required,
@@ -891,10 +903,7 @@ impl DurablePresenceHistoryStore {
         let Some(metrics) = self.metrics.as_ref() else {
             return Ok(());
         };
-        let retained = self
-            .stream_inspection(app_id, channel)
-            .await?
-            .retained;
+        let retained = self.stream_inspection(app_id, channel).await?.retained;
         metrics.update_presence_history_retained(
             app_id,
             retained.retained_events,
@@ -1033,15 +1042,17 @@ impl PresenceHistoryStore for DurablePresenceHistoryStore {
 
         Ok(PresenceHistoryPage {
             items,
-            next_cursor: history_page.next_cursor.map(|cursor| PresenceHistoryCursor {
-                version: cursor.version,
-                app_id: cursor.app_id,
-                channel: request.channel.clone(),
-                stream_id: cursor.stream_id,
-                serial: cursor.serial,
-                direction: request.direction,
-                bounds: request.bounds.clone(),
-            }),
+            next_cursor: history_page
+                .next_cursor
+                .map(|cursor| PresenceHistoryCursor {
+                    version: cursor.version,
+                    app_id: cursor.app_id,
+                    channel: request.channel.clone(),
+                    stream_id: cursor.stream_id,
+                    serial: cursor.serial,
+                    direction: request.direction,
+                    bounds: request.bounds.clone(),
+                }),
             retained: Self::retained_from_history(history_page.retained),
             has_more: history_page.has_more,
             complete: history_page.complete && runtime_state.continuity_proven,
