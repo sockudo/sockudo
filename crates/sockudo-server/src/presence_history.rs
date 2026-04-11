@@ -1,10 +1,10 @@
+use sockudo_core::history::HistoryStore;
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::PresenceHistoryConfig;
 use sockudo_core::presence_history::{
     DurablePresenceHistoryStore, MemoryPresenceHistoryStore, MemoryPresenceHistoryStoreConfig,
     NoopPresenceHistoryStore, PresenceHistoryStore, TrackingPresenceHistoryStore,
 };
-use sockudo_core::history::HistoryStore;
 use std::sync::Arc;
 use std::time::Duration;
 
