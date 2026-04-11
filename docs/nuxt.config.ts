@@ -53,14 +53,7 @@ export default defineNuxtConfig({
   },
 
   ogImage: {
-    defaults: {
-      component: "Sockudo",
-      props: {
-        title: "Sockudo Docs",
-        description:
-          "Open-source realtime infrastructure for Pusher-compatible apps.",
-      },
-    },
+    enabled: false,
   },
 
   app: {

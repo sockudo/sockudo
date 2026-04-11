@@ -11,6 +11,7 @@ activity_timeout = 120
 [adapter]
 driver = "local"
 enable_socket_counting = true
+fallback_to_local = true
 
 [adapter.nats]
 servers = ["nats://127.0.0.1:4222"]
