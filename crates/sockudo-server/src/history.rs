@@ -1572,6 +1572,7 @@ struct DegradeRequest<'a> {
     node_id: Option<String>,
 }
 
+#[cfg(feature = "postgres")]
 async fn mark_channel_degraded(
     pool: &PgPool,
     tables: &HistoryTables,

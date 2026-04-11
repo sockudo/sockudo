@@ -1185,22 +1185,43 @@ mod tests {
 
         let old_ts = now_ms() - 5_000;
         store
-            .append(make_record("app", "chat", &stream_id, 1, old_ts, "old"))
+            .append(HistoryAppendRecord {
+                retention: HistoryRetentionPolicy {
+                    retention_window_seconds: 1,
+                    max_messages_per_channel: Some(2),
+                    max_bytes_per_channel: None,
+                },
+                ..make_record("app", "chat", &stream_id, 1, old_ts, "old")
+            })
             .await
             .unwrap();
         store
-            .append(make_record("app", "chat", &stream_id, 2, now_ms(), "newer"))
+            .append(HistoryAppendRecord {
+                retention: HistoryRetentionPolicy {
+                    retention_window_seconds: 1,
+                    max_messages_per_channel: Some(2),
+                    max_bytes_per_channel: None,
+                },
+                ..make_record("app", "chat", &stream_id, 2, now_ms(), "newer")
+            })
             .await
             .unwrap();
         store
-            .append(make_record(
-                "app",
-                "chat",
-                &stream_id,
-                3,
-                now_ms(),
-                "newest",
-            ))
+            .append(HistoryAppendRecord {
+                retention: HistoryRetentionPolicy {
+                    retention_window_seconds: 1,
+                    max_messages_per_channel: Some(2),
+                    max_bytes_per_channel: None,
+                },
+                ..make_record(
+                    "app",
+                    "chat",
+                    &stream_id,
+                    3,
+                    now_ms(),
+                    "newest",
+                )
+            })
             .await
             .unwrap();
 
