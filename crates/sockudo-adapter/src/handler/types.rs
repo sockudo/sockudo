@@ -1,4 +1,5 @@
 use sockudo_core::channel::ChannelType;
+use sockudo_core::history::HistoryQueryBounds;
 use sockudo_core::options::EventNameFilteringConfig;
 #[cfg(feature = "delta")]
 use sockudo_delta::DeltaAlgorithm;
@@ -8,6 +9,58 @@ use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
 use std::option::Option;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscriptionRewind {
+    Count(usize),
+    Seconds(u64),
+}
+
+impl SubscriptionRewind {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        if let Some(count) = value.as_u64() {
+            return (count > 0).then_some(Self::Count(count as usize));
+        }
+
+        if let Some(s) = value.as_str()
+            && let Ok(count) = s.parse::<usize>()
+        {
+            return (count > 0).then_some(Self::Count(count));
+        }
+
+        let obj = value.as_object()?;
+        if let Some(count) = obj.get(&"count").and_then(Value::as_u64) {
+            return (count > 0).then_some(Self::Count(count as usize));
+        }
+        if let Some(seconds) = obj.get(&"seconds").and_then(Value::as_u64) {
+            return (seconds > 0).then_some(Self::Seconds(seconds));
+        }
+        if let Some(seconds) = obj.get(&"duration_seconds").and_then(Value::as_u64) {
+            return (seconds > 0).then_some(Self::Seconds(seconds));
+        }
+
+        None
+    }
+
+    pub fn to_history_bounds(&self, now_ms: i64) -> HistoryQueryBounds {
+        match self {
+            Self::Count(_) => HistoryQueryBounds::default(),
+            Self::Seconds(seconds) => HistoryQueryBounds {
+                start_serial: None,
+                end_serial: None,
+                start_time_ms: Some(now_ms.saturating_sub((*seconds as i64) * 1000)),
+                end_time_ms: None,
+            },
+        }
+    }
+
+    pub fn limit(&self) -> usize {
+        match self {
+            Self::Count(count) => *count,
+            Self::Seconds(_) => usize::MAX,
+        }
+    }
+}
 
 /// Per-subscription delta compression settings
 /// Allows clients to negotiate delta compression on a per-channel basis
@@ -93,6 +146,9 @@ pub struct SubscriptionRequest {
     /// Per-subscription delta compression settings
     /// Allows clients to negotiate delta compression per-channel
     pub delta: Option<SubscriptionDeltaSettings>,
+    /// V2-only rewind option. Replays historical messages on first subscribe
+    /// before live delivery resumes.
+    pub rewind: Option<SubscriptionRewind>,
     /// V2 only. Event name filter — only events matching this list are delivered.
     /// None or empty = receive all events.
     pub event_name_filter: Option<Vec<String>>,
@@ -116,7 +172,9 @@ impl SubscriptionRequest {
         message: &PusherMessage,
         event_name_filtering: &EventNameFilteringConfig,
     ) -> sockudo_core::error::Result<Self> {
-        let (channel, auth, channel_data, _tags_filter_raw, _delta_raw) = match &message.data {
+        let (channel, auth, channel_data, _tags_filter_raw, _delta_raw, rewind_raw) = match &message
+            .data
+        {
             Some(MessageData::Structured {
                 channel,
                 extra,
@@ -139,6 +197,7 @@ impl SubscriptionRequest {
 
                 // Parse per-subscription delta settings
                 let delta_raw: Option<&Value> = extra.get("delta");
+                let rewind_raw: Option<&Value> = extra.get("rewind");
 
                 (
                     ch.clone(),
@@ -146,6 +205,7 @@ impl SubscriptionRequest {
                     channel_data,
                     tags_filter_raw.cloned(),
                     delta_raw.cloned(),
+                    rewind_raw.cloned(),
                 )
             }
             Some(MessageData::Json(data)) => {
@@ -164,6 +224,7 @@ impl SubscriptionRequest {
                     .cloned();
 
                 let delta_raw = data.get("delta").cloned();
+                let rewind_raw = data.get("rewind").cloned();
 
                 return Self::build(
                     ch.to_string(),
@@ -171,6 +232,7 @@ impl SubscriptionRequest {
                     channel_data,
                     tags_filter_raw,
                     delta_raw,
+                    rewind_raw,
                     event_name_filtering,
                 );
             }
@@ -197,6 +259,7 @@ impl SubscriptionRequest {
                     .cloned();
 
                 let delta_raw = data.get("delta").cloned();
+                let rewind_raw = data.get("rewind").cloned();
 
                 (
                     ch.to_string(),
@@ -204,6 +267,7 @@ impl SubscriptionRequest {
                     channel_data,
                     tags_filter_raw,
                     delta_raw,
+                    rewind_raw,
                 )
             }
             _ => {
@@ -219,6 +283,7 @@ impl SubscriptionRequest {
             channel_data,
             _tags_filter_raw,
             _delta_raw,
+            rewind_raw,
             event_name_filtering,
         )
     }
@@ -229,6 +294,7 @@ impl SubscriptionRequest {
         channel_data: Option<String>,
         #[allow(unused_variables)] tags_filter_raw: Option<Value>,
         #[allow(unused_variables)] delta_raw: Option<Value>,
+        rewind_raw: Option<Value>,
         event_name_filtering: &EventNameFilteringConfig,
     ) -> sockudo_core::error::Result<Self> {
         // Extract event name filter from filter.events (V2 only).
@@ -283,6 +349,15 @@ impl SubscriptionRequest {
         #[cfg(feature = "delta")]
         let delta = delta_raw.and_then(|v| SubscriptionDeltaSettings::from_value(&v));
 
+        let rewind = match rewind_raw.as_ref() {
+            Some(raw) => Some(SubscriptionRewind::from_value(raw).ok_or_else(|| {
+                sockudo_core::error::Error::InvalidMessageFormat(
+                    "Invalid rewind option in subscription data".into(),
+                )
+            })?),
+            None => None,
+        };
+
         Ok(Self {
             channel,
             auth,
@@ -291,6 +366,7 @@ impl SubscriptionRequest {
             tags_filter,
             #[cfg(feature = "delta")]
             delta,
+            rewind,
             event_name_filter,
         })
     }
@@ -373,6 +449,40 @@ impl SignInRequest {
 }
 
 #[cfg(test)]
+mod rewind_tests {
+    use super::*;
+
+    #[test]
+    fn rewind_parser_accepts_count_and_seconds_shapes() {
+        assert_eq!(
+            SubscriptionRewind::from_value(&sonic_rs::json!(5)),
+            Some(SubscriptionRewind::Count(5))
+        );
+        assert_eq!(
+            SubscriptionRewind::from_value(&sonic_rs::json!({"count": 10})),
+            Some(SubscriptionRewind::Count(10))
+        );
+        assert_eq!(
+            SubscriptionRewind::from_value(&sonic_rs::json!({"seconds": 30})),
+            Some(SubscriptionRewind::Seconds(30))
+        );
+    }
+
+    #[test]
+    fn rewind_parser_rejects_invalid_shapes() {
+        assert_eq!(SubscriptionRewind::from_value(&sonic_rs::json!(0)), None);
+        assert_eq!(
+            SubscriptionRewind::from_value(&sonic_rs::json!({"count": 0})),
+            None
+        );
+        assert_eq!(
+            SubscriptionRewind::from_value(&sonic_rs::json!({"unknown": true})),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use sockudo_core::options::EventNameFilteringConfig;
@@ -447,6 +557,7 @@ mod tests {
             None,
             Some(filter),
             None,
+            None,
             &event_name_filtering_config(),
         );
         assert!(result.is_err());
@@ -469,6 +580,7 @@ mod tests {
             None,
             None,
             Some(filter),
+            None,
             None,
             &event_name_filtering_config(),
         );
@@ -493,6 +605,7 @@ mod tests {
             None,
             Some(filter),
             None,
+            None,
             &event_name_filtering_config(),
         );
         assert!(result.is_ok());
@@ -515,6 +628,7 @@ mod tests {
             None,
             Some(filter),
             None,
+            None,
             &config,
         );
         assert!(result.is_ok());
@@ -525,6 +639,7 @@ mod tests {
     fn test_no_filter_results_in_none() {
         let result = SubscriptionRequest::build(
             "test-channel".to_string(),
+            None,
             None,
             None,
             None,

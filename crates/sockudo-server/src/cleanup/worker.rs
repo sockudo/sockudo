@@ -4,6 +4,8 @@ use sockudo_adapter::channel_manager::ChannelManager;
 use sockudo_adapter::connection_manager::ConnectionManager;
 use sockudo_adapter::presence::global_presence_manager;
 use sockudo_core::app::AppManager;
+use sockudo_core::options::PresenceHistoryConfig;
+use sockudo_core::presence_history::{PresenceHistoryEventCause, PresenceHistoryStore};
 use sockudo_core::websocket::SocketId;
 use sockudo_webhook::WebhookIntegration;
 use std::sync::Arc;
@@ -16,6 +18,8 @@ pub struct CleanupWorker {
     connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
     app_manager: Arc<dyn AppManager + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
+    presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+    presence_history_config: PresenceHistoryConfig,
     config: CleanupConfig,
 }
 
@@ -24,12 +28,16 @@ impl CleanupWorker {
         connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
         app_manager: Arc<dyn AppManager + Send + Sync>,
         webhook_integration: Option<Arc<WebhookIntegration>>,
+        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+        presence_history_config: PresenceHistoryConfig,
         config: CleanupConfig,
     ) -> Self {
         Self {
             connection_manager,
             app_manager,
             webhook_integration,
+            presence_history_store,
+            presence_history_config,
             config,
         }
     }
@@ -306,8 +314,9 @@ impl CleanupWorker {
             for (app_id, events) in events_by_app {
                 let webhook_integration = webhook_integration.clone();
                 let app_manager = self.app_manager.clone();
-
                 let connection_manager = self.connection_manager.clone();
+                let presence_history_store = self.presence_history_store.clone();
+                let presence_history_config = self.presence_history_config.clone();
                 let handle = tokio::spawn(async move {
                     let app_config = match app_manager.find_by_id(&app_id).await {
                         Ok(Some(app)) => app,
@@ -325,6 +334,8 @@ impl CleanupWorker {
                         if let Err(e) = Self::send_webhook_event(
                             &connection_manager,
                             &webhook_integration,
+                            &presence_history_store,
+                            &presence_history_config,
                             &app_config,
                             &event,
                         )
@@ -349,6 +360,8 @@ impl CleanupWorker {
     async fn send_webhook_event(
         connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         webhook_integration: &Arc<WebhookIntegration>,
+        presence_history_store: &Arc<dyn PresenceHistoryStore + Send + Sync>,
+        presence_history_config: &PresenceHistoryConfig,
         app_config: &sockudo_core::app::App,
         event: &WebhookEvent,
     ) -> sockudo_core::error::Result<()> {
@@ -363,11 +376,26 @@ impl CleanupWorker {
                     global_presence_manager()
                         .handle_member_removed(
                             connection_manager,
+                            Arc::clone(presence_history_store),
+                            app_config
+                                .resolved_presence_history(&event.channel, presence_history_config)
+                                .enabled,
                             Some(webhook_integration),
+                            None,
                             app_config,
                             &event.channel,
                             user_id,
                             None,
+                            PresenceHistoryEventCause::Disconnect,
+                            None,
+                            Some(
+                                app_config
+                                    .resolved_presence_history(
+                                        &event.channel,
+                                        presence_history_config,
+                                    )
+                                    .retention(),
+                            ),
                         )
                         .await?;
                     debug!(

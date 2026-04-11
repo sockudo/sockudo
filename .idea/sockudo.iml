@@ -27,6 +27,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-rate-limiter/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-server/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-webhook/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-core/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/sockudo-server/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/benchmark/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/xdelta3/target" />

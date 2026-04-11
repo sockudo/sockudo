@@ -3,8 +3,10 @@
 #![allow(unused_assignments)]
 
 pub mod cleanup;
+mod history;
 mod http_handler;
 mod middleware;
+mod presence_history;
 mod ws_handler;
 
 #[cfg(unix)]
@@ -39,17 +41,21 @@ use tokio::signal;
 
 // Factory imports
 use crate::cleanup::{CleanupConfig, CleanupSender};
+use crate::history::create_history_store;
 use crate::http_handler::{
-    batch_events, channel, channel_users, channels, events, fallback_404, metrics, stats,
-    terminate_user_connections, up, usage,
+    batch_events, channel, channel_history, channel_history_purge, channel_history_reset,
+    channel_history_state, channel_presence_history, channel_presence_history_reset,
+    channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
+    events, fallback_404, metrics, stats, terminate_user_connections, up, usage,
 };
+use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::factory::AdapterFactory;
 use sockudo_app::AppManagerFactory;
 use sockudo_cache::CacheManagerFactory;
 use sockudo_core::error::Result;
 
 use crate::ws_handler::handle_ws_upgrade;
-use sockudo_core::options::{QueueDriver, ServerOptions};
+use sockudo_core::options::{AdapterDriver, DeltaCoordinationBackend, QueueDriver, ServerOptions};
 use sockudo_core::origin_validation::OriginValidator;
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_queue::QueueManagerFactory;
@@ -67,6 +73,18 @@ use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::ConnectionManager;
 
 use crate::cleanup::multi_worker::MultiWorkerCleanupSystem;
+
+fn resolve_delta_coordination_backend(config: &ServerOptions) -> DeltaCoordinationBackend {
+    match config.delta_compression.coordination_backend {
+        DeltaCoordinationBackend::Auto => match config.adapter.driver {
+            AdapterDriver::Redis => DeltaCoordinationBackend::Redis,
+            AdapterDriver::RedisCluster => DeltaCoordinationBackend::RedisCluster,
+            AdapterDriver::Nats => DeltaCoordinationBackend::Nats,
+            _ => DeltaCoordinationBackend::None,
+        },
+        ref backend => backend.clone(),
+    }
+}
 use crate::middleware::pusher_api_auth_middleware;
 use sockudo_cache::MemoryCacheManager;
 use sockudo_core::app::AppManager;
@@ -497,6 +515,83 @@ impl SockudoServer {
                     }
                 }
             }
+            QueueDriver::Nats => {
+                match QueueManagerFactory::create_nats(config.queue.nats.clone()).await {
+                    Ok(queue_driver_impl) => {
+                        info!("Queue manager initialized with NATS JetStream driver");
+                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize NATS JetStream queue manager: {}, queues will be disabled",
+                            e
+                        );
+                        None
+                    }
+                }
+            }
+            QueueDriver::RabbitMq => {
+                match QueueManagerFactory::create_rabbitmq(config.queue.rabbitmq.clone()).await {
+                    Ok(queue_driver_impl) => {
+                        info!("Queue manager initialized with RabbitMQ driver");
+                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize RabbitMQ queue manager: {}, queues will be disabled",
+                            e
+                        );
+                        None
+                    }
+                }
+            }
+            QueueDriver::Kafka => {
+                match QueueManagerFactory::create_kafka(config.queue.kafka.clone()).await {
+                    Ok(queue_driver_impl) => {
+                        info!("Queue manager initialized with Kafka driver");
+                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize Kafka queue manager: {}, queues will be disabled",
+                            e
+                        );
+                        None
+                    }
+                }
+            }
+            QueueDriver::Pulsar => {
+                match QueueManagerFactory::create_pulsar(config.queue.pulsar.clone()).await {
+                    Ok(queue_driver_impl) => {
+                        info!("Queue manager initialized with Pulsar driver");
+                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize Pulsar queue manager: {}, queues will be disabled",
+                            e
+                        );
+                        None
+                    }
+                }
+            }
+            QueueDriver::GooglePubSub => {
+                match QueueManagerFactory::create_google_pubsub(config.queue.google_pubsub.clone())
+                    .await
+                {
+                    Ok(queue_driver_impl) => {
+                        info!("Queue manager initialized with Google Pub/Sub driver");
+                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize Google Pub/Sub queue manager: {}, queues will be disabled",
+                            e
+                        );
+                        None
+                    }
+                }
+            }
             QueueDriver::None => {
                 info!("Queue driver set to None, queue manager will be disabled.");
                 None
@@ -622,6 +717,23 @@ impl SockudoServer {
             }
         };
 
+        let history_store = create_history_store(
+            &config.history,
+            &config.database,
+            &config.database_pooling,
+            metrics.clone(),
+            Some(cache_manager.clone()),
+        )
+        .await?;
+
+        let presence_history_store = create_presence_history_store(
+            &config.presence_history,
+            config.history.enabled,
+            Some(history_store.clone()),
+            metrics.clone(),
+        )
+        .await;
+
         // Initialize cleanup queue if enabled
         let cleanup_config = config.cleanup.clone();
 
@@ -639,6 +751,8 @@ impl SockudoServer {
                 connection_manager.clone(),
                 app_manager.clone(),
                 Some(webhook_integration.clone()),
+                presence_history_store.clone(),
+                config.presence_history.clone(),
                 cleanup_config.clone(),
             );
 
@@ -693,53 +807,90 @@ impl SockudoServer {
                 let mut manager = delta_compression_manager;
 
                 if config.delta_compression.cluster_coordination {
-                    #[cfg(feature = "redis")]
-                    if matches!(
-                        config.adapter.driver,
-                        sockudo_core::options::AdapterDriver::Redis
-                            | sockudo_core::options::AdapterDriver::RedisCluster
-                    ) {
-                        let redis_url = config.database.redis.to_url();
+                    let coordination_backend = resolve_delta_coordination_backend(&config);
 
-                        match sockudo_delta::coordination::RedisClusterCoordinator::new(
-                            &redis_url,
-                            Some(&config.database.redis.key_prefix),
-                        )
-                        .await
-                        {
-                            Ok(coordinator) => {
-                                info!("Delta compression cluster coordination enabled via Redis");
-                                manager.set_cluster_coordinator(Arc::new(coordinator));
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to setup Redis cluster coordination, falling back to node-local: {}",
-                                    e
-                                );
+                    match coordination_backend {
+                        #[cfg(feature = "redis")]
+                        DeltaCoordinationBackend::Redis => {
+                            let redis_url = config.database.redis.to_url();
+                            match sockudo_delta::coordination::RedisClusterCoordinator::new(
+                                &redis_url,
+                                Some(&config.database.redis.key_prefix),
+                            )
+                            .await
+                            {
+                                Ok(coordinator) => {
+                                    info!(
+                                        "Delta compression cluster coordination enabled via Redis"
+                                    );
+                                    manager.set_cluster_coordinator(Arc::new(coordinator));
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to setup Redis delta coordination, falling back to node-local: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
-                    }
-
-                    #[cfg(feature = "nats")]
-                    if config.adapter.driver == sockudo_core::options::AdapterDriver::Nats {
-                        let nats_servers = config.adapter.nats.servers.clone();
-
-                        match sockudo_delta::coordination::NatsClusterCoordinator::new(
-                            nats_servers,
-                            Some(&config.adapter.nats.prefix),
-                        )
-                        .await
-                        {
-                            Ok(coordinator) => {
-                                info!("Delta compression cluster coordination enabled via NATS");
-                                manager.set_cluster_coordinator(Arc::new(coordinator));
+                        #[cfg(feature = "redis")]
+                        DeltaCoordinationBackend::RedisCluster => {
+                            let nodes = config.database.redis.cluster_node_urls();
+                            match sockudo_delta::coordination::RedisClusterCoordinator::new_cluster(
+                                nodes,
+                                Some(&config.database.redis.key_prefix),
+                            )
+                            .await
+                            {
+                                Ok(coordinator) => {
+                                    info!(
+                                        "Delta compression cluster coordination enabled via Redis Cluster"
+                                    );
+                                    manager.set_cluster_coordinator(Arc::new(coordinator));
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to setup Redis Cluster delta coordination, falling back to node-local: {}",
+                                        e
+                                    );
+                                }
                             }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to setup NATS cluster coordination, falling back to node-local: {}",
-                                    e
-                                );
+                        }
+                        #[cfg(feature = "nats")]
+                        DeltaCoordinationBackend::Nats => {
+                            let nats_servers = config.adapter.nats.servers.clone();
+
+                            match sockudo_delta::coordination::NatsClusterCoordinator::new(
+                                nats_servers,
+                                Some(&config.adapter.nats.prefix),
+                            )
+                            .await
+                            {
+                                Ok(coordinator) => {
+                                    info!(
+                                        "Delta compression cluster coordination enabled via NATS"
+                                    );
+                                    manager.set_cluster_coordinator(Arc::new(coordinator));
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to setup NATS delta coordination, falling back to node-local: {}",
+                                        e
+                                    );
+                                }
                             }
+                        }
+                        DeltaCoordinationBackend::None => {
+                            info!(
+                                "Delta compression cluster coordination disabled or unsupported for this adapter"
+                            );
+                        }
+                        #[allow(unreachable_patterns)]
+                        other => {
+                            warn!(
+                                "Delta coordination backend {:?} requested but not compiled in; falling back to node-local",
+                                other
+                            );
                         }
                     }
                 }
@@ -789,6 +940,9 @@ impl SockudoServer {
             config.clone(),
         )
         .webhook_integration(webhook_integration);
+
+        builder = builder.history_store(history_store);
+        builder = builder.presence_history_store(presence_history_store);
 
         if let Some(adapter) = state.local_adapter.clone() {
             builder = builder.local_adapter(adapter);
@@ -1123,6 +1277,68 @@ impl SockudoServer {
             .route(
                 "/apps/{appId}/channels/{channelName}",
                 get(channel).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/history",
+                get(channel_history).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/presence/history",
+                get(channel_presence_history).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/presence/history/state",
+                get(channel_presence_history_state).route_layer(
+                    axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    ),
+                ),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/presence/history/reset",
+                post(channel_presence_history_reset).route_layer(
+                    axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    ),
+                ),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/presence/history/snapshot",
+                get(channel_presence_history_snapshot).route_layer(
+                    axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    ),
+                ),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/history/state",
+                get(channel_history_state).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/history/reset",
+                post(channel_history_reset).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/history/purge",
+                post(channel_history_purge).route_layer(axum_middleware::from_fn_with_state(
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),

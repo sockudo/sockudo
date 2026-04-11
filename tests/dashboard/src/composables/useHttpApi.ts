@@ -143,6 +143,49 @@ export function useHttpApi() {
   const getChannelUsers = (name: string) =>
     apiRequest('GET', `/channels/${encodeURIComponent(name)}/users`)
 
+  const getChannelHistory = (name: string, params: Record<string, string> = {}) =>
+    apiRequest('GET', `/channels/${encodeURIComponent(name)}/history`, undefined, params)
+
+  const getChannelHistoryState = (name: string) =>
+    apiRequest('GET', `/channels/${encodeURIComponent(name)}/history/state`)
+
+  const resetChannelHistory = (name: string, reason: string, requestedBy?: string) =>
+    apiRequest('POST', `/channels/${encodeURIComponent(name)}/history/reset`, {
+      confirm_channel: name,
+      confirm_operation: 'reset',
+      reason,
+      ...(requestedBy ? { requested_by: requestedBy } : {}),
+    })
+
+  const purgeChannelHistory = (
+    name: string,
+    mode: 'all' | 'before_serial' | 'before_time_ms',
+    reason: string,
+    opts: { before_serial?: number; before_time_ms?: number; requested_by?: string } = {},
+  ) =>
+    apiRequest('POST', `/channels/${encodeURIComponent(name)}/history/purge`, {
+      mode,
+      reason,
+      ...opts,
+    })
+
+  const getPresenceHistory = (name: string, params: Record<string, string> = {}) =>
+    apiRequest('GET', `/channels/${encodeURIComponent(name)}/presence/history`, undefined, params)
+
+  const getPresenceHistoryState = (name: string) =>
+    apiRequest('GET', `/channels/${encodeURIComponent(name)}/presence/history/state`)
+
+  const getPresenceHistorySnapshot = (name: string, params: Record<string, string> = {}) =>
+    apiRequest('GET', `/channels/${encodeURIComponent(name)}/presence/history/snapshot`, undefined, params)
+
+  const resetPresenceHistory = (name: string, reason: string, requestedBy?: string) =>
+    apiRequest('POST', `/channels/${encodeURIComponent(name)}/presence/history/reset`, {
+      confirm_channel: name,
+      confirm_operation: 'reset',
+      reason,
+      ...(requestedBy ? { requested_by: requestedBy } : {}),
+    })
+
   const terminateUser = (userId: string) =>
     apiRequest('POST', `/users/${encodeURIComponent(userId)}/terminate_connections`)
 
@@ -155,5 +198,21 @@ export function useHttpApi() {
     }
   }
 
-  return { publishEvent, publishBatch, getChannels, getChannel, getChannelUsers, terminateUser, healthCheck }
+  return {
+    publishEvent,
+    publishBatch,
+    getChannels,
+    getChannel,
+    getChannelUsers,
+    getChannelHistory,
+    getChannelHistoryState,
+    resetChannelHistory,
+    purgeChannelHistory,
+    getPresenceHistory,
+    getPresenceHistoryState,
+    getPresenceHistorySnapshot,
+    resetPresenceHistory,
+    terminateUser,
+    healthCheck,
+  }
 }

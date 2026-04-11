@@ -178,6 +178,18 @@ pub struct SizedMessage {
     pub size: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct BufferedRewindMessage {
+    pub serial: Option<u64>,
+    pub message_id: Option<String>,
+    pub message: PusherMessage,
+}
+
+#[derive(Debug, Default)]
+pub struct RewindGate {
+    pub buffered: Vec<BufferedRewindMessage>,
+}
+
 type MessageChannelFlavor = mpsc::Array<Message>;
 type MessageSenderHandle = crossfire::MAsyncTx<MessageChannelFlavor>;
 type SizedMessageChannelFlavor = mpsc::Array<SizedMessage>;
@@ -947,6 +959,7 @@ pub struct WebSocketRef {
     pub channel_filters: Arc<DashMap<String, Option<Arc<FilterNode>>>>,
     /// V2 event name filters per channel. None = receive all events.
     pub event_name_filters: Arc<DashMap<String, Option<Vec<String>>>>,
+    pub rewind_gates: Arc<DashMap<String, Arc<Mutex<RewindGate>>>>,
     pub socket_id: SocketId,
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
@@ -975,11 +988,13 @@ impl WebSocketRef {
         }
 
         let event_name_filters = Arc::new(DashMap::new());
+        let rewind_gates = Arc::new(DashMap::new());
 
         Self {
             broadcast_tx,
             channel_filters,
             event_name_filters,
+            rewind_gates,
             socket_id,
             buffer_config,
             byte_counter,
@@ -1174,6 +1189,37 @@ impl WebSocketRef {
             .get(channel)
             .and_then(|entry| entry.value().clone())
     }
+
+    pub fn start_rewind_gate(&self, channel: String) {
+        self.rewind_gates
+            .insert(channel, Arc::new(Mutex::new(RewindGate::default())));
+    }
+
+    pub async fn buffer_rewind_message(&self, channel: &str, message: &PusherMessage) -> bool {
+        let Some(gate) = self
+            .rewind_gates
+            .get(channel)
+            .map(|entry| entry.value().clone())
+        else {
+            return false;
+        };
+
+        let mut gate = gate.lock().await;
+        gate.buffered.push(BufferedRewindMessage {
+            serial: message.serial,
+            message_id: message.message_id.clone(),
+            message: message.clone(),
+        });
+        true
+    }
+
+    pub async fn finish_rewind_gate(&self, channel: &str) -> Vec<BufferedRewindMessage> {
+        let Some((_, gate)) = self.rewind_gates.remove(channel) else {
+            return Vec::new();
+        };
+        let mut gate = gate.lock().await;
+        std::mem::take(&mut gate.buffered)
+    }
 }
 
 impl Hash for WebSocketRef {
@@ -1354,6 +1400,38 @@ mod tests {
         let msg = SizedMessage::new(bytes.clone());
         assert_eq!(msg.size, 11);
         assert_eq!(msg.bytes, bytes);
+    }
+
+    #[test]
+    fn test_rewind_gate_buffers_and_drains_messages() {
+        let mut gate = RewindGate::default();
+        let message = BufferedRewindMessage {
+            serial: Some(1),
+            message_id: Some("msg-1".to_string()),
+            message: PusherMessage {
+                event: Some("evt".to_string()),
+                channel: Some("chat".to_string()),
+                data: None,
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: Some("msg-1".to_string()),
+                stream_id: Some("stream-1".to_string()),
+                serial: Some(1),
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            },
+        };
+        gate.buffered.push(message.clone());
+        let drained = std::mem::take(&mut gate.buffered);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].serial, Some(1));
+        assert_eq!(drained[0].message_id.as_deref(), Some("msg-1"));
+        assert!(gate.buffered.is_empty());
     }
 
     #[test]

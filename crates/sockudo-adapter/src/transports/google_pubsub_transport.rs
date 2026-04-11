@@ -5,8 +5,10 @@ use google_cloud_auth::credentials::anonymous::Builder as AnonymousCredentialsBu
 use google_cloud_pubsub::client::{Publisher, Subscriber, SubscriptionAdmin, TopicAdmin};
 use google_cloud_pubsub::model::Message;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::GooglePubSubAdapterConfig;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, error, info, warn};
 
@@ -20,6 +22,7 @@ pub struct GooglePubSubTransport {
     request_subscription: String,
     response_subscription: String,
     config: GooglePubSubAdapterConfig,
+    metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     owner_count: Arc<AtomicUsize>,
 }
 
@@ -92,6 +95,7 @@ impl HorizontalTransport for GooglePubSubTransport {
             request_subscription,
             response_subscription,
             config,
+            metrics: Arc::new(OnceLock::new()),
             owner_count: Arc::new(AtomicUsize::new(1)),
         })
     }
@@ -142,6 +146,10 @@ impl HorizontalTransport for GooglePubSubTransport {
 
         Ok(())
     }
+
+    fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
+        let _ = self.metrics.set(metrics);
+    }
 }
 
 impl GooglePubSubTransport {
@@ -156,6 +164,7 @@ impl GooglePubSubTransport {
         T: serde::de::DeserializeOwned + Send + 'static,
     {
         let subscriber = self.subscriber.clone();
+        let metrics = self.metrics.clone();
         tokio::spawn(async move {
             let mut stream = subscriber.subscribe(subscription).build();
 
@@ -167,6 +176,9 @@ impl GooglePubSubTransport {
                             ack_handler.ack();
                         }
                         Err(error) => {
+                            if let Some(metrics) = metrics.get() {
+                                metrics.mark_horizontal_transport_message_dropped("google_pubsub");
+                            }
                             warn!("Failed to parse Google Pub/Sub {kind} payload: {}", error);
                             ack_handler.ack();
                         }
@@ -196,6 +208,7 @@ impl GooglePubSubTransport {
     ) {
         let subscriber = self.subscriber.clone();
         let response_publisher = self.response_publisher.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             let mut stream = subscriber.subscribe(subscription).build();
@@ -222,6 +235,10 @@ impl GooglePubSubTransport {
                                 }
                             },
                             Err(error) => {
+                                if let Some(metrics) = metrics.get() {
+                                    metrics
+                                        .mark_horizontal_transport_message_dropped("google_pubsub");
+                                }
                                 warn!("Failed to parse Google Pub/Sub request payload: {}", error);
                                 ack_handler.ack();
                             }
@@ -287,6 +304,7 @@ impl Clone for GooglePubSubTransport {
             request_subscription: self.request_subscription.clone(),
             response_subscription: self.response_subscription.clone(),
             config: self.config.clone(),
+            metrics: self.metrics.clone(),
             owner_count: self.owner_count.clone(),
         }
     }

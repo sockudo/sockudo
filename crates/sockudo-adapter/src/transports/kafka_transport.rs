@@ -11,8 +11,10 @@ use rdkafka::message::Message as KafkaMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use rdkafka::util::Timeout;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::KafkaAdapterConfig;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -25,6 +27,7 @@ pub struct KafkaTransport {
     response_topic: String,
     listener_group_id: String,
     config: KafkaAdapterConfig,
+    metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
     owner_count: Arc<AtomicUsize>,
@@ -78,6 +81,7 @@ impl HorizontalTransport for KafkaTransport {
             response_topic,
             listener_group_id,
             config,
+            metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
             owner_count: Arc::new(AtomicUsize::new(1)),
@@ -128,6 +132,10 @@ impl HorizontalTransport for KafkaTransport {
             .map(|_| ())
             .map_err(|e| Error::Internal(format!("Kafka health check failed: {e}")))
     }
+
+    fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
+        let _ = self.metrics.set(metrics);
+    }
 }
 
 impl KafkaTransport {
@@ -149,6 +157,7 @@ impl KafkaTransport {
         )?;
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             let mut stream = consumer.stream();
@@ -171,7 +180,12 @@ impl KafkaTransport {
 
                         match sonic_rs::from_slice::<T>(payload) {
                             Ok(payload) => handler(payload).await,
-                            Err(error) => warn!("Failed to parse Kafka {kind} payload: {}", error),
+                            Err(error) => {
+                                if let Some(metrics) = metrics.get() {
+                                    metrics.mark_horizontal_transport_message_dropped("kafka");
+                                }
+                                warn!("Failed to parse Kafka {kind} payload: {}", error)
+                            }
                         }
                     }
                     Err(error) => {
@@ -206,6 +220,7 @@ impl KafkaTransport {
         let response_topic = self.response_topic.clone();
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             let mut stream = consumer.stream();
@@ -239,7 +254,12 @@ impl KafkaTransport {
                                     warn!("Kafka request handler failed: {}", error);
                                 }
                             },
-                            Err(error) => warn!("Failed to parse Kafka request payload: {}", error),
+                            Err(error) => {
+                                if let Some(metrics) = metrics.get() {
+                                    metrics.mark_horizontal_transport_message_dropped("kafka");
+                                }
+                                warn!("Failed to parse Kafka request payload: {}", error)
+                            }
                         }
                     }
                     Err(error) => {
@@ -264,6 +284,7 @@ impl Clone for KafkaTransport {
             response_topic: self.response_topic.clone(),
             listener_group_id: self.listener_group_id.clone(),
             config: self.config.clone(),
+            metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
             owner_count: self.owner_count.clone(),

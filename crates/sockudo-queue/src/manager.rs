@@ -1,5 +1,15 @@
 use sockudo_core::error::Result;
 
+#[cfg(feature = "google-pubsub")]
+use sockudo_core::options::GooglePubSubAdapterConfig;
+#[cfg(feature = "kafka")]
+use sockudo_core::options::KafkaAdapterConfig;
+#[cfg(feature = "nats")]
+use sockudo_core::options::NatsAdapterConfig;
+#[cfg(feature = "pulsar")]
+use sockudo_core::options::PulsarAdapterConfig;
+#[cfg(feature = "rabbitmq")]
+use sockudo_core::options::RabbitMqAdapterConfig;
 #[cfg(feature = "sns")]
 use sockudo_core::options::SnsQueueConfig;
 #[cfg(feature = "sqs")]
@@ -7,7 +17,17 @@ use sockudo_core::options::SqsQueueConfig;
 use sockudo_core::queue::QueueInterface;
 use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 
+#[cfg(feature = "google-pubsub")]
+use crate::google_pubsub_queue_manager::GooglePubSubQueueManager;
+#[cfg(feature = "kafka")]
+use crate::kafka_queue_manager::KafkaQueueManager;
 use crate::memory_queue_manager::MemoryQueueManager;
+#[cfg(feature = "nats")]
+use crate::nats_queue_manager::NatsJetStreamQueueManager;
+#[cfg(feature = "pulsar")]
+use crate::pulsar_queue_manager::PulsarQueueManager;
+#[cfg(feature = "rabbitmq")]
+use crate::rabbitmq_queue_manager::RabbitMqQueueManager;
 #[cfg(feature = "redis-cluster")]
 use crate::redis_cluster_queue_manager::RedisClusterQueueManager;
 #[cfg(feature = "redis")]
@@ -63,6 +83,15 @@ impl QueueManagerFactory {
                 let manager =
                     RedisClusterQueueManager::new(cluster_nodes, prefix_str, concurrency_val)
                         .await?;
+                Ok(Box::new(manager))
+            }
+            #[cfg(feature = "nats")]
+            "nats" => {
+                warn!(
+                    "NATS queue manager should be created via create_nats(). Falling back to memory queue."
+                );
+                let manager = MemoryQueueManager::new();
+                manager.start_processing();
                 Ok(Box::new(manager))
             }
             "memory" => {
@@ -172,6 +201,97 @@ impl QueueManagerFactory {
         config: sockudo_core::options::SnsQueueConfig,
     ) -> Result<Box<dyn QueueInterface>> {
         warn!("SNS queue manager requested but not compiled in. Falling back to memory queue.");
+        let manager = MemoryQueueManager::new();
+        manager.start_processing();
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(feature = "rabbitmq")]
+    pub async fn create_rabbitmq(config: RabbitMqAdapterConfig) -> Result<Box<dyn QueueInterface>> {
+        let manager = RabbitMqQueueManager::new(config).await?;
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(not(feature = "rabbitmq"))]
+    #[allow(unused_variables)]
+    pub async fn create_rabbitmq(
+        config: sockudo_core::options::RabbitMqAdapterConfig,
+    ) -> Result<Box<dyn QueueInterface>> {
+        warn!(
+            "RabbitMQ queue manager requested but not compiled in. Falling back to memory queue."
+        );
+        let manager = MemoryQueueManager::new();
+        manager.start_processing();
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(feature = "kafka")]
+    pub async fn create_kafka(config: KafkaAdapterConfig) -> Result<Box<dyn QueueInterface>> {
+        let manager = KafkaQueueManager::new(config).await?;
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    #[allow(unused_variables)]
+    pub async fn create_kafka(
+        config: sockudo_core::options::KafkaAdapterConfig,
+    ) -> Result<Box<dyn QueueInterface>> {
+        warn!("Kafka queue manager requested but not compiled in. Falling back to memory queue.");
+        let manager = MemoryQueueManager::new();
+        manager.start_processing();
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(feature = "pulsar")]
+    pub async fn create_pulsar(config: PulsarAdapterConfig) -> Result<Box<dyn QueueInterface>> {
+        let manager = PulsarQueueManager::new(config).await?;
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(not(feature = "pulsar"))]
+    #[allow(unused_variables)]
+    pub async fn create_pulsar(
+        config: sockudo_core::options::PulsarAdapterConfig,
+    ) -> Result<Box<dyn QueueInterface>> {
+        warn!("Pulsar queue manager requested but not compiled in. Falling back to memory queue.");
+        let manager = MemoryQueueManager::new();
+        manager.start_processing();
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(feature = "google-pubsub")]
+    pub async fn create_google_pubsub(
+        config: GooglePubSubAdapterConfig,
+    ) -> Result<Box<dyn QueueInterface>> {
+        let manager = GooglePubSubQueueManager::new(config).await?;
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(not(feature = "google-pubsub"))]
+    #[allow(unused_variables)]
+    pub async fn create_google_pubsub(
+        config: sockudo_core::options::GooglePubSubAdapterConfig,
+    ) -> Result<Box<dyn QueueInterface>> {
+        warn!(
+            "Google Pub/Sub queue manager requested but not compiled in. Falling back to memory queue."
+        );
+        let manager = MemoryQueueManager::new();
+        manager.start_processing();
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(feature = "nats")]
+    pub async fn create_nats(config: NatsAdapterConfig) -> Result<Box<dyn QueueInterface>> {
+        let manager = NatsJetStreamQueueManager::new(config).await?;
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(not(feature = "nats"))]
+    #[allow(unused_variables)]
+    pub async fn create_nats(
+        config: sockudo_core::options::NatsAdapterConfig,
+    ) -> Result<Box<dyn QueueInterface>> {
+        warn!("NATS queue manager requested but not compiled in. Falling back to memory queue.");
         let manager = MemoryQueueManager::new();
         manager.start_processing();
         Ok(Box::new(manager))

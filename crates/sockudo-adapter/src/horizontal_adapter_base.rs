@@ -152,6 +152,13 @@ where
         metrics: Arc<dyn MetricsInterface + Send + Sync>,
     ) -> Result<()> {
         self.horizontal.set_metrics(metrics);
+        self.transport.set_metrics(
+            self.horizontal
+                .metrics
+                .get()
+                .cloned()
+                .expect("metrics just set"),
+        );
         Ok(())
     }
 
@@ -515,10 +522,12 @@ where
                     if let Ok(message) = sonic_rs::from_str::<PusherMessage>(&broadcast.message) {
                         // Debug log for tag filtering diagnostics
                         tracing::debug!(
-                            "Received broadcast from node {}: channel={}, event={:?}, tags={:?}",
+                            "Received broadcast from node {}: channel={}, event={:?}, stream_id={:?}, serial={:?}, tags={:?}",
                             broadcast.node_id,
                             broadcast.channel,
                             message.event,
+                            message.stream_id,
+                            message.serial,
                             message.tags
                         );
 

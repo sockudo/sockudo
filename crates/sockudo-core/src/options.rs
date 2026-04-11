@@ -239,6 +239,12 @@ pub enum QueueDriver {
     Redis,
     #[serde(rename = "redis-cluster")]
     RedisCluster,
+    Nats,
+    Pulsar,
+    RabbitMq,
+    #[serde(rename = "google-pubsub")]
+    GooglePubSub,
+    Kafka,
     Sqs,
     Sns,
     None,
@@ -251,10 +257,41 @@ impl FromStr for QueueDriver {
             "memory" => Ok(QueueDriver::Memory),
             "redis" => Ok(QueueDriver::Redis),
             "redis-cluster" => Ok(QueueDriver::RedisCluster),
+            "nats" => Ok(QueueDriver::Nats),
+            "pulsar" => Ok(QueueDriver::Pulsar),
+            "rabbitmq" | "rabbit-mq" => Ok(QueueDriver::RabbitMq),
+            "google-pubsub" | "gcp-pubsub" | "pubsub" => Ok(QueueDriver::GooglePubSub),
+            "kafka" => Ok(QueueDriver::Kafka),
             "sqs" => Ok(QueueDriver::Sqs),
             "sns" => Ok(QueueDriver::Sns),
             "none" => Ok(QueueDriver::None),
             _ => Err(format!("Unknown queue driver: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DeltaCoordinationBackend {
+    #[default]
+    Auto,
+    None,
+    Redis,
+    RedisCluster,
+    Nats,
+}
+
+impl FromStr for DeltaCoordinationBackend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "none" => Ok(Self::None),
+            "redis" => Ok(Self::Redis),
+            "redis-cluster" | "redis_cluster" => Ok(Self::RedisCluster),
+            "nats" => Ok(Self::Nats),
+            _ => Err(format!("Unknown delta coordination backend: {s}")),
         }
     }
 }
@@ -265,6 +302,11 @@ impl AsRef<str> for QueueDriver {
             QueueDriver::Memory => "memory",
             QueueDriver::Redis => "redis",
             QueueDriver::RedisCluster => "redis-cluster",
+            QueueDriver::Nats => "nats",
+            QueueDriver::Pulsar => "pulsar",
+            QueueDriver::RabbitMq => "rabbitmq",
+            QueueDriver::GooglePubSub => "google-pubsub",
+            QueueDriver::Kafka => "kafka",
             QueueDriver::Sqs => "sqs",
             QueueDriver::Sns => "sns",
             QueueDriver::None => "none",
@@ -373,6 +415,8 @@ pub struct ServerOptions {
     pub tag_filtering: TagFilteringConfig,
     pub websocket: WebSocketConfig,
     pub connection_recovery: ConnectionRecoveryConfig,
+    pub history: HistoryConfig,
+    pub presence_history: PresenceHistoryConfig,
     pub idempotency: IdempotencyConfig,
     pub ephemeral: EphemeralConfig,
     pub echo_control: EchoControlConfig,
@@ -1057,6 +1101,175 @@ pub struct ConnectionRecoveryConfig {
     pub max_buffer_size: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryBackend {
+    #[default]
+    Postgres,
+    Mysql,
+    DynamoDb,
+    SurrealDb,
+    ScyllaDb,
+    Memory,
+}
+
+impl FromStr for HistoryBackend {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "postgres" | "postgresql" | "pgsql" => Ok(Self::Postgres),
+            "mysql" => Ok(Self::Mysql),
+            "dynamodb" => Ok(Self::DynamoDb),
+            "surrealdb" | "surreal" => Ok(Self::SurrealDb),
+            "scylladb" | "scylla" => Ok(Self::ScyllaDb),
+            "memory" => Ok(Self::Memory),
+            _ => Err(format!("Unknown history backend: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PostgresHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for PostgresHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MySqlHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for MySqlHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DynamoDbHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for DynamoDbHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SurrealDbHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for SurrealDbHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScyllaDbHistoryConfig {
+    pub table_prefix: String,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for ScyllaDbHistoryConfig {
+    fn default() -> Self {
+        Self {
+            table_prefix: "sockudo_history".to_string(),
+            write_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryConfig {
+    pub enabled: bool,
+    pub rewind_enabled: bool,
+    pub backend: HistoryBackend,
+    pub retention_window_seconds: u64,
+    pub max_page_size: usize,
+    pub max_messages_per_channel: Option<usize>,
+    pub max_bytes_per_channel: Option<u64>,
+    pub writer_shards: usize,
+    pub writer_queue_capacity: usize,
+    pub postgres: PostgresHistoryConfig,
+    pub mysql: MySqlHistoryConfig,
+    pub dynamodb: DynamoDbHistoryConfig,
+    pub surrealdb: SurrealDbHistoryConfig,
+    pub scylladb: ScyllaDbHistoryConfig,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rewind_enabled: true,
+            backend: HistoryBackend::Postgres,
+            retention_window_seconds: 86400,
+            max_page_size: 100,
+            max_messages_per_channel: None,
+            max_bytes_per_channel: None,
+            writer_shards: 16,
+            writer_queue_capacity: 4096,
+            postgres: PostgresHistoryConfig::default(),
+            mysql: MySqlHistoryConfig::default(),
+            dynamodb: DynamoDbHistoryConfig::default(),
+            surrealdb: SurrealDbHistoryConfig::default(),
+            scylladb: ScyllaDbHistoryConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PresenceHistoryConfig {
+    pub enabled: bool,
+    pub retention_window_seconds: u64,
+    pub max_page_size: usize,
+    pub max_events_per_channel: Option<usize>,
+    pub max_bytes_per_channel: Option<u64>,
+}
+
+impl Default for PresenceHistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            retention_window_seconds: 86400,
+            max_page_size: 100,
+            max_events_per_channel: None,
+            max_bytes_per_channel: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HttpApiConfig {
@@ -1205,6 +1418,11 @@ pub struct QueueConfig {
     pub driver: QueueDriver,
     pub redis: RedisQueueConfig,
     pub redis_cluster: RedisClusterQueueConfig,
+    pub nats: NatsAdapterConfig,
+    pub pulsar: PulsarAdapterConfig,
+    pub rabbitmq: RabbitMqAdapterConfig,
+    pub google_pubsub: GooglePubSubAdapterConfig,
+    pub kafka: KafkaAdapterConfig,
     pub sqs: SqsQueueConfig,
     pub sns: SnsQueueConfig,
 }
@@ -1327,6 +1545,7 @@ pub struct DeltaCompressionOptionsConfig {
     pub max_conflation_states_per_channel: Option<usize>,
     pub conflation_key_path: Option<String>,
     pub cluster_coordination: bool,
+    pub coordination_backend: DeltaCoordinationBackend,
     pub omit_delta_algorithm: bool,
 }
 
@@ -1489,6 +1708,8 @@ impl Default for ServerOptions {
             delta_compression: DeltaCompressionOptionsConfig::default(),
             websocket: WebSocketConfig::default(),
             connection_recovery: ConnectionRecoveryConfig::default(),
+            history: HistoryConfig::default(),
+            presence_history: PresenceHistoryConfig::default(),
             idempotency: IdempotencyConfig::default(),
             ephemeral: EphemeralConfig::default(),
             echo_control: EchoControlConfig::default(),
@@ -1962,8 +2183,48 @@ impl Default for DeltaCompressionOptionsConfig {
             max_conflation_states_per_channel: Some(100),
             conflation_key_path: None,
             cluster_coordination: false,
+            coordination_backend: DeltaCoordinationBackend::Auto,
             omit_delta_algorithm: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeltaCoordinationBackend, QueueDriver};
+    use std::str::FromStr;
+
+    #[test]
+    fn queue_driver_parses_broker_backends() {
+        assert_eq!(
+            QueueDriver::from_str("rabbitmq").unwrap(),
+            QueueDriver::RabbitMq
+        );
+        assert_eq!(QueueDriver::from_str("kafka").unwrap(), QueueDriver::Kafka);
+        assert_eq!(
+            QueueDriver::from_str("pulsar").unwrap(),
+            QueueDriver::Pulsar
+        );
+        assert_eq!(
+            QueueDriver::from_str("google-pubsub").unwrap(),
+            QueueDriver::GooglePubSub
+        );
+    }
+
+    #[test]
+    fn delta_coordination_backend_parses_expected_values() {
+        assert_eq!(
+            DeltaCoordinationBackend::from_str("auto").unwrap(),
+            DeltaCoordinationBackend::Auto
+        );
+        assert_eq!(
+            DeltaCoordinationBackend::from_str("redis-cluster").unwrap(),
+            DeltaCoordinationBackend::RedisCluster
+        );
+        assert_eq!(
+            DeltaCoordinationBackend::from_str("nats").unwrap(),
+            DeltaCoordinationBackend::Nats
+        );
     }
 }
 
@@ -2632,6 +2893,8 @@ impl ServerOptions {
                     webhooks: None,
                     idempotency: None,
                     connection_recovery: None,
+                    history: None,
+                    presence_history: None,
                 },
             );
 
@@ -2778,6 +3041,69 @@ impl ServerOptions {
             self.connection_recovery.max_buffer_size,
         );
 
+        self.history.enabled = parse_bool_env("HISTORY_ENABLED", self.history.enabled);
+        self.history.rewind_enabled =
+            parse_bool_env("HISTORY_REWIND_ENABLED", self.history.rewind_enabled);
+        self.history.retention_window_seconds = parse_env::<u64>(
+            "HISTORY_RETENTION_WINDOW_SECONDS",
+            self.history.retention_window_seconds,
+        );
+        self.history.max_page_size =
+            parse_env::<usize>("HISTORY_MAX_PAGE_SIZE", self.history.max_page_size);
+        self.history.writer_shards =
+            parse_env::<usize>("HISTORY_WRITER_SHARDS", self.history.writer_shards);
+        self.history.writer_queue_capacity = parse_env::<usize>(
+            "HISTORY_WRITER_QUEUE_CAPACITY",
+            self.history.writer_queue_capacity,
+        );
+        if let Ok(backend) = std::env::var("HISTORY_BACKEND") {
+            self.history.backend = HistoryBackend::from_str(&backend)?;
+        }
+        if let Ok(max_messages) = std::env::var("HISTORY_MAX_MESSAGES_PER_CHANNEL") {
+            self.history.max_messages_per_channel = Some(
+                max_messages
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid HISTORY_MAX_MESSAGES_PER_CHANNEL: {e}"))?,
+            );
+        }
+        if let Ok(max_bytes) = std::env::var("HISTORY_MAX_BYTES_PER_CHANNEL") {
+            self.history.max_bytes_per_channel = Some(
+                max_bytes
+                    .parse::<u64>()
+                    .map_err(|e| format!("Invalid HISTORY_MAX_BYTES_PER_CHANNEL: {e}"))?,
+            );
+        }
+        if let Ok(table_prefix) = std::env::var("HISTORY_POSTGRES_TABLE_PREFIX") {
+            self.history.postgres.table_prefix = table_prefix;
+        }
+        self.history.postgres.write_timeout_ms = parse_env::<u64>(
+            "HISTORY_POSTGRES_WRITE_TIMEOUT_MS",
+            self.history.postgres.write_timeout_ms,
+        );
+
+        self.presence_history.enabled =
+            parse_bool_env("PRESENCE_HISTORY_ENABLED", self.presence_history.enabled);
+        self.presence_history.retention_window_seconds = parse_env::<u64>(
+            "PRESENCE_HISTORY_RETENTION_WINDOW_SECONDS",
+            self.presence_history.retention_window_seconds,
+        );
+        self.presence_history.max_page_size = parse_env::<usize>(
+            "PRESENCE_HISTORY_MAX_PAGE_SIZE",
+            self.presence_history.max_page_size,
+        );
+        if let Ok(max_events) = std::env::var("PRESENCE_HISTORY_MAX_EVENTS_PER_CHANNEL") {
+            self.presence_history.max_events_per_channel =
+                Some(max_events.parse::<usize>().map_err(|e| {
+                    format!("Invalid PRESENCE_HISTORY_MAX_EVENTS_PER_CHANNEL: {e}")
+                })?);
+        }
+        if let Ok(max_bytes) = std::env::var("PRESENCE_HISTORY_MAX_BYTES_PER_CHANNEL") {
+            self.presence_history.max_bytes_per_channel = Some(
+                max_bytes
+                    .parse::<u64>()
+                    .map_err(|e| format!("Invalid PRESENCE_HISTORY_MAX_BYTES_PER_CHANNEL: {e}"))?,
+            );
+        }
         self.idempotency.enabled = parse_bool_env("IDEMPOTENCY_ENABLED", self.idempotency.enabled);
         self.idempotency.ttl_seconds =
             parse_env::<u64>("IDEMPOTENCY_TTL_SECONDS", self.idempotency.ttl_seconds);
@@ -2837,6 +3163,35 @@ impl ServerOptions {
 
         if let Err(e) = self.cleanup.validate() {
             return Err(format!("Invalid cleanup configuration: {}", e));
+        }
+
+        if self.history.enabled {
+            if self.history.max_page_size == 0 {
+                return Err("history.max_page_size must be greater than 0".to_string());
+            }
+            if self.history.writer_shards == 0 {
+                return Err("history.writer_shards must be greater than 0".to_string());
+            }
+            if self.history.writer_queue_capacity == 0 {
+                return Err("history.writer_queue_capacity must be greater than 0".to_string());
+            }
+            if self.history.retention_window_seconds == 0 {
+                return Err("history.retention_window_seconds must be greater than 0".to_string());
+            }
+            if self.history.postgres.table_prefix.trim().is_empty() {
+                return Err("history.postgres.table_prefix must not be empty".to_string());
+            }
+        }
+
+        if self.presence_history.enabled {
+            if self.presence_history.max_page_size == 0 {
+                return Err("presence_history.max_page_size must be greater than 0".to_string());
+            }
+            if self.presence_history.retention_window_seconds == 0 {
+                return Err(
+                    "presence_history.retention_window_seconds must be greater than 0".to_string(),
+                );
+            }
         }
 
         Ok(())

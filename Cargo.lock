@@ -6633,11 +6633,15 @@ name = "sockudo"
 version = "4.1.1"
 dependencies = [
  "ahash 0.8.12",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-dynamodb",
  "axum",
  "axum-server",
  "clap",
  "cmake",
  "crossfire",
+ "dashmap",
  "futures-util",
  "http 1.4.0",
  "http-body-util",
@@ -6645,7 +6649,9 @@ dependencies = [
  "hyper-util",
  "mimalloc",
  "num_cpus",
+ "redis",
  "rustls",
+ "scylla",
  "serde",
  "serde_urlencoded",
  "sockudo-adapter",
@@ -6661,6 +6667,9 @@ dependencies = [
  "sockudo-webhook",
  "sockudo-ws",
  "sonic-rs",
+ "sqlx",
+ "surrealdb",
+ "surrealdb-types",
  "sysinfo",
  "thiserror 2.0.18",
  "tokio",
@@ -6670,6 +6679,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "urlencoding",
  "uuid",
 ]
 
@@ -6761,8 +6771,10 @@ version = "4.1.1"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
+ "base64",
  "bytes",
  "chrono",
+ "criterion",
  "crossfire",
  "dashmap",
  "futures-util",
@@ -6853,18 +6865,27 @@ name = "sockudo-queue"
 version = "4.1.1"
 dependencies = [
  "ahash 0.8.12",
+ "async-nats",
  "async-trait",
  "aws-config",
  "aws-sdk-sns",
  "aws-sdk-sqs",
+ "bytes",
  "chrono",
  "dashmap",
+ "futures-util",
+ "google-cloud-auth",
+ "google-cloud-pubsub",
+ "lapin",
+ "pulsar",
+ "rdkafka",
  "redis",
  "serde",
  "sockudo-core",
  "sonic-rs",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

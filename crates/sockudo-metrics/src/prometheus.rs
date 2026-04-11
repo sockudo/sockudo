@@ -87,10 +87,37 @@ pub struct PrometheusMetricsDriver {
     event_filter_suppressed_total: CounterVec,
     // Echo control metrics
     echo_suppressed_total: CounterVec,
-    // Redis Cluster transport metrics
-    redis_cluster_channel_queue_size: GaugeVec,
-    redis_cluster_channel_messages_dropped: CounterVec,
-    redis_cluster_reconnections_total: CounterVec,
+    // History metrics
+    history_writes_total: CounterVec,
+    history_write_failures_total: CounterVec,
+    history_write_latency_ms: HistogramVec,
+    history_retained_messages: GaugeVec,
+    history_retained_bytes: GaugeVec,
+    history_evictions_total: CounterVec,
+    history_evicted_bytes_total: CounterVec,
+    history_queue_depth: GaugeVec,
+    history_degraded_channels: GaugeVec,
+    history_reset_required_channels: GaugeVec,
+    history_recovery_success_total: CounterVec,
+    history_recovery_failures_total: CounterVec,
+    presence_history_writes_total: CounterVec,
+    presence_history_write_failures_total: CounterVec,
+    presence_history_write_latency_ms: HistogramVec,
+    presence_history_retained_events: GaugeVec,
+    presence_history_retained_bytes: GaugeVec,
+    presence_history_evictions_total: CounterVec,
+    presence_history_evicted_bytes_total: CounterVec,
+    presence_history_queue_depth: GaugeVec,
+    presence_history_degraded_channels: GaugeVec,
+    presence_history_reset_required_channels: GaugeVec,
+    delta_cluster_coordination_ops_total: CounterVec,
+    delta_cluster_coordination_failures_total: CounterVec,
+    delta_cluster_coordination_latency_ms: HistogramVec,
+    delta_cluster_coordination_decisions_total: CounterVec,
+    delta_cluster_coordination_backend_up: GaugeVec,
+    horizontal_transport_queue_depth: GaugeVec,
+    horizontal_transport_messages_dropped_total: CounterVec,
+    horizontal_transport_reconnections_total: CounterVec,
 }
 
 impl PrometheusMetricsDriver {
@@ -486,38 +513,294 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
-        // Redis Cluster transport metrics
-        let redis_cluster_channel_queue_size = register_gauge_vec!(
+        let history_writes_total = register_counter_vec!(
             Opts::new(
-                format!("{prefix}redis_cluster_channel_queue_size"),
-                "Current size of the Redis Cluster PubSub message queue"
+                format!("{prefix}history_writes_total"),
+                "Total number of durable history writes"
             ),
-            &["transport_type"]
+            &["app_id", "port"]
         )
         .unwrap();
 
-        let redis_cluster_channel_messages_dropped = register_counter_vec!(
+        let history_write_failures_total = register_counter_vec!(
             Opts::new(
-                format!("{prefix}redis_cluster_channel_messages_dropped_total"),
-                "Total number of messages dropped due to full queue"
+                format!("{prefix}history_write_failures_total"),
+                "Total number of durable history write failures"
             ),
-            &["transport_type"]
+            &["app_id", "port"]
         )
         .unwrap();
 
-        let redis_cluster_reconnections_total = register_counter_vec!(
-            Opts::new(
-                format!("{prefix}redis_cluster_reconnections_total"),
-                "Total number of Redis Cluster reconnections"
+        let history_write_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}history_write_latency_ms"),
+                "Durable history write latency in milliseconds",
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
             ),
-            &["transport_type"]
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_retained_messages = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_retained_messages"),
+                "Current number of retained durable history messages"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_retained_bytes = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_retained_bytes"),
+                "Current number of retained durable history bytes"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_evictions_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_evictions_total"),
+                "Total number of durable history messages evicted"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_evicted_bytes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_evicted_bytes_total"),
+                "Total number of durable history bytes evicted"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_queue_depth = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_queue_depth"),
+                "Current durable history writer queue depth"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_degraded_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_degraded_channels"),
+                "Current number of degraded durable history channels"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_reset_required_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}history_reset_required_channels"),
+                "Current number of reset-required durable history channels"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let history_recovery_success_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_recovery_success_total"),
+                "Total number of successful recovery attempts"
+            ),
+            &["app_id", "port", "source"]
+        )
+        .unwrap();
+
+        let history_recovery_failures_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}history_recovery_failures_total"),
+                "Total number of failed recovery attempts"
+            ),
+            &["app_id", "port", "code"]
+        )
+        .unwrap();
+
+        let presence_history_writes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_writes_total"),
+                "Total number of presence-history writes"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_write_failures_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_write_failures_total"),
+                "Total number of presence-history write failures"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_write_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}presence_history_write_latency_ms"),
+                "Presence-history write latency in milliseconds",
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_retained_events = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_retained_events"),
+                "Current number of retained presence-history events"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_retained_bytes = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_retained_bytes"),
+                "Current number of retained presence-history bytes"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_evictions_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_evictions_total"),
+                "Total number of presence-history events evicted"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_evicted_bytes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_evicted_bytes_total"),
+                "Total number of presence-history bytes evicted"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_queue_depth = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_queue_depth"),
+                "Current presence-history writer queue depth"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_degraded_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_degraded_channels"),
+                "Current number of degraded presence-history channels"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let presence_history_reset_required_channels = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}presence_history_reset_required_channels"),
+                "Current number of reset-required presence-history channels"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let delta_cluster_coordination_ops_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}delta_cluster_coordination_ops_total"),
+                "Total number of delta cluster coordination operations"
+            ),
+            &["backend", "op", "result"]
+        )
+        .unwrap();
+
+        let delta_cluster_coordination_failures_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}delta_cluster_coordination_failures_total"),
+                "Total number of delta cluster coordination failures"
+            ),
+            &["backend", "op", "code"]
+        )
+        .unwrap();
+
+        let delta_cluster_coordination_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}delta_cluster_coordination_latency_ms"),
+                "Delta cluster coordination latency in milliseconds",
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
+            ),
+            &["backend", "op"]
+        )
+        .unwrap();
+
+        let delta_cluster_coordination_decisions_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}delta_cluster_coordination_decisions_total"),
+                "Total number of delta cluster coordination decisions"
+            ),
+            &["backend", "decision"]
+        )
+        .unwrap();
+
+        let delta_cluster_coordination_backend_up = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}delta_cluster_coordination_backend_up"),
+                "Whether the delta cluster coordination backend is currently healthy"
+            ),
+            &["backend"]
+        )
+        .unwrap();
+
+        let horizontal_transport_queue_depth = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}horizontal_transport_queue_depth"),
+                "Current queue depth for a horizontal transport driver"
+            ),
+            &["driver"]
+        )
+        .unwrap();
+
+        let horizontal_transport_messages_dropped_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}horizontal_transport_messages_dropped_total"),
+                "Total number of horizontal transport messages dropped"
+            ),
+            &["driver"]
+        )
+        .unwrap();
+
+        let horizontal_transport_reconnections_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}horizontal_transport_reconnections_total"),
+                "Total number of horizontal transport reconnects"
+            ),
+            &["driver"]
         )
         .unwrap();
 
         // Reset gauge metrics to 0 on startup - they represent current state, not historical
         connected_sockets.reset();
         active_channels.reset();
-        redis_cluster_channel_queue_size.reset();
+        history_retained_messages.reset();
+        history_retained_bytes.reset();
+        history_queue_depth.reset();
+        history_degraded_channels.reset();
+        history_reset_required_channels.reset();
+        presence_history_retained_events.reset();
+        presence_history_retained_bytes.reset();
+        presence_history_queue_depth.reset();
+        presence_history_degraded_channels.reset();
+        presence_history_reset_required_channels.reset();
+        delta_cluster_coordination_backend_up.reset();
+        horizontal_transport_queue_depth.reset();
 
         // Set process start time
         if let Ok(boot_time) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
@@ -573,9 +856,36 @@ impl PrometheusMetricsDriver {
             ephemeral_messages_total,
             event_filter_suppressed_total,
             echo_suppressed_total,
-            redis_cluster_channel_queue_size,
-            redis_cluster_channel_messages_dropped,
-            redis_cluster_reconnections_total,
+            history_writes_total,
+            history_write_failures_total,
+            history_write_latency_ms,
+            history_retained_messages,
+            history_retained_bytes,
+            history_evictions_total,
+            history_evicted_bytes_total,
+            history_queue_depth,
+            history_degraded_channels,
+            history_reset_required_channels,
+            history_recovery_success_total,
+            history_recovery_failures_total,
+            presence_history_writes_total,
+            presence_history_write_failures_total,
+            presence_history_write_latency_ms,
+            presence_history_retained_events,
+            presence_history_retained_bytes,
+            presence_history_evictions_total,
+            presence_history_evicted_bytes_total,
+            presence_history_queue_depth,
+            presence_history_degraded_channels,
+            presence_history_reset_required_channels,
+            delta_cluster_coordination_ops_total,
+            delta_cluster_coordination_failures_total,
+            delta_cluster_coordination_latency_ms,
+            delta_cluster_coordination_decisions_total,
+            delta_cluster_coordination_backend_up,
+            horizontal_transport_queue_depth,
+            horizontal_transport_messages_dropped_total,
+            horizontal_transport_reconnections_total,
         }
     }
 
@@ -717,24 +1027,21 @@ impl PrometheusMetricsDriver {
         }
     }
 
-    /// Record Redis Cluster channel queue size
-    pub fn record_redis_cluster_queue_size(&self, transport_type: &str, size: usize) {
-        self.redis_cluster_channel_queue_size
-            .with_label_values(&[transport_type])
-            .set(size as f64);
+    pub fn record_horizontal_transport_queue_depth(&self, driver: &str, depth: usize) {
+        self.horizontal_transport_queue_depth
+            .with_label_values(&[driver])
+            .set(depth as f64);
     }
 
-    /// Increment Redis Cluster messages dropped counter
-    pub fn increment_redis_cluster_messages_dropped(&self, transport_type: &str) {
-        self.redis_cluster_channel_messages_dropped
-            .with_label_values(&[transport_type])
+    pub fn increment_horizontal_transport_messages_dropped(&self, driver: &str) {
+        self.horizontal_transport_messages_dropped_total
+            .with_label_values(&[driver])
             .inc();
     }
 
-    /// Increment Redis Cluster reconnections counter
-    pub fn increment_redis_cluster_reconnections(&self, transport_type: &str) {
-        self.redis_cluster_reconnections_total
-            .with_label_values(&[transport_type])
+    pub fn increment_horizontal_transport_reconnections(&self, driver: &str) {
+        self.horizontal_transport_reconnections_total
+            .with_label_values(&[driver])
             .inc();
     }
 
@@ -1084,6 +1391,188 @@ impl MetricsInterface for PrometheusMetricsDriver {
     fn mark_echo_suppressed(&self, app_id: &str) {
         let tags = self.get_tags(app_id);
         self.echo_suppressed_total.with_label_values(&tags).inc();
+    }
+
+    fn mark_history_write(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.history_writes_total.with_label_values(&tags).inc();
+    }
+
+    fn track_history_write_latency(&self, app_id: &str, latency_ms: f64) {
+        let tags = self.get_tags(app_id);
+        self.history_write_latency_ms
+            .with_label_values(&tags)
+            .observe(latency_ms);
+    }
+
+    fn mark_history_write_failure(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.history_write_failures_total
+            .with_label_values(&tags)
+            .inc();
+    }
+
+    fn update_history_retained(&self, app_id: &str, messages: u64, bytes: u64) {
+        let tags = self.get_tags(app_id);
+        self.history_retained_messages
+            .with_label_values(&tags)
+            .set(messages as f64);
+        self.history_retained_bytes
+            .with_label_values(&tags)
+            .set(bytes as f64);
+    }
+
+    fn mark_history_eviction(&self, app_id: &str, messages: u64, bytes: u64) {
+        let tags = self.get_tags(app_id);
+        self.history_evictions_total
+            .with_label_values(&tags)
+            .inc_by(messages as f64);
+        self.history_evicted_bytes_total
+            .with_label_values(&tags)
+            .inc_by(bytes as f64);
+    }
+
+    fn update_history_queue_depth(&self, app_id: &str, depth: usize) {
+        let tags = self.get_tags(app_id);
+        self.history_queue_depth
+            .with_label_values(&tags)
+            .set(depth as f64);
+    }
+
+    fn update_history_degraded_channels(&self, app_id: &str, count: usize) {
+        let tags = self.get_tags(app_id);
+        self.history_degraded_channels
+            .with_label_values(&tags)
+            .set(count as f64);
+    }
+
+    fn update_history_reset_required_channels(&self, app_id: &str, count: usize) {
+        let tags = self.get_tags(app_id);
+        self.history_reset_required_channels
+            .with_label_values(&tags)
+            .set(count as f64);
+    }
+
+    fn mark_history_recovery_success(&self, app_id: &str, source: &str) {
+        self.history_recovery_success_total
+            .with_label_values(&[app_id, &self.port.to_string(), source])
+            .inc();
+    }
+
+    fn mark_history_recovery_failure(&self, app_id: &str, code: &str) {
+        self.history_recovery_failures_total
+            .with_label_values(&[app_id, &self.port.to_string(), code])
+            .inc();
+    }
+
+    fn mark_delta_cluster_coordination_op(&self, backend: &str, op: &str, result: &str) {
+        self.delta_cluster_coordination_ops_total
+            .with_label_values(&[backend, op, result])
+            .inc();
+    }
+
+    fn mark_delta_cluster_coordination_failure(&self, backend: &str, op: &str, code: &str) {
+        self.delta_cluster_coordination_failures_total
+            .with_label_values(&[backend, op, code])
+            .inc();
+    }
+
+    fn track_delta_cluster_coordination_latency(&self, backend: &str, op: &str, latency_ms: f64) {
+        self.delta_cluster_coordination_latency_ms
+            .with_label_values(&[backend, op])
+            .observe(latency_ms);
+    }
+
+    fn mark_delta_cluster_coordination_decision(&self, backend: &str, decision: &str) {
+        self.delta_cluster_coordination_decisions_total
+            .with_label_values(&[backend, decision])
+            .inc();
+    }
+
+    fn update_delta_cluster_coordination_backend_up(&self, backend: &str, up: bool) {
+        self.delta_cluster_coordination_backend_up
+            .with_label_values(&[backend])
+            .set(if up { 1.0 } else { 0.0 });
+    }
+
+    fn update_horizontal_transport_queue_depth(&self, driver: &str, depth: usize) {
+        self.horizontal_transport_queue_depth
+            .with_label_values(&[driver])
+            .set(depth as f64);
+    }
+
+    fn mark_horizontal_transport_message_dropped(&self, driver: &str) {
+        self.horizontal_transport_messages_dropped_total
+            .with_label_values(&[driver])
+            .inc();
+    }
+
+    fn mark_horizontal_transport_reconnection(&self, driver: &str) {
+        self.horizontal_transport_reconnections_total
+            .with_label_values(&[driver])
+            .inc();
+    }
+
+    fn mark_presence_history_write(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_writes_total
+            .with_label_values(&tags)
+            .inc();
+    }
+
+    fn track_presence_history_write_latency(&self, app_id: &str, latency_ms: f64) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_write_latency_ms
+            .with_label_values(&tags)
+            .observe(latency_ms);
+    }
+
+    fn mark_presence_history_write_failure(&self, app_id: &str) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_write_failures_total
+            .with_label_values(&tags)
+            .inc();
+    }
+
+    fn update_presence_history_retained(&self, app_id: &str, events: u64, bytes: u64) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_retained_events
+            .with_label_values(&tags)
+            .set(events as f64);
+        self.presence_history_retained_bytes
+            .with_label_values(&tags)
+            .set(bytes as f64);
+    }
+
+    fn mark_presence_history_eviction(&self, app_id: &str, events: u64, bytes: u64) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_evictions_total
+            .with_label_values(&tags)
+            .inc_by(events as f64);
+        self.presence_history_evicted_bytes_total
+            .with_label_values(&tags)
+            .inc_by(bytes as f64);
+    }
+
+    fn update_presence_history_queue_depth(&self, app_id: &str, depth: usize) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_queue_depth
+            .with_label_values(&tags)
+            .set(depth as f64);
+    }
+
+    fn update_presence_history_degraded_channels(&self, app_id: &str, count: usize) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_degraded_channels
+            .with_label_values(&tags)
+            .set(count as f64);
+    }
+
+    fn update_presence_history_reset_required_channels(&self, app_id: &str, count: usize) {
+        let tags = self.get_tags(app_id);
+        self.presence_history_reset_required_channels
+            .with_label_values(&tags)
+            .set(count as f64);
     }
 
     async fn get_metrics_as_plaintext(&self) -> String {

@@ -81,6 +81,7 @@ impl ConnectionHandler {
                     sequence: None,
                     conflation_key: None,
                     message_id: None,
+                    stream_id: None,
                     serial: None,
                     idempotency_key: None,
                     extras: None,
@@ -202,17 +203,55 @@ impl ConnectionHandler {
         }
         let t_after_presence_validate = t_start.elapsed().as_micros();
 
+        let rewind_gate_started = if request.rewind.is_some() {
+            let connection = self
+                .connection_manager
+                .get_connection(socket_id, &app_config.id)
+                .await
+                .ok_or(Error::ConnectionNotFound)?;
+            connection.start_rewind_gate(request.channel.clone());
+            true
+        } else {
+            false
+        };
+
         // Perform the subscription
         let t_before_execute = t_start.elapsed().as_micros();
-        let subscription_result = self
+        let subscription_result = match self
             .execute_subscription(socket_id, app_config, &request, is_authenticated)
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                if rewind_gate_started
+                    && let Some(connection) = self
+                        .connection_manager
+                        .get_connection(socket_id, &app_config.id)
+                        .await
+                {
+                    let _ = connection.finish_rewind_gate(&request.channel).await;
+                }
+                return Err(err);
+            }
+        };
         let t_after_execute = t_start.elapsed().as_micros();
 
         // Handle post-subscription (sends client response first, then does background work)
         let t_before_post = t_start.elapsed().as_micros();
-        self.handle_post_subscription(socket_id, app_config, &request, &subscription_result)
-            .await?;
+        if let Err(err) = self
+            .handle_post_subscription(socket_id, app_config, &request, &subscription_result)
+            .await
+        {
+            if rewind_gate_started
+                && let Some(connection) = self
+                    .connection_manager
+                    .get_connection(socket_id, &app_config.id)
+                    .await
+            {
+                let _ = connection.finish_rewind_gate(&request.channel).await;
+            }
+            return Err(err);
+        }
         let t_after_post = t_start.elapsed().as_micros();
 
         let total = t_start.elapsed().as_micros();
@@ -295,6 +334,7 @@ impl ConnectionHandler {
             sequence: None,
             conflation_key: None,
             message_id: None,
+            stream_id: None,
             serial: None,
             idempotency_key: None,
             extras: None,

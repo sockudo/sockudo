@@ -239,6 +239,18 @@ enabled = false
 buffer_ttl_seconds = 120
 max_buffer_size = 100
 
+[history]
+enabled = false
+backend = "postgres"
+retention_window_seconds = 86400
+max_page_size = 100
+writer_shards = 16
+writer_queue_capacity = 4096
+
+[history.postgres]
+table_prefix = "sockudo_history"
+write_timeout_ms = 5000
+
 [websocket]
 max_messages = 1000
 max_bytes = 1048576

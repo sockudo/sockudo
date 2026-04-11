@@ -122,6 +122,90 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a message delivery skipped due to echo control (V2 only)
     fn mark_echo_suppressed(&self, _app_id: &str) {}
 
+    /// Track a successful durable history write.
+    fn mark_history_write(&self, _app_id: &str) {}
+
+    /// Track durable history write latency.
+    fn track_history_write_latency(&self, _app_id: &str, _latency_ms: f64) {}
+
+    /// Track a durable history write failure.
+    fn mark_history_write_failure(&self, _app_id: &str) {}
+
+    /// Update retained durable history counts for an app.
+    fn update_history_retained(&self, _app_id: &str, _messages: u64, _bytes: u64) {}
+
+    /// Track evictions performed by the durable history store.
+    fn mark_history_eviction(&self, _app_id: &str, _messages: u64, _bytes: u64) {}
+
+    /// Update the current durable history writer queue depth for an app.
+    fn update_history_queue_depth(&self, _app_id: &str, _depth: usize) {}
+
+    /// Update the number of degraded durable history channels for an app.
+    fn update_history_degraded_channels(&self, _app_id: &str, _count: usize) {}
+
+    /// Update the number of reset-required durable history channels for an app.
+    fn update_history_reset_required_channels(&self, _app_id: &str, _count: usize) {}
+
+    /// Track a recovery success sourced from hot or cold history.
+    fn mark_history_recovery_success(&self, _app_id: &str, _source: &str) {}
+
+    /// Track a recovery failure code.
+    fn mark_history_recovery_failure(&self, _app_id: &str, _code: &str) {}
+
+    /// Track delta cluster coordination operations.
+    fn mark_delta_cluster_coordination_op(&self, _backend: &str, _op: &str, _result: &str) {}
+
+    /// Track delta cluster coordination failures.
+    fn mark_delta_cluster_coordination_failure(&self, _backend: &str, _op: &str, _code: &str) {}
+
+    /// Track delta cluster coordination latency.
+    fn track_delta_cluster_coordination_latency(
+        &self,
+        _backend: &str,
+        _op: &str,
+        _latency_ms: f64,
+    ) {
+    }
+
+    /// Track whether coordination chose a full or delta message.
+    fn mark_delta_cluster_coordination_decision(&self, _backend: &str, _decision: &str) {}
+
+    /// Update coordination backend health.
+    fn update_delta_cluster_coordination_backend_up(&self, _backend: &str, _up: bool) {}
+
+    /// Update queue depth for a horizontal transport driver.
+    fn update_horizontal_transport_queue_depth(&self, _driver: &str, _depth: usize) {}
+
+    /// Track dropped horizontal transport messages.
+    fn mark_horizontal_transport_message_dropped(&self, _driver: &str) {}
+
+    /// Track horizontal transport reconnects.
+    fn mark_horizontal_transport_reconnection(&self, _driver: &str) {}
+
+    /// Track a successful presence-history write.
+    fn mark_presence_history_write(&self, _app_id: &str) {}
+
+    /// Track presence-history write latency.
+    fn track_presence_history_write_latency(&self, _app_id: &str, _latency_ms: f64) {}
+
+    /// Track a presence-history write failure.
+    fn mark_presence_history_write_failure(&self, _app_id: &str) {}
+
+    /// Update retained presence-history counts for an app.
+    fn update_presence_history_retained(&self, _app_id: &str, _events: u64, _bytes: u64) {}
+
+    /// Track evictions performed by the presence-history store.
+    fn mark_presence_history_eviction(&self, _app_id: &str, _events: u64, _bytes: u64) {}
+
+    /// Update the current presence-history writer queue depth for an app.
+    fn update_presence_history_queue_depth(&self, _app_id: &str, _depth: usize) {}
+
+    /// Update the number of degraded presence-history channels for an app.
+    fn update_presence_history_degraded_channels(&self, _app_id: &str, _count: usize) {}
+
+    /// Update the number of reset-required presence-history channels for an app.
+    fn update_presence_history_reset_required_channels(&self, _app_id: &str, _count: usize) {}
+
     /// Get the stored metrics as plain text, if possible
     async fn get_metrics_as_plaintext(&self) -> String;
 

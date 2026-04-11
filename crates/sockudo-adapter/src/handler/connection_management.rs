@@ -2,12 +2,13 @@
 
 // src/adapter/handler/connection_management.rs
 use super::ConnectionHandler;
+use bytes::Bytes;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::history::{HistoryAppendRecord, now_ms};
 use sockudo_core::utils;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
-#[cfg(feature = "recovery")]
 use sockudo_protocol::messages::generate_message_id;
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
@@ -169,33 +170,82 @@ impl ConnectionHandler {
             metrics.mark_ephemeral_message(&app_config.id);
         }
 
-        // Connection recovery bundles serial + message_id + replay buffer (V2 feature, gated by config).
-        // Ephemeral messages skip recovery entirely — they are not stored in the replay buffer.
-        #[cfg(feature = "recovery")]
-        {
-            if !message.is_ephemeral() {
-                let options = self.server_options();
-                let recovery_config =
-                    app_config.resolved_connection_recovery(&options.connection_recovery);
-                if recovery_config.enabled {
-                    if message.message_id.is_none() {
-                        message.message_id = Some(generate_message_id());
-                    }
-                    if let Some(ref replay_buffer) = self.replay_buffer {
-                        let serial = replay_buffer.next_serial(&app_config.id, channel);
-                        message.serial = Some(serial);
-                    }
+        let history_policy = app_config.resolved_history(channel, &self.server_options().history);
+        let history_enabled = history_policy.enabled;
+        let mut history_stream_id: Option<String> = None;
 
-                    if let Some(ref replay_buffer) = self.replay_buffer
-                        && let Ok(bytes) = sonic_rs::to_vec(&message)
-                    {
-                        replay_buffer.store(
-                            &app_config.id,
-                            channel,
-                            message.serial.unwrap_or(0),
-                            bytes,
-                        );
+        if !message.is_ephemeral() {
+            #[cfg(feature = "recovery")]
+            let recovery_enabled = app_config
+                .resolved_connection_recovery(&self.server_options().connection_recovery)
+                .enabled;
+            #[cfg(not(feature = "recovery"))]
+            let recovery_enabled = false;
+
+            if history_enabled || recovery_enabled {
+                if message.message_id.is_none() {
+                    message.message_id = Some(generate_message_id());
+                }
+
+                if history_enabled {
+                    let reservation = self
+                        .history_store()
+                        .reserve_publish_position(&app_config.id, channel)
+                        .await?;
+                    history_stream_id = Some(reservation.stream_id.clone());
+                    message.stream_id = Some(reservation.stream_id);
+                    message.serial = Some(reservation.serial);
+                } else {
+                    #[cfg(feature = "recovery")]
+                    if let Some(ref replay_buffer) = self.replay_buffer {
+                        message.serial = Some(replay_buffer.next_serial(&app_config.id, channel));
                     }
+                }
+
+                let mut stored_v2_message = message.clone();
+                stored_v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+                stored_v2_message.idempotency_key = None;
+
+                let serialized = sonic_rs::to_vec(&stored_v2_message)
+                    .map(Bytes::from)
+                    .map_err(|e| {
+                        Error::Serialization(format!("Failed to serialize history payload: {e}"))
+                    })?;
+
+                #[cfg(feature = "recovery")]
+                if recovery_enabled && let Some(ref replay_buffer) = self.replay_buffer {
+                    replay_buffer.store(
+                        &app_config.id,
+                        channel,
+                        history_stream_id.as_deref(),
+                        message.serial.unwrap_or(0),
+                        serialized.clone(),
+                    );
+                }
+
+                if history_enabled {
+                    self.history_store()
+                        .append(HistoryAppendRecord {
+                            app_id: app_config.id.clone(),
+                            channel: channel.to_string(),
+                            stream_id: history_stream_id.clone().ok_or_else(|| {
+                                Error::Internal(
+                                    "History store did not return a stream identifier".to_string(),
+                                )
+                            })?,
+                            serial: message.serial.ok_or_else(|| {
+                                Error::Internal(
+                                    "History store did not return a channel serial".to_string(),
+                                )
+                            })?,
+                            published_at_ms: now_ms(),
+                            message_id: message.message_id.clone(),
+                            event_name: message.event.clone(),
+                            operation_kind: "append".to_string(),
+                            payload_bytes: serialized,
+                            retention: history_policy.retention(),
+                        })
+                        .await?;
                 }
             }
         }
@@ -371,6 +421,7 @@ impl ConnectionHandler {
             sequence: None,
             conflation_key: None,
             message_id: None,
+            stream_id: None,
             serial: None,
             idempotency_key: None,
             extras: None,

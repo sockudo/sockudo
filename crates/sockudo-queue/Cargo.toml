@@ -10,9 +10,14 @@ license-file.workspace = true
 [features]
 default = ["local"]
 local = []
-full = ["redis", "redis-cluster", "sqs", "sns"]
+full = ["redis", "redis-cluster", "nats", "rabbitmq", "kafka", "pulsar", "google-pubsub", "sqs", "sns"]
 redis = ["sockudo-core/redis", "dep:redis"]
 redis-cluster = ["redis", "sockudo-core/redis-cluster"]
+nats = ["sockudo-core/nats", "dep:async-nats"]
+rabbitmq = ["sockudo-core/rabbitmq", "dep:lapin"]
+kafka = ["sockudo-core/kafka", "dep:rdkafka"]
+pulsar = ["sockudo-core/pulsar", "dep:pulsar"]
+google-pubsub = ["sockudo-core/google-pubsub", "dep:google-cloud-auth", "dep:google-cloud-pubsub"]
 sqs = ["sockudo-core/sqs", "dep:aws-config", "dep:aws-sdk-sqs"]
 sns = ["sockudo-core/sns", "dep:aws-config", "dep:aws-sdk-sns"]
 
@@ -23,11 +28,20 @@ async-trait = { workspace = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-sns = { workspace = true, optional = true }
 aws-sdk-sqs = { workspace = true, optional = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
 ahash = { workspace = true }
+async-nats = { workspace = true, optional = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
+google-cloud-auth = { workspace = true, optional = true }
+google-cloud-pubsub = { workspace = true, optional = true }
+lapin = { workspace = true, optional = true }
+pulsar = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
+rdkafka = { workspace = true, optional = true }
 serde = { workspace = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }

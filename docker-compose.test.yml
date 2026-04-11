@@ -83,8 +83,8 @@ services:
       - "13306:3306"
     volumes:
       - mysql-test-data:/var/lib/mysql
-      - ./sql/init-sql-docker.sql:/docker-entrypoint-initdb.d/01-init-sql.sql:ro
-      - ./sql/init-test.sql:/docker-entrypoint-initdb.d/02-init-test.sql:ro
+      - ./ops/migrations/mysql/001_fresh_schema.sql:/docker-entrypoint-initdb.d/01-init-sql.sql:ro
+      - ./ops/migrations/mysql/002_test_access.sql:/docker-entrypoint-initdb.d/02-init-test.sql:ro
     networks:
       - sockudo-network
     mem_limit: 512m
@@ -130,7 +130,7 @@ services:
       - "15432:5432"
     volumes:
       - postgres-test-data:/var/lib/postgresql/data
-      - ./sql/init-postgres-test.sql:/docker-entrypoint-initdb.d/01-init-postgres-test.sql:ro
+      - ./ops/migrations/postgresql/001_fresh_schema.sql:/docker-entrypoint-initdb.d/01-init-postgres-test.sql:ro
     networks:
       - sockudo-network
     mem_limit: 256m
@@ -158,6 +158,32 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  # SurrealDB for testing
+  surrealdb-test:
+    image: surrealdb/surrealdb:latest
+    command:
+      - start
+      - --no-banner
+      - --bind
+      - 0.0.0.0:8000
+      - --user
+      - root
+      - --pass
+      - root
+      - memory
+    ports:
+      - "18001:8000"
+    networks:
+      - sockudo-network
+    mem_limit: 512m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "ws://localhost:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 networks:
   sockudo-network:

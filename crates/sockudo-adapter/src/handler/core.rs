@@ -112,15 +112,25 @@ impl ConnectionHandler {
         // Handle presence channel member removal
         if channel_name.starts_with("presence-") {
             if let Some(user_id_str) = user_id {
+                let presence_history_policy = app_config.resolved_presence_history(
+                    &channel_name,
+                    &self.server_options().presence_history,
+                );
                 // Use centralized presence member removal logic (instance method for race safety)
                 self.presence_manager
                     .handle_member_removed(
                         &self.connection_manager,
+                        Arc::clone(self.presence_history_store()),
+                        presence_history_policy.enabled,
                         self.webhook_integration.as_ref(),
+                        self.metrics.as_ref(),
                         app_config,
                         &channel_name,
                         &user_id_str,
                         Some(socket_id),
+                        sockudo_core::presence_history::PresenceHistoryEventCause::Disconnect,
+                        None,
+                        Some(presence_history_policy.retention()),
                     )
                     .await?;
             }
@@ -640,15 +650,25 @@ impl ConnectionHandler {
     ) -> Result<()> {
         if channel_str.starts_with("presence-") {
             if let Some(disconnected_user_id) = user_id {
+                let presence_history_policy = app_config.resolved_presence_history(
+                    channel_str,
+                    &self.server_options().presence_history,
+                );
                 // Use centralized presence member removal logic (instance method for race safety)
                 self.presence_manager
                     .handle_member_removed(
                         &self.connection_manager,
+                        Arc::clone(self.presence_history_store()),
+                        presence_history_policy.enabled,
                         self.webhook_integration.as_ref(),
+                        self.metrics.as_ref(),
                         app_config,
                         channel_str,
                         disconnected_user_id,
                         Some(socket_id),
+                        sockudo_core::presence_history::PresenceHistoryEventCause::Disconnect,
+                        None,
+                        Some(presence_history_policy.retention()),
                     )
                     .await
                     .ok();
@@ -1022,16 +1042,26 @@ impl ConnectionHandler {
 
             // Process all members for this app
             for orphaned_member in members {
+                let presence_history_policy = app_config.resolved_presence_history(
+                    &orphaned_member.channel,
+                    &self.server_options().presence_history,
+                );
                 // Use PresenceManager to handle member removal (instance method for race safety)
                 if let Err(e) = self
                     .presence_manager
                     .handle_member_removed(
                         &self.connection_manager,
+                        Arc::clone(self.presence_history_store()),
+                        presence_history_policy.enabled,
                         self.webhook_integration.as_ref(),
+                        self.metrics.as_ref(),
                         &app_config,
                         &orphaned_member.channel,
                         &orphaned_member.user_id,
                         None, // No excluding socket for dead node cleanup
+                        sockudo_core::presence_history::PresenceHistoryEventCause::OrphanCleanup,
+                        Some(&event.dead_node_id),
+                        Some(presence_history_policy.retention()),
                     )
                     .await
                 {
