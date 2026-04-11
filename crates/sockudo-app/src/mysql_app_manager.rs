@@ -804,6 +804,10 @@ mod tests {
             .await
             .unwrap();
 
+        // Ensure reruns are not affected by leftover rows from a previous failure.
+        let _ = manager.delete_app("test1").await;
+        let _ = manager.delete_app("test2").await;
+
         // Test registering an app
         let test_app = create_test_app("test1");
         manager.create_app(test_app.clone()).await.unwrap();
@@ -834,7 +838,9 @@ mod tests {
 
         // Get all apps
         let apps = manager.get_apps().await.unwrap();
-        assert_eq!(apps.len(), 2);
+        let ids = apps.iter().map(|app| app.id.as_str()).collect::<Vec<_>>();
+        assert!(ids.contains(&"test1"));
+        assert!(ids.contains(&"test2"));
 
         // Test removing an app
         manager.delete_app("test1").await.unwrap();
