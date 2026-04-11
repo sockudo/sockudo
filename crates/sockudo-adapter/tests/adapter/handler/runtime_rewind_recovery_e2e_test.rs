@@ -811,10 +811,7 @@ async fn partial_per_channel_recovery_results_surface_real_deliveries_e2e() {
         other => panic!("unexpected failure payload: {other:?}"),
     };
     assert_eq!(failure.channel.as_deref(), Some("bad"));
-    assert_eq!(
-        failure_data.get("code").and_then(|v| v.as_str()).is_some(),
-        true
-    );
+    assert!(failure_data.get("code").and_then(|v| v.as_str()).is_some());
 
     let aggregate = messages
         .last()

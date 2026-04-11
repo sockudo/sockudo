@@ -2,18 +2,18 @@ name: Docker - Build and Push Images
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master, main, develop]
     paths:
-      - 'src/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Dockerfile*'
       - 'docker-compose*.yml'
-  
+
   pull_request:
-    branches: [main, develop]
+    branches: [master, main, develop]
     paths:
-      - 'src/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Dockerfile*'
@@ -57,7 +57,7 @@ jobs:
       - name: Determine latest tag push
         id: latest
         run: |
-          if [ "${{ github.event.inputs.push_latest }}" = "true" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          if [ "${{ github.event.inputs.push_latest }}" = "true" ] || [ "${{ github.ref }}" = "refs/heads/master" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
             echo "should_push=true" >> $GITHUB_OUTPUT
           else
             echo "should_push=false" >> $GITHUB_OUTPUT

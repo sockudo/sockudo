@@ -5,8 +5,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::NatsAdapterConfig;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -61,6 +63,7 @@ pub struct NatsTransport {
     config: NatsAdapterConfig,
     /// Metrics for tracking message processing
     metrics: Arc<TransportMetrics>,
+    metrics_driver: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
     owner_count: Arc<AtomicUsize>,
@@ -190,6 +193,7 @@ impl HorizontalTransport for NatsTransport {
             response_subject,
             config,
             metrics: Arc::new(TransportMetrics::new()),
+            metrics_driver: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
             owner_count: Arc::new(AtomicUsize::new(1)),
@@ -253,6 +257,9 @@ impl HorizontalTransport for NatsTransport {
         let metrics_broadcast = self.metrics.clone();
         let metrics_request = self.metrics.clone();
         let metrics_response = self.metrics.clone();
+        let metrics_driver_broadcast = self.metrics_driver.clone();
+        let metrics_driver_request = self.metrics_driver.clone();
+        let metrics_driver_response = self.metrics_driver.clone();
         let shutdown_broadcast = self.shutdown.clone();
         let shutdown_request = self.shutdown.clone();
         let shutdown_response = self.shutdown.clone();
@@ -309,6 +316,9 @@ impl HorizontalTransport for NatsTransport {
                     }
                     Err(e) => {
                         metrics_broadcast.record_parse_error();
+                        if let Some(metrics) = metrics_driver_broadcast.get() {
+                            metrics.mark_horizontal_transport_message_dropped("nats");
+                        }
                         let payload_preview =
                             String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
                         error!(
@@ -355,6 +365,9 @@ impl HorizontalTransport for NatsTransport {
                     }
                     Err(e) => {
                         metrics_request.record_parse_error();
+                        if let Some(metrics) = metrics_driver_request.get() {
+                            metrics.mark_horizontal_transport_message_dropped("nats");
+                        }
                         let payload_preview =
                             String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
                         error!(
@@ -389,6 +402,9 @@ impl HorizontalTransport for NatsTransport {
                     }
                     Err(e) => {
                         metrics_response.record_parse_error();
+                        if let Some(metrics) = metrics_driver_response.get() {
+                            metrics.mark_horizontal_transport_message_dropped("nats");
+                        }
                         let payload_preview =
                             String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
                         error!(
@@ -437,6 +453,10 @@ impl HorizontalTransport for NatsTransport {
             ))),
         }
     }
+
+    fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
+        let _ = self.metrics_driver.set(metrics);
+    }
 }
 
 impl Drop for NatsTransport {
@@ -458,6 +478,7 @@ impl Clone for NatsTransport {
             response_subject: self.response_subject.clone(),
             config: self.config.clone(),
             metrics: self.metrics.clone(),
+            metrics_driver: self.metrics_driver.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
             owner_count: self.owner_count.clone(),

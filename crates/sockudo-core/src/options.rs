@@ -239,6 +239,12 @@ pub enum QueueDriver {
     Redis,
     #[serde(rename = "redis-cluster")]
     RedisCluster,
+    Nats,
+    Pulsar,
+    RabbitMq,
+    #[serde(rename = "google-pubsub")]
+    GooglePubSub,
+    Kafka,
     Sqs,
     Sns,
     None,
@@ -251,10 +257,41 @@ impl FromStr for QueueDriver {
             "memory" => Ok(QueueDriver::Memory),
             "redis" => Ok(QueueDriver::Redis),
             "redis-cluster" => Ok(QueueDriver::RedisCluster),
+            "nats" => Ok(QueueDriver::Nats),
+            "pulsar" => Ok(QueueDriver::Pulsar),
+            "rabbitmq" | "rabbit-mq" => Ok(QueueDriver::RabbitMq),
+            "google-pubsub" | "gcp-pubsub" | "pubsub" => Ok(QueueDriver::GooglePubSub),
+            "kafka" => Ok(QueueDriver::Kafka),
             "sqs" => Ok(QueueDriver::Sqs),
             "sns" => Ok(QueueDriver::Sns),
             "none" => Ok(QueueDriver::None),
             _ => Err(format!("Unknown queue driver: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DeltaCoordinationBackend {
+    #[default]
+    Auto,
+    None,
+    Redis,
+    RedisCluster,
+    Nats,
+}
+
+impl FromStr for DeltaCoordinationBackend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "none" => Ok(Self::None),
+            "redis" => Ok(Self::Redis),
+            "redis-cluster" | "redis_cluster" => Ok(Self::RedisCluster),
+            "nats" => Ok(Self::Nats),
+            _ => Err(format!("Unknown delta coordination backend: {s}")),
         }
     }
 }
@@ -265,6 +302,11 @@ impl AsRef<str> for QueueDriver {
             QueueDriver::Memory => "memory",
             QueueDriver::Redis => "redis",
             QueueDriver::RedisCluster => "redis-cluster",
+            QueueDriver::Nats => "nats",
+            QueueDriver::Pulsar => "pulsar",
+            QueueDriver::RabbitMq => "rabbitmq",
+            QueueDriver::GooglePubSub => "google-pubsub",
+            QueueDriver::Kafka => "kafka",
             QueueDriver::Sqs => "sqs",
             QueueDriver::Sns => "sns",
             QueueDriver::None => "none",
@@ -1052,44 +1094,16 @@ pub struct ConnectionRecoveryConfig {
     pub max_buffer_size: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum HistoryBackend {
+    #[default]
     Postgres,
     Mysql,
     DynamoDb,
     SurrealDb,
     ScyllaDb,
     Memory,
-}
-
-impl Default for HistoryBackend {
-    fn default() -> Self {
-        Self::Postgres
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PresenceHistoryBackend {
-    Memory,
-}
-
-impl Default for PresenceHistoryBackend {
-    fn default() -> Self {
-        Self::Memory
-    }
-}
-
-impl FromStr for PresenceHistoryBackend {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "memory" => Ok(Self::Memory),
-            other => Err(format!("Unsupported presence history backend '{other}'")),
-        }
-    }
 }
 
 impl FromStr for HistoryBackend {
@@ -1231,7 +1245,6 @@ impl Default for HistoryConfig {
 #[serde(default)]
 pub struct PresenceHistoryConfig {
     pub enabled: bool,
-    pub backend: PresenceHistoryBackend,
     pub retention_window_seconds: u64,
     pub max_page_size: usize,
     pub max_events_per_channel: Option<usize>,
@@ -1242,7 +1255,6 @@ impl Default for PresenceHistoryConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            backend: PresenceHistoryBackend::Memory,
             retention_window_seconds: 86400,
             max_page_size: 100,
             max_events_per_channel: None,
@@ -1399,6 +1411,11 @@ pub struct QueueConfig {
     pub driver: QueueDriver,
     pub redis: RedisQueueConfig,
     pub redis_cluster: RedisClusterQueueConfig,
+    pub nats: NatsAdapterConfig,
+    pub pulsar: PulsarAdapterConfig,
+    pub rabbitmq: RabbitMqAdapterConfig,
+    pub google_pubsub: GooglePubSubAdapterConfig,
+    pub kafka: KafkaAdapterConfig,
     pub sqs: SqsQueueConfig,
     pub sns: SnsQueueConfig,
 }
@@ -1521,6 +1538,7 @@ pub struct DeltaCompressionOptionsConfig {
     pub max_conflation_states_per_channel: Option<usize>,
     pub conflation_key_path: Option<String>,
     pub cluster_coordination: bool,
+    pub coordination_backend: DeltaCoordinationBackend,
     pub omit_delta_algorithm: bool,
 }
 
@@ -2158,8 +2176,48 @@ impl Default for DeltaCompressionOptionsConfig {
             max_conflation_states_per_channel: Some(100),
             conflation_key_path: None,
             cluster_coordination: false,
+            coordination_backend: DeltaCoordinationBackend::Auto,
             omit_delta_algorithm: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeltaCoordinationBackend, QueueDriver};
+    use std::str::FromStr;
+
+    #[test]
+    fn queue_driver_parses_broker_backends() {
+        assert_eq!(
+            QueueDriver::from_str("rabbitmq").unwrap(),
+            QueueDriver::RabbitMq
+        );
+        assert_eq!(QueueDriver::from_str("kafka").unwrap(), QueueDriver::Kafka);
+        assert_eq!(
+            QueueDriver::from_str("pulsar").unwrap(),
+            QueueDriver::Pulsar
+        );
+        assert_eq!(
+            QueueDriver::from_str("google-pubsub").unwrap(),
+            QueueDriver::GooglePubSub
+        );
+    }
+
+    #[test]
+    fn delta_coordination_backend_parses_expected_values() {
+        assert_eq!(
+            DeltaCoordinationBackend::from_str("auto").unwrap(),
+            DeltaCoordinationBackend::Auto
+        );
+        assert_eq!(
+            DeltaCoordinationBackend::from_str("redis-cluster").unwrap(),
+            DeltaCoordinationBackend::RedisCluster
+        );
+        assert_eq!(
+            DeltaCoordinationBackend::from_str("nats").unwrap(),
+            DeltaCoordinationBackend::Nats
+        );
     }
 }
 
@@ -3024,9 +3082,6 @@ impl ServerOptions {
             "PRESENCE_HISTORY_MAX_PAGE_SIZE",
             self.presence_history.max_page_size,
         );
-        if let Ok(backend) = std::env::var("PRESENCE_HISTORY_BACKEND") {
-            self.presence_history.backend = PresenceHistoryBackend::from_str(&backend)?;
-        }
         if let Ok(max_events) = std::env::var("PRESENCE_HISTORY_MAX_EVENTS_PER_CHANNEL") {
             self.presence_history.max_events_per_channel =
                 Some(max_events.parse::<usize>().map_err(|e| {
@@ -3040,7 +3095,6 @@ impl ServerOptions {
                     .map_err(|e| format!("Invalid PRESENCE_HISTORY_MAX_BYTES_PER_CHANNEL: {e}"))?,
             );
         }
-
         self.idempotency.enabled = parse_bool_env("IDEMPOTENCY_ENABLED", self.idempotency.enabled);
         self.idempotency.ttl_seconds =
             parse_env::<u64>("IDEMPOTENCY_TTL_SECONDS", self.idempotency.ttl_seconds);

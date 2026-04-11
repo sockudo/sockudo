@@ -394,6 +394,7 @@ impl AppRow {
                         .ok()
                 }),
                 history: None,
+                presence_history: None,
             },
         )
     }
@@ -637,6 +638,7 @@ mod tests {
                 idempotency: None,
                 connection_recovery: None,
                 history: None,
+                presence_history: None,
             },
         )
     }
@@ -713,6 +715,7 @@ mod tests {
                 idempotency: None,
                 connection_recovery: None,
                 history: None,
+                presence_history: None,
             },
         )
     }

@@ -609,9 +609,10 @@ impl HistoryStore for SurrealHistoryStore {
                 let now_ms = sockudo_core::history::now_ms();
                 let mut response = self
                     .db
-                    .query(format!(
+                    .query(
                         "UPDATE ONLY type::record($table, $id) SET next_serial = $next_serial, updated_at_ms = $updated_at_ms WHERE next_serial = $expected RETURN AFTER"
-                    ))
+                            .to_string(),
+                    )
                     .bind(("table", self.tables.streams.clone()))
                     .bind(("id", deterministic_key([app_id, channel].into_iter())))
                     .bind(("next_serial", existing.next_serial + 1))
@@ -691,10 +692,12 @@ impl HistoryStore for SurrealHistoryStore {
                 &self.degraded_channels,
                 self.cache_manager.as_ref(),
                 self.metrics.as_deref(),
-                &record.app_id,
-                &record.channel,
-                "durable_history_write_failed",
-                None,
+                DegradeRequest {
+                    app_id: &record.app_id,
+                    channel: &record.channel,
+                    reason: "durable_history_write_failed",
+                    node_id: None,
+                },
             )
             .await;
             if let Some(metrics) = self.metrics.as_ref() {
@@ -1159,32 +1162,39 @@ fn resolve_runtime_state(
     durable_state
 }
 
+struct DegradeRequest<'a> {
+    app_id: &'a str,
+    channel: &'a str,
+    reason: &'a str,
+    node_id: Option<String>,
+}
+
 async fn mark_channel_degraded(
     db: &Surreal<Any>,
     tables: &HistoryTables,
     degraded_channels: &DashMap<String, HistoryDegradedState>,
     cache_manager: Option<&Arc<dyn CacheManager + Send + Sync>>,
     metrics: Option<&(dyn MetricsInterface + Send + Sync)>,
-    app_id: &str,
-    channel: &str,
-    reason: &str,
-    node_id: Option<String>,
+    request: DegradeRequest<'_>,
 ) {
     let now_ms = sockudo_core::history::now_ms();
     let state = HistoryDegradedState {
-        app_id: app_id.to_string(),
-        channel: channel.to_string(),
+        app_id: request.app_id.to_string(),
+        channel: request.channel.to_string(),
         durable_state: HistoryDurableState::Degraded,
-        reason: reason.to_string(),
-        node_id,
+        reason: request.reason.to_string(),
+        node_id: request.node_id,
         last_transition_at_ms: now_ms,
         observed_source: "local_memory_hint",
     };
-    degraded_channels.insert(degraded_channel_key(app_id, channel), state.clone());
+    degraded_channels.insert(
+        degraded_channel_key(request.app_id, request.channel),
+        state.clone(),
+    );
     if let Some(cache) = cache_manager {
         let _ = cache
             .set(
-                &degraded_cache_key(app_id, channel),
+                &degraded_cache_key(request.app_id, request.channel),
                 &sonic_rs::to_string(&sonic_rs::json!({
                     "app_id": state.app_id,
                     "channel": state.channel,
@@ -1201,7 +1211,7 @@ async fn mark_channel_degraded(
 
     let resource = (
         tables.streams.clone(),
-        deterministic_key([app_id, channel].into_iter()),
+        deterministic_key([request.app_id, request.channel].into_iter()),
     );
     let current: std::result::Result<Option<StoredStreamRecord>, _> =
         db.select(resource.clone()).await;
@@ -1218,16 +1228,16 @@ async fn mark_channel_degraded(
             let upsert_result: std::result::Result<Option<StoredStreamRecord>, _> =
                 db.upsert(resource).content(updated).await;
             if let Err(err) = upsert_result {
-                error!(app_id = %app_id, channel = %channel, "Failed to persist SurrealDB history degraded state: {err}");
+                error!(app_id = %request.app_id, channel = %request.channel, "Failed to persist SurrealDB history degraded state: {err}");
             }
         }
         Ok(None) => {}
         Err(err) => {
-            error!(app_id = %app_id, channel = %channel, "Failed to load SurrealDB history stream before degrade: {err}");
+            error!(app_id = %request.app_id, channel = %request.channel, "Failed to load SurrealDB history stream before degrade: {err}");
         }
     }
     if let Some(metrics) = metrics {
-        let _ = refresh_history_state_metrics(db, tables, metrics, app_id).await;
+        let _ = refresh_history_state_metrics(db, tables, metrics, request.app_id).await;
     }
 }
 
@@ -1346,11 +1356,15 @@ mod tests {
             cache_ttl: 300,
             cache_max_capacity: 100,
         };
-        let mut config = HistoryConfig::default();
-        config.enabled = true;
-        config.backend = sockudo_core::options::HistoryBackend::SurrealDb;
-        config.surrealdb.table_prefix =
-            format!("sockudo_history_{}", uuid::Uuid::new_v4().simple());
+        let config = HistoryConfig {
+            enabled: true,
+            backend: sockudo_core::options::HistoryBackend::SurrealDb,
+            surrealdb: sockudo_core::options::SurrealDbHistoryConfig {
+                table_prefix: format!("sockudo_history_{}", uuid::Uuid::new_v4().simple()),
+                ..sockudo_core::options::SurrealDbHistoryConfig::default()
+            },
+            ..HistoryConfig::default()
+        };
         create_surreal_history_store(&settings, config, None, None)
             .await
             .unwrap()

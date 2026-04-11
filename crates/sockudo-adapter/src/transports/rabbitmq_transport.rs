@@ -10,8 +10,10 @@ use lapin::options::{
 use lapin::types::FieldTable;
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, ExchangeKind};
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::RabbitMqAdapterConfig;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
@@ -23,6 +25,7 @@ pub struct RabbitMqTransport {
     request_exchange: String,
     response_exchange: String,
     config: RabbitMqAdapterConfig,
+    metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
     owner_count: Arc<AtomicUsize>,
@@ -85,6 +88,7 @@ impl HorizontalTransport for RabbitMqTransport {
             request_exchange,
             response_exchange,
             config,
+            metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
             owner_count: Arc::new(AtomicUsize::new(1)),
@@ -144,6 +148,10 @@ impl HorizontalTransport for RabbitMqTransport {
             ))
         }
     }
+
+    fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
+        let _ = self.metrics.set(metrics);
+    }
 }
 
 impl RabbitMqTransport {
@@ -201,6 +209,7 @@ impl RabbitMqTransport {
             .map_err(|e| Error::Internal(format!("Failed to start RabbitMQ consumer: {e}")))?;
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
+        let metrics = self.metrics.clone();
 
         info!("RabbitMQ transport consuming {kind} from queue {}", queue);
 
@@ -218,7 +227,7 @@ impl RabbitMqTransport {
                 };
                 match delivery {
                     Ok(delivery) => {
-                        Self::handle_delivery(delivery, &handler).await;
+                        Self::handle_delivery(delivery, &handler, &metrics, kind).await;
                     }
                     Err(e) => {
                         error!("RabbitMQ {kind} consumer error: {}", e);
@@ -265,6 +274,7 @@ impl RabbitMqTransport {
             .map_err(|e| Error::Internal(format!("Failed to start RabbitMQ consumer: {e}")))?;
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
+        let metrics = self.metrics.clone();
 
         info!("RabbitMQ transport consuming requests from queue {}", queue);
 
@@ -310,6 +320,9 @@ impl RabbitMqTransport {
                                 }
                             },
                             Err(e) => {
+                                if let Some(metrics) = metrics.get() {
+                                    metrics.mark_horizontal_transport_message_dropped("rabbitmq");
+                                }
                                 warn!("Failed to parse RabbitMQ request payload: {}", e);
                             }
                         }
@@ -382,12 +395,19 @@ impl RabbitMqTransport {
         handler: &Arc<
             dyn Fn(T) -> crate::horizontal_transport::BoxFuture<'static, ()> + Send + Sync,
         >,
+        metrics: &Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
+        driver: &str,
     ) where
         T: serde::de::DeserializeOwned + Send + 'static,
     {
         match sonic_rs::from_slice::<T>(&delivery.data) {
             Ok(message) => handler(message).await,
-            Err(e) => warn!("Failed to parse RabbitMQ payload: {}", e),
+            Err(e) => {
+                if let Some(metrics) = metrics.get() {
+                    metrics.mark_horizontal_transport_message_dropped(driver);
+                }
+                warn!("Failed to parse RabbitMQ payload: {}", e)
+            }
         }
 
         if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
@@ -406,6 +426,7 @@ impl Clone for RabbitMqTransport {
             request_exchange: self.request_exchange.clone(),
             response_exchange: self.response_exchange.clone(),
             config: self.config.clone(),
+            metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
             owner_count: self.owner_count.clone(),

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use async_trait::async_trait;
 use sockudo_core::error::Result;
+use sockudo_core::metrics::MetricsInterface;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -41,6 +42,9 @@ pub trait HorizontalTransport: Send + Sync + Clone {
 
     /// Check transport health
     async fn check_health(&self) -> Result<()>;
+
+    /// Attach metrics for transport-level instrumentation.
+    fn set_metrics(&self, _metrics: Arc<dyn MetricsInterface + Send + Sync>) {}
 }
 
 /// Common configuration traits for transport implementations

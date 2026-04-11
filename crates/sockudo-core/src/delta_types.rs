@@ -130,6 +130,9 @@ impl Default for DeltaCompressionConfig {
 /// Implementations provide shared counters across nodes for synchronized full message intervals
 #[async_trait]
 pub trait ClusterCoordinator: Send + Sync {
+    /// Human-readable backend name used for logs and metrics.
+    fn backend_name(&self) -> &'static str;
+
     /// Increment the delta counter for a channel/conflation key and return whether to send full message
     /// Returns (should_send_full, current_count)
     async fn increment_and_check(
@@ -152,6 +155,10 @@ pub struct NoOpCoordinator;
 
 #[async_trait]
 impl ClusterCoordinator for NoOpCoordinator {
+    fn backend_name(&self) -> &'static str {
+        "none"
+    }
+
     async fn increment_and_check(
         &self,
         _app_id: &str,

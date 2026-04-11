@@ -256,12 +256,14 @@ fn bench_presence_history_snapshot(c: &mut Criterion) {
 
     group.bench_function("snapshot_from_1000_events", |b| {
         b.iter(|| {
-            rt.block_on(store_1k.snapshot_at(sockudo_core::presence_history::PresenceSnapshotRequest {
-                app_id: "bench-app".to_string(),
-                channel: "presence-bench-channel".to_string(),
-                at_time_ms: None,
-                at_serial: None,
-            }))
+            rt.block_on(store_1k.snapshot_at(
+                sockudo_core::presence_history::PresenceSnapshotRequest {
+                    app_id: "bench-app".to_string(),
+                    channel: "presence-bench-channel".to_string(),
+                    at_time_ms: None,
+                    at_serial: None,
+                },
+            ))
             .expect("snapshot")
         });
     });
@@ -272,12 +274,14 @@ fn bench_presence_history_snapshot(c: &mut Criterion) {
 
     group.bench_function("snapshot_from_10000_events", |b| {
         b.iter(|| {
-            rt.block_on(store_10k.snapshot_at(sockudo_core::presence_history::PresenceSnapshotRequest {
-                app_id: "bench-app".to_string(),
-                channel: "presence-bench-channel".to_string(),
-                at_time_ms: None,
-                at_serial: None,
-            }))
+            rt.block_on(store_10k.snapshot_at(
+                sockudo_core::presence_history::PresenceSnapshotRequest {
+                    app_id: "bench-app".to_string(),
+                    channel: "presence-bench-channel".to_string(),
+                    at_time_ms: None,
+                    at_serial: None,
+                },
+            ))
             .expect("snapshot")
         });
     });
@@ -285,12 +289,14 @@ fn bench_presence_history_snapshot(c: &mut Criterion) {
     // Snapshot bounded at serial midpoint (only replays half)
     group.bench_function("snapshot_bounded_at_serial_5000", |b| {
         b.iter(|| {
-            rt.block_on(store_10k.snapshot_at(sockudo_core::presence_history::PresenceSnapshotRequest {
-                app_id: "bench-app".to_string(),
-                channel: "presence-bench-channel".to_string(),
-                at_time_ms: None,
-                at_serial: Some(5000),
-            }))
+            rt.block_on(store_10k.snapshot_at(
+                sockudo_core::presence_history::PresenceSnapshotRequest {
+                    app_id: "bench-app".to_string(),
+                    channel: "presence-bench-channel".to_string(),
+                    at_time_ms: None,
+                    at_serial: Some(5000),
+                },
+            ))
             .expect("snapshot")
         });
     });

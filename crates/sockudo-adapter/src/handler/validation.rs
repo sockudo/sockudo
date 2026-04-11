@@ -542,8 +542,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        let mut global = HistoryConfig::default();
-        global.enabled = true;
+        let global = HistoryConfig {
+            enabled: true,
+            ..HistoryConfig::default()
+        };
 
         let err = validate_rewind_request(&app, "chat:room-1", true, &global).unwrap_err();
         assert!(
@@ -589,8 +591,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        let mut global = HistoryConfig::default();
-        global.enabled = true;
+        let global = HistoryConfig {
+            enabled: true,
+            ..HistoryConfig::default()
+        };
 
         assert!(validate_rewind_request(&app, "chat:room-1", true, &global).is_ok());
     }

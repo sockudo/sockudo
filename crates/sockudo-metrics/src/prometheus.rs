@@ -110,10 +110,14 @@ pub struct PrometheusMetricsDriver {
     presence_history_queue_depth: GaugeVec,
     presence_history_degraded_channels: GaugeVec,
     presence_history_reset_required_channels: GaugeVec,
-    // Redis Cluster transport metrics
-    redis_cluster_channel_queue_size: GaugeVec,
-    redis_cluster_channel_messages_dropped: CounterVec,
-    redis_cluster_reconnections_total: CounterVec,
+    delta_cluster_coordination_ops_total: CounterVec,
+    delta_cluster_coordination_failures_total: CounterVec,
+    delta_cluster_coordination_latency_ms: HistogramVec,
+    delta_cluster_coordination_decisions_total: CounterVec,
+    delta_cluster_coordination_backend_up: GaugeVec,
+    horizontal_transport_queue_depth: GaugeVec,
+    horizontal_transport_messages_dropped_total: CounterVec,
+    horizontal_transport_reconnections_total: CounterVec,
 }
 
 impl PrometheusMetricsDriver {
@@ -709,31 +713,76 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
-        // Redis Cluster transport metrics
-        let redis_cluster_channel_queue_size = register_gauge_vec!(
+        let delta_cluster_coordination_ops_total = register_counter_vec!(
             Opts::new(
-                format!("{prefix}redis_cluster_channel_queue_size"),
-                "Current size of the Redis Cluster PubSub message queue"
+                format!("{prefix}delta_cluster_coordination_ops_total"),
+                "Total number of delta cluster coordination operations"
             ),
-            &["transport_type"]
+            &["backend", "op", "result"]
         )
         .unwrap();
 
-        let redis_cluster_channel_messages_dropped = register_counter_vec!(
+        let delta_cluster_coordination_failures_total = register_counter_vec!(
             Opts::new(
-                format!("{prefix}redis_cluster_channel_messages_dropped_total"),
-                "Total number of messages dropped due to full queue"
+                format!("{prefix}delta_cluster_coordination_failures_total"),
+                "Total number of delta cluster coordination failures"
             ),
-            &["transport_type"]
+            &["backend", "op", "code"]
         )
         .unwrap();
 
-        let redis_cluster_reconnections_total = register_counter_vec!(
-            Opts::new(
-                format!("{prefix}redis_cluster_reconnections_total"),
-                "Total number of Redis Cluster reconnections"
+        let delta_cluster_coordination_latency_ms = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}delta_cluster_coordination_latency_ms"),
+                "Delta cluster coordination latency in milliseconds",
+                END_TO_END_LATENCY_HISTOGRAM_BUCKETS.to_vec()
             ),
-            &["transport_type"]
+            &["backend", "op"]
+        )
+        .unwrap();
+
+        let delta_cluster_coordination_decisions_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}delta_cluster_coordination_decisions_total"),
+                "Total number of delta cluster coordination decisions"
+            ),
+            &["backend", "decision"]
+        )
+        .unwrap();
+
+        let delta_cluster_coordination_backend_up = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}delta_cluster_coordination_backend_up"),
+                "Whether the delta cluster coordination backend is currently healthy"
+            ),
+            &["backend"]
+        )
+        .unwrap();
+
+        let horizontal_transport_queue_depth = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}horizontal_transport_queue_depth"),
+                "Current queue depth for a horizontal transport driver"
+            ),
+            &["driver"]
+        )
+        .unwrap();
+
+        let horizontal_transport_messages_dropped_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}horizontal_transport_messages_dropped_total"),
+                "Total number of horizontal transport messages dropped"
+            ),
+            &["driver"]
+        )
+        .unwrap();
+
+        let horizontal_transport_reconnections_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}horizontal_transport_reconnections_total"),
+                "Total number of horizontal transport reconnects"
+            ),
+            &["driver"]
         )
         .unwrap();
 
@@ -750,7 +799,8 @@ impl PrometheusMetricsDriver {
         presence_history_queue_depth.reset();
         presence_history_degraded_channels.reset();
         presence_history_reset_required_channels.reset();
-        redis_cluster_channel_queue_size.reset();
+        delta_cluster_coordination_backend_up.reset();
+        horizontal_transport_queue_depth.reset();
 
         // Set process start time
         if let Ok(boot_time) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
@@ -828,9 +878,14 @@ impl PrometheusMetricsDriver {
             presence_history_queue_depth,
             presence_history_degraded_channels,
             presence_history_reset_required_channels,
-            redis_cluster_channel_queue_size,
-            redis_cluster_channel_messages_dropped,
-            redis_cluster_reconnections_total,
+            delta_cluster_coordination_ops_total,
+            delta_cluster_coordination_failures_total,
+            delta_cluster_coordination_latency_ms,
+            delta_cluster_coordination_decisions_total,
+            delta_cluster_coordination_backend_up,
+            horizontal_transport_queue_depth,
+            horizontal_transport_messages_dropped_total,
+            horizontal_transport_reconnections_total,
         }
     }
 
@@ -972,24 +1027,21 @@ impl PrometheusMetricsDriver {
         }
     }
 
-    /// Record Redis Cluster channel queue size
-    pub fn record_redis_cluster_queue_size(&self, transport_type: &str, size: usize) {
-        self.redis_cluster_channel_queue_size
-            .with_label_values(&[transport_type])
-            .set(size as f64);
+    pub fn record_horizontal_transport_queue_depth(&self, driver: &str, depth: usize) {
+        self.horizontal_transport_queue_depth
+            .with_label_values(&[driver])
+            .set(depth as f64);
     }
 
-    /// Increment Redis Cluster messages dropped counter
-    pub fn increment_redis_cluster_messages_dropped(&self, transport_type: &str) {
-        self.redis_cluster_channel_messages_dropped
-            .with_label_values(&[transport_type])
+    pub fn increment_horizontal_transport_messages_dropped(&self, driver: &str) {
+        self.horizontal_transport_messages_dropped_total
+            .with_label_values(&[driver])
             .inc();
     }
 
-    /// Increment Redis Cluster reconnections counter
-    pub fn increment_redis_cluster_reconnections(&self, transport_type: &str) {
-        self.redis_cluster_reconnections_total
-            .with_label_values(&[transport_type])
+    pub fn increment_horizontal_transport_reconnections(&self, driver: &str) {
+        self.horizontal_transport_reconnections_total
+            .with_label_values(&[driver])
             .inc();
     }
 
@@ -1410,6 +1462,54 @@ impl MetricsInterface for PrometheusMetricsDriver {
     fn mark_history_recovery_failure(&self, app_id: &str, code: &str) {
         self.history_recovery_failures_total
             .with_label_values(&[app_id, &self.port.to_string(), code])
+            .inc();
+    }
+
+    fn mark_delta_cluster_coordination_op(&self, backend: &str, op: &str, result: &str) {
+        self.delta_cluster_coordination_ops_total
+            .with_label_values(&[backend, op, result])
+            .inc();
+    }
+
+    fn mark_delta_cluster_coordination_failure(&self, backend: &str, op: &str, code: &str) {
+        self.delta_cluster_coordination_failures_total
+            .with_label_values(&[backend, op, code])
+            .inc();
+    }
+
+    fn track_delta_cluster_coordination_latency(&self, backend: &str, op: &str, latency_ms: f64) {
+        self.delta_cluster_coordination_latency_ms
+            .with_label_values(&[backend, op])
+            .observe(latency_ms);
+    }
+
+    fn mark_delta_cluster_coordination_decision(&self, backend: &str, decision: &str) {
+        self.delta_cluster_coordination_decisions_total
+            .with_label_values(&[backend, decision])
+            .inc();
+    }
+
+    fn update_delta_cluster_coordination_backend_up(&self, backend: &str, up: bool) {
+        self.delta_cluster_coordination_backend_up
+            .with_label_values(&[backend])
+            .set(if up { 1.0 } else { 0.0 });
+    }
+
+    fn update_horizontal_transport_queue_depth(&self, driver: &str, depth: usize) {
+        self.horizontal_transport_queue_depth
+            .with_label_values(&[driver])
+            .set(depth as f64);
+    }
+
+    fn mark_horizontal_transport_message_dropped(&self, driver: &str) {
+        self.horizontal_transport_messages_dropped_total
+            .with_label_values(&[driver])
+            .inc();
+    }
+
+    fn mark_horizontal_transport_reconnection(&self, driver: &str) {
+        self.horizontal_transport_reconnections_total
+            .with_label_values(&[driver])
             .inc();
     }
 

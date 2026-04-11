@@ -186,6 +186,31 @@ pub struct ScyllaHistoryStore {
     queue_depth_total: AtomicUsize,
 }
 
+struct StreamWriteParams<'a> {
+    app_id: &'a str,
+    channel: &'a str,
+    stream_id: &'a str,
+    next_serial: u64,
+    durable_state: HistoryDurableState,
+    durable_state_reason: Option<&'a str>,
+    durable_state_node_id: Option<&'a str>,
+    durable_state_changed_at_ms: Option<i64>,
+    retained: &'a HistoryRetentionStats,
+    updated_at_ms: i64,
+}
+
+struct StreamRetentionUpdateParams<'a> {
+    app_id: &'a str,
+    channel: &'a str,
+    stream_id: &'a str,
+    next_serial: u64,
+    durable_state: HistoryDurableState,
+    durable_state_reason: Option<&'a str>,
+    durable_state_node_id: Option<&'a str>,
+    durable_state_changed_at_ms: Option<i64>,
+    updated_at_ms: i64,
+}
+
 pub async fn create_scylla_history_store(
     db_config: &ScyllaDbSettings,
     config: HistoryConfig,
@@ -486,19 +511,7 @@ impl ScyllaHistoryStore {
         Ok(())
     }
 
-    async fn write_stream_record(
-        &self,
-        app_id: &str,
-        channel: &str,
-        stream_id: &str,
-        next_serial: u64,
-        durable_state: HistoryDurableState,
-        durable_state_reason: Option<&str>,
-        durable_state_node_id: Option<&str>,
-        durable_state_changed_at_ms: Option<i64>,
-        retained: &HistoryRetentionStats,
-        updated_at_ms: i64,
-    ) -> Result<()> {
+    async fn write_stream_record(&self, params: StreamWriteParams<'_>) -> Result<()> {
         let query = format!(
             "INSERT INTO {} (app_id, channel, stream_id, next_serial, durable_state, durable_state_reason, durable_state_node_id, durable_state_changed_at_ms, retained_messages, retained_bytes, oldest_available_serial, newest_available_serial, oldest_available_published_at_ms, newest_available_published_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             self.tables.streams_fq()
@@ -507,21 +520,21 @@ impl ScyllaHistoryStore {
             .query_unpaged(
                 query,
                 (
-                    app_id,
-                    channel,
-                    stream_id,
-                    next_serial as i64,
-                    durable_state.as_str(),
-                    durable_state_reason,
-                    durable_state_node_id,
-                    durable_state_changed_at_ms,
-                    retained.retained_messages as i64,
-                    retained.retained_bytes as i64,
-                    retained.oldest_serial.map(|value| value as i64),
-                    retained.newest_serial.map(|value| value as i64),
-                    retained.oldest_published_at_ms,
-                    retained.newest_published_at_ms,
-                    updated_at_ms,
+                    params.app_id,
+                    params.channel,
+                    params.stream_id,
+                    params.next_serial as i64,
+                    params.durable_state.as_str(),
+                    params.durable_state_reason,
+                    params.durable_state_node_id,
+                    params.durable_state_changed_at_ms,
+                    params.retained.retained_messages as i64,
+                    params.retained.retained_bytes as i64,
+                    params.retained.oldest_serial.map(|value| value as i64),
+                    params.retained.newest_serial.map(|value| value as i64),
+                    params.retained.oldest_published_at_ms,
+                    params.retained.newest_published_at_ms,
+                    params.updated_at_ms,
                 ),
             )
             .await
@@ -533,21 +546,13 @@ impl ScyllaHistoryStore {
 
     async fn update_stream_retention_from_entries(
         &self,
-        app_id: &str,
-        channel: &str,
-        stream_id: &str,
-        next_serial: u64,
-        durable_state: HistoryDurableState,
-        durable_state_reason: Option<&str>,
-        durable_state_node_id: Option<&str>,
-        durable_state_changed_at_ms: Option<i64>,
-        updated_at_ms: i64,
+        params: StreamRetentionUpdateParams<'_>,
     ) -> Result<HistoryRetentionStats> {
         let rows = self
-            .load_entry_keys_for_stream(app_id, channel, stream_id)
+            .load_entry_keys_for_stream(params.app_id, params.channel, params.stream_id)
             .await?;
         let retained = HistoryRetentionStats {
-            stream_id: Some(stream_id.to_string()),
+            stream_id: Some(params.stream_id.to_string()),
             retained_messages: rows.len() as u64,
             retained_bytes: rows
                 .iter()
@@ -558,18 +563,18 @@ impl ScyllaHistoryStore {
             oldest_published_at_ms: rows.first().map(|row| row.published_at_ms),
             newest_published_at_ms: rows.last().map(|row| row.published_at_ms),
         };
-        self.write_stream_record(
-            app_id,
-            channel,
-            stream_id,
-            next_serial,
-            durable_state,
-            durable_state_reason,
-            durable_state_node_id,
-            durable_state_changed_at_ms,
-            &retained,
-            updated_at_ms,
-        )
+        self.write_stream_record(StreamWriteParams {
+            app_id: params.app_id,
+            channel: params.channel,
+            stream_id: params.stream_id,
+            next_serial: params.next_serial,
+            durable_state: params.durable_state,
+            durable_state_reason: params.durable_state_reason,
+            durable_state_node_id: params.durable_state_node_id,
+            durable_state_changed_at_ms: params.durable_state_changed_at_ms,
+            retained: &retained,
+            updated_at_ms: params.updated_at_ms,
+        })
         .await?;
         Ok(retained)
     }
@@ -652,17 +657,17 @@ impl ScyllaHistoryStore {
                 ))
             })?;
         let retained = self
-            .update_stream_retention_from_entries(
-                &record.app_id,
-                &record.channel,
-                &record.stream_id,
-                current.next_serial.max(record.serial.saturating_add(1)),
-                current.durable_state,
-                current.durable_state_reason.as_deref(),
-                current.durable_state_node_id.as_deref(),
-                current.durable_state_changed_at_ms,
-                record.published_at_ms,
-            )
+            .update_stream_retention_from_entries(StreamRetentionUpdateParams {
+                app_id: &record.app_id,
+                channel: &record.channel,
+                stream_id: &record.stream_id,
+                next_serial: current.next_serial.max(record.serial.saturating_add(1)),
+                durable_state: current.durable_state,
+                durable_state_reason: current.durable_state_reason.as_deref(),
+                durable_state_node_id: current.durable_state_node_id.as_deref(),
+                durable_state_changed_at_ms: current.durable_state_changed_at_ms,
+                updated_at_ms: record.published_at_ms,
+            })
             .await?;
 
         if let Some(metrics) = self.metrics.as_ref() {
@@ -781,10 +786,12 @@ impl HistoryStore for ScyllaHistoryStore {
                 &self.degraded_channels,
                 self.cache_manager.as_ref(),
                 self.metrics.as_deref(),
-                &record.app_id,
-                &record.channel,
-                "durable_history_write_failed",
-                None,
+                DegradeRequest {
+                    app_id: &record.app_id,
+                    channel: &record.channel,
+                    reason: "durable_history_write_failed",
+                    node_id: None,
+                },
             )
             .await;
             if let Some(metrics) = self.metrics.as_ref() {
@@ -1002,18 +1009,18 @@ impl HistoryStore for ScyllaHistoryStore {
         let new_stream_id = uuid::Uuid::new_v4().to_string();
         let now_ms = sockudo_core::history::now_ms();
         let retained = HistoryRetentionStats::default();
-        self.write_stream_record(
+        self.write_stream_record(StreamWriteParams {
             app_id,
             channel,
-            &new_stream_id,
-            1,
-            HistoryDurableState::Healthy,
-            None,
-            None,
-            Some(now_ms),
-            &retained,
-            now_ms,
-        )
+            stream_id: &new_stream_id,
+            next_serial: 1,
+            durable_state: HistoryDurableState::Healthy,
+            durable_state_reason: None,
+            durable_state_node_id: None,
+            durable_state_changed_at_ms: Some(now_ms),
+            retained: &retained,
+            updated_at_ms: now_ms,
+        })
         .await?;
         self.degraded_channels
             .remove(&degraded_channel_key(app_id, channel));
@@ -1082,17 +1089,17 @@ impl HistoryStore for ScyllaHistoryStore {
                 .await?;
             if let Some(stream) = self.load_stream_record(app_id, channel).await? {
                 let retained = self
-                    .update_stream_retention_from_entries(
+                    .update_stream_retention_from_entries(StreamRetentionUpdateParams {
                         app_id,
                         channel,
                         stream_id,
-                        stream.next_serial,
-                        stream.durable_state,
-                        stream.durable_state_reason.as_deref(),
-                        stream.durable_state_node_id.as_deref(),
-                        stream.durable_state_changed_at_ms,
-                        sockudo_core::history::now_ms(),
-                    )
+                        next_serial: stream.next_serial,
+                        durable_state: stream.durable_state,
+                        durable_state_reason: stream.durable_state_reason.as_deref(),
+                        durable_state_node_id: stream.durable_state_node_id.as_deref(),
+                        durable_state_changed_at_ms: stream.durable_state_changed_at_ms,
+                        updated_at_ms: sockudo_core::history::now_ms(),
+                    })
                     .await?;
                 if let Some(metrics) = self.metrics.as_ref() {
                     metrics.update_history_retained(
@@ -1252,32 +1259,39 @@ fn map_scylla_lwt_error(operation: &str, error: impl std::fmt::Display) -> Error
     ))
 }
 
+struct DegradeRequest<'a> {
+    app_id: &'a str,
+    channel: &'a str,
+    reason: &'a str,
+    node_id: Option<String>,
+}
+
 async fn mark_channel_degraded(
     session: &Session,
     tables: &HistoryTables,
     degraded_channels: &DashMap<String, HistoryDegradedState>,
     cache_manager: Option<&Arc<dyn CacheManager + Send + Sync>>,
     metrics: Option<&(dyn MetricsInterface + Send + Sync)>,
-    app_id: &str,
-    channel: &str,
-    reason: &str,
-    node_id: Option<String>,
+    request: DegradeRequest<'_>,
 ) {
     let now_ms = sockudo_core::history::now_ms();
     let state = HistoryDegradedState {
-        app_id: app_id.to_string(),
-        channel: channel.to_string(),
+        app_id: request.app_id.to_string(),
+        channel: request.channel.to_string(),
         durable_state: HistoryDurableState::Degraded,
-        reason: reason.to_string(),
-        node_id,
+        reason: request.reason.to_string(),
+        node_id: request.node_id,
         last_transition_at_ms: now_ms,
         observed_source: "local_memory_hint",
     };
-    degraded_channels.insert(degraded_channel_key(app_id, channel), state.clone());
+    degraded_channels.insert(
+        degraded_channel_key(request.app_id, request.channel),
+        state.clone(),
+    );
     if let Some(cache) = cache_manager {
         let _ = cache
             .set(
-                &degraded_cache_key(app_id, channel),
+                &degraded_cache_key(request.app_id, request.channel),
                 &sonic_rs::to_string(&sonic_rs::json!({
                     "app_id": state.app_id,
                     "channel": state.channel,
@@ -1299,7 +1313,7 @@ async fn mark_channel_degraded(
         );
         async {
             session
-                .query_unpaged(query, (app_id, channel))
+                .query_unpaged(query, (request.app_id, request.channel))
                 .await
                 .map_err(|e| {
                     Error::Internal(format!(
@@ -1346,8 +1360,8 @@ async fn mark_channel_degraded(
             .query_unpaged(
                 query,
                 (
-                    app_id,
-                    channel,
+                    request.app_id,
+                    request.channel,
                     current.stream_id.as_str(),
                     current.next_serial as i64,
                     state.durable_state.as_str(),
@@ -1365,11 +1379,11 @@ async fn mark_channel_degraded(
             )
             .await
         {
-            error!(app_id = %app_id, channel = %channel, "Failed to persist ScyllaDB history degraded state: {err}");
+            error!(app_id = %request.app_id, channel = %request.channel, "Failed to persist ScyllaDB history degraded state: {err}");
         }
     }
     if let Some(metrics) = metrics {
-        let _ = refresh_history_state_metrics(session, tables, metrics, app_id).await;
+        let _ = refresh_history_state_metrics(session, tables, metrics, request.app_id).await;
     }
 }
 
@@ -1487,10 +1501,15 @@ mod tests {
             replication_class: "SimpleStrategy".to_string(),
             replication_factor: 1,
         };
-        let mut config = HistoryConfig::default();
-        config.enabled = true;
-        config.backend = sockudo_core::options::HistoryBackend::ScyllaDb;
-        config.scylladb.table_prefix = format!("sockudo_history_{}", uuid::Uuid::new_v4().simple());
+        let config = HistoryConfig {
+            enabled: true,
+            backend: sockudo_core::options::HistoryBackend::ScyllaDb,
+            scylladb: sockudo_core::options::ScyllaDbHistoryConfig {
+                table_prefix: format!("sockudo_history_{}", uuid::Uuid::new_v4().simple()),
+                ..sockudo_core::options::ScyllaDbHistoryConfig::default()
+            },
+            ..HistoryConfig::default()
+        };
         create_scylla_history_store(&db, config, None, None)
             .await
             .unwrap()

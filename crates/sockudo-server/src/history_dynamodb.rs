@@ -1141,30 +1141,29 @@ impl DynamoDbHistoryStore {
         if let Some(current) = self
             .load_stream_raw(&record.app_id, &record.channel)
             .await?
+            && current.next_serial < record.serial.saturating_add(1)
         {
-            if current.next_serial < record.serial.saturating_add(1) {
-                let _ = self
-                    .client
-                    .update_item()
-                    .table_name(&self.tables.streams)
-                    .key(
-                        "stream_key",
-                        Self::attr_string(&Self::stream_key(&record.app_id, &record.channel)),
-                    )
-                    .condition_expression("#next_serial < :floor")
-                    .update_expression("SET #next_serial = :floor, updated_at_ms = :updated_at_ms")
-                    .expression_attribute_names("#next_serial", "next_serial")
-                    .expression_attribute_values(
-                        ":floor",
-                        Self::attr_number(record.serial.saturating_add(1)),
-                    )
-                    .expression_attribute_values(
-                        ":updated_at_ms",
-                        Self::attr_number(record.published_at_ms),
-                    )
-                    .send()
-                    .await;
-            }
+            let _ = self
+                .client
+                .update_item()
+                .table_name(&self.tables.streams)
+                .key(
+                    "stream_key",
+                    Self::attr_string(&Self::stream_key(&record.app_id, &record.channel)),
+                )
+                .condition_expression("#next_serial < :floor")
+                .update_expression("SET #next_serial = :floor, updated_at_ms = :updated_at_ms")
+                .expression_attribute_names("#next_serial", "next_serial")
+                .expression_attribute_values(
+                    ":floor",
+                    Self::attr_number(record.serial.saturating_add(1)),
+                )
+                .expression_attribute_values(
+                    ":updated_at_ms",
+                    Self::attr_number(record.published_at_ms),
+                )
+                .send()
+                .await;
         }
 
         let retained = HistoryRetentionStats {
@@ -1317,10 +1316,12 @@ impl HistoryStore for DynamoDbHistoryStore {
                 &self.degraded_channels,
                 self.cache_manager.as_ref(),
                 self.metrics.as_deref(),
-                &record.app_id,
-                &record.channel,
-                "durable_history_write_failed",
-                None,
+                DegradeRequest {
+                    app_id: &record.app_id,
+                    channel: &record.channel,
+                    reason: "durable_history_write_failed",
+                    node_id: None,
+                },
             )
             .await;
             if let Some(metrics) = self.metrics.as_ref() {
@@ -1762,32 +1763,39 @@ fn resolve_runtime_state(
     durable_state
 }
 
+struct DegradeRequest<'a> {
+    app_id: &'a str,
+    channel: &'a str,
+    reason: &'a str,
+    node_id: Option<String>,
+}
+
 async fn mark_channel_degraded(
     client: &Client,
     tables: &HistoryTables,
     degraded_channels: &DashMap<String, HistoryDegradedState>,
     cache_manager: Option<&Arc<dyn CacheManager + Send + Sync>>,
     metrics: Option<&(dyn MetricsInterface + Send + Sync)>,
-    app_id: &str,
-    channel: &str,
-    reason: &str,
-    node_id: Option<String>,
+    request: DegradeRequest<'_>,
 ) {
     let now_ms = sockudo_core::history::now_ms();
     let state = HistoryDegradedState {
-        app_id: app_id.to_string(),
-        channel: channel.to_string(),
+        app_id: request.app_id.to_string(),
+        channel: request.channel.to_string(),
         durable_state: HistoryDurableState::Degraded,
-        reason: reason.to_string(),
-        node_id,
+        reason: request.reason.to_string(),
+        node_id: request.node_id,
         last_transition_at_ms: now_ms,
         observed_source: "local_memory_hint",
     };
-    degraded_channels.insert(degraded_channel_key(app_id, channel), state.clone());
+    degraded_channels.insert(
+        degraded_channel_key(request.app_id, request.channel),
+        state.clone(),
+    );
     if let Some(cache) = cache_manager {
         let _ = cache
             .set(
-                &degraded_cache_key(app_id, channel),
+                &degraded_cache_key(request.app_id, request.channel),
                 &sonic_rs::to_string(&sonic_rs::json!({
                     "app_id": state.app_id,
                     "channel": state.channel,
@@ -1807,7 +1815,10 @@ async fn mark_channel_degraded(
         .table_name(&tables.streams)
         .key(
             "stream_key",
-            AttributeValue::S(DynamoDbHistoryStore::stream_key(app_id, channel)),
+            AttributeValue::S(DynamoDbHistoryStore::stream_key(
+                request.app_id,
+                request.channel,
+            )),
         )
         .send()
         .await;
@@ -1828,22 +1839,22 @@ async fn mark_channel_degraded(
                     .put_item()
                     .table_name(&tables.streams)
                     .set_item(Some(DynamoDbHistoryStore::stream_item(
-                        &DynamoDbHistoryStore::stream_key(app_id, channel),
+                        &DynamoDbHistoryStore::stream_key(request.app_id, request.channel),
                         &updated,
                     )))
                     .send()
                     .await;
                 if let Err(err) = put_result {
-                    error!(app_id = %app_id, channel = %channel, "Failed to persist DynamoDB history degraded state: {err}");
+                    error!(app_id = %request.app_id, channel = %request.channel, "Failed to persist DynamoDB history degraded state: {err}");
                 }
             }
         }
         Err(err) => {
-            error!(app_id = %app_id, channel = %channel, "Failed to load DynamoDB history stream before degrade: {err}");
+            error!(app_id = %request.app_id, channel = %request.channel, "Failed to load DynamoDB history stream before degrade: {err}");
         }
     }
     if let Some(metrics) = metrics {
-        let _ = refresh_history_state_metrics(client, tables, metrics, app_id).await;
+        let _ = refresh_history_state_metrics(client, tables, metrics, request.app_id).await;
     }
 }
 
@@ -1970,9 +1981,11 @@ mod tests {
             aws_secret_access_key: Some("dummy".to_string()),
             aws_profile_name: None,
         };
-        let mut config = HistoryConfig::default();
-        config.enabled = true;
-        config.backend = sockudo_core::options::HistoryBackend::DynamoDb;
+        let config = HistoryConfig {
+            enabled: true,
+            backend: sockudo_core::options::HistoryBackend::DynamoDb,
+            ..HistoryConfig::default()
+        };
 
         create_dynamodb_history_store(&settings, config, None, None)
             .await

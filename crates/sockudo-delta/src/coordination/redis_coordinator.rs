@@ -1,15 +1,60 @@
 use async_trait::async_trait;
 use redis::AsyncCommands;
+use redis::cluster::ClusterClientBuilder;
+use redis::cluster_async::ClusterConnection;
 use sockudo_core::delta_types::ClusterCoordinator;
 use sockudo_core::error::{Error, Result};
 use std::sync::Arc;
 use tracing::debug;
 
+enum RedisCoordinationConnection {
+    Standard(redis::aio::ConnectionManager),
+    Cluster(ClusterConnection),
+}
+
+impl RedisCoordinationConnection {
+    async fn incr(&mut self, key: &str, value: u32) -> redis::RedisResult<u32> {
+        match self {
+            Self::Standard(conn) => conn.incr(key, value).await,
+            Self::Cluster(conn) => conn.incr(key, value).await,
+        }
+    }
+
+    async fn expire(&mut self, key: &str, ttl_seconds: i64) -> redis::RedisResult<()> {
+        match self {
+            Self::Standard(conn) => conn.expire(key, ttl_seconds).await,
+            Self::Cluster(conn) => conn.expire(key, ttl_seconds).await,
+        }
+    }
+
+    async fn set(&mut self, key: &str, value: u32) -> redis::RedisResult<()> {
+        match self {
+            Self::Standard(conn) => conn.set(key, value).await,
+            Self::Cluster(conn) => conn.set(key, value).await,
+        }
+    }
+
+    async fn del(&mut self, key: &str) -> redis::RedisResult<()> {
+        match self {
+            Self::Standard(conn) => conn.del(key).await,
+            Self::Cluster(conn) => conn.del(key).await,
+        }
+    }
+
+    async fn get(&mut self, key: &str) -> redis::RedisResult<Option<u32>> {
+        match self {
+            Self::Standard(conn) => conn.get(key).await,
+            Self::Cluster(conn) => conn.get(key).await,
+        }
+    }
+}
+
 /// Redis-based cluster coordinator for delta interval synchronization
 pub struct RedisClusterCoordinator {
-    connection: Arc<tokio::sync::Mutex<redis::aio::ConnectionManager>>,
+    connection: Arc<tokio::sync::Mutex<RedisCoordinationConnection>>,
     prefix: String,
     ttl_seconds: u64,
+    backend_name: &'static str,
 }
 
 impl RedisClusterCoordinator {
@@ -29,9 +74,35 @@ impl RedisClusterCoordinator {
             .map_err(|e| Error::Redis(format!("Failed to connect to Redis: {}", e)))?;
 
         Ok(Self {
-            connection: Arc::new(tokio::sync::Mutex::new(connection)),
+            connection: Arc::new(tokio::sync::Mutex::new(
+                RedisCoordinationConnection::Standard(connection),
+            )),
             prefix: prefix.unwrap_or("sockudo").to_string(),
             ttl_seconds: 300,
+            backend_name: "redis",
+        })
+    }
+
+    /// Create a new Redis Cluster coordinator from seed nodes.
+    pub async fn new_cluster(nodes: Vec<String>, prefix: Option<&str>) -> Result<Self> {
+        let client = ClusterClientBuilder::new(nodes)
+            .retries(3)
+            .read_from_replicas()
+            .build()
+            .map_err(|e| Error::Redis(format!("Failed to create Redis Cluster client: {}", e)))?;
+
+        let connection = client
+            .get_async_connection()
+            .await
+            .map_err(|e| Error::Redis(format!("Failed to connect to Redis Cluster: {}", e)))?;
+
+        Ok(Self {
+            connection: Arc::new(tokio::sync::Mutex::new(
+                RedisCoordinationConnection::Cluster(connection),
+            )),
+            prefix: prefix.unwrap_or("sockudo").to_string(),
+            ttl_seconds: 300,
+            backend_name: "redis_cluster",
         })
     }
 
@@ -45,6 +116,10 @@ impl RedisClusterCoordinator {
 
 #[async_trait]
 impl ClusterCoordinator for RedisClusterCoordinator {
+    fn backend_name(&self) -> &'static str {
+        self.backend_name
+    }
+
     async fn increment_and_check(
         &self,
         app_id: &str,
@@ -131,6 +206,7 @@ impl Clone for RedisClusterCoordinator {
             connection: Arc::clone(&self.connection),
             prefix: self.prefix.clone(),
             ttl_seconds: self.ttl_seconds,
+            backend_name: self.backend_name,
         }
     }
 }

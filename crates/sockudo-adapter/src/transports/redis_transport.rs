@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use redis::AsyncCommands;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::MetricsInterface;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Notify;
 use tracing::{debug, error, warn};
@@ -47,6 +49,7 @@ pub struct RedisTransport {
     broadcast_channel: String,
     request_channel: String,
     response_channel: String,
+    metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
     owner_count: Arc<AtomicUsize>,
@@ -92,6 +95,7 @@ impl HorizontalTransport for RedisTransport {
             broadcast_channel,
             request_channel,
             response_channel,
+            metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
             owner_count: Arc::new(AtomicUsize::new(1)),
@@ -181,6 +185,7 @@ impl HorizontalTransport for RedisTransport {
         let broadcast_channel = self.broadcast_channel.clone();
         let request_channel = self.request_channel.clone();
         let response_channel = self.response_channel.clone();
+        let metrics = self.metrics.clone();
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
 
@@ -260,6 +265,7 @@ impl HorizontalTransport for RedisTransport {
                         let broadcast_channel_clone = broadcast_channel.clone();
                         let request_channel_clone = request_channel.clone();
                         let response_channel_clone = response_channel.clone();
+                        let metrics_clone = metrics.clone();
 
                         tokio::spawn(async move {
                             if channel == broadcast_channel_clone {
@@ -268,6 +274,8 @@ impl HorizontalTransport for RedisTransport {
                                     sonic_rs::from_str::<BroadcastMessage>(&payload)
                                 {
                                     broadcast_handler(broadcast).await;
+                                } else if let Some(metrics) = metrics_clone.get() {
+                                    metrics.mark_horizontal_transport_message_dropped("redis");
                                 }
                             } else if channel == request_channel_clone {
                                 // Handle request message
@@ -285,12 +293,17 @@ impl HorizontalTransport for RedisTransport {
                                             )
                                             .await;
                                     }
+                                } else if let Some(metrics) = metrics_clone.get() {
+                                    metrics.mark_horizontal_transport_message_dropped("redis");
                                 }
                             } else if channel == response_channel_clone {
                                 // Handle response message
                                 if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
                                     response_handler(response).await;
                                 } else {
+                                    if let Some(metrics) = metrics_clone.get() {
+                                        metrics.mark_horizontal_transport_message_dropped("redis");
+                                    }
                                     warn!("Failed to parse response message: {}", payload);
                                 }
                             }
@@ -304,6 +317,9 @@ impl HorizontalTransport for RedisTransport {
                 }
 
                 if connection_broken {
+                    if let Some(metrics) = metrics.get() {
+                        metrics.mark_horizontal_transport_reconnection("redis");
+                    }
                     warn!(
                         "Pub/sub connection broken, reconnecting in {}ms...",
                         retry_delay
@@ -314,6 +330,9 @@ impl HorizontalTransport for RedisTransport {
                     }
                     retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                 } else {
+                    if let Some(metrics) = metrics.get() {
+                        metrics.mark_horizontal_transport_reconnection("redis");
+                    }
                     warn!("Pub/sub message stream ended unexpectedly, reconnecting...");
                 }
 
@@ -379,6 +398,10 @@ impl HorizontalTransport for RedisTransport {
             )))
         }
     }
+
+    fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
+        let _ = self.metrics.set(metrics);
+    }
 }
 
 impl Drop for RedisTransport {
@@ -400,6 +423,7 @@ impl Clone for RedisTransport {
             broadcast_channel: self.broadcast_channel.clone(),
             request_channel: self.request_channel.clone(),
             response_channel: self.response_channel.clone(),
+            metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
             owner_count: self.owner_count.clone(),

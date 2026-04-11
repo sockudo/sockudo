@@ -71,6 +71,10 @@ impl NatsClusterCoordinator {
 
 #[async_trait]
 impl ClusterCoordinator for NatsClusterCoordinator {
+    fn backend_name(&self) -> &'static str {
+        "nats"
+    }
+
     async fn increment_and_check(
         &self,
         app_id: &str,
