@@ -4,8 +4,10 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use pulsar::{Authentication, Consumer, Producer, Pulsar, SubType, TokioExecutor};
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::PulsarAdapterConfig;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, info, warn};
@@ -22,6 +24,7 @@ pub struct PulsarTransport {
     request_subscription: String,
     response_subscription: String,
     config: PulsarAdapterConfig,
+    metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
     owner_count: Arc<AtomicUsize>,
@@ -112,6 +115,7 @@ impl HorizontalTransport for PulsarTransport {
             request_subscription,
             response_subscription,
             config,
+            metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
             owner_count: Arc::new(AtomicUsize::new(1)),
@@ -163,6 +167,10 @@ impl HorizontalTransport for PulsarTransport {
             .await
             .map_err(|e| Error::Internal(format!("Pulsar health check failed: {e}")))
     }
+
+    fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
+        let _ = self.metrics.set(metrics);
+    }
 }
 
 impl PulsarTransport {
@@ -194,6 +202,7 @@ impl PulsarTransport {
     {
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             loop {
@@ -213,6 +222,9 @@ impl PulsarTransport {
                         match sonic_rs::from_slice::<T>(&message.payload.data) {
                             Ok(payload) => handler(payload).await,
                             Err(error) => {
+                                if let Some(metrics) = metrics.get() {
+                                    metrics.mark_horizontal_transport_message_dropped("pulsar");
+                                }
                                 warn!("Failed to parse Pulsar {kind} payload: {}", error);
                             }
                         }
@@ -249,6 +261,7 @@ impl PulsarTransport {
         let response_producer = self.response_producer.clone();
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             loop {
@@ -279,6 +292,9 @@ impl PulsarTransport {
                                 }
                             },
                             Err(error) => {
+                                if let Some(metrics) = metrics.get() {
+                                    metrics.mark_horizontal_transport_message_dropped("pulsar");
+                                }
                                 warn!("Failed to parse Pulsar request payload: {}", error);
                             }
                         }
@@ -377,6 +393,7 @@ impl Clone for PulsarTransport {
             request_subscription: self.request_subscription.clone(),
             response_subscription: self.response_subscription.clone(),
             config: self.config.clone(),
+            metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
             owner_count: self.owner_count.clone(),

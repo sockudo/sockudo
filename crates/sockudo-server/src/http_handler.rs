@@ -68,18 +68,22 @@ impl IntoResponse for AppError {
     fn into_response(self) -> AxumResponse {
         let (status, code, msg) = match &self {
             AppError::AppNotFound(msg) => (StatusCode::NOT_FOUND, "app_not_found", msg.clone()),
-            AppError::AppValidationFailed(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "app_validation_failed", msg.clone())
-            }
+            AppError::AppValidationFailed(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "app_validation_failed",
+                msg.clone(),
+            ),
             AppError::ApiAuthFailed(msg) => (StatusCode::UNAUTHORIZED, "auth_failed", msg.clone()),
             AppError::MissingChannelInfo => (
                 StatusCode::BAD_REQUEST,
                 "missing_channel_info",
                 "Request must contain 'channels' (list) or 'channel' (string)".to_string(),
             ),
-            AppError::TerminationFailed(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "termination_failed", msg.clone())
-            }
+            AppError::TerminationFailed(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "termination_failed",
+                msg.clone(),
+            ),
             AppError::SerializationError(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "serialization_error",
@@ -90,17 +94,25 @@ impl IntoResponse for AppError {
                 "header_build_error",
                 format!("Internal error building response: {e}"),
             ),
-            AppError::InternalError(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg.clone())
+            AppError::InternalError(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                msg.clone(),
+            ),
+            AppError::LimitExceeded(msg) => {
+                (StatusCode::BAD_REQUEST, "limit_exceeded", msg.clone())
             }
-            AppError::LimitExceeded(msg) => (StatusCode::BAD_REQUEST, "limit_exceeded", msg.clone()),
-            AppError::PayloadTooLarge(msg) => {
-                (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", msg.clone())
-            }
+            AppError::PayloadTooLarge(msg) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                msg.clone(),
+            ),
             AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, "invalid_input", msg.clone()),
-            AppError::FeatureDisabled(msg) => {
-                (StatusCode::UNPROCESSABLE_ENTITY, "feature_disabled", msg.clone())
-            }
+            AppError::FeatureDisabled(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "feature_disabled",
+                msg.clone(),
+            ),
         };
         error!(error.message = %self, status_code = %status, "HTTP request failed");
         let error_message = json!({ "error": msg, "code": code, "status": status.as_u16() });
@@ -4105,9 +4117,18 @@ mod tests {
             .await
             .unwrap();
         let json: Value = sonic_rs::from_slice(&body).unwrap();
-        assert!(json["code"].as_str().is_some(), "error must include 'code' field");
-        assert!(json["status"].as_u64().is_some(), "error must include 'status' field");
-        assert!(json["error"].as_str().is_some(), "error must include 'error' field");
+        assert!(
+            json["code"].as_str().is_some(),
+            "error must include 'code' field"
+        );
+        assert!(
+            json["status"].as_u64().is_some(),
+            "error must include 'status' field"
+        );
+        assert!(
+            json["error"].as_str().is_some(),
+            "error must include 'error' field"
+        );
     }
 
     #[tokio::test]
@@ -4173,8 +4194,12 @@ mod tests {
         // All returned items should fall within the time bounds
         for item in items {
             let ts = item["published_at_ms"].as_i64().unwrap();
-            assert!(ts >= base_ts + 2 && ts <= base_ts + 4,
-                "item at ts={ts} outside Ably alias bounds [{}, {}]", base_ts + 2, base_ts + 4);
+            assert!(
+                ts >= base_ts + 2 && ts <= base_ts + 4,
+                "item at ts={ts} outside Ably alias bounds [{}, {}]",
+                base_ts + 2,
+                base_ts + 4
+            );
         }
     }
 }

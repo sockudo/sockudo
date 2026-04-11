@@ -430,10 +430,15 @@ async fn build_surreal_history_store() -> Arc<dyn HistoryStore + Send + Sync> {
         cache_ttl: 300,
         cache_max_capacity: 100,
     };
-    let mut config = sockudo_core::options::HistoryConfig::default();
-    config.enabled = true;
-    config.backend = sockudo_core::options::HistoryBackend::SurrealDb;
-    config.surrealdb.table_prefix = format!("sockudo_history_{}", Uuid::new_v4().simple());
+    let config = sockudo_core::options::HistoryConfig {
+        enabled: true,
+        backend: sockudo_core::options::HistoryBackend::SurrealDb,
+        surrealdb: sockudo_core::options::SurrealDbHistoryConfig {
+            table_prefix: format!("sockudo_history_{}", Uuid::new_v4().simple()),
+            ..sockudo_core::options::SurrealDbHistoryConfig::default()
+        },
+        ..sockudo_core::options::HistoryConfig::default()
+    };
     history_surreal::create_surreal_history_store(&settings, config, None, None)
         .await
         .unwrap()
@@ -448,9 +453,11 @@ async fn build_dynamodb_history_store() -> Arc<dyn HistoryStore + Send + Sync> {
         aws_secret_access_key: Some("dummy".to_string()),
         aws_profile_name: None,
     };
-    let mut config = sockudo_core::options::HistoryConfig::default();
-    config.enabled = true;
-    config.backend = sockudo_core::options::HistoryBackend::DynamoDb;
+    let config = sockudo_core::options::HistoryConfig {
+        enabled: true,
+        backend: sockudo_core::options::HistoryBackend::DynamoDb,
+        ..sockudo_core::options::HistoryConfig::default()
+    };
     history_dynamodb::create_dynamodb_history_store(&settings, config, None, None)
         .await
         .unwrap()

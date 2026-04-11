@@ -3,6 +3,7 @@ use crate::horizontal_transport::{HorizontalTransport, TransportConfig, Transpor
 use async_trait::async_trait;
 use crossfire::mpsc;
 use sockudo_core::error::{Error, Result};
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::RedisClusterAdapterConfig;
 
 use redis::AsyncCommands;
@@ -10,6 +11,7 @@ use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use redis::cluster_async::ClusterConnection;
 
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -58,6 +60,7 @@ pub struct RedisClusterTransport {
     response_channel: String,
     config: RedisClusterAdapterConfig,
     use_sharded_pubsub: bool,
+    metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
     owner_count: Arc<AtomicUsize>,
@@ -117,6 +120,7 @@ impl HorizontalTransport for RedisClusterTransport {
             response_channel,
             config,
             use_sharded_pubsub,
+            metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
             owner_count: Arc::new(AtomicUsize::new(1)),
@@ -287,6 +291,7 @@ impl HorizontalTransport for RedisClusterTransport {
         let use_sharded_pubsub = self.use_sharded_pubsub;
         // Clone the publish connection for use in handlers (cheap, thread-safe)
         let publish_connection = self.publish_connection.clone();
+        let metrics = self.metrics.clone();
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
 
@@ -336,13 +341,14 @@ impl HorizontalTransport for RedisClusterTransport {
                                 "Redis Cluster PubSub reconnected successfully after {} attempts",
                                 reconnection_count
                             );
-                            // Note: Reconnection metrics are tracked in src/metrics/prometheus.rs
-                            // but not accessible here without passing metrics driver through
                         }
                         conn
                     }
                     Err(e) => {
                         reconnection_count += 1;
+                        if let Some(metrics) = metrics.get() {
+                            metrics.mark_horizontal_transport_reconnection("redis_cluster");
+                        }
                         error!(
                             "Failed to get pubsub connection: {}, retrying in {}ms (attempt {})",
                             e, retry_delay, reconnection_count
@@ -372,6 +378,9 @@ impl HorizontalTransport for RedisClusterTransport {
                 };
 
                 if let Err(e) = subscribe_result {
+                    if let Some(metrics) = metrics.get() {
+                        metrics.mark_horizontal_transport_reconnection("redis_cluster");
+                    }
                     error!(
                         "Failed to subscribe to channels: {}, retrying in {}ms",
                         e, retry_delay
@@ -419,6 +428,9 @@ impl HorizontalTransport for RedisClusterTransport {
 
                     // PushInfo.data for messages should be [channel, payload]
                     if push_info.data.len() < 2 {
+                        if let Some(metrics) = metrics.get() {
+                            metrics.mark_horizontal_transport_message_dropped("redis_cluster");
+                        }
                         error!("Invalid push message format: {:?}", push_info);
                         continue;
                     }
@@ -426,6 +438,9 @@ impl HorizontalTransport for RedisClusterTransport {
                     let channel = match value_to_string(&push_info.data[0]) {
                         Some(s) => s,
                         None => {
+                            if let Some(metrics) = metrics.get() {
+                                metrics.mark_horizontal_transport_message_dropped("redis_cluster");
+                            }
                             error!("Failed to parse channel name: {:?}", push_info.data[0]);
                             continue;
                         }
@@ -434,6 +449,9 @@ impl HorizontalTransport for RedisClusterTransport {
                     let payload = match value_to_string(&push_info.data[1]) {
                         Some(s) => s,
                         None => {
+                            if let Some(metrics) = metrics.get() {
+                                metrics.mark_horizontal_transport_message_dropped("redis_cluster");
+                            }
                             error!("Failed to parse payload: {:?}", push_info.data[1]);
                             continue;
                         }
@@ -444,6 +462,7 @@ impl HorizontalTransport for RedisClusterTransport {
                     let request_handler = handlers.on_request.clone();
                     let response_handler = handlers.on_response.clone();
                     let publish_conn = publish_connection.clone(); // Cheap clone per redis-rs docs
+                    let metrics_clone = metrics.clone();
                     let broadcast_channel_clone = broadcast_channel.clone();
                     let request_channel_clone = request_channel.clone();
                     let response_channel_clone = response_channel.clone();
@@ -454,6 +473,8 @@ impl HorizontalTransport for RedisClusterTransport {
                             if let Ok(broadcast) = sonic_rs::from_str::<BroadcastMessage>(&payload)
                             {
                                 broadcast_handler(broadcast).await;
+                            } else if let Some(metrics) = metrics_clone.get() {
+                                metrics.mark_horizontal_transport_message_dropped("redis_cluster");
                             }
                         } else if channel == request_channel_clone {
                             // Handle request message
@@ -469,17 +490,24 @@ impl HorizontalTransport for RedisClusterTransport {
                                         .publish::<_, _, ()>(&response_channel_clone, response_json)
                                         .await;
                                 }
+                            } else if let Some(metrics) = metrics_clone.get() {
+                                metrics.mark_horizontal_transport_message_dropped("redis_cluster");
                             }
                         } else if channel == response_channel_clone {
                             // Handle response message
                             if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
                                 response_handler(response).await;
+                            } else if let Some(metrics) = metrics_clone.get() {
+                                metrics.mark_horizontal_transport_message_dropped("redis_cluster");
                             }
                         }
                     });
                 }
 
                 // Connection ended, reconnect with exponential backoff
+                if let Some(metrics) = metrics.get() {
+                    metrics.mark_horizontal_transport_reconnection("redis_cluster");
+                }
                 warn!("Redis Cluster PubSub connection ended, reconnecting...");
                 tokio::select! {
                     _ = shutdown.notified() => break,
@@ -539,6 +567,10 @@ impl HorizontalTransport for RedisClusterTransport {
             )))
         }
     }
+
+    fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
+        let _ = self.metrics.set(metrics);
+    }
 }
 
 impl Drop for RedisClusterTransport {
@@ -562,6 +594,7 @@ impl Clone for RedisClusterTransport {
             response_channel: self.response_channel.clone(),
             config: self.config.clone(),
             use_sharded_pubsub: self.use_sharded_pubsub,
+            metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
             owner_count: self.owner_count.clone(),

@@ -521,6 +521,7 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_rewind_complete(
         &self,
         socket_id: &SocketId,

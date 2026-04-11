@@ -354,10 +354,12 @@ impl MySqlHistoryStore {
                             &degraded_channels,
                             cache_manager.as_ref(),
                             metrics.as_deref(),
-                            &record.app_id,
-                            &record.channel,
-                            "durable_history_write_failed",
-                            None,
+                            DegradeRequest {
+                                app_id: &record.app_id,
+                                channel: &record.channel,
+                                reason: "durable_history_write_failed",
+                                node_id: None,
+                            },
                         )
                         .await;
                     } else if let Some(metrics) = metrics.as_ref() {
@@ -849,10 +851,12 @@ impl HistoryStore for MySqlHistoryStore {
                 &self.degraded_channels,
                 self.cache_manager.as_ref(),
                 self.metrics.as_deref(),
-                &record.app_id,
-                &record.channel,
-                "durable_history_write_failed",
-                None,
+                DegradeRequest {
+                    app_id: &record.app_id,
+                    channel: &record.channel,
+                    reason: "durable_history_write_failed",
+                    node_id: None,
+                },
             )
             .await;
             if let Some(metrics) = self.metrics.as_ref() {
@@ -1369,32 +1373,39 @@ fn decrement_app_queue_depth(
     }
 }
 
+struct DegradeRequest<'a> {
+    app_id: &'a str,
+    channel: &'a str,
+    reason: &'a str,
+    node_id: Option<String>,
+}
+
 async fn mark_channel_degraded(
     pool: &MySqlPool,
     tables: &HistoryTables,
     degraded_channels: &DashMap<String, HistoryDegradedState>,
     cache_manager: Option<&Arc<dyn CacheManager + Send + Sync>>,
     metrics: Option<&(dyn MetricsInterface + Send + Sync)>,
-    app_id: &str,
-    channel: &str,
-    reason: &str,
-    node_id: Option<String>,
+    request: DegradeRequest<'_>,
 ) {
     let now_ms = sockudo_core::history::now_ms();
     let state = HistoryDegradedState {
-        app_id: app_id.to_string(),
-        channel: channel.to_string(),
+        app_id: request.app_id.to_string(),
+        channel: request.channel.to_string(),
         durable_state: HistoryDurableState::Degraded,
-        reason: reason.to_string(),
-        node_id,
+        reason: request.reason.to_string(),
+        node_id: request.node_id,
         last_transition_at_ms: now_ms,
         observed_source: "local_memory_hint",
     };
-    degraded_channels.insert(degraded_channel_key(app_id, channel), state.clone());
+    degraded_channels.insert(
+        degraded_channel_key(request.app_id, request.channel),
+        state.clone(),
+    );
     if let Some(cache) = cache_manager {
         let _ = cache
             .set(
-                &degraded_cache_key(app_id, channel),
+                &degraded_cache_key(request.app_id, request.channel),
                 &sonic_rs::to_string(&sonic_rs::json!({
                     "app_id": state.app_id,
                     "channel": state.channel,
@@ -1417,16 +1428,16 @@ async fn mark_channel_degraded(
         .bind(&state.reason)
         .bind(&state.node_id)
         .bind(state.last_transition_at_ms)
-        .bind(app_id)
-        .bind(channel)
+        .bind(request.app_id)
+        .bind(request.channel)
         .bind(state.last_transition_at_ms)
         .execute(pool)
         .await
     {
-        error!(app_id = %app_id, channel = %channel, "Failed to persist MySQL history degraded state: {err}");
+        error!(app_id = %request.app_id, channel = %request.channel, "Failed to persist MySQL history degraded state: {err}");
     }
     if let Some(metrics) = metrics {
-        let _ = refresh_history_state_metrics(pool, tables, metrics, app_id).await;
+        let _ = refresh_history_state_metrics(pool, tables, metrics, request.app_id).await;
     }
 }
 
@@ -1528,11 +1539,15 @@ mod tests {
             ..Default::default()
         };
         let pooling = DatabasePooling::default();
-        let mut config = HistoryConfig::default();
-        config.enabled = true;
-        config.backend = sockudo_core::options::HistoryBackend::Mysql;
-        config.mysql.table_prefix =
-            format!("sockudo_history_test_{}", uuid::Uuid::new_v4().simple());
+        let config = HistoryConfig {
+            enabled: true,
+            backend: sockudo_core::options::HistoryBackend::Mysql,
+            mysql: sockudo_core::options::MySqlHistoryConfig {
+                table_prefix: format!("sockudo_history_test_{}", uuid::Uuid::new_v4().simple()),
+                ..sockudo_core::options::MySqlHistoryConfig::default()
+            },
+            ..HistoryConfig::default()
+        };
 
         create_mysql_history_store(&db, &pooling, config, None, None)
             .await

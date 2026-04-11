@@ -152,6 +152,13 @@ where
         metrics: Arc<dyn MetricsInterface + Send + Sync>,
     ) -> Result<()> {
         self.horizontal.set_metrics(metrics);
+        self.transport.set_metrics(
+            self.horizontal
+                .metrics
+                .get()
+                .cloned()
+                .expect("metrics just set"),
+        );
         Ok(())
     }
 

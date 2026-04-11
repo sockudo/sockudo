@@ -246,6 +246,7 @@ impl DynamoDbAppManager {
                         None
                     },
                     history: None,
+                    presence_history: None,
                 },
             ))
         } else {

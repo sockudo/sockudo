@@ -243,6 +243,7 @@ impl PresenceManager {
     /// async cleanup, and direct unsubscribe paths
     ///
     /// FIX: Uses atomic check-and-act pattern to prevent TOCTOU race conditions
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_member_removed(
         &self,
         connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,

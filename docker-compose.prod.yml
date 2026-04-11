@@ -125,7 +125,7 @@ services:
 
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./sql/init-prod.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./ops/migrations/mysql/001_fresh_schema.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - ./mysql/conf.d:/etc/mysql/conf.d:ro
 
     deploy:
@@ -167,8 +167,8 @@ services:
       - "9090:9090"
 
     volumes:
-      - ./monitoring/prometheus-prod.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - ./ops/monitoring/prometheus-prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/monitoring/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
 
     command:
@@ -207,8 +207,8 @@ services:
 
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./ops/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./ops/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
 
     deploy:
       resources:
@@ -230,8 +230,8 @@ services:
       - "443:443"
 
     volumes:
-      - ./nginx/nginx-prod.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./ops/nginx/nginx-prod.conf:/etc/nginx/nginx.conf:ro
+      - ./ops/nginx/ssl:/etc/nginx/ssl:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
 
     depends_on:

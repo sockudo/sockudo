@@ -469,10 +469,12 @@ impl PostgresHistoryStore {
                             &degraded_channels,
                             cache_manager.as_ref(),
                             metrics.as_deref(),
-                            &record.app_id,
-                            &record.channel,
-                            "durable_history_write_failed",
-                            None,
+                            DegradeRequest {
+                                app_id: &record.app_id,
+                                channel: &record.channel,
+                                reason: "durable_history_write_failed",
+                                node_id: None,
+                            },
                         )
                         .await;
                     } else if let Some(metrics) = metrics.as_ref() {
@@ -1008,10 +1010,12 @@ impl HistoryStore for PostgresHistoryStore {
                 &self.degraded_channels,
                 self.cache_manager.as_ref(),
                 self.metrics.as_deref(),
-                &record.app_id,
-                &record.channel,
-                "history_writer_queue_full",
-                None,
+                DegradeRequest {
+                    app_id: &record.app_id,
+                    channel: &record.channel,
+                    reason: "history_writer_queue_full",
+                    node_id: None,
+                },
             )
             .await;
             return Err(Error::Internal(format!(
@@ -1561,32 +1565,39 @@ fn decrement_app_queue_depth(
 }
 
 #[cfg(feature = "postgres")]
+struct DegradeRequest<'a> {
+    app_id: &'a str,
+    channel: &'a str,
+    reason: &'a str,
+    node_id: Option<String>,
+}
+
 async fn mark_channel_degraded(
     pool: &PgPool,
     tables: &HistoryTables,
     degraded_channels: &DashMap<String, HistoryDegradedState>,
     cache_manager: Option<&Arc<dyn CacheManager + Send + Sync>>,
     metrics: Option<&(dyn MetricsInterface + Send + Sync)>,
-    app_id: &str,
-    channel: &str,
-    reason: &str,
-    node_id: Option<String>,
+    request: DegradeRequest<'_>,
 ) {
     let now_ms = sockudo_core::history::now_ms();
     let state = HistoryDegradedState {
-        app_id: app_id.to_string(),
-        channel: channel.to_string(),
+        app_id: request.app_id.to_string(),
+        channel: request.channel.to_string(),
         durable_state: HistoryDurableState::Degraded,
-        reason: reason.to_string(),
-        node_id,
+        reason: request.reason.to_string(),
+        node_id: request.node_id,
         last_transition_at_ms: now_ms,
         observed_source: "local_memory_hint",
     };
-    degraded_channels.insert(degraded_channel_key(app_id, channel), state.clone());
+    degraded_channels.insert(
+        degraded_channel_key(request.app_id, request.channel),
+        state.clone(),
+    );
     if let Some(cache) = cache_manager {
         let _ = cache
             .set(
-                &degraded_cache_key(app_id, channel),
+                &degraded_cache_key(request.app_id, request.channel),
                 &sonic_rs::to_string(&json!({
                     "app_id": state.app_id,
                     "channel": state.channel,
@@ -1615,8 +1626,8 @@ async fn mark_channel_degraded(
         tables.streams
     );
     if let Err(err) = sqlx::query(&update_sql)
-        .bind(app_id)
-        .bind(channel)
+        .bind(request.app_id)
+        .bind(request.channel)
         .bind(state.durable_state.as_str())
         .bind(&state.reason)
         .bind(&state.node_id)
@@ -1625,14 +1636,14 @@ async fn mark_channel_degraded(
         .await
     {
         error!(
-            app_id = %app_id,
-            channel = %channel,
+            app_id = %request.app_id,
+            channel = %request.channel,
             "Failed to persist history degraded state: {err}"
         );
     }
 
     if let Some(metrics) = metrics {
-        let _ = refresh_history_state_metrics(pool, tables, metrics, app_id).await;
+        let _ = refresh_history_state_metrics(pool, tables, metrics, request.app_id).await;
     }
 }
 

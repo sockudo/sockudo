@@ -562,7 +562,7 @@ impl ConnectionHandler {
             .get_connection(socket_id, &app_config.id)
             .await
             .map(|conn| conn.wire_format)
-            .unwrap_or(sockudo_protocol::WireFormat::Json);
+            .unwrap_or(WireFormat::Json);
 
         let parsed = match self.parse_message(&message, wire_format) {
             Ok(msg) => msg,
@@ -672,11 +672,7 @@ impl ConnectionHandler {
         }
     }
 
-    fn parse_message(
-        &self,
-        message: &Message,
-        wire_format: sockudo_protocol::WireFormat,
-    ) -> Result<PusherMessage> {
+    fn parse_message(&self, message: &Message, wire_format: WireFormat) -> Result<PusherMessage> {
         let payload = match message {
             Message::Text(bytes) | Message::Binary(bytes) => bytes,
             _ => {

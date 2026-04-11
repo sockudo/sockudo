@@ -281,7 +281,7 @@ driver = "memory"
 
 Per-app app-manager entries are where V2 channel semantics live, now grouped under `app.policy`: `policy.channels.allowed_origins`, `policy.channels.channel_namespaces`, app-level `policy.idempotency`, `policy.connection_recovery`, and `policy.channels.channel_delta_compression`.
 
-For existing MySQL/PostgreSQL app tables, use the explicit migration scripts under [`migrations/mysql`](/Users/radudiaconu/Desktop/Code/Rust/sockudo/migrations/mysql) and [`migrations/postgresql`](/Users/radudiaconu/Desktop/Code/Rust/sockudo/migrations/postgresql) to backfill `policy` and then drop legacy columns during a maintenance window.
+Fresh SQL bootstraps now live under [`ops/migrations/mysql`](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql) and [`ops/migrations/postgresql`](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgresql). DynamoDB, SurrealDB, and ScyllaDB are runtime-provisioned and document that in their migration subfolders.
 
 ### Environment Variables
 

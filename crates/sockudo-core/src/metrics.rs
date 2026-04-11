@@ -152,6 +152,36 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a recovery failure code.
     fn mark_history_recovery_failure(&self, _app_id: &str, _code: &str) {}
 
+    /// Track delta cluster coordination operations.
+    fn mark_delta_cluster_coordination_op(&self, _backend: &str, _op: &str, _result: &str) {}
+
+    /// Track delta cluster coordination failures.
+    fn mark_delta_cluster_coordination_failure(&self, _backend: &str, _op: &str, _code: &str) {}
+
+    /// Track delta cluster coordination latency.
+    fn track_delta_cluster_coordination_latency(
+        &self,
+        _backend: &str,
+        _op: &str,
+        _latency_ms: f64,
+    ) {
+    }
+
+    /// Track whether coordination chose a full or delta message.
+    fn mark_delta_cluster_coordination_decision(&self, _backend: &str, _decision: &str) {}
+
+    /// Update coordination backend health.
+    fn update_delta_cluster_coordination_backend_up(&self, _backend: &str, _up: bool) {}
+
+    /// Update queue depth for a horizontal transport driver.
+    fn update_horizontal_transport_queue_depth(&self, _driver: &str, _depth: usize) {}
+
+    /// Track dropped horizontal transport messages.
+    fn mark_horizontal_transport_message_dropped(&self, _driver: &str) {}
+
+    /// Track horizontal transport reconnects.
+    fn mark_horizontal_transport_reconnection(&self, _driver: &str) {}
+
     /// Track a successful presence-history write.
     fn mark_presence_history_write(&self, _app_id: &str) {}
 

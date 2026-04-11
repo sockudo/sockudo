@@ -6865,18 +6865,27 @@ name = "sockudo-queue"
 version = "4.1.0"
 dependencies = [
  "ahash 0.8.12",
+ "async-nats",
  "async-trait",
  "aws-config",
  "aws-sdk-sns",
  "aws-sdk-sqs",
+ "bytes",
  "chrono",
  "dashmap",
+ "futures-util",
+ "google-cloud-auth",
+ "google-cloud-pubsub",
+ "lapin",
+ "pulsar",
+ "rdkafka",
  "redis",
  "serde",
  "sockudo-core",
  "sonic-rs",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

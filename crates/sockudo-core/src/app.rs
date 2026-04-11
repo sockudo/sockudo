@@ -1077,8 +1077,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        let mut global = HistoryConfig::default();
-        global.enabled = false;
+        let global = HistoryConfig {
+            enabled: false,
+            ..HistoryConfig::default()
+        };
 
         let resolved = app.resolved_history("chat:room-1", &global);
 
