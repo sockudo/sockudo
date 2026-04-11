@@ -1213,14 +1213,7 @@ mod tests {
                     max_messages_per_channel: Some(2),
                     max_bytes_per_channel: None,
                 },
-                ..make_record(
-                    "app",
-                    "chat",
-                    &stream_id,
-                    3,
-                    now_ms(),
-                    "newest",
-                )
+                ..make_record("app", "chat", &stream_id, 3, now_ms(), "newest")
             })
             .await
             .unwrap();
