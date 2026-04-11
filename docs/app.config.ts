@@ -46,7 +46,11 @@ export default defineAppConfig({
       ],
     },
   },
-  github: false,
+  github: {
+    url: "https://github.com/sockudo/sockudo",
+    branch: "master",
+    rootDir: "docs",
+  },
   ui: {
     contentNavigation: {
       slots: {

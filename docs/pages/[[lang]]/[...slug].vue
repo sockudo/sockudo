@@ -52,19 +52,36 @@ defineOgImageComponent('Sockudo', {
 
 const github = computed(() => appConfig.github ? appConfig.github : null)
 
+const githubBaseUrl = computed(() => {
+  const url = github.value?.url
+  if (!url || typeof url !== 'string') {
+    return null
+  }
+
+  return url.replace(/\/+$/, '')
+})
+
 const editLink = computed(() => {
-  if (!github.value) {
+  if (!github.value || !githubBaseUrl.value) {
     return
   }
 
   return [
-    github.value.url,
+    githubBaseUrl.value,
     'edit',
     github.value.branch,
     github.value.rootDir,
     'content',
     `${page.value?.stem}.${page.value?.extension}`,
   ].filter(Boolean).join('/')
+})
+
+const reportLink = computed(() => {
+  if (!githubBaseUrl.value) {
+    return
+  }
+
+  return `${githubBaseUrl.value}/issues/new/choose`
 })
 
 // Add the page path to the prerender list
@@ -102,7 +119,7 @@ addPrerenderPath(`/raw${route.path}.md`)
         :value="page"
       />
 
-      <USeparator v-if="github">
+      <USeparator v-if="githubBaseUrl">
         <div
           class="flex items-center gap-2 text-sm text-muted"
         >
@@ -120,7 +137,7 @@ addPrerenderPath(`/raw${route.path}.md`)
           <UButton
             variant="link"
             color="neutral"
-            :to="`${github.url}/issues/new/choose`"
+            :to="reportLink"
             target="_blank"
             icon="i-lucide-alert-circle"
             :ui="{ leadingIcon: 'size-4' }"
