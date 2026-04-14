@@ -13,7 +13,9 @@ use crate::horizontal_adapter::{
     AggregationStats, BroadcastMessage, DeadNodeEvent, HorizontalAdapter, OrphanedMember,
     PendingRequest, RequestBody, RequestType, ResponseBody, current_timestamp, generate_request_id,
 };
-use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
+use crate::horizontal_transport::{
+    HorizontalTransport, ResponseHandler, TransportConfig, TransportHandlers,
+};
 use crate::local_adapter::LocalAdapter;
 use async_trait::async_trait;
 use crossfire::mpsc;
@@ -299,8 +301,34 @@ where
             }
         }
 
-        // Broadcast the request via transport.
-        self.transport.publish_request(&request).await?;
+        // Set up inbox for direct replies (eliminates O(N²) response fan-out).
+        let _inbox_guard = match self.transport.new_inbox() {
+            Some(inbox) => {
+                // Subscribe BEFORE publishing to avoid missing early replies
+                let horizontal = self.horizontal.clone();
+                let handler: ResponseHandler = Arc::new(move |response| {
+                    let horizontal = horizontal.clone();
+                    Box::pin(async move {
+                        let _ = horizontal.process_response(response).await;
+                    })
+                });
+
+                let guard = self
+                    .transport
+                    .subscribe_response_inbox(&inbox, handler)
+                    .await?;
+
+                self.transport
+                    .publish_request_with_reply(&request, &inbox)
+                    .await?;
+
+                guard
+            }
+            None => {
+                self.transport.publish_request(&request).await?;
+                None
+            }
+        };
 
         // Wait for responses with adaptive timeout based on request type and node count
         let base_timeout = self

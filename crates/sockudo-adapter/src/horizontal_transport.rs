@@ -8,6 +8,12 @@ use sockudo_core::error::Result;
 use sockudo_core::metrics::MetricsInterface;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type ResponseHandler = Arc<dyn Fn(ResponseBody) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// Guard that keeps an inbox subscription alive. Drop to unsubscribe.
+pub struct InboxGuard {
+    pub(crate) _cancel: tokio::sync::oneshot::Sender<()>,
+}
 
 /// Handlers for transport events
 pub struct TransportHandlers {
@@ -45,6 +51,31 @@ pub trait HorizontalTransport: Send + Sync + Clone {
 
     /// Attach metrics for transport-level instrumentation.
     fn set_metrics(&self, _metrics: Arc<dyn MetricsInterface + Send + Sync>) {}
+
+    /// Generate a unique inbox subject. Returns None if transport doesn't support direct reply.
+    fn new_inbox(&self) -> Option<String> {
+        None
+    }
+
+    /// Publish a request with a reply-to subject so responders reply directly to the requester.
+    /// Default: ignores reply_to and publishes normally.
+    async fn publish_request_with_reply(
+        &self,
+        request: &RequestBody,
+        _reply_to: &str,
+    ) -> Result<()> {
+        self.publish_request(request).await
+    }
+
+    /// Subscribe to an inbox and forward responses to the handler.
+    /// Returns a guard — drop it to unsubscribe.
+    async fn subscribe_response_inbox(
+        &self,
+        _inbox: &str,
+        _handler: ResponseHandler,
+    ) -> Result<Option<InboxGuard>> {
+        Ok(None)
+    }
 }
 
 /// Common configuration traits for transport implementations

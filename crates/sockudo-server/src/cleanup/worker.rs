@@ -267,6 +267,7 @@ impl CleanupWorker {
                     app_id: task.app_id.clone(),
                     channel: channel.clone(),
                     user_id: Some(user_id.clone()),
+                    socket_id: Some(task.socket_id),
                     data: sonic_rs::json!({
                         "user_id": user_id,
                         "socket_id": task.socket_id.to_string()
@@ -287,6 +288,7 @@ impl CleanupWorker {
                     app_id: task.app_id.clone(),
                     channel: channel.clone(),
                     user_id: None,
+                    socket_id: None,
                     data: sonic_rs::json!({
                         "channel": channel
                     }),
@@ -385,7 +387,7 @@ impl CleanupWorker {
                             app_config,
                             &event.channel,
                             user_id,
-                            None,
+                            event.socket_id.as_ref(),
                             PresenceHistoryEventCause::Disconnect,
                             None,
                             Some(

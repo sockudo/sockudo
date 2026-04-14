@@ -1,5 +1,7 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
-use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
+use crate::horizontal_transport::{
+    HorizontalTransport, InboxGuard, ResponseHandler, TransportConfig, TransportHandlers,
+};
 use async_nats::{Client as NatsClient, ConnectOptions as NatsOptions, Subject};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -73,6 +75,10 @@ impl NatsTransport {
     /// Get transport metrics for monitoring
     pub fn get_metrics(&self) -> Arc<TransportMetrics> {
         self.metrics.clone()
+    }
+
+    pub fn client(&self) -> &NatsClient {
+        &self.client
     }
 
     async fn discover_node_count_via_system_ping(&self) -> Result<Option<usize>> {
@@ -309,24 +315,29 @@ impl HorizontalTransport for NatsTransport {
                     break;
                 };
                 metrics_broadcast.record_received();
-                match sonic_rs::from_slice::<BroadcastMessage>(&msg.payload) {
-                    Ok(broadcast) => {
-                        broadcast_handler(broadcast).await;
-                        metrics_broadcast.record_processed();
-                    }
-                    Err(e) => {
-                        metrics_broadcast.record_parse_error();
-                        if let Some(metrics) = metrics_driver_broadcast.get() {
-                            metrics.mark_horizontal_transport_message_dropped("nats");
+                let handler = broadcast_handler.clone();
+                let metrics = metrics_broadcast.clone();
+                let metrics_driver = metrics_driver_broadcast.clone();
+                tokio::spawn(async move {
+                    match sonic_rs::from_slice::<BroadcastMessage>(&msg.payload) {
+                        Ok(broadcast) => {
+                            handler(broadcast).await;
+                            metrics.record_processed();
                         }
-                        let payload_preview =
-                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                        error!(
-                            "Failed to parse broadcast message: {} - payload preview: {}",
-                            e, payload_preview
-                        );
+                        Err(e) => {
+                            metrics.record_parse_error();
+                            if let Some(m) = metrics_driver.get() {
+                                m.mark_horizontal_transport_message_dropped("nats");
+                            }
+                            let payload_preview =
+                                String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                            error!(
+                                "Failed to parse broadcast message: {} - payload preview: {}",
+                                e, payload_preview
+                            );
+                        }
                     }
-                }
+                });
             }
             warn!("Broadcast subscription ended unexpectedly");
         });
@@ -346,36 +357,43 @@ impl HorizontalTransport for NatsTransport {
                     break;
                 };
                 metrics_request.record_received();
-                match sonic_rs::from_slice::<RequestBody>(&msg.payload) {
-                    Ok(request) => {
-                        let response_result = request_handler(request).await;
+                let handler = request_handler.clone();
+                let metrics = metrics_request.clone();
+                let metrics_driver = metrics_driver_request.clone();
+                let client = response_client.clone();
+                let subject = response_subject.clone();
+                tokio::spawn(async move {
+                    match sonic_rs::from_slice::<RequestBody>(&msg.payload) {
+                        Ok(request) => {
+                            let response_result = handler(request).await;
 
-                        if let Ok(response) = response_result
-                            && let Ok(response_data) = sonic_rs::to_vec(&response)
-                            && let Err(e) = response_client
-                                .publish(
-                                    Subject::from(response_subject.clone()),
-                                    response_data.into(),
-                                )
-                                .await
-                        {
-                            warn!("Failed to publish response: {}", e);
+                            if let Ok(response) = response_result
+                                && let Ok(response_data) = sonic_rs::to_vec(&response)
+                            {
+                                // Reply to requester's inbox if available,
+                                // otherwise fall back to global subject
+                                let target = msg.reply.unwrap_or_else(|| Subject::from(subject));
+
+                                if let Err(e) = client.publish(target, response_data.into()).await {
+                                    warn!("Failed to publish response: {}", e);
+                                }
+                            }
+                            metrics.record_processed();
                         }
-                        metrics_request.record_processed();
-                    }
-                    Err(e) => {
-                        metrics_request.record_parse_error();
-                        if let Some(metrics) = metrics_driver_request.get() {
-                            metrics.mark_horizontal_transport_message_dropped("nats");
+                        Err(e) => {
+                            metrics.record_parse_error();
+                            if let Some(m) = metrics_driver.get() {
+                                m.mark_horizontal_transport_message_dropped("nats");
+                            }
+                            let payload_preview =
+                                String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                            error!(
+                                "Failed to parse request message: {} - payload preview: {}",
+                                e, payload_preview
+                            );
                         }
-                        let payload_preview =
-                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                        error!(
-                            "Failed to parse request message: {} - payload preview: {}",
-                            e, payload_preview
-                        );
                     }
-                }
+                });
             }
             warn!("Request subscription ended unexpectedly");
         });
@@ -395,24 +413,29 @@ impl HorizontalTransport for NatsTransport {
                     break;
                 };
                 metrics_response.record_received();
-                match sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
-                    Ok(response) => {
-                        response_handler(response).await;
-                        metrics_response.record_processed();
-                    }
-                    Err(e) => {
-                        metrics_response.record_parse_error();
-                        if let Some(metrics) = metrics_driver_response.get() {
-                            metrics.mark_horizontal_transport_message_dropped("nats");
+                let handler = response_handler.clone();
+                let metrics = metrics_response.clone();
+                let metrics_driver = metrics_driver_response.clone();
+                tokio::spawn(async move {
+                    match sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
+                        Ok(response) => {
+                            handler(response).await;
+                            metrics.record_processed();
                         }
-                        let payload_preview =
-                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                        error!(
-                            "Failed to parse response message: {} - payload preview: {}",
-                            e, payload_preview
-                        );
+                        Err(e) => {
+                            metrics.record_parse_error();
+                            if let Some(m) = metrics_driver.get() {
+                                m.mark_horizontal_transport_message_dropped("nats");
+                            }
+                            let payload_preview =
+                                String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                            error!(
+                                "Failed to parse response message: {} - payload preview: {}",
+                                e, payload_preview
+                            );
+                        }
                     }
-                }
+                });
             }
             warn!("Response subscription ended unexpectedly");
         });
@@ -456,6 +479,65 @@ impl HorizontalTransport for NatsTransport {
 
     fn set_metrics(&self, metrics: Arc<dyn MetricsInterface + Send + Sync>) {
         let _ = self.metrics_driver.set(metrics);
+    }
+
+    fn new_inbox(&self) -> Option<String> {
+        Some(self.client.new_inbox())
+    }
+
+    async fn publish_request_with_reply(
+        &self,
+        request: &RequestBody,
+        reply_to: &str,
+    ) -> Result<()> {
+        let request_data = sonic_rs::to_vec(request)
+            .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+
+        self.client
+            .publish_with_reply(
+                Subject::from(self.request_subject.clone()),
+                Subject::from(reply_to.to_string()),
+                request_data.into(),
+            )
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to publish request: {e}")))?;
+
+        debug!(
+            "Published request {} with reply_to via NATS",
+            request.request_id
+        );
+        Ok(())
+    }
+
+    async fn subscribe_response_inbox(
+        &self,
+        inbox: &str,
+        handler: ResponseHandler,
+    ) -> Result<Option<InboxGuard>> {
+        let mut sub = self
+            .client
+            .subscribe(Subject::from(inbox.to_string()))
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to subscribe to inbox: {e}")))?;
+
+        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut cancel_rx => break,
+                    msg = sub.next() => {
+                        let Some(msg) = msg else { break };
+                        if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
+                            handler(response).await;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Some(InboxGuard { _cancel: cancel_tx }))
     }
 }
 
