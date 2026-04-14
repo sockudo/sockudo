@@ -9,6 +9,7 @@ pub use sockudo_adapter::cleanup::{
 
 // Re-export CleanupConfig and WorkerThreadsConfig from sockudo-core options
 pub use sockudo_core::options::{CleanupConfig, WorkerThreadsConfig};
+use sockudo_core::websocket::SocketId;
 
 // Re-export CancellationToken for use by callers who want graceful shutdown
 pub use tokio_util::sync::CancellationToken;
@@ -103,5 +104,6 @@ pub struct WebhookEvent {
     pub app_id: String,
     pub channel: String,
     pub user_id: Option<String>,
+    pub socket_id: Option<SocketId>,
     pub data: sonic_rs::Value,
 }

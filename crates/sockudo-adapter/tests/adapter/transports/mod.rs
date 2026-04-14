@@ -9,3 +9,6 @@ mod redis_cluster_transport_test;
 
 #[cfg(all(test, feature = "nats"))]
 mod nats_transport_test;
+
+#[cfg(all(test, feature = "nats"))]
+mod nats_inbox_test;
