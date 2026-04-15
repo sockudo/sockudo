@@ -754,6 +754,7 @@ impl SockudoServer {
                 presence_history_store.clone(),
                 config.presence_history.clone(),
                 cleanup_config.clone(),
+                metrics.clone(),
             );
 
             let cleanup_sender =

@@ -2,6 +2,7 @@ use super::{CleanupConfig, CleanupSenderHandle, WorkerThreadsResolve, worker::Cl
 use crossfire::mpsc;
 use sockudo_adapter::connection_manager::ConnectionManager;
 use sockudo_core::app::AppManager;
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::PresenceHistoryConfig;
 use sockudo_core::presence_history::PresenceHistoryStore;
 use sockudo_webhook::WebhookIntegration;
@@ -23,6 +24,7 @@ impl MultiWorkerCleanupSystem {
         presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
         presence_history_config: PresenceHistoryConfig,
         config: CleanupConfig,
+        metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     ) -> Self {
         let num_workers = config.worker_threads.resolve();
 
@@ -46,6 +48,7 @@ impl MultiWorkerCleanupSystem {
                 presence_history_store.clone(),
                 presence_history_config.clone(),
                 worker_config.clone(),
+                metrics.clone(),
             );
 
             let handle = tokio::spawn(async move {
