@@ -205,14 +205,13 @@ impl ConnectionHandler {
                 metrics.mark_channel_subscription(&app_config.id, channel_type_str);
             }
 
-            // Update active channel count if this is the first connection to the channel
+            // Sync active channel gauge if this is the first connection to the channel
             if subscription_result.channel_connections == Some(1) {
-                // Channel became active - increment the count for this channel type
-                // Pass the Arc directly to avoid holding any locks
-                self.increment_active_channel_count(
+                super::sync_active_channel_count(
+                    &self.connection_manager,
+                    metrics,
                     &app_config.id,
                     channel_type_str,
-                    metrics.clone(),
                 )
                 .await;
             }

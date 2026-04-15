@@ -2,12 +2,16 @@ use super::{CleanupConfig, ConnectionCleanupInfo, DisconnectTask, WebhookEvent};
 use ahash::AHashMap;
 use sockudo_adapter::channel_manager::ChannelManager;
 use sockudo_adapter::connection_manager::ConnectionManager;
+use sockudo_adapter::handler::sync_active_channel_count;
 use sockudo_adapter::presence::global_presence_manager;
 use sockudo_core::app::AppManager;
+use sockudo_core::channel::ChannelType;
+use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::PresenceHistoryConfig;
 use sockudo_core::presence_history::{PresenceHistoryEventCause, PresenceHistoryStore};
 use sockudo_core::websocket::SocketId;
 use sockudo_webhook::WebhookIntegration;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
@@ -21,6 +25,7 @@ pub struct CleanupWorker {
     presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     presence_history_config: PresenceHistoryConfig,
     config: CleanupConfig,
+    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
 }
 
 impl CleanupWorker {
@@ -31,6 +36,7 @@ impl CleanupWorker {
         presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
         presence_history_config: PresenceHistoryConfig,
         config: CleanupConfig,
+        metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     ) -> Self {
         Self {
             connection_manager,
@@ -39,6 +45,7 @@ impl CleanupWorker {
             presence_history_store,
             presence_history_config,
             config,
+            metrics,
         }
     }
 
@@ -190,9 +197,18 @@ impl CleanupWorker {
 
             match ChannelManager::batch_unsubscribe(&self.connection_manager, operations).await {
                 Ok(results) => {
-                    for (_channel_name, result) in results {
+                    let mut types_to_sync: HashSet<String> = HashSet::new();
+
+                    for (channel_name, result) in &results {
                         match result {
-                            Ok(_) => total_success += 1,
+                            Ok((_, remaining_connections)) => {
+                                total_success += 1;
+                                if *remaining_connections == 0 {
+                                    types_to_sync.insert(
+                                        ChannelType::from_name(channel_name).as_str().to_string(),
+                                    );
+                                }
+                            }
                             Err(e) => {
                                 total_errors += 1;
                                 warn!(
@@ -200,6 +216,18 @@ impl CleanupWorker {
                                     app_id, e
                                 );
                             }
+                        }
+                    }
+
+                    if let Some(ref metrics) = self.metrics {
+                        for channel_type in &types_to_sync {
+                            sync_active_channel_count(
+                                &self.connection_manager,
+                                metrics,
+                                &app_id,
+                                channel_type,
+                            )
+                            .await;
                         }
                     }
                 }

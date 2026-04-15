@@ -783,88 +783,34 @@ impl ConnectionHandler {
 
         debug!("Socket {} cleanup completed", socket_id);
     }
+}
 
-    /// Increment the active channel count for a specific channel type
-    async fn increment_active_channel_count(
-        &self,
-        app_id: &str,
-        channel_type: &str,
-        metrics: Arc<dyn MetricsInterface + Send + Sync>,
-    ) {
-        // Get current count for this channel type
-        // IMPORTANT: We must get the count BEFORE acquiring the metrics lock to avoid deadlock
-        let current_count = self
-            .get_active_channel_count_for_type(app_id, channel_type)
-            .await;
-
-        // Now acquire the metrics lock and update
-        metrics.update_active_channels(app_id, channel_type, current_count + 1);
-
-        debug!(
-            "Incremented active {} channels for app {} to {}",
-            channel_type,
-            app_id,
-            current_count + 1
-        );
-    }
-
-    /// Decrement the active channel count for a specific channel type
-    async fn decrement_active_channel_count(
-        &self,
-        app_id: &str,
-        channel_type: &str,
-        metrics: Arc<dyn MetricsInterface + Send + Sync>,
-    ) {
-        // Get current count for this channel type
-        // IMPORTANT: We must get the count BEFORE acquiring the metrics lock to avoid deadlock
-        let current_count = self
-            .get_active_channel_count_for_type(app_id, channel_type)
-            .await;
-
-        // Decrement by 1, but never go below 0
-        let new_count = std::cmp::max(0, current_count - 1);
-
-        // Now acquire the metrics lock and update
-        metrics.update_active_channels(app_id, channel_type, new_count);
-
-        debug!(
-            "Decremented active {} channels for app {} to {}",
-            channel_type, app_id, new_count
-        );
-    }
-
-    /// Get the current count of active channels for a specific type
-    async fn get_active_channel_count_for_type(&self, app_id: &str, channel_type: &str) -> i64 {
-        // Get all channels with their socket counts
-        let channels_map = {
-            match self
-                .connection_manager
-                .get_channels_with_socket_count(app_id)
-                .await
-            {
-                Ok(map) => map,
-                Err(e) => {
-                    error!("Failed to get channels for metrics update: {}", e);
-                    return 0;
-                }
-            }
-        };
-
-        // Count active channels of the specified type
-        // This processing happens AFTER the connection_manager lock is released
-        let mut count = 0i64;
-        for (channel_name, socket_count) in &channels_map {
-            // Only count channels that have active connections
-            if *socket_count > 0 {
-                let ch_type = sockudo_core::channel::ChannelType::from_name(channel_name);
-                let ch_type_str = ch_type.as_str();
-
-                if ch_type_str == channel_type {
-                    count += 1;
-                }
-            }
+/// Sync the active channel gauge for a given channel type by recounting live channels
+/// from the DashMap.
+pub async fn sync_active_channel_count(
+    connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
+    metrics: &Arc<dyn MetricsInterface + Send + Sync>,
+    app_id: &str,
+    channel_type: &str,
+) {
+    let channels_map = match connection_manager
+        .get_channels_with_socket_count(app_id)
+        .await
+    {
+        Ok(map) => map,
+        Err(e) => {
+            error!("Failed to get channels for metrics sync: {}", e);
+            return;
         }
+    };
 
-        count
-    }
+    let count = channels_map
+        .iter()
+        .filter(|(name, cnt)| {
+            **cnt > 0
+                && sockudo_core::channel::ChannelType::from_name(name).as_str() == channel_type
+        })
+        .count() as i64;
+
+    metrics.update_active_channels(app_id, channel_type, count);
 }
