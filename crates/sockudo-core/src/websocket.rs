@@ -653,6 +653,10 @@ impl MessageSender {
                 }
             }
 
+            // Signal the reader loop that the writer is dead.
+            // cancel() is idempotent, safe if already cancelled by normal shutdown.
+            shutdown_token.cancel();
+
             if let Err(e) = socket.close(1000, "Normal closure").await {
                 Self::log_connection_error(&e, SocketOperation::SendCloseFrame, msg_count, true);
             }
@@ -818,7 +822,7 @@ impl WebSocket {
     }
 
     fn ensure_can_send(&self) -> Result<()> {
-        if self.is_connected() {
+        if self.is_connected() && !self.shutdown_token.is_cancelled() {
             Ok(())
         } else {
             Err(Error::ConnectionClosed(
@@ -873,6 +877,7 @@ impl WebSocket {
     }
 
     pub fn send_frame(&self, message: Message) -> Result<()> {
+        self.ensure_can_send()?;
         self.message_sender.send(message)
     }
 
@@ -1463,5 +1468,59 @@ mod tests {
         let config = WebSocketBufferConfig::new(500, false);
         assert_eq!(config.channel_capacity(), 500);
         assert!(!config.disconnect_on_full);
+    }
+
+    fn create_test_message_sender() -> MessageSender {
+        let (sender, _receiver) = mpsc::bounded_async::<Message>(1);
+        MessageSender {
+            sender,
+            receiver_handle: None,
+        }
+    }
+
+    fn create_test_websocket(shutdown_token: CancellationToken) -> WebSocket {
+        let (broadcast_tx, _broadcast_rx) = mpsc::bounded_async::<SizedMessage>(1);
+        WebSocket {
+            state: ConnectionState::with_socket_id(SocketId::new()),
+            message_sender: create_test_message_sender(),
+            broadcast_tx,
+            buffer_config: WebSocketBufferConfig::default(),
+            byte_counter: None,
+            shutdown_token,
+        }
+    }
+
+    #[test]
+    fn test_send_rejected_on_cancelled_token() {
+        let shutdown_token = CancellationToken::new();
+        let ws = create_test_websocket(shutdown_token.clone());
+
+        assert!(ws.is_connected());
+
+        shutdown_token.cancel();
+
+        let result = ws.send_text("hello".to_string());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConnectionClosed(_) => {}
+            other => panic!("expected ConnectionClosed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_normal_close_still_rejects() {
+        let shutdown_token = CancellationToken::new();
+        let mut ws = create_test_websocket(shutdown_token);
+
+        assert!(ws.is_connected());
+
+        ws.state.status = ConnectionStatus::Closed;
+
+        let result = ws.send_text("hello".to_string());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ConnectionClosed(_) => {}
+            other => panic!("expected ConnectionClosed, got: {other:?}"),
+        }
     }
 }
