@@ -14,6 +14,14 @@ use sockudo_core::metrics::MetricsInterface;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 use sockudo_core::options::DatabaseConnection;
 use sockudo_core::options::{DatabaseConfig, DatabasePooling, HistoryBackend, HistoryConfig};
+#[cfg(feature = "versioned-messages")]
+use sockudo_core::options::{VersionStoreDriver, VersionedMessagesConfig};
+#[cfg(feature = "postgres")]
+use sockudo_core::version_store::{
+    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
+    VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
+    VersionWriteReservation,
+};
 use std::sync::Arc;
 #[cfg(feature = "postgres")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -170,6 +178,9 @@ pub async fn create_history_store(
 struct HistoryTables {
     streams: String,
     entries: String,
+    version_streams: String,
+    version_messages: String,
+    version_entries: String,
 }
 
 #[cfg(feature = "postgres")]
@@ -311,6 +322,9 @@ impl PostgresHistoryStore {
         let tables = HistoryTables {
             streams: format!("{}_streams", config.postgres.table_prefix),
             entries: format!("{}_entries", config.postgres.table_prefix),
+            version_streams: format!("{}_version_streams", config.postgres.table_prefix),
+            version_messages: format!("{}_version_messages", config.postgres.table_prefix),
+            version_entries: format!("{}_version_entries", config.postgres.table_prefix),
         };
 
         let store = Self {
@@ -385,6 +399,91 @@ impl PostgresHistoryStore {
             "CREATE INDEX IF NOT EXISTS {0}_app_channel_time_idx ON {0} (app_id, channel, published_at_ms DESC, serial DESC)",
             self.tables.entries
         );
+        let create_version_streams = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                next_delivery_serial BIGINT NOT NULL,
+                oldest_available_delivery_serial BIGINT NULL,
+                newest_available_delivery_serial BIGINT NULL,
+                migration_state TEXT NOT NULL DEFAULT 'native_only',
+                migration_state_changed_at_ms BIGINT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel)
+            )
+            "#,
+            self.tables.version_streams
+        );
+        let create_version_messages = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message_serial TEXT NOT NULL,
+                history_serial BIGINT NOT NULL,
+                original_client_id TEXT NULL,
+                latest_version_serial TEXT NOT NULL,
+                latest_delivery_serial BIGINT NOT NULL,
+                latest_action TEXT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel, message_serial)
+            )
+            "#,
+            self.tables.version_messages
+        );
+        let create_version_entries = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message_serial TEXT NOT NULL,
+                version_serial TEXT NOT NULL,
+                delivery_serial BIGINT NOT NULL,
+                history_serial BIGINT NOT NULL,
+                action TEXT NOT NULL,
+                client_id TEXT NULL,
+                description TEXT NULL,
+                operation_metadata JSONB NULL,
+                event_name TEXT NULL,
+                payload_bytes BYTEA NOT NULL,
+                payload_size_bytes BIGINT NOT NULL,
+                version_timestamp_ms BIGINT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel, message_serial, version_serial)
+            )
+            "#,
+            self.tables.version_entries
+        );
+        let index_version_stream_window = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_delivery_window_idx ON {0} (app_id, oldest_available_delivery_serial, newest_available_delivery_serial)",
+            self.tables.version_streams
+        );
+        let index_version_messages_history = format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS {0}_history_serial_uidx ON {0} (app_id, channel, history_serial)",
+            self.tables.version_messages
+        );
+        let index_version_messages_latest = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_latest_version_idx ON {0} (app_id, channel, latest_version_serial)",
+            self.tables.version_messages
+        );
+        let index_version_entries_delivery = format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS {0}_delivery_uidx ON {0} (app_id, channel, delivery_serial)",
+            self.tables.version_entries
+        );
+        let index_version_entries_message = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_message_version_idx ON {0} (app_id, channel, message_serial, version_serial DESC)",
+            self.tables.version_entries
+        );
+        let index_version_entries_replay = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_replay_idx ON {0} (app_id, channel, delivery_serial)",
+            self.tables.version_entries
+        );
+        let index_version_entries_history = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_history_version_idx ON {0} (app_id, channel, history_serial, version_serial DESC)",
+            self.tables.version_entries
+        );
         let add_oldest_time = format!(
             "ALTER TABLE {} ADD COLUMN IF NOT EXISTS oldest_available_published_at_ms BIGINT NULL",
             self.tables.streams
@@ -415,6 +514,16 @@ impl PostgresHistoryStore {
             create_entries,
             index_serial,
             index_time,
+            create_version_streams,
+            create_version_messages,
+            create_version_entries,
+            index_version_stream_window,
+            index_version_messages_history,
+            index_version_messages_latest,
+            index_version_entries_delivery,
+            index_version_entries_message,
+            index_version_entries_replay,
+            index_version_entries_history,
             add_oldest_time,
             add_newest_time,
             add_durable_state,
@@ -1445,6 +1554,28 @@ impl HistoryStore for PostgresHistoryStore {
             inspection,
         })
     }
+
+    async fn purge_before(&self, before_ms: i64, batch_size: usize) -> Result<(u64, bool)> {
+        if batch_size == 0 {
+            return Ok((0, false));
+        }
+        let sql = format!(
+            r#"
+            DELETE FROM {table} WHERE id IN (
+                SELECT id FROM {table} WHERE published_at_ms < $1 ORDER BY published_at_ms ASC LIMIT $2
+            )
+            "#,
+            table = self.tables.entries
+        );
+        let rows_deleted = sqlx::query(&sql)
+            .bind(before_ms)
+            .bind(batch_size as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to purge expired history rows: {e}")))?
+            .rows_affected();
+        Ok((rows_deleted, rows_deleted as usize >= batch_size))
+    }
 }
 
 #[cfg(feature = "postgres")]
@@ -1693,6 +1824,633 @@ async fn get_cached_channel_degraded(
     }
 
     Ok(None)
+}
+
+#[cfg(feature = "versioned-messages")]
+pub async fn create_version_store(
+    versioned_config: &VersionedMessagesConfig,
+    history_config: &HistoryConfig,
+    db_config: &DatabaseConfig,
+    pooling: &DatabasePooling,
+) -> Result<Arc<dyn sockudo_core::version_store::VersionStore + Send + Sync>> {
+    use sockudo_core::version_store::MemoryVersionStore;
+
+    match versioned_config.driver {
+        VersionStoreDriver::Memory => Ok(Arc::new(MemoryVersionStore::new())),
+        VersionStoreDriver::Postgres => {
+            #[cfg(feature = "postgres")]
+            {
+                let store = PostgresVersionStore::new(
+                    &db_config.postgres,
+                    pooling,
+                    &history_config.postgres.table_prefix,
+                )
+                .await?;
+                info!("VersionStore initialized with driver: postgres");
+                Ok(Arc::new(store))
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(Error::Configuration(
+                    "Version store driver 'postgres' requires the 'postgres' feature".to_string(),
+                ))
+            }
+        }
+        VersionStoreDriver::Mysql => {
+            #[cfg(feature = "mysql")]
+            {
+                history_mysql::create_mysql_version_store(
+                    &db_config.mysql,
+                    pooling,
+                    &history_config.mysql.table_prefix,
+                )
+                .await
+            }
+            #[cfg(not(feature = "mysql"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(Error::Configuration(
+                    "Version store driver 'mysql' requires the 'mysql' feature".to_string(),
+                ))
+            }
+        }
+        VersionStoreDriver::DynamoDb => {
+            #[cfg(feature = "dynamodb")]
+            {
+                history_dynamodb::create_dynamodb_version_store(
+                    &db_config.dynamodb,
+                    &history_config.dynamodb.table_prefix,
+                    versioned_config.retention_window_seconds,
+                )
+                .await
+            }
+            #[cfg(not(feature = "dynamodb"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(Error::Configuration(
+                    "Version store driver 'dynamodb' requires the 'dynamodb' feature".to_string(),
+                ))
+            }
+        }
+        VersionStoreDriver::ScyllaDb => {
+            #[cfg(feature = "scylladb")]
+            {
+                history_scylla::create_scylla_version_store(
+                    &db_config.scylladb,
+                    &history_config.scylladb.table_prefix,
+                    versioned_config.retention_window_seconds,
+                )
+                .await
+            }
+            #[cfg(not(feature = "scylladb"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(Error::Configuration(
+                    "Version store driver 'scylladb' requires the 'scylladb' feature".to_string(),
+                ))
+            }
+        }
+        VersionStoreDriver::SurrealDb => {
+            #[cfg(feature = "surrealdb")]
+            {
+                history_surreal::create_surreal_version_store(
+                    &db_config.surrealdb,
+                    &history_config.surrealdb.table_prefix,
+                )
+                .await
+            }
+            #[cfg(not(feature = "surrealdb"))]
+            {
+                let _ = (history_config, db_config, pooling);
+                Err(Error::Configuration(
+                    "Version store driver 'surrealdb' requires the 'surrealdb' feature".to_string(),
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "postgres", feature = "versioned-messages"))]
+pub struct PostgresVersionStore {
+    pool: PgPool,
+    tables: HistoryTables,
+}
+
+#[cfg(all(feature = "postgres", feature = "versioned-messages"))]
+impl PostgresVersionStore {
+    async fn new(
+        db_config: &DatabaseConnection,
+        pooling: &DatabasePooling,
+        table_prefix: &str,
+    ) -> Result<Self> {
+        let password = urlencoding::encode(&db_config.password);
+        let connection_string = format!(
+            "postgresql://{}:{}@{}:{}/{}",
+            db_config.username, password, db_config.host, db_config.port, db_config.database
+        );
+
+        let mut opts = PgPoolOptions::new();
+        opts = if pooling.enabled {
+            let min = db_config.pool_min.unwrap_or(pooling.min);
+            let max = db_config.pool_max.unwrap_or(pooling.max);
+            opts.min_connections(min).max_connections(max)
+        } else {
+            opts.max_connections(db_config.connection_pool_size)
+        };
+
+        let pool = opts
+            .acquire_timeout(Duration::from_secs(5))
+            .idle_timeout(Duration::from_secs(180))
+            .connect(&connection_string)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to connect version store to PostgreSQL: {e}"
+                ))
+            })?;
+
+        let tables = HistoryTables {
+            streams: format!("{}_streams", table_prefix),
+            entries: format!("{}_entries", table_prefix),
+            version_streams: format!("{}_version_streams", table_prefix),
+            version_messages: format!("{}_version_messages", table_prefix),
+            version_entries: format!("{}_version_entries", table_prefix),
+        };
+
+        let store = Self { pool, tables };
+        store.ensure_version_tables().await?;
+        Ok(store)
+    }
+
+    async fn ensure_version_tables(&self) -> Result<()> {
+        let create_version_streams = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                next_delivery_serial BIGINT NOT NULL,
+                oldest_available_delivery_serial BIGINT NULL,
+                newest_available_delivery_serial BIGINT NULL,
+                migration_state TEXT NOT NULL DEFAULT 'native_only',
+                migration_state_changed_at_ms BIGINT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel)
+            )
+            "#,
+            self.tables.version_streams
+        );
+        let create_version_messages = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message_serial TEXT NOT NULL,
+                history_serial BIGINT NOT NULL,
+                original_client_id TEXT NULL,
+                latest_version_serial TEXT NOT NULL,
+                latest_delivery_serial BIGINT NOT NULL,
+                latest_action TEXT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel, message_serial)
+            )
+            "#,
+            self.tables.version_messages
+        );
+        let create_version_entries = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message_serial TEXT NOT NULL,
+                version_serial TEXT NOT NULL,
+                delivery_serial BIGINT NOT NULL,
+                history_serial BIGINT NOT NULL,
+                action TEXT NOT NULL,
+                client_id TEXT NULL,
+                description TEXT NULL,
+                operation_metadata JSONB NULL,
+                event_name TEXT NULL,
+                payload_bytes BYTEA NOT NULL,
+                payload_size_bytes BIGINT NOT NULL,
+                version_timestamp_ms BIGINT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel, message_serial, version_serial)
+            )
+            "#,
+            self.tables.version_entries
+        );
+        let idx_messages_history = format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS {0}_history_serial_uidx ON {0} (app_id, channel, history_serial)",
+            self.tables.version_messages
+        );
+        let idx_entries_delivery = format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS {0}_delivery_uidx ON {0} (app_id, channel, delivery_serial)",
+            self.tables.version_entries
+        );
+        let idx_entries_message = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_message_version_idx ON {0} (app_id, channel, message_serial, version_serial DESC)",
+            self.tables.version_entries
+        );
+        let idx_entries_replay = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_replay_idx ON {0} (app_id, channel, delivery_serial)",
+            self.tables.version_entries
+        );
+        let idx_entries_history = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_history_version_idx ON {0} (app_id, channel, history_serial, version_serial DESC)",
+            self.tables.version_entries
+        );
+        let idx_entries_created_at = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_created_at_idx ON {0} (created_at_ms)",
+            self.tables.version_entries
+        );
+        let idx_messages_updated_at = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_updated_at_idx ON {0} (updated_at_ms)",
+            self.tables.version_messages
+        );
+
+        for sql in [
+            create_version_streams,
+            create_version_messages,
+            create_version_entries,
+            idx_messages_history,
+            idx_entries_delivery,
+            idx_entries_message,
+            idx_entries_replay,
+            idx_entries_history,
+            idx_entries_created_at,
+            idx_messages_updated_at,
+        ] {
+            sqlx::query(&sql).execute(&self.pool).await.map_err(|e| {
+                Error::Internal(format!("Failed to initialize version store tables: {e}"))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "postgres", feature = "versioned-messages"))]
+#[async_trait::async_trait]
+impl VersionStore for PostgresVersionStore {
+    async fn reserve_delivery_position(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<VersionWriteReservation> {
+        let now_ms = sockudo_core::history::now_ms();
+        let sql = format!(
+            r#"
+            INSERT INTO {t} (app_id, channel, next_delivery_serial, updated_at_ms)
+            VALUES ($1, $2, 2, $3)
+            ON CONFLICT (app_id, channel) DO UPDATE SET
+                next_delivery_serial = {t}.next_delivery_serial + 1,
+                updated_at_ms = EXCLUDED.updated_at_ms
+            RETURNING next_delivery_serial - 1 AS reserved_serial
+            "#,
+            t = self.tables.version_streams
+        );
+        let row = sqlx::query(&sql)
+            .bind(app_id)
+            .bind(channel)
+            .bind(now_ms)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to reserve version delivery position: {e}"))
+            })?;
+
+        Ok(VersionWriteReservation {
+            stream_id: format!("{}/{}", app_id, channel),
+            delivery_serial: row.get::<i64, _>("reserved_serial") as u64,
+        })
+    }
+
+    async fn append_version(&self, record: StoredVersionRecord) -> Result<()> {
+        let now_ms = sockudo_core::history::now_ms();
+        let payload = sonic_rs::to_vec(&record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
+        let payload_size = payload.len() as i64;
+
+        let insert_entry = format!(
+            r#"
+            INSERT INTO {t} (
+                app_id, channel, message_serial, version_serial, delivery_serial, history_serial,
+                action, client_id, description, event_name,
+                payload_bytes, payload_size_bytes, version_timestamp_ms, created_at_ms
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT (app_id, channel, message_serial, version_serial) DO NOTHING
+            "#,
+            t = self.tables.version_entries
+        );
+        sqlx::query(&insert_entry)
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .bind(record.message_serial().as_str())
+            .bind(record.version_serial().as_str())
+            .bind(record.delivery_serial() as i64)
+            .bind(record.history_serial() as i64)
+            .bind(record.message.action.as_str())
+            .bind(record.original_client_id.as_deref())
+            .bind(record.message.version.description.as_deref())
+            .bind(record.message.name.as_deref())
+            .bind(payload.as_slice())
+            .bind(payload_size)
+            .bind(record.message.version.timestamp_ms)
+            .bind(now_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to insert version entry: {e}")))?;
+
+        // Upsert version_messages: only advance if the incoming version_serial is lexicographically greater.
+        let upsert_msg = format!(
+            r#"
+            INSERT INTO {t} (
+                app_id, channel, message_serial, history_serial, original_client_id,
+                latest_version_serial, latest_delivery_serial, latest_action,
+                created_at_ms, updated_at_ms
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+            ON CONFLICT (app_id, channel, message_serial) DO UPDATE SET
+                latest_version_serial = EXCLUDED.latest_version_serial,
+                latest_delivery_serial = EXCLUDED.latest_delivery_serial,
+                latest_action = EXCLUDED.latest_action,
+                updated_at_ms = EXCLUDED.updated_at_ms
+            WHERE {t}.latest_version_serial < EXCLUDED.latest_version_serial
+            "#,
+            t = self.tables.version_messages
+        );
+        sqlx::query(&upsert_msg)
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .bind(record.message_serial().as_str())
+            .bind(record.history_serial() as i64)
+            .bind(record.original_client_id.as_deref())
+            .bind(record.version_serial().as_str())
+            .bind(record.delivery_serial() as i64)
+            .bind(record.message.action.as_str())
+            .bind(now_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to upsert version message: {e}")))?;
+
+        // Update stream delivery window.
+        let update_stream = format!(
+            r#"
+            UPDATE {t} SET
+                oldest_available_delivery_serial = CASE
+                    WHEN oldest_available_delivery_serial IS NULL OR $3 < oldest_available_delivery_serial
+                    THEN $3 ELSE oldest_available_delivery_serial END,
+                newest_available_delivery_serial = CASE
+                    WHEN newest_available_delivery_serial IS NULL OR $3 > newest_available_delivery_serial
+                    THEN $3 ELSE newest_available_delivery_serial END,
+                updated_at_ms = $4
+            WHERE app_id = $1 AND channel = $2
+            "#,
+            t = self.tables.version_streams
+        );
+        sqlx::query(&update_stream)
+            .bind(&record.app_id)
+            .bind(&record.channel)
+            .bind(record.delivery_serial() as i64)
+            .bind(now_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to update version stream window: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn get_latest(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serial: &sockudo_core::versioned_messages::MessageSerial,
+    ) -> Result<Option<StoredVersionRecord>> {
+        let sql = format!(
+            r#"
+            SELECT payload_bytes FROM {}
+            WHERE app_id = $1 AND channel = $2 AND message_serial = $3
+            ORDER BY version_serial DESC
+            LIMIT 1
+            "#,
+            self.tables.version_entries
+        );
+        let row = sqlx::query(&sql)
+            .bind(app_id)
+            .bind(channel)
+            .bind(message_serial.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to query latest version: {e}")))?;
+
+        match row {
+            None => Ok(None),
+            Some(row) => {
+                let bytes: Vec<u8> = row.get("payload_bytes");
+                let record: StoredVersionRecord = sonic_rs::from_slice(&bytes).map_err(|e| {
+                    Error::Internal(format!("Failed to deserialize version record: {e}"))
+                })?;
+                Ok(Some(record))
+            }
+        }
+    }
+
+    async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {
+        request.validate()?;
+        let fetch_limit = (request.limit + 1) as i64;
+
+        let (order_dir, cursor_op) = match request.direction {
+            VersionStoreDirection::NewestFirst => ("DESC", "<"),
+            VersionStoreDirection::OldestFirst => ("ASC", ">"),
+        };
+
+        let rows = if let Some(cursor) = &request.cursor {
+            let sql = format!(
+                "SELECT payload_bytes FROM {} WHERE app_id = $1 AND channel = $2 AND message_serial = $3 AND version_serial {} $4 ORDER BY version_serial {} LIMIT $5",
+                self.tables.version_entries, cursor_op, order_dir
+            );
+            sqlx::query(&sql)
+                .bind(&request.app_id)
+                .bind(&request.channel)
+                .bind(request.message_serial.as_str())
+                .bind(cursor.version_serial.as_str())
+                .bind(fetch_limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to query version history: {e}")))?
+        } else {
+            let sql = format!(
+                "SELECT payload_bytes FROM {} WHERE app_id = $1 AND channel = $2 AND message_serial = $3 ORDER BY version_serial {} LIMIT $4",
+                self.tables.version_entries, order_dir
+            );
+            sqlx::query(&sql)
+                .bind(&request.app_id)
+                .bind(&request.channel)
+                .bind(request.message_serial.as_str())
+                .bind(fetch_limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to query version history: {e}")))?
+        };
+
+        let has_more = rows.len() > request.limit;
+        let items: Vec<StoredVersionRecord> = rows
+            .into_iter()
+            .take(request.limit)
+            .map(|row| {
+                let bytes: Vec<u8> = row.get("payload_bytes");
+                sonic_rs::from_slice(&bytes)
+                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let next_cursor = if has_more {
+            items.last().map(|item| VersionStoreCursor {
+                version: 1,
+                version_serial: item.version_serial().clone(),
+                direction: request.direction,
+            })
+        } else {
+            None
+        };
+
+        Ok(VersionStorePage {
+            items,
+            next_cursor,
+            has_more,
+        })
+    }
+
+    async fn replay_after(
+        &self,
+        request: VersionReplayRequest,
+    ) -> Result<Vec<StoredVersionRecord>> {
+        request.validate()?;
+        let sql = format!(
+            r#"
+            SELECT payload_bytes FROM {}
+            WHERE app_id = $1 AND channel = $2 AND delivery_serial > $3
+            ORDER BY delivery_serial ASC
+            LIMIT $4
+            "#,
+            self.tables.version_entries
+        );
+        let rows = sqlx::query(&sql)
+            .bind(&request.app_id)
+            .bind(&request.channel)
+            .bind(request.after_delivery_serial as i64)
+            .bind(request.limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to replay version entries: {e}")))?;
+
+        rows.into_iter()
+            .map(|row| {
+                let bytes: Vec<u8> = row.get("payload_bytes");
+                sonic_rs::from_slice(&bytes)
+                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
+            })
+            .collect()
+    }
+
+    async fn latest_by_history(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<Vec<StoredVersionRecord>> {
+        let sql = format!(
+            r#"
+            SELECT ve.payload_bytes
+            FROM {vm} vm
+            JOIN {ve} ve ON ve.app_id = vm.app_id
+                AND ve.channel = vm.channel
+                AND ve.message_serial = vm.message_serial
+                AND ve.version_serial = vm.latest_version_serial
+            WHERE vm.app_id = $1 AND vm.channel = $2
+            ORDER BY vm.history_serial ASC
+            "#,
+            vm = self.tables.version_messages,
+            ve = self.tables.version_entries
+        );
+        let rows = sqlx::query(&sql)
+            .bind(app_id)
+            .bind(channel)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to query latest by history: {e}")))?;
+
+        rows.into_iter()
+            .map(|row| {
+                let bytes: Vec<u8> = row.get("payload_bytes");
+                sonic_rs::from_slice(&bytes)
+                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
+            })
+            .collect()
+    }
+
+    async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {
+        let sql = format!(
+            "SELECT next_delivery_serial, oldest_available_delivery_serial, newest_available_delivery_serial FROM {} WHERE app_id = $1 AND channel = $2",
+            self.tables.version_streams
+        );
+        let row = sqlx::query(&sql)
+            .bind(app_id)
+            .bind(channel)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read version stream state: {e}")))?;
+
+        match row {
+            None => Ok(VersionStreamState::default()),
+            Some(row) => Ok(VersionStreamState {
+                stream_id: Some(format!("{}/{}", app_id, channel)),
+                next_delivery_serial: Some(row.get::<i64, _>("next_delivery_serial") as u64),
+                oldest_available_delivery_serial: row
+                    .try_get::<Option<i64>, _>("oldest_available_delivery_serial")
+                    .unwrap_or(None)
+                    .map(|v| v as u64),
+                newest_available_delivery_serial: row
+                    .try_get::<Option<i64>, _>("newest_available_delivery_serial")
+                    .unwrap_or(None)
+                    .map(|v| v as u64),
+            }),
+        }
+    }
+
+    async fn purge_before(&self, before_ms: i64, batch_size: usize) -> Result<(u64, bool)> {
+        if batch_size == 0 {
+            return Ok((0, false));
+        }
+        let limit = batch_size as i64;
+
+        let entries_sql = format!(
+            "DELETE FROM {0} WHERE ctid IN (SELECT ctid FROM {0} WHERE created_at_ms < $1 ORDER BY created_at_ms ASC LIMIT $2)",
+            self.tables.version_entries
+        );
+        let entries_deleted = sqlx::query(&entries_sql)
+            .bind(before_ms)
+            .bind(limit)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to purge version entries: {e}")))?
+            .rows_affected();
+
+        let messages_sql = format!(
+            "DELETE FROM {0} WHERE ctid IN (SELECT ctid FROM {0} WHERE updated_at_ms < $1 ORDER BY updated_at_ms ASC LIMIT $2)",
+            self.tables.version_messages
+        );
+        let messages_deleted = sqlx::query(&messages_sql)
+            .bind(before_ms)
+            .bind(limit)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to purge version messages: {e}")))?
+            .rows_affected();
+
+        let deleted = entries_deleted + messages_deleted;
+        let has_more = entries_deleted as i64 == limit || messages_deleted as i64 == limit;
+        Ok((deleted, has_more))
+    }
 }
 
 #[cfg(feature = "postgres")]

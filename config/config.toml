@@ -217,6 +217,15 @@ omit_delta_algorithm = true
 enabled = true
 enable_tags = false
 
+[versioned_messages]
+enabled = false
+driver = "memory"
+max_page_size = 100
+retention_window_seconds = 0
+purge_interval_seconds = 300
+purge_batch_size = 1000
+max_purge_per_tick = 100000
+
 [idempotency]
 enabled = true
 ttl_seconds = 120
@@ -246,6 +255,9 @@ retention_window_seconds = 86400
 max_page_size = 100
 writer_shards = 16
 writer_queue_capacity = 4096
+purge_interval_seconds = 300
+purge_batch_size = 1000
+max_purge_per_tick = 100000
 
 [history.postgres]
 table_prefix = "sockudo_history"

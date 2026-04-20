@@ -26,6 +26,7 @@ use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::ServerOptions;
 use sockudo_core::presence_history::{NoopPresenceHistoryStore, PresenceHistoryStore};
 use sockudo_core::rate_limiter::RateLimiter;
+use sockudo_core::version_store::{NoopVersionStore, VersionStore};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
@@ -49,6 +50,7 @@ pub struct ConnectionHandler {
     pub(crate) cache_manager: Arc<dyn CacheManager + Send + Sync>,
     pub(crate) metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     pub(crate) history_store: Arc<dyn HistoryStore + Send + Sync>,
+    pub(crate) version_store: Arc<dyn VersionStore + Send + Sync>,
     pub(crate) presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
@@ -75,6 +77,7 @@ pub struct ConnectionHandlerBuilder {
     cache_manager: Arc<dyn CacheManager + Send + Sync>,
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     history_store: Option<Arc<dyn HistoryStore + Send + Sync>>,
+    version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
     presence_history_store: Option<Arc<dyn PresenceHistoryStore + Send + Sync>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     server_options: ServerOptions,
@@ -97,6 +100,7 @@ impl ConnectionHandlerBuilder {
             cache_manager,
             metrics: None,
             history_store: None,
+            version_store: None,
             presence_history_store: None,
             webhook_integration: None,
             server_options,
@@ -118,6 +122,11 @@ impl ConnectionHandlerBuilder {
 
     pub fn history_store(mut self, history_store: Arc<dyn HistoryStore + Send + Sync>) -> Self {
         self.history_store = Some(history_store);
+        self
+    }
+
+    pub fn version_store(mut self, version_store: Arc<dyn VersionStore + Send + Sync>) -> Self {
+        self.version_store = Some(version_store);
         self
     }
 
@@ -174,6 +183,9 @@ impl ConnectionHandlerBuilder {
             history_store: self
                 .history_store
                 .unwrap_or_else(|| Arc::new(NoopHistoryStore)),
+            version_store: self
+                .version_store
+                .unwrap_or_else(|| Arc::new(NoopVersionStore)),
             presence_history_store: self
                 .presence_history_store
                 .unwrap_or_else(|| Arc::new(NoopPresenceHistoryStore)),
@@ -241,6 +253,10 @@ impl ConnectionHandler {
 
     pub fn history_store(&self) -> &Arc<dyn HistoryStore + Send + Sync> {
         &self.history_store
+    }
+
+    pub fn version_store(&self) -> &Arc<dyn VersionStore + Send + Sync> {
+        &self.version_store
     }
 
     pub fn presence_history_store(&self) -> &Arc<dyn PresenceHistoryStore + Send + Sync> {

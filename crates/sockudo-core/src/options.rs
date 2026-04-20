@@ -421,6 +421,7 @@ pub struct ServerOptions {
     pub ephemeral: EphemeralConfig,
     pub echo_control: EchoControlConfig,
     pub event_name_filtering: EventNameFilteringConfig,
+    pub versioned_messages: VersionedMessagesConfig,
 }
 
 // --- Configuration Sub-Structs ---
@@ -1103,6 +1104,62 @@ pub struct ConnectionRecoveryConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
+pub enum VersionStoreDriver {
+    #[default]
+    Memory,
+    Postgres,
+    Mysql,
+    DynamoDb,
+    ScyllaDb,
+    SurrealDb,
+}
+
+impl FromStr for VersionStoreDriver {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "postgres" | "postgresql" | "pgsql" => Ok(Self::Postgres),
+            "mysql" => Ok(Self::Mysql),
+            "dynamodb" => Ok(Self::DynamoDb),
+            "scylladb" | "scylla" => Ok(Self::ScyllaDb),
+            "surrealdb" | "surreal" => Ok(Self::SurrealDb),
+            "memory" => Ok(Self::Memory),
+            _ => Err(format!("Unknown version store driver: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VersionedMessagesConfig {
+    /// Whether V2 mutable message HTTP/retrieval surfaces are enabled.
+    pub enabled: bool,
+    /// Storage driver for versioned messages. Defaults to memory.
+    pub driver: VersionStoreDriver,
+    /// Maximum page size for version-history retrieval.
+    pub max_page_size: usize,
+    /// Retention window for version entries, in seconds. `0` disables expiry
+    /// (entries are kept forever).
+    ///
+    /// Backends with native row TTL (ScyllaDB `USING TTL`, DynamoDB TTL
+    /// attribute) apply this at the storage layer. Other backends (MySQL,
+    /// PostgreSQL, SurrealDB, Memory) enforce it via a periodic background
+    /// purge worker controlled by `purge_interval_seconds`.
+    pub retention_window_seconds: u64,
+    /// Interval between purge worker runs, in seconds. Only consulted for
+    /// backends without native TTL. Clamped to a minimum of 10 seconds.
+    pub purge_interval_seconds: u64,
+    /// Maximum rows deleted per purge query. Bounds lock/transaction sizes
+    /// for SQL backends. The worker loops until no more expired rows remain
+    /// or `max_purge_per_tick` is reached.
+    pub purge_batch_size: usize,
+    /// Hard cap on rows deleted per purge tick across all loop iterations.
+    /// Prevents a backlog of expired rows from monopolising a worker run.
+    pub max_purge_per_tick: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum HistoryBackend {
     #[default]
     Postgres,
@@ -1220,6 +1277,9 @@ pub struct HistoryConfig {
     pub max_bytes_per_channel: Option<u64>,
     pub writer_shards: usize,
     pub writer_queue_capacity: usize,
+    pub purge_interval_seconds: u64,
+    pub purge_batch_size: usize,
+    pub max_purge_per_tick: usize,
     pub postgres: PostgresHistoryConfig,
     pub mysql: MySqlHistoryConfig,
     pub dynamodb: DynamoDbHistoryConfig,
@@ -1239,11 +1299,28 @@ impl Default for HistoryConfig {
             max_bytes_per_channel: None,
             writer_shards: 16,
             writer_queue_capacity: 4096,
+            purge_interval_seconds: 300,
+            purge_batch_size: 1000,
+            max_purge_per_tick: 100_000,
             postgres: PostgresHistoryConfig::default(),
             mysql: MySqlHistoryConfig::default(),
             dynamodb: DynamoDbHistoryConfig::default(),
             surrealdb: SurrealDbHistoryConfig::default(),
             scylladb: ScyllaDbHistoryConfig::default(),
+        }
+    }
+}
+
+impl Default for VersionedMessagesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            driver: VersionStoreDriver::Memory,
+            max_page_size: 100,
+            retention_window_seconds: 0,
+            purge_interval_seconds: 300,
+            purge_batch_size: 1000,
+            max_purge_per_tick: 100_000,
         }
     }
 }
@@ -1714,6 +1791,7 @@ impl Default for ServerOptions {
             ephemeral: EphemeralConfig::default(),
             echo_control: EchoControlConfig::default(),
             event_name_filtering: EventNameFilteringConfig::default(),
+            versioned_messages: VersionedMessagesConfig::default(),
         }
     }
 }
@@ -2191,7 +2269,7 @@ impl Default for DeltaCompressionOptionsConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeltaCoordinationBackend, QueueDriver};
+    use super::{DeltaCoordinationBackend, QueueDriver, ServerOptions, VersionStoreDriver};
     use std::str::FromStr;
 
     #[test]
@@ -2224,6 +2302,30 @@ mod tests {
         assert_eq!(
             DeltaCoordinationBackend::from_str("nats").unwrap(),
             DeltaCoordinationBackend::Nats
+        );
+    }
+
+    #[tokio::test]
+    async fn versioned_messages_driver_overrides_from_env() {
+        let previous = std::env::var("VERSIONED_MESSAGES_DRIVER").ok();
+        // SAFETY: This test controls the environment variable lifecycle for a
+        // single key and restores the prior value before it returns.
+        unsafe { std::env::set_var("VERSIONED_MESSAGES_DRIVER", "postgres") };
+
+        let mut options = ServerOptions::default();
+        options.override_from_env().await.unwrap();
+
+        if let Some(previous) = previous {
+            // SAFETY: Restoring the pre-test value for the same key.
+            unsafe { std::env::set_var("VERSIONED_MESSAGES_DRIVER", previous) };
+        } else {
+            // SAFETY: Removing the test-only environment variable before exit.
+            unsafe { std::env::remove_var("VERSIONED_MESSAGES_DRIVER") };
+        }
+
+        assert_eq!(
+            options.versioned_messages.driver,
+            VersionStoreDriver::Postgres
         );
     }
 }
@@ -3080,6 +3182,16 @@ impl ServerOptions {
             "HISTORY_POSTGRES_WRITE_TIMEOUT_MS",
             self.history.postgres.write_timeout_ms,
         );
+        self.history.purge_interval_seconds = parse_env::<u64>(
+            "HISTORY_PURGE_INTERVAL_SECONDS",
+            self.history.purge_interval_seconds,
+        );
+        self.history.purge_batch_size =
+            parse_env::<usize>("HISTORY_PURGE_BATCH_SIZE", self.history.purge_batch_size);
+        self.history.max_purge_per_tick = parse_env::<usize>(
+            "HISTORY_MAX_PURGE_PER_TICK",
+            self.history.max_purge_per_tick,
+        );
 
         self.presence_history.enabled =
             parse_bool_env("PRESENCE_HISTORY_ENABLED", self.presence_history.enabled);
@@ -3132,6 +3244,37 @@ impl ServerOptions {
         self.event_name_filtering.max_event_name_length = parse_env::<usize>(
             "EVENT_NAME_FILTERING_MAX_EVENT_NAME_LENGTH",
             self.event_name_filtering.max_event_name_length,
+        );
+        self.versioned_messages.enabled = parse_bool_env(
+            "VERSIONED_MESSAGES_ENABLED",
+            self.versioned_messages.enabled,
+        );
+        if let Ok(driver_str) = std::env::var("VERSIONED_MESSAGES_DRIVER") {
+            self.versioned_messages.driver = parse_driver_enum(
+                driver_str,
+                self.versioned_messages.driver.clone(),
+                "VersionedMessages Backend",
+            );
+        }
+        self.versioned_messages.max_page_size = parse_env::<usize>(
+            "VERSIONED_MESSAGES_MAX_PAGE_SIZE",
+            self.versioned_messages.max_page_size,
+        );
+        self.versioned_messages.retention_window_seconds = parse_env::<u64>(
+            "VERSIONED_MESSAGES_RETENTION_WINDOW_SECONDS",
+            self.versioned_messages.retention_window_seconds,
+        );
+        self.versioned_messages.purge_interval_seconds = parse_env::<u64>(
+            "VERSIONED_MESSAGES_PURGE_INTERVAL_SECONDS",
+            self.versioned_messages.purge_interval_seconds,
+        );
+        self.versioned_messages.purge_batch_size = parse_env::<usize>(
+            "VERSIONED_MESSAGES_PURGE_BATCH_SIZE",
+            self.versioned_messages.purge_batch_size,
+        );
+        self.versioned_messages.max_purge_per_tick = parse_env::<usize>(
+            "VERSIONED_MESSAGES_MAX_PURGE_PER_TICK",
+            self.versioned_messages.max_purge_per_tick,
         );
 
         Ok(())
@@ -3192,6 +3335,10 @@ impl ServerOptions {
                     "presence_history.retention_window_seconds must be greater than 0".to_string(),
                 );
             }
+        }
+
+        if self.versioned_messages.enabled && self.versioned_messages.max_page_size == 0 {
+            return Err("versioned_messages.max_page_size must be greater than 0".to_string());
         }
 
         Ok(())

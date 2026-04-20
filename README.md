@@ -24,6 +24,7 @@
 - **⚡ Async Cleanup** - Non-blocking disconnect handling
 - **📊 Real-time Metrics** - Prometheus integration
 - **🧠 Delta Compression + Conflation** - Fossil and Xdelta3 (VCDIFF) with per-channel controls
+- **✏️ Mutable Messages (V2)** - Update, delete, append, latest-visible history, and version-history retrieval
 - **🏷️ Tag Filtering** - High-performance server-side filtering with optional tag emission controls
 - **🌐 Native WebSocket Engine** - `sockudo_ws` with advanced runtime tuning
 - **📦 Official SDKs** - Client and server SDKs for all major platforms
@@ -47,6 +48,7 @@ Additional v4 changes:
 - **Rebranded SDKs** - All server and client SDKs renamed from `pusher-*` to `sockudo-*`
 - **HTTP idempotency** - Atomic `idempotency_key` deduplication via `SET NX` (no race conditions)
 - **Replay buffer** - Per-channel message buffer with configurable TTL and max size
+- **Mutable durable messages** - Protocol V2 latest-visible history substitution, version-history retrieval, and `sockudo:message.update|delete|append`
 
 ## Official Client SDKs
 
@@ -64,6 +66,7 @@ All Sockudo client SDKs default to protocol V2 (`sockudo:` prefix, serial tracki
 | Language | Package |
 |---|---|
 | Node.js | `sockudo` |
+| Python | `sockudo-http-python` |
 | PHP | `sockudo/sockudo-php-server` |
 | Ruby | `sockudo` gem |
 | Go | `github.com/sockudo/sockudo-http-go` |
@@ -72,7 +75,7 @@ All Sockudo client SDKs default to protocol V2 (`sockudo:` prefix, serial tracki
 | .NET | `SockudoServer` |
 | Swift | `Sockudo` (SPM) |
 
-All server SDKs support `idempotency_key` for safe publish retries.
+All server SDKs support `idempotency_key` for safe publish retries. Sockudo-native server SDKs are also the intended home for durable history and versioned-message convenience methods such as `get_message`, `get_message_versions`, `update_message`, `delete_message`, and `append_message`.
 
 ## Quick Start
 

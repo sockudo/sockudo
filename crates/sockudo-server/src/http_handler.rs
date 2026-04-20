@@ -21,11 +21,28 @@ use sockudo_core::presence_history::{
     PresenceHistoryStreamRuntimeState, PresenceSnapshotRequest,
 };
 use sockudo_core::utils::{self, validate_channel_name};
+use sockudo_core::version_store::{
+    StoredVersionRecord, VersionStoreDirection, VersionStoreReadRequest,
+};
+use sockudo_core::versioned_message_auth::{
+    MutationAuthorizationRequest, MutationKind, authorize_message_mutation,
+};
+use sockudo_core::versioned_messages::MessageSerial;
+use sockudo_core::versioned_messages::{
+    FieldPatch, MessageAction as CoreMessageAction, MessageAppend, MessageFieldDelta,
+    VersionMetadata, VersionSerial,
+};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
 use sockudo_protocol::messages::{
     ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MessageData, PusherApiMessage,
     PusherMessage,
+};
+use sockudo_protocol::versioned_messages::{
+    AppendMessageRequest, DeleteMessageRequest, GetMessageResponse, ListMessageVersionsResponse,
+    MessageAction as ProtocolMessageAction, MessageVersionMetadata, MessageVersionsQuery,
+    MutationResponse, UpdateMessageRequest, VersionDirection, VersionedRealtimeMessage,
+    extract_runtime_message_serial,
 };
 use sonic_rs::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -62,6 +79,10 @@ pub enum AppError {
     InvalidInput(String),
     #[error("Feature disabled: {0}")]
     FeatureDisabled(String),
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+    #[error("Not found: {0}")]
+    NotFound(String),
 }
 
 impl IntoResponse for AppError {
@@ -113,6 +134,10 @@ impl IntoResponse for AppError {
                 "feature_disabled",
                 msg.clone(),
             ),
+            AppError::NotImplemented(msg) => {
+                (StatusCode::NOT_IMPLEMENTED, "not_implemented", msg.clone())
+            }
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg.clone()),
         };
         error!(error.message = %self, status_code = %status, "HTTP request failed");
         let error_message = json!({ "error": msg, "code": code, "status": status.as_u16() });
@@ -219,6 +244,16 @@ pub struct HistoryPurgeRequestBody {
     pub before_time_ms: Option<i64>,
     pub reason: String,
     pub requested_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VersionMutationPath {
+    #[serde(rename = "appId")]
+    pub app_id: String,
+    #[serde(rename = "channelName")]
+    pub channel_name: String,
+    #[serde(rename = "messageSerial")]
+    pub message_serial: String,
 }
 
 impl<'de> Deserialize<'de> for ChannelQuery {
@@ -427,6 +462,13 @@ fn parse_presence_history_direction(
     }
 }
 
+fn parse_version_direction(raw: Option<VersionDirection>) -> VersionStoreDirection {
+    match raw.unwrap_or(VersionDirection::NewestFirst) {
+        VersionDirection::NewestFirst => VersionStoreDirection::NewestFirst,
+        VersionDirection::OldestFirst => VersionStoreDirection::OldestFirst,
+    }
+}
+
 fn validate_history_destructive_request(
     path_channel: &str,
     confirm_channel: &str,
@@ -450,6 +492,228 @@ fn validate_history_destructive_request(
         ));
     }
     Ok(())
+}
+
+fn require_versioned_messages_enabled(
+    handler: &ConnectionHandler,
+    channel_name: &str,
+) -> Result<(), AppError> {
+    if !handler.server_options().versioned_messages.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Versioned messages are disabled for channel '{channel_name}'"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_message_serial(raw: &str) -> Result<MessageSerial, AppError> {
+    MessageSerial::new(raw.to_string()).map_err(AppError::from)
+}
+
+fn protocol_action(
+    action: sockudo_core::versioned_messages::MessageAction,
+) -> ProtocolMessageAction {
+    match action {
+        sockudo_core::versioned_messages::MessageAction::Create => ProtocolMessageAction::Create,
+        sockudo_core::versioned_messages::MessageAction::Update => ProtocolMessageAction::Update,
+        sockudo_core::versioned_messages::MessageAction::Delete => ProtocolMessageAction::Delete,
+        sockudo_core::versioned_messages::MessageAction::Append => ProtocolMessageAction::Append,
+        sockudo_core::versioned_messages::MessageAction::Summary => ProtocolMessageAction::Summary,
+    }
+}
+
+fn build_versioned_realtime_message(record: &StoredVersionRecord) -> VersionedRealtimeMessage {
+    let action = protocol_action(record.message.action);
+    VersionedRealtimeMessage {
+        message: PusherMessage {
+            event: Some(action.v2_event_name()),
+            channel: Some(record.channel.clone()),
+            data: record.message.data.clone(),
+            name: record.message.name.clone(),
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: None,
+            serial: Some(record.delivery_serial()),
+            idempotency_key: None,
+            extras: record.message.extras.clone(),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        },
+        action,
+        message_serial: record.message_serial().as_str().to_string(),
+        history_serial: Some(record.history_serial()),
+        delivery_serial: Some(record.delivery_serial()),
+        version: Some(MessageVersionMetadata {
+            serial: record.version_serial().as_str().to_string(),
+            client_id: record.message.version.client_id.clone(),
+            timestamp_ms: record.message.version.timestamp_ms,
+            description: record.message.version.description.clone(),
+            metadata: record.message.version.metadata.clone(),
+        }),
+    }
+}
+
+fn build_mutation_version_metadata(
+    handler: &ConnectionHandler,
+    client_id: Option<String>,
+    description: Option<String>,
+    metadata: Option<Value>,
+) -> Result<VersionMetadata, AppError> {
+    Ok(VersionMetadata {
+        serial: VersionSerial::new(handler.next_version_serial().to_string())?,
+        client_id,
+        timestamp_ms: sockudo_core::history::now_ms(),
+        description,
+        metadata,
+    })
+}
+
+async fn resolve_mutation_actor_identity(
+    handler: &Arc<ConnectionHandler>,
+    app_id: &str,
+    channel: &str,
+    kind: MutationKind,
+    original_client_id: Option<&str>,
+    requested_client_id: Option<&str>,
+    requested_socket_id: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let action_metric = format!("message.{}", kind.as_verb());
+    if let Some(raw_socket_id) = requested_socket_id {
+        let socket_id = SocketId::from_string(raw_socket_id)
+            .map_err(|e| AppError::InvalidInput(format!("Invalid socket_id: {e}")))?;
+        let connection = handler
+            .connection_manager()
+            .get_connection(&socket_id, app_id)
+            .await
+            .ok_or_else(|| {
+                if let Some(metrics) = handler.metrics() {
+                    metrics.mark_versioned_message_mutation(app_id, &action_metric, "auth_failed");
+                }
+                AppError::ApiAuthFailed(format!(
+                    "Mutation actor socket '{raw_socket_id}' is not connected"
+                ))
+            })?;
+
+        if connection.protocol_version != sockudo_protocol::ProtocolVersion::V2 {
+            if let Some(metrics) = handler.metrics() {
+                metrics.mark_versioned_message_mutation(app_id, &action_metric, "auth_failed");
+            }
+            return Err(AppError::ApiAuthFailed(
+                "Mutation actor socket must use protocol V2".to_string(),
+            ));
+        }
+
+        let actor_client_id = connection.get_user_id().await;
+        if let Some(requested_client_id) = requested_client_id {
+            let authenticated_client_id = actor_client_id.as_deref().ok_or_else(|| {
+                if let Some(metrics) = handler.metrics() {
+                    metrics.mark_versioned_message_mutation(app_id, &action_metric, "auth_failed");
+                }
+                AppError::ApiAuthFailed(
+                    "Mutation actor socket is not signed in with an identified client".to_string(),
+                )
+            })?;
+            if authenticated_client_id != requested_client_id {
+                if let Some(metrics) = handler.metrics() {
+                    metrics.mark_versioned_message_mutation(app_id, &action_metric, "auth_failed");
+                }
+                return Err(AppError::ApiAuthFailed(format!(
+                    "Requested client_id '{}' does not match authenticated actor '{}'",
+                    requested_client_id, authenticated_client_id
+                )));
+            }
+        }
+
+        let capabilities = connection.get_connection_capabilities().await;
+        if let Err(err) = authorize_message_mutation(MutationAuthorizationRequest {
+            channel,
+            kind,
+            original_client_id,
+            actor_client_id: actor_client_id.as_deref(),
+            capabilities: capabilities.as_ref(),
+            privileged_server: false,
+        }) {
+            if let Some(metrics) = handler.metrics() {
+                metrics.mark_versioned_message_mutation(app_id, &action_metric, "auth_failed");
+            }
+            warn!(
+                app_id = %app_id,
+                channel = %channel,
+                action = %kind.as_verb(),
+                original_client_id = ?original_client_id,
+                actor_client_id = ?actor_client_id,
+                "Denied versioned message mutation authorization"
+            );
+            return Err(AppError::from(err));
+        }
+
+        return Ok(actor_client_id.or_else(|| requested_client_id.map(str::to_string)));
+    }
+
+    authorize_message_mutation(MutationAuthorizationRequest {
+        channel,
+        kind,
+        original_client_id,
+        actor_client_id: requested_client_id,
+        capabilities: None,
+        privileged_server: true,
+    })?;
+
+    Ok(requested_client_id.map(str::to_string))
+}
+
+fn update_delta_from_request(request: &UpdateMessageRequest) -> MessageFieldDelta {
+    let mut delta = MessageFieldDelta::default();
+    if let Some(name) = request.name.clone() {
+        delta.name = FieldPatch::Replace(name);
+    }
+    if let Some(data) = request.data.clone() {
+        delta.data = FieldPatch::Replace(data);
+    }
+    if let Some(extras) = request.extras.clone() {
+        delta.extras = FieldPatch::Replace(extras);
+    }
+    for field in &request.clear_fields {
+        match field {
+            sockudo_protocol::versioned_messages::ClearField::Name => {
+                delta.name = FieldPatch::Clear
+            }
+            sockudo_protocol::versioned_messages::ClearField::Data => {
+                delta.data = FieldPatch::Clear
+            }
+            sockudo_protocol::versioned_messages::ClearField::Extras => {
+                delta.extras = FieldPatch::Clear
+            }
+        }
+    }
+    delta
+}
+
+fn delete_delta_from_request(request: &DeleteMessageRequest) -> MessageFieldDelta {
+    let mut delta = MessageFieldDelta::default();
+    if let Some(data) = request.data.clone() {
+        delta.data = FieldPatch::Replace(data);
+    }
+    if let Some(extras) = request.extras.clone() {
+        delta.extras = FieldPatch::Replace(extras);
+    }
+    for field in &request.clear_fields {
+        match field {
+            sockudo_protocol::versioned_messages::ClearField::Name => {
+                delta.name = FieldPatch::Clear
+            }
+            sockudo_protocol::versioned_messages::ClearField::Data => {
+                delta.data = FieldPatch::Clear
+            }
+            sockudo_protocol::versioned_messages::ClearField::Extras => {
+                delta.extras = FieldPatch::Clear
+            }
+        }
+    }
+    delta
 }
 
 /// Helper to build cache payload string
@@ -1333,6 +1597,470 @@ pub async fn batch_events(
     Ok((StatusCode::OK, Json(final_response_payload)))
 }
 
+/// GET /apps/{app_id}/channels/{channel_name}/messages/{message_serial}
+#[instrument(skip(handler), fields(app_id = %path.app_id, channel = %path.channel_name, message_serial = %path.message_serial))]
+pub async fn channel_message(
+    Path(path): Path<VersionMutationPath>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &path.channel_name).await?;
+    require_versioned_messages_enabled(&handler, &path.channel_name)?;
+
+    let message_serial = parse_message_serial(&path.message_serial)?;
+    let item = handler
+        .version_store()
+        .get_latest(&path.app_id, &path.channel_name, &message_serial)
+        .await?;
+    let item = match item {
+        Some(item) => {
+            if let Some(metrics) = handler.metrics() {
+                metrics.mark_versioned_message_retrieval(&path.app_id, "latest", "hit");
+            }
+            item
+        }
+        None => {
+            if let Some(metrics) = handler.metrics() {
+                metrics.mark_versioned_message_retrieval(&path.app_id, "latest", "miss");
+            }
+            return Err(AppError::NotFound(format!(
+                "Message '{}' was not found in channel '{}'",
+                path.message_serial, path.channel_name
+            )));
+        }
+    };
+
+    let payload = GetMessageResponse {
+        channel: path.channel_name,
+        item: build_versioned_realtime_message(&item),
+    };
+    let response_json_bytes = sonic_rs::to_vec(&payload)?;
+    record_api_metrics(&handler, &path.app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(payload)))
+}
+
+/// GET /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/versions
+#[instrument(skip(handler), fields(app_id = %path.app_id, channel = %path.channel_name, message_serial = %path.message_serial))]
+pub async fn channel_message_versions(
+    Path(path): Path<VersionMutationPath>,
+    Query(query_params): Query<MessageVersionsQuery>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &path.channel_name).await?;
+    require_versioned_messages_enabled(&handler, &path.channel_name)?;
+    query_params.validate().map_err(AppError::InvalidInput)?;
+
+    let message_serial = parse_message_serial(&path.message_serial)?;
+    if handler
+        .version_store()
+        .get_latest(&path.app_id, &path.channel_name, &message_serial)
+        .await?
+        .is_none()
+    {
+        if let Some(metrics) = handler.metrics() {
+            metrics.mark_versioned_message_retrieval(&path.app_id, "versions", "miss");
+        }
+        return Err(AppError::NotFound(format!(
+            "Message '{}' was not found in channel '{}'",
+            path.message_serial, path.channel_name
+        )));
+    }
+    if let Some(metrics) = handler.metrics() {
+        metrics.mark_versioned_message_retrieval(&path.app_id, "versions", "hit");
+    }
+
+    let requested_direction = query_params
+        .direction
+        .unwrap_or(VersionDirection::NewestFirst);
+    let direction = parse_version_direction(Some(requested_direction));
+    let limit = query_params
+        .limit
+        .unwrap_or(handler.server_options().versioned_messages.max_page_size)
+        .min(handler.server_options().versioned_messages.max_page_size);
+    if limit == 0 {
+        return Err(AppError::InvalidInput(
+            "Version-history limit must be greater than 0".to_string(),
+        ));
+    }
+
+    let cursor = match query_params.cursor.as_deref() {
+        Some(raw) => Some(sockudo_core::version_store::VersionStoreCursor {
+            version: 1,
+            version_serial: sockudo_core::versioned_messages::VersionSerial::new(raw.to_string())?,
+            direction,
+        }),
+        None => None,
+    };
+
+    let page = handler
+        .version_store()
+        .get_versions(VersionStoreReadRequest {
+            app_id: path.app_id.clone(),
+            channel: path.channel_name.clone(),
+            message_serial,
+            direction,
+            limit,
+            cursor,
+        })
+        .await?;
+
+    let payload = ListMessageVersionsResponse {
+        channel: path.channel_name,
+        direction: requested_direction,
+        limit,
+        has_more: page.has_more,
+        next_cursor: page
+            .next_cursor
+            .map(|cursor| cursor.version_serial.as_str().to_string()),
+        items: page
+            .items
+            .iter()
+            .map(build_versioned_realtime_message)
+            .collect(),
+    };
+    let response_json_bytes = sonic_rs::to_vec(&payload)?;
+    record_api_metrics(&handler, &path.app_id, 0, response_json_bytes.len()).await;
+    Ok((StatusCode::OK, Json(payload)))
+}
+
+/// POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/update
+#[instrument(skip(handler, request), fields(app_id = %path.app_id, channel = %path.channel_name, message_serial = %path.message_serial))]
+pub async fn update_message(
+    Path(path): Path<VersionMutationPath>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    Json(request): Json<UpdateMessageRequest>,
+) -> Result<AxumResponse, AppError> {
+    validate_channel_name(&app, &path.channel_name).await?;
+    require_versioned_messages_enabled(&handler, &path.channel_name)?;
+    let history_policy =
+        app.resolved_history(&path.channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            path.channel_name
+        )));
+    }
+    let message_serial = parse_message_serial(&path.message_serial)?;
+    request.validate().map_err(AppError::InvalidInput)?;
+
+    let current = handler
+        .version_store()
+        .get_latest(&path.app_id, &path.channel_name, &message_serial)
+        .await?;
+    let current = match current {
+        Some(current) => current,
+        None => {
+            if let Some(metrics) = handler.metrics() {
+                metrics.mark_versioned_message_mutation(
+                    &path.app_id,
+                    "message.update",
+                    "not_found",
+                );
+            }
+            return Err(AppError::NotFound(format!(
+                "Message '{}' was not found in channel '{}'",
+                path.message_serial, path.channel_name
+            )));
+        }
+    };
+
+    let actor_client_id = resolve_mutation_actor_identity(
+        &handler,
+        &path.app_id,
+        &path.channel_name,
+        MutationKind::Update,
+        current.original_client_id.as_deref(),
+        request.client_id.as_deref(),
+        request.socket_id.as_deref(),
+    )
+    .await?;
+    if let Some(metrics) = handler.metrics() {
+        metrics.mark_versioned_message_mutation(&path.app_id, "message.update", "applied");
+    }
+
+    let reservation = handler
+        .version_store()
+        .reserve_delivery_position(&path.app_id, &path.channel_name)
+        .await?;
+    let updated_message = current
+        .message
+        .apply_mutation(
+            CoreMessageAction::Update,
+            build_mutation_version_metadata(
+                &handler,
+                actor_client_id,
+                request.description.clone(),
+                request.metadata.clone(),
+            )?,
+            reservation.delivery_serial,
+            update_delta_from_request(&request),
+        )
+        .map_err(AppError::from)?;
+    let updated = StoredVersionRecord {
+        app_id: current.app_id.clone(),
+        channel: current.channel.clone(),
+        original_client_id: current.original_client_id.clone(),
+        message: updated_message,
+    };
+    handler
+        .version_store()
+        .append_version(updated.clone())
+        .await?;
+
+    let runtime_message =
+        handler.build_runtime_message_from_record(&updated, Some(reservation.stream_id));
+    handler
+        .broadcast_to_channel_force_full(&app, &path.channel_name, runtime_message, None, None)
+        .await?;
+    info!(
+        app_id = %path.app_id,
+        channel = %path.channel_name,
+        message_serial = %path.message_serial,
+        version_serial = %updated.version_serial().as_str(),
+        history_serial = updated.history_serial(),
+        delivery_serial = updated.delivery_serial(),
+        actor_client_id = ?updated.message.version.client_id,
+        "Applied versioned message.update"
+    );
+
+    let payload = MutationResponse {
+        channel: path.channel_name,
+        message_serial: path.message_serial,
+        action: ProtocolMessageAction::Update,
+        accepted: true,
+        version_serial: Some(updated.version_serial().as_str().to_string()),
+        status: "applied".to_string(),
+    };
+    Ok((StatusCode::OK, Json(payload)).into_response())
+}
+
+/// POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/delete
+#[instrument(skip(handler, request), fields(app_id = %path.app_id, channel = %path.channel_name, message_serial = %path.message_serial))]
+pub async fn delete_message(
+    Path(path): Path<VersionMutationPath>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    Json(request): Json<DeleteMessageRequest>,
+) -> Result<AxumResponse, AppError> {
+    validate_channel_name(&app, &path.channel_name).await?;
+    require_versioned_messages_enabled(&handler, &path.channel_name)?;
+    let history_policy =
+        app.resolved_history(&path.channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            path.channel_name
+        )));
+    }
+    let message_serial = parse_message_serial(&path.message_serial)?;
+    request.validate().map_err(AppError::InvalidInput)?;
+
+    let current = handler
+        .version_store()
+        .get_latest(&path.app_id, &path.channel_name, &message_serial)
+        .await?;
+    let current = match current {
+        Some(current) => current,
+        None => {
+            if let Some(metrics) = handler.metrics() {
+                metrics.mark_versioned_message_mutation(
+                    &path.app_id,
+                    "message.delete",
+                    "not_found",
+                );
+            }
+            return Err(AppError::NotFound(format!(
+                "Message '{}' was not found in channel '{}'",
+                path.message_serial, path.channel_name
+            )));
+        }
+    };
+
+    let actor_client_id = resolve_mutation_actor_identity(
+        &handler,
+        &path.app_id,
+        &path.channel_name,
+        MutationKind::Delete,
+        current.original_client_id.as_deref(),
+        request.client_id.as_deref(),
+        request.socket_id.as_deref(),
+    )
+    .await?;
+    if let Some(metrics) = handler.metrics() {
+        metrics.mark_versioned_message_mutation(&path.app_id, "message.delete", "applied");
+    }
+
+    let reservation = handler
+        .version_store()
+        .reserve_delivery_position(&path.app_id, &path.channel_name)
+        .await?;
+    let deleted_message = current
+        .message
+        .apply_mutation(
+            CoreMessageAction::Delete,
+            build_mutation_version_metadata(
+                &handler,
+                actor_client_id,
+                request.description.clone(),
+                request.metadata.clone(),
+            )?,
+            reservation.delivery_serial,
+            delete_delta_from_request(&request),
+        )
+        .map_err(AppError::from)?;
+    let deleted = StoredVersionRecord {
+        app_id: current.app_id.clone(),
+        channel: current.channel.clone(),
+        original_client_id: current.original_client_id.clone(),
+        message: deleted_message,
+    };
+    handler
+        .version_store()
+        .append_version(deleted.clone())
+        .await?;
+
+    let runtime_message =
+        handler.build_runtime_message_from_record(&deleted, Some(reservation.stream_id));
+    handler
+        .broadcast_to_channel_force_full(&app, &path.channel_name, runtime_message, None, None)
+        .await?;
+    info!(
+        app_id = %path.app_id,
+        channel = %path.channel_name,
+        message_serial = %path.message_serial,
+        version_serial = %deleted.version_serial().as_str(),
+        history_serial = deleted.history_serial(),
+        delivery_serial = deleted.delivery_serial(),
+        actor_client_id = ?deleted.message.version.client_id,
+        "Applied versioned message.delete"
+    );
+
+    let payload = MutationResponse {
+        channel: path.channel_name,
+        message_serial: path.message_serial,
+        action: ProtocolMessageAction::Delete,
+        accepted: true,
+        version_serial: Some(deleted.version_serial().as_str().to_string()),
+        status: "applied".to_string(),
+    };
+    Ok((StatusCode::OK, Json(payload)).into_response())
+}
+
+/// POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/append
+#[instrument(skip(handler, request), fields(app_id = %path.app_id, channel = %path.channel_name, message_serial = %path.message_serial))]
+pub async fn append_message(
+    Path(path): Path<VersionMutationPath>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    Json(request): Json<AppendMessageRequest>,
+) -> Result<AxumResponse, AppError> {
+    validate_channel_name(&app, &path.channel_name).await?;
+    require_versioned_messages_enabled(&handler, &path.channel_name)?;
+    let history_policy =
+        app.resolved_history(&path.channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            path.channel_name
+        )));
+    }
+    let message_serial = parse_message_serial(&path.message_serial)?;
+    request.validate().map_err(AppError::InvalidInput)?;
+
+    let current = handler
+        .version_store()
+        .get_latest(&path.app_id, &path.channel_name, &message_serial)
+        .await?;
+    let current = match current {
+        Some(current) => current,
+        None => {
+            if let Some(metrics) = handler.metrics() {
+                metrics.mark_versioned_message_mutation(
+                    &path.app_id,
+                    "message.append",
+                    "not_found",
+                );
+            }
+            return Err(AppError::NotFound(format!(
+                "Message '{}' was not found in channel '{}'",
+                path.message_serial, path.channel_name
+            )));
+        }
+    };
+
+    let actor_client_id = resolve_mutation_actor_identity(
+        &handler,
+        &path.app_id,
+        &path.channel_name,
+        MutationKind::Append,
+        current.original_client_id.as_deref(),
+        request.client_id.as_deref(),
+        request.socket_id.as_deref(),
+    )
+    .await?;
+    if let Some(metrics) = handler.metrics() {
+        metrics.mark_versioned_message_mutation(&path.app_id, "message.append", "applied");
+    }
+
+    let reservation = handler
+        .version_store()
+        .reserve_delivery_position(&path.app_id, &path.channel_name)
+        .await?;
+    let appended_message = current
+        .message
+        .apply_append(
+            build_mutation_version_metadata(
+                &handler,
+                actor_client_id,
+                request.description.clone(),
+                request.metadata.clone(),
+            )?,
+            reservation.delivery_serial,
+            MessageAppend {
+                data_fragment: request.data.clone(),
+            },
+        )
+        .map_err(AppError::from)?;
+    let appended = StoredVersionRecord {
+        app_id: current.app_id.clone(),
+        channel: current.channel.clone(),
+        original_client_id: current.original_client_id.clone(),
+        message: appended_message,
+    };
+    handler
+        .version_store()
+        .append_version(appended.clone())
+        .await?;
+
+    let runtime_message =
+        handler.build_runtime_message_from_record(&appended, Some(reservation.stream_id));
+    handler
+        .broadcast_to_channel_force_full(&app, &path.channel_name, runtime_message, None, None)
+        .await?;
+    info!(
+        app_id = %path.app_id,
+        channel = %path.channel_name,
+        message_serial = %path.message_serial,
+        version_serial = %appended.version_serial().as_str(),
+        history_serial = appended.history_serial(),
+        delivery_serial = appended.delivery_serial(),
+        actor_client_id = ?appended.message.version.client_id,
+        "Applied versioned message.append"
+    );
+
+    let payload = MutationResponse {
+        channel: path.channel_name,
+        message_serial: path.message_serial,
+        action: ProtocolMessageAction::Append,
+        accepted: true,
+        version_serial: Some(appended.version_serial().as_str().to_string()),
+        status: "applied".to_string(),
+    };
+    Ok((StatusCode::OK, Json(payload)).into_response())
+}
+
 /// GET /apps/{app_id}/channels/{channel_name}
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
 pub async fn channel(
@@ -1567,17 +2295,68 @@ pub async fn channel_history(
 
     let mut items = Vec::with_capacity(page.items.len());
     for item in page.items {
-        let message: Value = sonic_rs::from_slice(item.payload_bytes.as_ref()).map_err(|e| {
-            AppError::InternalError(format!("Failed to decode history payload: {e}"))
-        })?;
+        let mut event_name = item.event_name.clone();
+        let mut operation_kind = item.operation_kind.clone();
+        let mut payload_size_bytes = item.payload_size_bytes;
+        let message: Value = if handler.server_options().versioned_messages.enabled {
+            let raw_message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
+                .map_err(|e| {
+                    AppError::InternalError(format!("Failed to decode history payload: {e}"))
+                })?;
+            if let Some(message_serial) = extract_runtime_message_serial(&raw_message) {
+                match handler
+                    .version_store()
+                    .get_latest(
+                        &app_id,
+                        &channel_name,
+                        &parse_message_serial(message_serial)?,
+                    )
+                    .await?
+                {
+                    Some(latest) => {
+                        if let Some(metrics) = handler.metrics() {
+                            metrics.mark_versioned_history_substitution(&app_id, "applied");
+                        }
+                        let latest_message = build_versioned_realtime_message(&latest);
+                        let latest_bytes = sonic_rs::to_vec(&latest_message)?;
+                        event_name = latest_message.message.event.clone();
+                        operation_kind = latest_message.action.as_str().to_string();
+                        payload_size_bytes = latest_bytes.len();
+                        sonic_rs::to_value(&latest_message)?
+                    }
+                    None => {
+                        if let Some(metrics) = handler.metrics() {
+                            metrics.mark_versioned_history_substitution(&app_id, "missing_latest");
+                        }
+                        warn!(
+                            app_id = %app_id,
+                            channel = %channel_name,
+                            history_serial = item.serial,
+                            message_serial = %message_serial,
+                            "History row referenced a versioned message without a latest winner; returning stored payload"
+                        );
+                        sonic_rs::to_value(&raw_message)?
+                    }
+                }
+            } else {
+                if let Some(metrics) = handler.metrics() {
+                    metrics.mark_versioned_history_substitution(&app_id, "not_versioned");
+                }
+                sonic_rs::to_value(&raw_message)?
+            }
+        } else {
+            sonic_rs::from_slice(item.payload_bytes.as_ref()).map_err(|e| {
+                AppError::InternalError(format!("Failed to decode history payload: {e}"))
+            })?
+        };
         items.push(json!({
             "stream_id": item.stream_id,
             "serial": item.serial,
             "published_at_ms": item.published_at_ms,
             "message_id": item.message_id,
-            "event_name": item.event_name,
-            "operation_kind": item.operation_kind,
-            "payload_size_bytes": item.payload_size_bytes,
+            "event_name": event_name,
+            "operation_kind": operation_kind,
+            "payload_size_bytes": payload_size_bytes,
             "message": message,
         }));
     }
@@ -2296,11 +3075,29 @@ mod tests {
         PresenceHistoryStreamRuntimeState, PresenceHistoryTransitionRecord,
         TrackingPresenceHistoryStore,
     };
-    use sockudo_protocol::messages::{MessageData, PusherMessage};
+    use sockudo_core::version_store::{MemoryVersionStore, StoredVersionRecord, VersionStore};
+    use sockudo_core::versioned_messages::{
+        MessageSerial, VersionMetadata, VersionSerial, VersionedMessage,
+    };
+    use sockudo_core::websocket::{
+        ConnectionCapabilities, SocketId, UserInfo, WebSocketBufferConfig,
+    };
+    use sockudo_protocol::messages::{
+        ApiMessageData, MessageData, PusherApiMessage, PusherMessage,
+    };
+    use sockudo_protocol::versioned_messages::{
+        AppendMessageRequest, DeleteMessageRequest, MessageVersionsQuery, UpdateMessageRequest,
+        VersionDirection,
+    };
+    use sockudo_protocol::{ProtocolVersion, WireFormat};
+    use sockudo_ws::axum_integration::WebSocketWriter;
+    use sockudo_ws::client::WebSocketClient;
+    use sockudo_ws::{Config as WsConfig, Http1, Stream as WsStream, WebSocketStream};
     use sonic_rs::JsonContainerTrait;
     use sonic_rs::JsonValueTrait;
     use std::sync::Arc;
     use std::time::Instant;
+    use tokio::net::{TcpListener, TcpStream};
 
     fn test_app() -> App {
         test_app_with_policy(Default::default())
@@ -2381,6 +3178,144 @@ mod tests {
             max_page_size,
             Arc::new(MemoryPresenceHistoryStore::new(Default::default())),
         )
+    }
+
+    fn test_versioned_handler_harness(
+        max_page_size: usize,
+        version_store: Arc<dyn VersionStore + Send + Sync>,
+    ) -> (
+        Arc<ConnectionHandler>,
+        Arc<LocalAdapter>,
+        Arc<MemoryAppManager>,
+    ) {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let adapter = Arc::new(LocalAdapter::new());
+        let app_manager_dyn = app_manager.clone() as Arc<dyn AppManager + Send + Sync>;
+        let adapter_dyn =
+            adapter.clone() as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.versioned_messages.enabled = true;
+        options.versioned_messages.max_page_size = max_page_size;
+        options.history.enabled = true;
+
+        let handler = Arc::new(
+            ConnectionHandlerBuilder::new(app_manager_dyn, adapter_dyn, cache, options)
+                .history_store(Arc::new(MemoryHistoryStore::new(
+                    MemoryHistoryStoreConfig::default(),
+                )))
+                .version_store(version_store)
+                .build(),
+        );
+
+        (handler, adapter, app_manager)
+    }
+
+    fn test_versioned_handler_with_store(
+        max_page_size: usize,
+        version_store: Arc<dyn VersionStore + Send + Sync>,
+    ) -> Arc<ConnectionHandler> {
+        let (handler, _, _) = test_versioned_handler_harness(max_page_size, version_store);
+        handler
+    }
+
+    fn test_versioned_record(
+        message_serial: &str,
+        version_serial: &str,
+        history_serial: u64,
+        delivery_serial: u64,
+        text: &str,
+    ) -> StoredVersionRecord {
+        StoredVersionRecord {
+            app_id: "app-1".to_string(),
+            channel: "versioned-room".to_string(),
+            original_client_id: Some("user-1".to_string()),
+            message: VersionedMessage::new_create(
+                MessageSerial::new(message_serial.to_string()).unwrap(),
+                VersionMetadata {
+                    serial: VersionSerial::new(version_serial.to_string()).unwrap(),
+                    client_id: Some("user-1".to_string()),
+                    timestamp_ms: 1,
+                    description: None,
+                    metadata: None,
+                },
+                history_serial,
+                delivery_serial,
+                Some("chat.message".to_string()),
+                Some(MessageData::String(format!("{{\"text\":\"{text}\"}}"))),
+                None,
+            ),
+        }
+    }
+
+    async fn test_websocket_writer() -> WebSocketWriter {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = sockudo_ws::handshake::server_handshake(&mut stream)
+                .await
+                .unwrap();
+            let ws = sockudo_ws::axum_integration::WebSocket::from_tcp(stream, WsConfig::default());
+            let (_reader, writer) = ws.split();
+            writer
+        });
+
+        let client_stream = TcpStream::connect(addr).await.unwrap();
+        let client = WebSocketClient::<Http1>::new(WsConfig::default());
+        let (client_ws, _): (WebSocketStream<WsStream<Http1>>, _) = client
+            .connect(client_stream, &addr.to_string(), "/", None)
+            .await
+            .unwrap();
+        let (_reader, _writer) = client_ws.split();
+
+        server_task.await.unwrap()
+    }
+
+    async fn attach_signed_in_mutation_actor(
+        handler: &Arc<ConnectionHandler>,
+        app_manager: Arc<MemoryAppManager>,
+        app: &App,
+        socket_id: SocketId,
+        user_id: &str,
+        capabilities: ConnectionCapabilities,
+    ) {
+        app_manager.create_app(app.clone()).await.unwrap();
+
+        handler
+            .connection_manager()
+            .add_socket(
+                socket_id,
+                test_websocket_writer().await,
+                &app.id,
+                app_manager as Arc<dyn AppManager + Send + Sync>,
+                WebSocketBufferConfig::default(),
+                ProtocolVersion::V2,
+                WireFormat::Json,
+                true,
+            )
+            .await
+            .unwrap();
+
+        handler
+            .update_connection_with_user_info(
+                &socket_id,
+                app,
+                &UserInfo {
+                    id: user_id.to_string(),
+                    watchlist: None,
+                    info: None,
+                    capabilities: Some(capabilities),
+                    meta: None,
+                },
+            )
+            .await
+            .unwrap();
     }
 
     fn test_presence_history_handler_with_memory_store(
@@ -4201,5 +5136,814 @@ mod tests {
                 base_ts + 4
             );
         }
+    }
+
+    #[tokio::test]
+    async fn channel_message_returns_latest_versioned_item() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store.clone());
+        let app = test_app();
+
+        let original = test_versioned_record(
+            "msg:1",
+            "00000000000000000001:test:00000000000000000001",
+            10,
+            1,
+            "hello",
+        );
+        store.append_version(original.clone()).await.unwrap();
+        store
+            .append_version(StoredVersionRecord {
+                message: original
+                    .message
+                    .apply_mutation(
+                        sockudo_core::versioned_messages::MessageAction::Update,
+                        VersionMetadata {
+                            serial: VersionSerial::new(
+                                "00000000000000000002:test:00000000000000000002".to_string(),
+                            )
+                            .unwrap(),
+                            client_id: Some("user-1".to_string()),
+                            timestamp_ms: 2,
+                            description: Some("patched".to_string()),
+                            metadata: None,
+                        },
+                        2,
+                        sockudo_core::versioned_messages::MessageFieldDelta {
+                            data: sockudo_core::versioned_messages::FieldPatch::Replace(
+                                MessageData::String("{\"text\":\"patched\"}".to_string()),
+                            ),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                ..original
+            })
+            .await
+            .unwrap();
+
+        let response = channel_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["item"]["message_serial"], "msg:1");
+        assert_eq!(json["item"]["action"], "update");
+        assert_eq!(
+            json["item"]["version"]["serial"],
+            "00000000000000000002:test:00000000000000000002"
+        );
+        assert_eq!(json["item"]["event"], "sockudo:message.update");
+    }
+
+    #[tokio::test]
+    async fn events_create_then_update_substitutes_latest_visible_history() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store.clone());
+        let app = test_app();
+
+        let create_response = events(
+            Path("app-1".to_string()),
+            Query(EventQuery {
+                auth_key: String::new(),
+                auth_timestamp: String::new(),
+                auth_version: String::new(),
+                body_md5: String::new(),
+                auth_signature: String::new(),
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+            HeaderMap::new(),
+            Uri::from_static("/apps/app-1/events"),
+            RawQuery(None),
+            Json(PusherApiMessage {
+                name: Some("chat.message".to_string()),
+                data: Some(ApiMessageData::Json(json!({"text": "hello"}))),
+                channel: Some("versioned-room".to_string()),
+                channels: None,
+                socket_id: None,
+                info: None,
+                tags: None,
+                delta: None,
+                idempotency_key: None,
+                extras: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(create_response.status(), StatusCode::OK);
+
+        let latest = handler
+            .version_store()
+            .latest_by_history("app-1", "versioned-room")
+            .await
+            .unwrap();
+        assert_eq!(latest.len(), 1);
+        let message_serial = latest[0].message_serial().as_str().to_string();
+
+        let update_response = update_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: message_serial.clone(),
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+            Json(UpdateMessageRequest {
+                name: None,
+                data: Some(MessageData::String("{\"text\":\"patched\"}".to_string())),
+                extras: None,
+                clear_fields: Vec::new(),
+                client_id: None,
+                socket_id: None,
+                description: Some("patch".to_string()),
+                metadata: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(update_response.status(), StatusCode::OK);
+
+        let history_response = channel_history(
+            Path(("app-1".to_string(), "versioned-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("oldest_first".to_string()),
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(history_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(history_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["items"].as_array().unwrap().len(), 1);
+        assert_eq!(json["items"][0]["serial"], 1);
+        assert_eq!(
+            json["items"][0]["message"]["message_serial"],
+            message_serial
+        );
+        assert_eq!(json["items"][0]["message"]["action"], "update");
+        assert_eq!(
+            json["items"][0]["message"]["data"],
+            "{\"text\":\"patched\"}"
+        );
+        assert_eq!(json["items"][0]["event_name"], "sockudo:message.update");
+        assert_eq!(json["items"][0]["operation_kind"], "message.update");
+    }
+
+    #[tokio::test]
+    async fn events_create_then_delete_substitutes_latest_visible_history() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store.clone());
+        let app = test_app();
+
+        let create_response = events(
+            Path("app-1".to_string()),
+            Query(EventQuery {
+                auth_key: String::new(),
+                auth_timestamp: String::new(),
+                auth_version: String::new(),
+                body_md5: String::new(),
+                auth_signature: String::new(),
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+            HeaderMap::new(),
+            Uri::from_static("/apps/app-1/events"),
+            RawQuery(None),
+            Json(PusherApiMessage {
+                name: Some("chat.message".to_string()),
+                data: Some(ApiMessageData::Json(json!({"text": "hello"}))),
+                channel: Some("versioned-room".to_string()),
+                channels: None,
+                socket_id: None,
+                info: None,
+                tags: None,
+                delta: None,
+                idempotency_key: None,
+                extras: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(create_response.status(), StatusCode::OK);
+
+        let latest = handler
+            .version_store()
+            .latest_by_history("app-1", "versioned-room")
+            .await
+            .unwrap();
+        let message_serial = latest[0].message_serial().as_str().to_string();
+
+        let delete_response = delete_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: message_serial.clone(),
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+            Json(DeleteMessageRequest {
+                data: None,
+                extras: None,
+                clear_fields: vec![
+                    sockudo_protocol::versioned_messages::ClearField::Data,
+                    sockudo_protocol::versioned_messages::ClearField::Extras,
+                ],
+                client_id: None,
+                socket_id: None,
+                description: Some("deleted".to_string()),
+                metadata: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(delete_response.status(), StatusCode::OK);
+
+        let history_response = channel_history(
+            Path(("app-1".to_string(), "versioned-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("oldest_first".to_string()),
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        let body = axum::body::to_bytes(history_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["items"][0]["serial"], 1);
+        assert_eq!(
+            json["items"][0]["message"]["message_serial"],
+            message_serial
+        );
+        assert_eq!(json["items"][0]["message"]["action"], "delete");
+        assert!(json["items"][0]["message"]["data"].is_null());
+        assert_eq!(json["items"][0]["event_name"], "sockudo:message.delete");
+        assert_eq!(json["items"][0]["operation_kind"], "message.delete");
+    }
+
+    #[tokio::test]
+    async fn events_create_then_append_substitutes_latest_visible_history() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store.clone());
+        let app = test_app();
+
+        let create_response = events(
+            Path("app-1".to_string()),
+            Query(EventQuery {
+                auth_key: String::new(),
+                auth_timestamp: String::new(),
+                auth_version: String::new(),
+                body_md5: String::new(),
+                auth_signature: String::new(),
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+            HeaderMap::new(),
+            Uri::from_static("/apps/app-1/events"),
+            RawQuery(None),
+            Json(PusherApiMessage {
+                name: Some("chat.message".to_string()),
+                data: Some(ApiMessageData::String("hello".to_string())),
+                channel: Some("versioned-room".to_string()),
+                channels: None,
+                socket_id: None,
+                info: None,
+                tags: None,
+                delta: None,
+                idempotency_key: None,
+                extras: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(create_response.status(), StatusCode::OK);
+
+        let latest = handler
+            .version_store()
+            .latest_by_history("app-1", "versioned-room")
+            .await
+            .unwrap();
+        let message_serial = latest[0].message_serial().as_str().to_string();
+
+        let append_response = append_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: message_serial.clone(),
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+            Json(AppendMessageRequest {
+                data: " world".to_string(),
+                client_id: None,
+                socket_id: None,
+                description: Some("append".to_string()),
+                metadata: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(append_response.status(), StatusCode::OK);
+
+        let history_response = channel_history(
+            Path(("app-1".to_string(), "versioned-room".to_string())),
+            Query(HistoryQuery {
+                limit: Some(10),
+                direction: Some("oldest_first".to_string()),
+                ..Default::default()
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        let body = axum::body::to_bytes(history_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["items"][0]["serial"], 1);
+        assert_eq!(
+            json["items"][0]["message"]["message_serial"],
+            message_serial
+        );
+        assert_eq!(json["items"][0]["message"]["action"], "append");
+        assert_eq!(json["items"][0]["message"]["data"], "hello world");
+        assert_eq!(json["items"][0]["event_name"], "sockudo:message.append");
+        assert_eq!(json["items"][0]["operation_kind"], "message.append");
+    }
+
+    #[tokio::test]
+    async fn channel_message_versions_pages_newest_first() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(2, store.clone());
+        let app = test_app();
+
+        let original = test_versioned_record(
+            "msg:1",
+            "00000000000000000001:test:00000000000000000001",
+            10,
+            1,
+            "hello",
+        );
+        let update_1 = StoredVersionRecord {
+            message: original
+                .message
+                .apply_mutation(
+                    sockudo_core::versioned_messages::MessageAction::Update,
+                    VersionMetadata {
+                        serial: VersionSerial::new(
+                            "00000000000000000002:test:00000000000000000002".to_string(),
+                        )
+                        .unwrap(),
+                        client_id: Some("user-1".to_string()),
+                        timestamp_ms: 2,
+                        description: None,
+                        metadata: None,
+                    },
+                    2,
+                    sockudo_core::versioned_messages::MessageFieldDelta::default(),
+                )
+                .unwrap(),
+            ..original.clone()
+        };
+        let update_2 = StoredVersionRecord {
+            message: update_1
+                .message
+                .apply_mutation(
+                    sockudo_core::versioned_messages::MessageAction::Delete,
+                    VersionMetadata {
+                        serial: VersionSerial::new(
+                            "00000000000000000003:test:00000000000000000003".to_string(),
+                        )
+                        .unwrap(),
+                        client_id: Some("user-1".to_string()),
+                        timestamp_ms: 3,
+                        description: None,
+                        metadata: None,
+                    },
+                    3,
+                    sockudo_core::versioned_messages::MessageFieldDelta::default(),
+                )
+                .unwrap(),
+            ..original.clone()
+        };
+
+        store.append_version(original).await.unwrap();
+        store.append_version(update_1).await.unwrap();
+        store.append_version(update_2).await.unwrap();
+
+        let response = channel_message_versions(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Query(MessageVersionsQuery {
+                limit: Some(2),
+                direction: Some(VersionDirection::NewestFirst),
+                cursor: None,
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["items"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            json["items"][0]["version"]["serial"],
+            "00000000000000000003:test:00000000000000000003"
+        );
+        assert_eq!(
+            json["items"][1]["version"]["serial"],
+            "00000000000000000002:test:00000000000000000002"
+        );
+        assert_eq!(json["direction"], "newest_first");
+        assert!(json["has_more"].as_bool().unwrap());
+        assert_eq!(
+            json["next_cursor"],
+            "00000000000000000002:test:00000000000000000002"
+        );
+    }
+
+    #[tokio::test]
+    async fn versioned_message_endpoints_require_feature_flag() {
+        let handler = test_history_handler(100);
+        let app = test_app();
+
+        let response = match channel_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected feature-disabled error"),
+        };
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn update_message_validates_request_body_before_runtime() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store);
+        let app = test_app();
+
+        let response = match update_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(UpdateMessageRequest::default()),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected validation error"),
+        };
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_message_denies_authenticated_socket_without_mutation_capability() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let (handler, _adapter, app_manager) = test_versioned_handler_harness(100, store.clone());
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let socket_id = SocketId::from_string("11.11").unwrap();
+        attach_signed_in_mutation_actor(
+            &handler,
+            app_manager.clone(),
+            &app,
+            socket_id,
+            "user-2",
+            ConnectionCapabilities::default(),
+        )
+        .await;
+
+        let response = match update_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(UpdateMessageRequest {
+                name: None,
+                data: Some(MessageData::String("{\"text\":\"blocked\"}".to_string())),
+                extras: None,
+                clear_fields: Vec::new(),
+                client_id: Some("user-2".to_string()),
+                socket_id: Some(socket_id.to_string()),
+                description: Some("blocked".to_string()),
+                metadata: None,
+            }),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected capability check to fail"),
+        };
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn update_message_allows_authenticated_owner_with_own_capability() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let (handler, _adapter, app_manager) = test_versioned_handler_harness(100, store.clone());
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let socket_id = SocketId::from_string("12.12").unwrap();
+        attach_signed_in_mutation_actor(
+            &handler,
+            app_manager.clone(),
+            &app,
+            socket_id,
+            "user-1",
+            ConnectionCapabilities {
+                message_update_own: Some(vec!["versioned-room".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = update_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+            Json(UpdateMessageRequest {
+                name: None,
+                data: Some(MessageData::String("{\"text\":\"patched\"}".to_string())),
+                extras: None,
+                clear_fields: Vec::new(),
+                client_id: Some("user-1".to_string()),
+                socket_id: Some(socket_id.to_string()),
+                description: Some("owner patch".to_string()),
+                metadata: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let latest = handler
+            .version_store()
+            .get_latest(
+                "app-1",
+                "versioned-room",
+                &MessageSerial::new("msg:1").unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.message.version.client_id.as_deref(), Some("user-1"));
+        assert_eq!(
+            latest.message.data.unwrap().into_string().as_deref(),
+            Some("{\"text\":\"patched\"}")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_message_allows_authenticated_any_capability() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let (handler, _adapter, app_manager) = test_versioned_handler_harness(100, store.clone());
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let socket_id = SocketId::from_string("13.13").unwrap();
+        attach_signed_in_mutation_actor(
+            &handler,
+            app_manager.clone(),
+            &app,
+            socket_id,
+            "moderator",
+            ConnectionCapabilities {
+                message_delete_any: Some(vec!["versioned-room".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = delete_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(DeleteMessageRequest {
+                data: None,
+                extras: None,
+                clear_fields: vec![sockudo_protocol::versioned_messages::ClearField::Data],
+                client_id: Some("moderator".to_string()),
+                socket_id: Some(socket_id.to_string()),
+                description: Some("moderation".to_string()),
+                metadata: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn append_message_denies_non_owner_with_own_capability() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let (handler, _adapter, app_manager) = test_versioned_handler_harness(100, store.clone());
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let socket_id = SocketId::from_string("14.14").unwrap();
+        attach_signed_in_mutation_actor(
+            &handler,
+            app_manager.clone(),
+            &app,
+            socket_id,
+            "user-2",
+            ConnectionCapabilities {
+                message_append_own: Some(vec!["versioned-room".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = match append_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(AppendMessageRequest {
+                data: " world".to_string(),
+                client_id: Some("user-2".to_string()),
+                socket_id: Some(socket_id.to_string()),
+                description: Some("unauthorized append".to_string()),
+                metadata: None,
+            }),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected own-scope append to be denied"),
+        };
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn append_message_reports_not_implemented_after_validation() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store.clone());
+        let app = test_app();
+
+        let original = test_versioned_record(
+            "msg:1",
+            "00000000000000000001:test:00000000000000000001",
+            10,
+            1,
+            "hello",
+        );
+        store.append_version(original).await.unwrap();
+
+        let response = append_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(AppendMessageRequest {
+                data: "hello".to_string(),
+                client_id: None,
+                socket_id: None,
+                description: None,
+                metadata: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(json["accepted"], true);
+        assert_eq!(json["action"], "append");
     }
 }

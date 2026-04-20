@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.3.0] - 2026-04-15
+
+### Added
+
+- Sockudo-native Protocol V2 mutable messages with stable message identity, preserved version history, and latest-visible history substitution.
+- Realtime mutation delivery for `sockudo:message.update`, `sockudo:message.delete`, and `sockudo:message.append`.
+- Own-versus-any mutation authorization tied to authenticated V2 identities.
+- Client-facing mutable-message consumption guidance across in-repo SDKs, plus JS reducer helpers for replace-versus-concatenate handling.
+
+### Compatibility Notes
+
+- Release 4.3 mutable messages are V2-only Sockudo-native behavior.
+- Protocol V1 remains strictly Pusher-compatible and never receives mutable-message mutation envelopes.
+- Existing immutable history is not backfilled into mutable-message chains.
+
 ## [4.2.0] - 2026-04-11
 
 ### Added

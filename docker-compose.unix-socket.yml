@@ -4,7 +4,7 @@ services:
   sockudo-unix-socket:
     build:
       context: ./
-      dockerfile: ./test/unix-socket/Dockerfile.unix-socket
+      dockerfile: ./tests/unix-socket/Dockerfile.unix-socket
     volumes:
       # Mount the sockudo binary
       - ./target:/app/target:ro

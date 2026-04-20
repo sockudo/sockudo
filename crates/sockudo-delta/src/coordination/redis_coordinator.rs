@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use redis::AsyncCommands;
 use redis::cluster::ClusterClientBuilder;
 use redis::cluster_async::ClusterConnection;
+use redis::cluster_read_routing::RandomReplicaStrategy;
 use sockudo_core::delta_types::ClusterCoordinator;
 use sockudo_core::error::{Error, Result};
 use std::sync::Arc;
@@ -87,7 +88,7 @@ impl RedisClusterCoordinator {
     pub async fn new_cluster(nodes: Vec<String>, prefix: Option<&str>) -> Result<Self> {
         let client = ClusterClientBuilder::new(nodes)
             .retries(3)
-            .read_from_replicas()
+            .read_routing_strategy(RandomReplicaStrategy)
             .build()
             .map_err(|e| Error::Redis(format!("Failed to create Redis Cluster client: {}", e)))?;
 

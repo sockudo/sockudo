@@ -100,6 +100,9 @@ pub struct PrometheusMetricsDriver {
     history_reset_required_channels: GaugeVec,
     history_recovery_success_total: CounterVec,
     history_recovery_failures_total: CounterVec,
+    versioned_message_mutations_total: CounterVec,
+    versioned_message_retrieval_total: CounterVec,
+    versioned_history_substitution_total: CounterVec,
     presence_history_writes_total: CounterVec,
     presence_history_write_failures_total: CounterVec,
     presence_history_write_latency_ms: HistogramVec,
@@ -622,6 +625,33 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let versioned_message_mutations_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}versioned_message_mutations_total"),
+                "Total number of versioned-message mutation attempts by action and result"
+            ),
+            &["app_id", "port", "action", "result"]
+        )
+        .unwrap();
+
+        let versioned_message_retrieval_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}versioned_message_retrieval_total"),
+                "Total number of versioned-message retrieval attempts by surface and result"
+            ),
+            &["app_id", "port", "surface", "result"]
+        )
+        .unwrap();
+
+        let versioned_history_substitution_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}versioned_history_substitution_total"),
+                "Total number of history substitution outcomes for versioned messages"
+            ),
+            &["app_id", "port", "result"]
+        )
+        .unwrap();
+
         let presence_history_writes_total = register_counter_vec!(
             Opts::new(
                 format!("{prefix}presence_history_writes_total"),
@@ -868,6 +898,9 @@ impl PrometheusMetricsDriver {
             history_reset_required_channels,
             history_recovery_success_total,
             history_recovery_failures_total,
+            versioned_message_mutations_total,
+            versioned_message_retrieval_total,
+            versioned_history_substitution_total,
             presence_history_writes_total,
             presence_history_write_failures_total,
             presence_history_write_latency_ms,
@@ -1462,6 +1495,24 @@ impl MetricsInterface for PrometheusMetricsDriver {
     fn mark_history_recovery_failure(&self, app_id: &str, code: &str) {
         self.history_recovery_failures_total
             .with_label_values(&[app_id, &self.port.to_string(), code])
+            .inc();
+    }
+
+    fn mark_versioned_message_mutation(&self, app_id: &str, action: &str, result: &str) {
+        self.versioned_message_mutations_total
+            .with_label_values(&[app_id, &self.port.to_string(), action, result])
+            .inc();
+    }
+
+    fn mark_versioned_message_retrieval(&self, app_id: &str, surface: &str, result: &str) {
+        self.versioned_message_retrieval_total
+            .with_label_values(&[app_id, &self.port.to_string(), surface, result])
+            .inc();
+    }
+
+    fn mark_versioned_history_substitution(&self, app_id: &str, result: &str) {
+        self.versioned_history_substitution_total
+            .with_label_values(&[app_id, &self.port.to_string(), result])
             .inc();
     }
 

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use redis::AsyncCommands;
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use redis::cluster_async::ClusterConnection;
+use redis::cluster_read_routing::RandomReplicaStrategy;
 use sockudo_core::cache::CacheManager;
 use sockudo_core::error::{Error, Result};
 use std::time::Duration;
@@ -47,7 +48,7 @@ impl RedisClusterCacheManager {
         }
 
         if config.read_from_replicas {
-            builder = builder.read_from_replicas();
+            builder = builder.read_routing_strategy(RandomReplicaStrategy);
         }
 
         let client = builder

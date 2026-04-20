@@ -1,5 +1,7 @@
 use ahash::AHashMap;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -81,7 +83,7 @@ pub struct PresenceData {
     pub count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum MessageData {
     String(String),
@@ -103,7 +105,7 @@ impl<'de> Deserialize<'de> for MessageData {
     where
         D: serde::Deserializer<'de>,
     {
-        let v = Value::deserialize(deserializer)?;
+        let v = JsonValue::deserialize(deserializer)?;
         if let Some(s) = v.as_str() {
             return Ok(MessageData::String(s.to_string()));
         }
@@ -111,15 +113,15 @@ impl<'de> Deserialize<'de> for MessageData {
             // Flatten workaround for sonic-rs issue #114:
             // manually split known structured keys and keep remaining keys in `extra`.
             let channel_data = obj
-                .get(&"channel_data")
+                .get("channel_data")
                 .and_then(|x| x.as_str())
                 .map(ToString::to_string);
             let channel = obj
-                .get(&"channel")
+                .get("channel")
                 .and_then(|x| x.as_str())
                 .map(ToString::to_string);
             let user_data = obj
-                .get(&"user_data")
+                .get("user_data")
                 .and_then(|x| x.as_str())
                 .map(ToString::to_string);
 
@@ -127,7 +129,10 @@ impl<'de> Deserialize<'de> for MessageData {
                 let mut extra = AHashMap::new();
                 for (k, val) in obj.iter() {
                     if k != "channel_data" && k != "channel" && k != "user_data" {
-                        extra.insert(k.to_string(), val.clone());
+                        extra.insert(
+                            k.to_string(),
+                            serde_json_value_to_sonic(val.clone()).map_err(D::Error::custom)?,
+                        );
                     }
                 }
                 return Ok(MessageData::Structured {
@@ -138,8 +143,17 @@ impl<'de> Deserialize<'de> for MessageData {
                 });
             }
         }
-        Ok(MessageData::Json(v))
+        Ok(MessageData::Json(
+            serde_json_value_to_sonic(v).map_err(D::Error::custom)?,
+        ))
     }
+}
+
+fn serde_json_value_to_sonic(value: JsonValue) -> Result<Value, String> {
+    let encoded = serde_json::to_string(&value)
+        .map_err(|err| format!("failed to encode json value for MessageData: {err}"))?;
+    sonic_rs::from_str(&encoded)
+        .map_err(|err| format!("failed to decode json value for MessageData: {err}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,7 +162,7 @@ pub struct ErrorData {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PusherMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
