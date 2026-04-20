@@ -2,6 +2,7 @@ use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use async_trait::async_trait;
 use crossfire::mpsc;
+use redis::cluster_read_routing::RandomReplicaStrategy;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::RedisClusterAdapterConfig;
@@ -73,7 +74,7 @@ impl HorizontalTransport for RedisClusterTransport {
     async fn new(config: Self::Config) -> Result<Self> {
         let client = ClusterClientBuilder::new(config.nodes.clone())
             .retries(3)
-            .read_from_replicas()
+            .read_routing_strategy(RandomReplicaStrategy)
             .build()
             .map_err(|e| Error::Redis(format!("Failed to create Redis Cluster client: {e}")))?;
 

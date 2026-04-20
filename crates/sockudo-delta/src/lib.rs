@@ -218,7 +218,7 @@ impl ChannelState {
             }
         }
 
-        cache_times.sort_by(|a, b| a.1.cmp(&b.1));
+        cache_times.sort_by_key(|a| a.1);
 
         let to_remove = cache_times.len().saturating_sub(max_states);
         for (key, _) in cache_times.iter().take(to_remove) {
@@ -362,7 +362,7 @@ impl SocketDeltaState {
                 }
             }
 
-            channel_times.sort_by(|a, b| a.1.cmp(&b.1));
+            channel_times.sort_by_key(|a| a.1);
 
             let to_remove = channel_times
                 .len()

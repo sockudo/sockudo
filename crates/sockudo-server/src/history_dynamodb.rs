@@ -27,6 +27,13 @@ struct HistoryTables {
     streams: String,
     entries: String,
     entries_time_index: String,
+    version_streams: String,
+    version_messages: String,
+    version_messages_history_index: String,
+    version_entries: String,
+    version_entries_delivery_index: String,
+    version_entries_history_index: String,
+    version_entries_message_index: String,
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +183,25 @@ impl DynamoDbHistoryStore {
                 streams: format!("{}_streams", db_config.table_name),
                 entries: format!("{}_entries", db_config.table_name),
                 entries_time_index: format!("{}_time_idx", db_config.table_name),
+                version_streams: format!("{}_version_streams", db_config.table_name),
+                version_messages: format!("{}_version_messages", db_config.table_name),
+                version_messages_history_index: format!(
+                    "{}_version_messages_history_idx",
+                    db_config.table_name
+                ),
+                version_entries: format!("{}_version_entries", db_config.table_name),
+                version_entries_delivery_index: format!(
+                    "{}_version_entries_delivery_idx",
+                    db_config.table_name
+                ),
+                version_entries_history_index: format!(
+                    "{}_version_entries_history_idx",
+                    db_config.table_name
+                ),
+                version_entries_message_index: format!(
+                    "{}_version_entries_message_idx",
+                    db_config.table_name
+                ),
             },
             metrics,
             cache_manager,
@@ -189,6 +215,9 @@ impl DynamoDbHistoryStore {
     async fn ensure_tables(&self) -> Result<()> {
         self.ensure_streams_table().await?;
         self.ensure_entries_table().await?;
+        self.ensure_version_streams_table().await?;
+        self.ensure_version_messages_table().await?;
+        self.ensure_version_entries_table().await?;
         Ok(())
     }
 
@@ -348,6 +377,387 @@ impl DynamoDbHistoryStore {
                 ))
             })?;
         self.wait_for_active(&self.tables.entries).await
+    }
+
+    async fn ensure_version_streams_table(&self) -> Result<()> {
+        if self
+            .client
+            .describe_table()
+            .table_name(&self.tables.version_streams)
+            .send()
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+
+        self.client
+            .create_table()
+            .table_name(&self.tables.version_streams)
+            .billing_mode(BillingMode::PayPerRequest)
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("app_channel")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("app_channel")
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to build DynamoDB key schema: {e}"))
+                    })?,
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to create DynamoDB version streams table: {e}"
+                ))
+            })?;
+        self.wait_for_active(&self.tables.version_streams).await
+    }
+
+    async fn ensure_version_messages_table(&self) -> Result<()> {
+        if self
+            .client
+            .describe_table()
+            .table_name(&self.tables.version_messages)
+            .send()
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+
+        self.client
+            .create_table()
+            .table_name(&self.tables.version_messages)
+            .billing_mode(BillingMode::PayPerRequest)
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("app_channel")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("message_serial")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("history_serial")
+                    .attribute_type(ScalarAttributeType::N)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("app_channel")
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to build DynamoDB key schema: {e}"))
+                    })?,
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("message_serial")
+                    .key_type(KeyType::Range)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to build DynamoDB key schema: {e}"))
+                    })?,
+            )
+            .global_secondary_indexes(
+                GlobalSecondaryIndex::builder()
+                    .index_name(&self.tables.version_messages_history_index)
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name("app_channel")
+                            .key_type(KeyType::Hash)
+                            .build()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to build DynamoDB GSI key schema: {e}"
+                                ))
+                            })?,
+                    )
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name("history_serial")
+                            .key_type(KeyType::Range)
+                            .build()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to build DynamoDB GSI key schema: {e}"
+                                ))
+                            })?,
+                    )
+                    .projection(
+                        Projection::builder()
+                            .projection_type(ProjectionType::All)
+                            .build(),
+                    )
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB version messages history index: {e}"
+                        ))
+                    })?,
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to create DynamoDB version messages table: {e}"
+                ))
+            })?;
+        self.wait_for_active(&self.tables.version_messages).await
+    }
+
+    async fn ensure_version_entries_table(&self) -> Result<()> {
+        if self
+            .client
+            .describe_table()
+            .table_name(&self.tables.version_entries)
+            .send()
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+
+        self.client
+            .create_table()
+            .table_name(&self.tables.version_entries)
+            .billing_mode(BillingMode::PayPerRequest)
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("app_channel")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("message_version_key")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("delivery_serial")
+                    .attribute_type(ScalarAttributeType::N)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("history_serial")
+                    .attribute_type(ScalarAttributeType::N)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("app_channel_message")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("version_serial")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB attribute definition: {e}"
+                        ))
+                    })?,
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("app_channel")
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to build DynamoDB key schema: {e}"))
+                    })?,
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("message_version_key")
+                    .key_type(KeyType::Range)
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to build DynamoDB key schema: {e}"))
+                    })?,
+            )
+            .global_secondary_indexes(
+                GlobalSecondaryIndex::builder()
+                    .index_name(&self.tables.version_entries_delivery_index)
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name("app_channel")
+                            .key_type(KeyType::Hash)
+                            .build()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to build DynamoDB GSI key schema: {e}"
+                                ))
+                            })?,
+                    )
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name("delivery_serial")
+                            .key_type(KeyType::Range)
+                            .build()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to build DynamoDB GSI key schema: {e}"
+                                ))
+                            })?,
+                    )
+                    .projection(
+                        Projection::builder()
+                            .projection_type(ProjectionType::All)
+                            .build(),
+                    )
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB version entries delivery index: {e}"
+                        ))
+                    })?,
+            )
+            .global_secondary_indexes(
+                GlobalSecondaryIndex::builder()
+                    .index_name(&self.tables.version_entries_history_index)
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name("app_channel")
+                            .key_type(KeyType::Hash)
+                            .build()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to build DynamoDB GSI key schema: {e}"
+                                ))
+                            })?,
+                    )
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name("history_serial")
+                            .key_type(KeyType::Range)
+                            .build()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to build DynamoDB GSI key schema: {e}"
+                                ))
+                            })?,
+                    )
+                    .projection(
+                        Projection::builder()
+                            .projection_type(ProjectionType::All)
+                            .build(),
+                    )
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB version entries history index: {e}"
+                        ))
+                    })?,
+            )
+            .global_secondary_indexes(
+                GlobalSecondaryIndex::builder()
+                    .index_name(&self.tables.version_entries_message_index)
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name("app_channel_message")
+                            .key_type(KeyType::Hash)
+                            .build()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to build DynamoDB GSI key schema: {e}"
+                                ))
+                            })?,
+                    )
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name("version_serial")
+                            .key_type(KeyType::Range)
+                            .build()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to build DynamoDB GSI key schema: {e}"
+                                ))
+                            })?,
+                    )
+                    .projection(
+                        Projection::builder()
+                            .projection_type(ProjectionType::All)
+                            .build(),
+                    )
+                    .build()
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "Failed to build DynamoDB version entries message index: {e}"
+                        ))
+                    })?,
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to create DynamoDB version entries table: {e}"
+                ))
+            })?;
+        self.wait_for_active(&self.tables.version_entries).await
     }
 
     async fn wait_for_active(&self, table_name: &str) -> Result<()> {
@@ -1693,6 +2103,929 @@ fn is_truncated_by_retention(
         && retained
             .oldest_serial
             .is_some_and(|oldest_serial| oldest_serial > 1)
+}
+
+// ── DynamoDB VersionStore ─────────────────────────────────────────────────────
+
+#[cfg(feature = "versioned-messages")]
+use sockudo_core::version_store::{
+    StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
+    VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
+    VersionWriteReservation,
+};
+
+#[cfg(feature = "versioned-messages")]
+pub struct DynamoDbVersionStore {
+    client: Client,
+    tables: HistoryTables,
+    retention_seconds: u64,
+}
+
+#[cfg(feature = "versioned-messages")]
+pub async fn create_dynamodb_version_store(
+    db_config: &DynamoDbSettings,
+    table_prefix: &str,
+    retention_seconds: u64,
+) -> Result<std::sync::Arc<dyn VersionStore + Send + Sync>> {
+    let store = DynamoDbVersionStore::new(db_config, table_prefix, retention_seconds).await?;
+    Ok(std::sync::Arc::new(store))
+}
+
+#[cfg(feature = "versioned-messages")]
+impl DynamoDbVersionStore {
+    /// DynamoDB TTL attribute name. The table-level TTL configuration points
+    /// here so the service asynchronously deletes expired items.
+    const EXPIRES_AT_ATTR: &'static str = "expires_at";
+
+    /// Compute the Unix-epoch seconds value to store in the `expires_at`
+    /// attribute, or `None` when retention is disabled.
+    fn expires_at_value(&self) -> Option<AttributeValue> {
+        if self.retention_seconds == 0 {
+            return None;
+        }
+        let now_secs = (sockudo_core::history::now_ms() / 1000) as u64;
+        let expiry = now_secs.saturating_add(self.retention_seconds);
+        Some(Self::attr_n(expiry))
+    }
+
+    async fn new(
+        db_config: &DynamoDbSettings,
+        table_prefix: &str,
+        retention_seconds: u64,
+    ) -> Result<Self> {
+        let mut aws_config_builder = aws_config::from_env().region(
+            aws_sdk_dynamodb::config::Region::new(db_config.region.clone()),
+        );
+        if let Some(endpoint) = &db_config.endpoint_url {
+            aws_config_builder = aws_config_builder.endpoint_url(endpoint);
+        }
+        if let (Some(access_key), Some(secret_key)) = (
+            &db_config.aws_access_key_id,
+            &db_config.aws_secret_access_key,
+        ) {
+            let credentials_provider = aws_sdk_dynamodb::config::Credentials::new(
+                access_key, secret_key, None, None, "static",
+            );
+            aws_config_builder = aws_config_builder.credentials_provider(credentials_provider);
+        }
+        if let Some(profile) = &db_config.aws_profile_name {
+            aws_config_builder = aws_config_builder.profile_name(profile);
+        }
+        let client = Client::new(&aws_config_builder.load().await);
+        let store = Self {
+            client,
+            retention_seconds,
+            tables: HistoryTables {
+                streams: format!("{}_streams", table_prefix),
+                entries: format!("{}_entries", table_prefix),
+                entries_time_index: format!("{}_time_idx", table_prefix),
+                version_streams: format!("{}_version_streams", table_prefix),
+                version_messages: format!("{}_version_messages", table_prefix),
+                version_messages_history_index: format!(
+                    "{}_version_messages_history_idx",
+                    table_prefix
+                ),
+                version_entries: format!("{}_version_entries", table_prefix),
+                version_entries_delivery_index: format!(
+                    "{}_version_entries_delivery_idx",
+                    table_prefix
+                ),
+                version_entries_history_index: format!(
+                    "{}_version_entries_history_idx",
+                    table_prefix
+                ),
+                version_entries_message_index: format!(
+                    "{}_version_entries_message_idx",
+                    table_prefix
+                ),
+            },
+        };
+        store.ensure_version_tables().await?;
+        Ok(store)
+    }
+
+    async fn ensure_version_tables(&self) -> Result<()> {
+        // version_streams table
+        if self
+            .client
+            .describe_table()
+            .table_name(&self.tables.version_streams)
+            .send()
+            .await
+            .is_err()
+        {
+            self.client
+                .create_table()
+                .table_name(&self.tables.version_streams)
+                .billing_mode(BillingMode::PayPerRequest)
+                .attribute_definitions(
+                    AttributeDefinition::builder()
+                        .attribute_name("app_channel")
+                        .attribute_type(ScalarAttributeType::S)
+                        .build()
+                        .map_err(|e| {
+                            Error::Internal(format!("Failed to build DynamoDB attr def: {e}"))
+                        })?,
+                )
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("app_channel")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .map_err(|e| {
+                            Error::Internal(format!("Failed to build DynamoDB key schema: {e}"))
+                        })?,
+                )
+                .send()
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to create DynamoDB version_streams table: {e}"
+                    ))
+                })?;
+            self.wait_for_table(&self.tables.version_streams).await?;
+        }
+
+        // version_messages table
+        if self
+            .client
+            .describe_table()
+            .table_name(&self.tables.version_messages)
+            .send()
+            .await
+            .is_err()
+        {
+            self.client
+                .create_table()
+                .table_name(&self.tables.version_messages)
+                .billing_mode(BillingMode::PayPerRequest)
+                .attribute_definitions(
+                    AttributeDefinition::builder()
+                        .attribute_name("app_channel")
+                        .attribute_type(ScalarAttributeType::S)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build attr def: {e}")))?,
+                )
+                .attribute_definitions(
+                    AttributeDefinition::builder()
+                        .attribute_name("message_serial")
+                        .attribute_type(ScalarAttributeType::S)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build attr def: {e}")))?,
+                )
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("app_channel")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build key schema: {e}")))?,
+                )
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("message_serial")
+                        .key_type(KeyType::Range)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build key schema: {e}")))?,
+                )
+                .send()
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to create DynamoDB version_messages table: {e}"
+                    ))
+                })?;
+            self.wait_for_table(&self.tables.version_messages).await?;
+        }
+
+        // version_entries table with delivery and message GSIs
+        if self
+            .client
+            .describe_table()
+            .table_name(&self.tables.version_entries)
+            .send()
+            .await
+            .is_err()
+        {
+            self.client
+                .create_table()
+                .table_name(&self.tables.version_entries)
+                .billing_mode(BillingMode::PayPerRequest)
+                .attribute_definitions(
+                    AttributeDefinition::builder()
+                        .attribute_name("app_channel")
+                        .attribute_type(ScalarAttributeType::S)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build attr def: {e}")))?,
+                )
+                .attribute_definitions(
+                    AttributeDefinition::builder()
+                        .attribute_name("message_version_key")
+                        .attribute_type(ScalarAttributeType::S)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build attr def: {e}")))?,
+                )
+                .attribute_definitions(
+                    AttributeDefinition::builder()
+                        .attribute_name("delivery_serial")
+                        .attribute_type(ScalarAttributeType::N)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build attr def: {e}")))?,
+                )
+                .attribute_definitions(
+                    AttributeDefinition::builder()
+                        .attribute_name("app_channel_message")
+                        .attribute_type(ScalarAttributeType::S)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build attr def: {e}")))?,
+                )
+                .attribute_definitions(
+                    AttributeDefinition::builder()
+                        .attribute_name("version_serial")
+                        .attribute_type(ScalarAttributeType::S)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build attr def: {e}")))?,
+                )
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("app_channel")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build key schema: {e}")))?,
+                )
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("message_version_key")
+                        .key_type(KeyType::Range)
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build key schema: {e}")))?,
+                )
+                .global_secondary_indexes(
+                    GlobalSecondaryIndex::builder()
+                        .index_name(&self.tables.version_entries_delivery_index)
+                        .key_schema(
+                            KeySchemaElement::builder()
+                                .attribute_name("app_channel")
+                                .key_type(KeyType::Hash)
+                                .build()
+                                .map_err(|e| {
+                                    Error::Internal(format!("Failed to build GSI key: {e}"))
+                                })?,
+                        )
+                        .key_schema(
+                            KeySchemaElement::builder()
+                                .attribute_name("delivery_serial")
+                                .key_type(KeyType::Range)
+                                .build()
+                                .map_err(|e| {
+                                    Error::Internal(format!("Failed to build GSI key: {e}"))
+                                })?,
+                        )
+                        .projection(
+                            Projection::builder()
+                                .projection_type(ProjectionType::All)
+                                .build(),
+                        )
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build GSI: {e}")))?,
+                )
+                .global_secondary_indexes(
+                    GlobalSecondaryIndex::builder()
+                        .index_name(&self.tables.version_entries_message_index)
+                        .key_schema(
+                            KeySchemaElement::builder()
+                                .attribute_name("app_channel_message")
+                                .key_type(KeyType::Hash)
+                                .build()
+                                .map_err(|e| {
+                                    Error::Internal(format!("Failed to build GSI key: {e}"))
+                                })?,
+                        )
+                        .key_schema(
+                            KeySchemaElement::builder()
+                                .attribute_name("version_serial")
+                                .key_type(KeyType::Range)
+                                .build()
+                                .map_err(|e| {
+                                    Error::Internal(format!("Failed to build GSI key: {e}"))
+                                })?,
+                        )
+                        .projection(
+                            Projection::builder()
+                                .projection_type(ProjectionType::All)
+                                .build(),
+                        )
+                        .build()
+                        .map_err(|e| Error::Internal(format!("Failed to build GSI: {e}")))?,
+                )
+                .send()
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to create DynamoDB version_entries table: {e}"
+                    ))
+                })?;
+            self.wait_for_table(&self.tables.version_entries).await?;
+        }
+
+        // Enable native TTL on the two tables that carry `expires_at`. When
+        // retention is disabled we skip — items are written without the
+        // attribute so they never expire.
+        if self.retention_seconds > 0 {
+            self.ensure_ttl_enabled(&self.tables.version_entries)
+                .await?;
+            self.ensure_ttl_enabled(&self.tables.version_messages)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Enable DynamoDB native TTL on `table_name` using `EXPIRES_AT_ATTR`.
+    /// Idempotent: tolerates tables where TTL is already enabled with the
+    /// same attribute. If TTL is enabled with a different attribute name we
+    /// surface a configuration error so the operator can resolve it.
+    async fn ensure_ttl_enabled(&self, table_name: &str) -> Result<()> {
+        use aws_sdk_dynamodb::types::{TimeToLiveSpecification, TimeToLiveStatus};
+
+        let current = self
+            .client
+            .describe_time_to_live()
+            .table_name(table_name)
+            .send()
+            .await;
+        if let Ok(resp) = current
+            && let Some(desc) = resp.time_to_live_description()
+        {
+            let status = desc.time_to_live_status();
+            let attr = desc.attribute_name();
+            match (status, attr) {
+                (Some(TimeToLiveStatus::Enabled | TimeToLiveStatus::Enabling), Some(name))
+                    if name == Self::EXPIRES_AT_ATTR =>
+                {
+                    return Ok(());
+                }
+                (Some(TimeToLiveStatus::Enabled | TimeToLiveStatus::Enabling), Some(name)) => {
+                    return Err(Error::Configuration(format!(
+                        "DynamoDB table {table_name} has TTL enabled on attribute '{name}', expected '{}'. Disable TTL or choose a different table prefix.",
+                        Self::EXPIRES_AT_ATTR
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        let spec = TimeToLiveSpecification::builder()
+            .enabled(true)
+            .attribute_name(Self::EXPIRES_AT_ATTR)
+            .build()
+            .map_err(|e| Error::Internal(format!("Failed to build TTL spec: {e}")))?;
+
+        if let Err(e) = self
+            .client
+            .update_time_to_live()
+            .table_name(table_name)
+            .time_to_live_specification(spec)
+            .send()
+            .await
+        {
+            // Some DynamoDB-compatible environments (DynamoDB Local, certain
+            // emulators) do not support the TTL API. Log and continue rather
+            // than fail startup — the periodic purge worker is still a no-op
+            // for native-TTL backends, so users on emulators just won't get
+            // expiry until they migrate to real DynamoDB.
+            tracing::warn!(
+                table = %table_name,
+                error = %e,
+                "Unable to enable DynamoDB TTL on version store table; entries will not be auto-expired"
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn wait_for_table(&self, table_name: &str) -> Result<()> {
+        for _ in 0..30 {
+            let resp = self
+                .client
+                .describe_table()
+                .table_name(table_name)
+                .send()
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to describe table {table_name}: {e}"))
+                })?;
+            if resp
+                .table()
+                .and_then(|t| t.table_status().cloned())
+                .map(|s| s == TableStatus::Active)
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        Err(Error::Internal(format!(
+            "Timed out waiting for DynamoDB table {table_name} to become active"
+        )))
+    }
+
+    fn app_channel_key(app_id: &str, channel: &str) -> String {
+        format!("{}#{}", app_id, channel)
+    }
+
+    fn app_channel_message_key(app_id: &str, channel: &str, message_serial: &str) -> String {
+        format!("{}#{}#{}", app_id, channel, message_serial)
+    }
+
+    fn message_version_key(message_serial: &str, version_serial: &str) -> String {
+        format!("{}#{}", message_serial, version_serial)
+    }
+
+    fn attr_s(value: &str) -> AttributeValue {
+        AttributeValue::S(value.to_string())
+    }
+
+    fn attr_n(value: impl ToString) -> AttributeValue {
+        AttributeValue::N(value.to_string())
+    }
+
+    fn attr_b(value: Vec<u8>) -> AttributeValue {
+        AttributeValue::B(Blob::new(value))
+    }
+
+    fn item_str(item: &HashMap<String, AttributeValue>, key: &str) -> Option<String> {
+        item.get(key)
+            .and_then(|v| v.as_s().ok())
+            .map(|s| s.to_string())
+    }
+
+    fn item_num(item: &HashMap<String, AttributeValue>, key: &str) -> Option<i64> {
+        item.get(key)
+            .and_then(|v| v.as_n().ok())
+            .and_then(|n| n.parse::<i64>().ok())
+    }
+}
+
+#[cfg(feature = "versioned-messages")]
+#[async_trait::async_trait]
+impl VersionStore for DynamoDbVersionStore {
+    async fn reserve_delivery_position(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<VersionWriteReservation> {
+        let app_channel = Self::app_channel_key(app_id, channel);
+        loop {
+            let existing = self
+                .client
+                .get_item()
+                .table_name(&self.tables.version_streams)
+                .key("app_channel", Self::attr_s(&app_channel))
+                .send()
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to read version stream from DynamoDB: {e}"))
+                })?
+                .item;
+
+            let now_ms = sockudo_core::history::now_ms();
+
+            if let Some(item) = existing {
+                let current = Self::item_num(&item, "next_delivery_serial").unwrap_or(1) as u64;
+                let result = self
+                    .client
+                    .update_item()
+                    .table_name(&self.tables.version_streams)
+                    .key("app_channel", Self::attr_s(&app_channel))
+                    .update_expression("SET next_delivery_serial = :next, updated_at_ms = :now")
+                    .condition_expression("next_delivery_serial = :expected")
+                    .expression_attribute_values(":next", Self::attr_n(current + 1))
+                    .expression_attribute_values(":expected", Self::attr_n(current))
+                    .expression_attribute_values(":now", Self::attr_n(now_ms))
+                    .send()
+                    .await;
+                match result {
+                    Ok(_) => {
+                        return Ok(VersionWriteReservation {
+                            stream_id: format!("{}/{}", app_id, channel),
+                            delivery_serial: current,
+                        });
+                    }
+                    Err(e) if e.to_string().contains("ConditionalCheckFailed") => continue,
+                    Err(e) => {
+                        return Err(Error::Internal(format!(
+                            "Failed to advance DynamoDB version delivery serial: {e}"
+                        )));
+                    }
+                }
+            } else {
+                let mut new_item = HashMap::new();
+                new_item.insert("app_channel".to_string(), Self::attr_s(&app_channel));
+                new_item.insert("app_id".to_string(), Self::attr_s(app_id));
+                new_item.insert("channel".to_string(), Self::attr_s(channel));
+                new_item.insert("next_delivery_serial".to_string(), Self::attr_n(2_u64));
+                new_item.insert("migration_state".to_string(), Self::attr_s("native_only"));
+                new_item.insert("updated_at_ms".to_string(), Self::attr_n(now_ms));
+
+                let create_result = self
+                    .client
+                    .put_item()
+                    .table_name(&self.tables.version_streams)
+                    .set_item(Some(new_item))
+                    .condition_expression("attribute_not_exists(app_channel)")
+                    .send()
+                    .await;
+                match create_result {
+                    Ok(_) => {
+                        return Ok(VersionWriteReservation {
+                            stream_id: format!("{}/{}", app_id, channel),
+                            delivery_serial: 1,
+                        });
+                    }
+                    Err(e) if e.to_string().contains("ConditionalCheckFailed") => continue,
+                    Err(e) => {
+                        return Err(Error::Internal(format!(
+                            "Failed to create DynamoDB version stream row: {e}"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    async fn append_version(&self, record: StoredVersionRecord) -> Result<()> {
+        let now_ms = sockudo_core::history::now_ms();
+        let payload = sonic_rs::to_vec(&record)
+            .map_err(|e| Error::Internal(format!("Failed to serialize version record: {e}")))?;
+        let app_channel = Self::app_channel_key(&record.app_id, &record.channel);
+        let app_channel_message = Self::app_channel_message_key(
+            &record.app_id,
+            &record.channel,
+            record.message_serial().as_str(),
+        );
+        let message_version_key = Self::message_version_key(
+            record.message_serial().as_str(),
+            record.version_serial().as_str(),
+        );
+
+        // Write the entry (idempotent via condition).
+        let mut entry_item = HashMap::new();
+        entry_item.insert("app_channel".to_string(), Self::attr_s(&app_channel));
+        entry_item.insert(
+            "message_version_key".to_string(),
+            Self::attr_s(&message_version_key),
+        );
+        entry_item.insert(
+            "app_channel_message".to_string(),
+            Self::attr_s(&app_channel_message),
+        );
+        entry_item.insert("app_id".to_string(), Self::attr_s(&record.app_id));
+        entry_item.insert("channel".to_string(), Self::attr_s(&record.channel));
+        entry_item.insert(
+            "message_serial".to_string(),
+            Self::attr_s(record.message_serial().as_str()),
+        );
+        entry_item.insert(
+            "version_serial".to_string(),
+            Self::attr_s(record.version_serial().as_str()),
+        );
+        entry_item.insert(
+            "delivery_serial".to_string(),
+            Self::attr_n(record.delivery_serial()),
+        );
+        entry_item.insert(
+            "history_serial".to_string(),
+            Self::attr_n(record.history_serial()),
+        );
+        entry_item.insert(
+            "action".to_string(),
+            Self::attr_s(record.message.action.as_str()),
+        );
+        entry_item.insert("payload_bytes".to_string(), Self::attr_b(payload));
+        entry_item.insert("created_at_ms".to_string(), Self::attr_n(now_ms));
+        if let Some(expires_at) = self.expires_at_value() {
+            entry_item.insert(Self::EXPIRES_AT_ATTR.to_string(), expires_at);
+        }
+
+        let put_result = self
+            .client
+            .put_item()
+            .table_name(&self.tables.version_entries)
+            .set_item(Some(entry_item))
+            .condition_expression("attribute_not_exists(message_version_key)")
+            .send()
+            .await;
+        if let Err(e) = put_result
+            && !e.to_string().contains("ConditionalCheckFailed")
+        {
+            return Err(Error::Internal(format!(
+                "Failed to write version entry to DynamoDB: {e}"
+            )));
+        }
+        // Duplicate version entry — idempotent, continue.
+
+        // Advance version_messages if this version_serial is greater.
+        let (update_expr, expires_value) = if let Some(expires) = self.expires_at_value() {
+            (
+                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now), expires_at = :exp",
+                Some(expires),
+            )
+        } else {
+            (
+                "SET latest_version_serial = :vs, latest_delivery_serial = :ds, latest_action = :action, updated_at_ms = :now, history_serial = :hs, original_client_id = :oc, created_at_ms = if_not_exists(created_at_ms, :now)",
+                None,
+            )
+        };
+        let mut update_builder = self
+            .client
+            .update_item()
+            .table_name(&self.tables.version_messages)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .key(
+                "message_serial",
+                Self::attr_s(record.message_serial().as_str()),
+            )
+            .update_expression(update_expr)
+            .condition_expression(
+                "attribute_not_exists(latest_version_serial) OR latest_version_serial < :vs",
+            )
+            .expression_attribute_values(":vs", Self::attr_s(record.version_serial().as_str()))
+            .expression_attribute_values(":ds", Self::attr_n(record.delivery_serial()))
+            .expression_attribute_values(":action", Self::attr_s(record.message.action.as_str()))
+            .expression_attribute_values(":now", Self::attr_n(now_ms))
+            .expression_attribute_values(":hs", Self::attr_n(record.history_serial()))
+            .expression_attribute_values(
+                ":oc",
+                record
+                    .original_client_id
+                    .as_deref()
+                    .map(Self::attr_s)
+                    .unwrap_or(AttributeValue::Null(true)),
+            );
+        if let Some(expires) = expires_value {
+            update_builder = update_builder.expression_attribute_values(":exp", expires);
+        }
+        let update_result = update_builder.send().await;
+        if let Err(e) = update_result {
+            // ConditionalCheckFailed means a newer version is already stored — idempotent.
+            if !e.to_string().contains("ConditionalCheckFailed") {
+                return Err(Error::Internal(format!(
+                    "Failed to update version_messages in DynamoDB: {e}"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn get_latest(
+        &self,
+        app_id: &str,
+        channel: &str,
+        message_serial: &sockudo_core::versioned_messages::MessageSerial,
+    ) -> Result<Option<StoredVersionRecord>> {
+        let app_channel_message =
+            Self::app_channel_message_key(app_id, channel, message_serial.as_str());
+        // Query the message GSI sorted by version_serial DESC, limit 1.
+        let result = self
+            .client
+            .query()
+            .table_name(&self.tables.version_entries)
+            .index_name(&self.tables.version_entries_message_index)
+            .key_condition_expression("app_channel_message = :acm")
+            .expression_attribute_values(":acm", Self::attr_s(&app_channel_message))
+            .scan_index_forward(false)
+            .limit(1)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to query latest version: {e}")))?;
+
+        let items = result.items();
+        if items.is_empty() {
+            return Ok(None);
+        }
+        let bytes = items[0]
+            .get("payload_bytes")
+            .and_then(|v| v.as_b().ok())
+            .map(|b| b.as_ref().to_vec())
+            .ok_or_else(|| Error::Internal("Missing payload_bytes in version entry".to_string()))?;
+
+        let record: StoredVersionRecord = sonic_rs::from_slice(&bytes)
+            .map_err(|e| Error::Internal(format!("Failed to deserialize version record: {e}")))?;
+        Ok(Some(record))
+    }
+
+    async fn get_versions(&self, request: VersionStoreReadRequest) -> Result<VersionStorePage> {
+        request.validate()?;
+        let app_channel_message = Self::app_channel_message_key(
+            &request.app_id,
+            &request.channel,
+            request.message_serial.as_str(),
+        );
+        let scan_forward = matches!(request.direction, VersionStoreDirection::OldestFirst);
+        let fetch_limit = (request.limit + 1) as i32;
+
+        let mut query = self
+            .client
+            .query()
+            .table_name(&self.tables.version_entries)
+            .index_name(&self.tables.version_entries_message_index)
+            .key_condition_expression(if request.cursor.is_some() {
+                match request.direction {
+                    VersionStoreDirection::NewestFirst => {
+                        "app_channel_message = :acm AND version_serial < :cursor_vs"
+                    }
+                    VersionStoreDirection::OldestFirst => {
+                        "app_channel_message = :acm AND version_serial > :cursor_vs"
+                    }
+                }
+            } else {
+                "app_channel_message = :acm"
+            })
+            .expression_attribute_values(":acm", Self::attr_s(&app_channel_message))
+            .scan_index_forward(scan_forward)
+            .limit(fetch_limit);
+
+        if let Some(cursor) = &request.cursor {
+            query = query.expression_attribute_values(
+                ":cursor_vs",
+                Self::attr_s(cursor.version_serial.as_str()),
+            );
+        }
+
+        let result = query
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to query version history: {e}")))?;
+
+        let all_items = result.items();
+        let has_more = all_items.len() > request.limit;
+        let items: Vec<StoredVersionRecord> = all_items
+            .iter()
+            .take(request.limit)
+            .map(|item| {
+                let bytes = item
+                    .get("payload_bytes")
+                    .and_then(|v| v.as_b().ok())
+                    .map(|b| b.as_ref().to_vec())
+                    .ok_or_else(|| {
+                        Error::Internal("Missing payload_bytes in version entry".to_string())
+                    })?;
+                sonic_rs::from_slice(&bytes)
+                    .map_err(|e| Error::Internal(format!("Failed to deserialize version: {e}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let next_cursor = if has_more {
+            items.last().map(|item| VersionStoreCursor {
+                version: 1,
+                version_serial: item.version_serial().clone(),
+                direction: request.direction,
+            })
+        } else {
+            None
+        };
+
+        Ok(VersionStorePage {
+            items,
+            next_cursor,
+            has_more,
+        })
+    }
+
+    async fn replay_after(
+        &self,
+        request: VersionReplayRequest,
+    ) -> Result<Vec<StoredVersionRecord>> {
+        request.validate()?;
+        let app_channel = Self::app_channel_key(&request.app_id, &request.channel);
+        let result = self
+            .client
+            .query()
+            .table_name(&self.tables.version_entries)
+            .index_name(&self.tables.version_entries_delivery_index)
+            .key_condition_expression("app_channel = :ac AND delivery_serial > :after")
+            .expression_attribute_values(":ac", Self::attr_s(&app_channel))
+            .expression_attribute_values(":after", Self::attr_n(request.after_delivery_serial))
+            .scan_index_forward(true)
+            .limit(request.limit as i32)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to replay version entries: {e}")))?;
+
+        result
+            .items()
+            .iter()
+            .map(|item| {
+                let bytes = item
+                    .get("payload_bytes")
+                    .and_then(|v| v.as_b().ok())
+                    .map(|b| b.as_ref().to_vec())
+                    .ok_or_else(|| {
+                        Error::Internal("Missing payload_bytes in version entry".to_string())
+                    })?;
+                sonic_rs::from_slice(&bytes)
+                    .map_err(|e| Error::Internal(format!("Failed to deserialize replay: {e}")))
+            })
+            .collect()
+    }
+
+    async fn latest_by_history(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<Vec<StoredVersionRecord>> {
+        let app_channel = Self::app_channel_key(app_id, channel);
+        // Scan version_messages table for this channel.
+        let msg_result = self
+            .client
+            .query()
+            .table_name(&self.tables.version_messages)
+            .key_condition_expression("app_channel = :ac")
+            .expression_attribute_values(":ac", Self::attr_s(&app_channel))
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to query version messages: {e}")))?;
+
+        let mut msgs: Vec<(String, String, i64)> = msg_result
+            .items()
+            .iter()
+            .filter_map(|item| {
+                let message_serial = Self::item_str(item, "message_serial")?;
+                let latest_version_serial = Self::item_str(item, "latest_version_serial")?;
+                let history_serial = Self::item_num(item, "history_serial")?;
+                Some((message_serial, latest_version_serial, history_serial))
+            })
+            .collect();
+
+        msgs.sort_by_key(|(_, _, hs)| *hs);
+
+        let mut result = Vec::with_capacity(msgs.len());
+        for (message_serial, latest_version_serial, _hs) in msgs {
+            let app_channel_message =
+                Self::app_channel_message_key(app_id, channel, &message_serial);
+            let entry_result = self
+                .client
+                .query()
+                .table_name(&self.tables.version_entries)
+                .index_name(&self.tables.version_entries_message_index)
+                .key_condition_expression("app_channel_message = :acm AND version_serial = :vs")
+                .expression_attribute_values(":acm", Self::attr_s(&app_channel_message))
+                .expression_attribute_values(":vs", Self::attr_s(&latest_version_serial))
+                .limit(1)
+                .send()
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to fetch version entry: {e}")))?;
+
+            if let Some(item) = entry_result.items().first() {
+                let bytes = item
+                    .get("payload_bytes")
+                    .and_then(|v| v.as_b().ok())
+                    .map(|b| b.as_ref().to_vec())
+                    .ok_or_else(|| {
+                        Error::Internal("Missing payload_bytes in version entry".to_string())
+                    })?;
+                let record: StoredVersionRecord = sonic_rs::from_slice(&bytes).map_err(|e| {
+                    Error::Internal(format!("Failed to deserialize version record: {e}"))
+                })?;
+                result.push(record);
+            }
+        }
+        Ok(result)
+    }
+
+    async fn stream_state(&self, app_id: &str, channel: &str) -> Result<VersionStreamState> {
+        let app_channel = Self::app_channel_key(app_id, channel);
+        let result = self
+            .client
+            .get_item()
+            .table_name(&self.tables.version_streams)
+            .key("app_channel", Self::attr_s(&app_channel))
+            .send()
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to read DynamoDB version stream state: {e}"))
+            })?;
+
+        let Some(item) = result.item else {
+            return Ok(VersionStreamState::default());
+        };
+
+        Ok(VersionStreamState {
+            stream_id: Some(format!("{}/{}", app_id, channel)),
+            next_delivery_serial: Self::item_num(&item, "next_delivery_serial").map(|v| v as u64),
+            oldest_available_delivery_serial: Self::item_num(
+                &item,
+                "oldest_available_delivery_serial",
+            )
+            .map(|v| v as u64),
+            newest_available_delivery_serial: Self::item_num(
+                &item,
+                "newest_available_delivery_serial",
+            )
+            .map(|v| v as u64),
+        })
+    }
 }
 
 fn deterministic_key<I, S>(parts: I) -> String

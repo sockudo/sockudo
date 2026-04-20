@@ -11,6 +11,7 @@ use sockudo_core::error::{Error, Result};
 use sockudo_core::namespace::{Namespace, SocketInitOptions};
 use sockudo_core::websocket::{SocketId, WebSocketRef};
 use sockudo_protocol::messages::{PusherMessage, generate_message_id};
+use sockudo_protocol::versioned_messages::extract_runtime_action;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
 use std::sync::Arc;
@@ -1145,6 +1146,21 @@ impl LocalAdapter {
             .partition(|s| s.protocol_version == sockudo_protocol::ProtocolVersion::V1)
     }
 
+    fn v1_compatible_message(message: &PusherMessage) -> Option<PusherMessage> {
+        if extract_runtime_action(message).is_some() {
+            return None;
+        }
+
+        let mut v1_message = message.clone();
+        v1_message.serial = None;
+        v1_message.message_id = None;
+        v1_message.stream_id = None;
+        v1_message.tags = None;
+        v1_message.idempotency_key = None;
+        v1_message.extras = None;
+        Some(v1_message)
+    }
+
     /// Send a message to V1 sockets (strips serial/message_id/tags, plain Pusher format).
     async fn send_to_v1_sockets(
         &self,
@@ -1154,13 +1170,9 @@ impl LocalAdapter {
         if sockets.is_empty() {
             return Ok(());
         }
-        let mut v1_message = message.clone();
-        v1_message.serial = None;
-        v1_message.message_id = None;
-        v1_message.stream_id = None;
-        v1_message.tags = None;
-        v1_message.idempotency_key = None;
-        v1_message.extras = None;
+        let Some(v1_message) = Self::v1_compatible_message(message) else {
+            return Ok(());
+        };
         let v1_bytes = Bytes::from(
             sonic_rs::to_vec(&v1_message)
                 .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?,
@@ -1450,15 +1462,10 @@ impl ConnectionManager for LocalAdapter {
                 rewritten.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
                 connection.send_message(&rewritten).await
             }
-            sockudo_protocol::ProtocolVersion::V1 => {
-                // Strict Pusher: strip serial/message_id/extras
-                let mut v1_msg = message;
-                v1_msg.serial = None;
-                v1_msg.message_id = None;
-                v1_msg.stream_id = None;
-                v1_msg.extras = None;
-                connection.send_message(&v1_msg).await
-            }
+            sockudo_protocol::ProtocolVersion::V1 => match Self::v1_compatible_message(&message) {
+                Some(v1_msg) => connection.send_message(&v1_msg).await,
+                None => Ok(()),
+            },
         }
     }
 
@@ -1891,5 +1898,75 @@ impl ConnectionManager for LocalAdapter {
     ) -> Option<&dyn crate::connection_manager::HorizontalAdapterInterface> {
         // Local adapter doesn't support horizontal scaling
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalAdapter;
+    use sockudo_protocol::messages::{ExtrasValue, MessageData, MessageExtras, PusherMessage};
+    use std::collections::HashMap;
+
+    #[test]
+    fn v1_compatible_message_strips_v2_only_fields_for_plain_messages() {
+        let message = PusherMessage {
+            event: Some("chat.message".to_string()),
+            channel: Some("room".to_string()),
+            data: Some(MessageData::String("hello".to_string())),
+            name: Some("chat.message".to_string()),
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: Some("mid-1".to_string()),
+            stream_id: Some("stream-1".to_string()),
+            serial: Some(9),
+            idempotency_key: Some("idem-1".to_string()),
+            extras: Some(MessageExtras {
+                headers: Some(HashMap::from([(
+                    "note".to_string(),
+                    ExtrasValue::String("ok".to_string()),
+                )])),
+                ephemeral: Some(true),
+                idempotency_key: Some("extra-idem".to_string()),
+                echo: Some(false),
+            }),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        let v1 = LocalAdapter::v1_compatible_message(&message).unwrap();
+        assert_eq!(v1.event.as_deref(), Some("chat.message"));
+        assert!(v1.serial.is_none());
+        assert!(v1.message_id.is_none());
+        assert!(v1.stream_id.is_none());
+        assert!(v1.idempotency_key.is_none());
+        assert!(v1.extras.is_none());
+    }
+
+    #[test]
+    fn v1_compatible_message_drops_versioned_mutation_events() {
+        let mut message = PusherMessage::channel_event(
+            "sockudo:message.update",
+            "room",
+            sonic_rs::json!({"text": "patched"}),
+        );
+        message.extras = Some(MessageExtras {
+            headers: Some(HashMap::from([
+                (
+                    "sockudo_action".to_string(),
+                    ExtrasValue::String("message.update".to_string()),
+                ),
+                (
+                    "sockudo_message_serial".to_string(),
+                    ExtrasValue::String("msg:1".to_string()),
+                ),
+            ])),
+            ..Default::default()
+        });
+        message.serial = Some(11);
+        message.stream_id = Some("stream-1".to_string());
+
+        assert!(LocalAdapter::v1_compatible_message(&message).is_none());
     }
 }

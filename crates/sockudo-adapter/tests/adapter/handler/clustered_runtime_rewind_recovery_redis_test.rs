@@ -18,6 +18,11 @@ use sockudo_core::history::{
     MemoryHistoryStore, MemoryHistoryStoreConfig,
 };
 use sockudo_core::options::{ClusterHealthConfig, ServerOptions};
+use sockudo_core::version_store::{MemoryVersionStore, StoredVersionRecord, VersionStore};
+use sockudo_core::versioned_messages::{
+    FieldPatch, MessageAction as CoreMessageAction, MessageFieldDelta, VersionMetadata,
+    VersionSerial,
+};
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use sockudo_protocol::{ProtocolVersion, WireFormat};
@@ -194,6 +199,16 @@ async fn build_redis_node(
     history_store: Arc<dyn HistoryStore + Send + Sync>,
     options: ServerOptions,
 ) -> ClusterNode {
+    build_redis_node_with_version_store(prefix, app, history_store, None, options).await
+}
+
+async fn build_redis_node_with_version_store(
+    prefix: &str,
+    app: &App,
+    history_store: Arc<dyn HistoryStore + Send + Sync>,
+    version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
+    options: ServerOptions,
+) -> ClusterNode {
     let app_manager = Arc::new(MemoryAppManager::new());
     app_manager.create_app(app.clone()).await.unwrap();
 
@@ -218,7 +233,7 @@ async fn build_redis_node(
     adapter.start_listeners().await.unwrap();
 
     let adapter = Arc::new(adapter);
-    let handler = ConnectionHandler::builder(
+    let builder = ConnectionHandler::builder(
         app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
         adapter.clone() as Arc<dyn ConnectionManager + Send + Sync>,
         Arc::new(MockCacheManager::new()),
@@ -226,8 +241,12 @@ async fn build_redis_node(
     )
     .local_adapter(adapter.local_adapter.clone())
     .history_store(history_store)
-    .metrics(Arc::new(MockMetricsInterface::new()))
-    .build();
+    .metrics(Arc::new(MockMetricsInterface::new()));
+    let handler = if let Some(version_store) = version_store {
+        builder.version_store(version_store).build()
+    } else {
+        builder.build()
+    };
 
     ClusterNode {
         handler,
@@ -602,6 +621,390 @@ async fn fresh_node_with_empty_replay_buffer_uses_cold_recovery_after_cross_node
     assert_eq!(
         aggregate_data["recovered"][0]["source"].as_str(),
         Some("cold")
+    );
+}
+
+#[tokio::test]
+async fn versioned_winner_selection_converges_under_reordered_arrival_via_redis() {
+    if !is_redis_available().await {
+        eprintln!("Skipping test: Redis not available");
+        return;
+    }
+
+    let app = test_app();
+    let history_store = Arc::new(ClusterHistoryStore::new(Arc::new(MemoryHistoryStore::new(
+        MemoryHistoryStoreConfig::default(),
+    ))));
+    let version_store = Arc::new(MemoryVersionStore::new());
+    let prefix = format!("versioned_cluster_winner_{}", Uuid::new_v4().simple());
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.versioned_messages.enabled = true;
+
+    let node_a = build_redis_node_with_version_store(
+        &prefix,
+        &app,
+        history_store.clone(),
+        Some(version_store.clone() as Arc<dyn VersionStore + Send + Sync>),
+        options.clone(),
+    )
+    .await;
+    let node_b = build_redis_node_with_version_store(
+        &prefix,
+        &app,
+        history_store,
+        Some(version_store.clone() as Arc<dyn VersionStore + Send + Sync>),
+        options,
+    )
+    .await;
+    wait_for_cluster_ready(&[&node_a.adapter, &node_b.adapter], 2).await;
+
+    node_a
+        .handler
+        .broadcast_to_channel(
+            &app,
+            "versioned",
+            live_message("versioned", "chat.message", "versioned-msg-1"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let current = version_store
+        .latest_by_history(&app.id, "versioned")
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("expected created version");
+
+    let winner = StoredVersionRecord {
+        app_id: current.app_id.clone(),
+        channel: current.channel.clone(),
+        original_client_id: current.original_client_id.clone(),
+        message: current
+            .message
+            .apply_mutation(
+                CoreMessageAction::Delete,
+                VersionMetadata {
+                    serial: VersionSerial::new(
+                        "99999999999999999999:node-b:00000000000000000001".to_string(),
+                    )
+                    .unwrap(),
+                    client_id: Some("user-2".to_string()),
+                    timestamp_ms: 3,
+                    description: Some("winner".to_string()),
+                    metadata: None,
+                },
+                3,
+                MessageFieldDelta {
+                    data: FieldPatch::Clear,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+    };
+    let loser = StoredVersionRecord {
+        app_id: current.app_id.clone(),
+        channel: current.channel.clone(),
+        original_client_id: current.original_client_id.clone(),
+        message: current
+            .message
+            .apply_mutation(
+                CoreMessageAction::Update,
+                VersionMetadata {
+                    serial: VersionSerial::new(
+                        "50000000000000000000:node-a:00000000000000000001".to_string(),
+                    )
+                    .unwrap(),
+                    client_id: Some("user-1".to_string()),
+                    timestamp_ms: 2,
+                    description: Some("loser".to_string()),
+                    metadata: None,
+                },
+                2,
+                MessageFieldDelta {
+                    data: FieldPatch::Replace(MessageData::String("older".to_string())),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+    };
+
+    version_store.append_version(winner.clone()).await.unwrap();
+    version_store.append_version(loser).await.unwrap();
+
+    let latest_a = node_a
+        .handler
+        .version_store()
+        .get_latest(&app.id, "versioned", current.message_serial())
+        .await
+        .unwrap()
+        .unwrap();
+    let latest_b = node_b
+        .handler
+        .version_store()
+        .get_latest(&app.id, "versioned", current.message_serial())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        latest_a.version_serial().as_str(),
+        "99999999999999999999:node-b:00000000000000000001"
+    );
+    assert_eq!(
+        latest_b.version_serial().as_str(),
+        latest_a.version_serial().as_str()
+    );
+    assert_eq!(latest_a.message.action, CoreMessageAction::Delete);
+    assert_eq!(latest_b.message.action, CoreMessageAction::Delete);
+}
+
+#[tokio::test]
+async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
+    if !is_redis_available().await {
+        eprintln!("Skipping test: Redis not available");
+        return;
+    }
+
+    let app = test_app();
+    let history_store = Arc::new(ClusterHistoryStore::new(Arc::new(MemoryHistoryStore::new(
+        MemoryHistoryStoreConfig::default(),
+    ))));
+    let version_store = Arc::new(MemoryVersionStore::new());
+    let prefix = format!("versioned_cluster_cold_{}", Uuid::new_v4().simple());
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.connection_recovery.enabled = true;
+    options.versioned_messages.enabled = true;
+    options.history.max_page_size = 100;
+
+    let node_a = build_redis_node_with_version_store(
+        &prefix,
+        &app,
+        history_store.clone(),
+        Some(version_store.clone() as Arc<dyn VersionStore + Send + Sync>),
+        options.clone(),
+    )
+    .await;
+    let node_b = build_redis_node_with_version_store(
+        &prefix,
+        &app,
+        history_store.clone(),
+        Some(version_store.clone() as Arc<dyn VersionStore + Send + Sync>),
+        options.clone(),
+    )
+    .await;
+    wait_for_cluster_ready(&[&node_a.adapter, &node_b.adapter], 2).await;
+
+    let (source_socket_id, mut source_reader) = connect_v2_socket(&node_b, &app).await;
+    node_b
+        .handler
+        .handle_subscribe_request(
+            &source_socket_id,
+            &app,
+            SubscriptionRequest {
+                channel: "versioned".to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind: None,
+                event_name_filter: None,
+            },
+        )
+        .await
+        .unwrap();
+    let _ = recv_message(&mut source_reader).await;
+
+    node_a
+        .handler
+        .broadcast_to_channel(
+            &app,
+            "versioned",
+            live_message("versioned", "chat.message", "versioned-create-1"),
+            None,
+        )
+        .await
+        .unwrap();
+    let first = recv_message(&mut source_reader).await;
+
+    let current = version_store
+        .latest_by_history(&app.id, "versioned")
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("expected created version");
+
+    let update_reservation = version_store
+        .reserve_delivery_position(&app.id, "versioned")
+        .await
+        .unwrap();
+    let updated = StoredVersionRecord {
+        app_id: current.app_id.clone(),
+        channel: current.channel.clone(),
+        original_client_id: current.original_client_id.clone(),
+        message: current
+            .message
+            .apply_mutation(
+                CoreMessageAction::Update,
+                VersionMetadata {
+                    serial: VersionSerial::new(
+                        "50000000000000000000:node-a:00000000000000000001".to_string(),
+                    )
+                    .unwrap(),
+                    client_id: Some("user-1".to_string()),
+                    timestamp_ms: 2,
+                    description: Some("patched".to_string()),
+                    metadata: None,
+                },
+                update_reservation.delivery_serial,
+                MessageFieldDelta {
+                    data: FieldPatch::Replace(MessageData::String("patched".to_string())),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+    };
+    version_store.append_version(updated.clone()).await.unwrap();
+    node_a
+        .handler
+        .broadcast_to_channel_force_full(
+            &app,
+            "versioned",
+            node_a
+                .handler
+                .build_runtime_message_from_record(&updated, Some(update_reservation.stream_id)),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let _ = recv_message(&mut source_reader).await;
+
+    let latest = version_store
+        .get_latest(&app.id, "versioned", updated.message_serial())
+        .await
+        .unwrap()
+        .unwrap();
+    let append_reservation = version_store
+        .reserve_delivery_position(&app.id, "versioned")
+        .await
+        .unwrap();
+    let appended = StoredVersionRecord {
+        app_id: latest.app_id.clone(),
+        channel: latest.channel.clone(),
+        original_client_id: latest.original_client_id.clone(),
+        message: latest
+            .message
+            .apply_append(
+                VersionMetadata {
+                    serial: VersionSerial::new(
+                        "70000000000000000000:node-a:00000000000000000001".to_string(),
+                    )
+                    .unwrap(),
+                    client_id: Some("user-1".to_string()),
+                    timestamp_ms: 3,
+                    description: Some("append".to_string()),
+                    metadata: None,
+                },
+                append_reservation.delivery_serial,
+                sockudo_core::versioned_messages::MessageAppend {
+                    data_fragment: " world".to_string(),
+                },
+            )
+            .unwrap(),
+    };
+    version_store
+        .append_version(appended.clone())
+        .await
+        .unwrap();
+    node_a
+        .handler
+        .broadcast_to_channel_force_full(
+            &app,
+            "versioned",
+            node_a
+                .handler
+                .build_runtime_message_from_record(&appended, Some(append_reservation.stream_id)),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let _ = recv_message(&mut source_reader).await;
+
+    let restarted_node_b = build_redis_node_with_version_store(
+        &prefix,
+        &app,
+        history_store,
+        Some(version_store.clone() as Arc<dyn VersionStore + Send + Sync>),
+        options,
+    )
+    .await;
+    wait_for_cluster_ready(&[&node_a.adapter, &restarted_node_b.adapter], 2).await;
+
+    let (resume_socket_id, mut resume_reader) = connect_v2_socket(&restarted_node_b, &app).await;
+    let resume_payload = json!({
+        "channel_positions": {
+            "versioned": {
+                "stream_id": first.stream_id,
+                "serial": first.serial,
+                "last_message_id": first.message_id,
+            }
+        }
+    });
+    restarted_node_b
+        .handler
+        .handle_resume(
+            &resume_socket_id,
+            &app,
+            &PusherMessage {
+                event: Some("sockudo:resume".to_string()),
+                channel: None,
+                data: Some(MessageData::Json(resume_payload)),
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let messages = recv_until_event(&mut resume_reader, "sockudo:resume_success").await;
+    let replayed_events: Vec<String> = messages
+        .iter()
+        .filter_map(|msg| msg.event.clone())
+        .filter(|event| event == "sockudo:message.update" || event == "sockudo:message.append")
+        .collect();
+    assert_eq!(
+        replayed_events,
+        vec![
+            "sockudo:message.update".to_string(),
+            "sockudo:message.append".to_string()
+        ]
+    );
+
+    let appended_message = messages
+        .iter()
+        .find(|msg| msg.event.as_deref() == Some("sockudo:message.append"))
+        .expect("expected append replay");
+    assert_eq!(
+        appended_message.data,
+        Some(MessageData::String("patched world".to_string()))
     );
 }
 

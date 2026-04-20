@@ -14,7 +14,7 @@ services:
   sockudo-node1:
     build:
       context: ./
-      dockerfile: ./test/multinode/Dockerfile.multinode
+      dockerfile: ./tests/multinode/Dockerfile.multinode
     volumes:
       - ./target:/app/target:ro
       - ./config:/app/config:ro
@@ -51,7 +51,7 @@ services:
   sockudo-node2:
     build:
       context: ./
-      dockerfile: ./test/multinode/Dockerfile.multinode
+      dockerfile: ./tests/multinode/Dockerfile.multinode
     volumes:
       - ./target:/app/target:ro
       - ./config:/app/config:ro
@@ -85,7 +85,7 @@ services:
   nginx:
     build:
       context: ./
-      dockerfile: ./test/multinode/Dockerfile.nginx
+      dockerfile: ./tests/multinode/Dockerfile.nginx
     ports:
       - "82:82"
       - "444:444"
@@ -95,8 +95,8 @@ services:
       - sockudo-node1
       - sockudo-node2
     volumes:
-      - ./test/multinode/nginx-multinode.conf:/etc/nginx/nginx.conf:ro
-      - ./test/multinode/client/index.html:/usr/share/nginx/html/client/index.html:ro
+      - ./tests/multinode/nginx-multinode.conf:/etc/nginx/nginx.conf:ro
+      - ./tests/multinode/client/index.html:/usr/share/nginx/html/client/index.html:ro
 
 networks:
   sockudo-test:

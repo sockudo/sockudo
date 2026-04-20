@@ -7,14 +7,26 @@ use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryAppendRecord, now_ms};
 use sockudo_core::utils;
+use sockudo_core::version_store::StoredVersionRecord;
+use sockudo_core::versioned_messages::{
+    MessageAction as CoreMessageAction, MessageSerial, VersionMetadata, VersionSerial,
+    VersionedMessage,
+};
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::messages::generate_message_id;
+use sockudo_protocol::versioned_messages::{
+    MessageAction as ProtocolMessageAction, MessageVersionMetadata, apply_runtime_metadata,
+    extract_runtime_action, extract_runtime_message_serial,
+};
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
 #[cfg(feature = "delta")]
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
+
+static VERSION_SERIAL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn sanitize_v2_feature_flags(
     server_options: &sockudo_core::options::ServerOptions,
@@ -40,6 +52,77 @@ fn sanitize_v2_feature_flags(
 }
 
 impl ConnectionHandler {
+    async fn resolve_actor_client_id(
+        &self,
+        app_id: &str,
+        socket_id: Option<&SocketId>,
+    ) -> Option<String> {
+        let socket_id = socket_id?;
+        let connection = self
+            .connection_manager
+            .get_connection(socket_id, app_id)
+            .await?;
+        connection.get_user_id().await
+    }
+
+    pub fn next_version_serial(&self) -> String {
+        let counter = VERSION_SERIAL_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let process_id = self.server_options().instance.process_id.trim();
+        let node = if process_id.is_empty() {
+            "node"
+        } else {
+            process_id
+        };
+        format!("{:020}:{node}:{:020}", now_ms(), counter)
+    }
+
+    pub fn build_runtime_message_from_record(
+        &self,
+        record: &StoredVersionRecord,
+        stream_id: Option<String>,
+    ) -> PusherMessage {
+        let action = match record.message.action {
+            CoreMessageAction::Create => ProtocolMessageAction::Create,
+            CoreMessageAction::Update => ProtocolMessageAction::Update,
+            CoreMessageAction::Delete => ProtocolMessageAction::Delete,
+            CoreMessageAction::Append => ProtocolMessageAction::Append,
+            CoreMessageAction::Summary => ProtocolMessageAction::Summary,
+        };
+        let mut message = PusherMessage {
+            event: Some(action.v2_event_name()),
+            channel: Some(record.channel.clone()),
+            data: record.message.data.clone(),
+            name: record.message.name.clone(),
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: Some(generate_message_id()),
+            stream_id,
+            serial: Some(record.delivery_serial()),
+            idempotency_key: None,
+            extras: record.message.extras.clone(),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        apply_runtime_metadata(
+            &mut message,
+            action,
+            record.message_serial().as_str(),
+            &MessageVersionMetadata {
+                serial: record.version_serial().as_str().to_string(),
+                client_id: record.message.version.client_id.clone(),
+                timestamp_ms: record.message.version.timestamp_ms,
+                description: record.message.version.description.clone(),
+                metadata: record.message.version.metadata.clone(),
+            },
+            Some(record.history_serial()),
+        );
+
+        message
+    }
+
     pub async fn send_message_to_socket(
         &self,
         app_id: &str,
@@ -173,6 +256,19 @@ impl ConnectionHandler {
         let history_policy = app_config.resolved_history(channel, &self.server_options().history);
         let history_enabled = history_policy.enabled;
         let mut history_stream_id: Option<String> = None;
+        let mut history_serial_position: Option<u64> = None;
+        let versioned_enabled = self.server_options().versioned_messages.enabled && history_enabled;
+        let existing_runtime_action = extract_runtime_action(&message);
+        let is_history_mutation = matches!(
+            existing_runtime_action,
+            Some(ProtocolMessageAction::Update)
+                | Some(ProtocolMessageAction::Delete)
+                | Some(ProtocolMessageAction::Append)
+        );
+        let mut versioned_delivery_serial: Option<u64> = None;
+        let actor_client_id = self
+            .resolve_actor_client_id(&app_config.id, exclude_socket)
+            .await;
 
         if !message.is_ephemeral() {
             #[cfg(feature = "recovery")]
@@ -187,14 +283,30 @@ impl ConnectionHandler {
                     message.message_id = Some(generate_message_id());
                 }
 
-                if history_enabled {
+                if versioned_enabled
+                    && extract_runtime_message_serial(&message).is_none()
+                    && extract_runtime_action(&message).is_none()
+                {
+                    let delivery = self
+                        .version_store()
+                        .reserve_delivery_position(&app_config.id, channel)
+                        .await?;
+                    versioned_delivery_serial = Some(delivery.delivery_serial);
+                    message.serial = Some(delivery.delivery_serial);
+                    message.stream_id = Some(delivery.stream_id.clone());
+                }
+
+                if history_enabled && !is_history_mutation {
                     let reservation = self
                         .history_store()
                         .reserve_publish_position(&app_config.id, channel)
                         .await?;
                     history_stream_id = Some(reservation.stream_id.clone());
-                    message.stream_id = Some(reservation.stream_id);
-                    message.serial = Some(reservation.serial);
+                    history_serial_position = Some(reservation.serial);
+                    if !versioned_enabled {
+                        message.stream_id = Some(reservation.stream_id);
+                        message.serial = Some(reservation.serial);
+                    }
                 } else {
                     #[cfg(feature = "recovery")]
                     if let Some(ref replay_buffer) = self.replay_buffer {
@@ -205,6 +317,77 @@ impl ConnectionHandler {
                 let mut stored_v2_message = message.clone();
                 stored_v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
                 stored_v2_message.idempotency_key = None;
+
+                if versioned_enabled
+                    && extract_runtime_message_serial(&stored_v2_message).is_none()
+                    && extract_runtime_action(&stored_v2_message).is_none()
+                {
+                    let message_serial_value = self.next_version_serial();
+                    let version_serial_value = message_serial_value.clone();
+                    let history_serial = history_serial_position.ok_or_else(|| {
+                        Error::Internal(
+                            "History store did not return a create position for versioned message"
+                                .to_string(),
+                        )
+                    })?;
+                    let version_metadata = MessageVersionMetadata {
+                        serial: version_serial_value.clone(),
+                        client_id: actor_client_id.clone(),
+                        timestamp_ms: now_ms(),
+                        description: None,
+                        metadata: None,
+                    };
+
+                    apply_runtime_metadata(
+                        &mut stored_v2_message,
+                        ProtocolMessageAction::Create,
+                        &message_serial_value,
+                        &version_metadata,
+                        Some(history_serial),
+                    );
+
+                    message = stored_v2_message.clone();
+
+                    let record = StoredVersionRecord {
+                        app_id: app_config.id.clone(),
+                        channel: channel.to_string(),
+                        original_client_id: actor_client_id.clone(),
+                        message: VersionedMessage::new_create(
+                            MessageSerial::new(message_serial_value.clone())?,
+                            VersionMetadata {
+                                serial: VersionSerial::new(version_serial_value.clone())?,
+                                client_id: actor_client_id.clone(),
+                                timestamp_ms: version_metadata.timestamp_ms,
+                                description: None,
+                                metadata: None,
+                            },
+                            history_serial,
+                            versioned_delivery_serial
+                                .unwrap_or_else(|| message.serial.unwrap_or(0)),
+                            message.event.clone(),
+                            message.data.clone(),
+                            message.extras.clone(),
+                        ),
+                    };
+                    self.version_store().append_version(record).await?;
+                    if let Some(metrics) = self.metrics() {
+                        metrics.mark_versioned_message_mutation(
+                            &app_config.id,
+                            "message.create",
+                            "applied",
+                        );
+                    }
+                    tracing::info!(
+                        app_id = %app_config.id,
+                        channel = %channel,
+                        message_serial = %message_serial_value,
+                        version_serial = %version_serial_value,
+                        history_serial = history_serial,
+                        delivery_serial = versioned_delivery_serial.unwrap_or_else(|| message.serial.unwrap_or(0)),
+                        actor_client_id = ?actor_client_id,
+                        "Applied versioned message.create"
+                    );
+                }
 
                 let serialized = sonic_rs::to_vec(&stored_v2_message)
                     .map(Bytes::from)
@@ -217,13 +400,13 @@ impl ConnectionHandler {
                     replay_buffer.store(
                         &app_config.id,
                         channel,
-                        history_stream_id.as_deref(),
+                        message.stream_id.as_deref(),
                         message.serial.unwrap_or(0),
                         serialized.clone(),
                     );
                 }
 
-                if history_enabled {
+                if history_enabled && !is_history_mutation {
                     self.history_store()
                         .append(HistoryAppendRecord {
                             app_id: app_config.id.clone(),
@@ -233,7 +416,7 @@ impl ConnectionHandler {
                                     "History store did not return a stream identifier".to_string(),
                                 )
                             })?,
-                            serial: message.serial.ok_or_else(|| {
+                            serial: history_serial_position.ok_or_else(|| {
                                 Error::Internal(
                                     "History store did not return a channel serial".to_string(),
                                 )
@@ -816,6 +999,52 @@ mod tests {
 
         let json = sonic_rs::to_value(&msg).unwrap();
         assert!(json.get("extras").is_none());
+    }
+
+    #[test]
+    fn test_runtime_message_from_record_uses_sockudo_action_event() {
+        let action = ProtocolMessageAction::Update;
+        let mut message = PusherMessage {
+            event: Some(action.v2_event_name()),
+            channel: Some("versioned-room".to_string()),
+            data: Some(sockudo_protocol::messages::MessageData::String(
+                "{\"text\":\"patched\"}".to_string(),
+            )),
+            name: Some("chat.message".to_string()),
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: Some(generate_message_id()),
+            stream_id: Some("stream-1".to_string()),
+            serial: Some(12),
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        apply_runtime_metadata(
+            &mut message,
+            action,
+            "msg:1",
+            &MessageVersionMetadata {
+                serial: "ver:2".to_string(),
+                client_id: Some("user-1".to_string()),
+                timestamp_ms: 2,
+                description: Some("patch".to_string()),
+                metadata: None,
+            },
+            Some(10),
+        );
+
+        assert_eq!(message.event.as_deref(), Some("sockudo:message.update"));
+        assert_eq!(message.name.as_deref(), Some("chat.message"));
+        assert_eq!(
+            extract_runtime_action(&message),
+            Some(ProtocolMessageAction::Update)
+        );
+        assert_eq!(extract_runtime_message_serial(&message), Some("msg:1"));
     }
 
     // ── Echo control tests ──────────────────────────────────────────

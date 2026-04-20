@@ -308,6 +308,12 @@ pub struct ConnectionCapabilities {
     pub subscribe: Option<Vec<String>>,
     pub publish: Option<Vec<String>>,
     pub presence: Option<Vec<String>>,
+    pub message_update_own: Option<Vec<String>>,
+    pub message_update_any: Option<Vec<String>>,
+    pub message_delete_own: Option<Vec<String>>,
+    pub message_delete_any: Option<Vec<String>>,
+    pub message_append_own: Option<Vec<String>>,
+    pub message_append_any: Option<Vec<String>>,
 }
 
 impl ConnectionCapabilities {
@@ -333,6 +339,51 @@ impl ConnectionCapabilities {
         self.publish
             .as_deref()
             .is_none_or(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_message_mutation_own(
+        &self,
+        kind: crate::versioned_message_auth::MutationKind,
+        channel: &str,
+    ) -> bool {
+        self.mutation_patterns(kind, false)
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_message_mutation_any(
+        &self,
+        kind: crate::versioned_message_auth::MutationKind,
+        channel: &str,
+    ) -> bool {
+        self.mutation_patterns(kind, true)
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    fn mutation_patterns(
+        &self,
+        kind: crate::versioned_message_auth::MutationKind,
+        any_scope: bool,
+    ) -> Option<&[String]> {
+        match (kind, any_scope) {
+            (crate::versioned_message_auth::MutationKind::Update, false) => {
+                self.message_update_own.as_deref()
+            }
+            (crate::versioned_message_auth::MutationKind::Update, true) => {
+                self.message_update_any.as_deref()
+            }
+            (crate::versioned_message_auth::MutationKind::Delete, false) => {
+                self.message_delete_own.as_deref()
+            }
+            (crate::versioned_message_auth::MutationKind::Delete, true) => {
+                self.message_delete_any.as_deref()
+            }
+            (crate::versioned_message_auth::MutationKind::Append, false) => {
+                self.message_append_own.as_deref()
+            }
+            (crate::versioned_message_auth::MutationKind::Append, true) => {
+                self.message_append_any.as_deref()
+            }
+        }
     }
 }
 
@@ -1314,6 +1365,7 @@ mod tests {
             subscribe: Some(vec!["chat:*".to_string()]),
             publish: Some(vec!["private-chat:*".to_string()]),
             presence: Some(vec!["presence-chat:*".to_string()]),
+            ..Default::default()
         };
 
         assert!(capabilities.allows_subscribe("chat:room-1"));
@@ -1328,6 +1380,50 @@ mod tests {
 
         assert!(capabilities.allows_subscribe("chat:room-1"));
         assert!(capabilities.allows_publish("private-chat:room-1"));
+        assert!(!capabilities.allows_message_mutation_any(
+            crate::versioned_message_auth::MutationKind::Update,
+            "chat:room-1"
+        ));
+        assert!(!capabilities.allows_message_mutation_own(
+            crate::versioned_message_auth::MutationKind::Update,
+            "chat:room-1"
+        ));
+    }
+
+    #[test]
+    fn test_connection_capabilities_allow_matching_mutation_channels() {
+        let capabilities = ConnectionCapabilities {
+            subscribe: None,
+            publish: None,
+            presence: None,
+            message_update_own: Some(vec!["chat:*".to_string()]),
+            message_update_any: Some(vec!["admin:*".to_string()]),
+            message_delete_own: Some(vec!["chat:*".to_string()]),
+            message_delete_any: None,
+            message_append_own: None,
+            message_append_any: Some(vec!["stream:*".to_string()]),
+        };
+
+        assert!(capabilities.allows_message_mutation_own(
+            crate::versioned_message_auth::MutationKind::Update,
+            "chat:room-1"
+        ));
+        assert!(capabilities.allows_message_mutation_any(
+            crate::versioned_message_auth::MutationKind::Update,
+            "admin:room-1"
+        ));
+        assert!(capabilities.allows_message_mutation_own(
+            crate::versioned_message_auth::MutationKind::Delete,
+            "chat:room-1"
+        ));
+        assert!(capabilities.allows_message_mutation_any(
+            crate::versioned_message_auth::MutationKind::Append,
+            "stream:room-1"
+        ));
+        assert!(!capabilities.allows_message_mutation_any(
+            crate::versioned_message_auth::MutationKind::Delete,
+            "chat:room-1"
+        ));
     }
 
     #[test]

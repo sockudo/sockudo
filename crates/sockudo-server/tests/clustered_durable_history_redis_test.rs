@@ -1,7 +1,9 @@
 #![cfg(all(feature = "redis", feature = "surrealdb", feature = "dynamodb"))]
 
+#[allow(dead_code)]
 #[path = "../src/history_dynamodb.rs"]
 mod history_dynamodb;
+#[allow(dead_code)]
 #[path = "../src/history_surreal.rs"]
 mod history_surreal;
 

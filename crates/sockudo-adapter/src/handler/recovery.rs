@@ -257,6 +257,93 @@ impl ConnectionHandler {
             });
         }
 
+        if self.server_options().versioned_messages.enabled {
+            let stream_state = match self
+                .version_store()
+                .stream_state(&app_config.id, channel)
+                .await
+            {
+                Ok(state) => state,
+                Err(_) => {
+                    return ResumeOutcome::Failed(ResumeFailure {
+                        code: "persistence_unavailable",
+                        reason: "version_store_state_unavailable",
+                        expected_stream_id: position.stream_id.clone(),
+                        current_stream_id: None,
+                        oldest_available_serial: None,
+                        newest_available_serial: None,
+                    });
+                }
+            };
+
+            if stream_state.stream_id.as_deref() != position.stream_id.as_deref() {
+                return ResumeOutcome::Failed(ResumeFailure {
+                    code: "stream_reset",
+                    reason: "version_stream_id_mismatch",
+                    expected_stream_id: position.stream_id.clone(),
+                    current_stream_id: stream_state.stream_id.clone(),
+                    oldest_available_serial: stream_state.oldest_available_delivery_serial,
+                    newest_available_serial: stream_state.newest_available_delivery_serial,
+                });
+            }
+
+            let replay_limit = stream_state
+                .newest_available_delivery_serial
+                .map(|newest| newest.saturating_sub(position.serial) as usize)
+                .unwrap_or(0)
+                .max(1);
+
+            let records = match self
+                .version_store()
+                .replay_after(sockudo_core::version_store::VersionReplayRequest {
+                    app_id: app_config.id.clone(),
+                    channel: channel.to_string(),
+                    after_delivery_serial: position.serial,
+                    limit: replay_limit,
+                })
+                .await
+            {
+                Ok(records) => records,
+                Err(_) => {
+                    return ResumeOutcome::Failed(ResumeFailure {
+                        code: "persistence_unavailable",
+                        reason: "version_store_replay_failed",
+                        expected_stream_id: position.stream_id.clone(),
+                        current_stream_id: stream_state.stream_id.clone(),
+                        oldest_available_serial: stream_state.oldest_available_delivery_serial,
+                        newest_available_serial: stream_state.newest_available_delivery_serial,
+                    });
+                }
+            };
+
+            let mut messages = Vec::with_capacity(records.len());
+            for record in records {
+                let message =
+                    self.build_runtime_message_from_record(&record, stream_state.stream_id.clone());
+                let bytes =
+                    sonic_rs::to_vec(&message)
+                        .map(Bytes::from)
+                        .map_err(|_| ResumeFailure {
+                            code: "persistence_unavailable",
+                            reason: "version_store_payload_serialization_failed",
+                            expected_stream_id: position.stream_id.clone(),
+                            current_stream_id: stream_state.stream_id.clone(),
+                            oldest_available_serial: stream_state.oldest_available_delivery_serial,
+                            newest_available_serial: stream_state.newest_available_delivery_serial,
+                        });
+                match bytes {
+                    Ok(bytes) => messages.push(bytes),
+                    Err(failure) => return ResumeOutcome::Failed(failure),
+                }
+            }
+
+            return ResumeOutcome::Recovered {
+                source: "cold",
+                count: messages.len(),
+                messages,
+            };
+        }
+
         let history_policy = app_config.resolved_history(channel, &self.server_options().history);
         if !history_policy.enabled {
             return ResumeOutcome::Failed(ResumeFailure {

@@ -152,6 +152,15 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a recovery failure code.
     fn mark_history_recovery_failure(&self, _app_id: &str, _code: &str) {}
 
+    /// Track a mutable-message mutation attempt/result.
+    fn mark_versioned_message_mutation(&self, _app_id: &str, _action: &str, _result: &str) {}
+
+    /// Track a latest-message or version-history retrieval result.
+    fn mark_versioned_message_retrieval(&self, _app_id: &str, _surface: &str, _result: &str) {}
+
+    /// Track history substitution and anomaly outcomes for versioned messages.
+    fn mark_versioned_history_substitution(&self, _app_id: &str, _result: &str) {}
+
     /// Track delta cluster coordination operations.
     fn mark_delta_cluster_coordination_op(&self, _backend: &str, _op: &str, _result: &str) {}
 

@@ -9,6 +9,7 @@ license-file.workspace = true
 
 [features]
 default = ["local", "v2"]
+versioned-messages = []
 local = []
 v2 = ["delta", "tag-filtering", "recovery"]
 delta = ["sockudo-adapter/delta", "sockudo-delta"]
@@ -16,6 +17,7 @@ tag-filtering = ["sockudo-adapter/tag-filtering", "sockudo-filter"]
 recovery = ["sockudo-adapter/recovery"]
 full = [
   "v2",
+  "versioned-messages",
   "redis",
   "redis-cluster",
   "nats",
