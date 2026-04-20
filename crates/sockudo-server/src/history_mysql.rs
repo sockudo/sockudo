@@ -2222,7 +2222,10 @@ mod tests {
             enabled: true,
             backend: sockudo_core::options::HistoryBackend::Mysql,
             mysql: sockudo_core::options::MySqlHistoryConfig {
-                table_prefix: format!("sockudo_ht_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+                table_prefix: format!(
+                    "sockudo_ht_{}",
+                    &uuid::Uuid::new_v4().simple().to_string()[..12]
+                ),
                 ..sockudo_core::options::MySqlHistoryConfig::default()
             },
             ..HistoryConfig::default()
