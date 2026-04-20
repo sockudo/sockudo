@@ -448,6 +448,14 @@ pub trait HistoryStore: Send + Sync {
     async fn runtime_status(&self) -> Result<HistoryRuntimeStatus> {
         Ok(HistoryRuntimeStatus::default())
     }
+
+    /// Purge history entries older than `before_ms` (epoch milliseconds).
+    /// Returns `(total_deleted, has_more)` — `has_more` is true if the batch limit was hit.
+    /// Backends with native TTL (DynamoDB, ScyllaDB) return `(0, false)`.
+    async fn purge_before(&self, before_ms: i64, batch_size: usize) -> Result<(u64, bool)> {
+        let _ = (before_ms, batch_size);
+        Ok((0, false))
+    }
 }
 
 #[derive(Default)]

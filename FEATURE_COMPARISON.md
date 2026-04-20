@@ -228,15 +228,16 @@ This document provides a detailed comparison of features available in **Ably**, 
 | Feature | Ably | Centrifugo | Sockudo | Priority | Difficulty |
 |---------|------|------------|---------|----------|------------|
 | **Message Annotations** | ✅ | ❌ | ❌ | 🟢 Low | 🔴 Hard |
-| **Message Updates** | ✅ | ❌ | ❌ | 🟡 Medium | 🔴 Hard |
-| **Message Deletions** | ✅ | ❌ | ❌ | 🟡 Medium | 🔴 Hard |
+| **Message Updates** | ✅ | ❌ | ✅ (V2) | 🟡 Medium | 🔴 Hard |
+| **Message Deletions** | ✅ | ❌ | ✅ (V2) | 🟡 Medium | 🔴 Hard |
 | **Message Serial/ID** | ✅ | ✅ `offset` | ✅ (V2) | 🟡 Medium | 🟢 Easy |
-| **Message Actions** | ✅ (CREATE, UPDATE, DELETE, META) | ❌ | ❌ | 🟢 Low | 🔴 Hard |
+| **Message Actions** | ✅ (CREATE, UPDATE, DELETE, META) | ❌ | ✅ (V2 create/update/delete/append) | 🟢 Low | 🔴 Hard |
 
 **Notes:**
 - **Message Annotations**: Ably allows adding annotations to existing messages. Use case: reactions, read receipts, moderation flags.
 - **Message Updates/Deletions**: Edit or delete messages after publishing. Requires message serial tracking.
 - Sockudo V2 now assigns direct-message IDs as well as broadcast serial/message IDs while keeping protocol v1 deliveries stripped for Pusher compatibility.
+- Sockudo release 4.3 now ships V2 mutable-message actions, latest-visible history substitution, and version-history retrieval as Sockudo-native behavior.
 - **Message Actions**: Enum indicating what happened to message. Clients can handle differently.
 
 **Implementation Considerations:**

@@ -484,6 +484,7 @@ mod tests {
             subscribe: Some(vec!["news:*".to_string()]),
             publish: None,
             presence: None,
+            ..Default::default()
         };
 
         let err =
@@ -500,6 +501,7 @@ mod tests {
             subscribe: None,
             publish: Some(vec!["private-news:*".to_string()]),
             presence: None,
+            ..Default::default()
         };
 
         let err = validate_capability_permission(&capabilities, "private-chat:room-1", "publish")
@@ -516,6 +518,7 @@ mod tests {
             subscribe: None,
             publish: None,
             presence: Some(vec!["presence-chat:*".to_string()]),
+            ..Default::default()
         };
 
         assert!(

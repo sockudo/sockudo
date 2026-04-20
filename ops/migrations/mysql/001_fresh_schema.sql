@@ -4,11 +4,16 @@
 -- Canonical fresh-install schema for:
 -- - applications table used by the MySQL app manager
 -- - durable history tables used by the MySQL history backend
+-- - versioned durable-message tables used by the release 4.3 mutable-message layer
 --
 -- Presence history does not have separate tables. When both `history.enabled`
 -- and `presence_history.enabled` are true, retained presence transitions are
 -- stored in the same durable history backend under internal channel names like:
 --   [presence-history]presence-room
+--
+-- Backfill note:
+-- Existing immutable history is not backfilled into the versioned-message tables.
+-- Only release-4.3-aware mutable messages should populate those tables.
 
 CREATE TABLE IF NOT EXISTS `applications` (
     id VARCHAR(255) PRIMARY KEY,
@@ -84,6 +89,65 @@ ON `sockudo_history_entries` (app_id, channel, serial DESC);
 
 CREATE INDEX sockudo_history_entries_app_channel_time_idx
 ON `sockudo_history_entries` (app_id, channel, published_at_ms DESC, serial DESC);
+
+CREATE TABLE IF NOT EXISTS `sockudo_history_version_streams` (
+    app_id VARCHAR(255) NOT NULL,
+    channel VARCHAR(255) NOT NULL,
+    next_delivery_serial BIGINT NOT NULL,
+    oldest_available_delivery_serial BIGINT NULL,
+    newest_available_delivery_serial BIGINT NULL,
+    migration_state VARCHAR(32) NOT NULL DEFAULT 'native_only',
+    migration_state_changed_at_ms BIGINT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `sockudo_history_version_messages` (
+    app_id VARCHAR(255) NOT NULL,
+    channel VARCHAR(255) NOT NULL,
+    message_serial VARCHAR(128) NOT NULL,
+    history_serial BIGINT NOT NULL,
+    original_client_id VARCHAR(255) NULL,
+    latest_version_serial VARCHAR(128) NOT NULL,
+    latest_delivery_serial BIGINT NOT NULL,
+    latest_action VARCHAR(64) NOT NULL,
+    created_at_ms BIGINT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel, message_serial),
+    UNIQUE KEY sockudo_history_version_messages_history_serial_uidx (app_id, channel, history_serial)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX sockudo_history_version_messages_latest_version_idx
+ON `sockudo_history_version_messages` (app_id, channel, latest_version_serial);
+
+CREATE TABLE IF NOT EXISTS `sockudo_history_version_entries` (
+    app_id VARCHAR(255) NOT NULL,
+    channel VARCHAR(255) NOT NULL,
+    message_serial VARCHAR(128) NOT NULL,
+    version_serial VARCHAR(128) NOT NULL,
+    delivery_serial BIGINT NOT NULL,
+    history_serial BIGINT NOT NULL,
+    action VARCHAR(64) NOT NULL,
+    client_id VARCHAR(255) NULL,
+    description TEXT NULL,
+    operation_metadata JSON NULL,
+    event_name VARCHAR(255) NULL,
+    payload_bytes LONGBLOB NOT NULL,
+    payload_size_bytes BIGINT NOT NULL,
+    version_timestamp_ms BIGINT NOT NULL,
+    created_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel, message_serial, version_serial),
+    UNIQUE KEY sockudo_history_version_entries_delivery_uidx (app_id, channel, delivery_serial)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX sockudo_history_version_entries_message_version_idx
+ON `sockudo_history_version_entries` (app_id, channel, message_serial, version_serial DESC);
+
+CREATE INDEX sockudo_history_version_entries_replay_idx
+ON `sockudo_history_version_entries` (app_id, channel, delivery_serial);
+
+CREATE INDEX sockudo_history_version_entries_history_version_idx
+ON `sockudo_history_version_entries` (app_id, channel, history_serial, version_serial DESC);
 
 INSERT INTO `applications` (
     id,

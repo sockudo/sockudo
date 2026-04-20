@@ -16,5 +16,8 @@ pub mod queue;
 pub mod rate_limiter;
 pub mod token;
 pub mod utils;
+pub mod version_store;
+pub mod versioned_message_auth;
+pub mod versioned_messages;
 pub mod webhook_types;
 pub mod websocket;

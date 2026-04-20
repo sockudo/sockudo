@@ -110,7 +110,10 @@ async fn test_parse_user_data_extracts_capabilities_and_meta() {
                 "capabilities": {
                     "subscribe": ["chat:*"],
                     "publish": ["private-chat:*"],
-                    "presence": ["presence-chat:*"]
+                    "presence": ["presence-chat:*"],
+                    "message_update_own": ["chat:*"],
+                    "message_delete_any": ["mod:*"],
+                    "message_append_any": ["stream:*"]
                 },
                 "meta": {
                     "tenant": "acme",
@@ -129,6 +132,22 @@ async fn test_parse_user_data_extracts_capabilities_and_meta() {
             .and_then(|caps| caps.subscribe.as_ref())
             .unwrap(),
         &vec!["chat:*".to_string()]
+    );
+    assert_eq!(
+        parsed
+            .capabilities
+            .as_ref()
+            .and_then(|caps| caps.message_update_own.as_ref())
+            .unwrap(),
+        &vec!["chat:*".to_string()]
+    );
+    assert_eq!(
+        parsed
+            .capabilities
+            .as_ref()
+            .and_then(|caps| caps.message_delete_any.as_ref())
+            .unwrap(),
+        &vec!["mod:*".to_string()]
     );
     assert_eq!(parsed.meta.unwrap()["tenant"].as_str(), Some("acme"));
 }

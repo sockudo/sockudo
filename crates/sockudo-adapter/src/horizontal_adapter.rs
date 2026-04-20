@@ -894,15 +894,15 @@ impl HorizontalAdapter {
         request_type: &RequestType,
     ) -> Result<()> {
         match request_type {
-            RequestType::ChannelSocketsCount | RequestType::SocketsCount => {
-                if response.sockets_count == 0 && !response.socket_ids.is_empty() {
-                    warn!("Inconsistent response: sockets_count is 0 but socket_ids is not empty");
-                }
+            RequestType::ChannelSocketsCount | RequestType::SocketsCount
+                if response.sockets_count == 0 && !response.socket_ids.is_empty() =>
+            {
+                warn!("Inconsistent response: sockets_count is 0 but socket_ids is not empty");
             }
-            RequestType::ChannelMembersCount => {
-                if response.members_count == 0 && !response.members.is_empty() {
-                    warn!("Inconsistent response: members_count is 0 but members map is not empty");
-                }
+            RequestType::ChannelMembersCount
+                if response.members_count == 0 && !response.members.is_empty() =>
+            {
+                warn!("Inconsistent response: members_count is 0 but members map is not empty");
             }
             RequestType::ChannelsWithSocketsCount => {
                 let total_from_channels: usize =

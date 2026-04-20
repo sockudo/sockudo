@@ -42,11 +42,14 @@ use tokio::signal;
 // Factory imports
 use crate::cleanup::{CleanupConfig, CleanupSender};
 use crate::history::create_history_store;
+#[cfg(feature = "versioned-messages")]
+use crate::history::create_version_store;
 use crate::http_handler::{
-    batch_events, channel, channel_history, channel_history_purge, channel_history_reset,
-    channel_history_state, channel_presence_history, channel_presence_history_reset,
-    channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
-    events, fallback_404, metrics, stats, terminate_user_connections, up, usage,
+    append_message, batch_events, channel, channel_history, channel_history_purge,
+    channel_history_reset, channel_history_state, channel_message, channel_message_versions,
+    channel_presence_history, channel_presence_history_reset, channel_presence_history_snapshot,
+    channel_presence_history_state, channel_users, channels, delete_message, events, fallback_404,
+    metrics, stats, terminate_user_connections, up, update_message, usage,
 };
 use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::factory::AdapterFactory;
@@ -942,7 +945,118 @@ impl SockudoServer {
         )
         .webhook_integration(webhook_integration);
 
+        // Spawn the periodic history purge worker for backends without native TTL
+        // (PostgreSQL, MySQL, SurrealDB). DynamoDB and ScyllaDB use native TTL and
+        // inherit the trait's default `purge_before` which returns `(0, false)`.
+        if config.history.enabled && config.history.retention_window_seconds > 0 {
+            let purge_store = history_store.clone();
+            let retention_ms =
+                (config.history.retention_window_seconds as i64).saturating_mul(1000);
+            let interval =
+                std::time::Duration::from_secs(config.history.purge_interval_seconds.max(10));
+            let batch_size = config.history.purge_batch_size.max(1);
+            let max_per_tick = config.history.max_purge_per_tick;
+
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    let cutoff = sockudo_core::history::now_ms().saturating_sub(retention_ms);
+                    let mut total: u64 = 0;
+                    loop {
+                        match purge_store.purge_before(cutoff, batch_size).await {
+                            Ok((deleted, has_more)) => {
+                                total = total.saturating_add(deleted);
+                                if !has_more || total >= max_per_tick as u64 {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "history store purge failed"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    if total > 0 {
+                        tracing::debug!(deleted = total, "history store purge tick complete");
+                    }
+                }
+            });
+            info!(
+                "History store purge worker started (retention: {}s, interval: {}s)",
+                config.history.retention_window_seconds,
+                interval.as_secs()
+            );
+        }
+
         builder = builder.history_store(history_store);
+        #[cfg(feature = "versioned-messages")]
+        if config.versioned_messages.enabled {
+            let version_store = create_version_store(
+                &config.versioned_messages,
+                &config.history,
+                &config.database,
+                &config.database_pooling,
+            )
+            .await?;
+
+            // Spawn the periodic purge worker for backends without native TTL
+            // (MySQL, PostgreSQL, SurrealDB, Memory). ScyllaDB and DynamoDB
+            // inherit the trait's default `purge_before`, which returns
+            // `(0, false)` — the worker ticks against them are effectively
+            // free, so we keep the code path uniform.
+            if config.versioned_messages.retention_window_seconds > 0 {
+                let purge_store = version_store.clone();
+                let retention_ms = (config.versioned_messages.retention_window_seconds as i64)
+                    .saturating_mul(1000);
+                let interval = std::time::Duration::from_secs(
+                    config.versioned_messages.purge_interval_seconds.max(10),
+                );
+                let batch_size = config.versioned_messages.purge_batch_size.max(1);
+                let max_per_tick = config.versioned_messages.max_purge_per_tick;
+
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(interval);
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        ticker.tick().await;
+                        let cutoff = sockudo_core::history::now_ms().saturating_sub(retention_ms);
+                        let mut total: u64 = 0;
+                        loop {
+                            match purge_store.purge_before(cutoff, batch_size).await {
+                                Ok((deleted, has_more)) => {
+                                    total = total.saturating_add(deleted);
+                                    if !has_more || total >= max_per_tick as u64 {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "version store purge failed"
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        if total > 0 {
+                            tracing::debug!(deleted = total, "version store purge tick complete");
+                        }
+                    }
+                });
+                info!(
+                    "Version store purge worker started (retention: {}s, interval: {}s)",
+                    config.versioned_messages.retention_window_seconds,
+                    interval.as_secs()
+                );
+            }
+
+            builder = builder.version_store(version_store);
+        }
         builder = builder.presence_history_store(presence_history_store);
 
         if let Some(adapter) = state.local_adapter.clone() {
@@ -1278,6 +1392,41 @@ impl SockudoServer {
             .route(
                 "/apps/{appId}/channels/{channelName}",
                 get(channel).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/messages/{messageSerial}",
+                get(channel_message).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions",
+                get(channel_message_versions).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/messages/{messageSerial}/update",
+                post(update_message).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/messages/{messageSerial}/delete",
+                post(delete_message).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/messages/{messageSerial}/append",
+                post(append_message).route_layer(axum_middleware::from_fn_with_state(
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),

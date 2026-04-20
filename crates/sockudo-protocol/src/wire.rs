@@ -5,6 +5,7 @@ use sonic_rs::Value;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::messages::{ExtrasValue, MessageData, MessageExtras, PusherMessage};
+use crate::versioned_messages::{MessageAction, MessageVersionMetadata, VersionedRealtimeMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -71,6 +72,53 @@ pub fn deserialize_message(bytes: &[u8], format: WireFormat) -> Result<PusherMes
     }
 }
 
+pub fn serialize_versioned_message(
+    message: &VersionedRealtimeMessage,
+    format: WireFormat,
+) -> Result<Vec<u8>, String> {
+    match format {
+        WireFormat::Json => {
+            sonic_rs::to_vec(message).map_err(|e| format!("JSON serialization failed: {e}"))
+        }
+        WireFormat::MessagePack => {
+            rmp_serde::to_vec(&MsgpackVersionedRealtimeMessage::from(message.clone()))
+                .map_err(|e| format!("MessagePack serialization failed: {e}"))
+        }
+        WireFormat::Protobuf => {
+            let proto = ProtoVersionedRealtimeMessage::from(message.clone());
+            let mut buf = Vec::with_capacity(proto.encoded_len());
+            proto
+                .encode(&mut buf)
+                .map_err(|e| format!("Protobuf serialization failed: {e}"))?;
+            Ok(buf)
+        }
+    }
+}
+
+pub fn deserialize_versioned_message(
+    bytes: &[u8],
+    format: WireFormat,
+) -> Result<VersionedRealtimeMessage, String> {
+    let message: VersionedRealtimeMessage = match format {
+        WireFormat::Json => {
+            sonic_rs::from_slice(bytes).map_err(|e| format!("JSON deserialization failed: {e}"))
+        }
+        WireFormat::MessagePack => {
+            let msg: MsgpackVersionedRealtimeMessage = rmp_serde::from_slice(bytes)
+                .map_err(|e| format!("MessagePack deserialization failed: {e}"))?;
+            Ok(msg.into())
+        }
+        WireFormat::Protobuf => {
+            let proto = ProtoVersionedRealtimeMessage::decode(bytes)
+                .map_err(|e| format!("Protobuf deserialization failed: {e}"))?;
+            Ok(proto.into())
+        }
+    }?;
+
+    message.validate_v2()?;
+    Ok(message)
+}
+
 #[derive(Clone, PartialEq, Message)]
 struct ProtoPusherMessage {
     #[prost(string, optional, tag = "1")]
@@ -122,6 +170,32 @@ struct MsgpackPusherMessage {
     extras: Option<MsgpackMessageExtras>,
     delta_sequence: Option<u64>,
     delta_conflation_key: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ProtoVersionedRealtimeMessage {
+    #[prost(message, optional, tag = "1")]
+    message: Option<ProtoPusherMessage>,
+    #[prost(string, tag = "2")]
+    action: String,
+    #[prost(string, tag = "3")]
+    message_serial: String,
+    #[prost(uint64, optional, tag = "4")]
+    history_serial: Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    delivery_serial: Option<u64>,
+    #[prost(message, optional, tag = "6")]
+    version: Option<ProtoMessageVersionMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MsgpackVersionedRealtimeMessage {
+    message: MsgpackPusherMessage,
+    action: MessageAction,
+    message_serial: String,
+    history_serial: Option<u64>,
+    delivery_serial: Option<u64>,
+    version: Option<MsgpackMessageVersionMetadata>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -191,6 +265,29 @@ struct MsgpackMessageExtras {
     ephemeral: Option<bool>,
     idempotency_key: Option<String>,
     echo: Option<bool>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ProtoMessageVersionMetadata {
+    #[prost(string, tag = "1")]
+    serial: String,
+    #[prost(string, optional, tag = "2")]
+    client_id: Option<String>,
+    #[prost(int64, tag = "3")]
+    timestamp_ms: i64,
+    #[prost(string, optional, tag = "4")]
+    description: Option<String>,
+    #[prost(string, optional, tag = "5")]
+    metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MsgpackMessageVersionMetadata {
+    serial: String,
+    client_id: Option<String>,
+    timestamp_ms: i64,
+    description: Option<String>,
+    metadata_json: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -268,6 +365,32 @@ impl From<PusherMessage> for MsgpackPusherMessage {
     }
 }
 
+impl From<VersionedRealtimeMessage> for ProtoVersionedRealtimeMessage {
+    fn from(value: VersionedRealtimeMessage) -> Self {
+        Self {
+            message: Some(ProtoPusherMessage::from(value.message)),
+            action: value.action.as_str().to_string(),
+            message_serial: value.message_serial,
+            history_serial: value.history_serial,
+            delivery_serial: value.delivery_serial,
+            version: value.version.map(Into::into),
+        }
+    }
+}
+
+impl From<VersionedRealtimeMessage> for MsgpackVersionedRealtimeMessage {
+    fn from(value: VersionedRealtimeMessage) -> Self {
+        Self {
+            message: MsgpackPusherMessage::from(value.message),
+            action: value.action,
+            message_serial: value.message_serial,
+            history_serial: value.history_serial,
+            delivery_serial: value.delivery_serial,
+            version: value.version.map(Into::into),
+        }
+    }
+}
+
 impl From<ProtoPusherMessage> for PusherMessage {
     fn from(value: ProtoPusherMessage) -> Self {
         Self {
@@ -309,6 +432,48 @@ impl From<MsgpackPusherMessage> for PusherMessage {
             extras: value.extras.map(Into::into),
             delta_sequence: value.delta_sequence,
             delta_conflation_key: value.delta_conflation_key,
+        }
+    }
+}
+
+impl From<ProtoVersionedRealtimeMessage> for VersionedRealtimeMessage {
+    fn from(value: ProtoVersionedRealtimeMessage) -> Self {
+        Self {
+            message: value.message.map(Into::into).unwrap_or(PusherMessage {
+                event: None,
+                channel: None,
+                data: None,
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            }),
+            action: parse_message_action(&value.action),
+            message_serial: value.message_serial,
+            history_serial: value.history_serial,
+            delivery_serial: value.delivery_serial,
+            version: value.version.map(Into::into),
+        }
+    }
+}
+
+impl From<MsgpackVersionedRealtimeMessage> for VersionedRealtimeMessage {
+    fn from(value: MsgpackVersionedRealtimeMessage) -> Self {
+        Self {
+            message: value.message.into(),
+            action: value.action,
+            message_serial: value.message_serial,
+            history_serial: value.history_serial,
+            delivery_serial: value.delivery_serial,
+            version: value.version.map(Into::into),
         }
     }
 }
@@ -527,9 +692,79 @@ impl From<MsgpackExtrasValue> for ExtrasValue {
     }
 }
 
+impl From<MessageVersionMetadata> for ProtoMessageVersionMetadata {
+    fn from(value: MessageVersionMetadata) -> Self {
+        Self {
+            serial: value.serial,
+            client_id: value.client_id,
+            timestamp_ms: value.timestamp_ms,
+            description: value.description,
+            metadata_json: value
+                .metadata
+                .and_then(|value| sonic_rs::to_string(&value).ok()),
+        }
+    }
+}
+
+impl From<MessageVersionMetadata> for MsgpackMessageVersionMetadata {
+    fn from(value: MessageVersionMetadata) -> Self {
+        Self {
+            serial: value.serial,
+            client_id: value.client_id,
+            timestamp_ms: value.timestamp_ms,
+            description: value.description,
+            metadata_json: value
+                .metadata
+                .and_then(|value| sonic_rs::to_string(&value).ok()),
+        }
+    }
+}
+
+impl From<ProtoMessageVersionMetadata> for MessageVersionMetadata {
+    fn from(value: ProtoMessageVersionMetadata) -> Self {
+        Self {
+            serial: value.serial,
+            client_id: value.client_id,
+            timestamp_ms: value.timestamp_ms,
+            description: value.description,
+            metadata: value
+                .metadata_json
+                .and_then(|raw| sonic_rs::from_str(&raw).ok()),
+        }
+    }
+}
+
+impl From<MsgpackMessageVersionMetadata> for MessageVersionMetadata {
+    fn from(value: MsgpackMessageVersionMetadata) -> Self {
+        Self {
+            serial: value.serial,
+            client_id: value.client_id,
+            timestamp_ms: value.timestamp_ms,
+            description: value.description,
+            metadata: value
+                .metadata_json
+                .and_then(|raw| sonic_rs::from_str(&raw).ok()),
+        }
+    }
+}
+
+fn parse_message_action(raw: &str) -> MessageAction {
+    match raw {
+        "message.create" => MessageAction::Create,
+        "message.update" => MessageAction::Update,
+        "message.delete" => MessageAction::Delete,
+        "message.append" => MessageAction::Append,
+        "message.summary" => MessageAction::Summary,
+        _ => MessageAction::Update,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::versioned_messages::{
+        MessageAction, MessageVersionMetadata, VersionedRealtimeMessage,
+    };
 
     fn sample_message() -> PusherMessage {
         PusherMessage {
@@ -570,6 +805,26 @@ mod tests {
         }
     }
 
+    fn sample_versioned_message() -> VersionedRealtimeMessage {
+        let mut message = sample_message();
+        message.event = Some("sockudo:message.update".to_string());
+
+        VersionedRealtimeMessage {
+            message,
+            action: MessageAction::Update,
+            message_serial: "msg:1".to_string(),
+            history_serial: Some(7),
+            delivery_serial: Some(9),
+            version: Some(MessageVersionMetadata {
+                serial: "ver:2".to_string(),
+                client_id: Some("user-1".to_string()),
+                timestamp_ms: 1_713_100_805_000,
+                description: Some("patched".to_string()),
+                metadata: Some(sonic_rs::json!({"source": "test"})),
+            }),
+        }
+    }
+
     #[test]
     fn round_trip_messagepack() {
         let msg = sample_message();
@@ -588,6 +843,69 @@ mod tests {
         assert_eq!(decoded.channel, msg.channel);
         assert_eq!(decoded.message_id, msg.message_id);
         assert_eq!(decoded.delta_conflation_key, msg.delta_conflation_key);
+    }
+
+    #[test]
+    fn round_trip_versioned_messagepack() {
+        let msg = sample_versioned_message();
+        let bytes = serialize_versioned_message(&msg, WireFormat::MessagePack).unwrap();
+        let decoded = deserialize_versioned_message(&bytes, WireFormat::MessagePack).unwrap();
+        assert_eq!(decoded.action, msg.action);
+        assert_eq!(decoded.message_serial, msg.message_serial);
+        assert_eq!(decoded.version, msg.version);
+    }
+
+    #[test]
+    fn round_trip_versioned_protobuf() {
+        let msg = sample_versioned_message();
+        let bytes = serialize_versioned_message(&msg, WireFormat::Protobuf).unwrap();
+        let decoded = deserialize_versioned_message(&bytes, WireFormat::Protobuf).unwrap();
+        assert_eq!(decoded.action, msg.action);
+        assert_eq!(decoded.message_serial, msg.message_serial);
+        assert_eq!(decoded.history_serial, msg.history_serial);
+        assert_eq!(decoded.delivery_serial, msg.delivery_serial);
+    }
+
+    #[test]
+    fn deserialize_versioned_message_rejects_invalid_action_event_pair() {
+        let bytes = sonic_rs::to_vec(&VersionedRealtimeMessage {
+            message: PusherMessage {
+                event: Some("sockudo:message.delete".to_string()),
+                channel: Some("chat:room-1".to_string()),
+                data: Some(MessageData::String("hello".to_string())),
+                name: Some("chat.message".to_string()),
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: Some(9),
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            },
+            action: MessageAction::Update,
+            message_serial: "msg:1".to_string(),
+            history_serial: Some(7),
+            delivery_serial: Some(9),
+            version: Some(MessageVersionMetadata {
+                serial: "ver:2".to_string(),
+                client_id: Some("user-1".to_string()),
+                timestamp_ms: 1_713_100_805_000,
+                description: None,
+                metadata: None,
+            }),
+        })
+        .unwrap();
+
+        let error = deserialize_versioned_message(&bytes, WireFormat::Json).unwrap_err();
+        assert!(
+            error.contains("does not match action")
+                || error.contains("JSON deserialization failed"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
