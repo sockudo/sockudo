@@ -109,7 +109,7 @@ impl FilterIndex {
                     .insert(socket_id);
             }
             Some(filter_node) => {
-                if let Some(indexable) = self.extract_indexable_filter(filter_node) {
+                if let Some(indexable) = Self::extract_indexable_filter(filter_node) {
                     // Filter can be indexed
                     tracing::debug!(
                         "FilterIndex: Adding socket {} to eq_index for channel {}, key={}, values_count={}",
@@ -192,7 +192,7 @@ impl FilterIndex {
         // Remove from eq_index based on filter (if provided)
         // This is the only index where we need to know the filter to find the right entries
         if let Some(filter_node) = filter
-            && let Some(indexable) = self.extract_indexable_filter(filter_node)
+            && let Some(indexable) = Self::extract_indexable_filter(filter_node)
         {
             self.remove_from_eq_index(channel, socket_id, &indexable);
         }
@@ -296,7 +296,7 @@ impl FilterIndex {
     /// - Simple equality: `key = value`
     /// - IN operator: `key IN [v1, v2, ...]`
     /// - OR of indexable filters (all children must be indexable with same key)
-    fn extract_indexable_filter(&self, filter: &FilterNode) -> Option<IndexableFilter> {
+    fn extract_indexable_filter(filter: &FilterNode) -> Option<IndexableFilter> {
         // Check if it's a logical operation
         if let Some(op) = filter.logical_op() {
             match op {
@@ -306,7 +306,7 @@ impl FilterIndex {
                     let mut common_key: Option<String> = None;
 
                     for child in filter.nodes() {
-                        if let Some(indexable) = self.extract_indexable_filter(child) {
+                        if let Some(indexable) = Self::extract_indexable_filter(child) {
                             match &common_key {
                                 None => common_key = Some(indexable.key.clone()),
                                 Some(k) if k != &indexable.key => return None, // Different keys
