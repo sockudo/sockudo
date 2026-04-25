@@ -329,7 +329,8 @@ impl SubscriptionRequest {
 
         #[cfg(feature = "tag-filtering")]
         let tags_filter = effective_tags_filter_raw
-            .and_then(|v| sonic_rs::from_value::<FilterNode>(&v).ok())
+            .and_then(|v| sonic_rs::to_vec(&v).ok())
+            .and_then(|bytes| sonic_rs::from_slice::<FilterNode>(&bytes).ok())
             .map(|mut filter| {
                 // PERFORMANCE: Pre-build HashSet caches for large IN/NIN operators
                 filter.optimize();
@@ -503,12 +504,18 @@ mod tests {
     fn test_extract_event_name_filter_compound_with_events() {
         let filter = json!({
             "events": ["price-update", "trade-executed"],
-            "tags": "headers.asset == \"BTC\""
+            "tags": {
+                "cmp": "eq",
+                "key": "headers.asset",
+                "val": "BTC"
+            }
         });
         let (events, tags) = SubscriptionRequest::extract_event_name_filter(Some(filter));
         assert_eq!(events.unwrap(), vec!["price-update", "trade-executed"]);
-        assert!(tags.is_some());
-        assert_eq!(tags.unwrap().as_str().unwrap(), "headers.asset == \"BTC\"");
+        let tags = tags.unwrap();
+        assert_eq!(tags["cmp"].as_str(), Some("eq"));
+        assert_eq!(tags["key"].as_str(), Some("headers.asset"));
+        assert_eq!(tags["val"].as_str(), Some("BTC"));
     }
 
     #[test]
@@ -543,6 +550,38 @@ mod tests {
         let (events, tags) = SubscriptionRequest::extract_event_name_filter(Some(filter.clone()));
         assert!(events.is_none());
         assert_eq!(tags.unwrap(), filter);
+    }
+
+    #[test]
+    fn test_compound_filter_parses_tags_filter_node() {
+        let filter = json!({
+            "events": ["price-update"],
+            "tags": {
+                "cmp": "eq",
+                "key": "symbol",
+                "val": "BTC"
+            }
+        });
+
+        let request = SubscriptionRequest::build(
+            "ticker:*".to_string(),
+            None,
+            None,
+            Some(filter),
+            None,
+            None,
+            &event_name_filtering_config(),
+        )
+        .unwrap();
+
+        assert_eq!(request.event_name_filter.unwrap(), vec!["price-update"]);
+        #[cfg(feature = "tag-filtering")]
+        {
+            let tags_filter = request.tags_filter.expect("expected tags filter");
+            assert_eq!(tags_filter.cmp.as_deref(), Some("eq"));
+            assert_eq!(tags_filter.key.as_deref(), Some("symbol"));
+            assert_eq!(tags_filter.val.as_deref(), Some("BTC"));
+        }
     }
 
     #[test]

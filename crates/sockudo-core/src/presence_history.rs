@@ -737,6 +737,14 @@ struct DurablePresenceHistoryPayload {
 pub struct DurablePresenceHistoryStore {
     history_store: Arc<dyn HistoryStore + Send + Sync>,
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+    transition_cache: Arc<RwLock<BTreeMap<String, DurablePresenceTransitionCache>>>,
+}
+
+#[derive(Default)]
+struct DurablePresenceTransitionCache {
+    stream_id: Option<String>,
+    dedupe_keys: BTreeMap<String, u64>,
+    latest_event_by_user: BTreeMap<String, (PresenceHistoryEventKind, u64)>,
 }
 
 impl DurablePresenceHistoryStore {
@@ -747,11 +755,16 @@ impl DurablePresenceHistoryStore {
         Self {
             history_store,
             metrics,
+            transition_cache: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
     fn durable_channel_name(channel: &str) -> String {
         format!("[presence-history]{channel}")
+    }
+
+    fn cache_key(app_id: &str, channel: &str) -> String {
+        format!("{app_id}\0{channel}")
     }
 
     fn history_retention(record: &PresenceHistoryTransitionRecord) -> HistoryRetentionPolicy {
@@ -912,10 +925,107 @@ impl DurablePresenceHistoryStore {
         Ok(())
     }
 
+    async fn inspect_durable_channel(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<crate::history::HistoryStreamInspection> {
+        self.history_store
+            .stream_inspection(app_id, &Self::durable_channel_name(channel))
+            .await
+    }
+
+    async fn consult_transition_cache(
+        &self,
+        record: &PresenceHistoryTransitionRecord,
+    ) -> Result<Option<(bool, bool)>> {
+        let inspection = self
+            .inspect_durable_channel(&record.app_id, &record.channel)
+            .await?;
+        let cache_key = Self::cache_key(&record.app_id, &record.channel);
+        let oldest_serial = inspection.retained.oldest_serial.unwrap_or(u64::MAX);
+        let mut caches = self.transition_cache.write().await;
+        let cache = caches.entry(cache_key).or_default();
+
+        if cache.stream_id != inspection.stream_id {
+            cache.stream_id = inspection.stream_id;
+            cache.dedupe_keys.clear();
+            cache.latest_event_by_user.clear();
+        }
+
+        cache
+            .dedupe_keys
+            .retain(|_, serial| *serial >= oldest_serial);
+        cache
+            .latest_event_by_user
+            .retain(|_, (_, serial)| *serial >= oldest_serial);
+
+        if let Some(serial) = cache.dedupe_keys.get(&record.dedupe_key)
+            && *serial >= oldest_serial
+        {
+            return Ok(Some((true, false)));
+        }
+
+        if let Some((event, serial)) = cache.latest_event_by_user.get(&record.user_id)
+            && *serial >= oldest_serial
+        {
+            return Ok(Some((false, *event == record.event_kind)));
+        }
+
+        Ok(None)
+    }
+
+    async fn cache_scanned_transition(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: &str,
+        payload: &DurablePresenceHistoryPayload,
+        serial: u64,
+    ) {
+        let cache_key = Self::cache_key(app_id, channel);
+        let mut caches = self.transition_cache.write().await;
+        let cache = caches.entry(cache_key).or_default();
+        if cache.stream_id.as_deref() != Some(stream_id) {
+            cache.stream_id = Some(stream_id.to_string());
+            cache.dedupe_keys.clear();
+            cache.latest_event_by_user.clear();
+        }
+        cache.dedupe_keys.insert(payload.dedupe_key.clone(), serial);
+        cache
+            .latest_event_by_user
+            .entry(payload.user_id.clone())
+            .or_insert((payload.event, serial));
+    }
+
+    async fn cache_appended_transition(
+        &self,
+        record: &PresenceHistoryTransitionRecord,
+        stream_id: &str,
+        serial: u64,
+    ) {
+        let cache_key = Self::cache_key(&record.app_id, &record.channel);
+        let mut caches = self.transition_cache.write().await;
+        let cache = caches.entry(cache_key).or_default();
+        if cache.stream_id.as_deref() != Some(stream_id) {
+            cache.stream_id = Some(stream_id.to_string());
+            cache.dedupe_keys.clear();
+            cache.latest_event_by_user.clear();
+        }
+        cache.dedupe_keys.insert(record.dedupe_key.clone(), serial);
+        cache
+            .latest_event_by_user
+            .insert(record.user_id.clone(), (record.event_kind, serial));
+    }
+
     async fn find_existing_transition(
         &self,
         record: &PresenceHistoryTransitionRecord,
     ) -> Result<(bool, bool)> {
+        if let Some(found) = self.consult_transition_cache(record).await? {
+            return Ok(found);
+        }
+
         let mut request = PresenceHistoryReadRequest {
             app_id: record.app_id.clone(),
             channel: record.channel.clone(),
@@ -931,6 +1041,14 @@ impl DurablePresenceHistoryStore {
             let page = self.read_page(request.clone()).await?;
             for item in &page.items {
                 let payload = Self::decode_payload(item.payload_bytes.as_ref())?;
+                self.cache_scanned_transition(
+                    &record.app_id,
+                    &record.channel,
+                    &item.stream_id,
+                    &payload,
+                    item.serial,
+                )
+                .await;
                 if payload.dedupe_key == record.dedupe_key {
                     found_dedupe = true;
                     break;
@@ -982,12 +1100,13 @@ impl PresenceHistoryStore for DurablePresenceHistoryStore {
             }
         };
 
+        let stream_id = reservation.stream_id.clone();
         let append = self
             .history_store
             .append(HistoryAppendRecord {
                 app_id: record.app_id.clone(),
                 channel: Self::durable_channel_name(&record.channel),
-                stream_id: reservation.stream_id,
+                stream_id,
                 serial: reservation.serial,
                 published_at_ms: record.published_at_ms,
                 message_id: None,
@@ -1000,6 +1119,8 @@ impl PresenceHistoryStore for DurablePresenceHistoryStore {
 
         match append {
             Ok(()) => {
+                self.cache_appended_transition(&record, &reservation.stream_id, reservation.serial)
+                    .await;
                 if let Some(metrics) = self.metrics.as_ref() {
                     metrics.mark_presence_history_write(&record.app_id);
                     metrics.track_presence_history_write_latency(
@@ -1108,6 +1229,10 @@ impl PresenceHistoryStore for DurablePresenceHistoryStore {
                 requested_by,
             )
             .await?;
+        self.transition_cache
+            .write()
+            .await
+            .remove(&Self::cache_key(app_id, channel));
         self.update_retained_metrics(app_id, channel).await?;
         Ok(PresenceHistoryResetResult {
             app_id: app_id.to_string(),
@@ -1428,7 +1553,25 @@ impl PresenceHistoryStore for MemoryPresenceHistoryStore {
         request.validate()?;
         let key = Self::channel_key(&request.app_id, &request.channel);
         let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let Some(channel_state) = channels.get_mut(&key) else {
+            return Ok(PresenceHistoryPage {
+                items: Vec::new(),
+                next_cursor: None,
+                retained: PresenceHistoryRetentionStats {
+                    stream_id: None,
+                    retained_events: 0,
+                    retained_bytes: 0,
+                    oldest_serial: None,
+                    newest_serial: None,
+                    oldest_published_at_ms: None,
+                    newest_published_at_ms: None,
+                },
+                has_more: false,
+                complete: true,
+                truncated_by_retention: false,
+                degraded: false,
+            });
+        };
         let retention = channel_state
             .retention
             .clone()
@@ -2651,6 +2794,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_presence_history_reuses_cached_latest_state() {
+        let history = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
+        let store = DurablePresenceHistoryStore::new(history, None);
+        let base = now_ms();
+
+        store
+            .record_transition(transition(
+                base,
+                "join-alice-1",
+                PresenceHistoryEventKind::MemberAdded,
+                "alice",
+            ))
+            .await
+            .unwrap();
+
+        {
+            let cache = store.transition_cache.read().await;
+            let channel = cache
+                .get(&DurablePresenceHistoryStore::cache_key(
+                    "app",
+                    "presence-room",
+                ))
+                .unwrap();
+            assert_eq!(
+                channel.latest_event_by_user.get("alice"),
+                Some(&(PresenceHistoryEventKind::MemberAdded, 1))
+            );
+        }
+
+        store
+            .record_transition(transition(
+                base + 1,
+                "join-alice-2",
+                PresenceHistoryEventKind::MemberAdded,
+                "alice",
+            ))
+            .await
+            .unwrap();
+
+        let page = store
+            .read_page(PresenceHistoryReadRequest {
+                app_id: "app".to_string(),
+                channel: "presence-room".to_string(),
+                direction: PresenceHistoryDirection::OldestFirst,
+                limit: 10,
+                cursor: None,
+                bounds: PresenceHistoryQueryBounds::default(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+    }
+
+    #[tokio::test]
     async fn durable_presence_history_snapshot_and_reset_follow_presence_semantics() {
         let history = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
         let store = DurablePresenceHistoryStore::new(history, None);
@@ -2725,5 +2923,25 @@ mod tests {
             .await
             .unwrap();
         assert!(page.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_presence_history_read_page_does_not_materialize_absent_channels() {
+        let store = MemoryPresenceHistoryStore::new(MemoryPresenceHistoryStoreConfig::default());
+
+        let page = store
+            .read_page(PresenceHistoryReadRequest {
+                app_id: "app".to_string(),
+                channel: "missing".to_string(),
+                direction: PresenceHistoryDirection::OldestFirst,
+                limit: 10,
+                cursor: None,
+                bounds: PresenceHistoryQueryBounds::default(),
+            })
+            .await
+            .unwrap();
+
+        assert!(page.items.is_empty());
+        assert_eq!(store.channels.read().await.len(), 0);
     }
 }

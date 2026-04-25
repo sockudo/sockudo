@@ -305,6 +305,17 @@ impl From<Value> for MessageData {
 }
 
 impl PusherMessage {
+    pub fn is_protocol_ping_or_pong(&self) -> bool {
+        let Some(event) = self.event.as_deref() else {
+            return false;
+        };
+
+        matches!(
+            ProtocolVersion::parse_any_protocol_event(event),
+            Some(("ping", _)) | Some(("pong", _))
+        )
+    }
+
     pub fn connection_established(socket_id: String, activity_timeout: u64) -> Self {
         Self {
             event: Some("pusher:connection_established".to_string()),
@@ -781,5 +792,36 @@ impl InfoQueryParser for Option<&String> {
 
     fn wants_cache(&self) -> bool {
         self.parse_info().contains(&"cache")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PusherMessage;
+
+    #[test]
+    fn protocol_heartbeat_detection_matches_both_prefix_families() {
+        let mut ping = PusherMessage::ping();
+        assert!(ping.is_protocol_ping_or_pong());
+
+        ping.rewrite_prefix(crate::protocol_version::ProtocolVersion::V2);
+        assert!(ping.is_protocol_ping_or_pong());
+
+        let mut pong = PusherMessage::pong();
+        assert!(pong.is_protocol_ping_or_pong());
+
+        pong.rewrite_prefix(crate::protocol_version::ProtocolVersion::V2);
+        assert!(pong.is_protocol_ping_or_pong());
+    }
+
+    #[test]
+    fn protocol_heartbeat_detection_ignores_regular_messages() {
+        let message = PusherMessage::channel_event(
+            "chat.message",
+            "room",
+            sonic_rs::json!({"text": "hello"}),
+        );
+
+        assert!(!message.is_protocol_ping_or_pong());
     }
 }
