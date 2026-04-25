@@ -83,3 +83,8 @@ criterion = { workspace = true }
 name = "history_bench"
 path = "benches/history_bench.rs"
 harness = false
+
+[[bench]]
+name = "namespace_bench"
+path = "benches/namespace_bench.rs"
+harness = false

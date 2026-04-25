@@ -86,6 +86,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["sockudo", "--config", "/app/config/config.redis-cluster-delta-e2e.json"]
     environment:
       DEBUG: "true"
       ADAPTER_DRIVER: "redis-cluster"
@@ -101,6 +102,9 @@ services:
       QUEUE_DRIVER: "memory"
       RATE_LIMITER_DRIVER: "memory"
       TAG_FILTERING_ENABLED: "true"
+      HISTORY_ENABLED: "true"
+      HISTORY_BACKEND: "memory"
+      PRESENCE_HISTORY_ENABLED: "true"
       SHUTDOWN_GRACE_PERIOD: "1"
       SOCKUDO_DEFAULT_APP_ID: "test-app"
       SOCKUDO_DEFAULT_APP_KEY: "test-key"
@@ -108,6 +112,8 @@ services:
     ports:
       - "6002:6002"
       - "9602:9602"
+    volumes:
+      - ./config/config.redis-cluster-delta-e2e.json:/app/config/config.redis-cluster-delta-e2e.json:ro
     networks:
       - redis-cluster-net
     depends_on:
@@ -117,6 +123,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["sockudo", "--config", "/app/config/config.redis-cluster-delta-e2e.json"]
     environment:
       DEBUG: "true"
       ADAPTER_DRIVER: "redis-cluster"
@@ -132,6 +139,9 @@ services:
       QUEUE_DRIVER: "memory"
       RATE_LIMITER_DRIVER: "memory"
       TAG_FILTERING_ENABLED: "true"
+      HISTORY_ENABLED: "true"
+      HISTORY_BACKEND: "memory"
+      PRESENCE_HISTORY_ENABLED: "true"
       SHUTDOWN_GRACE_PERIOD: "1"
       SOCKUDO_DEFAULT_APP_ID: "test-app"
       SOCKUDO_DEFAULT_APP_KEY: "test-key"
@@ -139,6 +149,8 @@ services:
     ports:
       - "6003:6003"
       - "9603:9603"
+    volumes:
+      - ./config/config.redis-cluster-delta-e2e.json:/app/config/config.redis-cluster-delta-e2e.json:ro
     networks:
       - redis-cluster-net
     depends_on:
@@ -148,6 +160,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["sockudo", "--config", "/app/config/config.redis-cluster-delta-e2e.json"]
     environment:
       DEBUG: "true"
       ADAPTER_DRIVER: "redis-cluster"
@@ -163,6 +176,9 @@ services:
       QUEUE_DRIVER: "memory"
       RATE_LIMITER_DRIVER: "memory"
       TAG_FILTERING_ENABLED: "true"
+      HISTORY_ENABLED: "true"
+      HISTORY_BACKEND: "memory"
+      PRESENCE_HISTORY_ENABLED: "true"
       SHUTDOWN_GRACE_PERIOD: "1"
       SOCKUDO_DEFAULT_APP_ID: "test-app"
       SOCKUDO_DEFAULT_APP_KEY: "test-key"
@@ -170,6 +186,8 @@ services:
     ports:
       - "6004:6004"
       - "9604:9604"
+    volumes:
+      - ./config/config.redis-cluster-delta-e2e.json:/app/config/config.redis-cluster-delta-e2e.json:ro
     networks:
       - redis-cluster-net
     depends_on:

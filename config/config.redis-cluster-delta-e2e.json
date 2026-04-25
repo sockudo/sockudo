@@ -1,0 +1,89 @@
+{
+  "app_manager": {
+    "driver": "memory",
+    "array": {
+      "apps": [
+        {
+          "id": "test-app",
+          "key": "test-key",
+          "secret": "test-secret",
+          "enabled": true,
+          "policy": {
+            "limits": {
+              "max_connections": 100,
+              "max_backend_events_per_second": 100,
+              "max_client_events_per_second": 100,
+              "max_read_requests_per_second": 100,
+              "max_presence_members_per_channel": 100,
+              "max_presence_member_size_in_kb": 100,
+              "max_channel_name_length": 100,
+              "max_event_channels_at_once": 100,
+              "max_event_name_length": 100,
+              "max_event_payload_in_kb": 100,
+              "max_event_batch_size": 100
+            },
+            "features": {
+              "enable_client_messages": true
+            },
+            "channels": {
+              "channel_namespaces": [
+                {
+                  "name": "ticker",
+                  "channel_name_pattern": "^ticker:[A-Z]+$",
+                  "allow_subscribe_for_client": true,
+                  "allow_publish_for_client": true
+                },
+                {
+                  "name": "presence-delta-cluster",
+                  "channel_name_pattern": "^presence-delta-cluster-[0-9]+$",
+                  "allow_subscribe_for_client": true,
+                  "allow_presence_for_client": true
+                }
+              ],
+              "channel_delta_compression": {
+                "ticker:*": {
+                  "enabled": true,
+                  "algorithm": "Fossil",
+                  "conflation_key": "symbol",
+                  "max_messages_per_key": 10,
+                  "max_conflation_keys": 100
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "delta_compression": {
+    "enabled": true,
+    "algorithm": "fossil",
+    "full_message_interval": 4,
+    "min_message_size": 64,
+    "max_state_age_secs": 300,
+    "max_channel_states_per_socket": 100,
+    "max_conflation_states_per_channel": 100,
+    "conflation_key_path": "symbol",
+    "cluster_coordination": true,
+    "coordination_backend": "redis_cluster",
+    "omit_delta_algorithm": false
+  },
+  "tag_filtering": {
+    "enabled": true,
+    "enable_tags": true
+  },
+  "history": {
+    "enabled": true,
+    "rewind_enabled": true,
+    "backend": "memory",
+    "retention_window_seconds": 300,
+    "max_page_size": 50,
+    "max_messages_per_channel": 50
+  },
+  "presence_history": {
+    "enabled": true,
+    "retention_window_seconds": 300,
+    "max_page_size": 50,
+    "max_events_per_channel": 50
+  }
+}

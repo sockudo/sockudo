@@ -2,6 +2,7 @@
 
 // src/adapter/handler/connection_management.rs
 use super::ConnectionHandler;
+use crate::connection_manager::ConnectionManager;
 use bytes::Bytes;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
@@ -438,10 +439,18 @@ impl ConnectionHandler {
 
         // Get the number of sockets in the channel before sending and send the message
         let (result, target_socket_count) = {
-            let socket_count = self
-                .connection_manager
-                .get_channel_socket_count(&app_config.id, channel)
-                .await;
+            // Use local-only socket count — this value is only used for metrics, not
+            // broadcast correctness. Avoids the distributed adapter round-trip (e.g.
+            // cross-region NATS request/reply latency).
+            let socket_count = if let Some(ref local_adapter) = self.local_adapter {
+                local_adapter
+                    .get_channel_socket_count(&app_config.id, channel)
+                    .await
+            } else {
+                self.connection_manager
+                    .get_channel_socket_count(&app_config.id, channel)
+                    .await
+            };
 
             // Adjust for excluded socket
             let target_socket_count = if exclude_socket.is_some() && socket_count > 0 {

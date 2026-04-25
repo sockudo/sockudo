@@ -6,6 +6,7 @@
 
 // Re-export core delta types so consumers can use `sockudo_delta::*`
 pub use sockudo_core::delta_types::*;
+use sockudo_core::utils::{is_wildcard_subscription_pattern, wildcard_pattern_matches};
 
 pub mod coordination;
 
@@ -288,17 +289,54 @@ impl SocketDeltaState {
         }
 
         if let Some(settings) = self.channel_delta_settings.get(channel) {
+            tracing::debug!(
+                "delta channel exact setting matched: channel={}, enabled={}",
+                channel,
+                settings.enabled
+            );
             return settings.enabled;
         }
 
+        for entry in self.channel_delta_settings.iter() {
+            let subscribed_channel = entry.key();
+            if is_wildcard_subscription_pattern(subscribed_channel)
+                && wildcard_pattern_matches(channel, subscribed_channel)
+            {
+                tracing::debug!(
+                    "delta channel wildcard setting matched: requested_channel={}, subscribed_channel={}, enabled={}",
+                    channel,
+                    subscribed_channel,
+                    entry.enabled
+                );
+                return entry.enabled;
+            }
+        }
+
+        tracing::debug!(
+            "delta channel setting fell back to enabled: channel={}",
+            channel
+        );
         true
     }
 
     fn get_algorithm_for_channel(&self, channel: &str, default: DeltaAlgorithm) -> DeltaAlgorithm {
-        self.channel_delta_settings
-            .get(channel)
-            .and_then(|s| s.algorithm)
-            .unwrap_or(default)
+        if let Some(settings) = self.channel_delta_settings.get(channel)
+            && let Some(algorithm) = settings.algorithm
+        {
+            return algorithm;
+        }
+
+        for entry in self.channel_delta_settings.iter() {
+            let subscribed_channel = entry.key();
+            if is_wildcard_subscription_pattern(subscribed_channel)
+                && wildcard_pattern_matches(channel, subscribed_channel)
+                && let Some(algorithm) = entry.algorithm
+            {
+                return algorithm;
+            }
+        }
+
+        default
     }
 
     fn set_channel_delta_settings(&self, channel: String, settings: PerChannelDeltaSettings) {
@@ -2203,6 +2241,47 @@ mod enhanced_tests {
 
         assert!(!manager.is_enabled_for_socket_channel(&socket_id, "channel-a"));
         assert!(manager.is_enabled_for_socket_channel(&socket_id, "channel-b")); // unaffected
+    }
+
+    #[tokio::test]
+    async fn wildcard_channel_delta_settings_apply_to_matching_channels() {
+        let config = DeltaCompressionConfig::default();
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+        manager.set_channel_delta_settings(&socket_id, "ticker:*", Some(false), None);
+
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "ticker:BTC"));
+        assert!(!manager.is_enabled_for_socket_channel(&socket_id, "ticker:ETH"));
+        assert!(manager.is_enabled_for_socket_channel(&socket_id, "price:BTC"));
+    }
+
+    #[tokio::test]
+    async fn wildcard_channel_delta_settings_apply_algorithm_override() {
+        let config = DeltaCompressionConfig {
+            algorithm: DeltaAlgorithm::Fossil,
+            ..Default::default()
+        };
+        let manager = DeltaCompressionManager::new(config);
+        let socket_id = SocketId::new();
+
+        manager.enable_for_socket(&socket_id);
+        manager.set_channel_delta_settings(
+            &socket_id,
+            "ticker:*",
+            Some(true),
+            Some(DeltaAlgorithm::Xdelta3),
+        );
+
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "ticker:BTC"),
+            DeltaAlgorithm::Xdelta3
+        );
+        assert_eq!(
+            manager.get_algorithm_for_channel(&socket_id, "price:BTC"),
+            DeltaAlgorithm::Fossil
+        );
     }
 
     #[tokio::test]

@@ -94,17 +94,17 @@ fn event_name_filter_allows(socket: &WebSocketRef, channel: &str, event_name: &s
 }
 
 #[cfg(feature = "tag-filtering")]
-pub(crate) fn apply_tag_filter(
+pub(crate) fn apply_tag_filter_in_place(
     filter_index: &crate::filter_index::FilterIndex,
     tag_filtering_enabled: bool,
     channel: &str,
     message: &PusherMessage,
-    v2_sockets: Vec<WebSocketRef>,
+    v2_sockets: &mut Vec<WebSocketRef>,
     except: Option<&SocketId>,
     namespace: &Namespace,
-) -> Vec<WebSocketRef> {
+) {
     if !tag_filtering_enabled {
-        return v2_sockets;
+        return;
     }
 
     let _ = (filter_index, except, namespace);
@@ -114,28 +114,21 @@ pub(crate) fn apply_tag_filter(
             .collect::<std::collections::BTreeMap<String, String>>()
     });
 
-    v2_sockets
-        .into_iter()
-        .filter(|socket| should_deliver_for_tags(socket, channel, tags_btree.as_ref()))
-        .collect()
+    v2_sockets.retain(|socket| should_deliver_for_tags(socket, channel, tags_btree.as_ref()));
 }
 
-/// Same as `apply_tag_filter` but also verifies matched sockets are V2.
-///
-/// Used by `send_with_compression` where the filter index may contain both V1
-/// and V2 socket IDs (V1 sockets are sent to separately without compression).
 #[cfg(feature = "tag-filtering")]
-pub(crate) fn apply_tag_filter_v2_only(
+pub(crate) fn apply_tag_filter_v2_only_in_place(
     filter_index: &crate::filter_index::FilterIndex,
     tag_filtering_enabled: bool,
     channel: &str,
     message: &PusherMessage,
-    v2_sockets: Vec<WebSocketRef>,
+    v2_sockets: &mut Vec<WebSocketRef>,
     except: Option<&SocketId>,
     namespace: &Namespace,
-) -> Vec<WebSocketRef> {
+) {
     if !tag_filtering_enabled {
-        return v2_sockets;
+        return;
     }
 
     let _ = (filter_index, except, namespace);
@@ -145,30 +138,23 @@ pub(crate) fn apply_tag_filter_v2_only(
             .collect::<std::collections::BTreeMap<String, String>>()
     });
 
-    v2_sockets
-        .into_iter()
-        .filter(|socket| socket.protocol_version == sockudo_protocol::ProtocolVersion::V2)
-        .filter(|socket| should_deliver_for_tags(socket, channel, tags_btree.as_ref()))
-        .collect()
+    v2_sockets.retain(|socket| {
+        socket.protocol_version == sockudo_protocol::ProtocolVersion::V2
+            && should_deliver_for_tags(socket, channel, tags_btree.as_ref())
+    });
 }
 
-/// Apply event name filtering to a list of V2 sockets.
-/// Sockets whose subscription has an event name filter that does not include
-/// the message's event name are removed from the list.
-pub(crate) fn apply_event_name_filter(
+pub(crate) fn apply_event_name_filter_in_place(
     channel: &str,
     message: &PusherMessage,
-    sockets: Vec<sockudo_core::websocket::WebSocketRef>,
-) -> Vec<sockudo_core::websocket::WebSocketRef> {
+    sockets: &mut Vec<sockudo_core::websocket::WebSocketRef>,
+) {
     let event_name = match message.event.as_deref() {
         Some(name) => name,
-        None => return sockets, // no event name = deliver to all
+        None => return,
     };
 
-    sockets
-        .into_iter()
-        .filter(|socket| event_name_filter_allows(socket, channel, event_name))
-        .collect()
+    sockets.retain(|socket| event_name_filter_allows(socket, channel, event_name));
 }
 
 /// Strip tags from a message if tag inclusion is disabled for the channel.

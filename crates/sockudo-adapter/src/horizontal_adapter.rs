@@ -189,7 +189,7 @@ pub struct HorizontalAdapter {
     pub local_adapter: Arc<LocalAdapter>,
 
     /// Pending requests map - Use DashMap for thread-safe access
-    pub pending_requests: DashMap<String, PendingRequest>,
+    pub pending_requests: Arc<DashMap<String, PendingRequest>>,
 
     /// Timeout for requests in milliseconds
     pub requests_timeout: AtomicU64,
@@ -219,7 +219,7 @@ impl HorizontalAdapter {
         Self {
             node_id: Uuid::new_v4().to_string(),
             local_adapter: Arc::new(LocalAdapter::new()),
-            pending_requests: DashMap::new(),
+            pending_requests: Arc::new(DashMap::new()),
             requests_timeout: AtomicU64::new(5000),
             metrics: OnceLock::new(),
             cluster_presence_registry: Arc::new(RwLock::new(AHashMap::new())),
@@ -234,10 +234,8 @@ impl HorizontalAdapter {
 
     /// Start the request cleanup task
     pub fn start_request_cleanup(&self) {
-        // Clone data needed for the task
-        // let node_id = self.node_id.clone();
         let timeout = self.requests_timeout.load(Ordering::Relaxed);
-        let pending_requests_clone = self.pending_requests.clone();
+        let pending_requests = Arc::clone(&self.pending_requests);
 
         // Spawn a background task to clean up stale requests
         tokio::spawn(async move {
@@ -249,7 +247,7 @@ impl HorizontalAdapter {
                 let mut expired_requests = Vec::new();
 
                 // We can't modify pending_requests while iterating
-                for entry in &pending_requests_clone {
+                for entry in pending_requests.iter() {
                     let request_id = entry.key();
                     let request = entry.value();
                     if now.duration_since(request.start_time).as_millis() > timeout as u128 {
@@ -260,7 +258,9 @@ impl HorizontalAdapter {
                 // Process expired requests
                 for request_id in expired_requests {
                     warn!("{}", format!("Request {} expired", request_id));
-                    pending_requests_clone.remove(&request_id);
+                    if let Some((_, request)) = pending_requests.remove(&request_id) {
+                        request.notify.notify_waiters();
+                    }
                 }
             }
         });
@@ -372,10 +372,7 @@ impl HorizontalAdapter {
                     .local_adapter
                     .get_all_connections(&request.app_id)
                     .await;
-                response.socket_ids = connections
-                    .iter()
-                    .map(|entry| entry.key().to_string())
-                    .collect();
+                response.socket_ids = connections.iter().map(ToString::to_string).collect();
                 response.sockets_count = connections.len();
             }
             RequestType::Channels => {
@@ -571,6 +568,97 @@ impl HorizontalAdapter {
         Ok(())
     }
 
+    async fn wait_for_request_responses(
+        &self,
+        request_id: &str,
+        start: Instant,
+        timeout_duration: Duration,
+        max_expected_responses: usize,
+    ) -> Vec<ResponseBody> {
+        let deadline = start + timeout_duration;
+
+        loop {
+            let Some(notify) = self
+                .pending_requests
+                .get(request_id)
+                .map(|request| Arc::clone(&request.notify))
+            else {
+                return Vec::new();
+            };
+            let notified = notify.notified();
+            tokio::pin!(notified);
+
+            let response_count = self
+                .pending_requests
+                .get(request_id)
+                .map(|pending_request| pending_request.responses.len());
+
+            match response_count {
+                Some(count) if count >= max_expected_responses => {
+                    debug!(
+                        "Request {} completed successfully with {}/{} responses in {}ms",
+                        request_id,
+                        count,
+                        max_expected_responses,
+                        start.elapsed().as_millis()
+                    );
+                    return self
+                        .pending_requests
+                        .remove(request_id)
+                        .map(|(_, req)| req.responses)
+                        .unwrap_or_default();
+                }
+                Some(_) => {}
+                None => return Vec::new(),
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                let current_responses = self
+                    .pending_requests
+                    .get(request_id)
+                    .map(|r| r.responses.len())
+                    .unwrap_or(0);
+                warn!(
+                    "Request {} timed out after {}ms, got {} responses out of {} expected",
+                    request_id,
+                    start.elapsed().as_millis(),
+                    current_responses,
+                    max_expected_responses
+                );
+                return self
+                    .pending_requests
+                    .remove(request_id)
+                    .map(|(_, req)| req.responses)
+                    .unwrap_or_default();
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            if tokio::time::timeout(remaining, &mut notified)
+                .await
+                .is_err()
+            {
+                let current_responses = self
+                    .pending_requests
+                    .get(request_id)
+                    .map(|r| r.responses.len())
+                    .unwrap_or(0);
+                warn!(
+                    "Request {} timed out after {}ms, got {} responses out of {} expected",
+                    request_id,
+                    start.elapsed().as_millis(),
+                    current_responses,
+                    max_expected_responses
+                );
+                return self
+                    .pending_requests
+                    .remove(request_id)
+                    .map(|(_, req)| req.responses)
+                    .unwrap_or_default();
+            }
+        }
+    }
+
     /// Send a request to other nodes and wait for responses
     pub async fn send_request(
         &mut self,
@@ -653,57 +741,14 @@ impl HorizontalAdapter {
             });
         }
 
-        // Improved waiting logic
-        let check_interval = Duration::from_millis(50);
-        let mut checks = 0;
-        let max_checks = (timeout_duration.as_millis() / check_interval.as_millis()) as usize;
-
-        let responses = loop {
-            if checks >= max_checks {
-                let current_responses = self
-                    .pending_requests
-                    .get(&request_id)
-                    .map(|r| r.responses.len())
-                    .unwrap_or(0);
-
-                warn!(
-                    "Request {} timed out after {}ms, got {} responses out of {} expected",
-                    request_id,
-                    start.elapsed().as_millis(),
-                    current_responses,
-                    max_expected_responses
-                );
-                break self
-                    .pending_requests
-                    .remove(&request_id)
-                    .map(|(_, req)| req.responses)
-                    .unwrap_or_default();
-            }
-
-            if let Some(pending_request) = self.pending_requests.get(&request_id) {
-                if pending_request.responses.len() >= max_expected_responses {
-                    debug!(
-                        "Request {} completed successfully with {}/{} responses in {}ms",
-                        request_id,
-                        pending_request.responses.len(),
-                        max_expected_responses,
-                        start.elapsed().as_millis()
-                    );
-                    break self
-                        .pending_requests
-                        .remove(&request_id)
-                        .map(|(_, req)| req.responses)
-                        .unwrap_or_default();
-                }
-            } else {
-                return Err(Error::Other(format!(
-                    "Request {request_id} was removed unexpectedly (possibly by cleanup task)"
-                )));
-            }
-
-            tokio::time::sleep(check_interval).await;
-            checks += 1;
-        };
+        let responses = self
+            .wait_for_request_responses(
+                &request_id,
+                start,
+                timeout_duration,
+                max_expected_responses,
+            )
+            .await;
 
         // Use the aggregation method
         let responses_received = responses.len();
@@ -1149,4 +1194,83 @@ pub fn current_timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{Duration, sleep, timeout};
+
+    #[tokio::test]
+    async fn request_cleanup_operates_on_live_pending_requests() {
+        let adapter = HorizontalAdapter::new();
+        adapter.requests_timeout.store(1, Ordering::Relaxed);
+        adapter.start_request_cleanup();
+        adapter.pending_requests.insert(
+            "expired".to_string(),
+            PendingRequest {
+                start_time: Instant::now() - Duration::from_secs(1),
+                app_id: "app".to_string(),
+                responses: Vec::new(),
+                notify: Arc::new(Notify::new()),
+            },
+        );
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if !adapter.pending_requests.contains_key("expired") {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cleanup should remove expired live requests");
+    }
+
+    #[tokio::test]
+    async fn send_request_wakes_on_notify_without_polling_delay() {
+        let adapter = Arc::new(HorizontalAdapter::new());
+        adapter.pending_requests.insert(
+            "req-1".to_string(),
+            PendingRequest {
+                start_time: Instant::now(),
+                app_id: "app".to_string(),
+                responses: Vec::new(),
+                notify: Arc::new(Notify::new()),
+            },
+        );
+
+        let wait_adapter = Arc::clone(&adapter);
+        let waiter = tokio::spawn(async move {
+            wait_adapter
+                .wait_for_request_responses("req-1", Instant::now(), Duration::from_millis(40), 1)
+                .await
+        });
+
+        sleep(Duration::from_millis(10)).await;
+        adapter
+            .process_response(ResponseBody {
+                request_id: "req-1".to_string(),
+                node_id: "node-2".to_string(),
+                app_id: "app".to_string(),
+                members: AHashMap::new(),
+                channels_with_sockets_count: AHashMap::new(),
+                socket_ids: vec!["socket-1".to_string()],
+                sockets_count: 1,
+                exists: true,
+                channels: HashSet::new(),
+                members_count: 0,
+                responses_received: 0,
+                expected_responses: 0,
+                complete: true,
+            })
+            .await
+            .unwrap();
+
+        let responses = timeout(Duration::from_millis(20), waiter)
+            .await
+            .expect("notify should wake waiter before timeout");
+        assert_eq!(responses.unwrap().len(), 1);
+    }
 }

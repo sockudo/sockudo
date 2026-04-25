@@ -2,6 +2,7 @@ use super::ConnectionHandler;
 use bytes::Bytes;
 use sockudo_core::error::Result;
 use sockudo_core::websocket::SocketId;
+use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::PONG_TIMEOUT;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_ws::Message;
@@ -30,14 +31,30 @@ impl ConnectionHandler {
     }
 
     pub async fn set_activity_timeout(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        // Clear any existing timeout
+        self.clear_activity_timeout(app_id, socket_id).await?;
+
+        let Some(connection) = self
+            .connection_manager
+            .get_connection(socket_id, app_id)
+            .await
+        else {
+            return Ok(());
+        };
+
+        if connection.protocol_version == ProtocolVersion::V2 {
+            debug!(
+                "Skipping app-level activity timeout loop for V2 socket {} (native WebSocket ping/pong handles heartbeats)",
+                socket_id
+            );
+            return Ok(());
+        }
+
         let socket_id_clone = *socket_id;
         let app_id_clone = app_id.to_string();
         let connection_manager = self.connection_manager.clone();
         let handler = self.clone();
         let activity_timeout = self.server_options.activity_timeout;
-
-        // Clear any existing timeout
-        self.clear_activity_timeout(app_id, socket_id).await?;
 
         let timeout_handle = tokio::spawn(async move {
             // Initial sleep before first check
