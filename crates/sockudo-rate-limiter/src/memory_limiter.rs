@@ -2,10 +2,8 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use sockudo_core::error::Result;
 use sockudo_core::rate_limiter::{RateLimitConfig, RateLimitResult, RateLimiter};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
-use tokio::time::interval;
 
 /// Entry in the rate limiter map
 #[derive(Clone)]
@@ -21,12 +19,80 @@ struct RateLimitEntry {
 /// In-memory rate limiter implementation
 pub struct MemoryRateLimiter {
     /// Storage for rate limit counters
-    limits: Arc<DashMap<String, RateLimitEntry, ahash::RandomState>>,
+    limits: Arc<RateLimitMap>,
     /// Configuration for rate limiting
     config: RateLimitConfig,
-    /// Cleanup task handle
-    #[allow(dead_code)]
-    cleanup_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+type RateLimitMap = DashMap<String, RateLimitEntry, ahash::RandomState>;
+
+struct SharedLimiterCleanup {
+    tracked_maps: Arc<Mutex<Vec<Weak<RateLimitMap>>>>,
+}
+
+impl SharedLimiterCleanup {
+    fn global() -> &'static Self {
+        static REGISTRY: OnceLock<SharedLimiterCleanup> = OnceLock::new();
+
+        REGISTRY.get_or_init(|| {
+            let cleanup = SharedLimiterCleanup {
+                tracked_maps: Arc::new(Mutex::new(Vec::new())),
+            };
+            cleanup.spawn_worker();
+            cleanup
+        })
+    }
+
+    fn register(&self, limits: &Arc<RateLimitMap>) {
+        let mut tracked_maps = self.tracked_maps.lock().unwrap();
+        tracked_maps.push(Arc::downgrade(limits));
+    }
+
+    fn spawn_worker(&self) {
+        let tracked_maps = Arc::clone(&self.tracked_maps);
+
+        std::thread::Builder::new()
+            .name("sockudo-rate-limit-sweeper".to_string())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(shared_cleanup_interval());
+                    let now = Instant::now();
+                    let live_maps = {
+                        let mut tracked = tracked_maps.lock().unwrap();
+                        let mut live_maps = Vec::with_capacity(tracked.len());
+                        tracked.retain(|weak_map| match weak_map.upgrade() {
+                            Some(map) => {
+                                live_maps.push(map);
+                                true
+                            }
+                            None => false,
+                        });
+                        live_maps
+                    };
+
+                    for limits in live_maps {
+                        sweep_expired_entries(&limits, now);
+                    }
+                }
+            })
+            .expect("failed to spawn shared rate limiter cleanup worker");
+    }
+}
+
+fn sweep_expired_entries(limits: &RateLimitMap, now: Instant) {
+    limits.retain(|_, value| value.expiry > now);
+}
+
+fn shared_cleanup_interval() -> Duration {
+    #[cfg(test)]
+    {
+        Duration::from_millis(25)
+    }
+
+    #[cfg(not(test))]
+    {
+        Duration::from_secs(10)
+    }
 }
 
 impl MemoryRateLimiter {
@@ -41,26 +107,10 @@ impl MemoryRateLimiter {
 
     /// Create a new memory-based rate limiter with a specific configuration
     pub fn with_config(config: RateLimitConfig) -> Self {
-        let limits: Arc<DashMap<String, RateLimitEntry, ahash::RandomState>> =
-            Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
-        let limits_clone = Arc::clone(&limits);
+        let limits = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        SharedLimiterCleanup::global().register(&limits);
 
-        // Start cleanup task
-        let cleanup_task = tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(10)); // Check every 10 seconds
-            loop {
-                interval.tick().await;
-                let now = Instant::now();
-                // remove all expired limits
-                limits_clone.retain(|_, value| value.expiry > now);
-            }
-        });
-
-        Self {
-            limits,
-            config,
-            cleanup_task: Arc::new(Mutex::new(Some(cleanup_task))),
-        }
+        Self { limits, config }
     }
 }
 
@@ -72,7 +122,8 @@ impl RateLimiter for MemoryRateLimiter {
         if let Some(entry) = self.limits.get(key) {
             // Check if the window has expired
             if entry.expiry <= now {
-                // Window expired, will be cleaned up later
+                drop(entry);
+                self.limits.remove(key);
                 return Ok(RateLimitResult {
                     allowed: true,
                     remaining: self.config.max_requests,
@@ -150,6 +201,8 @@ impl RateLimiter for MemoryRateLimiter {
         if let Some(entry) = self.limits.get(key) {
             // Check if the window has expired
             if entry.expiry <= now {
+                drop(entry);
+                self.limits.remove(key);
                 return Ok(self.config.max_requests);
             }
 
@@ -161,19 +214,10 @@ impl RateLimiter for MemoryRateLimiter {
     }
 }
 
-impl Drop for MemoryRateLimiter {
-    fn drop(&mut self) {
-        if let Ok(mut task_guard) = self.cleanup_task.try_lock()
-            && let Some(task) = task_guard.take()
-        {
-            task.abort();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{sleep, timeout};
 
     #[tokio::test]
     async fn test_rate_limiter_basic() {
@@ -249,5 +293,26 @@ mod tests {
 
         let result = limiter.check("concurrent_key").await.unwrap();
         assert_eq!(result.remaining, 0, "Should have exactly 100 increments");
+    }
+
+    #[tokio::test]
+    async fn test_shared_cleanup_reaps_idle_expired_entries() {
+        let limiter = MemoryRateLimiter::new(1, 1);
+
+        limiter.increment("test_key").await.unwrap();
+        assert_eq!(limiter.limits.len(), 1);
+
+        sleep(Duration::from_secs(2)).await;
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if limiter.limits.is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("shared sweeper should reap expired idle limiter entries");
     }
 }

@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::utils::wildcard_pattern_matches;
 use crate::websocket::{SocketId, WebSocket, WebSocketBufferConfig, WebSocketRef};
 use ahash::AHashMap as HashMap;
+use ahash::AHashSet;
 use dashmap::{DashMap, DashSet};
 use futures_util::future::join_all;
 use sockudo_ws::axum_integration::WebSocketWriter;
@@ -15,6 +16,7 @@ pub struct Namespace {
     pub app_id: String,
     pub sockets: DashMap<SocketId, WebSocketRef>,
     pub channels: DashMap<String, DashSet<SocketId>>,
+    wildcard_channels: DashSet<String>,
     pub users: DashMap<String, DashSet<WebSocketRef>>,
 }
 
@@ -31,6 +33,7 @@ impl Namespace {
             app_id,
             sockets: DashMap::new(),
             channels: DashMap::new(),
+            wildcard_channels: DashSet::new(),
             users: DashMap::new(),
         }
     }
@@ -146,34 +149,25 @@ impl Namespace {
         channel: &str,
         except: Option<&SocketId>,
     ) -> Vec<WebSocketRef> {
-        let mut socket_refs = Vec::new();
-
-        if let Some(channel_sockets_ref) = self.channels.get(channel) {
-            let socket_ids: Vec<SocketId> = channel_sockets_ref
-                .value()
-                .iter()
-                .filter_map(|entry| {
-                    let socket_id = entry.key();
-                    if except == Some(socket_id) {
-                        None
-                    } else {
-                        Some(*socket_id)
-                    }
-                })
-                .collect();
-
-            drop(channel_sockets_ref);
-
-            for socket_id in socket_ids {
-                if let Some(socket_ref) = self.get_connection(&socket_id) {
-                    socket_refs.push(socket_ref);
-                }
-            }
-        } else {
+        let Some(channel_sockets_ref) = self.channels.get(channel) else {
             debug!(
                 "get_channel_socket_refs_except called on non-existent channel: {}",
                 channel
             );
+            return Vec::new();
+        };
+
+        let mut socket_refs = Vec::with_capacity(channel_sockets_ref.len());
+
+        for socket_id_entry in channel_sockets_ref.iter() {
+            let socket_id = socket_id_entry.key();
+            if except == Some(socket_id) {
+                continue;
+            }
+
+            if let Some(socket_ref) = self.get_connection(socket_id) {
+                socket_refs.push(socket_ref);
+            }
         }
 
         socket_refs
@@ -184,29 +178,219 @@ impl Namespace {
         channel: &str,
         except: Option<&SocketId>,
     ) -> Vec<WebSocketRef> {
-        let mut socket_ids = std::collections::HashSet::new();
+        if channel.contains('*') {
+            return self
+                .get_matching_channel_socket_ids_except(channel, except)
+                .into_iter()
+                .filter_map(|socket_id| self.get_connection(&socket_id))
+                .collect();
+        }
 
-        for entry in self.channels.iter() {
-            let subscribed_channel = entry.key();
-            let matches = subscribed_channel == channel
-                || (subscribed_channel.contains('*')
-                    && wildcard_pattern_matches(channel, subscribed_channel));
-            if !matches {
-                continue;
+        let mut socket_refs = self.get_channel_socket_refs_except(channel, except);
+        if self.wildcard_channels.is_empty() {
+            return socket_refs;
+        }
+
+        let mut seen_socket_ids = None;
+        self.collect_matching_socket_refs(channel, except, &mut seen_socket_ids, &mut socket_refs);
+        socket_refs
+    }
+
+    pub fn get_matching_channel_socket_refs_partitioned_except(
+        &self,
+        channel: &str,
+        except: Option<&SocketId>,
+    ) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
+        if channel.contains('*') {
+            let mut v1_refs = Vec::new();
+            let mut v2_refs = Vec::new();
+
+            for socket_id in self.get_matching_channel_socket_ids_except(channel, except) {
+                if let Some(socket_ref) = self.get_connection(&socket_id) {
+                    Self::push_socket_ref_by_protocol(socket_ref, &mut v1_refs, &mut v2_refs);
+                }
             }
 
-            for socket_id_entry in entry.value().iter() {
+            return (v1_refs, v2_refs);
+        }
+
+        let mut v1_refs = Vec::new();
+        let mut v2_refs = Vec::new();
+
+        if let Some(channel_sockets_ref) = self.channels.get(channel) {
+            for socket_id_entry in channel_sockets_ref.iter() {
+                let socket_id = socket_id_entry.key();
+                if except == Some(socket_id) {
+                    continue;
+                }
+
+                if let Some(socket_ref) = self.get_connection(socket_id) {
+                    Self::push_socket_ref_by_protocol(socket_ref, &mut v1_refs, &mut v2_refs);
+                }
+            }
+        }
+
+        if self.wildcard_channels.is_empty() {
+            return (v1_refs, v2_refs);
+        }
+
+        let mut seen_socket_ids = None;
+        self.collect_matching_socket_refs_partitioned(
+            channel,
+            except,
+            &mut seen_socket_ids,
+            &mut v1_refs,
+            &mut v2_refs,
+        );
+
+        (v1_refs, v2_refs)
+    }
+
+    pub fn get_matching_channel_socket_ids_except(
+        &self,
+        channel: &str,
+        except: Option<&SocketId>,
+    ) -> AHashSet<SocketId> {
+        let mut socket_ids = AHashSet::new();
+
+        if channel.contains('*') {
+            self.collect_matching_socket_ids(channel, except, &mut socket_ids, true);
+            return socket_ids;
+        }
+
+        self.collect_exact_channel_socket_ids(channel, except, &mut socket_ids);
+        self.collect_matching_socket_ids(channel, except, &mut socket_ids, false);
+        socket_ids
+    }
+
+    fn collect_exact_channel_socket_ids(
+        &self,
+        channel: &str,
+        except: Option<&SocketId>,
+        socket_ids: &mut AHashSet<SocketId>,
+    ) {
+        if let Some(channel_sockets_ref) = self.channels.get(channel) {
+            for socket_id_entry in channel_sockets_ref.iter() {
                 let socket_id = socket_id_entry.key();
                 if except != Some(socket_id) {
                     socket_ids.insert(*socket_id);
                 }
             }
         }
+    }
 
-        socket_ids
-            .into_iter()
-            .filter_map(|socket_id| self.get_connection(&socket_id))
-            .collect()
+    fn collect_matching_socket_ids(
+        &self,
+        channel: &str,
+        except: Option<&SocketId>,
+        socket_ids: &mut AHashSet<SocketId>,
+        include_exact_channels: bool,
+    ) {
+        for wildcard_channel in self.wildcard_channels.iter() {
+            let subscribed_channel = wildcard_channel.key();
+            if !wildcard_pattern_matches(channel, subscribed_channel) {
+                continue;
+            }
+
+            if let Some(channel_sockets_ref) = self.channels.get(subscribed_channel) {
+                for socket_id_entry in channel_sockets_ref.iter() {
+                    let socket_id = socket_id_entry.key();
+                    if except != Some(socket_id) {
+                        socket_ids.insert(*socket_id);
+                    }
+                }
+            }
+        }
+
+        if include_exact_channels {
+            self.collect_exact_channel_socket_ids(channel, except, socket_ids);
+        }
+    }
+
+    fn collect_matching_socket_refs(
+        &self,
+        channel: &str,
+        except: Option<&SocketId>,
+        seen_socket_ids: &mut Option<AHashSet<SocketId>>,
+        socket_refs: &mut Vec<WebSocketRef>,
+    ) {
+        for wildcard_channel in self.wildcard_channels.iter() {
+            let subscribed_channel = wildcard_channel.key();
+            if !wildcard_pattern_matches(channel, subscribed_channel) {
+                continue;
+            }
+
+            let seen_socket_ids = seen_socket_ids.get_or_insert_with(|| {
+                let mut seen = AHashSet::with_capacity(socket_refs.len().saturating_mul(2));
+                for socket_ref in socket_refs.iter() {
+                    seen.insert(*socket_ref.get_socket_id_sync());
+                }
+                seen
+            });
+
+            if let Some(channel_sockets_ref) = self.channels.get(subscribed_channel) {
+                for socket_id_entry in channel_sockets_ref.iter() {
+                    let socket_id = socket_id_entry.key();
+                    if except == Some(socket_id) || !seen_socket_ids.insert(*socket_id) {
+                        continue;
+                    }
+
+                    if let Some(socket_ref) = self.get_connection(socket_id) {
+                        socket_refs.push(socket_ref);
+                    }
+                }
+            }
+        }
+    }
+
+    fn collect_matching_socket_refs_partitioned(
+        &self,
+        channel: &str,
+        except: Option<&SocketId>,
+        seen_socket_ids: &mut Option<AHashSet<SocketId>>,
+        v1_refs: &mut Vec<WebSocketRef>,
+        v2_refs: &mut Vec<WebSocketRef>,
+    ) {
+        for wildcard_channel in self.wildcard_channels.iter() {
+            let subscribed_channel = wildcard_channel.key();
+            if !wildcard_pattern_matches(channel, subscribed_channel) {
+                continue;
+            }
+
+            let seen_socket_ids = seen_socket_ids.get_or_insert_with(|| {
+                let mut seen =
+                    AHashSet::with_capacity((v1_refs.len() + v2_refs.len()).saturating_mul(2));
+                for socket_ref in v1_refs.iter().chain(v2_refs.iter()) {
+                    seen.insert(*socket_ref.get_socket_id_sync());
+                }
+                seen
+            });
+
+            if let Some(channel_sockets_ref) = self.channels.get(subscribed_channel) {
+                for socket_id_entry in channel_sockets_ref.iter() {
+                    let socket_id = socket_id_entry.key();
+                    if except == Some(socket_id) || !seen_socket_ids.insert(*socket_id) {
+                        continue;
+                    }
+
+                    if let Some(socket_ref) = self.get_connection(socket_id) {
+                        Self::push_socket_ref_by_protocol(socket_ref, v1_refs, v2_refs);
+                    }
+                }
+            }
+        }
+    }
+
+    fn push_socket_ref_by_protocol(
+        socket_ref: WebSocketRef,
+        v1_refs: &mut Vec<WebSocketRef>,
+        v2_refs: &mut Vec<WebSocketRef>,
+    ) {
+        if socket_ref.protocol_version == sockudo_protocol::ProtocolVersion::V1 {
+            v1_refs.push(socket_ref);
+        } else {
+            v2_refs.push(socket_ref);
+        }
     }
 
     #[inline]
@@ -235,6 +419,9 @@ impl Namespace {
                 set.remove(&socket_id);
                 set.is_empty()
             });
+            if channel_name.contains('*') && !self.channels.contains_key(&channel_name) {
+                self.wildcard_channels.remove(&channel_name);
+            }
         }
 
         let user_id_option = ws_ref.get_user_id().await;
@@ -294,6 +481,10 @@ impl Namespace {
             .insert(*socket_id);
         let t_after_entry = t_start.elapsed().as_nanos();
 
+        if channel.contains('*') {
+            self.wildcard_channels.insert(channel.to_string());
+        }
+
         tracing::debug!(
             "PERF[NS_ADD_CHAN] channel={} socket={} entry_op={}ns inserted={}",
             channel,
@@ -315,6 +506,9 @@ impl Namespace {
                 .remove_if(channel, |_, set| set.is_empty())
                 .is_some()
             {
+                if channel.contains('*') {
+                    self.wildcard_channels.remove(channel);
+                }
                 debug!("Removed empty channel entry: {}", channel);
             }
             return removed.is_some();
@@ -329,12 +523,18 @@ impl Namespace {
     }
 
     pub fn get_channel(&self, channel: &str) -> Result<DashSet<SocketId>> {
-        let channel_data = self.channels.entry(channel.to_string()).or_default();
-        Ok(channel_data.value().clone())
+        Ok(self
+            .channels
+            .get(channel)
+            .map(|channel_data| channel_data.value().clone())
+            .unwrap_or_default())
     }
 
     pub fn remove_channel(&self, channel: &str) {
         self.channels.remove(channel);
+        if channel.contains('*') {
+            self.wildcard_channels.remove(channel);
+        }
         debug!("Removed channel entry: {}", channel);
     }
 
@@ -482,5 +682,157 @@ impl Namespace {
             .iter()
             .map(|entry| (*entry.key(), entry.value().clone()))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Namespace;
+    use crate::app::{App, AppManager, AppPolicy};
+    use crate::namespace::SocketInitOptions;
+    use crate::websocket::SocketId;
+    use async_trait::async_trait;
+    use sockudo_protocol::{ProtocolVersion, WireFormat};
+    use sockudo_ws::Config as WsConfig;
+    use sockudo_ws::Http1;
+    use sockudo_ws::WebSocketStream;
+    use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
+    use sockudo_ws::client::WebSocketClient;
+    use std::sync::Arc;
+    use tokio::net::{TcpListener, TcpStream};
+
+    #[derive(Clone)]
+    struct TestAppManager {
+        app: App,
+    }
+
+    #[async_trait]
+    impl AppManager for TestAppManager {
+        async fn init(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn create_app(&self, _config: App) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn update_app(&self, _config: App) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn delete_app(&self, _app_id: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn get_apps(&self) -> crate::error::Result<Vec<App>> {
+            Ok(vec![self.app.clone()])
+        }
+
+        async fn find_by_id(&self, app_id: &str) -> crate::error::Result<Option<App>> {
+            Ok((app_id == self.app.id).then(|| self.app.clone()))
+        }
+
+        async fn find_by_key(&self, key: &str) -> crate::error::Result<Option<App>> {
+            Ok((key == self.app.key).then(|| self.app.clone()))
+        }
+
+        async fn check_health(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    async fn create_server_writer() -> WebSocketWriter {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = sockudo_ws::handshake::server_handshake(&mut stream)
+                .await
+                .unwrap();
+            let ws = WebSocket::from_tcp(stream, WsConfig::default());
+            let (_reader, writer) = ws.split();
+            writer
+        });
+
+        let client_stream = TcpStream::connect(local_addr).await.unwrap();
+        let client = WebSocketClient::<Http1>::new(WsConfig::default());
+        let (_client_ws, _): (WebSocketStream<sockudo_ws::Stream<Http1>>, _) = client
+            .connect(client_stream, &local_addr.to_string(), "/", None)
+            .await
+            .unwrap();
+
+        server_task.await.unwrap()
+    }
+
+    #[test]
+    fn exact_channel_matching_uses_exact_and_wildcard_memberships_only() {
+        let namespace = Namespace::new("app".to_string());
+        let exact_socket = SocketId::new();
+        let wildcard_socket = SocketId::new();
+        let unrelated_socket = SocketId::new();
+
+        namespace.add_channel_to_socket("room-42", &exact_socket);
+        namespace.add_channel_to_socket("room-*", &wildcard_socket);
+        namespace.add_channel_to_socket("other-room", &unrelated_socket);
+
+        let matches = namespace.get_matching_channel_socket_ids_except("room-42", None);
+
+        assert!(matches.contains(&exact_socket));
+        assert!(matches.contains(&wildcard_socket));
+        assert!(!matches.contains(&unrelated_socket));
+    }
+
+    #[test]
+    fn wildcard_index_is_removed_when_last_subscription_leaves() {
+        let namespace = Namespace::new("app".to_string());
+        let socket_id = SocketId::new();
+
+        namespace.add_channel_to_socket("room-*", &socket_id);
+        assert!(namespace.wildcard_channels.contains("room-*"));
+
+        namespace.remove_channel_from_socket("room-*", &socket_id);
+
+        assert!(!namespace.wildcard_channels.contains("room-*"));
+    }
+
+    #[tokio::test]
+    async fn wildcard_only_subscription_matches_concrete_channel_in_partitioned_lookup() {
+        let namespace = Namespace::new("app".to_string());
+        let wildcard_socket = SocketId::new();
+        let writer = create_server_writer().await;
+        let app_manager: Arc<dyn AppManager + Send + Sync> = Arc::new(TestAppManager {
+            app: App::from_policy(
+                "app".to_string(),
+                "app-key".to_string(),
+                "app-secret".to_string(),
+                true,
+                AppPolicy::default(),
+            ),
+        });
+
+        namespace
+            .add_socket(
+                wildcard_socket,
+                writer,
+                app_manager,
+                SocketInitOptions {
+                    buffer_config: crate::websocket::WebSocketBufferConfig::default(),
+                    protocol_version: ProtocolVersion::V2,
+                    wire_format: WireFormat::Json,
+                    echo_messages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        namespace.add_channel_to_socket("room-*", &wildcard_socket);
+
+        let (v1, v2) =
+            namespace.get_matching_channel_socket_refs_partitioned_except("room-42", None);
+
+        assert!(v1.is_empty());
+        assert_eq!(v2.len(), 1);
+        assert_eq!(*v2[0].get_socket_id_sync(), wildcard_socket);
     }
 }

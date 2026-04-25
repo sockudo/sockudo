@@ -690,7 +690,24 @@ impl HistoryStore for MemoryHistoryStore {
         request.validate()?;
         let key = Self::channel_key(&request.app_id, &request.channel);
         let mut channels = self.channels.write().await;
-        let channel_state = channels.entry(key).or_default();
+        let Some(channel_state) = channels.get_mut(&key) else {
+            return Ok(HistoryPage {
+                items: Vec::new(),
+                next_cursor: None,
+                retained: HistoryRetentionStats {
+                    stream_id: None,
+                    retained_messages: 0,
+                    retained_bytes: 0,
+                    oldest_serial: None,
+                    newest_serial: None,
+                    oldest_published_at_ms: None,
+                    newest_published_at_ms: None,
+                },
+                has_more: false,
+                complete: true,
+                truncated_by_retention: false,
+            });
+        };
         let retention = channel_state
             .retention
             .clone()
@@ -1296,5 +1313,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 3, 4]
         );
+    }
+
+    #[tokio::test]
+    async fn memory_history_read_page_does_not_materialize_absent_channels() {
+        let store = MemoryHistoryStore::new(MemoryHistoryStoreConfig::default());
+
+        let page = store
+            .read_page(HistoryReadRequest {
+                app_id: "app".to_string(),
+                channel: "missing".to_string(),
+                direction: HistoryDirection::OldestFirst,
+                limit: 10,
+                cursor: None,
+                bounds: HistoryQueryBounds::default(),
+            })
+            .await
+            .unwrap();
+
+        assert!(page.items.is_empty());
+        assert_eq!(store.channels.read().await.len(), 0);
     }
 }

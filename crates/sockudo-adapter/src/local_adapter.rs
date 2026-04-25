@@ -341,8 +341,8 @@ impl LocalAdapter {
         for socket_ref in target_socket_refs {
             let socket_id = socket_ref.get_socket_id_sync();
 
-            // Check if socket has delta enabled
-            if delta_compression.is_enabled_for_socket(socket_id) {
+            // Check if socket has delta enabled for this specific channel
+            if delta_compression.is_enabled_for_socket_channel(socket_id, channel) {
                 debug!(
                     "Socket {} has delta compression enabled for channel {}",
                     socket_id, channel
@@ -699,7 +699,7 @@ impl LocalAdapter {
 
         // Only process delta compression if it's enabled for this socket
         let (compression_result, message_with_sequence) = if !delta_compression
-            .is_enabled_for_socket(socket_id)
+            .is_enabled_for_socket_channel(socket_id, channel)
         {
             (CompressionResult::Uncompressed, base_message_bytes.clone())
         } else {
@@ -1139,11 +1139,14 @@ impl LocalAdapter {
             .clone()
     }
 
-    /// Partition socket refs into V1 (strict Pusher) and V2 (Sockudo-native) groups.
-    fn partition_by_protocol(sockets: Vec<WebSocketRef>) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
-        sockets
-            .into_iter()
-            .partition(|s| s.protocol_version == sockudo_protocol::ProtocolVersion::V1)
+    fn existing_namespace(&self, app_id: &str) -> Option<Arc<Namespace>> {
+        self.namespaces
+            .get(app_id)
+            .map(|namespace| namespace.value().clone())
+    }
+
+    fn should_assign_v2_message_id(message: &PusherMessage) -> bool {
+        message.message_id.is_none() && !message.is_protocol_ping_or_pong()
     }
 
     fn v1_compatible_message(message: &PusherMessage) -> Option<PusherMessage> {
@@ -1195,17 +1198,17 @@ impl LocalAdapter {
 
     /// Apply tag filtering to V2 sockets. When the `tag-filtering` feature is
     /// disabled this is a no-op that returns the input unchanged.
-    fn filter_v2_sockets(
+    fn filter_v2_sockets_in_place(
         &self,
         channel: &str,
         message: &PusherMessage,
-        v2_sockets: Vec<WebSocketRef>,
+        v2_sockets: &mut Vec<WebSocketRef>,
         except: Option<&SocketId>,
         namespace: &Namespace,
-    ) -> Vec<WebSocketRef> {
+    ) {
         #[cfg(feature = "tag-filtering")]
         {
-            crate::v2_broadcast::apply_tag_filter(
+            crate::v2_broadcast::apply_tag_filter_in_place(
                 &self.filter_index,
                 self.tag_filtering_enabled.load(Ordering::Acquire),
                 channel,
@@ -1217,8 +1220,7 @@ impl LocalAdapter {
         }
         #[cfg(not(feature = "tag-filtering"))]
         {
-            let _ = (channel, message, except, namespace);
-            v2_sockets
+            let _ = (channel, message, v2_sockets, except, namespace);
         }
     }
 
@@ -1226,17 +1228,17 @@ impl LocalAdapter {
     /// matched sockets (used by `send_with_compression` where the filter index
     /// may contain both V1 and V2 socket IDs).
     #[cfg(feature = "delta")]
-    fn filter_v2_sockets_strict(
+    fn filter_v2_sockets_strict_in_place(
         &self,
         channel: &str,
         message: &PusherMessage,
-        v2_sockets: Vec<WebSocketRef>,
+        v2_sockets: &mut Vec<WebSocketRef>,
         except: Option<&SocketId>,
         namespace: &Namespace,
-    ) -> Vec<WebSocketRef> {
+    ) {
         #[cfg(feature = "tag-filtering")]
         {
-            crate::v2_broadcast::apply_tag_filter_v2_only(
+            crate::v2_broadcast::apply_tag_filter_v2_only_in_place(
                 &self.filter_index,
                 self.tag_filtering_enabled.load(Ordering::Acquire),
                 channel,
@@ -1248,8 +1250,7 @@ impl LocalAdapter {
         }
         #[cfg(not(feature = "tag-filtering"))]
         {
-            let _ = (channel, message, except, namespace);
-            v2_sockets
+            let _ = (channel, message, v2_sockets, except, namespace);
         }
     }
 
@@ -1274,26 +1275,27 @@ impl LocalAdapter {
         }
     }
 
-    async fn split_rewind_gated_sockets(
+    async fn split_rewind_gated_sockets_in_place(
         &self,
         channel: &str,
         message: &PusherMessage,
-        sockets: Vec<WebSocketRef>,
-    ) -> Vec<WebSocketRef> {
-        let mut ungated = Vec::with_capacity(sockets.len());
-        for socket in sockets {
-            if socket.buffer_rewind_message(channel, message).await {
-                continue;
+        sockets: &mut Vec<WebSocketRef>,
+    ) {
+        let mut index = 0;
+        while index < sockets.len() {
+            if sockets[index].buffer_rewind_message(channel, message).await {
+                sockets.swap_remove(index);
+            } else {
+                index += 1;
             }
-            ungated.push(socket);
         }
-        ungated
     }
 
     // Updated to return WebSocketRef instead of Arc<Mutex<WebSocket>>
-    pub async fn get_all_connections(&self, app_id: &str) -> DashMap<SocketId, WebSocketRef> {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        namespace.sockets.clone()
+    pub async fn get_all_connections(&self, app_id: &str) -> Vec<SocketId> {
+        self.existing_namespace(app_id)
+            .map(|namespace| namespace.sockets.iter().map(|entry| *entry.key()).collect())
+            .unwrap_or_default()
     }
 
     /// Fast-path channel join for LocalAdapter - atomic operation without locks
@@ -1376,7 +1378,7 @@ impl ConnectionManager for LocalAdapter {
     }
 
     async fn get_namespace(&self, app_id: &str) -> Option<Arc<Namespace>> {
-        Some(self.get_or_create_namespace(app_id).await)
+        self.existing_namespace(app_id)
     }
 
     async fn add_socket(
@@ -1422,8 +1424,9 @@ impl ConnectionManager for LocalAdapter {
             "LocalAdapter::get_connection: looking for socket {} in app {}",
             socket_id, app_id
         );
-        let namespace = self.get_or_create_namespace(app_id).await;
-        let result = namespace.get_connection(socket_id);
+        let result = self
+            .existing_namespace(app_id)
+            .and_then(|namespace| namespace.get_connection(socket_id));
         debug!(
             "LocalAdapter::get_connection: socket {} in app {} found: {}",
             socket_id,
@@ -1456,7 +1459,7 @@ impl ConnectionManager for LocalAdapter {
         match connection.protocol_version {
             sockudo_protocol::ProtocolVersion::V2 => {
                 let mut rewritten = message;
-                if rewritten.message_id.is_none() {
+                if Self::should_assign_v2_message_id(&rewritten) {
                     rewritten.message_id = Some(generate_message_id());
                 }
                 rewritten.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
@@ -1526,10 +1529,12 @@ impl ConnectionManager for LocalAdapter {
         }
 
         // Fall back to regular sending without delta compression
-        let namespace = self.get_namespace(app_id).await.unwrap();
+        let Some(namespace) = self.get_namespace(app_id).await else {
+            return Ok(());
+        };
 
         // Get target socket references based on channel type
-        let target_socket_refs = if channel.starts_with("#server-to-user-") {
+        let (v1_all_sockets, v2_target_sockets) = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
             let socket_refs = namespace.get_user_sockets(user_id).await?;
 
@@ -1541,23 +1546,28 @@ impl ConnectionManager for LocalAdapter {
                 }
             }
             target_refs
+                .into_iter()
+                .partition(|s| s.protocol_version == sockudo_protocol::ProtocolVersion::V1)
         } else {
-            namespace.get_matching_channel_socket_refs_except(channel, except)
+            namespace.get_matching_channel_socket_refs_partitioned_except(channel, except)
         };
-
-        let (v1_all_sockets, v2_target_sockets) = Self::partition_by_protocol(target_socket_refs);
 
         self.send_to_v1_sockets(v1_all_sockets, &message).await?;
 
-        let filtered_socket_refs =
-            self.filter_v2_sockets(channel, &message, v2_target_sockets, except, &namespace);
-
-        // Apply event name filtering (V2 only)
-        let filtered_socket_refs =
-            crate::v2_broadcast::apply_event_name_filter(channel, &message, filtered_socket_refs);
-
-        let filtered_socket_refs = self
-            .split_rewind_gated_sockets(channel, &message, filtered_socket_refs)
+        let mut filtered_socket_refs = v2_target_sockets;
+        self.filter_v2_sockets_in_place(
+            channel,
+            &message,
+            &mut filtered_socket_refs,
+            except,
+            &namespace,
+        );
+        crate::v2_broadcast::apply_event_name_filter_in_place(
+            channel,
+            &message,
+            &mut filtered_socket_refs,
+        );
+        self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
             .await;
 
         // Send to filtered V2 sockets (Sockudo-native: sockudo: prefix, serial + message_id)
@@ -1590,10 +1600,12 @@ impl ConnectionManager for LocalAdapter {
         );
         debug!("Message: {:?}", message);
 
-        let namespace = self.get_namespace(app_id).await.unwrap();
+        let Some(namespace) = self.get_namespace(app_id).await else {
+            return Ok(());
+        };
 
         // Get target socket references based on channel type
-        let target_socket_refs = if channel.starts_with("#server-to-user-") {
+        let (v1_all_sockets, v2_target_sockets) = if channel.starts_with("#server-to-user-") {
             let user_id = channel.trim_start_matches("#server-to-user-");
             let socket_refs = namespace.get_user_sockets(user_id).await?;
 
@@ -1605,23 +1617,28 @@ impl ConnectionManager for LocalAdapter {
                 }
             }
             target_refs
+                .into_iter()
+                .partition(|s| s.protocol_version == sockudo_protocol::ProtocolVersion::V1)
         } else {
-            namespace.get_matching_channel_socket_refs_except(channel, except)
+            namespace.get_matching_channel_socket_refs_partitioned_except(channel, except)
         };
-
-        let (v1_all_sockets, v2_target_sockets) = Self::partition_by_protocol(target_socket_refs);
 
         self.send_to_v1_sockets(v1_all_sockets, &message).await?;
 
-        let filtered_socket_refs =
-            self.filter_v2_sockets_strict(channel, &message, v2_target_sockets, except, &namespace);
-
-        // Apply event name filtering (V2 only)
-        let filtered_socket_refs =
-            crate::v2_broadcast::apply_event_name_filter(channel, &message, filtered_socket_refs);
-
-        let filtered_socket_refs = self
-            .split_rewind_gated_sockets(channel, &message, filtered_socket_refs)
+        let mut filtered_socket_refs = v2_target_sockets;
+        self.filter_v2_sockets_strict_in_place(
+            channel,
+            &message,
+            &mut filtered_socket_refs,
+            except,
+            &namespace,
+        );
+        crate::v2_broadcast::apply_event_name_filter_in_place(
+            channel,
+            &message,
+            &mut filtered_socket_refs,
+        );
+        self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
             .await;
 
         let message = self.maybe_strip_tags(message, channel_settings);
@@ -1658,13 +1675,17 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>> {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        namespace.get_channel_members(channel).await
+        match self.existing_namespace(app_id) {
+            Some(namespace) => namespace.get_channel_members(channel).await,
+            None => Ok(HashMap::new()),
+        }
     }
 
     async fn get_channel_sockets(&self, app_id: &str, channel: &str) -> Result<Vec<SocketId>> {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        Ok(namespace.get_channel_sockets(channel))
+        Ok(self
+            .existing_namespace(app_id)
+            .map(|namespace| namespace.get_channel_sockets(channel))
+            .unwrap_or_default())
     }
 
     async fn remove_channel(&self, app_id: &str, channel: &str) {
@@ -1694,13 +1715,16 @@ impl ConnectionManager for LocalAdapter {
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool> {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        Ok(namespace.is_in_channel(channel, socket_id))
+        Ok(self
+            .existing_namespace(app_id)
+            .is_some_and(|namespace| namespace.is_in_channel(channel, socket_id)))
     }
 
     async fn get_user_sockets(&self, user_id: &str, app_id: &str) -> Result<Vec<WebSocketRef>> {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        namespace.get_user_sockets(user_id).await
+        match self.existing_namespace(app_id) {
+            Some(namespace) => namespace.get_user_sockets(user_id).await,
+            None => Ok(Vec::new()),
+        }
     }
 
     async fn cleanup_connection(&self, app_id: &str, ws: WebSocketRef) {
@@ -1741,8 +1765,9 @@ impl ConnectionManager for LocalAdapter {
     }
 
     async fn get_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        namespace.get_channel_socket_count(channel)
+        self.existing_namespace(app_id)
+            .map(|namespace| namespace.get_channel_socket_count(channel))
+            .unwrap_or(0)
     }
 
     async fn add_to_channel(
@@ -1819,7 +1844,7 @@ impl ConnectionManager for LocalAdapter {
             let ws_guard = ws_ref.inner.lock().await;
             ws_guard.state.get_app_id()
         };
-        let namespace = self.get_namespace(&app_id).await.unwrap();
+        let namespace = self.get_or_create_namespace(&app_id).await;
         namespace.add_user(ws_ref).await
     }
 
@@ -1830,8 +1855,10 @@ impl ConnectionManager for LocalAdapter {
             let ws_guard = ws_ref.inner.lock().await;
             ws_guard.state.get_app_id()
         };
-        let namespace = self.get_namespace(&app_id).await.unwrap();
-        namespace.remove_user(ws_ref).await
+        match self.existing_namespace(&app_id) {
+            Some(namespace) => namespace.remove_user(ws_ref).await,
+            None => Ok(()),
+        }
     }
 
     async fn remove_user_socket(
@@ -1840,8 +1867,10 @@ impl ConnectionManager for LocalAdapter {
         socket_id: &SocketId,
         app_id: &str,
     ) -> Result<()> {
-        let namespace = self.get_namespace(app_id).await.unwrap();
-        namespace.remove_user_socket(user_id, socket_id).await
+        match self.existing_namespace(app_id) {
+            Some(namespace) => namespace.remove_user_socket(user_id, socket_id).await,
+            None => Ok(()),
+        }
     }
 
     async fn count_user_connections_in_channel(
@@ -1851,15 +1880,21 @@ impl ConnectionManager for LocalAdapter {
         channel: &str,
         excluding_socket: Option<&SocketId>,
     ) -> Result<usize> {
-        let namespace = self.get_namespace(app_id).await.unwrap();
-        namespace
-            .count_user_connections_in_channel(user_id, channel, excluding_socket)
-            .await
+        match self.existing_namespace(app_id) {
+            Some(namespace) => {
+                namespace
+                    .count_user_connections_in_channel(user_id, channel, excluding_socket)
+                    .await
+            }
+            None => Ok(0),
+        }
     }
 
     async fn get_channels_with_socket_count(&self, app_id: &str) -> Result<HashMap<String, usize>> {
-        let namespace = self.get_or_create_namespace(app_id).await;
-        namespace.get_channels_with_socket_count().await
+        match self.existing_namespace(app_id) {
+            Some(namespace) => namespace.get_channels_with_socket_count().await,
+            None => Ok(HashMap::new()),
+        }
     }
 
     async fn get_sockets_count(&self, app_id: &str) -> Result<usize> {
@@ -1904,6 +1939,7 @@ impl ConnectionManager for LocalAdapter {
 #[cfg(test)]
 mod tests {
     use super::LocalAdapter;
+    use crate::ConnectionManager;
     use sockudo_protocol::messages::{ExtrasValue, MessageData, MessageExtras, PusherMessage};
     use std::collections::HashMap;
 
@@ -1968,5 +2004,43 @@ mod tests {
         message.stream_id = Some("stream-1".to_string());
 
         assert!(LocalAdapter::v1_compatible_message(&message).is_none());
+    }
+
+    #[test]
+    fn v2_runtime_message_id_skips_protocol_heartbeats() {
+        assert!(!LocalAdapter::should_assign_v2_message_id(
+            &PusherMessage::ping()
+        ));
+        assert!(!LocalAdapter::should_assign_v2_message_id(
+            &PusherMessage::pong()
+        ));
+    }
+
+    #[test]
+    fn v2_runtime_message_id_still_assigns_regular_messages() {
+        let message = PusherMessage::channel_event(
+            "chat.message",
+            "room",
+            sonic_rs::json!({"text": "hello"}),
+        );
+
+        assert!(LocalAdapter::should_assign_v2_message_id(&message));
+    }
+
+    #[tokio::test]
+    async fn read_only_queries_do_not_create_empty_namespaces() {
+        let adapter = LocalAdapter::new();
+
+        assert_eq!(
+            ConnectionManager::get_channel_socket_count(&adapter, "missing-app", "room").await,
+            0
+        );
+        assert!(
+            ConnectionManager::get_channel_sockets(&adapter, "missing-app", "room")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(adapter.namespaces.len(), 0);
     }
 }

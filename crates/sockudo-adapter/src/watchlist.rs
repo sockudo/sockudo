@@ -45,6 +45,36 @@ impl WatchlistManager {
             .clone()
     }
 
+    fn is_user_online(state: &AppWatchlistState, user_id: &str) -> bool {
+        state
+            .online_users
+            .get(user_id)
+            .is_some_and(|sockets| !sockets.is_empty())
+    }
+
+    fn prune_watchlist_entry_if_empty(state: &mut AppWatchlistState, user_id: &str) {
+        let should_remove = state.watchlists.get(user_id).is_some_and(|entry| {
+            entry.watchers.is_empty()
+                && entry.watching.is_empty()
+                && !Self::is_user_online(state, user_id)
+        });
+
+        if should_remove {
+            state.watchlists.remove(user_id);
+        }
+    }
+
+    fn remove_watching_edge(
+        state: &mut AppWatchlistState,
+        watcher_id: &str,
+        watched_user_id: &str,
+    ) {
+        if let Some(watched_entry) = state.watchlists.get_mut(watched_user_id) {
+            watched_entry.watchers.remove(watcher_id);
+        }
+        Self::prune_watchlist_entry_if_empty(state, watched_user_id);
+    }
+
     /// Add a user with their watchlist
     pub async fn add_user_with_watchlist(
         &self,
@@ -73,9 +103,7 @@ impl WatchlistManager {
                 .unwrap_or_default();
 
             for removed_user_id in previous_watching.difference(&watching_set) {
-                if let Some(removed_entry) = state.watchlists.get_mut(removed_user_id) {
-                    removed_entry.watchers.remove(user_id);
-                }
+                Self::remove_watching_edge(&mut state, user_id, removed_user_id);
             }
 
             let user_watchers = {
@@ -170,13 +198,21 @@ impl WatchlistManager {
         if should_cleanup_user {
             state.online_users.remove(user_id);
 
-            if let Some(user_entry) = state.watchlists.remove(user_id) {
-                for watched_user_id in &user_entry.watching {
-                    if let Some(watched_entry) = state.watchlists.get_mut(watched_user_id) {
-                        watched_entry.watchers.remove(user_id);
-                    }
+            if let Some(previous_watching) = state
+                .watchlists
+                .get(user_id)
+                .map(|entry| entry.watching.iter().cloned().collect::<Vec<_>>())
+            {
+                if let Some(user_entry) = state.watchlists.get_mut(user_id) {
+                    user_entry.watching.clear();
+                }
+
+                for watched_user_id in previous_watching {
+                    Self::remove_watching_edge(&mut state, user_id, &watched_user_id);
                 }
             }
+
+            Self::prune_watchlist_entry_if_empty(&mut state, user_id);
         }
 
         Ok(events_to_send)
@@ -227,5 +263,74 @@ impl WatchlistManager {
         }
 
         Ok(watchers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sockudo_core::websocket::SocketId;
+
+    #[tokio::test]
+    async fn removes_empty_placeholder_entries_when_watchlist_changes() {
+        let manager = WatchlistManager::new();
+        let socket_id = SocketId::new();
+
+        manager
+            .add_user_with_watchlist(
+                "app",
+                "alice",
+                socket_id,
+                Some(vec!["bob".to_string(), "carol".to_string()]),
+            )
+            .await
+            .unwrap();
+        manager
+            .add_user_with_watchlist("app", "alice", socket_id, Some(vec!["bob".to_string()]))
+            .await
+            .unwrap();
+
+        let app_state = manager.apps.get("app").unwrap().value().clone();
+        let state = app_state.lock().unwrap();
+        assert!(state.watchlists.contains_key("bob"));
+        assert!(!state.watchlists.contains_key("carol"));
+    }
+
+    #[tokio::test]
+    async fn preserves_watcher_placeholders_when_user_goes_offline() {
+        let manager = WatchlistManager::new();
+        let watcher_socket = SocketId::new();
+        let watched_socket = SocketId::new();
+
+        manager
+            .add_user_with_watchlist(
+                "app",
+                "watcher",
+                watcher_socket,
+                Some(vec!["watched".to_string()]),
+            )
+            .await
+            .unwrap();
+        manager
+            .add_user_with_watchlist("app", "watched", watched_socket, Some(Vec::new()))
+            .await
+            .unwrap();
+
+        manager
+            .remove_user_connection("app", "watched", &watched_socket)
+            .await
+            .unwrap();
+
+        let watchers = manager
+            .get_watchers_for_user("app", "watched")
+            .await
+            .unwrap();
+        assert_eq!(watchers, vec!["watcher".to_string()]);
+
+        let app_state = manager.apps.get("app").unwrap().value().clone();
+        let state = app_state.lock().unwrap();
+        let watched_entry = state.watchlists.get("watched").unwrap();
+        assert!(watched_entry.watching.is_empty());
+        assert_eq!(watched_entry.watchers.len(), 1);
     }
 }
