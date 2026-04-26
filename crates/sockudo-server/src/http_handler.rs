@@ -2158,6 +2158,10 @@ pub async fn channels(
         .as_deref()
         .unwrap_or("");
     let wants_user_count = query_params_specific.info.as_ref().wants_user_count();
+    let wants_subscription_count = query_params_specific
+        .info
+        .as_ref()
+        .wants_subscription_count();
 
     let channels_map = handler
         .connection_manager()
@@ -2165,12 +2169,15 @@ pub async fn channels(
         .await?;
 
     let mut channels_info_response_map = AHashMap::new();
-    for (channel_name_str, _socket_count) in &channels_map {
+    for (channel_name_str, socket_count) in &channels_map {
         if !channel_name_str.starts_with(filter_prefix_str) {
             continue;
         }
         validate_channel_name(&app, channel_name_str).await?;
         let mut current_channel_info_map = sonic_rs::Object::new();
+        if wants_subscription_count {
+            current_channel_info_map.insert("subscription_count", json!(*socket_count));
+        }
         if wants_user_count {
             if channel_name_str.starts_with("presence-") {
                 let members_map = ChannelManager::get_channel_members(
@@ -3277,6 +3284,39 @@ mod tests {
         server_task.await.unwrap()
     }
 
+    fn empty_event_query() -> EventQuery {
+        EventQuery {
+            auth_key: String::new(),
+            auth_timestamp: String::new(),
+            auth_version: String::new(),
+            body_md5: String::new(),
+            auth_signature: String::new(),
+        }
+    }
+
+    fn test_realtime_handler_harness() -> (Arc<ConnectionHandler>, Arc<MemoryAppManager>) {
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let adapter = Arc::new(LocalAdapter::new());
+        let app_manager_dyn = app_manager.clone() as Arc<dyn AppManager + Send + Sync>;
+        let adapter_dyn =
+            adapter.clone() as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let handler = Arc::new(
+            ConnectionHandlerBuilder::new(
+                app_manager_dyn,
+                adapter_dyn,
+                cache,
+                sockudo_core::options::ServerOptions::default(),
+            )
+            .build(),
+        );
+
+        (handler, app_manager)
+    }
+
     async fn attach_signed_in_mutation_actor(
         handler: &Arc<ConnectionHandler>,
         app_manager: Arc<MemoryAppManager>,
@@ -3316,6 +3356,64 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn channels_list_includes_subscription_count_when_requested() {
+        let (handler, app_manager) = test_realtime_handler_harness();
+        let app = test_app();
+        app_manager.create_app(app.clone()).await.unwrap();
+
+        let socket_id = SocketId::from_string("31.31").unwrap();
+        handler
+            .connection_manager()
+            .add_socket(
+                socket_id,
+                test_websocket_writer().await,
+                &app.id,
+                app_manager as Arc<dyn AppManager + Send + Sync>,
+                WebSocketBufferConfig::default(),
+                ProtocolVersion::V2,
+                WireFormat::Json,
+                true,
+            )
+            .await
+            .unwrap();
+        handler
+            .connection_manager()
+            .add_to_channel(&app.id, "private-your-channel", &socket_id)
+            .await
+            .unwrap();
+
+        let response = channels(
+            Path(app.id.clone()),
+            Query(ChannelsQuery {
+                filter_by_prefix: Some("private-".to_string()),
+                info: Some("subscription_count".to_string()),
+                auth_params: empty_event_query(),
+            }),
+            Extension(app),
+            State(handler),
+            Uri::from_static(
+                "/apps/app-1/channels?filter_by_prefix=private-&info=subscription_count",
+            ),
+            RawQuery(Some(
+                "filter_by_prefix=private-&info=subscription_count".to_string(),
+            )),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert_eq!(
+            json["channels"]["private-your-channel"]["subscription_count"].as_u64(),
+            Some(1)
+        );
     }
 
     fn test_presence_history_handler_with_memory_store(
