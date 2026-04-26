@@ -5,6 +5,7 @@
 -- - applications table used by the MySQL app manager
 -- - durable history tables used by the MySQL history backend
 -- - versioned durable-message tables used by the release 4.3 mutable-message layer
+-- - annotation event/projection tables used by the release 4.4 annotation layer
 --
 -- Presence history does not have separate tables. When both `history.enabled`
 -- and `presence_history.enabled` are true, retained presence transitions are
@@ -14,6 +15,8 @@
 -- Backfill note:
 -- Existing immutable history is not backfilled into the versioned-message tables.
 -- Only release-4.3-aware mutable messages should populate those tables.
+-- Annotation tables are also additive. Existing channels have empty annotation
+-- stores until release-4.4-aware annotation events are published.
 
 CREATE TABLE IF NOT EXISTS `applications` (
     id VARCHAR(255) PRIMARY KEY,
@@ -148,6 +151,48 @@ ON `sockudo_history_version_entries` (app_id, channel, delivery_serial);
 
 CREATE INDEX sockudo_history_version_entries_history_version_idx
 ON `sockudo_history_version_entries` (app_id, channel, history_serial, version_serial DESC);
+
+CREATE TABLE IF NOT EXISTS `sockudo_history_annotation_events` (
+    app_id VARCHAR(255) NOT NULL,
+    channel VARCHAR(255) NOT NULL,
+    message_serial VARCHAR(128) NOT NULL,
+    annotation_serial VARCHAR(128) NOT NULL,
+    annotation_type VARCHAR(256) NOT NULL,
+    name VARCHAR(255) NULL,
+    client_id VARCHAR(255) NULL,
+    count_value BIGINT NULL,
+    action VARCHAR(64) NOT NULL,
+    data_bytes LONGBLOB NULL,
+    encoding VARCHAR(255) NULL,
+    annotation_timestamp_ms BIGINT NOT NULL,
+    payload_bytes LONGBLOB NOT NULL,
+    payload_size_bytes BIGINT NOT NULL,
+    created_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel, message_serial, annotation_serial)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX sockudo_history_annotation_events_summary_idx
+ON `sockudo_history_annotation_events` (app_id, channel, message_serial, annotation_type, annotation_serial);
+
+CREATE INDEX sockudo_history_annotation_events_dedup_idx
+ON `sockudo_history_annotation_events` (app_id, channel, message_serial, annotation_serial);
+
+CREATE INDEX sockudo_history_annotation_events_raw_replay_idx
+ON `sockudo_history_annotation_events` (app_id, channel, annotation_serial);
+
+CREATE INDEX sockudo_history_annotation_events_created_at_idx
+ON `sockudo_history_annotation_events` (created_at_ms);
+
+CREATE TABLE IF NOT EXISTS `sockudo_history_annotation_projections` (
+    app_id VARCHAR(255) NOT NULL,
+    channel VARCHAR(255) NOT NULL,
+    message_serial VARCHAR(128) NOT NULL,
+    annotation_type VARCHAR(256) NOT NULL,
+    summary_json JSON NOT NULL,
+    last_annotation_serial VARCHAR(128) NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel, message_serial, annotation_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `applications` (
     id,

@@ -17,6 +17,7 @@ pub mod webhook_management;
 use crate::ConnectionManager;
 use crate::presence::PresenceManager;
 use crate::watchlist::WatchlistManager;
+use sockudo_core::annotations::{AnnotationStore, MemoryAnnotationStore};
 use sockudo_core::app::App;
 use sockudo_core::app::AppManager;
 use sockudo_core::cache::CacheManager;
@@ -50,6 +51,7 @@ pub struct ConnectionHandler {
     pub(crate) cache_manager: Arc<dyn CacheManager + Send + Sync>,
     pub(crate) metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     pub(crate) history_store: Arc<dyn HistoryStore + Send + Sync>,
+    pub(crate) annotation_store: Arc<dyn AnnotationStore + Send + Sync>,
     pub(crate) version_store: Arc<dyn VersionStore + Send + Sync>,
     pub(crate) presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -77,6 +79,7 @@ pub struct ConnectionHandlerBuilder {
     cache_manager: Arc<dyn CacheManager + Send + Sync>,
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
     history_store: Option<Arc<dyn HistoryStore + Send + Sync>>,
+    annotation_store: Option<Arc<dyn AnnotationStore + Send + Sync>>,
     version_store: Option<Arc<dyn VersionStore + Send + Sync>>,
     presence_history_store: Option<Arc<dyn PresenceHistoryStore + Send + Sync>>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
@@ -100,6 +103,7 @@ impl ConnectionHandlerBuilder {
             cache_manager,
             metrics: None,
             history_store: None,
+            annotation_store: None,
             version_store: None,
             presence_history_store: None,
             webhook_integration: None,
@@ -122,6 +126,14 @@ impl ConnectionHandlerBuilder {
 
     pub fn history_store(mut self, history_store: Arc<dyn HistoryStore + Send + Sync>) -> Self {
         self.history_store = Some(history_store);
+        self
+    }
+
+    pub fn annotation_store(
+        mut self,
+        annotation_store: Arc<dyn AnnotationStore + Send + Sync>,
+    ) -> Self {
+        self.annotation_store = Some(annotation_store);
         self
     }
 
@@ -183,6 +195,9 @@ impl ConnectionHandlerBuilder {
             history_store: self
                 .history_store
                 .unwrap_or_else(|| Arc::new(NoopHistoryStore)),
+            annotation_store: self
+                .annotation_store
+                .unwrap_or_else(|| Arc::new(MemoryAnnotationStore::new())),
             version_store: self
                 .version_store
                 .unwrap_or_else(|| Arc::new(NoopVersionStore)),
@@ -253,6 +268,10 @@ impl ConnectionHandler {
 
     pub fn history_store(&self) -> &Arc<dyn HistoryStore + Send + Sync> {
         &self.history_store
+    }
+
+    pub fn annotation_store(&self) -> &Arc<dyn AnnotationStore + Send + Sync> {
+        &self.annotation_store
     }
 
     pub fn version_store(&self) -> &Arc<dyn VersionStore + Send + Sync> {

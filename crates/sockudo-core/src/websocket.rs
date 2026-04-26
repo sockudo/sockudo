@@ -308,6 +308,14 @@ pub struct ConnectionCapabilities {
     pub subscribe: Option<Vec<String>>,
     pub publish: Option<Vec<String>>,
     pub presence: Option<Vec<String>>,
+    #[serde(rename = "annotation-subscribe", alias = "annotation_subscribe")]
+    pub annotation_subscribe: Option<Vec<String>>,
+    #[serde(rename = "annotation-publish", alias = "annotation_publish")]
+    pub annotation_publish: Option<Vec<String>>,
+    #[serde(rename = "annotation-delete-own", alias = "annotation_delete_own")]
+    pub annotation_delete_own: Option<Vec<String>>,
+    #[serde(rename = "annotation-delete-any", alias = "annotation_delete_any")]
+    pub annotation_delete_any: Option<Vec<String>>,
     pub message_update_own: Option<Vec<String>>,
     pub message_update_any: Option<Vec<String>>,
     pub message_delete_own: Option<Vec<String>>,
@@ -339,6 +347,30 @@ impl ConnectionCapabilities {
         self.publish
             .as_deref()
             .is_none_or(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_annotation_subscribe(&self, channel: &str) -> bool {
+        self.annotation_subscribe
+            .as_deref()
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_annotation_publish(&self, channel: &str) -> bool {
+        self.annotation_publish
+            .as_deref()
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_annotation_delete_own(&self, channel: &str) -> bool {
+        self.annotation_delete_own
+            .as_deref()
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
+    }
+
+    pub fn allows_annotation_delete_any(&self, channel: &str) -> bool {
+        self.annotation_delete_any
+            .as_deref()
+            .is_some_and(|patterns| Self::matches_any(patterns, channel))
     }
 
     pub fn allows_message_mutation_own(
@@ -1010,6 +1042,8 @@ pub struct WebSocketRef {
     pub channel_filters: Arc<DashMap<String, Option<Arc<FilterNode>>>>,
     /// V2 event name filters per channel. None = receive all events.
     pub event_name_filters: Arc<DashMap<String, Option<Vec<String>>>>,
+    /// V2 raw annotation delivery mode per channel.
+    pub annotation_subscriptions: Arc<DashMap<String, bool>>,
     pub rewind_gates: Arc<DashMap<String, Arc<Mutex<RewindGate>>>>,
     pub socket_id: SocketId,
     pub buffer_config: WebSocketBufferConfig,
@@ -1039,12 +1073,14 @@ impl WebSocketRef {
         }
 
         let event_name_filters = Arc::new(DashMap::new());
+        let annotation_subscriptions = Arc::new(DashMap::new());
         let rewind_gates = Arc::new(DashMap::new());
 
         Self {
             broadcast_tx,
             channel_filters,
             event_name_filters,
+            annotation_subscriptions,
             rewind_gates,
             socket_id,
             buffer_config,
@@ -1177,7 +1213,8 @@ impl WebSocketRef {
         let mut ws = self.inner.lock().await;
         ws.subscribe_to_channel(channel.clone());
         self.channel_filters.insert(channel.clone(), None);
-        self.event_name_filters.insert(channel, None);
+        self.event_name_filters.insert(channel.clone(), None);
+        self.annotation_subscriptions.insert(channel, false);
     }
 
     pub async fn subscribe_to_channel_with_filter(
@@ -1193,7 +1230,8 @@ impl WebSocketRef {
         ws.subscribe_to_channel_with_filter(channel.clone(), filter.clone());
         self.channel_filters
             .insert(channel.clone(), filter.map(Arc::new));
-        self.event_name_filters.insert(channel, None);
+        self.event_name_filters.insert(channel.clone(), None);
+        self.annotation_subscriptions.insert(channel, false);
     }
 
     /// Subscribe with both tag filter and event name filter (V2).
@@ -1202,6 +1240,7 @@ impl WebSocketRef {
         channel: String,
         mut tag_filter: Option<FilterNode>,
         event_name_filter: Option<Vec<String>>,
+        annotation_subscribe: bool,
     ) {
         if let Some(ref mut f) = tag_filter {
             f.optimize();
@@ -1211,7 +1250,10 @@ impl WebSocketRef {
         ws.subscribe_to_channel_with_filter(channel.clone(), tag_filter.clone());
         self.channel_filters
             .insert(channel.clone(), tag_filter.map(Arc::new));
-        self.event_name_filters.insert(channel, event_name_filter);
+        self.event_name_filters
+            .insert(channel.clone(), event_name_filter);
+        self.annotation_subscriptions
+            .insert(channel, annotation_subscribe);
     }
 
     pub async fn unsubscribe_from_channel(&self, channel: &str) -> bool {
@@ -1219,6 +1261,7 @@ impl WebSocketRef {
         let result = ws.unsubscribe_from_channel(channel);
         self.channel_filters.remove(channel);
         self.event_name_filters.remove(channel);
+        self.annotation_subscriptions.remove(channel);
         result
     }
 
@@ -1239,6 +1282,12 @@ impl WebSocketRef {
         self.event_name_filters
             .get(channel)
             .and_then(|entry| entry.value().clone())
+    }
+
+    pub fn allows_annotation_events_sync(&self, channel: &str) -> bool {
+        self.annotation_subscriptions
+            .get(channel)
+            .is_some_and(|entry| *entry.value())
     }
 
     pub fn start_rewind_gate(&self, channel: String) {
@@ -1367,6 +1416,7 @@ mod tests {
         assert!(capabilities.allows_subscribe("presence-chat:room-1"));
         assert!(capabilities.allows_publish("private-chat:room-1"));
         assert!(!capabilities.allows_publish("private-news:room-1"));
+        assert!(!capabilities.allows_annotation_publish("chat:room-1"));
     }
 
     #[test]
@@ -1397,6 +1447,7 @@ mod tests {
             message_delete_any: None,
             message_append_own: None,
             message_append_any: Some(vec!["stream:*".to_string()]),
+            ..Default::default()
         };
 
         assert!(capabilities.allows_message_mutation_own(
@@ -1419,6 +1470,25 @@ mod tests {
             crate::versioned_message_auth::MutationKind::Delete,
             "chat:room-1"
         ));
+    }
+
+    #[test]
+    fn test_connection_capabilities_parse_hyphenated_annotation_grants() {
+        let capabilities: ConnectionCapabilities = sonic_rs::from_str(
+            r#"{
+                "annotation-publish":["chat:*"],
+                "annotation-delete-own":["chat:*"],
+                "annotation-delete-any":["admin:*"],
+                "annotation-subscribe":["chat:*"]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(capabilities.allows_annotation_publish("chat:room-1"));
+        assert!(capabilities.allows_annotation_delete_own("chat:room-1"));
+        assert!(capabilities.allows_annotation_delete_any("admin:room-1"));
+        assert!(capabilities.allows_annotation_subscribe("chat:room-1"));
+        assert!(!capabilities.allows_annotation_publish("news:room-1"));
     }
 
     #[test]
