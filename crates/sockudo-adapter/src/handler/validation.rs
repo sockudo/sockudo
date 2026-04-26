@@ -50,6 +50,10 @@ fn validate_capability_permission(
     action: &str,
 ) -> Result<()> {
     let allowed = match action {
+        "annotation_subscribe" => {
+            capabilities.allows_subscribe(channel)
+                && capabilities.allows_annotation_subscribe(channel)
+        }
         "publish" => capabilities.allows_publish(channel),
         _ => capabilities.allows_subscribe(channel),
     };
@@ -152,6 +156,12 @@ impl ConnectionHandler {
                 &self.server_options().history,
             )?;
         }
+        if request.annotation_subscribe && !self.server_options().annotations.enabled {
+            return Err(Error::Channel(format!(
+                "Annotations are disabled for channel '{}'",
+                request.channel
+            )));
+        }
 
         // Check if authentication is required and provided
         let requires_auth =
@@ -168,6 +178,15 @@ impl ConnectionHandler {
                 .await?;
             self.validate_v2_capability(socket_id, app_config, &request.channel, "subscribe")
                 .await?;
+            if request.annotation_subscribe {
+                self.validate_v2_capability(
+                    socket_id,
+                    app_config,
+                    &request.channel,
+                    "annotation_subscribe",
+                )
+                .await?;
+            }
         }
 
         self.validate_v2_channel_access(socket_id, app_config, &request.channel)
@@ -420,6 +439,11 @@ impl ConnectionHandler {
         }
 
         let Some(capabilities) = connection.get_connection_capabilities().await else {
+            if action == "annotation_subscribe" {
+                return Err(Error::Auth(format!(
+                    "Connection is not allowed to receive raw annotations for channel '{channel}'"
+                )));
+            }
             return Ok(());
         };
 

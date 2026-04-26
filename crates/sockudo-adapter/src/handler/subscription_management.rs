@@ -3,6 +3,7 @@ use super::ConnectionHandler;
 use super::types::*;
 use crate::channel_manager::ChannelManager;
 use crate::channel_manager::JoinResponse;
+use sockudo_core::annotations::AnnotationProjectionsForChannelRequest;
 use sockudo_core::app::App;
 use sockudo_core::channel::{ChannelType, PresenceMemberInfo};
 use sockudo_core::error::Result;
@@ -13,9 +14,13 @@ use sockudo_delta::DeltaCompressionManager;
 use ahash::AHashMap;
 use sockudo_core::utils::is_cache_channel;
 use sockudo_core::websocket::SocketId;
-use sockudo_protocol::messages::{MessageData, PresenceData, PusherMessage};
+use sockudo_protocol::ProtocolVersion;
+use sockudo_protocol::messages::{
+    AnnotationSummaryEnvelope, MESSAGE_SUMMARY_EVENT_NAME, MessageData, MessageExtras,
+    MessageSummaryData, PresenceData, PusherMessage,
+};
 use sonic_rs::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -584,6 +589,7 @@ impl ConnectionHandler {
                         request.channel.clone(),
                         tag_filter,
                         request.event_name_filter.clone(),
+                        request.annotation_subscribe,
                     )
                     .await;
             }
@@ -624,6 +630,9 @@ impl ConnectionHandler {
                 drop(conn_locked);
             }
         }
+
+        self.send_annotation_summary_snapshots(socket_id, app_config, &request.channel)
+            .await?;
 
         Ok(())
     }
@@ -719,6 +728,80 @@ impl ConnectionHandler {
         self.connection_manager
             .send_message(&app_config.id, socket_id, response_msg)
             .await
+    }
+
+    async fn send_annotation_summary_snapshots(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        channel: &str,
+    ) -> Result<()> {
+        let Some(connection) = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        else {
+            return Ok(());
+        };
+        if connection.protocol_version != ProtocolVersion::V2 {
+            return Ok(());
+        }
+
+        let projections = self
+            .annotation_store()
+            .list_projections_for_channel(AnnotationProjectionsForChannelRequest {
+                app_id: app_config.id.clone(),
+                channel_id: channel.to_string(),
+            })
+            .await?;
+
+        for projection in projections {
+            let mut summary_by_type = BTreeMap::new();
+            summary_by_type.insert(
+                projection.annotation_type.as_str().to_string(),
+                sonic_rs::to_value(&projection.summary).map_err(|err| {
+                    sockudo_core::error::Error::InvalidMessageFormat(format!(
+                        "Failed to encode annotation summary: {err}"
+                    ))
+                })?,
+            );
+            let message = PusherMessage {
+                event: Some(MESSAGE_SUMMARY_EVENT_NAME.to_string()),
+                channel: Some(channel.to_string()),
+                data: Some(MessageData::Json(
+                    sonic_rs::to_value(&MessageSummaryData {
+                        action: "message.summary".to_string(),
+                        serial: projection.message_serial.as_str().to_string(),
+                        annotations: AnnotationSummaryEnvelope {
+                            summary: summary_by_type,
+                        },
+                    })
+                    .map_err(|err| {
+                        sockudo_core::error::Error::InvalidMessageFormat(format!(
+                            "Failed to encode annotation summary message: {err}"
+                        ))
+                    })?,
+                )),
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: Some(MessageExtras {
+                    ephemeral: Some(true),
+                    ..Default::default()
+                }),
+                delta_sequence: None,
+                delta_conflation_key: None,
+            };
+            connection.send_message(&message).await?;
+        }
+
+        Ok(())
     }
 
     /// Apply per-subscription delta settings from the subscription request

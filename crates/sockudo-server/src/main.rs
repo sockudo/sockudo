@@ -18,7 +18,7 @@ use axum::http::header::HeaderName;
 use axum::http::uri::Authority;
 use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::response::Redirect;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 #[cfg(unix)]
 use axum::serve::IncomingStream;
 use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
@@ -46,10 +46,11 @@ use crate::history::create_history_store;
 use crate::history::create_version_store;
 use crate::http_handler::{
     append_message, batch_events, channel, channel_history, channel_history_purge,
-    channel_history_reset, channel_history_state, channel_message, channel_message_versions,
-    channel_presence_history, channel_presence_history_reset, channel_presence_history_snapshot,
-    channel_presence_history_state, channel_users, channels, delete_message, events, fallback_404,
-    metrics, stats, terminate_user_connections, up, update_message, usage,
+    channel_history_reset, channel_history_state, channel_message, channel_message_annotations,
+    channel_message_versions, channel_presence_history, channel_presence_history_reset,
+    channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
+    delete_annotation, delete_message, events, fallback_404, metrics, publish_annotation, stats,
+    terminate_user_connections, up, update_message, usage,
 };
 use crate::presence_history::create_presence_history_store;
 use sockudo_adapter::factory::AdapterFactory;
@@ -1406,6 +1407,22 @@ impl SockudoServer {
             .route(
                 "/apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions",
                 get(channel_message_versions).route_layer(axum_middleware::from_fn_with_state(
+                    self.handler.clone(),
+                    pusher_api_auth_middleware,
+                )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/messages/{messageSerial}/annotations",
+                get(channel_message_annotations)
+                    .post(publish_annotation)
+                    .route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+            )
+            .route(
+                "/apps/{appId}/channels/{channelName}/messages/{messageSerial}/annotations/{annotationSerial}",
+                delete(delete_annotation).route_layer(axum_middleware::from_fn_with_state(
                     self.handler.clone(),
                     pusher_api_auth_middleware,
                 )),

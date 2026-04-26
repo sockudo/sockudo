@@ -1,3 +1,4 @@
+pub mod annotations;
 pub mod app;
 pub mod auth;
 pub mod cache;

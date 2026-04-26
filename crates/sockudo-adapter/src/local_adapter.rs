@@ -10,7 +10,9 @@ use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::namespace::{Namespace, SocketInitOptions};
 use sockudo_core::websocket::{SocketId, WebSocketRef};
-use sockudo_protocol::messages::{PusherMessage, generate_message_id};
+use sockudo_protocol::messages::{
+    ANNOTATION_EVENT_NAME, MESSAGE_SUMMARY_EVENT_NAME, PusherMessage, generate_message_id,
+};
 use sockudo_protocol::versioned_messages::extract_runtime_action;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::any::Any;
@@ -25,6 +27,25 @@ use tokio::sync::Semaphore;
 #[cfg(feature = "delta")]
 use tracing::warn;
 use tracing::{debug, error, info};
+
+fn filter_annotation_subscribers_in_place(
+    channel: &str,
+    message: &PusherMessage,
+    socket_refs: &mut Vec<WebSocketRef>,
+) {
+    if message.event.as_deref() != Some(ANNOTATION_EVENT_NAME) {
+        return;
+    }
+
+    socket_refs.retain(|socket_ref| socket_ref.allows_annotation_events_sync(channel));
+}
+
+fn is_v2_annotation_protocol_event(message: &PusherMessage) -> bool {
+    matches!(
+        message.event.as_deref(),
+        Some(ANNOTATION_EVENT_NAME) | Some(MESSAGE_SUMMARY_EVENT_NAME)
+    )
+}
 
 pub struct LocalAdapter {
     pub namespaces: Arc<DashMap<String, Arc<Namespace>>>,
@@ -1552,7 +1573,9 @@ impl ConnectionManager for LocalAdapter {
             namespace.get_matching_channel_socket_refs_partitioned_except(channel, except)
         };
 
-        self.send_to_v1_sockets(v1_all_sockets, &message).await?;
+        if !is_v2_annotation_protocol_event(&message) {
+            self.send_to_v1_sockets(v1_all_sockets, &message).await?;
+        }
 
         let mut filtered_socket_refs = v2_target_sockets;
         self.filter_v2_sockets_in_place(
@@ -1562,6 +1585,7 @@ impl ConnectionManager for LocalAdapter {
             except,
             &namespace,
         );
+        filter_annotation_subscribers_in_place(channel, &message, &mut filtered_socket_refs);
         crate::v2_broadcast::apply_event_name_filter_in_place(
             channel,
             &message,
@@ -1623,7 +1647,9 @@ impl ConnectionManager for LocalAdapter {
             namespace.get_matching_channel_socket_refs_partitioned_except(channel, except)
         };
 
-        self.send_to_v1_sockets(v1_all_sockets, &message).await?;
+        if !is_v2_annotation_protocol_event(&message) {
+            self.send_to_v1_sockets(v1_all_sockets, &message).await?;
+        }
 
         let mut filtered_socket_refs = v2_target_sockets;
         self.filter_v2_sockets_strict_in_place(
@@ -1633,6 +1659,7 @@ impl ConnectionManager for LocalAdapter {
             except,
             &namespace,
         );
+        filter_annotation_subscribers_in_place(channel, &message, &mut filtered_socket_refs);
         crate::v2_broadcast::apply_event_name_filter_in_place(
             channel,
             &message,

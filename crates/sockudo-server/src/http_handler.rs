@@ -9,6 +9,11 @@ use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use sockudo_adapter::ConnectionHandler;
 use sockudo_adapter::channel_manager::ChannelManager;
+use sockudo_core::annotations::{
+    Annotation, AnnotationAction, AnnotationEventLookupRequest, AnnotationEventsRequest,
+    AnnotationId, AnnotationSerial, AnnotationType, RawAnnotationReplayRequest,
+    StoredAnnotationEvent,
+};
 use sockudo_core::app::App;
 use sockudo_core::error::{HEALTH_CHECK_TIMEOUT_MS, HealthStatus};
 use sockudo_core::history::{
@@ -35,8 +40,9 @@ use sockudo_core::versioned_messages::{
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::constants::EVENT_NAME_MAX_LENGTH as DEFAULT_EVENT_NAME_MAX_LENGTH;
 use sockudo_protocol::messages::{
-    ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MessageData, PusherApiMessage,
-    PusherMessage,
+    ANNOTATION_EVENT_NAME, AnnotationEventAction, AnnotationEventData, AnnotationSummaryEnvelope,
+    ApiMessageData, BatchPusherApiMessage, InfoQueryParser, MESSAGE_SUMMARY_EVENT_NAME,
+    MessageData, MessageExtras, MessageSummaryData, PusherApiMessage, PusherMessage,
 };
 use sockudo_protocol::versioned_messages::{
     AppendMessageRequest, DeleteMessageRequest, GetMessageResponse, ListMessageVersionsResponse,
@@ -45,7 +51,11 @@ use sockudo_protocol::versioned_messages::{
     extract_runtime_message_serial,
 };
 use sonic_rs::{Value, json};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Duration,
+};
 use sysinfo::System;
 use thiserror::Error;
 use tokio::time::timeout;
@@ -61,6 +71,8 @@ pub enum AppError {
     AppValidationFailed(String),
     #[error("API request authentication failed: {0}")]
     ApiAuthFailed(String),
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
     #[error("Channel validation failed: Missing 'channels' or 'channel' field")]
     MissingChannelInfo,
     #[error("User connection termination failed: {0}")]
@@ -95,6 +107,7 @@ impl IntoResponse for AppError {
                 msg.clone(),
             ),
             AppError::ApiAuthFailed(msg) => (StatusCode::UNAUTHORIZED, "auth_failed", msg.clone()),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "forbidden", msg.clone()),
             AppError::MissingChannelInfo => (
                 StatusCode::BAD_REQUEST,
                 "missing_channel_info",
@@ -254,6 +267,74 @@ pub struct VersionMutationPath {
     pub channel_name: String,
     #[serde(rename = "messageSerial")]
     pub message_serial: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnnotationMutationPath {
+    #[serde(rename = "appId")]
+    pub app_id: String,
+    #[serde(rename = "channelName")]
+    pub channel_name: String,
+    #[serde(rename = "messageSerial")]
+    pub message_serial: String,
+    #[serde(rename = "annotationSerial")]
+    pub annotation_serial: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct AnnotationEventsQuery {
+    #[serde(rename = "type")]
+    pub annotation_type: Option<String>,
+    pub limit: Option<usize>,
+    pub from_serial: Option<String>,
+    pub socket_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishAnnotationRequest {
+    #[serde(rename = "type")]
+    pub annotation_type: String,
+    pub name: Option<String>,
+    pub client_id: Option<String>,
+    pub socket_id: Option<String>,
+    pub count: Option<u64>,
+    pub data: Option<Value>,
+    pub encoding: Option<String>,
+}
+
+impl PublishAnnotationRequest {
+    fn validate(&self) -> Result<(), String> {
+        if self.count == Some(0) {
+            return Err("Annotation count must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishAnnotationResponse {
+    pub annotation_serial: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAnnotationResponse {
+    pub annotation_serial: String,
+    pub deleted_annotation_serial: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationEventsResponse {
+    pub channel: String,
+    pub message_serial: String,
+    pub limit: usize,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    pub items: Vec<AnnotationEventData>,
 }
 
 impl<'de> Deserialize<'de> for ChannelQuery {
@@ -506,8 +587,114 @@ fn require_versioned_messages_enabled(
     Ok(())
 }
 
+fn require_annotations_enabled(
+    handler: &ConnectionHandler,
+    channel_name: &str,
+) -> Result<(), AppError> {
+    if !handler.server_options().annotations.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Annotations are disabled for channel '{channel_name}'"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_message_serial(raw: &str) -> Result<MessageSerial, AppError> {
     MessageSerial::new(raw.to_string()).map_err(AppError::from)
+}
+
+fn parse_annotation_serial(raw: &str) -> Result<AnnotationSerial, AppError> {
+    AnnotationSerial::new(raw.to_string()).map_err(AppError::from)
+}
+
+fn parse_annotation_type(raw: &str) -> Result<AnnotationType, AppError> {
+    AnnotationType::new(raw.to_string()).map_err(AppError::from)
+}
+
+fn annotation_wire_event(annotation: &Annotation) -> AnnotationEventData {
+    AnnotationEventData {
+        action: match annotation.action {
+            AnnotationAction::Create => AnnotationEventAction::Create,
+            AnnotationAction::Delete => AnnotationEventAction::Delete,
+        },
+        id: matches!(annotation.action, AnnotationAction::Create)
+            .then(|| annotation.id.as_str().to_string()),
+        serial: annotation.serial.as_str().to_string(),
+        message_serial: annotation.message_serial.as_str().to_string(),
+        annotation_type: annotation.annotation_type.as_str().to_string(),
+        name: annotation.name.clone(),
+        client_id: annotation.client_id.clone(),
+        count: annotation.count,
+        data: annotation.data.clone(),
+        encoding: annotation.encoding.clone(),
+        timestamp: annotation.timestamp,
+    }
+}
+
+fn annotation_event_message(
+    channel: &str,
+    annotation: &Annotation,
+) -> Result<PusherMessage, AppError> {
+    Ok(PusherMessage {
+        event: Some(ANNOTATION_EVENT_NAME.to_string()),
+        channel: Some(channel.to_string()),
+        data: Some(MessageData::Json(sonic_rs::to_value(
+            &annotation_wire_event(annotation),
+        )?)),
+        name: None,
+        user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
+        message_id: None,
+        stream_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
+    })
+}
+
+fn annotation_summary_message(
+    channel: &str,
+    message_serial: &MessageSerial,
+    annotation_type: &AnnotationType,
+    summary: &sockudo_core::annotations::AnnotationSummary,
+) -> Result<PusherMessage, AppError> {
+    let mut summary_by_type = BTreeMap::new();
+    summary_by_type.insert(
+        annotation_type.as_str().to_string(),
+        sonic_rs::to_value(summary)?,
+    );
+    Ok(PusherMessage {
+        event: Some(MESSAGE_SUMMARY_EVENT_NAME.to_string()),
+        channel: Some(channel.to_string()),
+        data: Some(MessageData::Json(sonic_rs::to_value(
+            &MessageSummaryData {
+                action: "message.summary".to_string(),
+                serial: message_serial.as_str().to_string(),
+                annotations: AnnotationSummaryEnvelope {
+                    summary: summary_by_type,
+                },
+            },
+        )?)),
+        name: None,
+        user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
+        message_id: None,
+        stream_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: Some(MessageExtras {
+            ephemeral: Some(true),
+            ..Default::default()
+        }),
+        delta_sequence: None,
+        delta_conflation_key: None,
+    })
 }
 
 fn protocol_action(
@@ -663,6 +850,160 @@ async fn resolve_mutation_actor_identity(
     })?;
 
     Ok(requested_client_id.map(str::to_string))
+}
+
+async fn resolve_annotation_publish_actor(
+    handler: &Arc<ConnectionHandler>,
+    app_id: &str,
+    channel: &str,
+    requested_client_id: Option<&str>,
+    requested_socket_id: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    if let Some(raw_socket_id) = requested_socket_id {
+        let socket_id = SocketId::from_string(raw_socket_id)
+            .map_err(|e| AppError::InvalidInput(format!("Invalid socket_id: {e}")))?;
+        let connection = handler
+            .connection_manager()
+            .get_connection(&socket_id, app_id)
+            .await
+            .ok_or_else(|| {
+                AppError::ApiAuthFailed(format!(
+                    "Annotation actor socket '{raw_socket_id}' is not connected"
+                ))
+            })?;
+
+        if connection.protocol_version != sockudo_protocol::ProtocolVersion::V2 {
+            return Err(AppError::ApiAuthFailed(
+                "Annotation actor socket must use protocol V2".to_string(),
+            ));
+        }
+
+        let actor_client_id = connection.get_user_id().await;
+        if let Some(requested_client_id) = requested_client_id
+            && actor_client_id.as_deref() != Some(requested_client_id)
+        {
+            return Err(AppError::ApiAuthFailed(format!(
+                "Requested client_id '{}' does not match authenticated actor",
+                requested_client_id
+            )));
+        }
+
+        if connection
+            .get_connection_capabilities()
+            .await
+            .is_none_or(|capabilities| {
+                !capabilities.allows_publish(channel)
+                    || !capabilities.allows_annotation_publish(channel)
+            })
+        {
+            return Err(AppError::Forbidden(format!(
+                "annotation-publish capability is required for channel '{channel}'"
+            )));
+        }
+
+        return Ok(actor_client_id.or_else(|| requested_client_id.map(str::to_string)));
+    }
+
+    Ok(requested_client_id.map(str::to_string))
+}
+
+async fn authorize_annotation_delete(
+    handler: &Arc<ConnectionHandler>,
+    app_id: &str,
+    channel: &str,
+    target_client_id: Option<&str>,
+    requested_socket_id: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let Some(raw_socket_id) = requested_socket_id else {
+        return Ok(None);
+    };
+
+    let socket_id = SocketId::from_string(raw_socket_id)
+        .map_err(|e| AppError::InvalidInput(format!("Invalid socket_id: {e}")))?;
+    let connection = handler
+        .connection_manager()
+        .get_connection(&socket_id, app_id)
+        .await
+        .ok_or_else(|| {
+            AppError::ApiAuthFailed(format!(
+                "Annotation actor socket '{raw_socket_id}' is not connected"
+            ))
+        })?;
+
+    if connection.protocol_version != sockudo_protocol::ProtocolVersion::V2 {
+        return Err(AppError::ApiAuthFailed(
+            "Annotation actor socket must use protocol V2".to_string(),
+        ));
+    }
+
+    let actor_client_id = connection.get_user_id().await;
+    let capabilities = connection.get_connection_capabilities().await;
+    let any_allowed = capabilities
+        .as_ref()
+        .is_some_and(|caps| caps.allows_annotation_delete_any(channel));
+    let own_allowed = capabilities
+        .as_ref()
+        .is_some_and(|caps| caps.allows_annotation_delete_own(channel))
+        && actor_client_id.as_deref().is_some()
+        && actor_client_id.as_deref() == target_client_id;
+
+    if any_allowed && actor_client_id.is_none() {
+        return Err(AppError::Forbidden(
+            "annotation-delete-any requires an identified client".to_string(),
+        ));
+    }
+
+    if !any_allowed && !own_allowed {
+        return Err(AppError::Forbidden(format!(
+            "annotation-delete-own or annotation-delete-any capability is required for channel '{channel}'"
+        )));
+    }
+
+    Ok(actor_client_id)
+}
+
+async fn authorize_annotation_subscribe(
+    handler: &Arc<ConnectionHandler>,
+    app_id: &str,
+    channel: &str,
+    requested_socket_id: Option<&str>,
+) -> Result<(), AppError> {
+    let Some(raw_socket_id) = requested_socket_id else {
+        return Ok(());
+    };
+
+    let socket_id = SocketId::from_string(raw_socket_id)
+        .map_err(|e| AppError::InvalidInput(format!("Invalid socket_id: {e}")))?;
+    let connection = handler
+        .connection_manager()
+        .get_connection(&socket_id, app_id)
+        .await
+        .ok_or_else(|| {
+            AppError::ApiAuthFailed(format!(
+                "Annotation subscriber socket '{raw_socket_id}' is not connected"
+            ))
+        })?;
+
+    if connection.protocol_version != sockudo_protocol::ProtocolVersion::V2 {
+        return Err(AppError::ApiAuthFailed(
+            "Annotation subscriber socket must use protocol V2".to_string(),
+        ));
+    }
+
+    if connection
+        .get_connection_capabilities()
+        .await
+        .is_none_or(|capabilities| {
+            !capabilities.allows_subscribe(channel)
+                || !capabilities.allows_annotation_subscribe(channel)
+        })
+    {
+        return Err(AppError::Forbidden(format!(
+            "annotation-subscribe capability is required for channel '{channel}'"
+        )));
+    }
+
+    Ok(())
 }
 
 fn update_delta_from_request(request: &UpdateMessageRequest) -> MessageFieldDelta {
@@ -2061,6 +2402,322 @@ pub async fn append_message(
     Ok((StatusCode::OK, Json(payload)).into_response())
 }
 
+/// POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/annotations
+#[instrument(skip(handler, request), fields(app_id = %path.app_id, channel = %path.channel_name, message_serial = %path.message_serial))]
+pub async fn publish_annotation(
+    Path(path): Path<VersionMutationPath>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+    Json(request): Json<PublishAnnotationRequest>,
+) -> Result<AxumResponse, AppError> {
+    validate_channel_name(&app, &path.channel_name).await?;
+    require_versioned_messages_enabled(&handler, &path.channel_name)?;
+    require_annotations_enabled(&handler, &path.channel_name)?;
+    let history_policy =
+        app.resolved_history(&path.channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            path.channel_name
+        )));
+    }
+    request.validate().map_err(AppError::InvalidInput)?;
+
+    let message_serial = parse_message_serial(&path.message_serial)?;
+    if handler
+        .version_store()
+        .get_latest(&path.app_id, &path.channel_name, &message_serial)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::NotFound(format!(
+            "Message '{}' was not found in channel '{}'",
+            path.message_serial, path.channel_name
+        )));
+    }
+
+    let annotation_type = parse_annotation_type(&request.annotation_type)?;
+    let actor_client_id = resolve_annotation_publish_actor(
+        &handler,
+        &path.app_id,
+        &path.channel_name,
+        request.client_id.as_deref(),
+        request.socket_id.as_deref(),
+    )
+    .await?;
+    let serial = AnnotationSerial::new(handler.next_version_serial().to_string())?;
+    let annotation = Annotation {
+        id: AnnotationId::new(uuid::Uuid::new_v4().to_string())?,
+        action: AnnotationAction::Create,
+        serial: serial.clone(),
+        message_serial: message_serial.clone(),
+        annotation_type: annotation_type.clone(),
+        name: request.name.clone(),
+        client_id: actor_client_id,
+        count: request.count,
+        data: request.data.clone(),
+        encoding: request.encoding.clone(),
+        timestamp: sockudo_core::history::now_ms(),
+    };
+    annotation.validate().map_err(AppError::from)?;
+
+    let projection = handler
+        .annotation_store()
+        .append_event(StoredAnnotationEvent {
+            app_id: path.app_id.clone(),
+            channel_id: path.channel_name.clone(),
+            annotation: annotation.clone(),
+            stored_at_ms: sockudo_core::history::now_ms(),
+        })
+        .await?;
+
+    let raw_message = annotation_event_message(&path.channel_name, &annotation)?;
+    handler
+        .broadcast_to_channel_force_full(&app, &path.channel_name, raw_message, None, None)
+        .await?;
+
+    let summary_message = annotation_summary_message(
+        &path.channel_name,
+        &message_serial,
+        &annotation_type,
+        &projection.summary,
+    )?;
+    handler
+        .broadcast_to_channel_force_full(&app, &path.channel_name, summary_message, None, None)
+        .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(PublishAnnotationResponse {
+            annotation_serial: serial.as_str().to_string(),
+        }),
+    )
+        .into_response())
+}
+
+/// DELETE /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/annotations/{annotation_serial}
+#[instrument(skip(handler), fields(app_id = %path.app_id, channel = %path.channel_name, message_serial = %path.message_serial, annotation_serial = %path.annotation_serial))]
+pub async fn delete_annotation(
+    Path(path): Path<AnnotationMutationPath>,
+    Query(query): Query<HashMap<String, String>>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<AxumResponse, AppError> {
+    validate_channel_name(&app, &path.channel_name).await?;
+    require_versioned_messages_enabled(&handler, &path.channel_name)?;
+    require_annotations_enabled(&handler, &path.channel_name)?;
+    let message_serial = parse_message_serial(&path.message_serial)?;
+    let target_serial = parse_annotation_serial(&path.annotation_serial)?;
+    let target = handler
+        .annotation_store()
+        .get_event_by_serial(AnnotationEventLookupRequest {
+            app_id: path.app_id.clone(),
+            channel_id: path.channel_name.clone(),
+            annotation_serial: target_serial.clone(),
+        })
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Annotation '{}' was not found in channel '{}'",
+                path.annotation_serial, path.channel_name
+            ))
+        })?;
+
+    if target.message_serial() != &message_serial {
+        return Err(AppError::NotFound(format!(
+            "Annotation '{}' does not target message '{}'",
+            path.annotation_serial, path.message_serial
+        )));
+    }
+    if target.annotation.action != AnnotationAction::Create {
+        return Err(AppError::InvalidInput(
+            "Only annotation.create events can be deleted".to_string(),
+        ));
+    }
+
+    authorize_annotation_delete(
+        &handler,
+        &path.app_id,
+        &path.channel_name,
+        target.annotation.client_id.as_deref(),
+        query.get("socket_id").map(String::as_str),
+    )
+    .await?;
+
+    let existing = handler
+        .annotation_store()
+        .get_events(AnnotationEventsRequest {
+            app_id: path.app_id.clone(),
+            channel_id: path.channel_name.clone(),
+            message_serial: message_serial.clone(),
+            annotation_type: target.annotation.annotation_type.clone(),
+        })
+        .await?;
+    if existing.iter().any(|record| {
+        record.annotation.action == AnnotationAction::Delete
+            && record.annotation.id == target.annotation.id
+    }) {
+        return Ok((
+            StatusCode::OK,
+            Json(DeleteAnnotationResponse {
+                annotation_serial: path.annotation_serial,
+                deleted_annotation_serial: target_serial.as_str().to_string(),
+            }),
+        )
+            .into_response());
+    }
+
+    let delete_serial = AnnotationSerial::new(handler.next_version_serial().to_string())?;
+    let annotation = Annotation {
+        id: target.annotation.id.clone(),
+        action: AnnotationAction::Delete,
+        serial: delete_serial.clone(),
+        message_serial: message_serial.clone(),
+        annotation_type: target.annotation.annotation_type.clone(),
+        name: target.annotation.name.clone(),
+        client_id: target.annotation.client_id.clone(),
+        count: target.annotation.count,
+        data: None,
+        encoding: None,
+        timestamp: sockudo_core::history::now_ms(),
+    };
+    annotation.validate().map_err(AppError::from)?;
+
+    let projection = handler
+        .annotation_store()
+        .append_event(StoredAnnotationEvent {
+            app_id: path.app_id.clone(),
+            channel_id: path.channel_name.clone(),
+            annotation: annotation.clone(),
+            stored_at_ms: sockudo_core::history::now_ms(),
+        })
+        .await?;
+
+    let raw_message = annotation_event_message(&path.channel_name, &annotation)?;
+    handler
+        .broadcast_to_channel_force_full(&app, &path.channel_name, raw_message, None, None)
+        .await?;
+
+    let summary_message = annotation_summary_message(
+        &path.channel_name,
+        &message_serial,
+        &target.annotation.annotation_type,
+        &projection.summary,
+    )?;
+    handler
+        .broadcast_to_channel_force_full(&app, &path.channel_name, summary_message, None, None)
+        .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(DeleteAnnotationResponse {
+            annotation_serial: delete_serial.as_str().to_string(),
+            deleted_annotation_serial: target_serial.as_str().to_string(),
+        }),
+    )
+        .into_response())
+}
+
+/// GET /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/annotations
+#[instrument(skip(handler), fields(app_id = %path.app_id, channel = %path.channel_name, message_serial = %path.message_serial))]
+pub async fn channel_message_annotations(
+    Path(path): Path<VersionMutationPath>,
+    Query(query): Query<AnnotationEventsQuery>,
+    Extension(app): Extension<App>,
+    State(handler): State<Arc<ConnectionHandler>>,
+) -> Result<impl IntoResponse, AppError> {
+    validate_channel_name(&app, &path.channel_name).await?;
+    require_versioned_messages_enabled(&handler, &path.channel_name)?;
+    require_annotations_enabled(&handler, &path.channel_name)?;
+    let history_policy =
+        app.resolved_history(&path.channel_name, &handler.server_options().history);
+    if !history_policy.enabled {
+        return Err(AppError::FeatureDisabled(format!(
+            "Durable history is disabled by policy for channel '{}'",
+            path.channel_name
+        )));
+    }
+    authorize_annotation_subscribe(
+        &handler,
+        &path.app_id,
+        &path.channel_name,
+        query.socket_id.as_deref(),
+    )
+    .await?;
+    let message_serial = parse_message_serial(&path.message_serial)?;
+    let limit = query
+        .limit
+        .unwrap_or(handler.server_options().versioned_messages.max_page_size)
+        .min(handler.server_options().versioned_messages.max_page_size);
+    if limit == 0 {
+        return Err(AppError::InvalidInput(
+            "Annotation event limit must be greater than 0".to_string(),
+        ));
+    }
+    let from_serial = match query.from_serial.as_deref() {
+        Some(raw) => Some(parse_annotation_serial(raw)?),
+        None => None,
+    };
+
+    let mut items = if let Some(raw_type) = query.annotation_type.as_deref() {
+        let annotation_type = parse_annotation_type(raw_type)?;
+        handler
+            .annotation_store()
+            .get_events(AnnotationEventsRequest {
+                app_id: path.app_id.clone(),
+                channel_id: path.channel_name.clone(),
+                message_serial: message_serial.clone(),
+                annotation_type,
+            })
+            .await?
+            .into_iter()
+            .filter(|record| {
+                from_serial
+                    .as_ref()
+                    .is_none_or(|serial| record.annotation_serial() > serial)
+            })
+            .take(limit + 1)
+            .collect::<Vec<_>>()
+    } else {
+        handler
+            .annotation_store()
+            .replay_raw(RawAnnotationReplayRequest {
+                app_id: path.app_id.clone(),
+                channel_id: path.channel_name.clone(),
+                after_annotation_serial: from_serial,
+                limit: usize::MAX,
+            })
+            .await?
+            .into_iter()
+            .filter(|record| record.message_serial() == &message_serial)
+            .take(limit + 1)
+            .collect::<Vec<_>>()
+    };
+    items.sort_by(|left, right| left.annotation_serial().cmp(right.annotation_serial()));
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    let next_cursor = has_more
+        .then(|| {
+            items
+                .last()
+                .map(|record| record.annotation_serial().as_str().to_string())
+        })
+        .flatten();
+
+    let payload = AnnotationEventsResponse {
+        channel: path.channel_name,
+        message_serial: path.message_serial,
+        limit,
+        has_more,
+        next_cursor,
+        items: items
+            .iter()
+            .map(|record| annotation_wire_event(&record.annotation))
+            .collect(),
+    };
+    Ok((StatusCode::OK, Json(payload)))
+}
+
 /// GET /apps/{app_id}/channels/{channel_name}
 #[instrument(skip(handler), fields(app_id = %app_id, channel = %channel_name))]
 pub async fn channel(
@@ -3188,6 +3845,18 @@ mod tests {
         Arc<LocalAdapter>,
         Arc<MemoryAppManager>,
     ) {
+        test_versioned_handler_harness_with_annotations(max_page_size, version_store, true)
+    }
+
+    fn test_versioned_handler_harness_with_annotations(
+        max_page_size: usize,
+        version_store: Arc<dyn VersionStore + Send + Sync>,
+        annotations_enabled: bool,
+    ) -> (
+        Arc<ConnectionHandler>,
+        Arc<LocalAdapter>,
+        Arc<MemoryAppManager>,
+    ) {
         let app_manager = Arc::new(MemoryAppManager::new());
         let adapter = Arc::new(LocalAdapter::new());
         let app_manager_dyn = app_manager.clone() as Arc<dyn AppManager + Send + Sync>;
@@ -3202,6 +3871,7 @@ mod tests {
         options.versioned_messages.enabled = true;
         options.versioned_messages.max_page_size = max_page_size;
         options.history.enabled = true;
+        options.annotations.enabled = annotations_enabled;
 
         let handler = Arc::new(
             ConnectionHandlerBuilder::new(app_manager_dyn, adapter_dyn, cache, options)
@@ -5635,6 +6305,219 @@ mod tests {
         };
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn annotation_publish_requires_feature_flag() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let (handler, _adapter, _app_manager) =
+            test_versioned_handler_harness_with_annotations(100, store.clone(), false);
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let response = match publish_annotation(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(PublishAnnotationRequest {
+                annotation_type: "reactions:total.v1".to_string(),
+                name: None,
+                client_id: None,
+                socket_id: None,
+                count: None,
+                data: None,
+                encoding: None,
+            }),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected annotations feature-disabled error"),
+        };
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn annotation_publish_denies_socket_without_annotation_publish_capability() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let (handler, _adapter, app_manager) = test_versioned_handler_harness(100, store.clone());
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let socket_id = SocketId::from_string("21.21").unwrap();
+        attach_signed_in_mutation_actor(
+            &handler,
+            app_manager,
+            &app,
+            socket_id,
+            "user-1",
+            ConnectionCapabilities {
+                publish: Some(vec!["versioned-room".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = match publish_annotation(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(PublishAnnotationRequest {
+                annotation_type: "reactions:distinct.v1".to_string(),
+                name: Some("thumbsup".to_string()),
+                client_id: Some("user-1".to_string()),
+                socket_id: Some(socket_id.to_string()),
+                count: None,
+                data: None,
+                encoding: None,
+            }),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected annotation-publish capability denial"),
+        };
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn annotation_publish_rejects_unidentified_ownership_summarizer() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store.clone());
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let response = match publish_annotation(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(PublishAnnotationRequest {
+                annotation_type: "reactions:flag.v1".to_string(),
+                name: None,
+                client_id: None,
+                socket_id: None,
+                count: None,
+                data: None,
+                encoding: None,
+            }),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected missing client_id validation"),
+        };
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn annotation_delete_own_denies_identity_mismatch() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let (handler, _adapter, app_manager) = test_versioned_handler_harness(100, store);
+        let app = test_app();
+
+        handler
+            .annotation_store()
+            .append_event(StoredAnnotationEvent {
+                app_id: "app-1".to_string(),
+                channel_id: "versioned-room".to_string(),
+                stored_at_ms: sockudo_core::history::now_ms(),
+                annotation: Annotation {
+                    id: AnnotationId::new("ann-1").unwrap(),
+                    action: AnnotationAction::Create,
+                    serial: AnnotationSerial::new("ann:1").unwrap(),
+                    message_serial: MessageSerial::new("msg:1").unwrap(),
+                    annotation_type: AnnotationType::new("reactions:distinct.v1").unwrap(),
+                    name: Some("thumbsup".to_string()),
+                    client_id: Some("user-1".to_string()),
+                    count: None,
+                    data: None,
+                    encoding: None,
+                    timestamp: sockudo_core::history::now_ms(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let socket_id = SocketId::from_string("22.22").unwrap();
+        attach_signed_in_mutation_actor(
+            &handler,
+            app_manager,
+            &app,
+            socket_id,
+            "user-2",
+            ConnectionCapabilities {
+                annotation_delete_own: Some(vec!["versioned-room".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = match delete_annotation(
+            Path(AnnotationMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+                annotation_serial: "ann:1".to_string(),
+            }),
+            Query(HashMap::from([(
+                "socket_id".to_string(),
+                socket_id.to_string(),
+            )])),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected annotation-delete-own identity mismatch"),
+        };
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

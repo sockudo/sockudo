@@ -5,6 +5,7 @@
 -- - applications table used by the PostgreSQL app manager
 -- - durable history tables used by the PostgreSQL history backend
 -- - versioned durable-message tables used by the release 4.3 mutable-message layer
+-- - annotation event/projection tables used by the release 4.4 annotation layer
 --
 -- Presence history does not have separate tables. When both `history.enabled`
 -- and `presence_history.enabled` are true, retained presence transitions are
@@ -14,6 +15,8 @@
 -- Backfill note:
 -- Existing immutable history is not backfilled into the versioned-message tables.
 -- Only release-4.3-aware mutable messages should populate those tables.
+-- Annotation tables are also additive. Existing channels have empty annotation
+-- stores until release-4.4-aware annotation events are published.
 
 CREATE TABLE IF NOT EXISTS applications (
     id VARCHAR(255) PRIMARY KEY,
@@ -152,6 +155,48 @@ ON sockudo_history_version_entries (app_id, channel, delivery_serial);
 
 CREATE INDEX IF NOT EXISTS sockudo_history_version_entries_history_version_idx
 ON sockudo_history_version_entries (app_id, channel, history_serial, version_serial DESC);
+
+CREATE TABLE IF NOT EXISTS sockudo_history_annotation_events (
+    app_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    message_serial TEXT NOT NULL,
+    annotation_serial TEXT NOT NULL,
+    annotation_type TEXT NOT NULL,
+    name TEXT NULL,
+    client_id TEXT NULL,
+    count_value BIGINT NULL,
+    action TEXT NOT NULL,
+    data_bytes BYTEA NULL,
+    encoding TEXT NULL,
+    annotation_timestamp_ms BIGINT NOT NULL,
+    payload_bytes BYTEA NOT NULL,
+    payload_size_bytes BIGINT NOT NULL,
+    created_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel, message_serial, annotation_serial)
+);
+
+CREATE INDEX IF NOT EXISTS sockudo_history_annotation_events_summary_idx
+ON sockudo_history_annotation_events (app_id, channel, message_serial, annotation_type, annotation_serial);
+
+CREATE INDEX IF NOT EXISTS sockudo_history_annotation_events_dedup_idx
+ON sockudo_history_annotation_events (app_id, channel, message_serial, annotation_serial);
+
+CREATE INDEX IF NOT EXISTS sockudo_history_annotation_events_raw_replay_idx
+ON sockudo_history_annotation_events (app_id, channel, annotation_serial);
+
+CREATE INDEX IF NOT EXISTS sockudo_history_annotation_events_created_at_idx
+ON sockudo_history_annotation_events (created_at_ms);
+
+CREATE TABLE IF NOT EXISTS sockudo_history_annotation_projections (
+    app_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    message_serial TEXT NOT NULL,
+    annotation_type TEXT NOT NULL,
+    summary_json JSONB NOT NULL,
+    last_annotation_serial TEXT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (app_id, channel, message_serial, annotation_type)
+);
 
 INSERT INTO applications (
     id,
