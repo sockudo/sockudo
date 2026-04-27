@@ -14,7 +14,7 @@ const snippets = {
   sockudo:
     image: ghcr.io/sockudo/sockudo:latest
     ports: ["6001:6001"]
-    volumes: ["./config.toml:/app/config.toml"]`,
+    volumes: ["./config.toml:/app/config/config.toml"]`,
         summary: "Run docker compose up -d to start Sockudo on :6001.",
     },
     binstall: {
