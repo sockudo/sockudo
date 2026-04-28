@@ -2999,6 +2999,10 @@ impl ServerOptions {
                                 None
                             }
                         },
+                        annotations_enabled: Some(parse_bool_env(
+                            "SOCKUDO_DEFAULT_APP_ANNOTATIONS_ENABLED",
+                            false,
+                        )),
                         channel_delta_compression: None,
                         channel_namespaces: None,
                     },

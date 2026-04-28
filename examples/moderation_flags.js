@@ -1,7 +1,7 @@
 /**
  * Release 4.4 annotation summaries: moderation scores.
  *
- * Run:
+ * Run after setting `annotations_enabled = true` on the channel rule:
  *
  *   HISTORY_ENABLED=true VERSIONED_MESSAGES_ENABLED=true ANNOTATIONS_ENABLED=true cargo run -p sockudo
  *   node examples/moderation_flags.js

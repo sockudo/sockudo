@@ -190,6 +190,14 @@ impl DynamoDbAppManager {
                         } else {
                             None
                         },
+                        annotations_enabled: if let Some(
+                            aws_sdk_dynamodb::types::AttributeValue::Bool(b),
+                        ) = map.get("annotations_enabled")
+                        {
+                            Some(*b)
+                        } else {
+                            None
+                        },
                         channel_delta_compression: if let Some(
                             aws_sdk_dynamodb::types::AttributeValue::S(json_str),
                         ) = map.get("channel_delta_compression")

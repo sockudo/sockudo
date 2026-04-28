@@ -156,11 +156,19 @@ impl ConnectionHandler {
                 &self.server_options().history,
             )?;
         }
-        if request.annotation_subscribe && !self.server_options().annotations.enabled {
-            return Err(Error::Channel(format!(
-                "Annotations are disabled for channel '{}'",
-                request.channel
-            )));
+        if request.annotation_subscribe {
+            if !self.server_options().annotations.enabled {
+                return Err(Error::Channel(format!(
+                    "Annotations are disabled globally for channel '{}'",
+                    request.channel
+                )));
+            }
+            if !app_config.annotations_enabled_for_channel(&request.channel) {
+                return Err(Error::Channel(format!(
+                    "Annotations are disabled by channel policy for channel '{}'",
+                    request.channel
+                )));
+            }
         }
 
         // Check if authentication is required and provided
@@ -464,6 +472,7 @@ mod tests {
             name: "chat".to_string(),
             channel_name_pattern: None,
             max_channel_name_length: None,
+            annotations_enabled: None,
             allow_user_limited_channels: None,
             allow_subscribe_for_client: Some(false),
             allow_publish_for_client: None,
@@ -486,6 +495,7 @@ mod tests {
             name: "chat".to_string(),
             channel_name_pattern: None,
             max_channel_name_length: None,
+            annotations_enabled: None,
             allow_user_limited_channels: None,
             allow_subscribe_for_client: None,
             allow_publish_for_client: Some(false),
@@ -601,6 +611,7 @@ mod tests {
                         name: "chat".to_string(),
                         channel_name_pattern: None,
                         max_channel_name_length: None,
+                        annotations_enabled: None,
                         allow_user_limited_channels: None,
                         allow_subscribe_for_client: None,
                         allow_publish_for_client: None,

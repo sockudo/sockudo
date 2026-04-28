@@ -98,6 +98,8 @@ pub struct AppFeaturesPolicy {
 pub struct AppChannelsPolicy {
     #[serde(default, deserialize_with = "deserialize_and_validate_origins")]
     pub allowed_origins: Option<Vec<String>>,
+    #[serde(default)]
+    pub annotations_enabled: Option<bool>,
     pub channel_delta_compression: Option<AHashMap<String, crate::delta_types::ChannelDeltaConfig>>,
     pub channel_namespaces: Option<Vec<ChannelNamespace>>,
 }
@@ -238,6 +240,7 @@ pub struct AppFeaturesPolicyRef<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct AppChannelsPolicyRef<'a> {
     pub allowed_origins: Option<&'a [String]>,
+    pub annotations_enabled: Option<bool>,
     pub channel_delta_compression:
         Option<&'a AHashMap<String, crate::delta_types::ChannelDeltaConfig>>,
     pub channel_namespaces: Option<&'a [ChannelNamespace]>,
@@ -304,6 +307,7 @@ impl App {
             },
             channels: AppChannelsPolicyRef {
                 allowed_origins: self.policy.channels.allowed_origins.as_deref(),
+                annotations_enabled: self.policy.channels.annotations_enabled,
                 channel_delta_compression: self.policy.channels.channel_delta_compression.as_ref(),
                 channel_namespaces: self.policy.channels.channel_namespaces.as_deref(),
             },
@@ -467,6 +471,14 @@ impl App {
     }
 
     #[inline]
+    pub fn annotations_enabled_for_channel(&self, channel: &str) -> bool {
+        self.namespace_for_channel(channel)
+            .and_then(|namespace| namespace.annotations_enabled)
+            .or(self.policy.channels.annotations_enabled)
+            .unwrap_or(false)
+    }
+
+    #[inline]
     pub fn resolved_idempotency(&self, global: &IdempotencyConfig) -> IdempotencyConfig {
         match self.idempotency_override() {
             Some(app_config) => IdempotencyConfig {
@@ -501,11 +513,13 @@ impl App {
         let namespace_config = self
             .namespace_for_channel(channel)
             .and_then(|namespace| namespace.history.as_ref());
+        let annotations_require_history = self.annotations_enabled_for_channel(channel);
 
         ResolvedHistoryPolicy {
-            enabled: app_config
-                .and_then(|config| config.enabled)
-                .unwrap_or(global.enabled),
+            enabled: annotations_require_history
+                || app_config
+                    .and_then(|config| config.enabled)
+                    .unwrap_or(global.enabled),
             rewind_enabled: namespace_config
                 .and_then(|config| config.rewind_enabled)
                 .or_else(|| app_config.and_then(|config| config.rewind_enabled))
@@ -600,6 +614,8 @@ struct AppSerde {
     #[serde(default, deserialize_with = "deserialize_and_validate_origins")]
     allowed_origins: Option<Vec<String>>,
     #[serde(default)]
+    annotations_enabled: Option<bool>,
+    #[serde(default)]
     channel_delta_compression: Option<AHashMap<String, crate::delta_types::ChannelDeltaConfig>>,
     #[serde(default)]
     idempotency: Option<AppIdempotencyConfig>,
@@ -661,6 +677,7 @@ impl<'de> Deserialize<'de> for App {
                 },
                 channels: AppChannelsPolicy {
                     allowed_origins: app.allowed_origins,
+                    annotations_enabled: app.annotations_enabled,
                     channel_delta_compression: app.channel_delta_compression,
                     channel_namespaces: app.channel_namespaces,
                 },
@@ -680,6 +697,8 @@ pub struct ChannelNamespace {
     pub name: String,
     pub channel_name_pattern: Option<String>,
     pub max_channel_name_length: Option<u32>,
+    #[serde(default)]
+    pub annotations_enabled: Option<bool>,
     #[serde(default)]
     pub allow_user_limited_channels: Option<bool>,
     #[serde(default)]
@@ -868,6 +887,24 @@ mod tests {
         assert_eq!(namespaces[0].allow_subscribe_for_client, Some(true));
         assert_eq!(namespaces[0].allow_publish_for_client, Some(false));
         assert_eq!(namespaces[0].allow_presence_for_client, Some(true));
+        assert_eq!(namespaces[0].annotations_enabled, None);
+    }
+
+    #[test]
+    fn deserialize_channel_annotation_flags() {
+        let json = test_app_json(
+            "",
+            r#","channels":{"annotations_enabled":true,"channel_namespaces":[{"name":"chat","annotations_enabled":false}]}"#,
+        );
+        let app: App = sonic_rs::from_str(&json).unwrap();
+
+        assert_eq!(app.policy.channels.annotations_enabled, Some(true));
+        assert_eq!(
+            app.policy.channels.channel_namespaces.as_ref().unwrap()[0].annotations_enabled,
+            Some(false)
+        );
+        assert!(!app.annotations_enabled_for_channel("chat:room-1"));
+        assert!(app.annotations_enabled_for_channel("news:room-1"));
     }
 
     #[test]
@@ -888,6 +925,7 @@ mod tests {
             name: "chat".to_string(),
             channel_name_pattern: Some("[".to_string()),
             max_channel_name_length: None,
+            annotations_enabled: None,
             allow_user_limited_channels: None,
             allow_subscribe_for_client: None,
             allow_publish_for_client: None,
@@ -929,11 +967,13 @@ mod tests {
             },
             channels: AppChannelsPolicy {
                 allowed_origins: Some(vec!["https://example.com".to_string()]),
+                annotations_enabled: Some(true),
                 channel_delta_compression: None,
                 channel_namespaces: Some(vec![ChannelNamespace {
                     name: "chat".to_string(),
                     channel_name_pattern: Some("^chat:[a-z0-9-]+$".to_string()),
                     max_channel_name_length: Some(64),
+                    annotations_enabled: Some(true),
                     allow_user_limited_channels: Some(true),
                     allow_subscribe_for_client: Some(true),
                     allow_publish_for_client: Some(true),
@@ -976,6 +1016,7 @@ mod tests {
             app.policy().channels.channel_namespaces.unwrap()[0].name,
             "chat"
         );
+        assert!(app.policy().channels.annotations_enabled.unwrap());
         assert_eq!(app.policy().idempotency.unwrap().ttl_seconds, Some(300));
         assert_eq!(
             app.policy().connection_recovery.unwrap().max_buffer_size,
@@ -1060,6 +1101,7 @@ mod tests {
                         name: "chat".to_string(),
                         channel_name_pattern: None,
                         max_channel_name_length: None,
+                        annotations_enabled: None,
                         allow_user_limited_channels: None,
                         allow_subscribe_for_client: None,
                         allow_publish_for_client: None,
@@ -1090,6 +1132,46 @@ mod tests {
         assert_eq!(resolved.max_messages_per_channel, Some(8));
         assert_eq!(resolved.max_bytes_per_channel, Some(4096));
         assert!(resolved.rewind_allowed());
+    }
+
+    #[test]
+    fn resolved_history_annotations_enabled_forces_persistence() {
+        let app = App::from_policy(
+            "app".to_string(),
+            "key".to_string(),
+            "secret".to_string(),
+            true,
+            AppPolicy {
+                history: Some(AppHistoryConfig {
+                    enabled: Some(false),
+                    rewind_enabled: Some(false),
+                    retention_window_seconds: Some(60),
+                    max_messages_per_channel: Some(2),
+                    max_bytes_per_channel: Some(256),
+                }),
+                channels: AppChannelsPolicy {
+                    annotations_enabled: Some(false),
+                    channel_namespaces: Some(vec![ChannelNamespace {
+                        name: "chat".to_string(),
+                        annotations_enabled: Some(true),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let global = HistoryConfig {
+            enabled: false,
+            ..HistoryConfig::default()
+        };
+
+        let enabled = app.resolved_history("chat:room-1", &global);
+        let disabled = app.resolved_history("news:room-1", &global);
+
+        assert!(enabled.enabled);
+        assert_eq!(enabled.retention_window_seconds, 60);
+        assert!(!disabled.enabled);
     }
 
     #[test]

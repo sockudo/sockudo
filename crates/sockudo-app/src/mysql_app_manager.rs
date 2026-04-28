@@ -657,6 +657,7 @@ impl AppRow {
                 },
                 channels: sockudo_core::app::AppChannelsPolicy {
                     allowed_origins: self.allowed_origins,
+                    annotations_enabled: None,
                     channel_delta_compression: self.channel_delta_compression,
                     channel_namespaces: None,
                 },
@@ -723,7 +724,7 @@ impl Clone for MySQLAppManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sockudo_core::app::AppHistoryConfig;
+    use sockudo_core::app::{AppChannelsPolicy, AppHistoryConfig};
     use std::time::Duration;
 
     fn create_test_app(id: &str) -> App {
@@ -879,6 +880,10 @@ mod tests {
                     max_messages_per_channel: Some(5),
                     max_bytes_per_channel: Some(2048),
                 }),
+                channels: AppChannelsPolicy {
+                    annotations_enabled: Some(true),
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             webhooks: None,
@@ -893,5 +898,6 @@ mod tests {
         assert_eq!(history.enabled, Some(true));
         assert_eq!(history.rewind_enabled, Some(false));
         assert_eq!(history.max_messages_per_channel, Some(5));
+        assert_eq!(app.policy.channels.annotations_enabled, Some(true));
     }
 }

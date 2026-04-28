@@ -1,7 +1,8 @@
 /**
  * Release 4.4 annotation summaries: reactions.
  *
- * Run against a local Sockudo instance with annotations enabled:
+ * Run against a local Sockudo instance with annotations enabled globally and
+ * `annotations_enabled = true` on the channel rule:
  *
  *   HISTORY_ENABLED=true VERSIONED_MESSAGES_ENABLED=true ANNOTATIONS_ENABLED=true cargo run -p sockudo
  *   node examples/reactions_summary.js

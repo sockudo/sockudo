@@ -352,6 +352,7 @@ impl AppRow {
                             })
                             .ok()
                     }),
+                    annotations_enabled: None,
                     channel_delta_compression: self.channel_delta_compression.and_then(|json| {
                         sonic_rs::from_str::<
                             ahash::AHashMap<String, sockudo_core::delta_types::ChannelDeltaConfig>,
@@ -708,6 +709,7 @@ mod tests {
                         "https://example.com".to_string(),
                         "https://app.example.com".to_string(),
                     ]),
+                    annotations_enabled: None,
                     channel_delta_compression: None,
                     channel_namespaces: None,
                 },
@@ -949,6 +951,10 @@ mod tests {
                         max_messages_per_channel: Some(5),
                         max_bytes_per_channel: Some(2048),
                     }),
+                    channels: AppChannelsPolicy {
+                        annotations_enabled: Some(true),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 })
                 .unwrap(),
@@ -979,5 +985,6 @@ mod tests {
         assert_eq!(history.enabled, Some(true));
         assert_eq!(history.rewind_enabled, Some(false));
         assert_eq!(history.max_messages_per_channel, Some(5));
+        assert_eq!(app.policy.channels.annotations_enabled, Some(true));
     }
 }

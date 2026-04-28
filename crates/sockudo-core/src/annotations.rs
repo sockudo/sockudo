@@ -1243,22 +1243,29 @@ mod tests {
 
     #[test]
     fn validation_requires_client_for_ownership_summarizers() {
-        let error = event(
-            "ann:1",
-            "reaction:flag.v1",
-            AnnotationAction::Create,
-            None,
-            None,
-            None,
-        )
-        .validate()
-        .unwrap_err();
+        for (serial, annotation_type, name) in [
+            ("ann:1", "reaction:flag.v1", None),
+            ("ann:2", "reaction:distinct.v1", Some("like")),
+            ("ann:3", "reaction:unique.v1", Some("like")),
+        ] {
+            let error = event(
+                serial,
+                annotation_type,
+                AnnotationAction::Create,
+                name,
+                None,
+                None,
+            )
+            .validate()
+            .unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("annotation client_id is required")
-        );
+            assert!(
+                error
+                    .to_string()
+                    .contains("annotation client_id is required"),
+                "unexpected error for {annotation_type}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -1879,6 +1886,46 @@ mod tests {
             .await
             .unwrap();
 
+        let AnnotationSummary::Unique(names) = projection.summary else {
+            panic!("expected unique summary");
+        };
+        assert!(!names.contains_key("like"));
+        assert_eq!(names["laugh"].client_ids, vec!["client-1".to_string()]);
+        assert_eq!(projection.last_annotation_serial.unwrap().as_str(), "ann:2");
+    }
+
+    #[tokio::test]
+    async fn memory_store_converges_under_concurrent_unique_churn() {
+        let store = MemoryAnnotationStore::new();
+
+        let earlier = store.append_event(stored_event(
+            "ann:1",
+            "reaction:unique.v1",
+            AnnotationAction::Create,
+            Some("like"),
+            Some("client-1"),
+            None,
+            1,
+        ));
+        let later = store.append_event(stored_event(
+            "ann:2",
+            "reaction:unique.v1",
+            AnnotationAction::Create,
+            Some("laugh"),
+            Some("client-1"),
+            None,
+            2,
+        ));
+
+        let (earlier_result, later_result) = tokio::join!(earlier, later);
+        earlier_result.unwrap();
+        later_result.unwrap();
+
+        let projection = store
+            .get_projection(projection_request("reaction:unique.v1"))
+            .await
+            .unwrap()
+            .unwrap();
         let AnnotationSummary::Unique(names) = projection.summary else {
             panic!("expected unique summary");
         };

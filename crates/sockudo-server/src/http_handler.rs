@@ -586,11 +586,17 @@ fn require_versioned_messages_enabled(
 
 fn require_annotations_enabled(
     handler: &ConnectionHandler,
+    app: &App,
     channel_name: &str,
 ) -> Result<(), AppError> {
     if !handler.server_options().annotations.enabled {
         return Err(AppError::FeatureDisabled(format!(
-            "Annotations are disabled for channel '{channel_name}'"
+            "Annotations are disabled globally for channel '{channel_name}'"
+        )));
+    }
+    if !app.annotations_enabled_for_channel(channel_name) {
+        return Err(AppError::Forbidden(format!(
+            "Annotations are disabled by channel policy for channel '{channel_name}'"
         )));
     }
     Ok(())
@@ -2343,7 +2349,7 @@ pub async fn publish_annotation(
 ) -> Result<AxumResponse, AppError> {
     validate_channel_name(&app, &path.channel_name).await?;
     require_versioned_messages_enabled(&handler, &path.channel_name)?;
-    require_annotations_enabled(&handler, &path.channel_name)?;
+    require_annotations_enabled(&handler, &app, &path.channel_name)?;
     let history_policy =
         app.resolved_history(&path.channel_name, &handler.server_options().history);
     if !history_policy.enabled {
@@ -2409,7 +2415,7 @@ pub async fn delete_annotation(
 ) -> Result<AxumResponse, AppError> {
     validate_channel_name(&app, &path.channel_name).await?;
     require_versioned_messages_enabled(&handler, &path.channel_name)?;
-    require_annotations_enabled(&handler, &path.channel_name)?;
+    require_annotations_enabled(&handler, &app, &path.channel_name)?;
     let message_serial = parse_message_serial(&path.message_serial)?;
     let target_serial = parse_annotation_serial(&path.annotation_serial)?;
     let target = handler
@@ -2500,7 +2506,7 @@ pub async fn channel_message_annotations(
 ) -> Result<impl IntoResponse, AppError> {
     validate_channel_name(&app, &path.channel_name).await?;
     require_versioned_messages_enabled(&handler, &path.channel_name)?;
-    require_annotations_enabled(&handler, &path.channel_name)?;
+    require_annotations_enabled(&handler, &app, &path.channel_name)?;
     let history_policy =
         app.resolved_history(&path.channel_name, &handler.server_options().history);
     if !history_policy.enabled {
@@ -3636,6 +3642,16 @@ mod tests {
         test_app_with_policy(Default::default())
     }
 
+    fn test_annotation_app() -> App {
+        test_app_with_policy(AppPolicy {
+            channels: AppChannelsPolicy {
+                annotations_enabled: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
     fn test_app_with_policy(policy: AppPolicy) -> App {
         App::from_policy(
             "app-1".to_string(),
@@ -4305,7 +4321,7 @@ mod tests {
             },
         });
         let handler = test_history_handler_with_store(100, stateful_store);
-        let app = test_app();
+        let app = test_annotation_app();
 
         let response = channel_history_state(
             Path(("app-1".to_string(), "public-room".to_string())),
@@ -5139,6 +5155,7 @@ mod tests {
                     name: "chat".to_string(),
                     channel_name_pattern: None,
                     max_channel_name_length: None,
+                    annotations_enabled: None,
                     allow_user_limited_channels: None,
                     allow_subscribe_for_client: None,
                     allow_publish_for_client: None,
@@ -6229,10 +6246,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn annotation_publish_requires_channel_policy_flag() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store.clone());
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let response = match publish_annotation(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(PublishAnnotationRequest {
+                annotation_type: "reactions:total.v1".to_string(),
+                name: None,
+                client_id: None,
+                socket_id: None,
+                count: None,
+                data: None,
+                encoding: None,
+            }),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected annotation channel policy denial"),
+        };
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = sonic_rs::from_slice(&body).unwrap();
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("Annotations are disabled by channel policy")
+        );
+    }
+
+    #[tokio::test]
     async fn annotation_publish_denies_socket_without_annotation_publish_capability() {
         let store = Arc::new(MemoryVersionStore::new());
         let (handler, _adapter, app_manager) = test_versioned_handler_harness(100, store.clone());
-        let app = test_app();
+        let app = test_annotation_app();
 
         store
             .append_version(test_versioned_record(
@@ -6290,7 +6361,7 @@ mod tests {
     async fn annotation_publish_rejects_unidentified_ownership_summarizer() {
         let store = Arc::new(MemoryVersionStore::new());
         let handler = test_versioned_handler_with_store(100, store.clone());
-        let app = test_app();
+        let app = test_annotation_app();
 
         store
             .append_version(test_versioned_record(
@@ -6334,7 +6405,7 @@ mod tests {
     async fn annotation_publish_and_delete_update_summary_projection() {
         let store = Arc::new(MemoryVersionStore::new());
         let handler = test_versioned_handler_with_store(100, store.clone());
-        let app = test_app();
+        let app = test_annotation_app();
 
         store
             .append_version(test_versioned_record(
@@ -6422,10 +6493,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn annotation_delete_missing_annotation_returns_404() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_versioned_handler_with_store(100, store);
+        let app = test_annotation_app();
+
+        let response = match delete_annotation(
+            Path(AnnotationMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+                annotation_serial: "ann:missing".to_string(),
+            }),
+            Query(HashMap::new()),
+            Extension(app),
+            State(handler),
+        )
+        .await
+        {
+            Err(err) => err.into_response(),
+            Ok(_) => panic!("expected missing annotation 404"),
+        };
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn annotation_delete_own_denies_identity_mismatch() {
         let store = Arc::new(MemoryVersionStore::new());
         let (handler, _adapter, app_manager) = test_versioned_handler_harness(100, store);
-        let app = test_app();
+        let app = test_annotation_app();
 
         handler
             .annotation_store()
