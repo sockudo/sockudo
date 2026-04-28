@@ -161,6 +161,25 @@ pub trait MetricsInterface: Send + Sync {
     /// Track history substitution and anomaly outcomes for versioned messages.
     fn mark_versioned_history_substitution(&self, _app_id: &str, _result: &str) {}
 
+    /// Track a successful annotation publish.
+    fn mark_annotation_published(&self, _channel: &str, _annotation_type: &str) {}
+
+    /// Track a successful annotation delete.
+    fn mark_annotation_deleted(&self, _channel: &str, _annotation_type: &str) {}
+
+    /// Track a delivered annotation summary.
+    fn mark_annotation_summary_delivery(&self, _channel: &str) {}
+
+    /// Track a clipped annotation summary.
+    fn mark_annotation_summary_clipped(&self, _channel: &str, _annotation_type: &str) {}
+
+    /// Track a full annotation projection rebuild.
+    fn mark_annotation_projection_rebuild(&self, _channel: &str) {}
+
+    /// Track full annotation projection rebuild latency.
+    fn track_annotation_projection_rebuild_duration(&self, _channel: &str, _duration_seconds: f64) {
+    }
+
     /// Track delta cluster coordination operations.
     fn mark_delta_cluster_coordination_op(&self, _backend: &str, _op: &str, _result: &str) {}
 

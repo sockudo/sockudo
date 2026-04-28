@@ -1,5 +1,6 @@
 // src/adapter/handler/subscription_management.rs
 use super::ConnectionHandler;
+use super::annotations::clipped_contributor_count;
 use super::types::*;
 use crate::channel_manager::ChannelManager;
 use crate::channel_manager::JoinResponse;
@@ -756,6 +757,22 @@ impl ConnectionHandler {
             .await?;
 
         for projection in projections {
+            if let Some(contributor_count) = clipped_contributor_count(&projection.summary) {
+                tracing::warn!(
+                    channel = %channel,
+                    message_serial = %projection.message_serial.as_str(),
+                    annotation_type = %projection.annotation_type.as_str(),
+                    contributor_count,
+                    "annotation summary clipped"
+                );
+                if let Some(metrics) = self.metrics() {
+                    metrics.mark_annotation_summary_clipped(
+                        channel,
+                        projection.annotation_type.as_str(),
+                    );
+                }
+            }
+
             let mut summary_by_type = BTreeMap::new();
             summary_by_type.insert(
                 projection.annotation_type.as_str().to_string(),
@@ -799,6 +816,9 @@ impl ConnectionHandler {
                 delta_conflation_key: None,
             };
             connection.send_message(&message).await?;
+            if let Some(metrics) = self.metrics() {
+                metrics.mark_annotation_summary_delivery(channel);
+            }
         }
 
         Ok(())
