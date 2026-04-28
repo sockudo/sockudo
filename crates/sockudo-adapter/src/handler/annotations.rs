@@ -14,6 +14,7 @@ use sockudo_protocol::messages::{
 };
 use sonic_rs::Value;
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 pub struct PublishAnnotationRuntimeRequest {
     pub app: App,
@@ -88,6 +89,9 @@ impl ConnectionHandler {
                 stored_at_ms: now_ms(),
             })
             .await?;
+        if let Some(metrics) = self.metrics() {
+            metrics.mark_annotation_published(&request.channel, request.annotation_type.as_str());
+        }
         let projection = self
             .projection_fitting_payload(&request.app, &request.channel, projection)
             .await?;
@@ -186,6 +190,12 @@ impl ConnectionHandler {
                 stored_at_ms: now_ms(),
             })
             .await?;
+        if let Some(metrics) = self.metrics() {
+            metrics.mark_annotation_deleted(
+                &request.channel,
+                target.annotation.annotation_type.as_str(),
+            );
+        }
         let projection = self
             .projection_fitting_payload(&request.app, &request.channel, projection)
             .await?;
@@ -240,15 +250,72 @@ impl ConnectionHandler {
                 Some(previous) => previous / 2,
             });
 
-            candidate = self
+            let projection_key = candidate.projection_key();
+            let annotation_count = self
+                .annotation_store()
+                .get_events(AnnotationEventsRequest {
+                    app_id: app.id.clone(),
+                    channel_id: channel.to_string(),
+                    message_serial: projection_key.message_serial.clone(),
+                    annotation_type: projection_key.annotation_type.clone(),
+                })
+                .await
+                .map(|events| events.len())
+                .unwrap_or(0);
+
+            tracing::warn!(
+                channel = %channel,
+                message_serial = %projection_key.message_serial.as_str(),
+                annotation_type = %projection_key.annotation_type.as_str(),
+                annotation_count,
+                client_id_limit = limit.unwrap_or_default(),
+                "annotation projection rebuild triggered on hot channel"
+            );
+
+            if let Some(metrics) = self.metrics() {
+                metrics.mark_annotation_projection_rebuild(channel);
+            }
+            let rebuild_started = Instant::now();
+            let rebuilt = self
                 .annotation_store()
                 .rebuild_projection_with_options(
-                    candidate.projection_key(),
+                    projection_key,
                     AnnotationProjectionOptions {
                         client_id_limit: limit,
                     },
                 )
-                .await?;
+                .await;
+            if let Some(metrics) = self.metrics() {
+                metrics.track_annotation_projection_rebuild_duration(
+                    channel,
+                    rebuild_started.elapsed().as_secs_f64(),
+                );
+            }
+            candidate = rebuilt?;
+        }
+    }
+
+    fn observe_clipped_summary(
+        &self,
+        channel: &str,
+        message_serial: &MessageSerial,
+        annotation_type: &AnnotationType,
+        summary: &AnnotationSummary,
+    ) {
+        let Some(contributor_count) = clipped_contributor_count(summary) else {
+            return;
+        };
+
+        tracing::warn!(
+            channel = %channel,
+            message_serial = %message_serial.as_str(),
+            annotation_type = %annotation_type.as_str(),
+            contributor_count,
+            "annotation summary clipped"
+        );
+
+        if let Some(metrics) = self.metrics() {
+            metrics.mark_annotation_summary_clipped(channel, annotation_type.as_str());
         }
     }
 
@@ -261,14 +328,67 @@ impl ConnectionHandler {
         annotation_type: &AnnotationType,
         summary: &AnnotationSummary,
     ) -> Result<()> {
+        self.observe_clipped_summary(channel, message_serial, annotation_type, summary);
+
         let summary_message =
             annotation_summary_message(channel, message_serial, annotation_type, summary)?;
-        self.broadcast_to_channel_force_full(app, channel, summary_message, None, None)
-            .await?;
+        if let Err(err) = self
+            .broadcast_to_channel_force_full(app, channel, summary_message, None, None)
+            .await
+        {
+            tracing::error!(
+                channel = %channel,
+                message_serial = %message_serial.as_str(),
+                annotation_type = %annotation_type.as_str(),
+                error = %err,
+                "annotation summary failed to fan out through cluster broadcast"
+            );
+            return Err(err);
+        }
+        if let Some(metrics) = self.metrics() {
+            metrics.mark_annotation_summary_delivery(channel);
+        }
 
         let raw_message = annotation_event_message(channel, annotation)?;
-        self.broadcast_to_channel_force_full(app, channel, raw_message, None, None)
+        if let Err(err) = self
+            .broadcast_to_channel_force_full(app, channel, raw_message, None, None)
             .await
+        {
+            tracing::error!(
+                channel = %channel,
+                message_serial = %message_serial.as_str(),
+                annotation_type = %annotation_type.as_str(),
+                annotation_serial = %annotation.serial.as_str(),
+                error = %err,
+                "annotation event failed to fan out through cluster broadcast"
+            );
+            return Err(err);
+        }
+
+        Ok(())
+    }
+}
+
+pub(crate) fn clipped_contributor_count(summary: &AnnotationSummary) -> Option<u64> {
+    match summary {
+        AnnotationSummary::Total(_) => None,
+        AnnotationSummary::Flag(summary) => summary.clipped.then_some(summary.total),
+        AnnotationSummary::Distinct(names) | AnnotationSummary::Unique(names) => {
+            let total = names
+                .values()
+                .filter(|summary| summary.clipped)
+                .map(|summary| summary.total)
+                .sum::<u64>();
+            (total > 0).then_some(total)
+        }
+        AnnotationSummary::Multiple(names) => {
+            let total = names
+                .values()
+                .filter(|summary| summary.clipped)
+                .map(|summary| summary.total_client_ids)
+                .sum::<u64>();
+            (total > 0).then_some(total)
+        }
     }
 }
 
