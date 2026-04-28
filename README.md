@@ -11,7 +11,7 @@
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=sockudo/sockudo&type=Date)](https://star-history.com/#Sockudo/sockudo&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=sockudo/sockudo&type=Date&theme=dark)](https://star-history.com/#sockudo/sockudo&Date)
 
 ## Features
 
