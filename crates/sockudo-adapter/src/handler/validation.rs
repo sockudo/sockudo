@@ -50,6 +50,10 @@ fn validate_capability_permission(
     action: &str,
 ) -> Result<()> {
     let allowed = match action {
+        "annotation_subscribe" => {
+            capabilities.allows_subscribe(channel)
+                && capabilities.allows_annotation_subscribe(channel)
+        }
         "publish" => capabilities.allows_publish(channel),
         _ => capabilities.allows_subscribe(channel),
     };
@@ -152,6 +156,20 @@ impl ConnectionHandler {
                 &self.server_options().history,
             )?;
         }
+        if request.annotation_subscribe {
+            if !self.server_options().annotations.enabled {
+                return Err(Error::Channel(format!(
+                    "Annotations are disabled globally for channel '{}'",
+                    request.channel
+                )));
+            }
+            if !app_config.annotations_enabled_for_channel(&request.channel) {
+                return Err(Error::Channel(format!(
+                    "Annotations are disabled by channel policy for channel '{}'",
+                    request.channel
+                )));
+            }
+        }
 
         // Check if authentication is required and provided
         let requires_auth =
@@ -168,6 +186,15 @@ impl ConnectionHandler {
                 .await?;
             self.validate_v2_capability(socket_id, app_config, &request.channel, "subscribe")
                 .await?;
+            if request.annotation_subscribe {
+                self.validate_v2_capability(
+                    socket_id,
+                    app_config,
+                    &request.channel,
+                    "annotation_subscribe",
+                )
+                .await?;
+            }
         }
 
         self.validate_v2_channel_access(socket_id, app_config, &request.channel)
@@ -420,6 +447,11 @@ impl ConnectionHandler {
         }
 
         let Some(capabilities) = connection.get_connection_capabilities().await else {
+            if action == "annotation_subscribe" {
+                return Err(Error::Auth(format!(
+                    "Connection is not allowed to receive raw annotations for channel '{channel}'"
+                )));
+            }
             return Ok(());
         };
 
@@ -440,6 +472,7 @@ mod tests {
             name: "chat".to_string(),
             channel_name_pattern: None,
             max_channel_name_length: None,
+            annotations_enabled: None,
             allow_user_limited_channels: None,
             allow_subscribe_for_client: Some(false),
             allow_publish_for_client: None,
@@ -462,6 +495,7 @@ mod tests {
             name: "chat".to_string(),
             channel_name_pattern: None,
             max_channel_name_length: None,
+            annotations_enabled: None,
             allow_user_limited_channels: None,
             allow_subscribe_for_client: None,
             allow_publish_for_client: Some(false),
@@ -577,6 +611,7 @@ mod tests {
                         name: "chat".to_string(),
                         channel_name_pattern: None,
                         max_channel_name_length: None,
+                        annotations_enabled: None,
                         allow_user_limited_channels: None,
                         allow_subscribe_for_client: None,
                         allow_publish_for_client: None,

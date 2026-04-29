@@ -76,6 +76,54 @@ pub fn generate_message_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+pub const ANNOTATION_EVENT_NAME: &str = "sockudo_internal:annotation";
+pub const MESSAGE_SUMMARY_EVENT_NAME: &str = "sockudo_internal:message";
+pub const ANNOTATION_SUBSCRIBE_MODE: &str = "ANNOTATION_SUBSCRIBE";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AnnotationEventAction {
+    #[serde(rename = "annotation.create")]
+    Create,
+    #[serde(rename = "annotation.delete")]
+    Delete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationEventData {
+    pub action: AnnotationEventAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub serial: String,
+    pub message_serial: String,
+    #[serde(rename = "type")]
+    pub annotation_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AnnotationSummaryEnvelope {
+    pub summary: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSummaryData {
+    pub action: String,
+    pub serial: String,
+    pub annotations: AnnotationSummaryEnvelope,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceData {
     pub ids: Vec<String>,
@@ -797,7 +845,12 @@ impl InfoQueryParser for Option<&String> {
 
 #[cfg(test)]
 mod tests {
-    use super::PusherMessage;
+    use super::{
+        AnnotationEventAction, AnnotationEventData, AnnotationSummaryEnvelope, MessageSummaryData,
+        PusherMessage,
+    };
+    use sonic_rs::JsonValueTrait;
+    use std::collections::BTreeMap;
 
     #[test]
     fn protocol_heartbeat_detection_matches_both_prefix_families() {
@@ -823,5 +876,50 @@ mod tests {
         );
 
         assert!(!message.is_protocol_ping_or_pong());
+    }
+
+    #[test]
+    fn annotation_create_serializes_camel_case_contract() {
+        let data = AnnotationEventData {
+            action: AnnotationEventAction::Create,
+            id: Some("ann-1".to_string()),
+            serial: "ann:1".to_string(),
+            message_serial: "msg:1".to_string(),
+            annotation_type: "reactions:distinct.v1".to_string(),
+            name: Some("thumbsup".to_string()),
+            client_id: Some("user-123".to_string()),
+            count: Some(1),
+            data: Some(sonic_rs::json!({"raw": true})),
+            encoding: None,
+            timestamp: 1_700_000_000_000,
+        };
+
+        let value = sonic_rs::to_value(&data).unwrap();
+        assert_eq!(value["action"].as_str(), Some("annotation.create"));
+        assert_eq!(value["messageSerial"].as_str(), Some("msg:1"));
+        assert_eq!(value["type"].as_str(), Some("reactions:distinct.v1"));
+        assert_eq!(value["clientId"].as_str(), Some("user-123"));
+    }
+
+    #[test]
+    fn message_summary_serializes_summary_envelope() {
+        let mut summary = BTreeMap::new();
+        summary.insert(
+            "reactions:distinct.v1".to_string(),
+            sonic_rs::json!({"thumbsup": {"total": 5, "clientIds": ["a"], "clipped": false}}),
+        );
+        let data = MessageSummaryData {
+            action: "message.summary".to_string(),
+            serial: "msg:1".to_string(),
+            annotations: AnnotationSummaryEnvelope { summary },
+        };
+
+        let value = sonic_rs::to_value(&data).unwrap();
+        assert_eq!(value["action"].as_str(), Some("message.summary"));
+        assert_eq!(value["serial"].as_str(), Some("msg:1"));
+        assert_eq!(
+            value["annotations"]["summary"]["reactions:distinct.v1"]["thumbsup"]["total"].as_u64(),
+            Some(5)
+        );
     }
 }

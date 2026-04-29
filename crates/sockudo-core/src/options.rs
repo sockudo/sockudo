@@ -422,6 +422,7 @@ pub struct ServerOptions {
     pub echo_control: EchoControlConfig,
     pub event_name_filtering: EventNameFilteringConfig,
     pub versioned_messages: VersionedMessagesConfig,
+    pub annotations: AnnotationsConfig,
 }
 
 // --- Configuration Sub-Structs ---
@@ -1158,6 +1159,14 @@ pub struct VersionedMessagesConfig {
     pub max_purge_per_tick: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AnnotationsConfig {
+    /// Whether Sockudo-native annotation APIs and realtime annotation protocol
+    /// surfaces are enabled. Disabled by default while the feature is opt-in.
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum HistoryBackend {
@@ -1792,6 +1801,7 @@ impl Default for ServerOptions {
             echo_control: EchoControlConfig::default(),
             event_name_filtering: EventNameFilteringConfig::default(),
             versioned_messages: VersionedMessagesConfig::default(),
+            annotations: AnnotationsConfig::default(),
         }
     }
 }
@@ -2989,6 +2999,10 @@ impl ServerOptions {
                                 None
                             }
                         },
+                        annotations_enabled: Some(parse_bool_env(
+                            "SOCKUDO_DEFAULT_APP_ANNOTATIONS_ENABLED",
+                            false,
+                        )),
                         channel_delta_compression: None,
                         channel_namespaces: None,
                     },
@@ -3276,6 +3290,7 @@ impl ServerOptions {
             "VERSIONED_MESSAGES_MAX_PURGE_PER_TICK",
             self.versioned_messages.max_purge_per_tick,
         );
+        self.annotations.enabled = parse_bool_env("ANNOTATIONS_ENABLED", self.annotations.enabled);
 
         Ok(())
     }
@@ -3339,6 +3354,9 @@ impl ServerOptions {
 
         if self.versioned_messages.enabled && self.versioned_messages.max_page_size == 0 {
             return Err("versioned_messages.max_page_size must be greater than 0".to_string());
+        }
+        if self.annotations.enabled && !self.versioned_messages.enabled {
+            return Err("annotations require versioned_messages.enabled".to_string());
         }
 
         Ok(())

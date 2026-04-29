@@ -480,6 +480,7 @@ async fn publish_on_node_a_reaches_subscriber_on_node_b_via_redis() {
                 delta: None,
                 rewind: None,
                 event_name_filter: None,
+                annotation_subscribe: false,
             },
         )
         .await
@@ -542,6 +543,7 @@ async fn fresh_node_with_empty_replay_buffer_uses_cold_recovery_after_cross_node
                 delta: None,
                 rewind: None,
                 event_name_filter: None,
+                annotation_subscribe: false,
             },
         )
         .await
@@ -814,6 +816,7 @@ async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
                 delta: None,
                 rewind: None,
                 event_name_filter: None,
+                annotation_subscribe: false,
             },
         )
         .await
@@ -1045,6 +1048,7 @@ async fn degraded_durable_state_causes_explicit_cross_node_recovery_failure_via_
                 delta: None,
                 rewind: None,
                 event_name_filter: None,
+                annotation_subscribe: false,
             },
         )
         .await
@@ -1201,6 +1205,7 @@ async fn rewind_live_handoff_across_nodes_has_no_gap_and_no_duplicates_via_redis
         delta: None,
         rewind: Some(SubscriptionRewind::Count(2)),
         event_name_filter: None,
+        annotation_subscribe: false,
     };
 
     let (started_rx, continue_tx) = history_store.arm_gate().await;

@@ -417,6 +417,7 @@ async fn rewind_handoff_has_no_gap_and_suppresses_duplicates_e2e() {
         delta: None,
         rewind: Some(SubscriptionRewind::Count(2)),
         event_name_filter: None,
+        annotation_subscribe: false,
     };
 
     let (started_rx, continue_tx) = harness.history_store.arm_gate().await;
@@ -500,6 +501,7 @@ async fn hot_recovery_replays_real_deliveries_e2e() {
         delta: None,
         rewind: None,
         event_name_filter: None,
+        annotation_subscribe: false,
     };
     harness
         .handler
@@ -602,6 +604,7 @@ async fn cold_recovery_replays_real_deliveries_e2e() {
                 delta: None,
                 rewind: None,
                 event_name_filter: None,
+                annotation_subscribe: false,
             },
         )
         .await
@@ -900,6 +903,7 @@ async fn writer_queue_full_fault_rejects_publish_without_live_delivery() {
                 delta: None,
                 rewind: None,
                 event_name_filter: None,
+                annotation_subscribe: false,
             },
         )
         .await

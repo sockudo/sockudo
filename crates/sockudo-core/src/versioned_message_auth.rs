@@ -103,6 +103,7 @@ mod tests {
             message_delete_any: None,
             message_append_own: None,
             message_append_any: None,
+            ..Default::default()
         }
     }
 
@@ -117,6 +118,7 @@ mod tests {
             message_delete_any: Some(vec!["chat:*".to_string()]),
             message_append_own: None,
             message_append_any: None,
+            ..Default::default()
         }
     }
 
@@ -131,6 +133,7 @@ mod tests {
             message_delete_any: None,
             message_append_own: Some(vec!["chat:*".to_string()]),
             message_append_any: None,
+            ..Default::default()
         }
     }
 

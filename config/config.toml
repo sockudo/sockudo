@@ -100,6 +100,7 @@ name = "chat"
 channel_name_pattern = "^chat:[A-Za-z0-9._-]+$"
 max_channel_name_length = 200
 allow_user_limited_channels = true
+annotations_enabled = true
 
 [app_manager.array.apps.policy.idempotency]
 enabled = true
@@ -225,6 +226,9 @@ retention_window_seconds = 0
 purge_interval_seconds = 300
 purge_batch_size = 1000
 max_purge_per_tick = 100000
+
+[annotations]
+enabled = false
 
 [idempotency]
 enabled = true

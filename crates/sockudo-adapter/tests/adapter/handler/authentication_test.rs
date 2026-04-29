@@ -20,6 +20,7 @@ async fn test_verify_channel_authentication_public_channel() {
         delta: None,
         rewind: None,
         event_name_filter: None,
+        annotation_subscribe: false,
     };
 
     let result = handler
@@ -43,6 +44,7 @@ async fn test_verify_channel_authentication_private_channel_no_auth() {
         delta: None,
         rewind: None,
         event_name_filter: None,
+        annotation_subscribe: false,
     };
 
     let result = handler
@@ -93,6 +95,7 @@ async fn test_verify_channel_authentication_private_channel_with_auth() {
         delta: None,
         rewind: None,
         event_name_filter: None,
+        annotation_subscribe: false,
     };
 
     let result = handler
@@ -146,6 +149,7 @@ async fn test_verify_channel_authentication_presence_channel() {
         delta: None,
         rewind: None,
         event_name_filter: None,
+        annotation_subscribe: false,
     };
 
     let result = handler

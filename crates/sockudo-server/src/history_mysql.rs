@@ -25,6 +25,8 @@ struct HistoryTables {
     version_streams: String,
     version_messages: String,
     version_entries: String,
+    annotation_events: String,
+    annotation_projections: String,
 }
 
 #[derive(Clone)]
@@ -210,6 +212,8 @@ impl MySqlHistoryStore {
             version_streams: format!("{}_version_streams", config.mysql.table_prefix),
             version_messages: format!("{}_version_messages", config.mysql.table_prefix),
             version_entries: format!("{}_version_entries", config.mysql.table_prefix),
+            annotation_events: format!("{}_annotation_events", config.mysql.table_prefix),
+            annotation_projections: format!("{}_annotation_projections", config.mysql.table_prefix),
         };
 
         let store = Self {
@@ -333,6 +337,46 @@ impl MySqlHistoryStore {
             "#,
             self.tables.version_entries, MAX_VERSIONED_SERIAL_LENGTH, MAX_VERSIONED_SERIAL_LENGTH
         );
+        let create_annotation_events = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id VARCHAR(255) NOT NULL,
+                channel VARCHAR(255) NOT NULL,
+                message_serial VARCHAR({}) NOT NULL,
+                annotation_serial VARCHAR({}) NOT NULL,
+                annotation_type VARCHAR(256) NOT NULL,
+                name VARCHAR(255) NULL,
+                client_id VARCHAR(255) NULL,
+                count_value BIGINT NULL,
+                action VARCHAR(64) NOT NULL,
+                data_bytes LONGBLOB NULL,
+                encoding VARCHAR(255) NULL,
+                annotation_timestamp_ms BIGINT NOT NULL,
+                payload_bytes LONGBLOB NOT NULL,
+                payload_size_bytes BIGINT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel, message_serial, annotation_serial)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            "#,
+            self.tables.annotation_events, MAX_VERSIONED_SERIAL_LENGTH, MAX_VERSIONED_SERIAL_LENGTH
+        );
+        let create_annotation_projections = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id VARCHAR(255) NOT NULL,
+                channel VARCHAR(255) NOT NULL,
+                message_serial VARCHAR({}) NOT NULL,
+                annotation_type VARCHAR(256) NOT NULL,
+                summary_json JSON NOT NULL,
+                last_annotation_serial VARCHAR({}) NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel, message_serial, annotation_type)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            "#,
+            self.tables.annotation_projections,
+            MAX_VERSIONED_SERIAL_LENGTH,
+            MAX_VERSIONED_SERIAL_LENGTH
+        );
         let index_serial = format!(
             "CREATE INDEX {0}_app_channel_serial_idx ON {0} (app_id, channel, serial DESC)",
             self.tables.entries
@@ -361,12 +405,30 @@ impl MySqlHistoryStore {
             "CREATE INDEX {0}_history_version_idx ON {0} (app_id, channel, history_serial, version_serial DESC)",
             self.tables.version_entries
         );
+        let index_annotation_events_summary = format!(
+            "CREATE INDEX {0}_summary_idx ON {0} (app_id, channel, message_serial, annotation_type, annotation_serial)",
+            self.tables.annotation_events
+        );
+        let index_annotation_events_dedup = format!(
+            "CREATE INDEX {0}_dedup_idx ON {0} (app_id, channel, message_serial, annotation_serial)",
+            self.tables.annotation_events
+        );
+        let index_annotation_events_raw_replay = format!(
+            "CREATE INDEX {0}_raw_replay_idx ON {0} (app_id, channel, annotation_serial)",
+            self.tables.annotation_events
+        );
+        let index_annotation_events_created_at = format!(
+            "CREATE INDEX {0}_created_at_idx ON {0} (created_at_ms)",
+            self.tables.annotation_events
+        );
         for sql in [
             create_streams,
             create_entries,
             create_version_streams,
             create_version_messages,
             create_version_entries,
+            create_annotation_events,
+            create_annotation_projections,
         ] {
             sqlx::query(&sql).execute(&self.pool).await.map_err(|e| {
                 Error::Internal(format!("Failed to initialize MySQL history tables: {e}"))
@@ -414,6 +476,10 @@ impl MySqlHistoryStore {
             index_version_entries_message,
             index_version_entries_replay,
             index_version_entries_history,
+            index_annotation_events_summary,
+            index_annotation_events_dedup,
+            index_annotation_events_raw_replay,
+            index_annotation_events_created_at,
         ] {
             let _ = sqlx::query(&sql).execute(&self.pool).await;
         }
@@ -1696,6 +1762,8 @@ impl MysqlVersionStore {
             version_streams: format!("{}_version_streams", table_prefix),
             version_messages: format!("{}_version_messages", table_prefix),
             version_entries: format!("{}_version_entries", table_prefix),
+            annotation_events: format!("{}_annotation_events", table_prefix),
+            annotation_projections: format!("{}_annotation_projections", table_prefix),
         };
 
         let store = Self { pool, tables };

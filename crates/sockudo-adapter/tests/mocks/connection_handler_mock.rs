@@ -19,6 +19,7 @@ use sockudo_ws::axum_integration::WebSocketWriter;
 use sonic_rs::Value;
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 pub struct MockAdapter;
@@ -306,7 +307,11 @@ impl CacheManager for MockCacheManager {
     }
 }
 
-pub struct MockMetricsInterface;
+#[derive(Clone)]
+pub struct MockMetricsInterface {
+    annotation_projection_rebuilds: Arc<AtomicUsize>,
+    annotation_projection_rebuild_durations: Arc<AtomicUsize>,
+}
 impl Default for MockMetricsInterface {
     fn default() -> Self {
         Self::new()
@@ -315,7 +320,19 @@ impl Default for MockMetricsInterface {
 
 impl MockMetricsInterface {
     pub fn new() -> Self {
-        Self
+        Self {
+            annotation_projection_rebuilds: Arc::new(AtomicUsize::new(0)),
+            annotation_projection_rebuild_durations: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn annotation_projection_rebuilds(&self) -> usize {
+        self.annotation_projection_rebuilds.load(Ordering::Relaxed)
+    }
+
+    pub fn annotation_projection_rebuild_durations(&self) -> usize {
+        self.annotation_projection_rebuild_durations
+            .load(Ordering::Relaxed)
     }
 }
 
@@ -387,6 +404,14 @@ impl MetricsInterface for MockMetricsInterface {
     }
     fn track_delta_compression_full_message(&self, _app_id: &str, _channel_name: &str) {}
     fn track_delta_compression_delta_message(&self, _app_id: &str, _channel_name: &str) {}
+    fn mark_annotation_projection_rebuild(&self, _channel: &str) {
+        self.annotation_projection_rebuilds
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    fn track_annotation_projection_rebuild_duration(&self, _channel: &str, _duration_seconds: f64) {
+        self.annotation_projection_rebuild_durations
+            .fetch_add(1, Ordering::Relaxed);
+    }
     async fn get_metrics_as_plaintext(&self) -> String {
         String::new()
     }

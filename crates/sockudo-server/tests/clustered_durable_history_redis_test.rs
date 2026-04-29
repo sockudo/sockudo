@@ -506,6 +506,7 @@ async fn run_cross_node_cold_recovery_test(history_store: Arc<dyn HistoryStore +
                 delta: None,
                 rewind: None,
                 event_name_filter: None,
+                annotation_subscribe: false,
             },
         )
         .await

@@ -113,6 +113,12 @@ pub struct PrometheusMetricsDriver {
     presence_history_queue_depth: GaugeVec,
     presence_history_degraded_channels: GaugeVec,
     presence_history_reset_required_channels: GaugeVec,
+    annotations_published_total: CounterVec,
+    annotations_deleted_total: CounterVec,
+    annotation_summary_deliveries_total: CounterVec,
+    annotation_summary_clipped_total: CounterVec,
+    annotation_projection_rebuild_total: CounterVec,
+    annotation_projection_rebuild_duration_seconds: HistogramVec,
     delta_cluster_coordination_ops_total: CounterVec,
     delta_cluster_coordination_failures_total: CounterVec,
     delta_cluster_coordination_latency_ms: HistogramVec,
@@ -743,6 +749,63 @@ impl PrometheusMetricsDriver {
         )
         .unwrap();
 
+        let annotations_published_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}annotations_published_total"),
+                "Total number of annotation.create events published"
+            ),
+            &["channel", "type"]
+        )
+        .unwrap();
+
+        let annotations_deleted_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}annotations_deleted_total"),
+                "Total number of annotation.delete events published"
+            ),
+            &["channel", "type"]
+        )
+        .unwrap();
+
+        let annotation_summary_deliveries_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}annotation_summary_deliveries_total"),
+                "Total number of annotation summary messages delivered"
+            ),
+            &["channel"]
+        )
+        .unwrap();
+
+        let annotation_summary_clipped_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}annotation_summary_clipped_total"),
+                "Total number of clipped annotation summaries"
+            ),
+            &["channel", "type"]
+        )
+        .unwrap();
+
+        let annotation_projection_rebuild_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}annotation_projection_rebuild_total"),
+                "Total number of full annotation projection rebuilds"
+            ),
+            &["channel"]
+        )
+        .unwrap();
+
+        let annotation_projection_rebuild_duration_seconds = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}annotation_projection_rebuild_duration_seconds"),
+                "Full annotation projection rebuild latency in seconds",
+                vec![
+                    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0
+                ]
+            ),
+            &["channel"]
+        )
+        .unwrap();
+
         let delta_cluster_coordination_ops_total = register_counter_vec!(
             Opts::new(
                 format!("{prefix}delta_cluster_coordination_ops_total"),
@@ -911,6 +974,12 @@ impl PrometheusMetricsDriver {
             presence_history_queue_depth,
             presence_history_degraded_channels,
             presence_history_reset_required_channels,
+            annotations_published_total,
+            annotations_deleted_total,
+            annotation_summary_deliveries_total,
+            annotation_summary_clipped_total,
+            annotation_projection_rebuild_total,
+            annotation_projection_rebuild_duration_seconds,
             delta_cluster_coordination_ops_total,
             delta_cluster_coordination_failures_total,
             delta_cluster_coordination_latency_ms,
@@ -1514,6 +1583,42 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.versioned_history_substitution_total
             .with_label_values(&[app_id, &self.port.to_string(), result])
             .inc();
+    }
+
+    fn mark_annotation_published(&self, channel: &str, annotation_type: &str) {
+        self.annotations_published_total
+            .with_label_values(&[channel, annotation_type])
+            .inc();
+    }
+
+    fn mark_annotation_deleted(&self, channel: &str, annotation_type: &str) {
+        self.annotations_deleted_total
+            .with_label_values(&[channel, annotation_type])
+            .inc();
+    }
+
+    fn mark_annotation_summary_delivery(&self, channel: &str) {
+        self.annotation_summary_deliveries_total
+            .with_label_values(&[channel])
+            .inc();
+    }
+
+    fn mark_annotation_summary_clipped(&self, channel: &str, annotation_type: &str) {
+        self.annotation_summary_clipped_total
+            .with_label_values(&[channel, annotation_type])
+            .inc();
+    }
+
+    fn mark_annotation_projection_rebuild(&self, channel: &str) {
+        self.annotation_projection_rebuild_total
+            .with_label_values(&[channel])
+            .inc();
+    }
+
+    fn track_annotation_projection_rebuild_duration(&self, channel: &str, duration_seconds: f64) {
+        self.annotation_projection_rebuild_duration_seconds
+            .with_label_values(&[channel])
+            .observe(duration_seconds);
     }
 
     fn mark_delta_cluster_coordination_op(&self, backend: &str, op: &str, result: &str) {

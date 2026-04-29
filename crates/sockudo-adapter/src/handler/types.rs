@@ -5,7 +5,7 @@ use sockudo_core::options::EventNameFilteringConfig;
 use sockudo_delta::DeltaAlgorithm;
 #[cfg(feature = "tag-filtering")]
 use sockudo_filter::FilterNode;
-use sockudo_protocol::messages::{MessageData, PusherMessage};
+use sockudo_protocol::messages::{ANNOTATION_SUBSCRIBE_MODE, MessageData, PusherMessage};
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
 use std::option::Option;
@@ -152,6 +152,8 @@ pub struct SubscriptionRequest {
     /// V2 only. Event name filter — only events matching this list are delivered.
     /// None or empty = receive all events.
     pub event_name_filter: Option<Vec<String>>,
+    /// V2 only. Enables raw annotation event delivery for this subscription.
+    pub annotation_subscribe: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -172,110 +174,119 @@ impl SubscriptionRequest {
         message: &PusherMessage,
         event_name_filtering: &EventNameFilteringConfig,
     ) -> sockudo_core::error::Result<Self> {
-        let (channel, auth, channel_data, _tags_filter_raw, _delta_raw, rewind_raw) = match &message
-            .data
-        {
-            Some(MessageData::Structured {
-                channel,
-                extra,
-                channel_data,
-                ..
-            }) => {
-                let ch = channel.as_ref().ok_or_else(|| {
-                    sockudo_core::error::Error::InvalidMessageFormat("Missing channel field".into())
-                })?;
-                let channel_data = if ChannelType::from_name(ch) == ChannelType::Presence {
-                    Some(channel_data.as_ref().unwrap().clone())
-                } else {
-                    None
-                };
-                let auth = extra.get("auth").and_then(Value::as_str).map(String::from);
-
-                // Accept both "filter" (client-side) and "tags_filter" (server-side) for compatibility
-                let tags_filter_raw: Option<&Value> =
-                    extra.get("filter").or_else(|| extra.get("tags_filter"));
-
-                // Parse per-subscription delta settings
-                let delta_raw: Option<&Value> = extra.get("delta");
-                let rewind_raw: Option<&Value> = extra.get("rewind");
-
-                (
-                    ch.clone(),
-                    auth,
+        let (channel, auth, channel_data, _tags_filter_raw, _delta_raw, rewind_raw, modes_raw) =
+            match &message.data {
+                Some(MessageData::Structured {
+                    channel,
+                    extra,
                     channel_data,
-                    tags_filter_raw.cloned(),
-                    delta_raw.cloned(),
-                    rewind_raw.cloned(),
-                )
-            }
-            Some(MessageData::Json(data)) => {
-                let ch = data.get("channel").and_then(Value::as_str).ok_or_else(|| {
-                    sockudo_core::error::Error::InvalidMessageFormat("Missing channel field".into())
-                })?;
-                let auth = data.get("auth").and_then(Value::as_str).map(String::from);
-                let channel_data = data
-                    .get("channel_data")
-                    .and_then(Value::as_str)
-                    .map(String::from);
+                    ..
+                }) => {
+                    let ch = channel.as_ref().ok_or_else(|| {
+                        sockudo_core::error::Error::InvalidMessageFormat(
+                            "Missing channel field".into(),
+                        )
+                    })?;
+                    let channel_data = if ChannelType::from_name(ch) == ChannelType::Presence {
+                        Some(channel_data.as_ref().unwrap().clone())
+                    } else {
+                        None
+                    };
+                    let auth = extra.get("auth").and_then(Value::as_str).map(String::from);
 
-                let tags_filter_raw = data
-                    .get("filter")
-                    .or_else(|| data.get("tags_filter"))
-                    .cloned();
+                    // Accept both "filter" (client-side) and "tags_filter" (server-side) for compatibility
+                    let tags_filter_raw: Option<&Value> =
+                        extra.get("filter").or_else(|| extra.get("tags_filter"));
 
-                let delta_raw = data.get("delta").cloned();
-                let rewind_raw = data.get("rewind").cloned();
+                    // Parse per-subscription delta settings
+                    let delta_raw: Option<&Value> = extra.get("delta");
+                    let rewind_raw: Option<&Value> = extra.get("rewind");
+                    let modes_raw: Option<&Value> = extra.get("modes");
 
-                return Self::build(
-                    ch.to_string(),
-                    auth,
-                    channel_data,
-                    tags_filter_raw,
-                    delta_raw,
-                    rewind_raw,
-                    event_name_filtering,
-                );
-            }
-            Some(MessageData::String(s)) => {
-                let data: Value = sonic_rs::from_str(s).map_err(|_| {
-                    sockudo_core::error::Error::InvalidMessageFormat(
-                        "Failed to parse subscription data".into(),
+                    (
+                        ch.clone(),
+                        auth,
+                        channel_data,
+                        tags_filter_raw.cloned(),
+                        delta_raw.cloned(),
+                        rewind_raw.cloned(),
+                        modes_raw.cloned(),
                     )
-                })?;
-                let ch = data.get("channel").and_then(Value::as_str).ok_or_else(|| {
-                    sockudo_core::error::Error::InvalidMessageFormat(
-                        "Missing channel field in string data".into(),
+                }
+                Some(MessageData::Json(data)) => {
+                    let ch = data.get("channel").and_then(Value::as_str).ok_or_else(|| {
+                        sockudo_core::error::Error::InvalidMessageFormat(
+                            "Missing channel field".into(),
+                        )
+                    })?;
+                    let auth = data.get("auth").and_then(Value::as_str).map(String::from);
+                    let channel_data = data
+                        .get("channel_data")
+                        .and_then(Value::as_str)
+                        .map(String::from);
+
+                    let tags_filter_raw = data
+                        .get("filter")
+                        .or_else(|| data.get("tags_filter"))
+                        .cloned();
+
+                    let delta_raw = data.get("delta").cloned();
+                    let rewind_raw = data.get("rewind").cloned();
+                    let modes_raw = data.get("modes").cloned();
+
+                    return Self::build(
+                        ch.to_string(),
+                        auth,
+                        channel_data,
+                        tags_filter_raw,
+                        delta_raw,
+                        rewind_raw,
+                        modes_raw,
+                        event_name_filtering,
+                    );
+                }
+                Some(MessageData::String(s)) => {
+                    let data: Value = sonic_rs::from_str(s).map_err(|_| {
+                        sockudo_core::error::Error::InvalidMessageFormat(
+                            "Failed to parse subscription data".into(),
+                        )
+                    })?;
+                    let ch = data.get("channel").and_then(Value::as_str).ok_or_else(|| {
+                        sockudo_core::error::Error::InvalidMessageFormat(
+                            "Missing channel field in string data".into(),
+                        )
+                    })?;
+                    let auth = data.get("auth").and_then(Value::as_str).map(String::from);
+                    let channel_data = data
+                        .get("channel_data")
+                        .and_then(Value::as_str)
+                        .map(String::from);
+
+                    let tags_filter_raw = data
+                        .get("filter")
+                        .or_else(|| data.get("tags_filter"))
+                        .cloned();
+
+                    let delta_raw = data.get("delta").cloned();
+                    let rewind_raw = data.get("rewind").cloned();
+                    let modes_raw = data.get("modes").cloned();
+
+                    (
+                        ch.to_string(),
+                        auth,
+                        channel_data,
+                        tags_filter_raw,
+                        delta_raw,
+                        rewind_raw,
+                        modes_raw,
                     )
-                })?;
-                let auth = data.get("auth").and_then(Value::as_str).map(String::from);
-                let channel_data = data
-                    .get("channel_data")
-                    .and_then(Value::as_str)
-                    .map(String::from);
-
-                let tags_filter_raw = data
-                    .get("filter")
-                    .or_else(|| data.get("tags_filter"))
-                    .cloned();
-
-                let delta_raw = data.get("delta").cloned();
-                let rewind_raw = data.get("rewind").cloned();
-
-                (
-                    ch.to_string(),
-                    auth,
-                    channel_data,
-                    tags_filter_raw,
-                    delta_raw,
-                    rewind_raw,
-                )
-            }
-            _ => {
-                return Err(sockudo_core::error::Error::InvalidMessageFormat(
-                    "Invalid subscription data format".into(),
-                ));
-            }
-        };
+                }
+                _ => {
+                    return Err(sockudo_core::error::Error::InvalidMessageFormat(
+                        "Invalid subscription data format".into(),
+                    ));
+                }
+            };
 
         Self::build(
             channel,
@@ -284,10 +295,12 @@ impl SubscriptionRequest {
             _tags_filter_raw,
             _delta_raw,
             rewind_raw,
+            modes_raw,
             event_name_filtering,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         channel: String,
         auth: Option<String>,
@@ -295,6 +308,7 @@ impl SubscriptionRequest {
         #[allow(unused_variables)] tags_filter_raw: Option<Value>,
         #[allow(unused_variables)] delta_raw: Option<Value>,
         rewind_raw: Option<Value>,
+        modes_raw: Option<Value>,
         event_name_filtering: &EventNameFilteringConfig,
     ) -> sockudo_core::error::Result<Self> {
         // Extract event name filter from filter.events (V2 only).
@@ -358,6 +372,7 @@ impl SubscriptionRequest {
             })?),
             None => None,
         };
+        let annotation_subscribe = Self::parse_annotation_subscribe_mode(modes_raw.as_ref())?;
 
         Ok(Self {
             channel,
@@ -369,7 +384,26 @@ impl SubscriptionRequest {
             delta,
             rewind,
             event_name_filter,
+            annotation_subscribe,
         })
+    }
+
+    fn parse_annotation_subscribe_mode(
+        modes_raw: Option<&Value>,
+    ) -> sockudo_core::error::Result<bool> {
+        let Some(modes) = modes_raw else {
+            return Ok(false);
+        };
+        let Some(items) = modes.as_array() else {
+            return Err(sockudo_core::error::Error::InvalidMessageFormat(
+                "subscription modes must be an array".into(),
+            ));
+        };
+
+        Ok(items
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|mode| mode == ANNOTATION_SUBSCRIBE_MODE))
     }
 
     /// Extract event name filter from the raw filter value.
@@ -570,6 +604,7 @@ mod tests {
             Some(filter),
             None,
             None,
+            None,
             &event_name_filtering_config(),
         )
         .unwrap();
@@ -597,6 +632,7 @@ mod tests {
             Some(filter),
             None,
             None,
+            None,
             &event_name_filtering_config(),
         );
         assert!(result.is_err());
@@ -619,6 +655,7 @@ mod tests {
             None,
             None,
             Some(filter),
+            None,
             None,
             None,
             &event_name_filtering_config(),
@@ -645,6 +682,7 @@ mod tests {
             Some(filter),
             None,
             None,
+            None,
             &event_name_filtering_config(),
         );
         assert!(result.is_ok());
@@ -668,6 +706,7 @@ mod tests {
             Some(filter),
             None,
             None,
+            None,
             &config,
         );
         assert!(result.is_ok());
@@ -683,9 +722,43 @@ mod tests {
             None,
             None,
             None,
+            None,
             &event_name_filtering_config(),
         );
         assert!(result.is_ok());
         assert!(result.unwrap().event_name_filter.is_none());
+    }
+
+    #[test]
+    fn test_annotation_subscribe_mode_parses_from_modes_array() {
+        let request = SubscriptionRequest::build(
+            "test-channel".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(json!(["ANNOTATION_SUBSCRIBE"])),
+            &event_name_filtering_config(),
+        )
+        .unwrap();
+
+        assert!(request.annotation_subscribe);
+    }
+
+    #[test]
+    fn test_annotation_subscribe_mode_rejects_non_array() {
+        let result = SubscriptionRequest::build(
+            "test-channel".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(json!("ANNOTATION_SUBSCRIBE")),
+            &event_name_filtering_config(),
+        );
+
+        assert!(result.is_err());
     }
 }

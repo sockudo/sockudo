@@ -11,12 +11,12 @@ use sockudo_core::history::{
 };
 use sockudo_core::history::{HistoryStore, MemoryHistoryStore, MemoryHistoryStoreConfig};
 use sockudo_core::metrics::MetricsInterface;
-#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[cfg(feature = "postgres")]
 use sockudo_core::options::DatabaseConnection;
 use sockudo_core::options::{DatabaseConfig, DatabasePooling, HistoryBackend, HistoryConfig};
 #[cfg(feature = "versioned-messages")]
 use sockudo_core::options::{VersionStoreDriver, VersionedMessagesConfig};
-#[cfg(feature = "postgres")]
+#[cfg(all(feature = "postgres", feature = "versioned-messages"))]
 use sockudo_core::version_store::{
     StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
     VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,
@@ -181,6 +181,8 @@ struct HistoryTables {
     version_streams: String,
     version_messages: String,
     version_entries: String,
+    annotation_events: String,
+    annotation_projections: String,
 }
 
 #[cfg(feature = "postgres")]
@@ -325,6 +327,11 @@ impl PostgresHistoryStore {
             version_streams: format!("{}_version_streams", config.postgres.table_prefix),
             version_messages: format!("{}_version_messages", config.postgres.table_prefix),
             version_entries: format!("{}_version_entries", config.postgres.table_prefix),
+            annotation_events: format!("{}_annotation_events", config.postgres.table_prefix),
+            annotation_projections: format!(
+                "{}_annotation_projections",
+                config.postgres.table_prefix
+            ),
         };
 
         let store = Self {
@@ -456,6 +463,44 @@ impl PostgresHistoryStore {
             "#,
             self.tables.version_entries
         );
+        let create_annotation_events = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message_serial TEXT NOT NULL,
+                annotation_serial TEXT NOT NULL,
+                annotation_type TEXT NOT NULL,
+                name TEXT NULL,
+                client_id TEXT NULL,
+                count_value BIGINT NULL,
+                action TEXT NOT NULL,
+                data_bytes BYTEA NULL,
+                encoding TEXT NULL,
+                annotation_timestamp_ms BIGINT NOT NULL,
+                payload_bytes BYTEA NOT NULL,
+                payload_size_bytes BIGINT NOT NULL,
+                created_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel, message_serial, annotation_serial)
+            )
+            "#,
+            self.tables.annotation_events
+        );
+        let create_annotation_projections = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                app_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message_serial TEXT NOT NULL,
+                annotation_type TEXT NOT NULL,
+                summary_json JSONB NOT NULL,
+                last_annotation_serial TEXT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (app_id, channel, message_serial, annotation_type)
+            )
+            "#,
+            self.tables.annotation_projections
+        );
         let index_version_stream_window = format!(
             "CREATE INDEX IF NOT EXISTS {0}_delivery_window_idx ON {0} (app_id, oldest_available_delivery_serial, newest_available_delivery_serial)",
             self.tables.version_streams
@@ -483,6 +528,22 @@ impl PostgresHistoryStore {
         let index_version_entries_history = format!(
             "CREATE INDEX IF NOT EXISTS {0}_history_version_idx ON {0} (app_id, channel, history_serial, version_serial DESC)",
             self.tables.version_entries
+        );
+        let index_annotation_events_summary = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_summary_idx ON {0} (app_id, channel, message_serial, annotation_type, annotation_serial)",
+            self.tables.annotation_events
+        );
+        let index_annotation_events_dedup = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_dedup_idx ON {0} (app_id, channel, message_serial, annotation_serial)",
+            self.tables.annotation_events
+        );
+        let index_annotation_events_raw_replay = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_raw_replay_idx ON {0} (app_id, channel, annotation_serial)",
+            self.tables.annotation_events
+        );
+        let index_annotation_events_created_at = format!(
+            "CREATE INDEX IF NOT EXISTS {0}_created_at_idx ON {0} (created_at_ms)",
+            self.tables.annotation_events
         );
         let add_oldest_time = format!(
             "ALTER TABLE {} ADD COLUMN IF NOT EXISTS oldest_available_published_at_ms BIGINT NULL",
@@ -517,6 +578,8 @@ impl PostgresHistoryStore {
             create_version_streams,
             create_version_messages,
             create_version_entries,
+            create_annotation_events,
+            create_annotation_projections,
             index_version_stream_window,
             index_version_messages_history,
             index_version_messages_latest,
@@ -524,6 +587,10 @@ impl PostgresHistoryStore {
             index_version_entries_message,
             index_version_entries_replay,
             index_version_entries_history,
+            index_annotation_events_summary,
+            index_annotation_events_dedup,
+            index_annotation_events_raw_replay,
+            index_annotation_events_created_at,
             add_oldest_time,
             add_newest_time,
             add_durable_state,
@@ -1561,8 +1628,8 @@ impl HistoryStore for PostgresHistoryStore {
         }
         let sql = format!(
             r#"
-            DELETE FROM {table} WHERE id IN (
-                SELECT id FROM {table} WHERE published_at_ms < $1 ORDER BY published_at_ms ASC LIMIT $2
+            DELETE FROM {table} WHERE ctid IN (
+                SELECT ctid FROM {table} WHERE published_at_ms < $1 ORDER BY published_at_ms ASC LIMIT $2
             )
             "#,
             table = self.tables.entries
@@ -1976,6 +2043,8 @@ impl PostgresVersionStore {
             version_streams: format!("{}_version_streams", table_prefix),
             version_messages: format!("{}_version_messages", table_prefix),
             version_entries: format!("{}_version_entries", table_prefix),
+            annotation_events: format!("{}_annotation_events", table_prefix),
+            annotation_projections: format!("{}_annotation_projections", table_prefix),
         };
 
         let store = Self { pool, tables };
