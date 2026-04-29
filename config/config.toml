@@ -44,6 +44,7 @@ request_timeout_ms = 5000
 
 [adapter.iggy]
 connection_string = "iggy://iggy:iggy@127.0.0.1:8090"
+consumer_name = ""
 stream = "sockudo"
 topic_prefix = "sockudo-adapter"
 request_timeout_ms = 5000
@@ -153,6 +154,7 @@ driver = "memory"
 
 [queue.iggy]
 connection_string = "iggy://iggy:iggy@127.0.0.1:8090"
+consumer_name = ""
 stream = "sockudo"
 queue_topic_prefix = "sockudo-queue"
 consumer_group_prefix = "sockudo-workers"

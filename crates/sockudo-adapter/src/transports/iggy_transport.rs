@@ -2,10 +2,11 @@ use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures_util::StreamExt;
 use iggy::prelude::{
-    Client, CompressionAlgorithm, Consumer, IggyClient, IggyError, IggyExpiry, IggyMessage,
-    MaxTopicSize, MessageClient, Partitioning, PollingStrategy, StreamClient, SystemClient,
-    TopicClient, UserClient,
+    AutoCommit, AutoCommitWhen, Client, CompressionAlgorithm, Consumer, ConsumerOffsetClient,
+    IggyClient, IggyDuration, IggyError, IggyExpiry, IggyMessage, IggyProducer, MaxTopicSize,
+    Partitioning, PollingStrategy, StreamClient, SystemClient, TopicClient, UserClient,
 };
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
@@ -15,7 +16,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 pub struct IggyTransport {
@@ -24,6 +25,9 @@ pub struct IggyTransport {
     broadcast_topic: String,
     request_topic: String,
     response_topic: String,
+    broadcast_producer: Arc<IggyProducer>,
+    request_producer: Arc<IggyProducer>,
+    response_producer: Arc<IggyProducer>,
     listener_id: String,
     config: IggyConfig,
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
@@ -58,6 +62,13 @@ impl HorizontalTransport for IggyTransport {
         ensure_topic(&client, &config, &stream, &broadcast_topic).await?;
         ensure_topic(&client, &config, &stream, &request_topic).await?;
         ensure_topic(&client, &config, &stream, &response_topic).await?;
+        let broadcast_producer =
+            Arc::new(build_producer(&client, &config, &stream, &broadcast_topic).await?);
+        let request_producer =
+            Arc::new(build_producer(&client, &config, &stream, &request_topic).await?);
+        let response_producer =
+            Arc::new(build_producer(&client, &config, &stream, &response_topic).await?);
+        let listener_id = stable_consumer_name(&config);
 
         info!(
             "Apache Iggy transport initialized with stream '{}' and topics: {}, {}, {}",
@@ -70,7 +81,10 @@ impl HorizontalTransport for IggyTransport {
             broadcast_topic,
             request_topic,
             response_topic,
-            listener_id: uuid::Uuid::new_v4().simple().to_string(),
+            broadcast_producer,
+            request_producer,
+            response_producer,
+            listener_id,
             config,
             metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
@@ -80,36 +94,15 @@ impl HorizontalTransport for IggyTransport {
     }
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
-        publish_message(
-            &self.client,
-            &self.config,
-            &self.stream,
-            &self.broadcast_topic,
-            message,
-        )
-        .await
+        publish_message(&self.config, &self.broadcast_producer, message).await
     }
 
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
-        publish_message(
-            &self.client,
-            &self.config,
-            &self.stream,
-            &self.request_topic,
-            request,
-        )
-        .await
+        publish_message(&self.config, &self.request_producer, request).await
     }
 
     async fn publish_response(&self, response: &ResponseBody) -> Result<()> {
-        publish_message(
-            &self.client,
-            &self.config,
-            &self.stream,
-            &self.response_topic,
-            response,
-        )
-        .await
+        publish_message(&self.config, &self.response_producer, response).await
     }
 
     async fn start_listeners(&self, handlers: TransportHandlers) -> Result<()> {
@@ -176,18 +169,19 @@ impl IggyTransport {
                 }
             };
 
-            let consumer = match consumer_name.as_str().try_into() {
-                Ok(id) => Consumer::new(id),
-                Err(error) => {
-                    error!("Invalid Apache Iggy {kind} consumer name: {}", error);
-                    return;
-                }
-            };
-            let mut strategy = if config.start_from_latest {
-                PollingStrategy::last()
-            } else {
-                PollingStrategy::next()
-            };
+            let consumer =
+                match build_consumer(&client, &config, &stream, &topic, &consumer_name).await {
+                    Ok(consumer) => consumer,
+                    Err(error) => {
+                        error!(
+                            "Failed to initialize Apache Iggy {kind} consumer: {}",
+                            error
+                        );
+                        let _ = client.shutdown().await;
+                        return;
+                    }
+                };
+            let mut consumer = consumer;
 
             loop {
                 if !is_running.load(Ordering::Relaxed) {
@@ -195,26 +189,30 @@ impl IggyTransport {
                 }
                 tokio::select! {
                     _ = shutdown.notified() => break,
-                    _ = sleep(Duration::from_millis(config.poll_interval_ms)) => {}
-                }
-
-                match poll_messages(&client, &config, &stream, &topic, &consumer, &strategy).await {
-                    Ok(messages) => {
-                        strategy = PollingStrategy::next();
-                        for message in messages {
-                            match sonic_rs::from_slice::<T>(&message.payload) {
-                                Ok(payload) => handler(payload).await,
-                                Err(error) => {
-                                    if let Some(metrics) = metrics.get() {
-                                        metrics.mark_horizontal_transport_message_dropped("iggy");
+                    received = consumer.next() => {
+                        match received {
+                            Some(Ok(received)) => {
+                                match sonic_rs::from_slice::<T>(&received.message.payload) {
+                                    Ok(payload) => handler(payload).await,
+                                    Err(error) => {
+                                        if let Some(metrics) = metrics.get() {
+                                            metrics.mark_horizontal_transport_message_dropped("iggy");
+                                        }
+                                        warn!("Failed to parse Apache Iggy {kind} payload: {}", error);
                                     }
-                                    warn!("Failed to parse Apache Iggy {kind} payload: {}", error);
                                 }
                             }
+                            Some(Err(error)) => warn!("Apache Iggy {kind} consumer failed: {}", error),
+                            None => break,
                         }
                     }
-                    Err(error) => warn!("Apache Iggy {kind} poll failed: {}", error),
                 }
+            }
+            if let Err(error) = consumer.shutdown().await {
+                warn!("Failed to shutdown Apache Iggy {kind} consumer: {error}");
+            }
+            if let Err(error) = client.shutdown().await {
+                warn!("Failed to shutdown Apache Iggy {kind} listener client: {error}");
             }
             warn!("Apache Iggy {kind} consumer loop ended");
         });
@@ -251,18 +249,31 @@ impl IggyTransport {
                 }
             };
 
-            let consumer = match consumer_name.as_str().try_into() {
-                Ok(id) => Consumer::new(id),
-                Err(error) => {
-                    error!("Invalid Apache Iggy request consumer name: {}", error);
-                    return;
-                }
-            };
-            let mut strategy = if config.start_from_latest {
-                PollingStrategy::last()
-            } else {
-                PollingStrategy::next()
-            };
+            let consumer =
+                match build_consumer(&client, &config, &stream, &topic, &consumer_name).await {
+                    Ok(consumer) => consumer,
+                    Err(error) => {
+                        error!(
+                            "Failed to initialize Apache Iggy request consumer: {}",
+                            error
+                        );
+                        let _ = client.shutdown().await;
+                        return;
+                    }
+                };
+            let response_producer =
+                match build_producer(&client, &config, &stream, &response_topic).await {
+                    Ok(producer) => producer,
+                    Err(error) => {
+                        error!(
+                            "Failed to initialize Apache Iggy response producer: {}",
+                            error
+                        );
+                        let _ = client.shutdown().await;
+                        return;
+                    }
+                };
+            let mut consumer = consumer;
 
             loop {
                 if !is_running.load(Ordering::Relaxed) {
@@ -270,46 +281,49 @@ impl IggyTransport {
                 }
                 tokio::select! {
                     _ = shutdown.notified() => break,
-                    _ = sleep(Duration::from_millis(config.poll_interval_ms)) => {}
-                }
-
-                match poll_messages(&client, &config, &stream, &topic, &consumer, &strategy).await {
-                    Ok(messages) => {
-                        strategy = PollingStrategy::next();
-                        for message in messages {
-                            match sonic_rs::from_slice::<RequestBody>(&message.payload) {
-                                Ok(request) => match handler(request).await {
-                                    Ok(response) => {
-                                        if let Err(error) = publish_message(
-                                            &client,
-                                            &config,
-                                            &stream,
-                                            &response_topic,
-                                            &response,
-                                        )
-                                        .await
-                                        {
-                                            warn!(
-                                                "Failed to publish Apache Iggy response: {}",
-                                                error
-                                            );
+                    received = consumer.next() => {
+                        match received {
+                            Some(Ok(received)) => {
+                                match sonic_rs::from_slice::<RequestBody>(&received.message.payload) {
+                                    Ok(request) => match handler(request).await {
+                                        Ok(response) => {
+                                            if let Err(error) = publish_message(
+                                                &config,
+                                                &response_producer,
+                                                &response,
+                                            )
+                                            .await
+                                            {
+                                                warn!(
+                                                    "Failed to publish Apache Iggy response: {}",
+                                                    error
+                                                );
+                                            }
+                                        }
+                                        Err(error) => {
+                                            warn!("Apache Iggy request handler failed: {}", error)
                                         }
                                     }
                                     Err(error) => {
-                                        warn!("Apache Iggy request handler failed: {}", error)
+                                        if let Some(metrics) = metrics.get() {
+                                            metrics.mark_horizontal_transport_message_dropped("iggy");
+                                        }
+                                        warn!("Failed to parse Apache Iggy request payload: {}", error);
                                     }
-                                },
-                                Err(error) => {
-                                    if let Some(metrics) = metrics.get() {
-                                        metrics.mark_horizontal_transport_message_dropped("iggy");
-                                    }
-                                    warn!("Failed to parse Apache Iggy request payload: {}", error);
                                 }
                             }
+                            Some(Err(error)) => warn!("Apache Iggy request consumer failed: {}", error),
+                            None => break,
                         }
                     }
-                    Err(error) => warn!("Apache Iggy request poll failed: {}", error),
                 }
+            }
+            if let Err(error) = consumer.shutdown().await {
+                warn!("Failed to shutdown Apache Iggy request consumer: {error}");
+            }
+            response_producer.shutdown().await;
+            if let Err(error) = client.shutdown().await {
+                warn!("Failed to shutdown Apache Iggy request listener client: {error}");
             }
             warn!("Apache Iggy request consumer loop ended");
         });
@@ -327,6 +341,9 @@ impl Clone for IggyTransport {
             broadcast_topic: self.broadcast_topic.clone(),
             request_topic: self.request_topic.clone(),
             response_topic: self.response_topic.clone(),
+            broadcast_producer: self.broadcast_producer.clone(),
+            request_producer: self.request_producer.clone(),
+            response_producer: self.response_producer.clone(),
             listener_id: self.listener_id.clone(),
             config: self.config.clone(),
             metrics: self.metrics.clone(),
@@ -342,11 +359,29 @@ impl Drop for IggyTransport {
         if self.owner_count.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.is_running.store(false, Ordering::Relaxed);
             self.shutdown.notify_waiters();
+            let client = self.client.clone();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    if let Err(error) = client.shutdown().await {
+                        warn!("Failed to shutdown Apache Iggy transport client: {error}");
+                    }
+                });
+            }
         }
     }
 }
 
 async fn connect_client(config: &IggyConfig) -> Result<IggyClient> {
+    if config.username.is_some()
+        && config.password.is_some()
+        && connection_string_has_credentials(&config.connection_string)
+    {
+        return Err(Error::Config(
+            "Apache Iggy credentials must come from either connection_string or username/password, not both"
+                .to_string(),
+        ));
+    }
+
     let client = IggyClient::from_connection_string(&config.connection_string)
         .map_err(|e| Error::Internal(format!("Invalid Apache Iggy connection string: {e}")))?;
     client
@@ -362,6 +397,96 @@ async fn connect_client(config: &IggyConfig) -> Result<IggyClient> {
     }
 
     Ok(client)
+}
+
+async fn build_producer(
+    client: &IggyClient,
+    config: &IggyConfig,
+    stream: &str,
+    topic: &str,
+) -> Result<IggyProducer> {
+    let mut builder = client
+        .producer(stream, topic)
+        .map_err(to_iggy_error)?
+        .partitioning(Partitioning::balanced());
+
+    builder = if config.auto_create {
+        builder.create_topic_if_not_exists(
+            config.partitions_count,
+            None,
+            IggyExpiry::ServerDefault,
+            MaxTopicSize::ServerDefault,
+        )
+    } else {
+        builder
+            .do_not_create_stream_if_not_exists()
+            .do_not_create_topic_if_not_exists()
+    };
+
+    let producer = builder.build();
+    with_timeout(config, producer.init()).await?;
+    Ok(producer)
+}
+
+async fn build_consumer(
+    client: &IggyClient,
+    config: &IggyConfig,
+    stream: &str,
+    topic: &str,
+    consumer_name: &str,
+) -> Result<iggy::prelude::IggyConsumer> {
+    let consumer = Consumer::new(
+        consumer_name
+            .try_into()
+            .map_err(|e| Error::Config(format!("Invalid Apache Iggy consumer name: {e}")))?,
+    );
+    if config.start_from_latest {
+        seed_latest_offsets(client, config, stream, topic, &consumer).await?;
+    }
+
+    let mut consumer = client
+        .consumer(consumer_name, stream, topic, config.partition_id)
+        .map_err(to_iggy_error)?
+        .partition(None)
+        .poll_interval(IggyDuration::from(Duration::from_millis(
+            config.poll_interval_ms,
+        )))
+        .batch_length(config.poll_batch_size)
+        .auto_commit(AutoCommit::When(AutoCommitWhen::PollingMessages))
+        .polling_strategy(PollingStrategy::next())
+        .build();
+    with_timeout(config, consumer.init()).await?;
+    Ok(consumer)
+}
+
+async fn seed_latest_offsets(
+    client: &IggyClient,
+    config: &IggyConfig,
+    stream: &str,
+    topic: &str,
+    consumer: &Consumer,
+) -> Result<()> {
+    let stream_id = stream_identifier(stream)?;
+    let topic_id = stream_identifier(topic)?;
+    let Some(topic_details) = with_timeout(config, client.get_topic(&stream_id, &topic_id)).await?
+    else {
+        return Ok(());
+    };
+
+    for partition in topic_details.partitions {
+        with_timeout(
+            config,
+            client.store_consumer_offset(
+                consumer,
+                &stream_id,
+                &topic_id,
+                Some(partition.id),
+                partition.current_offset,
+            ),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn ensure_topic(
@@ -421,74 +546,41 @@ async fn ensure_topic(
 }
 
 async fn publish_message<T: serde::Serialize>(
-    client: &IggyClient,
     config: &IggyConfig,
-    stream: &str,
-    topic: &str,
+    producer: &IggyProducer,
     message: &T,
 ) -> Result<()> {
     let payload = sonic_rs::to_vec(message)
         .map_err(|e| Error::Other(format!("Failed to serialize Apache Iggy message: {e}")))?;
-    let mut messages = [IggyMessage::builder()
+    let message = IggyMessage::builder()
         .payload(Bytes::from(payload))
         .build()
-        .map_err(to_iggy_error)?];
-    let partitioning = Partitioning::messages_key(topic.as_bytes())
-        .unwrap_or_else(|_| Partitioning::partition_id(config.partition_id));
-    with_timeout(
-        config,
-        client.send_messages(
-            &stream_identifier(stream)?,
-            &stream_identifier(topic)?,
-            &partitioning,
-            &mut messages,
-        ),
-    )
-    .await
-    .map_err(|e| Error::Internal(format!("Failed to publish Apache Iggy message: {e}")))?;
+        .map_err(to_iggy_error)?;
+    with_timeout(config, producer.send_one(message))
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to publish Apache Iggy message: {e}")))?;
 
-    debug!("Published Apache Iggy message to {stream}/{topic}");
+    debug!("Published Apache Iggy message");
     Ok(())
 }
 
-async fn poll_messages(
-    client: &IggyClient,
-    config: &IggyConfig,
-    stream: &str,
-    topic: &str,
-    consumer: &Consumer,
-    strategy: &PollingStrategy,
-) -> Result<Vec<IggyMessage>> {
-    let result = with_timeout(
-        config,
-        client.poll_messages(
-            &stream_identifier(stream)?,
-            &stream_identifier(topic)?,
-            Some(config.partition_id),
-            consumer,
-            strategy,
-            config.poll_batch_size,
-            true,
-        ),
-    )
-    .await
-    .map_err(|e| Error::Internal(format!("Failed to poll Apache Iggy messages: {e}")))?;
-
-    Ok(result.messages)
-}
-
-async fn with_timeout<F, T>(config: &IggyConfig, future: F) -> std::result::Result<T, IggyError>
+async fn with_timeout<F, T>(config: &IggyConfig, future: F) -> Result<T>
 where
     F: std::future::Future<Output = std::result::Result<T, IggyError>>,
 {
     timeout(Duration::from_millis(config.request_timeout_ms), future)
         .await
-        .map_err(|_| IggyError::CannotEstablishConnection)?
+        .map_err(|_| {
+            Error::Internal(format!(
+                "Apache Iggy request timed out after {} ms",
+                config.request_timeout_ms
+            ))
+        })?
+        .map_err(to_iggy_error)
 }
 
 fn stream_identifier(value: &str) -> Result<iggy::prelude::Identifier> {
-    value
-        .try_into()
+    iggy::prelude::Identifier::named(value)
         .map_err(|e| Error::Config(format!("Invalid Apache Iggy identifier '{value}': {e}")))
 }
 
@@ -496,6 +588,11 @@ fn validate_config(config: &IggyConfig) -> Result<()> {
     if config.connection_string.trim().is_empty() {
         return Err(Error::Config(
             "Apache Iggy connection_string must not be empty".to_string(),
+        ));
+    }
+    if config.username.is_some() != config.password.is_some() {
+        return Err(Error::Config(
+            "Apache Iggy username and password must be configured together".to_string(),
         ));
     }
     if config.partitions_count == 0 {
@@ -514,7 +611,40 @@ fn validate_config(config: &IggyConfig) -> Result<()> {
             "Apache Iggy poll_batch_size must be greater than 0".to_string(),
         ));
     }
+    for (field, value) in [
+        ("stream", config.stream.as_str()),
+        ("topic_prefix", config.topic_prefix.as_str()),
+    ] {
+        let normalized = normalize_name(value, "");
+        if !normalized.is_empty() && normalized.chars().all(|ch| ch.is_ascii_digit()) {
+            return Err(Error::Config(format!(
+                "Apache Iggy {field} must not normalize to an all-digit name"
+            )));
+        }
+    }
     Ok(())
+}
+
+fn stable_consumer_name(config: &IggyConfig) -> String {
+    let raw = config
+        .consumer_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| std::env::var("INSTANCE_PROCESS_ID").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "sockudo".to_string());
+    normalize_name(&raw, "sockudo")
+}
+
+fn connection_string_has_credentials(connection_string: &str) -> bool {
+    let Some(after_scheme) = connection_string.split_once("://").map(|(_, rest)| rest) else {
+        return false;
+    };
+    after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .is_some_and(|authority| authority.contains('@'))
 }
 
 fn normalize_name(value: &str, fallback: &str) -> String {
