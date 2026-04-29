@@ -592,6 +592,7 @@ pub struct IggyConfig {
     pub connection_string: String,
     pub username: Option<String>,
     pub password: Option<String>,
+    pub consumer_name: Option<String>,
     pub stream: String,
     pub topic_prefix: String,
     pub queue_topic_prefix: String,
@@ -1958,6 +1959,7 @@ impl Default for IggyConfig {
             connection_string: "iggy://iggy:iggy@127.0.0.1:8090".to_string(),
             username: None,
             password: None,
+            consumer_name: None,
             stream: "sockudo".to_string(),
             topic_prefix: "sockudo-adapter".to_string(),
             queue_topic_prefix: "sockudo-queue".to_string(),
@@ -2906,6 +2908,15 @@ impl ServerOptions {
             self.adapter.iggy.password = password.clone();
             self.queue.iggy.password = password;
         }
+        if let Ok(consumer_name) = std::env::var("IGGY_CONSUMER_NAME") {
+            let consumer_name = (!consumer_name.is_empty()).then_some(consumer_name);
+            self.adapter.iggy.consumer_name = consumer_name.clone();
+            self.queue.iggy.consumer_name = consumer_name;
+        } else if let Ok(process_id) = std::env::var("INSTANCE_PROCESS_ID") {
+            let process_id = (!process_id.is_empty()).then_some(process_id);
+            self.adapter.iggy.consumer_name = process_id.clone();
+            self.queue.iggy.consumer_name = process_id;
+        }
         if let Ok(stream) = std::env::var("IGGY_STREAM") {
             self.adapter.iggy.stream = stream.clone();
             self.queue.iggy.stream = stream;
@@ -2935,14 +2946,22 @@ impl ServerOptions {
             parse_env::<u32>("IGGY_POLL_BATCH_SIZE", self.adapter.iggy.poll_batch_size);
         self.queue.iggy.poll_batch_size =
             parse_env::<u32>("IGGY_POLL_BATCH_SIZE", self.queue.iggy.poll_batch_size);
-        self.adapter.iggy.partitions_count =
-            parse_env::<u32>("IGGY_PARTITIONS_COUNT", self.adapter.iggy.partitions_count);
-        self.queue.iggy.partitions_count =
-            parse_env::<u32>("IGGY_PARTITIONS_COUNT", self.queue.iggy.partitions_count);
-        self.adapter.iggy.partition_id =
-            parse_env::<u32>("IGGY_PARTITION_ID", self.adapter.iggy.partition_id);
-        self.queue.iggy.partition_id =
-            parse_env::<u32>("IGGY_PARTITION_ID", self.queue.iggy.partition_id);
+        self.adapter.iggy.partitions_count = parse_env::<u32>(
+            "ADAPTER_IGGY_PARTITIONS_COUNT",
+            parse_env::<u32>("IGGY_PARTITIONS_COUNT", self.adapter.iggy.partitions_count),
+        );
+        self.queue.iggy.partitions_count = parse_env::<u32>(
+            "QUEUE_IGGY_PARTITIONS_COUNT",
+            parse_env::<u32>("IGGY_PARTITIONS_COUNT", self.queue.iggy.partitions_count),
+        );
+        self.adapter.iggy.partition_id = parse_env::<u32>(
+            "ADAPTER_IGGY_PARTITION_ID",
+            parse_env::<u32>("IGGY_PARTITION_ID", self.adapter.iggy.partition_id),
+        );
+        self.queue.iggy.partition_id = parse_env::<u32>(
+            "QUEUE_IGGY_PARTITION_ID",
+            parse_env::<u32>("IGGY_PARTITION_ID", self.queue.iggy.partition_id),
+        );
         self.adapter.iggy.auto_create =
             parse_env::<bool>("IGGY_AUTO_CREATE", self.adapter.iggy.auto_create);
         self.queue.iggy.auto_create =

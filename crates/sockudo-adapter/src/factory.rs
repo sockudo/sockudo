@@ -507,6 +507,7 @@ impl AdapterFactory {
                     connection_string: config.iggy.connection_string.clone(),
                     username: config.iggy.username.clone(),
                     password: config.iggy.password.clone(),
+                    consumer_name: config.iggy.consumer_name.clone(),
                     stream: config.iggy.stream.clone(),
                     topic_prefix: config.iggy.topic_prefix.clone(),
                     queue_topic_prefix: config.iggy.queue_topic_prefix.clone(),
