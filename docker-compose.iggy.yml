@@ -1,0 +1,169 @@
+# =============================================================================
+# Sockudo + Apache Iggy multinode test stack
+# =============================================================================
+
+name: sockudo-iggy-test
+
+x-sockudo-build: &sockudo-build
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+    args:
+      SOCKUDO_FEATURES: "iggy"
+
+x-sockudo-common-env: &sockudo-common-env
+  RUST_LOG: "info,sockudo=debug"
+  DEBUG: "true"
+  HOST: "0.0.0.0"
+  APP_MANAGER_DRIVER: "memory"
+  ADAPTER_DRIVER: "iggy"
+  CACHE_DRIVER: "memory"
+  QUEUE_DRIVER: "iggy"
+  RATE_LIMITER_DRIVER: "memory"
+  METRICS_ENABLED: "true"
+  METRICS_HOST: "0.0.0.0"
+  METRICS_PROMETHEUS_PREFIX: "sockudo_"
+  CORS_CREDENTIALS: "false"
+  IGGY_CONNECTION_STRING: "iggy://iggy:iggy@iggy:8090"
+  IGGY_STREAM: "sockudo"
+  IGGY_TOPIC_PREFIX: "sockudo-adapter"
+  IGGY_QUEUE_TOPIC_PREFIX: "sockudo-queue"
+  IGGY_CONSUMER_GROUP_PREFIX: "sockudo-workers"
+  IGGY_REQUEST_TIMEOUT_MS: "5000"
+  IGGY_POLL_INTERVAL_MS: "50"
+  IGGY_POLL_BATCH_SIZE: "100"
+  ADAPTER_IGGY_PARTITIONS_COUNT: "1"
+  QUEUE_IGGY_PARTITIONS_COUNT: "3"
+  IGGY_AUTO_CREATE: "true"
+  IGGY_START_FROM_LATEST: "false"
+  IGGY_NODES_NUMBER: "3"
+  CLUSTER_HEALTH_ENABLED: "true"
+  SHUTDOWN_GRACE_PERIOD: "2"
+  SOCKUDO_DEFAULT_APP_ID: "demo-app"
+  SOCKUDO_DEFAULT_APP_KEY: "demo-key"
+  SOCKUDO_DEFAULT_APP_SECRET: "demo-secret"
+  SOCKUDO_DEFAULT_APP_ENABLED: "true"
+  SOCKUDO_ENABLE_CLIENT_MESSAGES: "true"
+  SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS: "1000"
+  SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND: "100"
+  SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND: "100"
+  SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION: "false"
+  SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS: "false"
+  HEALTHCHECK_PATH: "up/demo-app"
+
+x-sockudo-common: &sockudo-common
+  <<: *sockudo-build
+  restart: unless-stopped
+  volumes:
+    - ./config:/app/config:ro
+    - sockudo-logs:/app/logs
+  depends_on:
+    iggy:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://localhost:$${PORT}/up/demo-app >/dev/null"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 20s
+  networks:
+    - sockudo-iggy-network
+
+services:
+  iggy:
+    image: apache/iggy:latest
+    container_name: sockudo-iggy
+    restart: unless-stopped
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      IGGY_ROOT_USERNAME: "iggy"
+      IGGY_ROOT_PASSWORD: "iggy"
+      IGGY_TCP_ADDRESS: "0.0.0.0:8090"
+      IGGY_HTTP_ENABLED: "true"
+      IGGY_HTTP_ADDRESS: "0.0.0.0:3000"
+      IGGY_QUIC_ADDRESS: "0.0.0.0:8080"
+      IGGY_SYSTEM_PATH: "/local_data"
+    ports:
+      - "3000:3000" # Iggy HTTP API
+      - "8080:8080/udp" # Iggy QUIC
+      - "8090:8090" # Iggy TCP
+    volumes:
+      - iggy-data:/local_data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "iggy",
+          "--transport",
+          "tcp",
+          "--credentials-username",
+          "iggy",
+          "--credentials-password",
+          "iggy",
+          "ping",
+          "--count",
+          "1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - sockudo-iggy-network
+
+  sockudo-node1:
+    <<: *sockudo-common
+    container_name: sockudo-iggy-node1
+    environment:
+      <<: *sockudo-common-env
+      INSTANCE_PROCESS_ID: "sockudo-iggy-node1"
+      IGGY_CONSUMER_NAME: "sockudo-iggy-node1"
+      PORT: "6001"
+      METRICS_PORT: "9601"
+    ports:
+      - "6001:6001"
+      - "9601:9601"
+
+  sockudo-node2:
+    <<: *sockudo-common
+    container_name: sockudo-iggy-node2
+    environment:
+      <<: *sockudo-common-env
+      INSTANCE_PROCESS_ID: "sockudo-iggy-node2"
+      IGGY_CONSUMER_NAME: "sockudo-iggy-node2"
+      PORT: "6002"
+      METRICS_PORT: "9602"
+    ports:
+      - "6002:6002"
+      - "9602:9602"
+
+  sockudo-node3:
+    <<: *sockudo-common
+    container_name: sockudo-iggy-node3
+    environment:
+      <<: *sockudo-common-env
+      INSTANCE_PROCESS_ID: "sockudo-iggy-node3"
+      IGGY_CONSUMER_NAME: "sockudo-iggy-node3"
+      PORT: "6003"
+      METRICS_PORT: "9603"
+    ports:
+      - "6003:6003"
+      - "9603:9603"
+
+networks:
+  sockudo-iggy-network:
+    driver: bridge
+
+volumes:
+  iggy-data:
+    driver: local
+  sockudo-logs:
+    driver: local

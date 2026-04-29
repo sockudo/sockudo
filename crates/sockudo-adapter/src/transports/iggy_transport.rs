@@ -354,6 +354,9 @@ impl IggyTransport {
                                                     Err(error) => warn!("Failed to publish Apache Iggy response: {error}"),
                                                 }
                                             }
+                                            Err(Error::OwnRequestIgnored | Error::RequestNotForThisNode) => {
+                                                should_commit = true;
+                                            }
                                             Err(error) => warn!("Apache Iggy request handler failed: {}", error),
                                         }
                                         Err(error) => {
@@ -424,7 +427,15 @@ impl Drop for IggyTransport {
             self.is_running.store(false, Ordering::Relaxed);
             self.shutdown.notify_waiters();
             let client = self.client.clone();
-            shutdown_client_blocking(client);
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    if let Err(error) = client.shutdown().await {
+                        warn!("Failed to shutdown Apache Iggy transport client: {error}");
+                    }
+                });
+            } else {
+                warn!("No Tokio runtime available to shutdown Apache Iggy transport client");
+            }
         }
     }
 }
@@ -703,29 +714,6 @@ async fn wait_before_retry(
     tokio::select! {
         _ = shutdown.notified() => {}
         _ = sleep(Duration::from_millis(delay_ms)) => {}
-    }
-}
-
-fn shutdown_client_blocking(client: Arc<IggyClient>) {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        match std::thread::spawn(move || handle.block_on(client.shutdown())).join() {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => warn!("Failed to shutdown Apache Iggy transport client: {error}"),
-            Err(_) => warn!("Apache Iggy transport shutdown thread panicked"),
-        }
-        return;
-    }
-
-    match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => {
-            if let Err(error) = runtime.block_on(client.shutdown()) {
-                warn!("Failed to shutdown Apache Iggy transport client: {error}");
-            }
-        }
-        Err(error) => warn!("Failed to create runtime for Apache Iggy transport shutdown: {error}"),
     }
 }
 
