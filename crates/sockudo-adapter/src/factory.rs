@@ -1,6 +1,8 @@
 use crate::ConnectionManager;
 #[cfg(feature = "google-pubsub")]
 use crate::google_pubsub_adapter::GooglePubSubAdapter;
+#[cfg(feature = "iggy")]
+use crate::iggy_adapter::IggyAdapter;
 #[cfg(feature = "kafka")]
 use crate::kafka_adapter::KafkaAdapter;
 use crate::local_adapter::LocalAdapter;
@@ -19,6 +21,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "google-pubsub")]
 use sockudo_core::options::GooglePubSubAdapterConfig;
+#[cfg(feature = "iggy")]
+use sockudo_core::options::IggyConfig;
 #[cfg(feature = "kafka")]
 use sockudo_core::options::KafkaAdapterConfig;
 #[cfg(feature = "nats")]
@@ -49,6 +53,8 @@ pub enum TypedAdapter {
     Pulsar(Arc<PulsarAdapter>),
     #[cfg(feature = "google-pubsub")]
     GooglePubSub(Arc<GooglePubSubAdapter>),
+    #[cfg(feature = "iggy")]
+    Iggy(Arc<IggyAdapter>),
     #[cfg(feature = "kafka")]
     Kafka(Arc<KafkaAdapter>),
     #[cfg(feature = "rabbitmq")]
@@ -70,6 +76,8 @@ impl TypedAdapter {
             TypedAdapter::Pulsar(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "google-pubsub")]
             TypedAdapter::GooglePubSub(adapter) => adapter.local_adapter.clone(),
+            #[cfg(feature = "iggy")]
+            TypedAdapter::Iggy(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "kafka")]
             TypedAdapter::Kafka(adapter) => adapter.local_adapter.clone(),
             #[cfg(feature = "rabbitmq")]
@@ -133,6 +141,10 @@ impl TypedAdapter {
             TypedAdapter::GooglePubSub(adapter) => {
                 adapter.set_cache_manager(cache_manager, idempotency_ttl);
             }
+            #[cfg(feature = "iggy")]
+            TypedAdapter::Iggy(adapter) => {
+                adapter.set_cache_manager(cache_manager, idempotency_ttl);
+            }
             #[cfg(feature = "kafka")]
             TypedAdapter::Kafka(adapter) => {
                 adapter.set_cache_manager(cache_manager, idempotency_ttl);
@@ -166,6 +178,8 @@ impl TypedAdapter {
             TypedAdapter::Pulsar(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "google-pubsub")]
             TypedAdapter::GooglePubSub(adapter) => adapter.set_metrics(metrics).await,
+            #[cfg(feature = "iggy")]
+            TypedAdapter::Iggy(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "kafka")]
             TypedAdapter::Kafka(adapter) => adapter.set_metrics(metrics).await,
             #[cfg(feature = "rabbitmq")]
@@ -487,6 +501,50 @@ impl AdapterFactory {
                     }
                 }
             }
+            #[cfg(feature = "iggy")]
+            AdapterDriver::Iggy => {
+                let iggy_cfg = IggyConfig {
+                    connection_string: config.iggy.connection_string.clone(),
+                    username: config.iggy.username.clone(),
+                    password: config.iggy.password.clone(),
+                    stream: config.iggy.stream.clone(),
+                    topic_prefix: config.iggy.topic_prefix.clone(),
+                    queue_topic_prefix: config.iggy.queue_topic_prefix.clone(),
+                    consumer_group_prefix: config.iggy.consumer_group_prefix.clone(),
+                    request_timeout_ms: config.iggy.request_timeout_ms,
+                    poll_interval_ms: config.iggy.poll_interval_ms,
+                    poll_batch_size: config.iggy.poll_batch_size,
+                    partitions_count: config.iggy.partitions_count,
+                    partition_id: config.iggy.partition_id,
+                    auto_create: config.iggy.auto_create,
+                    start_from_latest: config.iggy.start_from_latest,
+                    nodes_number: config.iggy.nodes_number,
+                };
+                match IggyAdapter::new(iggy_cfg).await {
+                    Ok(mut adapter) => {
+                        adapter.set_cluster_health(&config.cluster_health).await?;
+                        adapter.set_socket_counting(config.enable_socket_counting);
+                        let adapter = Arc::new(adapter);
+                        let typed = TypedAdapter::Iggy(adapter.clone());
+                        Ok((adapter, typed))
+                    }
+                    Err(e) => {
+                        if !config.fallback_to_local {
+                            tracing::error!("Failed to initialize Apache Iggy adapter: {}", e);
+                            return Err(e);
+                        }
+                        warn!(
+                            "Failed to initialize Apache Iggy adapter: {}, falling back to local adapter",
+                            e
+                        );
+                        let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                            config.buffer_multiplier_per_cpu,
+                        ));
+                        let typed = TypedAdapter::Local(local_adapter.clone());
+                        Ok((local_adapter, typed))
+                    }
+                }
+            }
             AdapterDriver::Local => {
                 info!("{}", "Using local adapter.".to_string());
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
@@ -598,6 +656,22 @@ impl AdapterFactory {
                 }
                 warn!(
                     "Kafka adapter requested but not compiled in. Falling back to local adapter."
+                );
+                let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
+                    config.buffer_multiplier_per_cpu,
+                ));
+                let typed = TypedAdapter::Local(local_adapter.clone());
+                Ok((local_adapter, typed))
+            }
+            #[cfg(not(feature = "iggy"))]
+            AdapterDriver::Iggy => {
+                if !config.fallback_to_local {
+                    return Err(Error::HorizontalAdapter(
+                        "Apache Iggy adapter requested but not compiled in. Fallback to local adapter is disabled. Build with --features iggy or set adapter.fallback_to_local = true".to_string()
+                    ));
+                }
+                warn!(
+                    "Apache Iggy adapter requested but not compiled in. Falling back to local adapter."
                 );
                 let local_adapter = Arc::new(LocalAdapter::new_with_buffer_multiplier(
                     config.buffer_multiplier_per_cpu,

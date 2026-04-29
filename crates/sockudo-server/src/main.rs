@@ -564,6 +564,21 @@ impl SockudoServer {
                     }
                 }
             }
+            QueueDriver::Iggy => {
+                match QueueManagerFactory::create_iggy(config.queue.iggy.clone()).await {
+                    Ok(queue_driver_impl) => {
+                        info!("Queue manager initialized with Apache Iggy driver");
+                        Some(Arc::new(QueueManager::new(queue_driver_impl)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize Apache Iggy queue manager: {}, queues will be disabled",
+                            e
+                        );
+                        None
+                    }
+                }
+            }
             QueueDriver::Pulsar => {
                 match QueueManagerFactory::create_pulsar(config.queue.pulsar.clone()).await {
                     Ok(queue_driver_impl) => {

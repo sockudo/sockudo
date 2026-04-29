@@ -42,6 +42,18 @@ brokers = ["127.0.0.1:9092"]
 prefix = "sockudo_adapter"
 request_timeout_ms = 5000
 
+[adapter.iggy]
+connection_string = "iggy://iggy:iggy@127.0.0.1:8090"
+stream = "sockudo"
+topic_prefix = "sockudo-adapter"
+request_timeout_ms = 5000
+poll_interval_ms = 50
+poll_batch_size = 100
+partitions_count = 1
+partition_id = 1
+auto_create = true
+start_from_latest = true
+
 [adapter.cluster]
 nodes = []
 prefix = "sockudo_adapter:"
@@ -138,6 +150,18 @@ max_capacity = 10000
 
 [queue]
 driver = "memory"
+
+[queue.iggy]
+connection_string = "iggy://iggy:iggy@127.0.0.1:8090"
+stream = "sockudo"
+queue_topic_prefix = "sockudo-queue"
+consumer_group_prefix = "sockudo-workers"
+request_timeout_ms = 5000
+poll_interval_ms = 50
+poll_batch_size = 100
+partitions_count = 1
+partition_id = 1
+auto_create = true
 
 [rate_limiter]
 enabled = false

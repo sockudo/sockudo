@@ -2,6 +2,8 @@ use sockudo_core::error::Result;
 
 #[cfg(feature = "google-pubsub")]
 use sockudo_core::options::GooglePubSubAdapterConfig;
+#[cfg(feature = "iggy")]
+use sockudo_core::options::IggyConfig;
 #[cfg(feature = "kafka")]
 use sockudo_core::options::KafkaAdapterConfig;
 #[cfg(feature = "nats")]
@@ -19,6 +21,8 @@ use sockudo_core::webhook_types::{JobData, JobProcessorFnAsync};
 
 #[cfg(feature = "google-pubsub")]
 use crate::google_pubsub_queue_manager::GooglePubSubQueueManager;
+#[cfg(feature = "iggy")]
+use crate::iggy_queue_manager::IggyQueueManager;
 #[cfg(feature = "kafka")]
 use crate::kafka_queue_manager::KafkaQueueManager;
 use crate::memory_queue_manager::MemoryQueueManager;
@@ -237,6 +241,25 @@ impl QueueManagerFactory {
         config: sockudo_core::options::KafkaAdapterConfig,
     ) -> Result<Box<dyn QueueInterface>> {
         warn!("Kafka queue manager requested but not compiled in. Falling back to memory queue.");
+        let manager = MemoryQueueManager::new();
+        manager.start_processing();
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(feature = "iggy")]
+    pub async fn create_iggy(config: IggyConfig) -> Result<Box<dyn QueueInterface>> {
+        let manager = IggyQueueManager::new(config).await?;
+        Ok(Box::new(manager))
+    }
+
+    #[cfg(not(feature = "iggy"))]
+    #[allow(unused_variables)]
+    pub async fn create_iggy(
+        config: sockudo_core::options::IggyConfig,
+    ) -> Result<Box<dyn QueueInterface>> {
+        warn!(
+            "Apache Iggy queue manager requested but not compiled in. Falling back to memory queue."
+        );
         let manager = MemoryQueueManager::new();
         manager.start_processing();
         Ok(Box::new(manager))

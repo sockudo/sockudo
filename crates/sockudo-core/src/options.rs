@@ -84,6 +84,7 @@ pub enum AdapterDriver {
     #[serde(rename = "google-pubsub")]
     GooglePubSub,
     Kafka,
+    Iggy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +177,7 @@ impl FromStr for AdapterDriver {
             "rabbitmq" | "rabbit-mq" => Ok(AdapterDriver::RabbitMq),
             "google-pubsub" | "gcp-pubsub" | "pubsub" => Ok(AdapterDriver::GooglePubSub),
             "kafka" => Ok(AdapterDriver::Kafka),
+            "iggy" | "apache-iggy" | "apache_iggy" => Ok(AdapterDriver::Iggy),
             _ => Err(format!("Unknown adapter driver: {s}")),
         }
     }
@@ -245,6 +247,7 @@ pub enum QueueDriver {
     #[serde(rename = "google-pubsub")]
     GooglePubSub,
     Kafka,
+    Iggy,
     Sqs,
     Sns,
     None,
@@ -262,6 +265,7 @@ impl FromStr for QueueDriver {
             "rabbitmq" | "rabbit-mq" => Ok(QueueDriver::RabbitMq),
             "google-pubsub" | "gcp-pubsub" | "pubsub" => Ok(QueueDriver::GooglePubSub),
             "kafka" => Ok(QueueDriver::Kafka),
+            "iggy" | "apache-iggy" | "apache_iggy" => Ok(QueueDriver::Iggy),
             "sqs" => Ok(QueueDriver::Sqs),
             "sns" => Ok(QueueDriver::Sns),
             "none" => Ok(QueueDriver::None),
@@ -307,6 +311,7 @@ impl AsRef<str> for QueueDriver {
             QueueDriver::RabbitMq => "rabbitmq",
             QueueDriver::GooglePubSub => "google-pubsub",
             QueueDriver::Kafka => "kafka",
+            QueueDriver::Iggy => "iggy",
             QueueDriver::Sqs => "sqs",
             QueueDriver::Sns => "sns",
             QueueDriver::None => "none",
@@ -460,6 +465,7 @@ pub struct AdapterConfig {
     pub rabbitmq: RabbitMqAdapterConfig,
     pub google_pubsub: GooglePubSubAdapterConfig,
     pub kafka: KafkaAdapterConfig,
+    pub iggy: IggyConfig,
     #[serde(default = "default_buffer_multiplier_per_cpu")]
     pub buffer_multiplier_per_cpu: usize,
     pub cluster_health: ClusterHealthConfig,
@@ -492,6 +498,7 @@ impl Default for AdapterConfig {
             rabbitmq: RabbitMqAdapterConfig::default(),
             google_pubsub: GooglePubSubAdapterConfig::default(),
             kafka: KafkaAdapterConfig::default(),
+            iggy: IggyConfig::default(),
             buffer_multiplier_per_cpu: default_buffer_multiplier_per_cpu(),
             cluster_health: ClusterHealthConfig::default(),
             enable_socket_counting: default_enable_socket_counting(),
@@ -576,6 +583,26 @@ pub struct KafkaAdapterConfig {
     pub sasl_mechanism: Option<String>,
     pub sasl_username: Option<String>,
     pub sasl_password: Option<String>,
+    pub nodes_number: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IggyConfig {
+    pub connection_string: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub stream: String,
+    pub topic_prefix: String,
+    pub queue_topic_prefix: String,
+    pub consumer_group_prefix: String,
+    pub request_timeout_ms: u64,
+    pub poll_interval_ms: u64,
+    pub poll_batch_size: u32,
+    pub partitions_count: u32,
+    pub partition_id: u32,
+    pub auto_create: bool,
+    pub start_from_latest: bool,
     pub nodes_number: Option<u32>,
 }
 
@@ -1509,6 +1536,7 @@ pub struct QueueConfig {
     pub rabbitmq: RabbitMqAdapterConfig,
     pub google_pubsub: GooglePubSubAdapterConfig,
     pub kafka: KafkaAdapterConfig,
+    pub iggy: IggyConfig,
     pub sqs: SqsQueueConfig,
     pub sns: SnsQueueConfig,
 }
@@ -1919,6 +1947,28 @@ impl Default for KafkaAdapterConfig {
             sasl_mechanism: None,
             sasl_username: None,
             sasl_password: None,
+            nodes_number: None,
+        }
+    }
+}
+
+impl Default for IggyConfig {
+    fn default() -> Self {
+        Self {
+            connection_string: "iggy://iggy:iggy@127.0.0.1:8090".to_string(),
+            username: None,
+            password: None,
+            stream: "sockudo".to_string(),
+            topic_prefix: "sockudo-adapter".to_string(),
+            queue_topic_prefix: "sockudo-queue".to_string(),
+            consumer_group_prefix: "sockudo-workers".to_string(),
+            request_timeout_ms: 5000,
+            poll_interval_ms: 50,
+            poll_batch_size: 100,
+            partitions_count: 1,
+            partition_id: 1,
+            auto_create: true,
+            start_from_latest: true,
             nodes_number: None,
         }
     }
@@ -2839,6 +2889,71 @@ impl ServerOptions {
         );
         if let Some(nodes) = parse_env_optional::<u32>("KAFKA_NODES_NUMBER") {
             self.adapter.kafka.nodes_number = Some(nodes);
+        }
+
+        // --- Apache Iggy Adapter / Queue ---
+        if let Ok(connection_string) = std::env::var("IGGY_CONNECTION_STRING") {
+            self.adapter.iggy.connection_string = connection_string.clone();
+            self.queue.iggy.connection_string = connection_string;
+        }
+        if let Ok(username) = std::env::var("IGGY_USERNAME") {
+            let username = (!username.is_empty()).then_some(username);
+            self.adapter.iggy.username = username.clone();
+            self.queue.iggy.username = username;
+        }
+        if let Ok(password) = std::env::var("IGGY_PASSWORD") {
+            let password = (!password.is_empty()).then_some(password);
+            self.adapter.iggy.password = password.clone();
+            self.queue.iggy.password = password;
+        }
+        if let Ok(stream) = std::env::var("IGGY_STREAM") {
+            self.adapter.iggy.stream = stream.clone();
+            self.queue.iggy.stream = stream;
+        }
+        if let Ok(prefix) = std::env::var("IGGY_TOPIC_PREFIX") {
+            self.adapter.iggy.topic_prefix = prefix;
+        }
+        if let Ok(prefix) = std::env::var("IGGY_QUEUE_TOPIC_PREFIX") {
+            self.queue.iggy.queue_topic_prefix = prefix;
+        }
+        if let Ok(prefix) = std::env::var("IGGY_CONSUMER_GROUP_PREFIX") {
+            self.queue.iggy.consumer_group_prefix = prefix;
+        }
+        self.adapter.iggy.request_timeout_ms = parse_env::<u64>(
+            "IGGY_REQUEST_TIMEOUT_MS",
+            self.adapter.iggy.request_timeout_ms,
+        );
+        self.queue.iggy.request_timeout_ms = parse_env::<u64>(
+            "IGGY_REQUEST_TIMEOUT_MS",
+            self.queue.iggy.request_timeout_ms,
+        );
+        self.adapter.iggy.poll_interval_ms =
+            parse_env::<u64>("IGGY_POLL_INTERVAL_MS", self.adapter.iggy.poll_interval_ms);
+        self.queue.iggy.poll_interval_ms =
+            parse_env::<u64>("IGGY_POLL_INTERVAL_MS", self.queue.iggy.poll_interval_ms);
+        self.adapter.iggy.poll_batch_size =
+            parse_env::<u32>("IGGY_POLL_BATCH_SIZE", self.adapter.iggy.poll_batch_size);
+        self.queue.iggy.poll_batch_size =
+            parse_env::<u32>("IGGY_POLL_BATCH_SIZE", self.queue.iggy.poll_batch_size);
+        self.adapter.iggy.partitions_count =
+            parse_env::<u32>("IGGY_PARTITIONS_COUNT", self.adapter.iggy.partitions_count);
+        self.queue.iggy.partitions_count =
+            parse_env::<u32>("IGGY_PARTITIONS_COUNT", self.queue.iggy.partitions_count);
+        self.adapter.iggy.partition_id =
+            parse_env::<u32>("IGGY_PARTITION_ID", self.adapter.iggy.partition_id);
+        self.queue.iggy.partition_id =
+            parse_env::<u32>("IGGY_PARTITION_ID", self.queue.iggy.partition_id);
+        self.adapter.iggy.auto_create =
+            parse_env::<bool>("IGGY_AUTO_CREATE", self.adapter.iggy.auto_create);
+        self.queue.iggy.auto_create =
+            parse_env::<bool>("IGGY_AUTO_CREATE", self.queue.iggy.auto_create);
+        self.adapter.iggy.start_from_latest = parse_env::<bool>(
+            "IGGY_START_FROM_LATEST",
+            self.adapter.iggy.start_from_latest,
+        );
+        if let Some(nodes) = parse_env_optional::<u32>("IGGY_NODES_NUMBER") {
+            self.adapter.iggy.nodes_number = Some(nodes);
+            self.queue.iggy.nodes_number = Some(nodes);
         }
 
         // --- CORS ---

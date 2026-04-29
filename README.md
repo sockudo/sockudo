@@ -19,7 +19,7 @@
 - **🔄 Dual Protocol** - V1 for Pusher compatibility, V2 for Sockudo-native with serial numbers, message IDs, and connection recovery
 - **🔗 Connection Recovery** - Ably-style serial-based message replay for exactly-once delivery (V2)
 - **🆔 Message Idempotency** - Automatic `message_id` on every broadcast, HTTP-level `idempotency_key` deduplication
-- **🏗️ Scalable Architecture** - Redis, Redis Cluster, NATS adapters
+- **🏗️ Scalable Architecture** - Redis, Redis Cluster, NATS, Kafka, and Apache Iggy adapters
 - **🛡️ Production Ready** - Rate limiting, SSL/TLS, metrics
 - **⚡ Async Cleanup** - Non-blocking disconnect handling
 - **📊 Real-time Metrics** - Prometheus integration
@@ -139,6 +139,7 @@ cargo build --features "redis,surrealdb"       # Redis + SurrealDB 3
 cargo build --features "rabbitmq,postgres"     # RabbitMQ + PostgreSQL
 cargo build --features "google-pubsub,mysql"   # Google Pub/Sub + MySQL
 cargo build --features "kafka,postgres"        # Kafka + PostgreSQL
+cargo build --features "iggy,postgres"         # Apache Iggy + PostgreSQL
 
 # Full production build
 cargo build --release --features full          # All backends
@@ -156,6 +157,7 @@ cargo build --release --features full          # All backends
 - `rabbitmq` - RabbitMQ adapter
 - `google-pubsub` - Google Cloud Pub/Sub adapter
 - `kafka` - Kafka adapter
+- `iggy` - Apache Iggy adapter and queue driver
 - `mysql` / `postgres` / `dynamodb` / `surrealdb` / `scylladb` - App manager backends
 - `sqs` / `lambda` - AWS integrations
 - `full` - All features enabled
@@ -300,14 +302,15 @@ SOCKUDO_DEFAULT_APP_KEY=app-key
 SOCKUDO_DEFAULT_APP_SECRET=app-secret
 
 # Scaling drivers
-ADAPTER_DRIVER=redis          # local, redis, redis-cluster, nats, rabbitmq, google-pubsub, kafka
+ADAPTER_DRIVER=redis          # local, redis, redis-cluster, nats, rabbitmq, google-pubsub, kafka, iggy
 CACHE_DRIVER=redis           # memory, redis, redis-cluster, none
-QUEUE_DRIVER=redis           # memory, redis, redis-cluster, sqs, none
+QUEUE_DRIVER=redis           # memory, redis, redis-cluster, nats, rabbitmq, kafka, pulsar, google-pubsub, sqs, sns, iggy, none
 APP_MANAGER_DRIVER=surrealdb # memory, mysql, postgres, dynamodb, surrealdb, scylladb
 
 RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672/%2f
 GOOGLE_PUBSUB_PROJECT_ID=my-gcp-project
 KAFKA_BROKERS=127.0.0.1:9092
+IGGY_CONNECTION_STRING=iggy://iggy:iggy@127.0.0.1:8090
 
 DATABASE_SURREALDB_URL=ws://127.0.0.1:8000
 DATABASE_SURREALDB_NAMESPACE=sockudo

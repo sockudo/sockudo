@@ -10,12 +10,13 @@ license-file.workspace = true
 [features]
 default = ["local"]
 local = []
-full = ["redis", "redis-cluster", "nats", "rabbitmq", "kafka", "pulsar", "google-pubsub", "sqs", "sns"]
+full = ["redis", "redis-cluster", "nats", "rabbitmq", "kafka", "iggy", "pulsar", "google-pubsub", "sqs", "sns"]
 redis = ["sockudo-core/redis", "dep:redis"]
 redis-cluster = ["redis", "sockudo-core/redis-cluster"]
 nats = ["sockudo-core/nats", "dep:async-nats"]
 rabbitmq = ["sockudo-core/rabbitmq", "dep:lapin"]
 kafka = ["sockudo-core/kafka", "dep:rdkafka"]
+iggy = ["sockudo-core/iggy", "dep:iggy"]
 pulsar = ["sockudo-core/pulsar", "dep:pulsar"]
 google-pubsub = ["sockudo-core/google-pubsub", "dep:google-cloud-auth", "dep:google-cloud-pubsub"]
 sqs = ["sockudo-core/sqs", "dep:aws-config", "dep:aws-sdk-sqs"]
@@ -40,6 +41,7 @@ lapin = { workspace = true, optional = true }
 pulsar = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
 rdkafka = { workspace = true, optional = true }
+iggy = { workspace = true, optional = true }
 serde = { workspace = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }

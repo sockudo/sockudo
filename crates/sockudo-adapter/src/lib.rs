@@ -10,6 +10,8 @@ pub mod handler;
 pub mod horizontal_adapter;
 pub mod horizontal_adapter_base;
 pub mod horizontal_transport;
+#[cfg(feature = "iggy")]
+pub mod iggy_adapter;
 #[cfg(feature = "kafka")]
 pub mod kafka_adapter;
 pub mod local_adapter;

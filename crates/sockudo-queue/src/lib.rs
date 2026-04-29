@@ -1,5 +1,7 @@
 #[cfg(feature = "google-pubsub")]
 pub mod google_pubsub_queue_manager;
+#[cfg(feature = "iggy")]
+pub mod iggy_queue_manager;
 #[cfg(feature = "kafka")]
 pub mod kafka_queue_manager;
 pub mod manager;
@@ -21,6 +23,8 @@ pub mod sqs_queue_manager;
 
 #[cfg(feature = "google-pubsub")]
 pub use google_pubsub_queue_manager::GooglePubSubQueueManager;
+#[cfg(feature = "iggy")]
+pub use iggy_queue_manager::IggyQueueManager;
 #[cfg(feature = "kafka")]
 pub use kafka_queue_manager::KafkaQueueManager;
 pub use manager::{QueueManager, QueueManagerFactory};
