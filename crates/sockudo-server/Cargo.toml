@@ -25,6 +25,7 @@ full = [
   "rabbitmq",
   "google-pubsub",
   "kafka",
+  "iggy",
   "mysql",
   "postgres",
   "dynamodb",
@@ -56,6 +57,7 @@ pulsar = ["sockudo-core/pulsar", "sockudo-adapter/pulsar", "sockudo-queue/pulsar
 rabbitmq = ["sockudo-core/rabbitmq", "sockudo-adapter/rabbitmq", "sockudo-queue/rabbitmq"]
 google-pubsub = ["sockudo-core/google-pubsub", "sockudo-adapter/google-pubsub", "sockudo-queue/google-pubsub"]
 kafka = ["sockudo-core/kafka", "sockudo-adapter/kafka", "sockudo-queue/kafka"]
+iggy = ["sockudo-core/iggy", "sockudo-adapter/iggy", "sockudo-queue/iggy"]
 mysql = ["sockudo-core/mysql", "sockudo-app/mysql", "dep:sqlx", "dep:urlencoding"]
 postgres = ["sockudo-core/postgres", "sockudo-app/postgres", "dep:sqlx", "dep:urlencoding"]
 dynamodb = ["sockudo-core/dynamodb", "sockudo-app/dynamodb", "dep:aws-config", "dep:aws-sdk-dynamodb"]

@@ -1,5 +1,7 @@
 #[cfg(feature = "google-pubsub")]
 pub mod google_pubsub_transport;
+#[cfg(feature = "iggy")]
+pub mod iggy_transport;
 #[cfg(feature = "kafka")]
 pub mod kafka_transport;
 #[cfg(feature = "nats")]
@@ -15,6 +17,8 @@ pub mod redis_transport;
 
 #[cfg(feature = "google-pubsub")]
 pub use google_pubsub_transport::GooglePubSubTransport;
+#[cfg(feature = "iggy")]
+pub use iggy_transport::IggyTransport;
 #[cfg(feature = "kafka")]
 pub use kafka_transport::KafkaTransport;
 #[cfg(feature = "nats")]
