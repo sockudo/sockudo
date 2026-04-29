@@ -25,6 +25,7 @@
 - **📊 Real-time Metrics** - Prometheus integration
 - **🧠 Delta Compression + Conflation** - Fossil and Xdelta3 (VCDIFF) with per-channel controls
 - **✏️ Mutable Messages (V2)** - Update, delete, append, latest-visible history, and version-history retrieval
+- **💬 Message Annotations (V2)** - Reactions, read receipts, moderation votes, summary projections, and raw annotation streams
 - **🏷️ Tag Filtering** - High-performance server-side filtering with optional tag emission controls
 - **🌐 Native WebSocket Engine** - `sockudo_ws` with advanced runtime tuning
 - **📦 Official SDKs** - Client and server SDKs for all major platforms
@@ -49,6 +50,7 @@ Additional v4 changes:
 - **HTTP idempotency** - Atomic `idempotency_key` deduplication via `SET NX` (no race conditions)
 - **Replay buffer** - Per-channel message buffer with configurable TTL and max size
 - **Mutable durable messages** - Protocol V2 latest-visible history substitution, version-history retrieval, and `sockudo:message.update|delete|append`
+- **Message annotations** - Release 4.4 adds V2 annotation summaries, raw annotation subscriptions, HTTP annotation APIs, and Prometheus coverage for reactions, receipts, and moderation workflows
 
 ## Official Client SDKs
 
@@ -350,6 +352,12 @@ omit_delta_algorithm = true
 [tag_filtering]
 enabled = true
 enable_tags = false
+
+[versioned_messages]
+enabled = true
+
+[annotations]
+enabled = true
 ```
 
 ### V2 Message Features (`config/config.toml`)
