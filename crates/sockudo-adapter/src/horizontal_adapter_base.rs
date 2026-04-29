@@ -227,15 +227,12 @@ where
         self.enable_socket_counting = enable;
     }
 
-    /// Enhanced send_request that properly integrates with HorizontalAdapter
-    pub async fn send_request(
-        &self,
-        app_id: &str,
-        request_type: RequestType,
-        channel: Option<&str>,
-        socket_id: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<ResponseBody> {
+    /// Publish a pre-built RequestBody and collect responses from other nodes
+    pub async fn send_request_with_body(&self, request: RequestBody) -> Result<ResponseBody> {
+        let app_id = request.app_id.clone();
+        let request_type = request.request_type.clone();
+        let request_id = request.request_id.clone();
+
         let should_skip_horizontal = self.should_skip_horizontal_communication().await;
         let discovered_node_count = self.horizontal.get_effective_node_count().await;
         let node_count = if should_skip_horizontal {
@@ -245,25 +242,6 @@ where
                 discovered_node_count,
                 self.transport.get_node_count().await?,
             )
-        };
-
-        // Create the request
-        let request_id = Uuid::new_v4().to_string();
-        let node_id = self.horizontal.node_id.clone();
-
-        let request = RequestBody {
-            request_id: request_id.clone(),
-            node_id,
-            app_id: app_id.to_string(),
-            request_type: request_type.clone(),
-            channel: channel.map(String::from),
-            socket_id: socket_id.map(String::from),
-            user_id: user_id.map(String::from),
-            // Cluster presence fields (not used for regular requests)
-            user_info: None,
-            timestamp: None,
-            dead_node_id: None,
-            target_node_id: None,
         };
 
         if should_skip_horizontal {
@@ -297,7 +275,7 @@ where
             );
 
             if let Some(metrics) = self.horizontal.metrics.get() {
-                metrics.mark_horizontal_adapter_request_sent(app_id);
+                metrics.mark_horizontal_adapter_request_sent(&app_id);
             }
         }
 
@@ -489,7 +467,7 @@ where
         // Track metrics
         if let Some(metrics) = self.horizontal.metrics.get() {
             let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
-            metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
+            metrics.track_horizontal_adapter_resolve_time(&app_id, duration_ms);
 
             let resolved = combined_response.sockets_count > 0
                 || !combined_response.members.is_empty()
@@ -498,10 +476,36 @@ where
                 || combined_response.members_count > 0
                 || !combined_response.channels_with_sockets_count.is_empty();
 
-            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
+            metrics.track_horizontal_adapter_resolved_promises(&app_id, resolved);
         }
 
         Ok(combined_response)
+    }
+
+    /// Enhanced send_request that properly integrates with HorizontalAdapter
+    pub async fn send_request(
+        &self,
+        app_id: &str,
+        request_type: RequestType,
+        channel: Option<&str>,
+        socket_id: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<ResponseBody> {
+        let request = RequestBody {
+            request_id: Uuid::new_v4().to_string(),
+            node_id: self.horizontal.node_id.clone(),
+            app_id: app_id.to_string(),
+            request_type,
+            channel: channel.map(String::from),
+            socket_id: socket_id.map(String::from),
+            user_id: user_id.map(String::from),
+            user_info: None,
+            timestamp: None,
+            dead_node_id: None,
+            target_node_id: None,
+            channels: None,
+        };
+        self.send_request_with_body(request).await
     }
 
     pub async fn start_listeners(&self) -> Result<()> {
@@ -821,6 +825,7 @@ where
                     timestamp: Some(current_timestamp()),
                     dead_node_id: None,
                     target_node_id: None,
+                    channels: None,
                 };
 
                 if let Err(e) = transport.publish_request(&heartbeat_request).await {
@@ -935,6 +940,7 @@ where
                                     timestamp: Some(current_timestamp()),
                                     dead_node_id: Some(dead_node_id.clone()),
                                     target_node_id: None,
+                                    channels: None,
                                 };
 
                                 if let Err(e) = transport.publish_request(&dead_node_request).await
@@ -1410,6 +1416,59 @@ where
             .count
     }
 
+    async fn get_local_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
+        self.local_adapter
+            .get_channel_socket_count(app_id, channel)
+            .await
+    }
+
+    async fn get_batch_channel_socket_counts(
+        &self,
+        app_id: &str,
+        channels: &[&str],
+    ) -> Result<HashMap<String, usize>> {
+        // Get local counts (no cross-node communication)
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for ch in channels {
+            let c = self
+                .local_adapter
+                .get_channel_socket_count(app_id, ch)
+                .await;
+            if c > 0 {
+                counts.insert(ch.to_string(), c);
+            }
+        }
+
+        if self.should_skip_horizontal_communication().await {
+            return Ok(counts);
+        }
+
+        // Single batched request for all channels
+        let request = RequestBody {
+            request_id: Uuid::new_v4().to_string(),
+            node_id: self.horizontal.node_id.clone(),
+            app_id: app_id.to_string(),
+            request_type: RequestType::BatchChannelSocketsCount,
+            channel: None,
+            socket_id: None,
+            user_id: None,
+            user_info: None,
+            timestamp: None,
+            dead_node_id: None,
+            target_node_id: None,
+            channels: Some(channels.iter().map(|c| c.to_string()).collect()),
+        };
+
+        let response = self.send_request_with_body(request).await?;
+
+        // Merge remote counts into local
+        for (ch, count) in response.channels_with_sockets_count {
+            *counts.entry(ch).or_insert(0) += count;
+        }
+
+        Ok(counts)
+    }
+
     async fn add_to_channel(
         &self,
         app_id: &str,
@@ -1621,6 +1680,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            channels: None,
         };
 
         // Send without waiting for response (broadcast) - skip if single node
@@ -1662,6 +1722,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            channels: None,
         };
 
         // Send without waiting for response (broadcast) - skip if single node
@@ -1708,6 +1769,7 @@ async fn send_presence_state_to_node<T: HorizontalTransport>(
             user_id: None,
             timestamp: None,
             dead_node_id: None,
+            channels: None,
         };
 
         // This broadcasts but only target_node will process it
