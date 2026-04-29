@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.3.1] - 2026-04-26
+
+### Fixed
+
+- Include `subscription_count` in filtered channel list responses when `info=subscription_count` is requested, instead of dropping matching channels with otherwise empty info maps.
+- Use native WebSocket ping/pong frames for Protocol V2 idle heartbeats while preserving Protocol V1 `pusher:ping` / `pusher:pong` compatibility.
+- Avoid attaching V2 recovery metadata to fallback heartbeat messages.
+
+### Performance
+
+- Use local socket counts for broadcast latency metrics when available, avoiding unnecessary distributed adapter round-trips.
+
+### Tests / Hardening
+
+- Added clustered Redis coverage for delta compression combined with wildcard subscriptions, tag filtering, durable message history, and presence history across multiple Sockudo nodes.
+- Tightened clustered fanout waiting, namespace lookups, wildcard matching, presence-history dedupe, and in-memory cleanup paths related to V2 delivery.
+
 ## [4.3.0] - 2026-04-20
 
 ### Added
