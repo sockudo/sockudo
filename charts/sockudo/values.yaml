@@ -290,7 +290,7 @@ pdb:
 
 livenessProbe:
   httpGet:
-    path: /up
+    path: /live
     port: http
   initialDelaySeconds: 15
   periodSeconds: 20
@@ -310,7 +310,7 @@ readinessProbe:
 
 startupProbe:
   httpGet:
-    path: /up
+    path: /live
     port: http
   initialDelaySeconds: 5
   periodSeconds: 5
