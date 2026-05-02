@@ -1,7 +1,5 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
-use crate::horizontal_transport::{
-    HorizontalTransport, InboxGuard, ResponseHandler, TransportConfig, TransportHandlers,
-};
+use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use async_nats::{Client as NatsClient, ConnectOptions as NatsOptions, Subject};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -15,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 const NATS_SYS_SERVER_PING_SUBJECT: &str = "$SYS.REQ.SERVER.PING";
 
@@ -62,6 +61,8 @@ pub struct NatsTransport {
     broadcast_subject: String,
     request_subject: String,
     response_subject: String,
+    /// Shared inbox prefix for direct reply routing
+    inbox_prefix: String,
     config: NatsAdapterConfig,
     /// Metrics for tracking message processing
     metrics: Arc<TransportMetrics>,
@@ -165,7 +166,51 @@ impl HorizontalTransport for NatsTransport {
         );
 
         // Build NATS Options
-        let mut nats_options = NatsOptions::new();
+        let mut nats_options = NatsOptions::new()
+            .retry_on_initial_connect()
+            .event_callback(|event| async move {
+                match event {
+                    async_nats::Event::Connected => {
+                        info!("NATS connection established");
+                    }
+                    async_nats::Event::Disconnected => {
+                        warn!("NATS connection lost");
+                    }
+                    async_nats::Event::SlowConsumer(sid) => {
+                        error!(subscription_id = sid, "NATS slow consumer detected");
+                    }
+                    async_nats::Event::ServerError(err) => {
+                        error!("NATS server error: {}", err);
+                    }
+                    async_nats::Event::ClientError(ref err) => match err {
+                        async_nats::ClientError::MaxReconnects => {
+                            error!("NATS max reconnects exhausted");
+                        }
+                        async_nats::ClientError::Other(msg) => {
+                            error!("NATS client error: {}", msg);
+                        }
+                    },
+                    async_nats::Event::LameDuckMode => {
+                        warn!("NATS server entering lame duck mode");
+                    }
+                    async_nats::Event::Draining => {
+                        info!("NATS client draining");
+                    }
+                    async_nats::Event::Closed => {
+                        warn!("NATS connection closed");
+                    }
+                }
+            });
+
+        if let Some(cap) = config.subscription_capacity {
+            nats_options = nats_options.subscription_capacity(cap);
+        }
+        if let Some(cap) = config.client_capacity {
+            nats_options = nats_options.client_capacity(cap);
+        }
+        if let Some(max) = config.max_reconnects {
+            nats_options = nats_options.max_reconnects(max);
+        }
 
         // Set credentials conditionally
         if let (Some(username), Some(password)) =
@@ -192,11 +237,15 @@ impl HorizontalTransport for NatsTransport {
         let request_subject = format!("{}.requests", config.prefix);
         let response_subject = format!("{}.responses", config.prefix);
 
+        // Build inbox prefix
+        let inbox_prefix = format!("_INBOX.{}.", Uuid::new_v4().as_simple());
+
         Ok(Self {
             client,
             broadcast_subject,
             request_subject,
             response_subject,
+            inbox_prefix,
             config,
             metrics: Arc::new(TransportMetrics::new()),
             metrics_driver: Arc::new(OnceLock::new()),
@@ -263,15 +312,19 @@ impl HorizontalTransport for NatsTransport {
         let metrics_broadcast = self.metrics.clone();
         let metrics_request = self.metrics.clone();
         let metrics_response = self.metrics.clone();
+        let metrics_inbox = self.metrics.clone();
         let metrics_driver_broadcast = self.metrics_driver.clone();
         let metrics_driver_request = self.metrics_driver.clone();
         let metrics_driver_response = self.metrics_driver.clone();
+        let metrics_driver_inbox = self.metrics_driver.clone();
         let shutdown_broadcast = self.shutdown.clone();
         let shutdown_request = self.shutdown.clone();
         let shutdown_response = self.shutdown.clone();
+        let shutdown_inbox = self.shutdown.clone();
         let running_broadcast = self.is_running.clone();
         let running_request = self.is_running.clone();
         let running_response = self.is_running.clone();
+        let running_inbox = self.is_running.clone();
 
         // Subscribe to broadcast channel
         let mut broadcast_subscription = client
@@ -295,9 +348,16 @@ impl HorizontalTransport for NatsTransport {
                 Error::Internal(format!("Failed to subscribe to response subject: {e}"))
             })?;
 
+        // Subscribe to shared inbox wildcard
+        let inbox_subject = format!("{}*", self.inbox_prefix);
+        let mut inbox_subscription = client
+            .subscribe(Subject::from(inbox_subject.clone()))
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to subscribe to inbox subject: {e}")))?;
+
         info!(
-            "NATS transport listening on subjects: {}, {}, {}",
-            broadcast_subject, request_subject, response_subject
+            "NATS transport listening on subjects: {}, {}, {}, {}",
+            broadcast_subject, request_subject, response_subject, inbox_subject
         );
 
         // Spawn a task to handle broadcast messages
@@ -361,7 +421,6 @@ impl HorizontalTransport for NatsTransport {
                 let metrics = metrics_request.clone();
                 let metrics_driver = metrics_driver_request.clone();
                 let client = response_client.clone();
-                let subject = response_subject.clone();
                 tokio::spawn(async move {
                     match sonic_rs::from_slice::<RequestBody>(&msg.payload) {
                         Ok(request) => {
@@ -370,11 +429,12 @@ impl HorizontalTransport for NatsTransport {
                             if let Ok(response) = response_result
                                 && let Ok(response_data) = sonic_rs::to_vec(&response)
                             {
-                                // Reply to requester's inbox if available,
-                                // otherwise fall back to global subject
-                                let target = msg.reply.unwrap_or_else(|| Subject::from(subject));
-
-                                if let Err(e) = client.publish(target, response_data.into()).await {
+                                // Some requests (heartbeats, presence sync) have no reply address
+                                // and expect no response. Only reply when explicitly asked.
+                                if let Some(reply_to) = msg.reply
+                                    && let Err(e) =
+                                        client.publish(reply_to, response_data.into()).await
+                                {
                                     warn!("Failed to publish response: {}", e);
                                 }
                             }
@@ -413,31 +473,63 @@ impl HorizontalTransport for NatsTransport {
                     break;
                 };
                 metrics_response.record_received();
-                let handler = response_handler.clone();
-                let metrics = metrics_response.clone();
-                let metrics_driver = metrics_driver_response.clone();
-                tokio::spawn(async move {
-                    match sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
-                        Ok(response) => {
-                            handler(response).await;
-                            metrics.record_processed();
-                        }
-                        Err(e) => {
-                            metrics.record_parse_error();
-                            if let Some(m) = metrics_driver.get() {
-                                m.mark_horizontal_transport_message_dropped("nats");
-                            }
-                            let payload_preview =
-                                String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
-                            error!(
-                                "Failed to parse response message: {} - payload preview: {}",
-                                e, payload_preview
-                            );
-                        }
+                match sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
+                    Ok(response) => {
+                        response_handler(response).await;
+                        metrics_response.record_processed();
                     }
-                });
+                    Err(e) => {
+                        metrics_response.record_parse_error();
+                        if let Some(m) = metrics_driver_response.get() {
+                            m.mark_horizontal_transport_message_dropped("nats");
+                        }
+                        let payload_preview =
+                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                        error!(
+                            "Failed to parse response message: {} - payload preview: {}",
+                            e, payload_preview
+                        );
+                    }
+                }
             }
             warn!("Response subscription ended unexpectedly");
+        });
+
+        // Spawn a task to handle inbox responses
+        let inbox_handler = handlers.on_response.clone();
+        tokio::spawn(async move {
+            loop {
+                if !running_inbox.load(Ordering::Relaxed) {
+                    break;
+                }
+                let msg = tokio::select! {
+                    _ = shutdown_inbox.notified() => break,
+                    msg = inbox_subscription.next() => msg,
+                };
+                let Some(msg) = msg else {
+                    break;
+                };
+                metrics_inbox.record_received();
+                match sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
+                    Ok(response) => {
+                        inbox_handler(response).await;
+                        metrics_inbox.record_processed();
+                    }
+                    Err(e) => {
+                        metrics_inbox.record_parse_error();
+                        if let Some(m) = metrics_driver_inbox.get() {
+                            m.mark_horizontal_transport_message_dropped("nats");
+                        }
+                        let payload_preview =
+                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                        error!(
+                            "Failed to parse inbox response: {} - payload preview: {}",
+                            e, payload_preview
+                        );
+                    }
+                }
+            }
+            warn!("Inbox subscription ended unexpectedly");
         });
 
         Ok(())
@@ -482,7 +574,11 @@ impl HorizontalTransport for NatsTransport {
     }
 
     fn new_inbox(&self) -> Option<String> {
-        Some(self.client.new_inbox())
+        Some(format!(
+            "{}{}",
+            self.inbox_prefix,
+            Uuid::new_v4().as_simple()
+        ))
     }
 
     async fn publish_request_with_reply(
@@ -508,37 +604,6 @@ impl HorizontalTransport for NatsTransport {
         );
         Ok(())
     }
-
-    async fn subscribe_response_inbox(
-        &self,
-        inbox: &str,
-        handler: ResponseHandler,
-    ) -> Result<Option<InboxGuard>> {
-        let mut sub = self
-            .client
-            .subscribe(Subject::from(inbox.to_string()))
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to subscribe to inbox: {e}")))?;
-
-        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
-
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = &mut cancel_rx => break,
-                    msg = sub.next() => {
-                        let Some(msg) = msg else { break };
-                        if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&msg.payload) {
-                            handler(response).await;
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(Some(InboxGuard { _cancel: cancel_tx }))
-    }
 }
 
 impl Drop for NatsTransport {
@@ -546,6 +611,19 @@ impl Drop for NatsTransport {
         if self.owner_count.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.is_running.store(false, Ordering::Relaxed);
             self.shutdown.notify_waiters();
+
+            // Drain flushes pending messages and sends UNSUB before closing.
+            // try_current() avoids panicking if the runtime is already gone.
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let client = self.client.clone();
+                handle.spawn(async move {
+                    match tokio::time::timeout(Duration::from_secs(5), client.drain()).await {
+                        Ok(Ok(())) => debug!("NATS client drained successfully"),
+                        Ok(Err(e)) => warn!("NATS client drain failed: {}", e),
+                        Err(_) => warn!("NATS client drain timed out"),
+                    }
+                });
+            }
         }
     }
 }
@@ -558,6 +636,7 @@ impl Clone for NatsTransport {
             broadcast_subject: self.broadcast_subject.clone(),
             request_subject: self.request_subject.clone(),
             response_subject: self.response_subject.clone(),
+            inbox_prefix: self.inbox_prefix.clone(),
             config: self.config.clone(),
             metrics: self.metrics.clone(),
             metrics_driver: self.metrics_driver.clone(),

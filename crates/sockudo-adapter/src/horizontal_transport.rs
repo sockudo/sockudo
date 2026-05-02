@@ -8,12 +8,6 @@ use sockudo_core::error::Result;
 use sockudo_core::metrics::MetricsInterface;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-pub type ResponseHandler = Arc<dyn Fn(ResponseBody) -> BoxFuture<'static, ()> + Send + Sync>;
-
-/// Guard that keeps an inbox subscription alive. Drop to unsubscribe.
-pub struct InboxGuard {
-    pub(crate) _cancel: tokio::sync::oneshot::Sender<()>,
-}
 
 /// Handlers for transport events
 pub struct TransportHandlers {
@@ -65,16 +59,6 @@ pub trait HorizontalTransport: Send + Sync + Clone {
         _reply_to: &str,
     ) -> Result<()> {
         self.publish_request(request).await
-    }
-
-    /// Subscribe to an inbox and forward responses to the handler.
-    /// Returns a guard — drop it to unsubscribe.
-    async fn subscribe_response_inbox(
-        &self,
-        _inbox: &str,
-        _handler: ResponseHandler,
-    ) -> Result<Option<InboxGuard>> {
-        Ok(None)
     }
 }
 

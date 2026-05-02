@@ -541,6 +541,9 @@ pub struct NatsAdapterConfig {
     pub nodes_number: Option<u32>,
     pub discovery_max_wait_ms: u64,
     pub discovery_idle_wait_ms: u64,
+    pub subscription_capacity: Option<usize>,
+    pub client_capacity: Option<usize>,
+    pub max_reconnects: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1898,6 +1901,9 @@ impl Default for NatsAdapterConfig {
             nodes_number: None,
             discovery_max_wait_ms: 1000,
             discovery_idle_wait_ms: 150,
+            subscription_capacity: None,
+            client_capacity: None,
+            max_reconnects: None,
         }
     }
 }
@@ -2809,6 +2815,15 @@ impl ServerOptions {
         );
         if let Some(nodes) = parse_env_optional::<u32>("NATS_NODES_NUMBER") {
             self.adapter.nats.nodes_number = Some(nodes);
+        }
+        if let Some(v) = parse_env_optional::<usize>("NATS_SUBSCRIPTION_CAPACITY") {
+            self.adapter.nats.subscription_capacity = Some(v);
+        }
+        if let Some(v) = parse_env_optional::<usize>("NATS_CLIENT_CAPACITY") {
+            self.adapter.nats.client_capacity = Some(v);
+        }
+        if let Some(v) = parse_env_optional::<usize>("NATS_MAX_RECONNECTS") {
+            self.adapter.nats.max_reconnects = Some(v);
         }
 
         // --- Pulsar Adapter ---
