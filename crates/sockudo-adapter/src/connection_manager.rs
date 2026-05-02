@@ -172,6 +172,27 @@ pub trait ConnectionManager: Send + Sync {
     async fn get_namespaces(&self) -> Result<Vec<(String, Arc<Namespace>)>>;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
+    /// Local-only socket count (no cross-node query)
+    async fn get_local_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
+        self.get_channel_socket_count(app_id, channel).await
+    }
+
+    /// Batch cross-node channel socket counts in one round-trip
+    async fn get_batch_channel_socket_counts(
+        &self,
+        app_id: &str,
+        channels: &[&str],
+    ) -> Result<HashMap<String, usize>> {
+        let mut result = HashMap::new();
+        for channel in channels {
+            let count = self.get_channel_socket_count(app_id, channel).await;
+            if count > 0 {
+                result.insert(channel.to_string(), count);
+            }
+        }
+        Ok(result)
+    }
+
     /// Check the health of the connection manager and its underlying adapter
     /// Returns Ok(()) if healthy, Err(error_message) if unhealthy with specific reason
     async fn check_health(&self) -> Result<()>;

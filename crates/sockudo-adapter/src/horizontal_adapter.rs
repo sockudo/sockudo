@@ -49,7 +49,8 @@ pub enum RequestType {
     NodeDead,  // Dead node notification
 
     // State synchronization
-    PresenceStateSync, // Send bulk presence state to a specific node
+    PresenceStateSync,        // Send bulk presence state to a specific node
+    BatchChannelSocketsCount, // Get socket counts for a list of channels in one round-trip
 }
 
 /// Request body for horizontal communication
@@ -68,6 +69,10 @@ pub struct RequestBody {
     pub timestamp: Option<u64>,             // For heartbeat timestamp
     pub dead_node_id: Option<String>,       // For dead node notifications
     pub target_node_id: Option<String>,     // Which node should process this request
+
+    // List of channels for BatchChannelSocketsCount
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Vec<String>>,
 }
 
 /// Response body for horizontal requests
@@ -484,6 +489,21 @@ impl HorizontalAdapter {
                     self.cleanup_local_presence_registry(dead_node_id).await;
                 }
             }
+            RequestType::BatchChannelSocketsCount => {
+                if let Some(channels) = &request.channels {
+                    for channel in channels {
+                        let count = self
+                            .local_adapter
+                            .get_channel_socket_count(&request.app_id, channel)
+                            .await;
+                        if count > 0 {
+                            response
+                                .channels_with_sockets_count
+                                .insert(channel.clone(), count);
+                        }
+                    }
+                }
+            }
             RequestType::PresenceStateSync => {
                 if let Some(presence_data) = request.user_info {
                     let deser_result = sonic_rs::to_vec(&presence_data).and_then(|bytes| {
@@ -686,6 +706,7 @@ impl HorizontalAdapter {
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            channels: None,
         };
 
         // Add to pending requests with proper initialization
@@ -893,6 +914,15 @@ impl HorizontalAdapter {
                     // Sum connection counts from all nodes
                     combined_response.sockets_count += response.sockets_count;
                 }
+                RequestType::BatchChannelSocketsCount => {
+                    for (channel, count) in response.channels_with_sockets_count {
+                        *combined_response
+                            .channels_with_sockets_count
+                            .entry(channel)
+                            .or_insert(0) += count;
+                    }
+                }
+
                 // Presence replication - no response aggregation needed (broadcast-only)
                 RequestType::PresenceMemberJoined => {
                     // These are broadcast-only requests, no response aggregation needed
