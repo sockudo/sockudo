@@ -10,6 +10,9 @@ async fn test_nats_transport_new() -> Result<()> {
     let config = get_nats_config();
     let transport = NatsTransport::new(config.clone()).await?;
 
+    // Give time for connection to establish
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     // Verify the transport was created successfully by checking health
     transport.check_health().await?;
 
@@ -17,7 +20,7 @@ async fn test_nats_transport_new() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_nats_transport_new_with_invalid_url() {
+async fn test_nats_health_fails_when_server_unreachable() {
     // Use localhost with a port that's not listening - should fail quickly
     let config = NatsAdapterConfig {
         servers: vec!["nats://127.0.0.1:19999/".to_string()],
@@ -30,6 +33,7 @@ async fn test_nats_transport_new_with_invalid_url() {
         password: None,
         token: None,
         nodes_number: Some(1),
+        ..Default::default()
     };
 
     // Add a timeout to prevent test from hanging
@@ -39,8 +43,9 @@ async fn test_nats_transport_new_with_invalid_url() {
     )
     .await;
 
-    // Either timeout or connection error is fine
-    assert!(result.is_err() || result.unwrap().is_err());
+    // retry_on_initial_connect means new() succeeds; health check catches it
+    let transport = result.unwrap().unwrap();
+    assert!(transport.check_health().await.is_err());
 }
 
 #[tokio::test]
@@ -182,6 +187,9 @@ async fn test_check_health() -> Result<()> {
     let config = get_nats_config();
     let transport = NatsTransport::new(config).await?;
 
+    // Give time for connection to establish
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     // Health check should succeed
     transport.check_health().await?;
 
@@ -204,6 +212,7 @@ async fn test_subject_names() -> Result<()> {
         password: None,
         token: None,
         nodes_number: Some(2),
+        ..Default::default()
     };
 
     let transport = NatsTransport::new(config.clone()).await?;
@@ -297,7 +306,10 @@ async fn test_request_response_flow() -> Result<()> {
     assert!(received_request.is_some());
     assert_eq!(received_request.unwrap().request_id, request_id);
 
-    // The handler automatically sends a response (see test_helpers)
+    // Transport2 publishes a response back
+    let response = create_test_response(&request_id);
+    transport2.publish_response(&response).await?;
+
     // Transport1 should receive the response
     let received_response = collector1.wait_for_response(500).await;
     assert!(received_response.is_some());
@@ -323,9 +335,11 @@ async fn test_nats_with_no_credentials() -> Result<()> {
         password: None,
         token: None,
         nodes_number: Some(2),
+        ..Default::default()
     };
 
     let transport = NatsTransport::new(config).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     transport.check_health().await?;
 
     Ok(())
@@ -345,10 +359,12 @@ async fn test_nats_with_username_but_no_password() -> Result<()> {
         password: None, // Missing password
         token: None,
         nodes_number: Some(1),
+        ..Default::default()
     };
 
     // Our code should not set credentials if both username AND password aren't provided
     let transport = NatsTransport::new(config).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     transport.check_health().await?;
 
     Ok(())
@@ -368,10 +384,12 @@ async fn test_nats_with_password_but_no_username() -> Result<()> {
         password: Some("testpass".to_string()),
         token: None,
         nodes_number: Some(1),
+        ..Default::default()
     };
 
     // Our code should not set credentials if both username AND password aren't provided
     let transport = NatsTransport::new(config).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     transport.check_health().await?;
 
     Ok(())
@@ -391,6 +409,7 @@ async fn test_nats_token_takes_precedence_over_username_password() -> Result<()>
         password: Some("pass".to_string()),
         token: Some("fake_token".to_string()), // Token should take precedence
         nodes_number: Some(1),
+        ..Default::default()
     };
 
     // This tests our conditional logic: token is checked first, so username/password are ignored
@@ -419,35 +438,14 @@ async fn test_nats_empty_string_credentials() -> Result<()> {
         password: Some("".to_string()), // Empty string
         token: None,
         nodes_number: Some(1),
+        ..Default::default()
     };
 
     // Our code should still try to set credentials with empty strings
     // This tests that we don't do additional validation beyond Option checking
     let transport = NatsTransport::new(config).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     transport.check_health().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_nats_connection_timeout() -> Result<()> {
-    // Test with very short connection timeout to non-existent server
-    let config = NatsAdapterConfig {
-        servers: vec!["nats://127.0.0.1:19999".to_string()],
-        prefix: "test_timeout".to_string(),
-        request_timeout_ms: 1000,
-        discovery_max_wait_ms: 1000,
-        discovery_idle_wait_ms: 150,
-        connection_timeout_ms: 100, // Very short timeout
-        username: None,
-        password: None,
-        token: None,
-        nodes_number: Some(1),
-    };
-
-    // This should fail quickly due to short connection timeout
-    let result = NatsTransport::new(config).await;
-    assert!(result.is_err());
 
     Ok(())
 }
@@ -466,9 +464,11 @@ async fn test_nats_config_edge_cases() -> Result<()> {
         password: None,
         token: None,
         nodes_number: Some(1),
+        ..Default::default()
     };
 
     let transport = NatsTransport::new(config).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     transport.check_health().await?;
 
     // Test with very short timeouts (but not zero to avoid timeout issues)
@@ -483,10 +483,12 @@ async fn test_nats_config_edge_cases() -> Result<()> {
         password: None,
         token: None,
         nodes_number: Some(1),
+        ..Default::default()
     };
 
     // This should still work - our code doesn't validate timeouts
     let transport = NatsTransport::new(config).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     transport.check_health().await?;
 
     // Test with very large values
@@ -501,9 +503,11 @@ async fn test_nats_config_edge_cases() -> Result<()> {
         password: None,
         token: None,
         nodes_number: Some(0), // Zero nodes
+        ..Default::default()
     };
 
     let transport = NatsTransport::new(config).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     transport.check_health().await?;
 
     Ok(())
@@ -526,10 +530,14 @@ async fn test_nats_invalid_config() {
         password: None,
         token: None,
         nodes_number: Some(1),
+        ..Default::default()
     };
 
-    let result = NatsTransport::new(config).await;
-    assert!(result.is_err(), "Expected error for non-existent server");
+    let transport = NatsTransport::new(config).await.unwrap();
+    assert!(
+        transport.check_health().await.is_err(),
+        "Expected error for non-existent server"
+    );
 
     // Test with malformed server URLs
     let malformed_servers = vec![
@@ -552,6 +560,7 @@ async fn test_nats_invalid_config() {
             password: None,
             token: None,
             nodes_number: Some(1),
+            ..Default::default()
         };
 
         let result = tokio::time::timeout(
@@ -560,11 +569,13 @@ async fn test_nats_invalid_config() {
         )
         .await;
 
-        assert!(
-            result.is_err() || result.unwrap().is_err(),
-            "Expected error for malformed server URL: {}",
-            server
-        );
+        if let Ok(Ok(transport)) = result {
+            assert!(
+                transport.check_health().await.is_err(),
+                "Expected error for malformed server URL: {}",
+                server
+            );
+        }
     }
 }
 

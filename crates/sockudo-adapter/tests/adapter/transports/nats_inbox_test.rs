@@ -1,5 +1,5 @@
 use sockudo_adapter::horizontal_adapter::ResponseBody;
-use sockudo_adapter::horizontal_transport::{BoxFuture, HorizontalTransport, ResponseHandler};
+use sockudo_adapter::horizontal_transport::HorizontalTransport;
 use sockudo_adapter::transports::NatsTransport;
 use sockudo_core::error::Result;
 use std::sync::Arc;
@@ -7,56 +7,51 @@ use tokio::sync::Mutex;
 
 use super::test_helpers::*;
 
+/// Test that responses arrive via the shared inbox wildcard subscription
+/// when requests use publish_request_with_reply.
 #[tokio::test]
-async fn test_inbox_request_reply_flow() -> Result<()> {
+async fn test_shared_inbox_request_reply_flow() -> Result<()> {
     let config = get_nats_config();
     let transport = NatsTransport::new(config.clone()).await?;
 
-    // Start listeners (responder side)
+    // Collect responses that arrive via the shared inbox and global response
+    // subject. Both use on_response which we capture via the collector.
     let collector = MessageCollector::new();
     let handlers = create_test_handlers(collector.clone());
     transport.start_listeners(handlers).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // Set up inbox subscription (requester side)
+    // Publish request with reply-to pointing to the shared inbox prefix
     let inbox = transport.new_inbox().unwrap();
-    let inbox_responses = Arc::new(Mutex::new(Vec::new()));
-    let inbox_responses_clone = inbox_responses.clone();
-    let handler: ResponseHandler = Arc::new(move |response| {
-        let responses = inbox_responses_clone.clone();
-        Box::pin(async move {
-            responses.lock().await.push(response);
-        }) as BoxFuture<'static, ()>
-    });
-    let _guard = transport.subscribe_response_inbox(&inbox, handler).await?;
-
-    // Publish request with reply-to
     let request = create_test_request();
     let request_id = request.request_id.clone();
     transport
         .publish_request_with_reply(&request, &inbox)
         .await?;
 
-    // Response should arrive at the inbox
+    // Response should arrive via the shared inbox subscription
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(500);
     loop {
-        let responses = inbox_responses.lock().await;
-        if !responses.is_empty() {
-            assert_eq!(responses[0].request_id, request_id);
+        if let Some(response) = collector.wait_for_response(50).await {
+            assert_eq!(response.request_id, request_id);
             break;
         }
-        drop(responses);
         if tokio::time::Instant::now() >= deadline {
             panic!("Timed out waiting for inbox response");
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 
     Ok(())
 }
 
+/// Test that requests without reply_to do NOT generate a response on the
+/// global subject.  Fire-and-forget requests (heartbeats, presence
+/// replication, dead-node notifications) are published without a reply
+/// address and nobody is waiting for their response.  Publishing to the
+/// global response subject in that case fans out to every node, wasting
+/// bandwidth and overwhelming subscriptions under presence-heavy load.
 #[tokio::test]
-async fn test_no_reply_to_falls_back_to_global_subject() -> Result<()> {
+async fn test_no_reply_to_does_not_publish_response() -> Result<()> {
     let config = get_nats_config();
     let transport = NatsTransport::new(config.clone()).await?;
 
@@ -66,64 +61,22 @@ async fn test_no_reply_to_falls_back_to_global_subject() -> Result<()> {
     transport.start_listeners(handlers).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // Publish request WITHOUT reply_to (simulates old pod)
+    // Publish request WITHOUT reply_to (fire-and-forget)
     let request = create_test_request();
-    let request_id = request.request_id.clone();
     transport.publish_request(&request).await?;
 
-    // Response should arrive via global subject
+    // No response should arrive on the global subject
     let received = collector.wait_for_response(500).await;
     assert!(
-        received.is_some(),
-        "Response should arrive via global subject when no reply_to"
-    );
-    assert_eq!(received.unwrap().request_id, request_id);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_inbox_guard_drop_stops_receiving() -> Result<()> {
-    let config = get_nats_config();
-    let transport = NatsTransport::new(config.clone()).await?;
-
-    let inbox = transport.new_inbox().unwrap();
-    let received = Arc::new(Mutex::new(Vec::<ResponseBody>::new()));
-    let received_clone = received.clone();
-    let handler: ResponseHandler = Arc::new(move |response| {
-        let received = received_clone.clone();
-        Box::pin(async move {
-            received.lock().await.push(response);
-        }) as BoxFuture<'static, ()>
-    });
-
-    let guard = transport
-        .subscribe_response_inbox(&inbox, handler)
-        .await?
-        .unwrap();
-
-    // Drop the guard
-    drop(guard);
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-    // Publish after drop — should not be received
-    let response = create_test_response("should-not-arrive");
-    let response_data = sonic_rs::to_vec(&response).unwrap();
-    transport
-        .client()
-        .publish(async_nats::Subject::from(inbox), response_data.into())
-        .await
-        .map_err(|e| sockudo_core::error::Error::Internal(e.to_string()))?;
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    assert!(
-        received.lock().await.is_empty(),
-        "Should not receive messages after guard dropped"
+        received.is_none(),
+        "Fire-and-forget requests (no reply_to) must not generate responses on the global subject"
     );
 
     Ok(())
 }
 
+/// Test that two transports with separate inbox prefixes receive only their
+/// own responses, not each other's.
 #[tokio::test]
 async fn test_two_transports_inbox_isolation() -> Result<()> {
     let config = get_nats_config();
@@ -141,42 +94,32 @@ async fn test_two_transports_inbox_isolation() -> Result<()> {
         .await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // Transport A sends a request with inbox
+    // Transport A sends a request with its inbox
     let inbox_a = transport_a.new_inbox().unwrap();
-    let responses_a = Arc::new(Mutex::new(Vec::new()));
-    let responses_a_clone = responses_a.clone();
-    let handler_a: ResponseHandler = Arc::new(move |response| {
-        let responses = responses_a_clone.clone();
-        Box::pin(async move {
-            responses.lock().await.push(response);
-        }) as BoxFuture<'static, ()>
-    });
-    let _guard_a = transport_a
-        .subscribe_response_inbox(&inbox_a, handler_a)
-        .await?;
-
     let request = create_test_request();
     let request_id = request.request_id.clone();
     transport_a
         .publish_request_with_reply(&request, &inbox_a)
         .await?;
 
-    // Wait for responses
+    // Wait for responses on transport A's collector.
+    // Both transport_a and transport_b receive the request and respond to inbox_a.
+    // transport_a's shared inbox subscription receives both responses.
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(1);
+    let responses_a = Arc::new(Mutex::new(Vec::<ResponseBody>::new()));
     loop {
-        let resps = responses_a.lock().await;
-        // Both transport_a and transport_b receive the request and respond to inbox_a.
-        // transport_a's own listener also responds. So we expect 2 responses.
-        if resps.len() >= 2 {
-            assert!(resps.iter().all(|r| r.request_id == request_id));
-            break;
+        if let Some(response) = collector_a.wait_for_response(50).await {
+            let mut resps = responses_a.lock().await;
+            resps.push(response);
+            if resps.len() >= 2 {
+                assert!(resps.iter().all(|r| r.request_id == request_id));
+                break;
+            }
         }
-        drop(resps);
         if tokio::time::Instant::now() >= deadline {
             let count = responses_a.lock().await.len();
             panic!("Timed out: expected 2 inbox responses, got {}", count);
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 
     Ok(())

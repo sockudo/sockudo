@@ -63,6 +63,9 @@ async fn test_horizontal_adapter_with_nats_transport() -> Result<()> {
     let adapter_mut = HorizontalAdapterBase::<NatsTransport>::new(config).await?;
     adapter_mut.init().await;
 
+    // Give time for connections to establish
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     // Start listeners
     adapter.start_listeners().await?;
 
@@ -458,6 +461,9 @@ async fn test_transport_failure_isolation_redis() -> Result<()> {
 async fn test_transport_failure_isolation_nats() -> Result<()> {
     let config = get_nats_config();
     let adapter = HorizontalAdapterBase::<NatsTransport>::new(config).await?;
+
+    // Give time for connection to establish
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Start listeners
     adapter.start_listeners().await?;
