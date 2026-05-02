@@ -37,6 +37,7 @@ async fn create_nats_adapter(node_id: &str, cluster_config: &ClusterHealthConfig
         token: env::var("NATS_TOKEN").ok(),
         connection_timeout_ms: 5000,
         nodes_number: Some(1),
+        ..Default::default()
     };
 
     let mut adapter = NatsAdapter::new(config).await.unwrap();
