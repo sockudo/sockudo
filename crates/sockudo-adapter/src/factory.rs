@@ -336,6 +336,9 @@ impl AdapterFactory {
                     nodes_number: config.nats.nodes_number,
                     discovery_max_wait_ms: config.nats.discovery_max_wait_ms,
                     discovery_idle_wait_ms: config.nats.discovery_idle_wait_ms,
+                    subscription_capacity: config.nats.subscription_capacity,
+                    client_capacity: config.nats.client_capacity,
+                    max_reconnects: config.nats.max_reconnects,
                 };
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(mut adapter) => {
