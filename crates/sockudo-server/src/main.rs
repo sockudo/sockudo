@@ -1881,6 +1881,16 @@ impl SockudoServer {
         info!("Stopping server...");
         self.state.running.store(false, Ordering::SeqCst);
 
+        // Tell cluster peers this node is leaving and no responses are expected
+        if let Err(e) = self
+            .state
+            .connection_manager
+            .announce_node_departure()
+            .await
+        {
+            warn!("Failed to announce node departure: {}", e);
+        }
+
         let mut connections_to_cleanup: Vec<(String, WebSocketRef)> = Vec::new();
 
         {

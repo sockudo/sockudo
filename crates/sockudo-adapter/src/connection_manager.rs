@@ -208,4 +208,10 @@ pub trait ConnectionManager: Send + Sync {
     fn configure_dead_node_events(&self) -> Option<DeadNodeEventBusReceiver> {
         None // Default: no clustering support
     }
+
+    /// Tell cluster peers this node is leaving so they prune
+    /// heartbeat tracking without waiting for the timeout window
+    async fn announce_node_departure(&self) -> Result<()> {
+        Ok(())
+    }
 }

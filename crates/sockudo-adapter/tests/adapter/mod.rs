@@ -51,3 +51,6 @@ mod local_adapter_fallback_tests;
 
 #[cfg(test)]
 mod single_node_optimization_tests;
+
+#[cfg(test)]
+mod graceful_departure_tests;

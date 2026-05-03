@@ -235,7 +235,14 @@ where
         let discovered_node_count = self.horizontal.get_effective_node_count().await;
         let node_count = if should_skip_horizontal {
             1
+        } else if self.transport.node_count_is_real_time() {
+            // Transport supports accurate node counting, use it directly
+            self.transport.get_node_count().await?
+        } else if self.cluster_health_enabled && discovered_node_count > 1 {
+            // Cluster health heartbeats are tracking peers
+            discovered_node_count
         } else {
+            // Fallback to transport hint
             std::cmp::max(
                 discovered_node_count,
                 self.transport.get_node_count().await?,
@@ -1603,6 +1610,44 @@ where
 
     async fn check_health(&self) -> Result<()> {
         self.transport.check_health().await
+    }
+
+    async fn announce_node_departure(&self) -> Result<()> {
+        let request = RequestBody {
+            request_id: generate_request_id(),
+            node_id: self.node_id.clone(),
+            app_id: "cluster".to_string(),
+            request_type: RequestType::NodeDead,
+            channel: None,
+            socket_id: None,
+            user_id: None,
+            user_info: None,
+            timestamp: Some(current_timestamp()),
+            dead_node_id: Some(self.node_id.clone()),
+            target_node_id: None,
+            channels: None,
+        };
+
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            self.transport.publish_request(&request),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                info!("Announced node departure to cluster peers");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                warn!("Failed to announce node departure: {}", e);
+                Ok(())
+            }
+            Err(_) => {
+                warn!("Node departure announcement timed out");
+                Ok(())
+            }
+        }
     }
 
     fn get_node_id(&self) -> String {

@@ -40,6 +40,11 @@ pub trait HorizontalTransport: Send + Sync + Clone {
     /// Get the current number of nodes in the cluster
     async fn get_node_count(&self) -> Result<usize>;
 
+    /// Whether real-time nodes counting is reliable or not
+    fn node_count_is_real_time(&self) -> bool {
+        false
+    }
+
     /// Check transport health
     async fn check_health(&self) -> Result<()>;
 

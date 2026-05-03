@@ -550,6 +550,10 @@ impl HorizontalTransport for RedisClusterTransport {
         }
     }
 
+    fn node_count_is_real_time(&self) -> bool {
+        true
+    }
+
     async fn check_health(&self) -> Result<()> {
         // Use dedicated health check connection to avoid contention with publish operations
         // Under high load (10K+ msg/s), sharing the publish connection causes timeouts
