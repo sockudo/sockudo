@@ -15,9 +15,17 @@ v2 = ["delta", "tag-filtering", "recovery"]
 delta = ["sockudo-adapter/delta", "sockudo-delta"]
 tag-filtering = ["sockudo-adapter/tag-filtering", "sockudo-filter"]
 recovery = ["sockudo-adapter/recovery"]
+push = ["dep:sockudo-push"]
+push-fcm = ["push", "sockudo-push/push-fcm"]
+push-apns = ["push", "sockudo-push/push-apns"]
+push-webpush = ["push", "sockudo-push/push-webpush"]
+push-hms = ["push", "sockudo-push/push-hms"]
+push-wns = ["push", "sockudo-push/push-wns"]
+monolith = ["push", "sockudo-push/monolith"]
 full = [
   "v2",
   "versioned-messages",
+  "push",
   "redis",
   "redis-cluster",
   "nats",
@@ -43,6 +51,7 @@ redis = [
   "sockudo-queue/redis",
   "sockudo-rate-limiter/redis",
   "sockudo-delta?/redis",
+  "sockudo-push?/redis",
 ]
 redis-cluster = [
   "redis",
@@ -51,20 +60,21 @@ redis-cluster = [
   "sockudo-cache/redis-cluster",
   "sockudo-queue/redis-cluster",
   "sockudo-rate-limiter/redis-cluster",
+  "sockudo-push?/redis-cluster",
 ]
-nats = ["sockudo-core/nats", "sockudo-adapter/nats", "sockudo-delta?/nats", "sockudo-queue/nats"]
-pulsar = ["sockudo-core/pulsar", "sockudo-adapter/pulsar", "sockudo-queue/pulsar"]
-rabbitmq = ["sockudo-core/rabbitmq", "sockudo-adapter/rabbitmq", "sockudo-queue/rabbitmq"]
-google-pubsub = ["sockudo-core/google-pubsub", "sockudo-adapter/google-pubsub", "sockudo-queue/google-pubsub"]
-kafka = ["sockudo-core/kafka", "sockudo-adapter/kafka", "sockudo-queue/kafka"]
-iggy = ["sockudo-core/iggy", "sockudo-adapter/iggy", "sockudo-queue/iggy"]
-mysql = ["sockudo-core/mysql", "sockudo-app/mysql", "dep:sqlx", "dep:urlencoding"]
-postgres = ["sockudo-core/postgres", "sockudo-app/postgres", "dep:sqlx", "dep:urlencoding"]
-dynamodb = ["sockudo-core/dynamodb", "sockudo-app/dynamodb", "dep:aws-config", "dep:aws-sdk-dynamodb"]
-surrealdb = ["sockudo-core/surrealdb", "sockudo-app/surrealdb", "dep:surrealdb", "dep:surrealdb-types"]
-scylladb = ["sockudo-core/scylladb", "sockudo-app/scylladb", "dep:scylla"]
-sqs = ["sockudo-core/sqs", "sockudo-queue/sqs"]
-sns = ["sockudo-core/sns", "sockudo-queue/sns"]
+nats = ["sockudo-core/nats", "sockudo-adapter/nats", "sockudo-delta?/nats", "sockudo-queue/nats", "sockudo-push?/nats"]
+pulsar = ["sockudo-core/pulsar", "sockudo-adapter/pulsar", "sockudo-queue/pulsar", "sockudo-push?/pulsar"]
+rabbitmq = ["sockudo-core/rabbitmq", "sockudo-adapter/rabbitmq", "sockudo-queue/rabbitmq", "sockudo-push?/rabbitmq"]
+google-pubsub = ["sockudo-core/google-pubsub", "sockudo-adapter/google-pubsub", "sockudo-queue/google-pubsub", "sockudo-push?/google-pubsub"]
+kafka = ["sockudo-core/kafka", "sockudo-adapter/kafka", "sockudo-queue/kafka", "sockudo-push?/kafka"]
+iggy = ["sockudo-core/iggy", "sockudo-adapter/iggy", "sockudo-queue/iggy", "sockudo-push?/iggy"]
+mysql = ["sockudo-core/mysql", "sockudo-app/mysql", "dep:sqlx", "dep:urlencoding", "sockudo-push?/mysql"]
+postgres = ["sockudo-core/postgres", "sockudo-app/postgres", "dep:sqlx", "dep:urlencoding", "sockudo-push?/postgres"]
+dynamodb = ["sockudo-core/dynamodb", "sockudo-app/dynamodb", "dep:aws-config", "dep:aws-sdk-dynamodb", "sockudo-push?/dynamodb"]
+surrealdb = ["sockudo-core/surrealdb", "sockudo-app/surrealdb", "dep:surrealdb", "dep:surrealdb-types", "sockudo-push?/surrealdb"]
+scylladb = ["sockudo-core/scylladb", "sockudo-app/scylladb", "dep:scylla", "sockudo-push?/scylladb"]
+sqs = ["sockudo-core/sqs", "sockudo-queue/sqs", "sockudo-push?/sqs"]
+sns = ["sockudo-core/sns", "sockudo-queue/sns", "sockudo-push?/sns"]
 lambda = ["sockudo-core/lambda", "sockudo-webhook/lambda"]
 
 [[bin]]
@@ -83,6 +93,7 @@ sockudo-metrics = { workspace = true }
 sockudo-webhook = { workspace = true }
 sockudo-delta = { workspace = true, optional = true }
 sockudo-adapter = { workspace = true }
+sockudo-push = { workspace = true, optional = true }
 
 ahash = { workspace = true }
 async-trait = { workspace = true }
@@ -101,6 +112,7 @@ mimalloc = { workspace = true }
 num_cpus = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_urlencoded = { workspace = true }
 sockudo-ws = { workspace = true }
 sonic-rs = { workspace = true }

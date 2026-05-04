@@ -43,6 +43,12 @@ pub struct MessageExtras {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
 
+    /// V2-only push payload. HTTP publish with `extras.push` creates an
+    /// asynchronous channel push event for push subscribers and is stripped from
+    /// V1/Pusher-compatible WebSocket deliveries with the rest of `extras`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push: Option<Value>,
+
     /// Per-message echo control. Overrides the connection-level echo setting
     /// when explicitly set.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -82,6 +82,16 @@ pub enum AppError {
     HeaderBuildError(#[from] axum::http::Error),
     #[error("Limit exceeded: {0}")]
     LimitExceeded(String),
+    #[error("Too many requests: {message}")]
+    TooManyRequests {
+        message: String,
+        retry_after_seconds: u64,
+    },
+    #[error("Service unavailable due to backpressure: {message}")]
+    Backpressure {
+        message: String,
+        retry_after_seconds: u64,
+    },
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
     #[error("Invalid input: {0}")]
@@ -133,6 +143,16 @@ impl IntoResponse for AppError {
             AppError::LimitExceeded(msg) => {
                 (StatusCode::BAD_REQUEST, "limit_exceeded", msg.clone())
             }
+            AppError::TooManyRequests { message, .. } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                message.clone(),
+            ),
+            AppError::Backpressure { message, .. } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "backpressure",
+                message.clone(),
+            ),
             AppError::PayloadTooLarge(msg) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "payload_too_large",
@@ -151,7 +171,23 @@ impl IntoResponse for AppError {
         };
         error!(error.message = %self, status_code = %status, "HTTP request failed");
         let error_message = json!({ "error": msg, "code": code, "status": status.as_u16() });
-        (status, Json(error_message)).into_response()
+        let mut response = (status, Json(error_message)).into_response();
+        match &self {
+            AppError::TooManyRequests {
+                retry_after_seconds,
+                ..
+            }
+            | AppError::Backpressure {
+                retry_after_seconds,
+                ..
+            } => {
+                if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+                    response.headers_mut().insert(header::RETRY_AFTER, value);
+                }
+            }
+            _ => {}
+        }
+        response
     }
 }
 
@@ -1487,12 +1523,14 @@ fn idempotency_cache_key(app_id: &str, key: &str) -> String {
 /// Merge per-app idempotency overrides with the global config.
 /// Only fields explicitly set at the app level take precedence.
 /// POST /apps/{app_id}/events
-#[instrument(skip(handler, headers, event_payload), fields(app_id = %app_id))]
+#[instrument(skip_all, fields(app_id = %app_id))]
 #[allow(clippy::too_many_arguments)]
 pub async fn events(
     Path(app_id): Path<String>,
     Query(_auth_q_params_struct): Query<EventQuery>,
     Extension(app): Extension<App>,
+    #[cfg(feature = "push")] Extension(push_store): Extension<sockudo_push::DynPushStore>,
+    #[cfg(feature = "push")] Extension(push_queue): Extension<sockudo_push::DynPushQueue>,
     State(handler): State<Arc<ConnectionHandler>>,
     headers: HeaderMap,
     _uri: Uri,
@@ -1617,6 +1655,36 @@ pub async fn events(
 
     let need_channel_info = event_payload.info.is_some();
 
+    #[cfg(feature = "push")]
+    if let Some(extras_push) = event_payload
+        .extras
+        .as_ref()
+        .and_then(|extras| extras.push.as_ref())
+    {
+        if let Some(channel) = event_payload.channel.as_deref() {
+            crate::push_http::enqueue_v2_channel_push_from_extras(
+                &app_id,
+                channel,
+                extras_push,
+                &push_store,
+                &push_queue,
+            )
+            .await?;
+        }
+        if let Some(channels) = event_payload.channels.as_ref() {
+            for channel in channels {
+                crate::push_http::enqueue_v2_channel_push_from_extras(
+                    &app_id,
+                    channel,
+                    extras_push,
+                    &push_store,
+                    &push_queue,
+                )
+                .await?;
+            }
+        }
+    }
+
     let channels_info_map = process_single_event_parallel(
         &handler,
         &app,
@@ -1668,6 +1736,8 @@ pub async fn batch_events(
     Path(app_id): Path<String>,
     Query(_auth_q_params_struct): Query<EventQuery>,
     Extension(app_config): Extension<App>,
+    #[cfg(feature = "push")] Extension(push_store): Extension<sockudo_push::DynPushStore>,
+    #[cfg(feature = "push")] Extension(push_queue): Extension<sockudo_push::DynPushQueue>,
     State(handler): State<Arc<ConnectionHandler>>,
     headers: HeaderMap,
     _uri: Uri,
@@ -1797,6 +1867,36 @@ pub async fn batch_events(
         }
 
         let should_collect_info_for_this_event = single_event_message.info.is_some();
+        #[cfg(feature = "push")]
+        if let Some(extras_push) = single_event_message
+            .extras
+            .as_ref()
+            .and_then(|extras| extras.push.as_ref())
+        {
+            if let Some(channel) = single_event_message.channel.as_deref() {
+                crate::push_http::enqueue_v2_channel_push_from_extras(
+                    &app_id,
+                    channel,
+                    extras_push,
+                    &push_store,
+                    &push_queue,
+                )
+                .await?;
+            }
+            if let Some(channels) = single_event_message.channels.as_ref() {
+                for channel in channels {
+                    crate::push_http::enqueue_v2_channel_push_from_extras(
+                        &app_id,
+                        channel,
+                        extras_push,
+                        &push_store,
+                        &push_queue,
+                    )
+                    .await?;
+                }
+            }
+        }
+
         let channel_info_map = process_single_event_parallel(
             &handler,
             &app_config,
@@ -3576,6 +3676,12 @@ pub async fn metrics(
             "# Metrics collection is not enabled.\n".to_string()
         }
     };
+    #[cfg(feature = "push")]
+    let plaintext_metrics_str = {
+        let mut plaintext_metrics_str = plaintext_metrics_str;
+        plaintext_metrics_str.push_str(&crate::push_http::push_metrics_plaintext());
+        plaintext_metrics_str
+    };
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         header::CONTENT_TYPE,
@@ -3644,6 +3750,16 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::net::{TcpListener, TcpStream};
+
+    #[cfg(feature = "push")]
+    fn test_push_store() -> Extension<sockudo_push::DynPushStore> {
+        Extension(Arc::new(sockudo_push::MemoryPushStore::new()))
+    }
+
+    #[cfg(feature = "push")]
+    fn test_push_queue() -> Extension<sockudo_push::DynPushQueue> {
+        Extension(Arc::new(sockudo_push::MemoryPushQueue::new()))
+    }
 
     fn test_app() -> App {
         test_app_with_policy(Default::default())
@@ -5886,6 +6002,10 @@ mod tests {
                 auth_signature: String::new(),
             }),
             Extension(app.clone()),
+            #[cfg(feature = "push")]
+            test_push_store(),
+            #[cfg(feature = "push")]
+            test_push_queue(),
             State(handler.clone()),
             HeaderMap::new(),
             Uri::from_static("/apps/app-1/events"),
@@ -5992,6 +6112,10 @@ mod tests {
                 auth_signature: String::new(),
             }),
             Extension(app.clone()),
+            #[cfg(feature = "push")]
+            test_push_store(),
+            #[cfg(feature = "push")]
+            test_push_queue(),
             State(handler.clone()),
             HeaderMap::new(),
             Uri::from_static("/apps/app-1/events"),
@@ -6094,6 +6218,10 @@ mod tests {
                 auth_signature: String::new(),
             }),
             Extension(app.clone()),
+            #[cfg(feature = "push")]
+            test_push_store(),
+            #[cfg(feature = "push")]
+            test_push_queue(),
             State(handler.clone()),
             HeaderMap::new(),
             Uri::from_static("/apps/app-1/events"),

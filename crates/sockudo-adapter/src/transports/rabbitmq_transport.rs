@@ -112,21 +112,21 @@ impl HorizontalTransport for RabbitMqTransport {
 
     async fn start_listeners(&self, handlers: TransportHandlers) -> Result<()> {
         self.spawn_consumer(
-            self.broadcast_exchange.clone(),
+            &self.broadcast_exchange,
             "broadcast",
             handlers.on_broadcast.clone(),
         )
         .await?;
 
         self.spawn_request_consumer(
-            self.request_exchange.clone(),
-            self.response_exchange.clone(),
+            &self.request_exchange,
+            &self.response_exchange,
             handlers.on_request.clone(),
         )
         .await?;
 
         self.spawn_consumer(
-            self.response_exchange.clone(),
+            &self.response_exchange,
             "response",
             handlers.on_response.clone(),
         )
@@ -181,7 +181,7 @@ impl RabbitMqTransport {
 
     async fn spawn_consumer<T>(
         &self,
-        exchange: String,
+        exchange: &str,
         kind: &'static str,
         handler: Arc<
             dyn Fn(T) -> crate::horizontal_transport::BoxFuture<'static, ()> + Send + Sync,
@@ -196,7 +196,7 @@ impl RabbitMqTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to create RabbitMQ channel: {e}")))?;
 
-        let queue = Self::declare_bound_queue(&channel, &exchange, kind).await?;
+        let queue = Self::declare_bound_queue(&channel, exchange, kind).await?;
         let consumer_tag = format!("sockudo-{kind}-{}", uuid::Uuid::new_v4());
         let mut consumer = channel
             .basic_consume(
@@ -244,8 +244,8 @@ impl RabbitMqTransport {
 
     async fn spawn_request_consumer(
         &self,
-        exchange: String,
-        response_exchange: String,
+        exchange: &str,
+        response_exchange: &str,
         handler: Arc<
             dyn Fn(
                     RequestBody,
@@ -261,7 +261,7 @@ impl RabbitMqTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to create RabbitMQ channel: {e}")))?;
 
-        let queue = Self::declare_bound_queue(&channel, &exchange, "request").await?;
+        let queue = Self::declare_bound_queue(&channel, exchange, "request").await?;
         let consumer_tag = format!("sockudo-request-{}", uuid::Uuid::new_v4());
         let mut consumer = channel
             .basic_consume(
@@ -275,6 +275,8 @@ impl RabbitMqTransport {
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
         let metrics = self.metrics.clone();
+        let response_channel = channel;
+        let response_exchange = response_exchange.to_owned();
 
         info!("RabbitMQ transport consuming requests from queue {}", queue);
 
@@ -292,9 +294,6 @@ impl RabbitMqTransport {
                 };
                 match delivery {
                     Ok(delivery) => {
-                        let response_channel = channel.clone();
-                        let response_exchange = response_exchange.clone();
-
                         match sonic_rs::from_slice::<RequestBody>(&delivery.data) {
                             Ok(request) => match handler(request).await {
                                 Ok(response) => {

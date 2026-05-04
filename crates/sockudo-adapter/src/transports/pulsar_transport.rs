@@ -324,11 +324,13 @@ async fn publish_message<T: serde::Serialize>(
     let payload = sonic_rs::to_vec(message)
         .map_err(|e| Error::Other(format!("Failed to serialize Pulsar message: {e}")))?;
 
-    let mut producer = producer.lock().await;
-    let receipt = producer
-        .send_non_blocking(payload)
-        .await
-        .map_err(|e| Error::Internal(format!("Failed to enqueue Pulsar message: {e}")))?;
+    let receipt = {
+        let mut producer = producer.lock().await;
+        producer
+            .send_non_blocking(payload)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to enqueue Pulsar message: {e}")))?
+    };
     receipt
         .await
         .map_err(|e| Error::Internal(format!("Failed to publish Pulsar message: {e}")))?;
