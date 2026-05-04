@@ -373,6 +373,7 @@ mod tests {
                 headers: None,
                 ephemeral: Some(false),
                 idempotency_key: None,
+                push: None,
                 echo: Some(true),
             }),
         )

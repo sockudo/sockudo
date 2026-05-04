@@ -1703,6 +1703,7 @@ async fn refresh_history_state_metrics(
 
 // ── MySQL VersionStore ────────────────────────────────────────────────────────
 
+#[cfg(feature = "versioned-messages")]
 use sockudo_core::version_store::{
     StoredVersionRecord, VersionReplayRequest, VersionStore, VersionStoreCursor,
     VersionStoreDirection, VersionStorePage, VersionStoreReadRequest, VersionStreamState,

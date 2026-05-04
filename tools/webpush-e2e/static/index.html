@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sockudo Web Push E2E</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #f7f8fb;
+        color: #172033;
+      }
+
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 40px 20px;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 28px;
+        letter-spacing: 0;
+      }
+
+      p {
+        line-height: 1.5;
+      }
+
+      button {
+        min-height: 40px;
+        border: 1px solid #0d6efd;
+        border-radius: 6px;
+        background: #0d6efd;
+        color: white;
+        padding: 0 14px;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+
+      .panel {
+        margin-top: 22px;
+        border: 1px solid #d8dee9;
+        border-radius: 8px;
+        background: white;
+        padding: 16px;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        border-bottom: 1px solid #eef1f5;
+        padding: 10px 0;
+      }
+
+      .row:last-child {
+        border-bottom: 0;
+      }
+
+      .label {
+        color: #4f5d75;
+      }
+
+      .value {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        overflow-wrap: anywhere;
+        text-align: right;
+      }
+
+      pre {
+        overflow: auto;
+        border-radius: 6px;
+        background: #121826;
+        color: #d8e3f7;
+        padding: 14px;
+        white-space: pre-wrap;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #111827;
+          color: #eef2f7;
+        }
+
+        .panel {
+          border-color: #374151;
+          background: #1f2937;
+        }
+
+        .row {
+          border-bottom-color: #374151;
+        }
+
+        .label {
+          color: #a8b3c7;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sockudo Web Push E2E</h1>
+      <p>
+        This page registers a service worker, creates a browser push
+        subscription, and asks the local Sockudo harness to send a real Web Push
+        request.
+      </p>
+      <button id="run">Subscribe And Send</button>
+      <button id="send" disabled>Send Again</button>
+
+      <section class="panel">
+        <div class="row">
+          <span class="label">Service worker</span>
+          <span class="value" id="sw">waiting</span>
+        </div>
+        <div class="row">
+          <span class="label">Permission</span>
+          <span class="value" id="permission">unknown</span>
+        </div>
+        <div class="row">
+          <span class="label">Subscription</span>
+          <span class="value" id="subscription">none</span>
+        </div>
+        <div class="row">
+          <span class="label">Dispatch</span>
+          <span class="value" id="dispatch">not sent</span>
+        </div>
+        <div class="row">
+          <span class="label">Push received</span>
+          <span class="value" id="received">not yet</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <script>
+      const runButton = document.querySelector("#run");
+      const sendButton = document.querySelector("#send");
+      const logEl = document.querySelector("#log");
+      const fields = {
+        sw: document.querySelector("#sw"),
+        permission: document.querySelector("#permission"),
+        subscription: document.querySelector("#subscription"),
+        dispatch: document.querySelector("#dispatch"),
+        received: document.querySelector("#received"),
+      };
+
+      runButton.addEventListener("click", run);
+      sendButton.addEventListener("click", sendAgain);
+      navigator.serviceWorker?.addEventListener("message", (event) => {
+        if (event.data?.type === "push-received") {
+          fields.received.textContent = new Date().toLocaleTimeString();
+          log("Service worker received push", event.data.payload);
+        }
+      });
+
+      updatePermission();
+
+      async function run() {
+        runButton.disabled = true;
+        try {
+          assertPushSupport();
+          const registration = await navigator.serviceWorker.register("/sw.js", {
+            scope: "/",
+          });
+          fields.sw.textContent = "registered";
+          log("Service worker registered");
+
+          const permission = await Notification.requestPermission();
+          updatePermission();
+          if (permission !== "granted") {
+            throw new Error("Notification permission was not granted");
+          }
+
+          const { publicKey } = await fetchJson("/vapid-public-key");
+          let subscription = await registration.pushManager.getSubscription();
+          if (!subscription) {
+            subscription = await registration.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: base64UrlToUint8Array(publicKey),
+            });
+          }
+          fields.subscription.textContent = "created";
+          log("Browser subscription", subscription.toJSON());
+
+          const result = await postJson("/subscription", subscription.toJSON());
+          fields.dispatch.textContent = result.ok ? "accepted" : "failed";
+          log("Sockudo dispatch result", result);
+          sendButton.disabled = !result.ok;
+        } catch (error) {
+          fields.dispatch.textContent = "failed";
+          log("Error", error.message || String(error));
+        } finally {
+          runButton.disabled = false;
+        }
+      }
+
+      async function sendAgain() {
+        sendButton.disabled = true;
+        try {
+          const result = await postJson("/send", {});
+          fields.dispatch.textContent = result.ok ? "accepted" : "failed";
+          log("Sockudo dispatch result", result);
+        } catch (error) {
+          fields.dispatch.textContent = "failed";
+          log("Error", error.message || String(error));
+        } finally {
+          sendButton.disabled = false;
+        }
+      }
+
+      function assertPushSupport() {
+        if (!("serviceWorker" in navigator)) {
+          throw new Error("Service workers are not supported in this browser");
+        }
+        if (!("PushManager" in window)) {
+          throw new Error("Push API is not supported in this browser");
+        }
+        if (!("Notification" in window)) {
+          throw new Error("Notifications are not supported in this browser");
+        }
+      }
+
+      function updatePermission() {
+        fields.permission.textContent =
+          "Notification" in window ? Notification.permission : "unsupported";
+      }
+
+      async function fetchJson(path) {
+        const response = await fetch(path);
+        if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+        return response.json();
+      }
+
+      async function postJson(path, body) {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || `${path} returned ${response.status}`);
+        }
+        return data;
+      }
+
+      function log(label, value = "") {
+        const line =
+          typeof value === "string"
+            ? `${label}: ${value}`
+            : `${label}:\n${JSON.stringify(value, null, 2)}`;
+        logEl.textContent = `${new Date().toLocaleTimeString()} ${line}\n\n${logEl.textContent}`;
+      }
+
+      function base64UrlToUint8Array(value) {
+        const padding = "=".repeat((4 - (value.length % 4)) % 4);
+        const base64 = (value + padding).replaceAll("-", "+").replaceAll("_", "/");
+        const raw = atob(base64);
+        const output = new Uint8Array(raw.length);
+        for (let index = 0; index < raw.length; index += 1) {
+          output[index] = raw.charCodeAt(index);
+        }
+        return output;
+      }
+    </script>
+  </body>
+</html>

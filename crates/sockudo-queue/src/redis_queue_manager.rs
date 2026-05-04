@@ -108,6 +108,9 @@ impl RedisQueueManager {
                     }
                     Ok(None) => continue,
                     Err(e) => {
+                        if e.to_string().contains("timed out") {
+                            continue;
+                        }
                         error!(
                             "{}",
                             format!(

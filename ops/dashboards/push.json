@@ -1,0 +1,441 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "Push SLOs",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum(rate(sockudo_push_publish_acceptance_duration_seconds_bucket{app=~\"$app\"}[5m])) by (le))",
+          "refId": "A"
+        }
+      ],
+      "title": "Acceptance p99",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum(rate(sockudo_push_dispatch_duration_seconds_bucket{provider=~\"$provider\",app=~\"$app\"}[5m])) by (le))",
+          "refId": "A"
+        }
+      ],
+      "title": "Dispatch p99",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
+      "id": 3,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sockudo_push_publish_log_lag_seconds",
+          "refId": "A"
+        }
+      ],
+      "title": "Publish Log Lag",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
+      "id": 4,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider) (sockudo_push_circuit_breaker_state{provider=~\"$provider\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "Circuit Breakers Open",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 101,
+      "panels": [],
+      "title": "Admission And Planning",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "id": 5,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (result) (rate(sockudo_push_publish_accepted_total{app=~\"$app\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(sockudo_push_quota_acceptance_rejections_total{app=~\"$app\"}[5m]))",
+          "legendFormat": "quota_rejected",
+          "refId": "B"
+        }
+      ],
+      "title": "Publish Acceptance Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "id": 6,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum(rate(sockudo_push_planner_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "planner p99",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum(rate(sockudo_push_fanout_size_bucket{app=~\"$app\"}[5m])) by (le))",
+          "legendFormat": "fanout p99",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(sockudo_push_channel_publish_total[5m]))",
+          "legendFormat": "channel publishes",
+          "refId": "C"
+        }
+      ],
+      "title": "Planner And Fanout",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 102,
+      "panels": [],
+      "title": "Dispatch And Providers",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "id": 7,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,status) (rate(sockudo_push_dispatched_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} {{status}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider) (sockudo_push_dispatch_inflight{provider=~\"$provider\",app=~\"$app\"})",
+          "legendFormat": "{{provider}} inflight",
+          "refId": "B"
+        }
+      ],
+      "title": "Dispatch Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "id": 8,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider) (rate(sockudo_push_delivery_jobs_emitted_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} emitted",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (provider) (sockudo_push_delivery_jobs_lag_seconds{provider=~\"$provider\"})",
+          "legendFormat": "{{provider}} lag",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider) (sockudo_push_worker_pool_busy{provider=~\"$provider\"}) / clamp_min(sum by (provider) (sockudo_push_worker_pool_size{provider=~\"$provider\"}), 1)",
+          "legendFormat": "{{provider}} busy ratio",
+          "refId": "C"
+        }
+      ],
+      "title": "Delivery Queues And Workers",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "id": 103,
+      "panels": [],
+      "title": "Fairness And Backpressure",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "id": 9,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,app) (rate(sockudo_push_wfq_dispatched_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} {{app}} dispatched",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (provider,app) (sockudo_push_wfq_starvation_seconds{provider=~\"$provider\",app=~\"$app\"})",
+          "legendFormat": "{{provider}} {{app}} starvation",
+          "refId": "B"
+        }
+      ],
+      "title": "Weighted Fair Queueing",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "id": 10,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,tenant) (rate(sockudo_push_rate_limiter_throttled_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} {{tenant}} throttled",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (app) (rate(sockudo_push_quota_delivery_rejections_total{app=~\"$app\"}[5m]))",
+          "legendFormat": "{{app}} delivery quota",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (app) (sockudo_push_quota_consumed_acceptance{app=~\"$app\"})",
+          "legendFormat": "{{app}} acceptance quota",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (app) (sockudo_push_quota_consumed_delivery{app=~\"$app\"})",
+          "legendFormat": "{{app}} delivery consumed",
+          "refId": "D"
+        }
+      ],
+      "title": "Throttling And Quotas",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "id": 104,
+      "panels": [],
+      "title": "Devices And Feedback",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "id": 11,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (state) (sockudo_push_devices_total{app=~\"$app\"})",
+          "legendFormat": "{{state}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (from,to) (rate(sockudo_push_device_state_transitions_total{app=~\"$app\"}[5m]))",
+          "legendFormat": "{{from}} -> {{to}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Device State",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "id": 12,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider) (rate(sockudo_push_token_invalidations_total{provider=~\"$provider\",app=~\"$app\"}[5m]))",
+          "legendFormat": "{{provider}} invalidated",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status) (rate(sockudo_push_delivery_status_total{app=~\"$app\"}[5m]))",
+          "legendFormat": "{{status}}",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(sockudo_push_duplicate_suppressed_total[5m]))",
+          "legendFormat": "duplicates suppressed",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (app) (rate(sockudo_push_stale_devices_removed_total{app=~\"$app\"}[5m]))",
+          "legendFormat": "{{app}} stale removed",
+          "refId": "D"
+        }
+      ],
+      "title": "Feedback And Cleanup",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
+      "id": 105,
+      "panels": [],
+      "title": "Scheduling And Provider Capacity",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "id": 13,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status) (sockudo_push_scheduled_jobs_total)",
+          "legendFormat": "{{status}} scheduled",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sockudo_push_scheduler_lag_seconds",
+          "legendFormat": "scheduler lag",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (app) (rate(sockudo_push_rate_dropped_total{app=~\"$app\"}[5m]))",
+          "legendFormat": "{{app}} dropped",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (app) (rate(sockudo_push_rate_queued_total{app=~\"$app\"}[5m]))",
+          "legendFormat": "{{app}} queued",
+          "refId": "D"
+        }
+      ],
+      "title": "Scheduler And Rate Queue",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "id": 14,
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,tenant) (sockudo_push_provider_connections{provider=~\"$provider\"})",
+          "legendFormat": "{{provider}} {{tenant}} connections",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,tenant) (sockudo_push_provider_streams_active{provider=~\"$provider\"})",
+          "legendFormat": "{{provider}} {{tenant}} streams",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (provider,tenant) (rate(sockudo_push_circuit_breaker_open_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} {{tenant}} opened",
+          "refId": "C"
+        }
+      ],
+      "title": "Provider Capacity And Breakers",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["sockudo", "push"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
+      {
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(sockudo_push_publish_accepted_total, app)",
+        "includeAll": true,
+        "label": "App",
+        "name": "app",
+        "query": { "query": "label_values(sockudo_push_publish_accepted_total, app)", "refId": "app" },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(sockudo_push_dispatched_total, provider)",
+        "includeAll": true,
+        "label": "Provider",
+        "name": "provider",
+        "query": { "query": "label_values(sockudo_push_dispatched_total, provider)", "refId": "provider" },
+        "refresh": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "Sockudo Push",
+  "uid": "sockudo-push",
+  "version": 1,
+  "weekStart": ""
+}
