@@ -254,22 +254,15 @@ impl HorizontalTransport for RedisTransport {
                     let Some(msg) = next_msg else {
                         break;
                     };
-                    let channel: String = msg.get_channel_name().to_string();
+                    let channel = msg.get_channel_name();
                     let payload_result: redis::RedisResult<String> = msg.get_payload();
 
                     if let Ok(payload) = payload_result {
-                        let broadcast_handler = handlers.on_broadcast.clone();
-                        let request_handler = handlers.on_request.clone();
-                        let response_handler = handlers.on_response.clone();
-                        let pub_connection_clone = pub_connection.clone();
-                        let broadcast_channel_clone = broadcast_channel.clone();
-                        let request_channel_clone = request_channel.clone();
-                        let response_channel_clone = response_channel.clone();
-                        let metrics_clone = metrics.clone();
+                        if channel == broadcast_channel.as_str() {
+                            let broadcast_handler = handlers.on_broadcast.clone();
+                            let metrics_clone = metrics.clone();
 
-                        tokio::spawn(async move {
-                            if channel == broadcast_channel_clone {
-                                // Handle broadcast message
+                            tokio::spawn(async move {
                                 if let Ok(broadcast) =
                                     sonic_rs::from_str::<BroadcastMessage>(&payload)
                                 {
@@ -277,8 +270,14 @@ impl HorizontalTransport for RedisTransport {
                                 } else if let Some(metrics) = metrics_clone.get() {
                                     metrics.mark_horizontal_transport_message_dropped("redis");
                                 }
-                            } else if channel == request_channel_clone {
-                                // Handle request message
+                            });
+                        } else if channel == request_channel.as_str() {
+                            let request_handler = handlers.on_request.clone();
+                            let pub_connection_clone = pub_connection.clone();
+                            let response_channel_clone = response_channel.clone();
+                            let metrics_clone = metrics.clone();
+
+                            tokio::spawn(async move {
                                 if let Ok(request) = sonic_rs::from_str::<RequestBody>(&payload) {
                                     let response_result = request_handler(request).await;
 
@@ -296,8 +295,12 @@ impl HorizontalTransport for RedisTransport {
                                 } else if let Some(metrics) = metrics_clone.get() {
                                     metrics.mark_horizontal_transport_message_dropped("redis");
                                 }
-                            } else if channel == response_channel_clone {
-                                // Handle response message
+                            });
+                        } else if channel == response_channel.as_str() {
+                            let response_handler = handlers.on_response.clone();
+                            let metrics_clone = metrics.clone();
+
+                            tokio::spawn(async move {
                                 if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
                                     response_handler(response).await;
                                 } else {
@@ -306,8 +309,8 @@ impl HorizontalTransport for RedisTransport {
                                     }
                                     warn!("Failed to parse response message: {}", payload);
                                 }
-                            }
-                        });
+                            });
+                        }
                     } else {
                         // Error getting payload - connection might be broken
                         warn!("Error getting message payload: {:?}", payload_result);

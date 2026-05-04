@@ -1,0 +1,59 @@
+[package]
+name = "sockudo-push"
+description = "Provider-independent push notification domain model for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[features]
+default = ["memory"]
+memory = []
+monolith = []
+push-fcm = ["dep:reqwest"]
+push-apns = ["dep:reqwest"]
+push-webpush = ["dep:reqwest", "dep:web-push-native"]
+push-hms = ["dep:reqwest"]
+push-wns = ["dep:reqwest"]
+postgres = ["dep:sqlx"]
+mysql = ["dep:sqlx"]
+dynamodb = ["dep:aws-sdk-dynamodb"]
+surrealdb = ["dep:surrealdb", "dep:surrealdb-types"]
+scylladb = ["dep:scylla"]
+redis = []
+redis-cluster = ["redis"]
+nats = []
+pulsar = []
+rabbitmq = []
+google-pubsub = []
+kafka = []
+iggy = []
+sqs = []
+sns = []
+
+[[example]]
+name = "webpush_send"
+required-features = ["push-webpush"]
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true, optional = true }
+aws-sdk-dynamodb = { workspace = true, optional = true }
+scylla = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true, optional = true }
+surrealdb = { workspace = true, optional = true }
+surrealdb-types = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+web-push-native = { workspace = true, optional = true }
