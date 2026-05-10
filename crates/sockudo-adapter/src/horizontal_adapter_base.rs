@@ -1267,6 +1267,41 @@ where
         Ok(members)
     }
 
+    async fn get_local_channel_members(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HashMap<String, PresenceMemberInfo>> {
+        let mut members = self
+            .local_adapter
+            .get_channel_members(app_id, channel)
+            .await?;
+
+        {
+            let registry = self.horizontal.cluster_presence_registry.read().await;
+            for (node_id, node_data) in registry.iter() {
+                if node_id == &self.node_id {
+                    continue;
+                }
+                if let Some(channel_sockets) = node_data.get(channel) {
+                    for entry in channel_sockets.values() {
+                        if entry.app_id != app_id {
+                            continue;
+                        }
+                        members.entry(entry.user_id.clone()).or_insert_with(|| {
+                            PresenceMemberInfo {
+                                user_id: entry.user_id.clone(),
+                                user_info: entry.user_info.clone(),
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(members)
+    }
+
     async fn get_channel_sockets(&self, app_id: &str, channel: &str) -> Result<Vec<SocketId>> {
         // Get local sockets
         let mut all_socket_ids = self

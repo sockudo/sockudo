@@ -114,6 +114,15 @@ pub trait ConnectionManager: Send + Sync {
         app_id: &str,
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>>;
+
+    async fn get_local_channel_members(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HashMap<String, PresenceMemberInfo>> {
+        self.get_channel_members(app_id, channel).await
+    }
+
     async fn get_channel_sockets(&self, app_id: &str, channel: &str) -> Result<Vec<SocketId>>;
     async fn remove_channel(&self, app_id: &str, channel: &str);
     async fn is_in_channel(

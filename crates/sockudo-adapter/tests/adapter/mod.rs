@@ -54,3 +54,6 @@ mod single_node_optimization_tests;
 
 #[cfg(test)]
 mod graceful_departure_tests;
+
+#[cfg(test)]
+mod local_channel_members_tests;
