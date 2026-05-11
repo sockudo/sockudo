@@ -175,6 +175,21 @@ pub trait ConnectionManager: Send + Sync {
         channel: &str,
         excluding_socket: Option<&SocketId>,
     ) -> Result<usize>;
+
+    /// Returns true if the user has any connections in the channel (excluding one socket).
+    async fn user_has_connections_in_channel(
+        &self,
+        user_id: &str,
+        app_id: &str,
+        channel: &str,
+        excluding_socket: Option<&SocketId>,
+    ) -> Result<bool> {
+        Ok(self
+            .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+            .await?
+            > 0)
+    }
+
     async fn get_channels_with_socket_count(&self, app_id: &str) -> Result<HashMap<String, usize>>;
 
     async fn get_sockets_count(&self, app_id: &str) -> Result<usize>;

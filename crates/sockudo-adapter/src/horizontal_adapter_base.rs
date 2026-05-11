@@ -1582,6 +1582,40 @@ where
         }
     }
 
+    async fn user_has_connections_in_channel(
+        &self,
+        user_id: &str,
+        app_id: &str,
+        channel: &str,
+        excluding_socket: Option<&SocketId>,
+    ) -> Result<bool> {
+        let local_count = self
+            .local_adapter
+            .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+            .await?;
+
+        if local_count > 0 {
+            return Ok(true);
+        }
+
+        match self
+            .send_request(
+                app_id,
+                RequestType::CountUserConnectionsInChannel,
+                Some(channel),
+                None,
+                Some(user_id),
+            )
+            .await
+        {
+            Ok(response) => Ok(response.sockets_count > 0),
+            Err(e) => {
+                error!("Failed to get remote user connections count: {}", e);
+                Ok(false)
+            }
+        }
+    }
+
     async fn get_channels_with_socket_count(&self, app_id: &str) -> Result<HashMap<String, usize>> {
         // Get local channels
         let mut channels = self
