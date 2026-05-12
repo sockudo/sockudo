@@ -1,5 +1,8 @@
-use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
+use crate::horizontal_adapter::{
+    BroadcastMessage, PresenceEntry, RequestBody, RequestType, ResponseBody, generate_request_id,
+};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
+use ahash::AHashMap;
 use async_nats::{Client as NatsClient, ConnectOptions as NatsOptions, Subject};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -16,6 +19,23 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 const NATS_SYS_SERVER_PING_SUBJECT: &str = "$SYS.REQ.SERVER.PING";
+
+#[doc(hidden)]
+pub fn build_presence_state_chunks(
+    our_data: &AHashMap<String, AHashMap<String, PresenceEntry>>,
+    chunk_size: usize,
+) -> sockudo_core::error::Result<Vec<sonic_rs::Value>> {
+    let cap = chunk_size.max(1);
+    let pairs: Vec<(&String, &AHashMap<String, PresenceEntry>)> = our_data.iter().collect();
+    pairs
+        .chunks(cap)
+        .map(|c| {
+            let chunk_map: AHashMap<&String, &AHashMap<String, PresenceEntry>> =
+                c.iter().copied().collect();
+            sonic_rs::to_value(&chunk_map).map_err(Into::into)
+        })
+        .collect()
+}
 
 /// Metrics for tracking message processing and drops
 #[derive(Debug, Default)]
@@ -355,9 +375,16 @@ impl HorizontalTransport for NatsTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to subscribe to inbox subject: {e}")))?;
 
+        // Subscribe to per-node channel
+        let node_subject = format!("{}.node.{}", self.config.prefix, handlers.node_id);
+        let mut node_subscription = client
+            .subscribe(Subject::from(node_subject.clone()))
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to subscribe to node subject: {e}")))?;
+
         info!(
-            "NATS transport listening on subjects: {}, {}, {}, {}",
-            broadcast_subject, request_subject, response_subject, inbox_subject
+            "NATS transport listening on subjects: {}, {}, {}, {}, {}",
+            broadcast_subject, request_subject, response_subject, inbox_subject, node_subject
         );
 
         // Spawn a task to handle broadcast messages
@@ -532,6 +559,48 @@ impl HorizontalTransport for NatsTransport {
             warn!("Inbox subscription ended unexpectedly");
         });
 
+        // Spawn a task to handle per-node targeted requests
+        let node_request_handler = handlers.on_request.clone();
+        let metrics_node = self.metrics.clone();
+        let metrics_driver_node = self.metrics_driver.clone();
+        let shutdown_node = self.shutdown.clone();
+        let running_node = self.is_running.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if !running_node.load(Ordering::Relaxed) {
+                    break;
+                }
+                let msg = tokio::select! {
+                    _ = shutdown_node.notified() => break,
+                    msg = node_subscription.next() => msg,
+                };
+                let Some(msg) = msg else {
+                    break;
+                };
+                metrics_node.record_received();
+                match sonic_rs::from_slice::<RequestBody>(&msg.payload) {
+                    Ok(request) => {
+                        let _ = node_request_handler(request).await;
+                        metrics_node.record_processed();
+                    }
+                    Err(e) => {
+                        metrics_node.record_parse_error();
+                        if let Some(m) = metrics_driver_node.get() {
+                            m.mark_horizontal_transport_message_dropped("nats");
+                        }
+                        let preview =
+                            String::from_utf8_lossy(&msg.payload[..msg.payload.len().min(200)]);
+                        error!(
+                            "Failed to parse node-targeted request: {} - preview: {}",
+                            e, preview
+                        );
+                    }
+                }
+            }
+            warn!("Node subscription ended unexpectedly");
+        });
+
         Ok(())
     }
 
@@ -601,6 +670,100 @@ impl HorizontalTransport for NatsTransport {
         debug!(
             "Published request {} with reply_to via NATS",
             request.request_id
+        );
+        Ok(())
+    }
+
+    async fn publish_request_to_node(
+        &self,
+        request: &RequestBody,
+        target_node_id: &str,
+    ) -> Result<()> {
+        let target_subject = format!("{}.node.{}", self.config.prefix, target_node_id);
+        let request_data = sonic_rs::to_vec(request)
+            .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        self.client
+            .publish(Subject::from(target_subject), request_data.into())
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to publish to node {target_node_id}: {e}"))
+            })?;
+        debug!(
+            "Published request {} to node {} via NATS",
+            request.request_id, target_node_id
+        );
+        Ok(())
+    }
+
+    async fn sync_presence_state_to_node(
+        &self,
+        horizontal: &Arc<crate::horizontal_adapter::HorizontalAdapter>,
+        target_node_id: &str,
+    ) -> Result<()> {
+        use crate::horizontal_transport::send_presence_state_to_node;
+
+        let Some(chunk_size) = self.config.presence_sync_chunk_size else {
+            return send_presence_state_to_node(self, horizontal, target_node_id).await;
+        };
+
+        let (our_node_id, serialized_chunks, total_channels) = {
+            let registry = horizontal.cluster_presence_registry.read().await;
+            let Some(our_data) = registry.get(&horizontal.node_id) else {
+                debug!("No presence data to send to new node: {}", target_node_id);
+                return Ok(());
+            };
+            if our_data.is_empty() {
+                debug!("Empty presence data for new node: {}", target_node_id);
+                return Ok(());
+            }
+            let total = our_data.len();
+            let chunks = build_presence_state_chunks(our_data, chunk_size)?;
+            (horizontal.node_id.clone(), chunks, total)
+        };
+
+        let total_chunks = serialized_chunks.len();
+        debug!(
+            "Sending presence state to node {} in {} chunk(s) ({} channels)",
+            target_node_id, total_chunks, total_channels
+        );
+
+        for (i, chunk_value) in serialized_chunks.into_iter().enumerate() {
+            let sync_request = RequestBody {
+                request_id: generate_request_id(),
+                node_id: our_node_id.clone(),
+                app_id: "cluster".to_string(),
+                request_type: RequestType::PresenceStateSync,
+                target_node_id: Some(target_node_id.to_string()),
+                user_info: Some(chunk_value),
+                channel: None,
+                socket_id: None,
+                user_id: None,
+                timestamp: None,
+                dead_node_id: None,
+                channels: None,
+            };
+
+            if let Err(e) = self
+                .publish_request_to_node(&sync_request, target_node_id)
+                .await
+            {
+                warn!(
+                    "Failed to publish presence chunk {}/{} to node {}: {}",
+                    i + 1,
+                    total_chunks,
+                    target_node_id,
+                    e
+                );
+            }
+        }
+
+        if let Err(e) = self.client.flush().await {
+            warn!("Failed to flush NATS client after chunked sync: {}", e);
+        }
+
+        info!(
+            "Sent presence state to new node: {} ({} channels in {} chunk(s))",
+            target_node_id, total_channels, total_chunks
         );
         Ok(())
     }

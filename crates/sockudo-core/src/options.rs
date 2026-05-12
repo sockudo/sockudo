@@ -547,6 +547,7 @@ pub struct NatsAdapterConfig {
     pub subscription_capacity: Option<usize>,
     pub client_capacity: Option<usize>,
     pub max_reconnects: Option<usize>,
+    pub presence_sync_chunk_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1908,6 +1909,7 @@ impl Default for NatsAdapterConfig {
             subscription_capacity: None,
             client_capacity: None,
             max_reconnects: None,
+            presence_sync_chunk_size: None,
         }
     }
 }
@@ -2829,6 +2831,9 @@ impl ServerOptions {
         if let Some(v) = parse_env_optional::<usize>("NATS_MAX_RECONNECTS") {
             self.adapter.nats.max_reconnects = Some(v);
         }
+        if let Some(v) = parse_env_optional::<usize>("NATS_PRESENCE_SYNC_CHUNK_SIZE") {
+            self.adapter.nats.presence_sync_chunk_size = Some(v);
+        }
 
         // --- Pulsar Adapter ---
         if let Ok(url) = std::env::var("PULSAR_URL") {
@@ -3514,6 +3519,10 @@ impl ServerOptions {
         }
         if self.annotations.enabled && !self.versioned_messages.enabled {
             return Err("annotations require versioned_messages.enabled".to_string());
+        }
+
+        if self.adapter.nats.presence_sync_chunk_size == Some(0) {
+            return Err("nats.presence_sync_chunk_size must be > 0 when set".to_string());
         }
 
         Ok(())
