@@ -339,6 +339,7 @@ impl AdapterFactory {
                     subscription_capacity: config.nats.subscription_capacity,
                     client_capacity: config.nats.client_capacity,
                     max_reconnects: config.nats.max_reconnects,
+                    presence_sync_chunk_size: config.nats.presence_sync_chunk_size,
                 };
                 match NatsAdapter::new(nats_cfg).await {
                     Ok(mut adapter) => {
