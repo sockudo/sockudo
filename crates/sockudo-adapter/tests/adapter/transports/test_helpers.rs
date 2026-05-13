@@ -246,6 +246,7 @@ pub fn create_test_handlers(
     let response_collector = collector.clone();
 
     sockudo_adapter::horizontal_transport::TransportHandlers {
+        node_id: "test-node".to_string(),
         on_broadcast: Arc::new(move |msg| {
             let collector = broadcast_collector.clone();
             Box::pin(async move {
