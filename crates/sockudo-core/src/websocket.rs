@@ -827,7 +827,9 @@ impl MessageSender {
     pub fn send(&self, message: Message) -> Result<()> {
         self.sender.try_send(message).map_err(|e| match e {
             TrySendError::Full(_) => Error::BufferFull("Message buffer is full".into()),
-            TrySendError::Disconnected(_) => Error::Connection("Message channel closed".into()),
+            TrySendError::Disconnected(_) => {
+                Error::ConnectionClosed("Message channel closed".into())
+            }
         })
     }
 

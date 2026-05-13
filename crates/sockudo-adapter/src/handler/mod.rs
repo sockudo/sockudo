@@ -554,11 +554,15 @@ impl ConnectionHandler {
                         .handle_message(message, socket_id, app_config.clone())
                         .await
                     {
-                        error!("Message handling error for socket {}: {}", socket_id, e);
                         if e.is_fatal() {
+                            error!("Message handling error for socket {}: {}", socket_id, e);
                             self.handle_fatal_error(socket_id, app_config, &e).await?;
                             break;
+                        } else if matches!(&e, Error::ConnectionClosed(_)) {
+                            debug!("Message handling error for socket {}: {}", socket_id, e);
+                            break;
                         } else {
+                            error!("Message handling error for socket {}: {}", socket_id, e);
                             // Send pusher:error for non-fatal errors
                             if let Err(send_err) =
                                 self.send_error(&app_config.id, socket_id, &e, None).await
