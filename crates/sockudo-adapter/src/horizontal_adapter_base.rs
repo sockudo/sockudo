@@ -1,6 +1,7 @@
 use ahash::AHashMap as HashMap;
 use std::any::Any;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,6 +30,9 @@ use sockudo_ws::axum_integration::WebSocketWriter;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// Maximum hash-based spread (ms) when staggering presence-state sync on new-node detection
+const PRESENCE_SYNC_STAGGER_MAX_MS: u64 = 5_000;
 
 /// Generic base adapter that handles all common horizontal scaling logic
 pub struct HorizontalAdapterBase<T: HorizontalTransport> {
@@ -517,6 +521,7 @@ where
             .load(std::sync::atomic::Ordering::Relaxed);
 
         let handlers = TransportHandlers {
+            node_id: self.node_id.clone(),
             on_broadcast: Arc::new(move |broadcast| {
                 let horizontal_clone = broadcast_horizontal.clone();
                 let cache_manager_clone = broadcast_cache_manager.clone();
@@ -727,20 +732,23 @@ where
                         let new_node_id = request.node_id.clone();
                         let horizontal_clone_for_task = horizontal_clone.clone();
                         let transport_for_task = transport_clone.clone();
+                        let node_id = horizontal_clone.node_id.clone();
 
                         tokio::spawn(async move {
-                            // Small delay to let the new node finish initialization
-                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            let mut hasher = std::hash::DefaultHasher::new();
+                            node_id.hash(&mut hasher);
+                            let stagger_ms = hasher.finish() % PRESENCE_SYNC_STAGGER_MAX_MS;
+                            tokio::time::sleep(Duration::from_millis(100 + stagger_ms)).await;
 
-                            if let Err(e) = send_presence_state_to_node(
-                                &horizontal_clone_for_task,
-                                &transport_for_task,
-                                &new_node_id,
-                            )
-                            .await
+                            if let Err(e) = transport_for_task
+                                .sync_presence_state_to_node(
+                                    &horizontal_clone_for_task,
+                                    &new_node_id,
+                                )
+                                .await
                             {
                                 error!(
-                                    "Failed to send presence state to new node {}: {}",
+                                    "Failed to sync presence state to new node {}: {}",
                                     new_node_id, e
                                 );
                             }
@@ -1827,57 +1835,4 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             Ok(())
         }
     }
-}
-
-/// Helper function to send presence state to a new node
-async fn send_presence_state_to_node<T: HorizontalTransport>(
-    horizontal: &Arc<HorizontalAdapter>,
-    transport: &T,
-    target_node_id: &str,
-) -> Result<()> {
-    // Get our presence data
-    let (our_node_id, data_to_send) = {
-        let registry = horizontal.cluster_presence_registry.read().await;
-
-        // Get only our node's data
-        if let Some(our_presence_data) = registry.get(&horizontal.node_id) {
-            // Clone the data to avoid holding the lock
-            (horizontal.node_id.clone(), Some(our_presence_data.clone()))
-        } else {
-            (horizontal.node_id.clone(), None)
-        }
-    };
-
-    if let Some(data_to_send) = data_to_send {
-        // Serialize the presence data
-        let serialized_data = sonic_rs::to_value(&data_to_send)?;
-
-        let sync_request = RequestBody {
-            request_id: generate_request_id(),
-            node_id: our_node_id,
-            app_id: "cluster".to_string(),
-            request_type: RequestType::PresenceStateSync,
-            target_node_id: Some(target_node_id.to_string()),
-            user_info: Some(serialized_data), // Reuse this field for bulk data
-            channel: None,
-            socket_id: None,
-            user_id: None,
-            timestamp: None,
-            dead_node_id: None,
-            channels: None,
-        };
-
-        // This broadcasts but only target_node will process it
-        transport.publish_request(&sync_request).await?;
-
-        info!(
-            "Sent presence state to new node: {} ({} channels)",
-            target_node_id,
-            data_to_send.len()
-        );
-    } else {
-        debug!("No presence data to send to new node: {}", target_node_id);
-    }
-
-    Ok(())
 }
