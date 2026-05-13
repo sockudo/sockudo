@@ -630,3 +630,141 @@ async fn test_concurrent_operations() -> Result<()> {
 
     Ok(())
 }
+
+/// Verifies publish_request_to_node delivers ONLY to the target node's
+/// per-node subject, not to the shared requests subject.
+/// Requires running NATS server.
+#[tokio::test]
+#[ignore]
+async fn test_nats_publish_request_to_node_delivers_to_target_only() {
+    let config = get_nats_config();
+    let transport_a = NatsTransport::new(config.clone()).await.unwrap();
+    let transport_b = NatsTransport::new(config.clone()).await.unwrap();
+
+    let collector_a = MessageCollector::new();
+    let collector_b = MessageCollector::new();
+
+    let mut handlers_a = create_test_handlers(collector_a.clone());
+    handlers_a.node_id = "node-a".to_string();
+    transport_a.start_listeners(handlers_a).await.unwrap();
+
+    let mut handlers_b = create_test_handlers(collector_b.clone());
+    handlers_b.node_id = "node-b".to_string();
+    transport_b.start_listeners(handlers_b).await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    let request = create_test_request();
+    let request_id = request.request_id.clone();
+    transport_a
+        .publish_request_to_node(&request, "node-b")
+        .await
+        .unwrap();
+
+    let received = collector_b.wait_for_request(500).await;
+    assert!(received.is_some(), "Node B should receive the request");
+    assert_eq!(received.unwrap().request_id, request_id);
+
+    let a_requests = collector_a.get_requests().await;
+    assert!(
+        a_requests.is_empty(),
+        "Node A should NOT receive it, got {}",
+        a_requests.len()
+    );
+}
+
+#[cfg(test)]
+mod chunk_builder_tests {
+    use ahash::AHashMap;
+    use sockudo_adapter::horizontal_adapter::PresenceEntry;
+    use sockudo_adapter::transports::nats_transport::build_presence_state_chunks;
+
+    fn make_entry(socket_id: &str, user_id: &str) -> PresenceEntry {
+        PresenceEntry {
+            user_info: None,
+            node_id: "test-node".to_string(),
+            app_id: "test-app".to_string(),
+            user_id: user_id.to_string(),
+            socket_id: socket_id.to_string(),
+            sequence_number: 0,
+        }
+    }
+
+    fn build_registry(
+        channels: usize,
+        sockets_per: usize,
+    ) -> AHashMap<String, AHashMap<String, PresenceEntry>> {
+        let mut out = AHashMap::with_capacity(channels);
+        for c in 0..channels {
+            let mut sockets = AHashMap::with_capacity(sockets_per);
+            for s in 0..sockets_per {
+                let sid = format!("socket-{c}-{s}");
+                sockets.insert(sid.clone(), make_entry(&sid, &format!("user-{s}")));
+            }
+            out.insert(format!("channel-{c}"), sockets);
+        }
+        out
+    }
+
+    fn channels_in_chunk(chunk: &sonic_rs::Value) -> usize {
+        let bytes = sonic_rs::to_vec(chunk).unwrap();
+        let map: AHashMap<String, sonic_rs::Value> = sonic_rs::from_slice(&bytes).unwrap();
+        map.len()
+    }
+
+    #[test]
+    fn chunks_by_channel_count() {
+        let reg = build_registry(250, 5);
+        let chunks = build_presence_state_chunks(&reg, 100).unwrap();
+        assert_eq!(chunks.len(), 3, "250 channels / 100 = 3 chunks");
+        let total: usize = chunks.iter().map(channels_in_chunk).sum();
+        assert_eq!(total, 250, "all channels accounted for");
+    }
+
+    #[test]
+    fn exact_boundary_no_trailing_empty_chunk() {
+        let reg = build_registry(200, 1);
+        let chunks = build_presence_state_chunks(&reg, 100).unwrap();
+        assert_eq!(chunks.len(), 2, "200/100 = exactly 2, no trailing empty");
+        for c in &chunks {
+            assert_eq!(channels_in_chunk(c), 100);
+        }
+    }
+
+    #[test]
+    fn single_chunk_under_1mb() {
+        let mut reg = build_registry(100, 5);
+        for sockets in reg.values_mut() {
+            for entry in sockets.values_mut() {
+                entry.user_info = Some(sonic_rs::json!({
+                    "name": "Test User Realistic",
+                    "email": "user@example.com",
+                    "tier": "premium",
+                }));
+            }
+        }
+        let chunks = build_presence_state_chunks(&reg, 100).unwrap();
+        assert_eq!(chunks.len(), 1);
+        let bytes = sonic_rs::to_vec(&chunks[0]).unwrap();
+        assert!(
+            bytes.len() < 1_000_000,
+            "chunk must fit under 1MB NATS default, got {}",
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn empty_registry_zero_chunks() {
+        let reg = AHashMap::new();
+        let chunks = build_presence_state_chunks(&reg, 100).unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn single_channel_one_chunk() {
+        let reg = build_registry(1, 3);
+        let chunks = build_presence_state_chunks(&reg, 100).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(channels_in_chunk(&chunks[0]), 1);
+    }
+}
