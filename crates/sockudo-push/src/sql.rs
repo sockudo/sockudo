@@ -8,11 +8,12 @@ use crate::domain::{
     PushProviderKind, ShardJob,
 };
 use crate::storage::{
-    DeviceRegistrationChange, DeviceRegistrationOutcome, IdempotencyRecord,
-    OperatorInvalidationEvent, Page, PushCredentialStore, PushDeliveryEventStore, PushDeviceStore,
-    PushFanoutShardStore, PushIdempotencyStore, PushOperatorEventStore, PushPublishLogStore,
-    PushPublishStatusStore, PushScheduleStore, PushSchedulerLockStore, PushStorageError,
-    PushStorageResult, PushSubscriptionStore, PushTemplateStore, ScheduledPushJob, SchedulerLock,
+    DeviceRegistrationChange, DeviceRegistrationOutcome, EXPECTED_PUSH_SCHEMA_VERSION,
+    IdempotencyRecord, OperatorInvalidationEvent, Page, PushCredentialStore,
+    PushDeliveryEventStore, PushDeviceStore, PushFanoutShardStore, PushIdempotencyStore,
+    PushOperatorEventStore, PushPublishLogStore, PushPublishStatusStore, PushScheduleStore,
+    PushSchedulerLockStore, PushStorageError, PushStorageResult, PushSubscriptionStore,
+    PushTemplateStore, ScheduledPushJob, SchedulerLock,
 };
 
 #[cfg(feature = "postgres")]
@@ -26,6 +27,16 @@ impl PostgresPushStore {
     pub fn new(pool: sqlx::PgPool) -> Self {
         Self { pool }
     }
+
+    pub async fn assert_schema_version(&self) -> PushStorageResult<()> {
+        let version: i32 = sqlx::query_scalar(
+            "SELECT version FROM push_schema_version ORDER BY version DESC LIMIT 1",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(sql_error)?;
+        assert_expected_schema_version(version as u32)
+    }
 }
 
 #[cfg(feature = "mysql")]
@@ -38,6 +49,16 @@ pub struct MySqlPushStore {
 impl MySqlPushStore {
     pub fn new(pool: sqlx::MySqlPool) -> Self {
         Self { pool }
+    }
+
+    pub async fn assert_schema_version(&self) -> PushStorageResult<()> {
+        let version: u32 = sqlx::query_scalar(
+            "SELECT version FROM push_schema_version ORDER BY version DESC LIMIT 1",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(sql_error)?;
+        assert_expected_schema_version(version)
     }
 }
 
@@ -81,18 +102,20 @@ impl PushDeviceStore for PostgresPushStore {
         app_id: &str,
         client_id: &str,
     ) -> PushStorageResult<u64> {
+        let mut tx = self.pool.begin().await.map_err(sql_error)?;
         sqlx::query("DELETE FROM push_channel_subscribers WHERE app_id = $1 AND client_id = $2")
             .bind(app_id)
             .bind(client_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(sql_error)?;
         let result = sqlx::query("DELETE FROM push_devices WHERE app_id = $1 AND client_id = $2")
             .bind(app_id)
             .bind(client_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(sql_error)?;
+        tx.commit().await.map_err(sql_error)?;
         Ok(result.rows_affected())
     }
 
@@ -147,18 +170,20 @@ impl PushDeviceStore for MySqlPushStore {
         app_id: &str,
         client_id: &str,
     ) -> PushStorageResult<u64> {
+        let mut tx = self.pool.begin().await.map_err(sql_error)?;
         sqlx::query("DELETE FROM push_channel_subscribers WHERE app_id = ? AND client_id = ?")
             .bind(app_id)
             .bind(client_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(sql_error)?;
         let result = sqlx::query("DELETE FROM push_devices WHERE app_id = ? AND client_id = ?")
             .bind(app_id)
             .bind(client_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(sql_error)?;
+        tx.commit().await.map_err(sql_error)?;
         Ok(result.rows_affected())
     }
 
@@ -493,11 +518,9 @@ macro_rules! impl_common_sql_traits {
 
             async fn get_template(&self, app_id: &str, template_id: &str) -> PushStorageResult<Option<NotificationTemplate>> {
                 let q = sql_query(format!(
-                    "SELECT app_id, template_id, default_locale, {1} AS locales_json, {1} AS provider_overrides_json FROM push_notification_templates WHERE app_id = {0} AND template_id = {0}",
-                    $bind, $json_text
-                )
-                .replacen($json_text, "locales_json", 1)
-                .replacen($json_text, "provider_overrides_json", 1), $postgres);
+                    "SELECT app_id, template_id, default_locale, {1} AS locales_json, {2} AS provider_overrides_json FROM push_notification_templates WHERE app_id = {0} AND template_id = {0}",
+                    $bind, json_text_expr("locales_json", $json_text), json_text_expr("provider_overrides_json", $json_text)
+                ), $postgres);
                 sqlx::query(&q)
                     .bind(app_id)
                     .bind(template_id)
@@ -587,13 +610,15 @@ macro_rules! impl_common_sql_traits {
 
             async fn list_publish_log_events(&self, app_id: &str, limit: usize, cursor: Option<PushCursor>) -> PushStorageResult<Page<PublishLogEvent>> {
                 let start = cursor_position(cursor, app_id)?.unwrap_or_default();
+                let (cursor_ms, cursor_event_id) = parse_ts_id_cursor(&start);
                 let q = sql_query(format!(
-                    "SELECT occurred_at_ms, event_id, {1} AS event_json FROM push_publish_log WHERE app_id = {0} AND {2} > {0} ORDER BY occurred_at_ms, event_id LIMIT {0}",
-                    $bind, json_text_expr("event_json", $json_text), cursor_expr("occurred_at_ms", "event_id", $postgres)
+                    "SELECT occurred_at_ms, event_id, {1} AS event_json FROM push_publish_log WHERE app_id = {0} AND (occurred_at_ms, event_id) > ({0}, {0}) ORDER BY occurred_at_ms, event_id LIMIT {0}",
+                    $bind, json_text_expr("event_json", $json_text)
                 ), $postgres);
                 let rows = sqlx::query(&q)
                     .bind(app_id)
-                    .bind(start)
+                    .bind(cursor_ms)
+                    .bind(cursor_event_id)
                     .bind(limit_plus_one(limit))
                     .fetch_all(&self.$pool)
                     .await
@@ -677,16 +702,28 @@ macro_rules! impl_common_sql_traits {
                 delete_result(sqlx::query(&q).bind(app_id).bind(publish_id).execute(&self.$pool).await.map_err(sql_error)?.rows_affected())
             }
 
+            async fn list_scheduled_apps(&self) -> PushStorageResult<Vec<String>> {
+                let rows = sqlx::query("SELECT DISTINCT app_id FROM push_scheduled_jobs WHERE state = 'pending' ORDER BY app_id")
+                    .fetch_all(&self.$pool)
+                    .await
+                    .map_err(sql_error)?;
+                rows.into_iter()
+                    .map(|row| row.try_get("app_id").map_err(sql_error))
+                    .collect()
+            }
+
             async fn list_due_scheduled_jobs(&self, app_id: &str, due_minute_ms: u64, limit: usize, cursor: Option<PushCursor>) -> PushStorageResult<Page<ScheduledPushJob>> {
                 let start = cursor_position(cursor, app_id)?.unwrap_or_default();
+                let (cursor_due_ms, cursor_publish_id) = parse_ts_id_cursor(&start);
                 let q = sql_query(format!(
-                    "SELECT app_id, publish_id, due_minute_ms, due_at_ms, {1} AS payload_json FROM push_scheduled_jobs WHERE app_id = {0} AND due_minute_ms <= {0} AND {2} > {0} ORDER BY due_at_ms, publish_id LIMIT {0}",
-                    $bind, json_text_expr("payload_json", $json_text), cursor_expr("due_at_ms", "publish_id", $postgres)
+                    "SELECT app_id, publish_id, due_minute_ms, due_at_ms, {1} AS payload_json FROM push_scheduled_jobs WHERE app_id = {0} AND due_minute_ms <= {0} AND (due_at_ms, publish_id) > ({0}, {0}) ORDER BY due_at_ms, publish_id LIMIT {0}",
+                    $bind, json_text_expr("payload_json", $json_text)
                 ), $postgres);
                 let rows = sqlx::query(&q)
                     .bind(app_id)
                     .bind(due_minute_ms as i64)
-                    .bind(start)
+                    .bind(cursor_due_ms)
+                    .bind(cursor_publish_id)
                     .bind(limit_plus_one(limit))
                     .fetch_all(&self.$pool)
                     .await
@@ -722,14 +759,16 @@ macro_rules! impl_common_sql_traits {
 
             async fn list_delivery_events(&self, app_id: &str, publish_id: &str, limit: usize, cursor: Option<PushCursor>) -> PushStorageResult<Page<DeliveryEvent>> {
                 let start = cursor_position(cursor, app_id)?.unwrap_or_default();
+                let (cursor_ms, cursor_event_id) = parse_ts_id_cursor(&start);
                 let q = sql_query(format!(
-                    "SELECT occurred_at_ms, event_id, {1} AS result_json FROM push_delivery_events WHERE app_id = {0} AND publish_id = {0} AND {2} > {0} ORDER BY occurred_at_ms, event_id LIMIT {0}",
-                    $bind, json_text_expr("result_json", $json_text), cursor_expr("occurred_at_ms", "event_id", $postgres)
+                    "SELECT occurred_at_ms, event_id, {1} AS result_json FROM push_delivery_events WHERE app_id = {0} AND publish_id = {0} AND (occurred_at_ms, event_id) > ({0}, {0}) ORDER BY occurred_at_ms, event_id LIMIT {0}",
+                    $bind, json_text_expr("result_json", $json_text)
                 ), $postgres);
                 let rows = sqlx::query(&q)
                     .bind(app_id)
                     .bind(publish_id)
-                    .bind(start)
+                    .bind(cursor_ms)
+                    .bind(cursor_event_id)
                     .bind(limit_plus_one(limit))
                     .fetch_all(&self.$pool)
                     .await
@@ -870,13 +909,15 @@ macro_rules! impl_common_sql_traits {
 
             async fn list_operator_invalidations(&self, app_id: &str, limit: usize, cursor: Option<PushCursor>) -> PushStorageResult<Page<OperatorInvalidationEvent>> {
                 let start = cursor_position(cursor, app_id)?.unwrap_or_default();
+                let (cursor_ms, cursor_event_id) = parse_ts_id_cursor(&start);
                 let q = sql_query(format!(
-                    "SELECT app_id, occurred_at_ms, event_id, subject FROM push_operator_invalidations WHERE app_id = {0} AND {1} > {0} ORDER BY occurred_at_ms, event_id LIMIT {0}",
-                    $bind, cursor_expr("occurred_at_ms", "event_id", $postgres)
+                    "SELECT app_id, occurred_at_ms, event_id, subject FROM push_operator_invalidations WHERE app_id = {0} AND (occurred_at_ms, event_id) > ({0}, {0}) ORDER BY occurred_at_ms, event_id LIMIT {0}",
+                    $bind
                 ), $postgres);
                 let rows = sqlx::query(&q)
                     .bind(app_id)
-                    .bind(start)
+                    .bind(cursor_ms)
+                    .bind(cursor_event_id)
                     .bind(limit_plus_one(limit))
                     .fetch_all(&self.$pool)
                     .await
@@ -914,10 +955,10 @@ async fn upsert_device_pg(
     device: DeviceDetails,
 ) -> PushStorageResult<DeviceRegistrationOutcome> {
     device.validate()?;
-    let existing = get_device_pg(pool, &device.app_id, &device.id).await?;
     let token_hash = device.push.recipient.token_hash();
+    let existing = get_device_pg(pool, &device.app_id, &device.id).await?;
     let now = now_ms_i64();
-    sqlx::query(
+    let row = sqlx::query(
         r#"
         INSERT INTO push_devices
             (app_id, device_id, client_id, form_factor, platform, metadata, device_secret_hash, timezone, locale, last_active_at_ms, push_state, failure_count, error_reason, transport_type, token_hash, recipient_json, credential_version, created_at_ms, updated_at_ms)
@@ -938,6 +979,22 @@ async fn upsert_device_pg(
             token_hash = EXCLUDED.token_hash,
             recipient_json = EXCLUDED.recipient_json,
             updated_at_ms = EXCLUDED.updated_at_ms
+        WHERE
+            push_devices.client_id IS DISTINCT FROM EXCLUDED.client_id OR
+            push_devices.form_factor IS DISTINCT FROM EXCLUDED.form_factor OR
+            push_devices.platform IS DISTINCT FROM EXCLUDED.platform OR
+            push_devices.metadata IS DISTINCT FROM EXCLUDED.metadata OR
+            push_devices.device_secret_hash IS DISTINCT FROM EXCLUDED.device_secret_hash OR
+            push_devices.timezone IS DISTINCT FROM EXCLUDED.timezone OR
+            push_devices.locale IS DISTINCT FROM EXCLUDED.locale OR
+            push_devices.last_active_at_ms IS DISTINCT FROM EXCLUDED.last_active_at_ms OR
+            push_devices.push_state IS DISTINCT FROM EXCLUDED.push_state OR
+            push_devices.failure_count IS DISTINCT FROM EXCLUDED.failure_count OR
+            push_devices.error_reason IS DISTINCT FROM EXCLUDED.error_reason OR
+            push_devices.transport_type IS DISTINCT FROM EXCLUDED.transport_type OR
+            push_devices.token_hash IS DISTINCT FROM EXCLUDED.token_hash OR
+            push_devices.recipient_json IS DISTINCT FROM EXCLUDED.recipient_json
+        RETURNING 1 AS touched
         "#,
     )
     .bind(&device.app_id)
@@ -958,13 +1015,15 @@ async fn upsert_device_pg(
     .bind(to_json_string(&device.push.recipient)?)
     .bind(now)
     .bind(now)
-    .execute(pool)
+    .fetch_optional(pool)
     .await
     .map_err(sql_error)?;
-    Ok(DeviceRegistrationOutcome {
-        change: registration_change(existing.as_ref(), &device),
-        token_hash,
-    })
+    let change = match row {
+        None => DeviceRegistrationChange::Unchanged,
+        Some(_) if existing.is_none() => DeviceRegistrationChange::Inserted,
+        Some(_) => DeviceRegistrationChange::Updated,
+    };
+    Ok(DeviceRegistrationOutcome { change, token_hash })
 }
 
 #[cfg(feature = "mysql")]
@@ -973,10 +1032,9 @@ async fn upsert_device_mysql(
     device: DeviceDetails,
 ) -> PushStorageResult<DeviceRegistrationOutcome> {
     device.validate()?;
-    let existing = get_device_mysql(pool, &device.app_id, &device.id).await?;
     let token_hash = device.push.recipient.token_hash();
     let now = now_ms_i64();
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         INSERT INTO push_devices
             (app_id, device_id, client_id, form_factor, platform, metadata, device_secret_hash, timezone, locale, last_active_at_ms, push_state, failure_count, error_reason, transport_type, token_hash, recipient_json, credential_version, created_at_ms, updated_at_ms)
@@ -1020,10 +1078,12 @@ async fn upsert_device_mysql(
     .execute(pool)
     .await
     .map_err(sql_error)?;
-    Ok(DeviceRegistrationOutcome {
-        change: registration_change(existing.as_ref(), &device),
-        token_hash,
-    })
+    let change = match result.rows_affected() {
+        1 => DeviceRegistrationChange::Inserted,
+        0 => DeviceRegistrationChange::Unchanged,
+        _ => DeviceRegistrationChange::Updated,
+    };
+    Ok(DeviceRegistrationOutcome { change, token_hash })
 }
 
 #[cfg(feature = "postgres")]
@@ -1163,10 +1223,14 @@ async fn list_stale_devices_pg(
     cursor: Option<PushCursor>,
 ) -> PushStorageResult<Page<DeviceDetails>> {
     let start = cursor_position(cursor, app_id)?.unwrap_or_default();
-    let rows = sqlx::query(r#"SELECT app_id, device_id, client_id, form_factor, platform, metadata::text AS metadata, device_secret_hash, timezone, locale, last_active_at_ms, push_state, failure_count, error_reason, recipient_json::text AS recipient_json FROM push_devices WHERE app_id = $1 AND (last_active_at_ms / 86400000)::text = $2 AND CONCAT(LPAD(last_active_at_ms::text, 20, '0'), ':', device_id) > $3 ORDER BY last_active_at_ms, device_id LIMIT $4"#)
+    let (start_ms, end_ms) = day_bucket_range(day_bucket)?;
+    let (cursor_ms, cursor_device_id) = parse_ts_id_cursor(&start);
+    let rows = sqlx::query(r#"SELECT app_id, device_id, client_id, form_factor, platform, metadata::text AS metadata, device_secret_hash, timezone, locale, last_active_at_ms, push_state, failure_count, error_reason, recipient_json::text AS recipient_json FROM push_devices WHERE app_id = $1 AND last_active_at_ms >= $2 AND last_active_at_ms < $3 AND (last_active_at_ms, device_id) > ($4, $5) ORDER BY last_active_at_ms, device_id LIMIT $6"#)
         .bind(app_id)
-        .bind(day_bucket)
-        .bind(start)
+        .bind(start_ms)
+        .bind(end_ms)
+        .bind(cursor_ms)
+        .bind(cursor_device_id)
         .bind(limit_plus_one(limit))
         .fetch_all(pool)
         .await
@@ -1187,10 +1251,14 @@ async fn list_stale_devices_mysql(
     cursor: Option<PushCursor>,
 ) -> PushStorageResult<Page<DeviceDetails>> {
     let start = cursor_position(cursor, app_id)?.unwrap_or_default();
-    let rows = sqlx::query(r#"SELECT app_id, device_id, client_id, form_factor, platform, CAST(metadata AS CHAR) AS metadata, device_secret_hash, timezone, locale, last_active_at_ms, push_state, failure_count, error_reason, CAST(recipient_json AS CHAR) AS recipient_json FROM push_devices WHERE app_id = ? AND CAST(FLOOR(last_active_at_ms / 86400000) AS CHAR) = ? AND CONCAT(LPAD(CAST(last_active_at_ms AS CHAR), 20, '0'), ':', device_id) > ? ORDER BY last_active_at_ms, device_id LIMIT ?"#)
+    let (start_ms, end_ms) = day_bucket_range(day_bucket)?;
+    let (cursor_ms, cursor_device_id) = parse_ts_id_cursor(&start);
+    let rows = sqlx::query(r#"SELECT app_id, device_id, client_id, form_factor, platform, CAST(metadata AS CHAR) AS metadata, device_secret_hash, timezone, locale, last_active_at_ms, push_state, failure_count, error_reason, CAST(recipient_json AS CHAR) AS recipient_json FROM push_devices WHERE app_id = ? AND last_active_at_ms >= ? AND last_active_at_ms < ? AND (last_active_at_ms, device_id) > (?, ?) ORDER BY last_active_at_ms, device_id LIMIT ?"#)
         .bind(app_id)
-        .bind(day_bucket)
-        .bind(start)
+        .bind(start_ms)
+        .bind(end_ms)
+        .bind(cursor_ms)
+        .bind(cursor_device_id)
         .bind(limit_plus_one(limit))
         .fetch_all(pool)
         .await
@@ -1330,8 +1398,9 @@ async fn list_subscriptions_pg(
     cursor: Option<PushCursor>,
 ) -> PushStorageResult<Page<ChannelSubscription>> {
     let start = cursor_position(cursor, app_id)?.unwrap_or_default();
-    let rows = sqlx::query("SELECT app_id, channel, device_id, client_id, provider, token_hash, credential_version FROM push_channel_subscribers WHERE app_id = $1 AND CONCAT(channel, ':', device_id) > $2 ORDER BY channel, device_id LIMIT $3")
-        .bind(app_id).bind(start).bind(limit_plus_one(limit)).fetch_all(pool).await.map_err(sql_error)?;
+    let (cursor_channel, cursor_device_id) = parse_channel_device_cursor(&start);
+    let rows = sqlx::query("SELECT app_id, channel, device_id, client_id, provider, token_hash, credential_version FROM push_channel_subscribers WHERE app_id = $1 AND (channel, device_id) > ($2, $3) ORDER BY channel, device_id LIMIT $4")
+        .bind(app_id).bind(cursor_channel).bind(cursor_device_id).bind(limit_plus_one(limit)).fetch_all(pool).await.map_err(sql_error)?;
     page_from_sql_rows(
         app_id,
         PushCursorKind::ChannelSubscription,
@@ -1356,8 +1425,9 @@ async fn list_subscriptions_mysql(
     cursor: Option<PushCursor>,
 ) -> PushStorageResult<Page<ChannelSubscription>> {
     let start = cursor_position(cursor, app_id)?.unwrap_or_default();
-    let rows = sqlx::query("SELECT app_id, channel, device_id, client_id, provider, token_hash, credential_version FROM push_channel_subscribers WHERE app_id = ? AND CONCAT(channel, ':', device_id) > ? ORDER BY channel, device_id LIMIT ?")
-        .bind(app_id).bind(start).bind(limit_plus_one(limit)).fetch_all(pool).await.map_err(sql_error)?;
+    let (cursor_channel, cursor_device_id) = parse_channel_device_cursor(&start);
+    let rows = sqlx::query("SELECT app_id, channel, device_id, client_id, provider, token_hash, credential_version FROM push_channel_subscribers WHERE app_id = ? AND (channel, device_id) > (?, ?) ORDER BY channel, device_id LIMIT ?")
+        .bind(app_id).bind(cursor_channel).bind(cursor_device_id).bind(limit_plus_one(limit)).fetch_all(pool).await.map_err(sql_error)?;
     page_from_sql_rows(
         app_id,
         PushCursorKind::ChannelSubscription,
@@ -1430,6 +1500,28 @@ fn cursor_position(cursor: Option<PushCursor>, app_id: &str) -> PushStorageResul
         Some(cursor) => Ok(Some(cursor.position)),
         None => Ok(None),
     }
+}
+
+fn day_bucket_range(day_bucket: &str) -> PushStorageResult<(i64, i64)> {
+    let day = day_bucket
+        .parse::<i64>()
+        .map_err(|_| PushStorageError::Backend("invalid push day bucket".to_owned()))?;
+    let start = day.saturating_mul(86_400_000);
+    Ok((start, start.saturating_add(86_400_000)))
+}
+
+fn parse_ts_id_cursor(cursor: &str) -> (i64, String) {
+    let Some((timestamp, id)) = cursor.split_once(':') else {
+        return (-1, String::new());
+    };
+    (timestamp.parse::<i64>().unwrap_or(-1), id.to_owned())
+}
+
+fn parse_channel_device_cursor(cursor: &str) -> (String, String) {
+    let Some((channel, device_id)) = cursor.split_once(':') else {
+        return (String::new(), String::new());
+    };
+    (channel.to_owned(), device_id.to_owned())
 }
 
 fn page_from_sql_rows<R, T, F>(
@@ -1563,17 +1655,6 @@ where
     })
 }
 
-fn registration_change(
-    existing: Option<&DeviceDetails>,
-    incoming: &DeviceDetails,
-) -> DeviceRegistrationChange {
-    match existing {
-        None => DeviceRegistrationChange::Inserted,
-        Some(existing) if existing == incoming => DeviceRegistrationChange::Unchanged,
-        Some(_) => DeviceRegistrationChange::Updated,
-    }
-}
-
 fn enum_label<T: Serialize>(value: &T) -> PushStorageResult<String> {
     serde_json::to_value(value)
         .map_err(json_error)?
@@ -1603,19 +1684,35 @@ fn provider_from_label(label: &str) -> PushStorageResult<PushProviderKind> {
 }
 
 fn to_json_string<T: Serialize>(value: &T) -> PushStorageResult<String> {
-    serde_json::to_string(value).map_err(json_error)
+    let data = serde_json::to_value(value).map_err(json_error)?;
+    serde_json::to_string(&serde_json::json!({ "_v": 1, "data": data })).map_err(json_error)
 }
 
 fn to_json_vec<T: Serialize>(value: &T) -> PushStorageResult<Vec<u8>> {
-    serde_json::to_vec(value).map_err(json_error)
+    let data = serde_json::to_value(value).map_err(json_error)?;
+    serde_json::to_vec(&serde_json::json!({ "_v": 1, "data": data })).map_err(json_error)
 }
 
 fn from_json_str<T: DeserializeOwned>(value: &str) -> PushStorageResult<T> {
-    serde_json::from_str(value).map_err(json_error)
+    from_versioned_json_value(serde_json::from_str(value).map_err(json_error)?)
 }
 
 fn from_json_slice<T: DeserializeOwned>(value: &[u8]) -> PushStorageResult<T> {
-    serde_json::from_slice(value).map_err(json_error)
+    from_versioned_json_value(serde_json::from_slice(value).map_err(json_error)?)
+}
+
+fn from_versioned_json_value<T: DeserializeOwned>(
+    value: serde_json::Value,
+) -> PushStorageResult<T> {
+    if let serde_json::Value::Object(mut object) = value {
+        if object.get("_v").and_then(serde_json::Value::as_u64) == Some(1)
+            && let Some(data) = object.remove("data")
+        {
+            return serde_json::from_value(data).map_err(json_error);
+        }
+        return serde_json::from_value(serde_json::Value::Object(object)).map_err(json_error);
+    }
+    serde_json::from_value(value).map_err(json_error)
 }
 
 fn json_error(error: serde_json::Error) -> PushStorageError {
@@ -1624,6 +1721,16 @@ fn json_error(error: serde_json::Error) -> PushStorageError {
 
 fn sql_error(error: sqlx::Error) -> PushStorageError {
     PushStorageError::Backend(format!("push SQL backend error: {error}"))
+}
+
+fn assert_expected_schema_version(version: u32) -> PushStorageResult<()> {
+    if version == EXPECTED_PUSH_SCHEMA_VERSION {
+        return Ok(());
+    }
+    Err(PushStorageError::Backend(format!(
+        "push SQL schema version mismatch: expected {}, found {version}",
+        EXPECTED_PUSH_SCHEMA_VERSION
+    )))
 }
 
 fn delete_result(rows: u64) -> PushStorageResult<DeleteDeviceOutcome> {
@@ -1644,14 +1751,6 @@ fn now_ms_i64() -> i64 {
 
 fn json_text_expr(column: &str, template: &str) -> String {
     template.replace('?', column).replace("$1", column)
-}
-
-fn cursor_expr(timestamp_column: &str, id_column: &str, postgres: bool) -> String {
-    if postgres {
-        format!("CONCAT(LPAD({timestamp_column}::text, 20, '0'), ':', {id_column})")
-    } else {
-        format!("CONCAT(LPAD(CAST({timestamp_column} AS CHAR), 20, '0'), ':', {id_column})")
-    }
 }
 
 fn sql_query(raw: String, postgres: bool) -> String {
@@ -1759,17 +1858,5 @@ mod tests {
         let sql = sql_query("SELECT ? AS a, CAST(? AS JSON) AS b".to_owned(), false);
 
         assert_eq!(sql, "SELECT ? AS a, CAST(? AS JSON) AS b");
-    }
-
-    #[test]
-    fn cursor_expression_uses_database_specific_text_cast() {
-        assert_eq!(
-            cursor_expr("occurred_at_ms", "event_id", true),
-            "CONCAT(LPAD(occurred_at_ms::text, 20, '0'), ':', event_id)"
-        );
-        assert_eq!(
-            cursor_expr("occurred_at_ms", "event_id", false),
-            "CONCAT(LPAD(CAST(occurred_at_ms AS CHAR), 20, '0'), ':', event_id)"
-        );
     }
 }

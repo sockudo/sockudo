@@ -84,6 +84,12 @@ wns_enabled = false
 # webpush_credential_ref = "secret://sockudo/push/webpush"
 # hms_credential_ref = "secret://sockudo/push/hms"
 # wns_credential_ref = "secret://sockudo/push/wns"
+# APNs monolith dispatch workers require PUSH_APNS_TOPIC. Set PUSH_APNS_APP_ID
+# to load a stored push/credentials/apns credential, optionally with
+# PUSH_APNS_CREDENTIAL_ID (defaults to apns). Without PUSH_APNS_APP_ID the
+# worker falls back to env token auth via PUSH_APNS_TEAM_ID, PUSH_APNS_KEY_ID,
+# and PUSH_APNS_PRIVATE_KEY_PATH or PUSH_APNS_PRIVATE_KEY. Set
+# PUSH_APNS_ENDPOINT=https://api.sandbox.push.apple.com for sandbox devices.
 accept_worker_count = 1
 planner_worker_count = 1
 shard_worker_count = 1
@@ -98,6 +104,8 @@ fanout_sync_threshold = 0
 backpressure_lag_threshold_secs = 60
 publish_status_ttl_days = 30
 stale_device_max_age_days = 90
+# Set PUSH_CREDENTIAL_ENCRYPTION_KEY before uploading credentials to store
+# decryptable AES-GCM envelopes that workers can load later.
 # credential_encryption_key = "env://PUSH_CREDENTIAL_ENCRYPTION_KEY"
 # kms_key_ref = "aws-kms://alias/sockudo-push"
 # vault_secret_ref = "kv/sockudo/push"

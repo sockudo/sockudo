@@ -1,12 +1,18 @@
-import { createECDH, createHash, createHmac } from "node:crypto";
+import { createECDH } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../..");
 const stateDir = join(repoRoot, ".webpush-e2e");
+const require = createRequire(import.meta.url);
+const Sockudo = require(join(
+  repoRoot,
+  "server-sdks/sockudo-http-node/dist/sockudo.js",
+));
 const port = Number(process.env.PORT || 5179);
 const sockudoUrl = process.env.SOCKUDO_URL || "http://127.0.0.1:6001";
 const sockudoAppId = process.env.SOCKUDO_APP_ID || "app-id";
@@ -18,6 +24,12 @@ const vapidPrivateKey =
 const vapidPublicKey = derivePublicKey(vapidPrivateKey);
 const vapidContact =
   process.env.VAPID_CONTACT || "mailto:sockudo-webpush-e2e@example.com";
+const sdkBundlePath = join(
+  repoRoot,
+  "client-sdks/sockudo-js/dist/web/sockudo.mjs",
+);
+const webpushChannel = process.env.WEBPUSH_E2E_CHANNEL || "webpush-e2e";
+const sockudoApi = createSockudoApi(sockudoUrl);
 
 await mkdir(stateDir, { recursive: true });
 
@@ -30,8 +42,25 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/sw.js") {
       return sendFile(res, "sw.js", "text/javascript; charset=utf-8");
     }
+    if (req.method === "GET" && url.pathname === "/sdk/sockudo.mjs") {
+      return sendPath(res, sdkBundlePath, "text/javascript; charset=utf-8");
+    }
+    if (req.method === "GET" && url.pathname === "/sdk-info") {
+      return sendJson(res, {
+        ok: true,
+        clientSdk: "@sockudo/client",
+        serverSdk: "sockudo-http-node",
+        channel: webpushChannel,
+        sockudoUrl,
+        appId: sockudoAppId,
+        vapidPublicKey,
+      });
+    }
     if (req.method === "GET" && url.pathname === "/vapid-public-key") {
       return sendJson(res, { publicKey: vapidPublicKey });
+    }
+    if (url.pathname.startsWith("/sdk-push/")) {
+      return handleSdkPush(req, res, url);
     }
     if (req.method === "POST" && url.pathname === "/subscription") {
       const subscription = await readJson(req);
@@ -63,11 +92,16 @@ const server = createServer(async (req, res) => {
 server.listen(port, "127.0.0.1", () => {
   console.log(`Sockudo Web Push E2E app: http://127.0.0.1:${port}/`);
   console.log(`Sockudo HTTP API: ${sockudoUrl}/apps/${sockudoAppId}/push/*`);
+  console.log(`Harness SDK proxy: http://127.0.0.1:${port}/sdk-push/*`);
   console.log(`VAPID public key: ${vapidPublicKey}`);
 });
 
 async function sendFile(res, filename, contentType) {
-  const body = await readFile(join(here, "static", filename));
+  return sendPath(res, join(here, "static", filename), contentType);
+}
+
+async function sendPath(res, path, contentType) {
+  const body = await readFile(path);
   res.writeHead(200, {
     "cache-control": "no-store",
     "content-type": contentType,
@@ -89,6 +123,43 @@ async function sendJson(res, data, status = 200) {
   res.end(JSON.stringify(data, null, 2));
 }
 
+async function handleSdkPush(req, res, url) {
+  try {
+    if (req.method === "POST" && url.pathname === "/sdk-push/deviceRegistrations") {
+      const device = await readJson(req);
+      const result = await activateDevice(device);
+      return sendJson(res, result);
+    }
+    if (req.method === "POST" && url.pathname === "/sdk-push/channelSubscriptions") {
+      const subscription = await readJson(req);
+      const result = await sockudoApi.upsertChannelPushSubscription({
+        ...subscription,
+        appId: sockudoAppId,
+      });
+      return sendJson(res, result);
+    }
+    if (req.method === "POST" && url.pathname === "/sdk-push/publish") {
+      const publishRequest = await readJson(req);
+      const result = await sockudoApi.publishPush(publishRequest);
+      return sendJson(res, result);
+    }
+
+    const publishStatusMatch = url.pathname.match(
+      /^\/sdk-push\/publish\/([^/]+)\/status$/,
+    );
+    if (req.method === "GET" && publishStatusMatch) {
+      const result = await sockudoApi.getPublishStatus(
+        decodeURIComponent(publishStatusMatch[1]),
+      );
+      return sendJson(res, result);
+    }
+
+    return sendJson(res, { ok: false, error: "sdk push route not found" }, 404);
+  } catch (error) {
+    return sendJson(res, sdkError(error), error.statusCode || error.status || 500);
+  }
+}
+
 async function sendViaSockudo(subscription) {
   const now = Date.now();
   const publishId = `webpush-e2e-${now}`;
@@ -102,13 +173,8 @@ async function sendViaSockudo(subscription) {
     },
   };
 
-  const credential = await sockudoRequest("POST", "/push/credentials/webpush", {
-    credentialId: "webpush-e2e",
-    publicKey: vapidPublicKey,
-    privateKey: vapidPrivateKey,
-  });
-  const device = await sockudoRequest("POST", "/push/deviceRegistrations", {
-    appId: sockudoAppId,
+  const credential = await ensureWebPushCredential();
+  const device = await activateDevice({
     id: "browser",
     clientId: "webpush-e2e-browser",
     formFactor: "desktop",
@@ -129,17 +195,14 @@ async function sendViaSockudo(subscription) {
     },
     pushRatePolicy: null,
   });
-  const publish = await sockudoRequest("POST", "/push/publish", {
+  const publish = await sockudoApi.publishPush({
     publishId,
-    recipients: [{ type: "device", device_id: "browser" }],
+    recipients: [{ type: "device", deviceId: "browser" }],
     payload,
     providerOverrides: [],
     sync: false,
   });
-  const statusBeforeDelivery = await sockudoRequest(
-    "GET",
-    `/push/publish/${encodeURIComponent(publishId)}/status`,
-  );
+  const statusBeforeDelivery = await sockudoApi.getPublishStatus(publishId);
   return {
     ok: publish.status === "accepted",
     sockudo: {
@@ -149,6 +212,26 @@ async function sendViaSockudo(subscription) {
       statusBeforeDelivery,
     },
   };
+}
+
+async function ensureWebPushCredential() {
+  return sockudoApi.putPushCredential("webpush", {
+    appId: sockudoAppId,
+    credentialId: "webpush-e2e",
+    publicKey: vapidPublicKey,
+    privateKey: vapidPrivateKey,
+  });
+}
+
+async function activateDevice(device) {
+  await ensureWebPushCredential();
+  return sockudoApi.activateDevice(
+    {
+      ...device,
+      appId: sockudoAppId,
+    },
+    { rotateDeviceIdentityToken: true },
+  );
 }
 
 function subscriptionToRecipient(subscription) {
@@ -163,61 +246,35 @@ function subscriptionToRecipient(subscription) {
   };
 }
 
-async function sockudoRequest(method, pushPath, body) {
-  const path = `/apps/${sockudoAppId}${pushPath}`;
-  const bodyText = body === undefined ? null : JSON.stringify(body);
-  const query = {
-    auth_key: sockudoKey,
-    auth_timestamp: String(Math.floor(Date.now() / 1000)),
-    auth_version: "1.0",
-  };
-  if (method === "POST" && bodyText !== null) {
-    query.body_md5 = createHash("md5").update(bodyText).digest("hex");
-  }
-  query.auth_signature = signSockudoRequest(method, path, query);
-
-  const url = new URL(path, sockudoUrl);
-  for (const [key, value] of Object.entries(query)) {
-    url.searchParams.set(key, value);
-  }
-
-  const response = await fetch(url, {
-    method,
-    headers: {
-      "content-type": "application/json",
-      "x-sockudo-push-capability": "push-admin",
-    },
-    body: bodyText,
-  });
-  const responseText = await response.text();
-  const responseBody = parseMaybeJson(responseText) ?? responseText;
-  if (!response.ok) {
-    throw new Error(
-      `Sockudo ${method} ${pushPath} returned ${response.status}: ${JSON.stringify(
-        responseBody,
-      )}`,
-    );
-  }
-  return responseBody;
-}
-
-function signSockudoRequest(method, path, query) {
-  const signingQuery = Object.entries(query)
-    .filter(([key]) => key !== "auth_signature")
-    .map(([key, value]) => [key.toLowerCase(), value])
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${value}`)
-    .join("&");
-  const stringToSign = `${method.toUpperCase()}\n${path}\n${signingQuery}`;
-  return createHmac("sha256", sockudoSecret).update(stringToSign).digest("hex");
-}
-
 function parseMaybeJson(value) {
   try {
     return JSON.parse(value);
   } catch {
     return null;
   }
+}
+
+function createSockudoApi(baseUrl) {
+  const parsed = new URL(baseUrl);
+  return new Sockudo({
+    appId: sockudoAppId,
+    key: sockudoKey,
+    secret: sockudoSecret,
+    host: parsed.hostname,
+    port: parsed.port || undefined,
+    scheme: parsed.protocol.replace(/:$/, ""),
+    useTLS: parsed.protocol === "https:",
+  });
+}
+
+function sdkError(error) {
+  const body = typeof error?.body === "string" ? parseMaybeJson(error.body) : null;
+  return {
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+    status: error?.statusCode || error?.status,
+    body: body ?? error?.body,
+  };
 }
 
 function derivePublicKey(privateKey) {

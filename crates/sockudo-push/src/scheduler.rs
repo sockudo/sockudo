@@ -67,6 +67,7 @@ impl PushScheduler {
     }
 
     async fn emit_due_job(&self, job: ScheduledPushJob, now_ms: u64) -> PushPipelineResult<bool> {
+        let lock_expires_at = now_ms.saturating_add(self.lock_ttl_ms);
         let acquired = self
             .store
             .acquire_scheduler_lock(
@@ -74,7 +75,7 @@ impl PushScheduler {
                     app_id: job.app_id.clone(),
                     publish_id: job.publish_id.clone(),
                     owner_id: self.owner_id.clone(),
-                    expires_at_ms: now_ms.saturating_add(self.lock_ttl_ms),
+                    expires_at_ms: lock_expires_at,
                 },
                 now_ms,
             )
@@ -89,9 +90,19 @@ impl PushScheduler {
             .produce(
                 PushQueueStage::PublishLog,
                 event.queue_key(),
-                PushQueuePayload::PublishLog(event),
+                PushQueuePayload::PublishLog(Box::new(event)),
             )
             .await?;
+        let finalized_at_ms = if lock_expires_at > 1_000_000_000_000 {
+            crate::pipeline::now_ms()
+        } else {
+            now_ms
+        };
+        if finalized_at_ms > lock_expires_at {
+            return Err(crate::pipeline::PushPipelineError::Backpressure(
+                "scheduler lock expired before due job could be finalized".to_owned(),
+            ));
+        }
         self.store
             .delete_scheduled_job(&job.app_id, &job.publish_id)
             .await?;
@@ -115,7 +126,7 @@ fn scheduled_publish_event(
         });
     }
     let intent = serde_json::from_value::<PublishIntent>(job.payload_json.clone())
-        .map_err(|error| crate::pipeline::PushPipelineError::Backpressure(error.to_string()))?;
+        .map_err(|error| crate::pipeline::PushPipelineError::InvalidPayload(error.to_string()))?;
     let fanout_regime = FanoutRegime::ShardPath;
     Ok(PublishLogEvent {
         app_id: job.app_id.clone(),

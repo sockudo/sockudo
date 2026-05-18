@@ -225,3 +225,12 @@ CREATE TABLE IF NOT EXISTS push_operator_invalidations (
     subject TEXT NOT NULL,
     PRIMARY KEY (app_id, occurred_at_ms, event_id)
 ) PARTITION BY HASH (app_id);
+
+CREATE TABLE IF NOT EXISTS push_schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at_ms BIGINT NOT NULL
+);
+
+INSERT INTO push_schema_version (version, applied_at_ms)
+VALUES (1, 0)
+ON CONFLICT (version) DO NOTHING;

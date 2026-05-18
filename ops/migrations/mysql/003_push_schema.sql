@@ -188,3 +188,11 @@ CREATE TABLE IF NOT EXISTS `push_operator_invalidations` (
     subject VARCHAR(1024) NOT NULL,
     PRIMARY KEY (app_id, occurred_at_ms, event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `push_schema_version` (
+    version INT UNSIGNED NOT NULL PRIMARY KEY,
+    applied_at_ms BIGINT UNSIGNED NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO `push_schema_version` (version, applied_at_ms)
+VALUES (1, 0);

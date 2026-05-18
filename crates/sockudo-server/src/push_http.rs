@@ -1,15 +1,22 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
+};
 use axum::{
     Json,
     extract::{Extension, Path, Query},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::IntoResponse,
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sockudo_core::app::App;
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_push::{
@@ -31,9 +38,13 @@ const MAX_LIMIT: usize = 1000;
 const DEFAULT_PUSH_FANOUT_FAST_THRESHOLD: u64 = 10_000;
 const DEFAULT_PUSH_FANOUT_SHARD_SIZE: u64 = 100_000;
 const DEFAULT_PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS: u64 = 5;
+const PUSH_HTTP_DEFAULT_IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 const QUOTA_OVERRIDE_HEADER: &str = "x-sockudo-push-quota-override";
 const PUSH_CAPABILITY_HEADER: &str = "x-sockudo-push-capability";
 const DEVICE_TOKEN_HEADER: &str = "x-sockudo-device-identity-token";
+const CREDENTIAL_SECRET_LOCAL_PREFIX: &str = "envelope:v1:local:";
+const CREDENTIAL_SECRET_AES_PREFIX: &str = "envelope:v1:aes256gcm:";
+const CREDENTIAL_SECRET_LEGACY_HASH_PREFIX: &str = "envelope:v1:sha256:";
 
 static PUSH_DEVICE_RATE_WINDOWS: LazyLock<Mutex<BTreeMap<String, RateWindow>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
@@ -41,6 +52,21 @@ static PUSH_HTTP_METRICS: LazyLock<PushMetrics> = LazyLock::new(PushMetrics::def
 
 pub fn push_metrics_plaintext() -> String {
     PUSH_HTTP_METRICS.to_prometheus_text()
+}
+
+fn publish_state_label(state: PublishLifecycleState) -> &'static str {
+    match state {
+        PublishLifecycleState::Queued => "accepted",
+        PublishLifecycleState::Planning => "planning",
+        PublishLifecycleState::Throttled => "throttled",
+        PublishLifecycleState::Dispatching => "dispatching",
+        PublishLifecycleState::Cancelled => "cancelled",
+        PublishLifecycleState::Succeeded => "succeeded",
+        PublishLifecycleState::PartiallySucceeded => "partially_succeeded",
+        PublishLifecycleState::Failed => "failed",
+        PublishLifecycleState::QuotaExceeded => "quota_exceeded",
+        PublishLifecycleState::Expired => "expired",
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -124,7 +150,11 @@ pub struct ApnsCredentialRequest {
     pub credential_id: Option<String>,
     pub version: Option<u64>,
     pub p12: Option<String>,
+    pub p12_password: Option<String>,
     pub pem: Option<String>,
+    pub team_id: Option<String>,
+    pub key_id: Option<String>,
+    pub private_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,7 +266,11 @@ pub async fn post_apns_credential(
             version: request.version.unwrap_or(1),
             material: ProviderCredentialMaterial::Apns {
                 p12: encrypt_optional(request.p12)?,
+                p12_password: encrypt_optional(request.p12_password)?,
                 pem: encrypt_optional(request.pem)?,
+                team_id: request.team_id,
+                key_id: request.key_id,
+                private_key: encrypt_optional(request.private_key)?,
             },
         },
     )
@@ -845,19 +879,34 @@ async fn accept_publish_inner(
         audit_log(app_id, "quotaOverride", Some(&publish_id));
     }
 
+    let rendered_payloads = render_all_payloads(&request.payload, &request.provider_overrides)?;
     let idempotency_key = intent.idempotency_key();
-    let idempotency = IdempotencyRecord {
-        app_id: app_id.to_owned(),
-        key: idempotency_key,
-        publish_id: publish_id.clone(),
-        expires_at_ms: request.expires_at_ms.unwrap_or(u64::MAX),
-    };
-    store
-        .put_idempotency_record_if_absent(idempotency)
+    let existing_idempotency = store
+        .get_idempotency_record(app_id, &idempotency_key)
         .await
         .map_err(push_error)?;
+    let existing_status = if let Some(existing) = existing_idempotency.as_ref() {
+        store
+            .get_publish_status(app_id, &existing.publish_id)
+            .await
+            .map_err(push_error)?
+    } else {
+        None
+    };
+    if let (Some(existing), Some(status)) = (existing_idempotency, existing_status) {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(PublishAcceptedResponse {
+                publish_id: existing.publish_id,
+                status: publish_state_label(status.state),
+                expected_recipients: status.counters.planned,
+                fanout_regime: status.fanout_regime.unwrap_or(fanout_regime),
+                rendered_payloads,
+            }),
+            forced_async,
+        ));
+    }
 
-    let rendered_payloads = render_all_payloads(&request.payload, &request.provider_overrides)?;
     let quota_failure = if quota_override {
         None
     } else {
@@ -902,6 +951,50 @@ async fn accept_publish_inner(
         .await
         .map_err(push_error)?;
 
+    let idempotency = IdempotencyRecord {
+        app_id: app_id.to_owned(),
+        key: idempotency_key,
+        publish_id: publish_id.clone(),
+        expires_at_ms: request
+            .expires_at_ms
+            .unwrap_or_else(|| now_ms().saturating_add(PUSH_HTTP_DEFAULT_IDEMPOTENCY_TTL_MS)),
+    };
+    if !store
+        .put_idempotency_record_if_absent(idempotency)
+        .await
+        .map_err(push_error)?
+    {
+        let existing = store
+            .get_idempotency_record(app_id, &intent.idempotency_key())
+            .await
+            .map_err(push_error)?
+            .ok_or_else(|| {
+                AppError::InternalError(
+                    "duplicate publish idempotency record disappeared".to_owned(),
+                )
+            })?;
+        if let Some(status) = store
+            .get_publish_status(app_id, &existing.publish_id)
+            .await
+            .map_err(push_error)?
+        {
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(PublishAcceptedResponse {
+                    publish_id: existing.publish_id,
+                    status: publish_state_label(status.state),
+                    expected_recipients: status.counters.planned,
+                    fanout_regime: status.fanout_regime.unwrap_or(fanout_regime),
+                    rendered_payloads,
+                }),
+                forced_async,
+            ));
+        }
+        return Err(AppError::InternalError(
+            "duplicate publish is missing persisted status".to_owned(),
+        ));
+    }
+
     let publish_event = PublishLogEvent {
         app_id: app_id.to_owned(),
         publish_id: publish_id.clone(),
@@ -921,7 +1014,7 @@ async fn accept_publish_inner(
         .produce(
             PushQueueStage::PublishLog,
             publish_event.queue_key(),
-            PushQueuePayload::PublishLog(publish_event),
+            PushQueuePayload::PublishLog(Box::new(publish_event)),
         )
         .await
         .map_err(|error| AppError::InternalError(error.to_string()))?;
@@ -1566,11 +1659,84 @@ fn encrypt_optional(raw: Option<String>) -> Result<Option<EncryptedSecret>, AppE
 }
 
 fn encrypted_secret(raw: &str) -> Result<EncryptedSecret, AppError> {
-    let hash = SecretString::new(raw)
-        .map_err(|error| AppError::InvalidInput(error.to_string()))?
-        .stable_hash();
-    EncryptedSecret::new(format!("envelope:v1:sha256:{hash}"))
-        .map_err(|error| AppError::InvalidInput(error.to_string()))
+    SecretString::new(raw).map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let ciphertext = if let Some(key) = credential_encryption_key() {
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|error| AppError::InternalError(format!("invalid credential key: {error}")))?;
+        let nonce_bytes = credential_nonce_bytes();
+        let encrypted = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), raw.as_bytes())
+            .map_err(|error| {
+                AppError::InternalError(format!("failed to encrypt credential material: {error}"))
+            })?;
+        let mut envelope = Vec::with_capacity(nonce_bytes.len() + encrypted.len());
+        envelope.extend_from_slice(&nonce_bytes);
+        envelope.extend_from_slice(&encrypted);
+        format!(
+            "{CREDENTIAL_SECRET_AES_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(envelope)
+        )
+    } else {
+        format!(
+            "{CREDENTIAL_SECRET_LOCAL_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(raw.as_bytes())
+        )
+    };
+    EncryptedSecret::new(ciphertext).map_err(|error| AppError::InvalidInput(error.to_string()))
+}
+
+pub(crate) fn decrypt_credential_secret(secret: &EncryptedSecret) -> Result<String, String> {
+    let envelope = secret.ciphertext();
+    if let Some(encoded) = envelope.strip_prefix(CREDENTIAL_SECRET_LOCAL_PREFIX) {
+        let plaintext = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|error| format!("invalid local credential envelope: {error}"))?;
+        return String::from_utf8(plaintext)
+            .map_err(|error| format!("credential material is not valid UTF-8: {error}"));
+    }
+
+    if let Some(encoded) = envelope.strip_prefix(CREDENTIAL_SECRET_AES_PREFIX) {
+        let key = credential_encryption_key().ok_or_else(|| {
+            "PUSH_CREDENTIAL_ENCRYPTION_KEY is required to decrypt stored credential material"
+                .to_owned()
+        })?;
+        let sealed = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|error| format!("invalid encrypted credential envelope: {error}"))?;
+        let (nonce_bytes, ciphertext) = sealed
+            .split_at_checked(12)
+            .ok_or_else(|| "encrypted credential envelope is too short".to_owned())?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&key).map_err(|error| format!("invalid key: {error}"))?;
+        let plaintext = cipher
+            .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+            .map_err(|error| format!("failed to decrypt credential material: {error}"))?;
+        return String::from_utf8(plaintext)
+            .map_err(|error| format!("credential material is not valid UTF-8: {error}"));
+    }
+
+    if envelope.starts_with(CREDENTIAL_SECRET_LEGACY_HASH_PREFIX) {
+        return Err(
+            "credential was stored with a legacy non-decryptable hash envelope; re-upload it"
+                .to_owned(),
+        );
+    }
+
+    Err("unsupported credential envelope".to_owned())
+}
+
+fn credential_encryption_key() -> Option<[u8; 32]> {
+    env::var("PUSH_CREDENTIAL_ENCRYPTION_KEY")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(|value| Sha256::digest(value.as_bytes()).into())
+}
+
+fn credential_nonce_bytes() -> [u8; 12] {
+    let mut nonce = [0_u8; 12];
+    nonce.copy_from_slice(&uuid::Uuid::new_v4().as_bytes()[..12]);
+    nonce
 }
 
 fn push_error(error: sockudo_push::PushStorageError) -> AppError {

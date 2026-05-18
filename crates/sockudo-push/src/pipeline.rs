@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::domain::{
     DeadLetter, DeliveryBatch, DeliveryResult, FanoutConfig, FanoutRegime, PublishCounters,
     PublishIntent, PublishLifecycleState, PublishLogEvent, PublishStatus, PushDomainError,
-    RetryScheduleEntry, stable_hash,
+    RetryScheduleEntry, provider_key, stable_hash,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
@@ -18,6 +18,7 @@ use crate::storage::{DynPushStore, IdempotencyRecord, PushStorageError};
 pub type DynPushQueue = Arc<dyn PushQueue + Send + Sync>;
 pub type PushQueueResult<T> = Result<T, PushQueueError>;
 pub type PushPipelineResult<T> = Result<T, PushPipelineError>;
+const DEFAULT_IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -33,12 +34,12 @@ pub enum PushQueueStage {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PushQueuePayload {
-    PublishLog(PublishLogEvent),
-    ShardJob(crate::domain::ShardJob),
-    DeliveryBatch(DeliveryBatch),
-    DeliveryResult(DeliveryResult),
-    DeadLetter(DeadLetter),
-    RetrySchedule(RetryScheduleEntry),
+    PublishLog(Box<PublishLogEvent>),
+    ShardJob(Box<crate::domain::ShardJob>),
+    DeliveryBatch(Box<DeliveryBatch>),
+    DeliveryResult(Box<DeliveryResult>),
+    DeadLetter(Box<DeadLetter>),
+    RetrySchedule(Box<RetryScheduleEntry>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,7 +177,7 @@ impl PushQueueStage {
             Self::PublishLog => "push.publish.v1".to_owned(),
             Self::ShardJobs => "push.shards.v1".to_owned(),
             Self::DeliveryJobs(provider) => {
-                format!("push.delivery.{provider:?}.v1").to_ascii_lowercase()
+                format!("push.delivery.{}.v1", provider_key(provider))
             }
             Self::DeliveryResults => "push.results.v1".to_owned(),
             Self::DeadLetters => "push.deadletters.v1".to_owned(),
@@ -236,8 +237,11 @@ fn payload_app_id(payload: &PushQueuePayload) -> Option<String> {
 
 fn partition_for_key(key: &str, partitions: u32) -> u32 {
     let hash = stable_hash(key.as_bytes());
-    let prefix = hash.get(..16).unwrap_or(&hash);
-    let value = u64::from_str_radix(prefix, 16).unwrap_or(0);
+    let prefix = hash
+        .get(..16)
+        .expect("stable_hash always returns at least 16 hex characters");
+    let value = u64::from_str_radix(prefix, 16)
+        .expect("stable_hash prefix always contains valid hex characters");
     (value % u64::from(partitions.max(1))) as u32
 }
 
@@ -435,9 +439,10 @@ impl PushQueue for MemoryPushQueue {
     }
 
     async fn ack(&self, token: QueueAckToken) -> PushQueueResult<()> {
-        self.lock()?
-            .inflight
-            .remove(&(token.stage, token.message_id));
+        let mut inner = self.lock()?;
+        if let Some(stored) = inner.inflight.remove(&(token.stage, token.message_id)) {
+            inner.produced_keys.remove(&(token.stage, stored.key));
+        }
         Ok(())
     }
 
@@ -459,6 +464,9 @@ impl PushQueue for MemoryPushQueue {
     async fn dead_letter(&self, token: QueueAckToken, reason: String) -> PushQueueResult<()> {
         let mut inner = self.lock()?;
         if let Some(stored) = inner.inflight.remove(&(token.stage, token.message_id)) {
+            inner
+                .produced_keys
+                .remove(&(token.stage, stored.key.clone()));
             let dead_letter = dead_letter_from_message(token.stage, &stored, reason);
             inner.dead_letters.push(dead_letter.clone());
             inner
@@ -471,9 +479,9 @@ impl PushQueue for MemoryPushQueue {
                     route: QueueRoute::for_message(
                         PushQueueStage::DeadLetters,
                         &dead_letter.key,
-                        &PushQueuePayload::DeadLetter(dead_letter.clone()),
+                        &PushQueuePayload::DeadLetter(Box::new(dead_letter.clone())),
                     ),
-                    payload: PushQueuePayload::DeadLetter(dead_letter),
+                    payload: PushQueuePayload::DeadLetter(Box::new(dead_letter)),
                     attempt: 1,
                     not_before_ms: None,
                     lease_deadline_ms: 0,
@@ -646,6 +654,8 @@ pub enum PushPipelineError {
     Queue(#[from] PushQueueError),
     #[error("push pipeline backpressure: {0}")]
     Backpressure(String),
+    #[error("push pipeline invalid payload: {0}")]
+    InvalidPayload(String),
 }
 
 impl PushPipeline {
@@ -713,7 +723,10 @@ impl PushPipeline {
             publish_idempotency_key(&request.intent.app_id, &request.intent.publish_id);
         let publish_uid_key =
             publish_uid_key(&request.intent.app_id, &request.intent.idempotency_key());
-        let expires_at_ms = request.intent.expires_at_ms.unwrap_or(u64::MAX);
+        let expires_at_ms = request
+            .intent
+            .expires_at_ms
+            .unwrap_or_else(|| occurred_at_ms.saturating_add(DEFAULT_IDEMPOTENCY_TTL_MS));
         if let Some(record) = self
             .store
             .get_idempotency_record(&request.intent.app_id, &publish_id_key)
@@ -732,6 +745,23 @@ impl PushPipeline {
                 .duplicate_accept(&request.intent.app_id, &record.publish_id)
                 .await;
         }
+        let status = PublishStatus {
+            app_id: request.intent.app_id.clone(),
+            publish_id: request.intent.publish_id.clone(),
+            state: PublishLifecycleState::Queued,
+            counters: PublishCounters {
+                planned: request.expected_recipients,
+                dispatched: 0,
+                succeeded: 0,
+                failed: 0,
+                expired: 0,
+            },
+            fanout_regime: Some(fanout_regime),
+            retry_after_ms: None,
+            error_reason: None,
+        };
+        self.store.put_publish_status(status.clone()).await?;
+
         let publish_id_record = IdempotencyRecord {
             app_id: request.intent.app_id.clone(),
             key: publish_id_key.clone(),
@@ -781,23 +811,6 @@ impl PushPipeline {
                 .await;
         }
 
-        let status = PublishStatus {
-            app_id: request.intent.app_id.clone(),
-            publish_id: request.intent.publish_id.clone(),
-            state: PublishLifecycleState::Queued,
-            counters: PublishCounters {
-                planned: request.expected_recipients,
-                dispatched: 0,
-                succeeded: 0,
-                failed: 0,
-                expired: 0,
-            },
-            fanout_regime: Some(fanout_regime),
-            retry_after_ms: None,
-            error_reason: None,
-        };
-        self.store.put_publish_status(status.clone()).await?;
-
         let event = PublishLogEvent {
             app_id: request.intent.app_id.clone(),
             publish_id: request.intent.publish_id.clone(),
@@ -815,7 +828,7 @@ impl PushPipeline {
             .produce(
                 PushQueueStage::PublishLog,
                 event.queue_key(),
-                PushQueuePayload::PublishLog(event.clone()),
+                PushQueuePayload::PublishLog(Box::new(event.clone())),
             )
             .await?;
         self.metrics
@@ -918,14 +931,23 @@ pub(crate) fn dedupe_key(seed: impl AsRef<str>, existing: &mut BTreeSet<String>)
     if existing.insert(seed.to_owned()) {
         return seed.to_owned();
     }
-    let mut index = 1_u64;
-    loop {
-        let candidate = format!("{seed}-{index}");
+    let mut index = existing.len() as u64;
+    for _ in 0..8 {
+        let candidate = format!(
+            "{seed}-{index}-{}",
+            &stable_hash(format!("{seed}:{index}").as_bytes())[..8]
+        );
         if existing.insert(candidate.clone()) {
             return candidate;
         }
-        index += 1;
+        index = index.saturating_add(1);
     }
+    let candidate = format!(
+        "{seed}-{}",
+        stable_hash(format!("{seed}:{}", existing.len()).as_bytes())
+    );
+    existing.insert(candidate.clone());
+    candidate
 }
 
 #[cfg(test)]
@@ -990,7 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn feature_queue_runtime_preserves_ack_retry_and_lag_contract() {
         let queue = MemoryPushQueue::for_backend(PushQueueBackendKind::Memory).unwrap();
-        let payload = PushQueuePayload::PublishLog(sample_publish_log_event());
+        let payload = PushQueuePayload::PublishLog(Box::new(sample_publish_log_event()));
         queue
             .produce(
                 PushQueueStage::PublishLog,
@@ -1039,7 +1061,7 @@ mod tests {
     #[tokio::test]
     async fn memory_queue_reclaims_expired_leases() {
         let queue = MemoryPushQueue::new();
-        let payload = PushQueuePayload::PublishLog(sample_publish_log_event());
+        let payload = PushQueuePayload::PublishLog(Box::new(sample_publish_log_event()));
         queue
             .produce(PushQueueStage::PublishLog, "key-1".to_owned(), payload)
             .await

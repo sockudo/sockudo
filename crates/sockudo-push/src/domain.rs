@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -9,13 +10,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use url::Url;
+use url::{Host, Url};
+use zeroize::Zeroize;
 
 pub const MAX_METADATA_BYTES: usize = 4096;
 pub const MAX_TEMPLATE_DATA_BYTES: usize = 8192;
 pub const MAX_PROVIDER_OVERRIDE_BYTES: usize = 4096;
 pub const MAX_RENDERED_TEMPLATE_BYTES: usize = 4096;
 pub const MAX_CURSOR_BYTES: usize = 2048;
+pub const MAX_APP_ID_BYTES: usize = 128;
+pub const MAX_PUSH_TARGETS: usize = 1024;
+pub const MAX_PUSH_TITLE_BYTES: usize = 256;
+pub const MAX_PUSH_BODY_BYTES: usize = 4096;
+pub const MAX_PUSH_ICON_BYTES: usize = 2048;
 pub const DEVICE_IDENTITY_TOKEN_BYTES: usize = 32;
 pub const DEVICE_SECRET_PBKDF2_ITERATIONS: u32 = 120_000;
 pub const DEFAULT_PUSH_FANOUT_FAST_THRESHOLD: u64 = 10_000;
@@ -79,6 +86,12 @@ impl fmt::Debug for SecretString {
     }
 }
 
+impl Drop for SecretString {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 pub fn generate_device_identity_token() -> SecretString {
     let bytes: [u8; DEVICE_IDENTITY_TOKEN_BYTES] = rand::random();
     SecretString(URL_SAFE_NO_PAD.encode(bytes))
@@ -98,13 +111,16 @@ pub fn verify_device_identity_token(token: &str, stored_hash: &SecretString) -> 
     let Ok(iterations) = parts[1].parse::<u32>() else {
         return false;
     };
+    if iterations < DEVICE_SECRET_PBKDF2_ITERATIONS {
+        return false;
+    }
     let Ok(salt) = URL_SAFE_NO_PAD.decode(parts[2]) else {
         return false;
     };
 
     let candidate = pbkdf2_sha256(token.as_bytes(), &salt, iterations);
     let candidate = URL_SAFE_NO_PAD.encode(candidate);
-    secure_compare(&candidate, parts[3])
+    fixed_length_secure_compare(&candidate, parts[3])
 }
 
 pub fn is_hashed_device_secret(secret: &SecretString) -> bool {
@@ -141,7 +157,7 @@ fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
     output.into()
 }
 
-fn secure_compare(a: &str, b: &str) -> bool {
+fn fixed_length_secure_compare(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -291,7 +307,10 @@ impl PushRecipient {
                 require_secret("p256dh", p256dh)?;
                 require_secret("auth", auth)
             }
-            Self::Wns { channel_uri } => require_secret("channelUri", channel_uri),
+            Self::Wns { channel_uri } => {
+                require_secret("channelUri", channel_uri)?;
+                validate_web_push_endpoint(channel_uri.expose_secret())
+            }
         }
     }
 }
@@ -379,7 +398,7 @@ pub struct DeviceDetails {
 
 impl DeviceDetails {
     pub fn validate(&self) -> Result<(), PushDomainError> {
-        require_non_empty("appId", &self.app_id)?;
+        validate_app_id(&self.app_id)?;
         require_non_empty("id", &self.id)?;
         require_secret("deviceSecret", &self.device_secret)?;
         if !is_hashed_device_secret(&self.device_secret) {
@@ -485,7 +504,7 @@ impl ChannelSubscription {
     }
 
     pub fn validate(&self) -> Result<(), PushDomainError> {
-        require_non_empty("appId", &self.app_id)?;
+        validate_app_id(&self.app_id)?;
         require_non_empty("channel", &self.channel)?;
         require_non_empty("deviceId", &self.device_id)?;
         require_non_empty("tokenHash", &self.token_hash)
@@ -504,7 +523,7 @@ pub struct ProviderCredential {
 
 impl ProviderCredential {
     pub fn validate(&self) -> Result<(), PushDomainError> {
-        require_non_empty("appId", &self.app_id)?;
+        validate_app_id(&self.app_id)?;
         require_non_empty("credentialId", &self.credential_id)?;
         if self.version == 0 {
             return Err(PushDomainError::InvalidField {
@@ -540,7 +559,15 @@ pub enum ProviderCredentialMaterial {
         #[serde(skip_serializing_if = "Option::is_none")]
         p12: Option<EncryptedSecret>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        p12_password: Option<EncryptedSecret>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         pem: Option<EncryptedSecret>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        private_key: Option<EncryptedSecret>,
     },
     #[serde(rename = "webPush")]
     WebPush {
@@ -565,12 +592,25 @@ impl ProviderCredentialMaterial {
             Self::Fcm {
                 service_account_json,
             } => require_encrypted("serviceAccountJson", service_account_json),
-            Self::Apns { p12, pem } => {
-                if p12.is_none() && pem.is_none() {
+            Self::Apns {
+                p12,
+                pem,
+                team_id,
+                key_id,
+                private_key,
+                ..
+            } => {
+                let token_auth_present =
+                    team_id.is_some() && key_id.is_some() && private_key.is_some();
+                if p12.is_none() && pem.is_none() && !token_auth_present {
                     return Err(PushDomainError::InvalidField {
                         field: "material",
-                        reason: "apns requires p12 or pem material",
+                        reason: "apns requires p12, pem, or token auth material",
                     });
+                }
+                if token_auth_present {
+                    require_non_empty("teamId", team_id.as_deref().unwrap_or_default())?;
+                    require_non_empty("keyId", key_id.as_deref().unwrap_or_default())?;
                 }
                 Ok(())
             }
@@ -641,7 +681,7 @@ pub struct NotificationTemplate {
 
 impl NotificationTemplate {
     pub fn validate(&self) -> Result<(), PushDomainError> {
-        require_non_empty("appId", &self.app_id)?;
+        validate_app_id(&self.app_id)?;
         require_non_empty("templateId", &self.template_id)?;
         require_non_empty("defaultLocale", &self.default_locale)?;
         if !self.locales.contains_key(&self.default_locale) {
@@ -666,10 +706,13 @@ impl NotificationTemplate {
             if let Some(content) = self.locales.get(locale) {
                 return Some(content);
             }
-            if let Some(language) = locale.split(['-', '_']).next()
-                && let Some(content) = self.locales.get(language)
-            {
-                return Some(content);
+            let normalized = locale.replace('_', "-");
+            let segments = normalized.split('-').collect::<Vec<_>>();
+            for length in (1..segments.len()).rev() {
+                let candidate = segments[..length].join("-");
+                if let Some(content) = self.locales.get(&candidate) {
+                    return Some(content);
+                }
             }
         }
         self.locales.get(&self.default_locale)
@@ -709,6 +752,12 @@ pub struct PushPayload {
 
 impl PushPayload {
     pub fn validate(&self) -> Result<(), PushDomainError> {
+        require_optional_bound("title", &self.title, MAX_PUSH_TITLE_BYTES)?;
+        require_optional_bound("body", &self.body, MAX_PUSH_BODY_BYTES)?;
+        require_optional_bound("icon", &self.icon, MAX_PUSH_ICON_BYTES)?;
+        if let Some(icon) = &self.icon {
+            validate_https_url("icon", icon)?;
+        }
         require_json_bound("templateData", &self.template_data, MAX_TEMPLATE_DATA_BYTES)
     }
 }
@@ -783,6 +832,24 @@ pub enum PublishTarget {
     },
 }
 
+impl PublishTarget {
+    pub fn validate(&self) -> Result<(), PushDomainError> {
+        match self {
+            Self::Device { device_id } => require_non_empty("deviceId", device_id),
+            Self::Client { client_id } => require_non_empty("clientId", client_id),
+            Self::Channel { channel } => require_non_empty("channel", channel),
+            Self::RegisteredTopic { topic }
+            | Self::UserTopic { topic }
+            | Self::ProviderTopic { topic, .. } => require_non_empty("topic", topic),
+            Self::ProviderCondition { condition, .. } => require_non_empty("condition", condition),
+            Self::Recipient { recipient } => recipient.validate(),
+            Self::IndexedFilter { filter } => {
+                require_json_bound("filter", filter, MAX_PROVIDER_OVERRIDE_BYTES)
+            }
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublishIntent {
@@ -800,13 +867,22 @@ pub struct PublishIntent {
 
 impl PublishIntent {
     pub fn validate(&self) -> Result<(), PushDomainError> {
-        require_non_empty("appId", &self.app_id)?;
+        validate_app_id(&self.app_id)?;
         require_non_empty("publishId", &self.publish_id)?;
         if self.targets.is_empty() {
             return Err(PushDomainError::InvalidField {
                 field: "targets",
                 reason: "must contain at least one target",
             });
+        }
+        if self.targets.len() > MAX_PUSH_TARGETS {
+            return Err(PushDomainError::InvalidField {
+                field: "targets",
+                reason: "too many targets",
+            });
+        }
+        for target in &self.targets {
+            target.validate()?;
         }
         self.payload.validate()?;
         for override_payload in &self.provider_overrides {
@@ -816,9 +892,12 @@ impl PublishIntent {
     }
 
     pub fn idempotency_key(&self) -> String {
+        let mut canonical =
+            serde_json::to_value(self).expect("PublishIntent serialization is infallible");
+        canonicalize_intent_json(&mut canonical);
         stable_hash(
-            serde_json::to_vec(self)
-                .expect("PublishIntent serialization is infallible")
+            serde_json::to_vec(&canonical)
+                .expect("canonical intent serialization is infallible")
                 .as_slice(),
         )
     }
@@ -873,13 +952,15 @@ pub struct FanoutConfig {
 
 impl Default for FanoutConfig {
     fn default() -> Self {
-        Self {
+        let config = Self {
             fast_threshold: DEFAULT_PUSH_FANOUT_FAST_THRESHOLD,
             shard_size: DEFAULT_PUSH_FANOUT_SHARD_SIZE,
             page_size: DEFAULT_PUSH_FANOUT_PAGE_SIZE,
             provider_batch_size: DEFAULT_PUSH_PROVIDER_BATCH_SIZE,
             status_retention_days: DEFAULT_PUSH_STATUS_RETENTION_DAYS,
-        }
+        };
+        debug_assert!(config.validate().is_ok());
+        config
     }
 }
 
@@ -1001,12 +1082,33 @@ pub struct DeliveryJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     pub recipient: PushRecipient,
-    pub payload: PushPayload,
+    #[serde(with = "arc_push_payload")]
+    pub payload: Arc<PushPayload>,
     pub attempt: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_before_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
+}
+
+mod arc_push_payload {
+    use super::PushPayload;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::Arc;
+
+    pub fn serialize<S>(payload: &Arc<PushPayload>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        payload.as_ref().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Arc<PushPayload>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        PushPayload::deserialize(deserializer).map(Arc::new)
+    }
 }
 
 impl DeliveryJob {
@@ -1232,6 +1334,54 @@ fn require_non_empty(field: &'static str, value: &str) -> Result<(), PushDomainE
     Ok(())
 }
 
+fn validate_app_id(value: &str) -> Result<(), PushDomainError> {
+    require_non_empty("appId", value)?;
+    if value.len() > MAX_APP_ID_BYTES {
+        return Err(PushDomainError::TooLarge {
+            field: "appId",
+            max_bytes: MAX_APP_ID_BYTES,
+        });
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(PushDomainError::InvalidField {
+            field: "appId",
+            reason: "must contain only ASCII letters, digits, underscore, or hyphen",
+        });
+    }
+    Ok(())
+}
+
+fn require_optional_bound(
+    field: &'static str,
+    value: &Option<String>,
+    max_bytes: usize,
+) -> Result<(), PushDomainError> {
+    if value
+        .as_deref()
+        .is_some_and(|value| value.len() > max_bytes)
+    {
+        return Err(PushDomainError::TooLarge { field, max_bytes });
+    }
+    Ok(())
+}
+
+fn validate_https_url(field: &'static str, value: &str) -> Result<(), PushDomainError> {
+    let parsed = Url::parse(value).map_err(|_| PushDomainError::InvalidField {
+        field,
+        reason: "must be a valid URL",
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(PushDomainError::InvalidField {
+            field,
+            reason: "must use https",
+        });
+    }
+    Ok(())
+}
+
 fn require_secret(field: &'static str, value: &SecretString) -> Result<(), PushDomainError> {
     require_non_empty(field, value.expose_secret())
 }
@@ -1257,7 +1407,7 @@ fn require_json_bound(
     Ok(())
 }
 
-fn validate_web_push_endpoint(endpoint: &str) -> Result<(), PushDomainError> {
+pub(crate) fn validate_web_push_endpoint(endpoint: &str) -> Result<(), PushDomainError> {
     let parsed = Url::parse(endpoint).map_err(|_| PushDomainError::InvalidField {
         field: "endpoint",
         reason: "must be a valid URL",
@@ -1267,6 +1417,12 @@ fn validate_web_push_endpoint(endpoint: &str) -> Result<(), PushDomainError> {
         return Err(PushDomainError::InvalidField {
             field: "endpoint",
             reason: "must use https",
+        });
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(PushDomainError::DisallowedField {
+            field: "endpoint",
+            reason: "userinfo is not allowed",
         });
     }
 
@@ -1281,15 +1437,15 @@ fn validate_web_push_endpoint(endpoint: &str) -> Result<(), PushDomainError> {
         .ok()
         .is_some_and(|raw| matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes"));
 
-    if host == "localhost" && !local_tests_allowed {
+    if (host == "localhost" || host.ends_with(".local")) && !local_tests_allowed {
         return Err(PushDomainError::DisallowedField {
             field: "endpoint",
             reason: "localhost endpoints are only allowed in local tests",
         });
     }
 
-    if let Ok(ip) = host.parse::<IpAddr>()
-        && is_private_or_local_ip(ip)
+    if (parsed.host().is_some_and(host_variant_is_private_or_local)
+        || host.parse::<IpAddr>().is_ok_and(is_private_or_local_ip))
         && !local_tests_allowed
     {
         return Err(PushDomainError::DisallowedField {
@@ -1320,6 +1476,14 @@ fn validate_web_push_endpoint(endpoint: &str) -> Result<(), PushDomainError> {
     Ok(())
 }
 
+fn host_variant_is_private_or_local(host: Host<&str>) -> bool {
+    match host {
+        Host::Domain(_) => false,
+        Host::Ipv4(ip) => is_private_or_local_ip(IpAddr::V4(ip)),
+        Host::Ipv6(ip) => is_private_or_local_ip(IpAddr::V6(ip)),
+    }
+}
+
 fn host_matches_list(host: &str, env_name: &str) -> bool {
     std::env::var(env_name).ok().is_some_and(|raw| {
         raw.split(',').any(|entry| {
@@ -1339,32 +1503,79 @@ fn is_private_or_local_ip(ip: IpAddr) -> bool {
             ip.is_private()
                 || ip.is_loopback()
                 || ip.is_link_local()
+                || ip.is_multicast()
+                || ip.is_unspecified()
                 || ip.is_broadcast()
                 || ip.is_documentation()
                 || ip.octets()[0] == 0
         }
         IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_private_or_local_ip(IpAddr::V4(mapped));
+            }
             ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_unique_local()
                 || ip.is_unicast_link_local()
+                || ip.is_multicast()
         }
+    }
+}
+
+fn canonicalize_json(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                canonicalize_json(item);
+            }
+        }
+        Value::Object(map) => {
+            let mut sorted = BTreeMap::new();
+            for (key, mut value) in std::mem::take(map) {
+                canonicalize_json(&mut value);
+                sorted.insert(key, value);
+            }
+            map.extend(sorted);
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn canonicalize_intent_json(value: &mut Value) {
+    canonicalize_json(value);
+    if let Value::Object(map) = value
+        && let Some(Value::Array(overrides)) = map.get_mut("providerOverrides")
+    {
+        overrides.sort_by(|left, right| {
+            left.get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .cmp(
+                    right
+                        .get("provider")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+        });
     }
 }
 
 fn redact_error_reason(value: String) -> String {
     let lower = value.to_ascii_lowercase();
-    if lower.contains("token")
+    let looks_like_token = value.len() >= 24
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'='));
+    if value.len() > 128
+        || lower.contains("token")
         || lower.contains("secret")
         || lower.contains("endpoint")
         || lower.contains("auth")
         || lower.contains("http://")
         || lower.contains("https://")
+        || looks_like_token
     {
-        "[REDACTED]".to_owned()
-    } else if value.len() > 256 {
-        let truncated = value.chars().take(256).collect::<String>();
-        format!("{truncated}...")
+        format!("[REDACTED:{}]", &stable_hash(value.as_bytes())[..12])
     } else {
         value
     }
@@ -1587,6 +1798,20 @@ mod tests {
                 reason: "must use https"
             })
         );
+
+        for endpoint in [
+            "https://169.254.169.254/latest/meta-data",
+            "https://[::1]/push",
+            "https://[::ffff:10.0.0.1]/push",
+            "https://attacker.example@10.0.0.1/push",
+        ] {
+            let recipient = PushRecipient::Web {
+                endpoint: secret(endpoint),
+                p256dh: secret("p256dh"),
+                auth: secret("auth"),
+            };
+            assert!(recipient.validate().is_err(), "{endpoint} must be rejected");
+        }
     }
 
     #[test]

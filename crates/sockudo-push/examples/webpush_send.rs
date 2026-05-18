@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 p256dh: SecretString::new(subscription.keys.p256dh).map_err(|e| e.to_string())?,
                 auth: SecretString::new(subscription.keys.auth).map_err(|e| e.to_string())?,
             },
-            payload: PushPayload {
+            payload: Arc::new(PushPayload {
                 template_id: None,
                 template_data: json!({
                     "source": "sockudo-webpush-e2e",
@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 icon: None,
                 sound: None,
                 collapse_key: Some(collapse_key),
-            },
+            }),
             attempt: 1,
             not_before_ms: None,
             expires_at_ms: None,

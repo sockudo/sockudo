@@ -15,9 +15,9 @@ v2 = ["delta", "tag-filtering", "recovery"]
 delta = ["sockudo-adapter/delta", "sockudo-delta"]
 tag-filtering = ["sockudo-adapter/tag-filtering", "sockudo-filter"]
 recovery = ["sockudo-adapter/recovery"]
-push = ["dep:sockudo-push"]
+push = ["dep:aes-gcm", "dep:base64", "dep:sha2", "dep:sockudo-push"]
 push-fcm = ["push", "sockudo-push/push-fcm"]
-push-apns = ["push", "sockudo-push/push-apns"]
+push-apns = ["push", "sockudo-push/push-apns", "dep:jsonwebtoken"]
 push-webpush = ["push", "sockudo-push/push-webpush"]
 push-hms = ["push", "sockudo-push/push-hms"]
 push-wns = ["push", "sockudo-push/push-wns"]
@@ -95,6 +95,7 @@ sockudo-delta = { workspace = true, optional = true }
 sockudo-adapter = { workspace = true }
 sockudo-push = { workspace = true, optional = true }
 
+aes-gcm = { workspace = true, optional = true }
 ahash = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -133,6 +134,9 @@ surrealdb = { workspace = true, optional = true }
 surrealdb-types = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 redis = { workspace = true }

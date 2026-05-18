@@ -3983,6 +3983,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-tls"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tower-service",
+]
+
+[[package]]
 name = "hyper-util"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6715,14 +6731,17 @@ dependencies = [
  "base64",
  "bytes",
  "futures-core",
+ "h2",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
  "hyper",
  "hyper-rustls",
+ "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
+ "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -6733,6 +6752,7 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
+ "tokio-native-tls",
  "tokio-rustls",
  "tower",
  "tower-http",
@@ -7850,12 +7870,14 @@ dependencies = [
 name = "sockudo"
 version = "4.4.0"
 dependencies = [
+ "aes-gcm",
  "ahash 0.8.12",
  "async-trait",
  "aws-config",
  "aws-sdk-dynamodb",
  "axum",
  "axum-server",
+ "base64",
  "clap",
  "cmake",
  "crossfire",
@@ -7865,6 +7887,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "jsonwebtoken",
  "mimalloc",
  "num_cpus",
  "redis",
@@ -7873,6 +7896,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "sha2 0.11.0",
  "sockudo-adapter",
  "sockudo-app",
  "sockudo-cache",
@@ -8089,9 +8113,12 @@ dependencies = [
  "async-trait",
  "aws-sdk-dynamodb",
  "base64",
+ "criterion",
+ "dashmap",
  "futures-util",
  "hex",
  "hmac 0.13.0",
+ "httpdate",
  "rand 0.9.4",
  "reqwest 0.12.28",
  "scylla",
@@ -8106,6 +8133,7 @@ dependencies = [
  "tracing",
  "url",
  "web-push-native",
+ "zeroize",
 ]
 
 [[package]]

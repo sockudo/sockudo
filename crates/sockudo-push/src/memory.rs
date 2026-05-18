@@ -16,6 +16,8 @@ use crate::storage::{
     PushSubscriptionStore, PushTemplateStore, ScheduledPushJob, SchedulerLock,
 };
 
+const MEMORY_DELIVERY_EVENT_CAP: usize = 100_000;
+
 #[derive(Clone, Default)]
 pub struct MemoryPushStore {
     inner: Arc<RwLock<MemoryPushState>>,
@@ -636,6 +638,20 @@ impl PushScheduleStore for MemoryPushStore {
         })
     }
 
+    async fn list_scheduled_apps(&self) -> PushStorageResult<Vec<String>> {
+        let mut apps = self
+            .inner
+            .read()
+            .await
+            .scheduled_by_id
+            .keys()
+            .map(|(app_id, _)| app_id.clone())
+            .collect::<Vec<_>>();
+        apps.sort();
+        apps.dedup();
+        Ok(apps)
+    }
+
     async fn list_due_scheduled_jobs(
         &self,
         app_id: &str,
@@ -738,6 +754,7 @@ impl PushIdempotencyStore for MemoryPushStore {
     ) -> PushStorageResult<bool> {
         let key = (record.app_id.clone(), record.key.clone());
         let mut inner = self.inner.write().await;
+        prune_expired_records(&mut inner, crate::pipeline::now_ms());
         if inner.idempotency.contains_key(&key) {
             return Ok(false);
         }
@@ -750,10 +767,9 @@ impl PushIdempotencyStore for MemoryPushStore {
         app_id: &str,
         key: &str,
     ) -> PushStorageResult<Option<IdempotencyRecord>> {
-        Ok(self
-            .inner
-            .read()
-            .await
+        let mut inner = self.inner.write().await;
+        prune_expired_records(&mut inner, crate::pipeline::now_ms());
+        Ok(inner
             .idempotency
             .get(&(app_id.to_owned(), key.to_owned()))
             .cloned())
@@ -769,6 +785,7 @@ impl PushSchedulerLockStore for MemoryPushStore {
     ) -> PushStorageResult<bool> {
         let key = (lock.app_id.clone(), lock.publish_id.clone());
         let mut inner = self.inner.write().await;
+        prune_expired_records(&mut inner, now_ms);
         if let Some(existing) = inner.scheduler_locks.get(&key)
             && existing.owner_id != lock.owner_id
             && existing.expires_at_ms > now_ms
@@ -795,6 +812,27 @@ impl PushSchedulerLockStore for MemoryPushStore {
             inner.scheduler_locks.remove(&key);
         }
         Ok(())
+    }
+}
+
+fn prune_expired_records(inner: &mut MemoryPushState, now_ms: u64) {
+    inner.idempotency.retain(|_, record| {
+        record.expires_at_ms < 1_000_000_000_000 || record.expires_at_ms > now_ms
+    });
+    inner
+        .scheduler_locks
+        .retain(|_, lock| lock.expires_at_ms > now_ms);
+    if inner.delivery_events.len() > MEMORY_DELIVERY_EVENT_CAP {
+        let remove_count = inner.delivery_events.len() - MEMORY_DELIVERY_EVENT_CAP;
+        let keys = inner
+            .delivery_events
+            .keys()
+            .take(remove_count)
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            inner.delivery_events.remove(&key);
+        }
     }
 }
 

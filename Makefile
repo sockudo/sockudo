@@ -310,6 +310,26 @@ benchmark: ## Run basic performance benchmark
 	done
 	@echo "$(GREEN)Benchmark complete!$(RESET)"
 
+.PHONY: push-benchmark
+push-benchmark: ## Run push notification admission benchmark (override ARGS="--mode all --devices 10000")
+	@node scripts/push-benchmark.mjs $(ARGS)
+
+.PHONY: push-benchmark-scenarios
+push-benchmark-scenarios: ## Print or execute push benchmark scenario suite (default dry-run; pass ARGS="--execute")
+	@node scripts/push-benchmark-scenarios.mjs $(ARGS)
+
+.PHONY: push-benchmark-internal
+push-benchmark-internal: ## Run internal Criterion push pipeline benchmarks
+	@cargo bench -p sockudo-push --bench push_pipeline_bench --features testing
+
+.PHONY: push-mock-provider
+push-mock-provider: ## Start mock push provider for throttling/failure simulations
+	@node scripts/push-mock-provider.mjs $(ARGS)
+
+.PHONY: push-provider-canary
+push-provider-canary: ## Run bounded real-provider push canary (dry-run unless ARGS includes --execute)
+	@node scripts/push-provider-canary.mjs $(ARGS)
+
 # =============================================================================
 # SSL and Security
 # =============================================================================

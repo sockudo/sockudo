@@ -16,28 +16,36 @@ use crate::storage::{
 use surrealdb_types::SurrealValue;
 
 const FAMILY_DEVICE: &str = "device";
+const FAMILY_DEVICE_BY_CLIENT: &str = "device-by-client";
+const FAMILY_DEVICE_BY_DAY: &str = "device-by-day";
 const FAMILY_SUBSCRIPTION: &str = "subscription";
+const FAMILY_SUBSCRIPTION_BY_DEVICE: &str = "subscription-by-device";
+const FAMILY_SUBSCRIPTION_CHANNEL: &str = "subscription-channel";
 const FAMILY_CREDENTIAL: &str = "credential";
 const FAMILY_TEMPLATE: &str = "template";
 const FAMILY_STATUS: &str = "status";
 const FAMILY_PUBLISH_LOG: &str = "publish-log";
 const FAMILY_FANOUT_SHARD: &str = "fanout-shard";
 const FAMILY_SCHEDULED_JOB: &str = "scheduled-job";
+const FAMILY_SCHEDULED_APP: &str = "scheduled-app";
+const FAMILY_SCHEDULED_JOB_DUE: &str = "scheduled-job-due";
 const FAMILY_DELIVERY_EVENT: &str = "delivery-event";
+const FAMILY_DELIVERY_EVENT_TIME: &str = "delivery-event-time";
 const FAMILY_IDEMPOTENCY: &str = "idempotency";
 const FAMILY_SCHEDULER_LOCK: &str = "scheduler-lock";
 const FAMILY_OPERATOR_INVALIDATION: &str = "operator-invalidation";
 const DEFAULT_SK: &str = "_";
+const GLOBAL_APP_ID: &str = "_global";
 
 #[derive(Clone, Debug)]
-struct StoredDocument {
+pub struct StoredDocument {
     pk: String,
     sk: String,
     data: String,
 }
 
 #[async_trait]
-trait DocumentBackend: Clone + Send + Sync + 'static {
+pub trait DocumentBackend: Clone + Send + Sync + 'static {
     async fn put(
         &self,
         family: &'static str,
@@ -77,6 +85,68 @@ trait DocumentBackend: Clone + Send + Sync + 'static {
         family: &'static str,
         app_id: &str,
     ) -> PushStorageResult<Vec<StoredDocument>>;
+
+    async fn scan_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        Ok(self
+            .scan_app(family, app_id)
+            .await?
+            .into_iter()
+            .filter(|document| document.pk == pk)
+            .collect())
+    }
+
+    async fn scan_pk_page(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        Ok(self
+            .scan_pk(family, app_id, pk)
+            .await?
+            .into_iter()
+            .filter(|document| start_after.is_none_or(|start| document.sk.as_str() > start))
+            .take(limit.max(1))
+            .collect())
+    }
+
+    async fn scan_app_page_by_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        start_after_pk: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        Ok(self
+            .scan_app(family, app_id)
+            .await?
+            .into_iter()
+            .filter(|document| start_after_pk.is_none_or(|start| document.pk.as_str() > start))
+            .take(limit.max(1))
+            .collect())
+    }
+
+    async fn delete_many(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        keys: &[(String, String)],
+    ) -> PushStorageResult<u64> {
+        let mut deleted = 0_u64;
+        for (pk, sk) in keys {
+            if self.delete(family, app_id, pk, sk).await? {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
 }
 
 #[derive(Clone)]
@@ -97,7 +167,6 @@ pub type SurrealDbPushStore = DocumentPushStore<SurrealDbDocumentBackend>;
 #[cfg(feature = "scylladb")]
 pub type ScyllaDbPushStore = DocumentPushStore<ScyllaDbDocumentBackend>;
 
-#[allow(private_bounds)]
 impl<B> DocumentPushStore<B>
 where
     B: DocumentBackend,
@@ -151,6 +220,51 @@ where
             .map(|doc| Ok((doc.pk, doc.sk, from_json_str(&doc.data)?)))
             .collect()
     }
+
+    async fn scan_pk_json<T: DeserializeOwned>(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+    ) -> PushStorageResult<Vec<(String, String, T)>> {
+        self.backend
+            .scan_pk(family, app_id, pk)
+            .await?
+            .into_iter()
+            .map(|doc| Ok((doc.pk, doc.sk, from_json_str(&doc.data)?)))
+            .collect()
+    }
+
+    async fn scan_pk_page_json<T: DeserializeOwned>(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<(String, String, T)>> {
+        self.backend
+            .scan_pk_page(family, app_id, pk, start_after, limit)
+            .await?
+            .into_iter()
+            .map(|doc| Ok((doc.pk, doc.sk, from_json_str(&doc.data)?)))
+            .collect()
+    }
+
+    async fn scan_app_page_by_pk_json<T: DeserializeOwned>(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        start_after_pk: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<(String, String, T)>> {
+        self.backend
+            .scan_app_page_by_pk(family, app_id, start_after_pk, limit)
+            .await?
+            .into_iter()
+            .map(|doc| Ok((doc.pk, doc.sk, from_json_str(&doc.data)?)))
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -163,9 +277,34 @@ where
         device: DeviceDetails,
     ) -> PushStorageResult<DeviceRegistrationOutcome> {
         device.validate()?;
-        let existing = self.get_device(&device.app_id, &device.id).await?;
         let token_hash = device.push.recipient.token_hash();
+        if self
+            .backend
+            .put_if_absent(
+                FAMILY_DEVICE,
+                &device.app_id,
+                &device.id,
+                DEFAULT_SK,
+                to_json_string(&device)?,
+            )
+            .await?
+        {
+            self.put_device_indexes(&device).await?;
+            return Ok(DeviceRegistrationOutcome {
+                change: DeviceRegistrationChange::Inserted,
+                token_hash,
+            });
+        }
+
+        let existing = self.get_device(&device.app_id, &device.id).await?;
         let change = registration_change(existing.as_ref(), &device);
+        if matches!(change, DeviceRegistrationChange::Unchanged) {
+            self.put_device_indexes(&device).await?;
+            return Ok(DeviceRegistrationOutcome { change, token_hash });
+        }
+        if let Some(existing) = existing.as_ref() {
+            self.delete_device_indexes(existing).await?;
+        }
         self.put_json(
             FAMILY_DEVICE,
             &device.app_id,
@@ -174,6 +313,7 @@ where
             &device,
         )
         .await?;
+        self.put_device_indexes(&device).await?;
         Ok(DeviceRegistrationOutcome { change, token_hash })
     }
 
@@ -191,6 +331,9 @@ where
         app_id: &str,
         device_id: &str,
     ) -> PushStorageResult<DeleteDeviceOutcome> {
+        if let Some(device) = self.get_device(app_id, device_id).await? {
+            self.delete_device_indexes(&device).await?;
+        }
         self.delete_subscriptions_by_device(app_id, device_id)
             .await?;
         self.delete_json(FAMILY_DEVICE, app_id, device_id, DEFAULT_SK)
@@ -205,7 +348,12 @@ where
     ) -> PushStorageResult<Page<DeviceDetails>> {
         let start = cursor_position(cursor, app_id)?;
         let rows = self
-            .scan_json::<DeviceDetails>(FAMILY_DEVICE, app_id)
+            .scan_app_page_by_pk_json::<DeviceDetails>(
+                FAMILY_DEVICE,
+                app_id,
+                start.as_deref(),
+                limit_plus_one(limit),
+            )
             .await?
             .into_iter()
             .map(|(device_id, _, device)| (device_id, device))
@@ -225,13 +373,11 @@ where
         client_id: &str,
     ) -> PushStorageResult<u64> {
         let devices = self
-            .scan_json::<DeviceDetails>(FAMILY_DEVICE, app_id)
+            .scan_pk_json::<String>(FAMILY_DEVICE_BY_CLIENT, app_id, client_id)
             .await?;
         let mut deleted = 0_u64;
-        for (device_id, _, device) in devices {
-            if device.client_id.as_deref() == Some(client_id)
-                && self.delete_device(app_id, &device_id).await? == DeleteDeviceOutcome::Deleted
-            {
+        for (_, device_id, _) in devices {
+            if self.delete_device(app_id, &device_id).await? == DeleteDeviceOutcome::Deleted {
                 deleted += 1;
             }
         }
@@ -246,20 +392,19 @@ where
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<DeviceDetails>> {
         let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .scan_json::<DeviceDetails>(FAMILY_DEVICE, app_id)
+        let index_rows = self
+            .scan_pk_json::<String>(FAMILY_DEVICE_BY_DAY, app_id, day_bucket)
             .await?
-            .into_iter()
-            .filter_map(|(_, _, device)| {
-                (day_bucket_for_ms(device.last_active_at_ms) == day_bucket).then(|| {
-                    (
-                        format!("{:020}:{}", device.last_active_at_ms, device.id),
-                        device,
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
+            .into_iter();
+        let mut rows = Vec::new();
+        for (_, position, device_id) in index_rows {
+            if let Some(device) = self
+                .get_json::<DeviceDetails>(FAMILY_DEVICE, app_id, &device_id, DEFAULT_SK)
+                .await?
+            {
+                rows.push((position, device));
+            }
+        }
         Ok(page_from_rows(
             app_id,
             PushCursorKind::Device,
@@ -267,6 +412,54 @@ where
             limit,
             start,
         ))
+    }
+}
+
+impl<B> DocumentPushStore<B>
+where
+    B: DocumentBackend,
+{
+    async fn put_device_indexes(&self, device: &DeviceDetails) -> PushStorageResult<()> {
+        if let Some(client_id) = &device.client_id {
+            self.put_json(
+                FAMILY_DEVICE_BY_CLIENT,
+                &device.app_id,
+                client_id,
+                &device.id,
+                &device.id,
+            )
+            .await?;
+        }
+        self.put_json(
+            FAMILY_DEVICE_BY_DAY,
+            &device.app_id,
+            &day_bucket_for_ms(device.last_active_at_ms),
+            &format!("{:020}:{}", device.last_active_at_ms, device.id),
+            &device.id,
+        )
+        .await
+    }
+
+    async fn delete_device_indexes(&self, device: &DeviceDetails) -> PushStorageResult<()> {
+        if let Some(client_id) = &device.client_id {
+            self.backend
+                .delete(
+                    FAMILY_DEVICE_BY_CLIENT,
+                    &device.app_id,
+                    client_id,
+                    &device.id,
+                )
+                .await?;
+        }
+        self.backend
+            .delete(
+                FAMILY_DEVICE_BY_DAY,
+                &device.app_id,
+                &day_bucket_for_ms(device.last_active_at_ms),
+                &format!("{:020}:{}", device.last_active_at_ms, device.id),
+            )
+            .await?;
+        Ok(())
     }
 }
 
@@ -287,6 +480,22 @@ where
             &subscription.device_id,
             &subscription,
         )
+        .await?;
+        self.put_json(
+            FAMILY_SUBSCRIPTION_BY_DEVICE,
+            &subscription.app_id,
+            &subscription.device_id,
+            &subscription.channel,
+            &subscription,
+        )
+        .await?;
+        self.put_json(
+            FAMILY_SUBSCRIPTION_CHANNEL,
+            &subscription.app_id,
+            &subscription.channel,
+            DEFAULT_SK,
+            &subscription.channel,
+        )
         .await
     }
 
@@ -296,6 +505,9 @@ where
         channel: &str,
         device_id: &str,
     ) -> PushStorageResult<DeleteDeviceOutcome> {
+        self.backend
+            .delete(FAMILY_SUBSCRIPTION_BY_DEVICE, app_id, device_id, channel)
+            .await?;
         self.delete_json(FAMILY_SUBSCRIPTION, app_id, channel, device_id)
             .await
     }
@@ -309,12 +521,16 @@ where
     ) -> PushStorageResult<Page<ChannelSubscription>> {
         let start = cursor_position(cursor, app_id)?;
         let rows = self
-            .scan_json::<ChannelSubscription>(FAMILY_SUBSCRIPTION, app_id)
+            .scan_pk_page_json::<ChannelSubscription>(
+                FAMILY_SUBSCRIPTION,
+                app_id,
+                channel,
+                start.as_deref(),
+                limit_plus_one(limit),
+            )
             .await?
             .into_iter()
-            .filter_map(|(_, device_id, subscription)| {
-                (subscription.channel == channel).then_some((device_id, subscription))
-            })
+            .map(|(_, device_id, subscription)| (device_id, subscription))
             .collect();
         Ok(page_from_rows(
             app_id,
@@ -333,16 +549,18 @@ where
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<ChannelSubscription>> {
         let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .scan_json::<ChannelSubscription>(FAMILY_SUBSCRIPTION, app_id)
+        let rows = self
+            .scan_pk_page_json::<ChannelSubscription>(
+                FAMILY_SUBSCRIPTION_BY_DEVICE,
+                app_id,
+                device_id,
+                start.as_deref(),
+                limit_plus_one(limit),
+            )
             .await?
             .into_iter()
-            .filter_map(|(_, _, subscription)| {
-                (subscription.device_id == device_id)
-                    .then(|| (subscription.channel.clone(), subscription))
-            })
+            .map(|(_, channel, subscription)| (channel, subscription))
             .collect::<Vec<_>>();
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(page_from_rows(
             app_id,
             PushCursorKind::ChannelSubscription,
@@ -387,14 +605,17 @@ where
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<String>> {
         let start = cursor_position(cursor, app_id)?;
-        let mut channels = self
-            .scan_json::<ChannelSubscription>(FAMILY_SUBSCRIPTION, app_id)
+        let channels = self
+            .scan_app_page_by_pk_json::<String>(
+                FAMILY_SUBSCRIPTION_CHANNEL,
+                app_id,
+                start.as_deref(),
+                limit_plus_one(limit),
+            )
             .await?
             .into_iter()
-            .map(|(_, _, subscription)| subscription.channel)
+            .map(|(channel, _, _)| channel)
             .collect::<Vec<_>>();
-        channels.sort();
-        channels.dedup();
         let rows = channels
             .into_iter()
             .map(|channel| (channel.clone(), channel))
@@ -414,20 +635,20 @@ where
         device_id: &str,
     ) -> PushStorageResult<u64> {
         let subscriptions = self
-            .scan_json::<ChannelSubscription>(FAMILY_SUBSCRIPTION, app_id)
+            .scan_pk_json::<ChannelSubscription>(FAMILY_SUBSCRIPTION_BY_DEVICE, app_id, device_id)
             .await?;
-        let mut deleted = 0_u64;
-        for (channel, sub_device_id, _) in subscriptions {
-            if sub_device_id == device_id
-                && self
-                    .backend
-                    .delete(FAMILY_SUBSCRIPTION, app_id, &channel, &sub_device_id)
-                    .await?
-            {
-                deleted += 1;
-            }
+        let mut forward_keys = Vec::with_capacity(subscriptions.len());
+        let mut reverse_keys = Vec::with_capacity(subscriptions.len());
+        for (_, channel, _) in subscriptions {
+            forward_keys.push((channel.clone(), device_id.to_owned()));
+            reverse_keys.push((device_id.to_owned(), channel));
         }
-        Ok(deleted)
+        self.backend
+            .delete_many(FAMILY_SUBSCRIPTION_BY_DEVICE, app_id, &reverse_keys)
+            .await?;
+        self.backend
+            .delete_many(FAMILY_SUBSCRIPTION, app_id, &forward_keys)
+            .await
     }
 
     async fn delete_subscriptions_by_channel(
@@ -436,19 +657,24 @@ where
         channel: &str,
     ) -> PushStorageResult<u64> {
         let subscriptions = self
-            .scan_json::<ChannelSubscription>(FAMILY_SUBSCRIPTION, app_id)
+            .scan_pk_json::<ChannelSubscription>(FAMILY_SUBSCRIPTION, app_id, channel)
             .await?;
-        let mut deleted = 0_u64;
-        for (sub_channel, device_id, _) in subscriptions {
-            if sub_channel == channel
-                && self
-                    .backend
-                    .delete(FAMILY_SUBSCRIPTION, app_id, &sub_channel, &device_id)
-                    .await?
-            {
-                deleted += 1;
-            }
+        let mut forward_keys = Vec::with_capacity(subscriptions.len());
+        let mut reverse_keys = Vec::with_capacity(subscriptions.len());
+        for (_, device_id, _) in subscriptions {
+            forward_keys.push((channel.to_owned(), device_id.clone()));
+            reverse_keys.push((device_id, channel.to_owned()));
         }
+        self.backend
+            .delete_many(FAMILY_SUBSCRIPTION_BY_DEVICE, app_id, &reverse_keys)
+            .await?;
+        let deleted = self
+            .backend
+            .delete_many(FAMILY_SUBSCRIPTION, app_id, &forward_keys)
+            .await?;
+        self.backend
+            .delete(FAMILY_SUBSCRIPTION_CHANNEL, app_id, channel, DEFAULT_SK)
+            .await?;
         Ok(deleted)
     }
 }
@@ -659,12 +885,45 @@ where
     B: DocumentBackend,
 {
     async fn put_scheduled_job(&self, job: ScheduledPushJob) -> PushStorageResult<()> {
+        if let Some(existing) = self
+            .get_json::<ScheduledPushJob>(
+                FAMILY_SCHEDULED_JOB,
+                &job.app_id,
+                &job.publish_id,
+                DEFAULT_SK,
+            )
+            .await?
+        {
+            self.delete_json(
+                FAMILY_SCHEDULED_JOB_DUE,
+                &existing.app_id,
+                "due",
+                &scheduled_due_position(&existing),
+            )
+            .await?;
+        }
         self.put_json(
             FAMILY_SCHEDULED_JOB,
             &job.app_id,
             &job.publish_id,
             DEFAULT_SK,
             &job,
+        )
+        .await?;
+        self.put_json(
+            FAMILY_SCHEDULED_JOB_DUE,
+            &job.app_id,
+            "due",
+            &scheduled_due_position(&job),
+            &job,
+        )
+        .await?;
+        self.put_json(
+            FAMILY_SCHEDULED_APP,
+            GLOBAL_APP_ID,
+            "apps",
+            &job.app_id,
+            &job.app_id,
         )
         .await
     }
@@ -683,8 +942,29 @@ where
         app_id: &str,
         publish_id: &str,
     ) -> PushStorageResult<DeleteDeviceOutcome> {
+        if let Some(existing) = self
+            .get_json::<ScheduledPushJob>(FAMILY_SCHEDULED_JOB, app_id, publish_id, DEFAULT_SK)
+            .await?
+        {
+            self.delete_json(
+                FAMILY_SCHEDULED_JOB_DUE,
+                app_id,
+                "due",
+                &scheduled_due_position(&existing),
+            )
+            .await?;
+        }
         self.delete_json(FAMILY_SCHEDULED_JOB, app_id, publish_id, DEFAULT_SK)
             .await
+    }
+
+    async fn list_scheduled_apps(&self) -> PushStorageResult<Vec<String>> {
+        Ok(self
+            .scan_pk_json::<String>(FAMILY_SCHEDULED_APP, GLOBAL_APP_ID, "apps")
+            .await?
+            .into_iter()
+            .map(|(_, _, app_id)| app_id)
+            .collect())
     }
 
     async fn list_due_scheduled_jobs(
@@ -695,16 +975,20 @@ where
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<ScheduledPushJob>> {
         let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .scan_json::<ScheduledPushJob>(FAMILY_SCHEDULED_JOB, app_id)
+        let rows = self
+            .scan_pk_page_json::<ScheduledPushJob>(
+                FAMILY_SCHEDULED_JOB_DUE,
+                app_id,
+                "due",
+                start.as_deref(),
+                limit_plus_one(limit),
+            )
             .await?
             .into_iter()
-            .filter_map(|(_, _, job)| {
-                (job.due_minute_ms <= due_minute_ms)
-                    .then(|| (format!("{:020}:{}", job.due_at_ms, job.publish_id), job))
+            .filter_map(|(_, position, job)| {
+                (job.due_minute_ms <= due_minute_ms).then_some((position, job))
             })
             .collect::<Vec<_>>();
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(page_from_rows(
             app_id,
             PushCursorKind::ScheduledJob,
@@ -721,11 +1005,20 @@ where
     B: DocumentBackend,
 {
     async fn append_delivery_event(&self, event: DeliveryEvent) -> PushStorageResult<()> {
+        let position = delivery_event_position(&event);
         self.put_json(
             FAMILY_DELIVERY_EVENT,
             &event.app_id,
             &event.publish_id,
-            &format!("{:020}:{}", event.occurred_at_ms, event.event_id),
+            &position,
+            &event,
+        )
+        .await?;
+        self.put_json(
+            FAMILY_DELIVERY_EVENT_TIME,
+            &event.app_id,
+            "time",
+            &format!("{position}:{}", event.publish_id),
             &event,
         )
         .await
@@ -739,15 +1032,18 @@ where
         cursor: Option<PushCursor>,
     ) -> PushStorageResult<Page<DeliveryEvent>> {
         let start = cursor_position(cursor, app_id)?;
-        let mut rows = self
-            .scan_json::<DeliveryEvent>(FAMILY_DELIVERY_EVENT, app_id)
+        let rows = self
+            .scan_pk_page_json::<DeliveryEvent>(
+                FAMILY_DELIVERY_EVENT,
+                app_id,
+                publish_id,
+                start.as_deref(),
+                limit_plus_one(limit),
+            )
             .await?
             .into_iter()
-            .filter_map(|(event_publish_id, position, event)| {
-                (event_publish_id == publish_id).then_some((position, event))
-            })
+            .map(|(_, position, event)| (position, event))
             .collect::<Vec<_>>();
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(page_from_rows(
             app_id,
             PushCursorKind::DeliveryEvent,
@@ -763,19 +1059,24 @@ where
         before_ms: u64,
     ) -> PushStorageResult<u64> {
         let events = self
-            .scan_json::<DeliveryEvent>(FAMILY_DELIVERY_EVENT, app_id)
+            .scan_pk_json::<DeliveryEvent>(FAMILY_DELIVERY_EVENT_TIME, app_id, "time")
             .await?;
-        let mut deleted = 0_u64;
-        for (publish_id, position, event) in events {
-            if event.occurred_at_ms < before_ms
-                && self
-                    .backend
-                    .delete(FAMILY_DELIVERY_EVENT, app_id, &publish_id, &position)
-                    .await?
-            {
-                deleted += 1;
-            }
+        let mut primary_keys = Vec::new();
+        let mut time_keys = Vec::new();
+        for (_, time_position, event) in events
+            .into_iter()
+            .filter(|(_, _, event)| event.occurred_at_ms < before_ms)
+        {
+            primary_keys.push((event.publish_id.clone(), delivery_event_position(&event)));
+            time_keys.push(("time".to_owned(), time_position));
         }
+        let deleted = self
+            .backend
+            .delete_many(FAMILY_DELIVERY_EVENT, app_id, &primary_keys)
+            .await?;
+        self.backend
+            .delete_many(FAMILY_DELIVERY_EVENT_TIME, app_id, &time_keys)
+            .await?;
         Ok(deleted)
     }
 }
@@ -1042,7 +1343,13 @@ impl DocumentBackend for DynamoDbDocumentBackend {
             .await;
         match result {
             Ok(_) => Ok(true),
-            Err(error) if error.to_string().contains("ConditionalCheckFailed") => Ok(false),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|error| error.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
+            }
             Err(error) => Err(dynamodb_error(error)),
         }
     }
@@ -1120,6 +1427,153 @@ impl DocumentBackend for DynamoDbDocumentBackend {
             })
             .collect::<PushStorageResult<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    async fn scan_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+        let family_app = family_app(family, app_id);
+        let prefix = format!("{pk}\0");
+        let rows = self
+            .client
+            .query()
+            .table_name(&self.table)
+            .key_condition_expression("family_app = :family_app AND begins_with(doc_key, :prefix)")
+            .expression_attribute_values(":family_app", AttributeValue::S(family_app))
+            .expression_attribute_values(":prefix", AttributeValue::S(prefix))
+            .send()
+            .await
+            .map_err(dynamodb_error)?
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut item| {
+                let pk = take_dynamodb_string(&mut item, "pk")?;
+                let sk = take_dynamodb_string(&mut item, "sk")?;
+                let data = take_dynamodb_string(&mut item, "data")?;
+                Ok(StoredDocument { pk, sk, data })
+            })
+            .collect::<PushStorageResult<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    async fn scan_pk_page(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+        let family_app = family_app(family, app_id);
+        let prefix = format!("{pk}\0");
+        let mut query = self
+            .client
+            .query()
+            .table_name(&self.table)
+            .key_condition_expression("family_app = :family_app AND begins_with(doc_key, :prefix)")
+            .expression_attribute_values(":family_app", AttributeValue::S(family_app.clone()))
+            .expression_attribute_values(":prefix", AttributeValue::S(prefix))
+            .limit(limit.max(1) as i32);
+        if let Some(start_after) = start_after {
+            query = query
+                .exclusive_start_key("family_app", AttributeValue::S(family_app))
+                .exclusive_start_key("doc_key", AttributeValue::S(document_key(pk, start_after)));
+        }
+        let rows = query
+            .send()
+            .await
+            .map_err(dynamodb_error)?
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut item| {
+                let pk = take_dynamodb_string(&mut item, "pk")?;
+                let sk = take_dynamodb_string(&mut item, "sk")?;
+                let data = take_dynamodb_string(&mut item, "data")?;
+                Ok(StoredDocument { pk, sk, data })
+            })
+            .collect::<PushStorageResult<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    async fn scan_app_page_by_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        start_after_pk: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+        let family_app = family_app(family, app_id);
+        let mut query = self
+            .client
+            .query()
+            .table_name(&self.table)
+            .key_condition_expression("family_app = :family_app")
+            .expression_attribute_values(":family_app", AttributeValue::S(family_app.clone()))
+            .limit(limit.max(1) as i32);
+        if let Some(start_after_pk) = start_after_pk {
+            query = query
+                .exclusive_start_key("family_app", AttributeValue::S(family_app))
+                .exclusive_start_key(
+                    "doc_key",
+                    AttributeValue::S(document_key(start_after_pk, DEFAULT_SK)),
+                );
+        }
+        let rows = query
+            .send()
+            .await
+            .map_err(dynamodb_error)?
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut item| {
+                let pk = take_dynamodb_string(&mut item, "pk")?;
+                let sk = take_dynamodb_string(&mut item, "sk")?;
+                let data = take_dynamodb_string(&mut item, "data")?;
+                Ok(StoredDocument { pk, sk, data })
+            })
+            .collect::<PushStorageResult<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    async fn delete_many(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        keys: &[(String, String)],
+    ) -> PushStorageResult<u64> {
+        use aws_sdk_dynamodb::types::{AttributeValue, DeleteRequest, WriteRequest};
+        let mut deleted = 0_u64;
+        for chunk in keys.chunks(25) {
+            let mut requests = Vec::with_capacity(chunk.len());
+            for (pk, sk) in chunk {
+                let (family_app, doc_key) = Self::key(family, app_id, pk, sk);
+                let delete = DeleteRequest::builder()
+                    .key("family_app", AttributeValue::S(family_app))
+                    .key("doc_key", AttributeValue::S(doc_key))
+                    .build()
+                    .map_err(dynamodb_build_error)?;
+                requests.push(WriteRequest::builder().delete_request(delete).build());
+            }
+            if requests.is_empty() {
+                continue;
+            }
+            self.client
+                .batch_write_item()
+                .request_items(self.table.clone(), requests)
+                .send()
+                .await
+                .map_err(dynamodb_error)?;
+            deleted += chunk.len() as u64;
+        }
+        Ok(deleted)
     }
 }
 
@@ -1209,11 +1663,30 @@ impl DocumentBackend for SurrealDbDocumentBackend {
         sk: &str,
         data: String,
     ) -> PushStorageResult<bool> {
-        if self.get(family, app_id, pk, sk).await?.is_some() {
-            return Ok(false);
-        }
-        self.put(family, app_id, pk, sk, data).await?;
-        Ok(true)
+        let result = self
+            .db
+            .query("CREATE type::record($table, $id) SET family_app = $family_app, app_id = $app_id, pk = $pk, sk = $sk, data = $data")
+            .bind(("table", self.table.clone()))
+            .bind(("id", Self::record_id(family, app_id, pk, sk)))
+            .bind(("family_app", family_app(family, app_id)))
+            .bind(("app_id", app_id.to_owned()))
+            .bind(("pk", pk.to_owned()))
+            .bind(("sk", sk.to_owned()))
+            .bind(("data", data))
+            .await;
+        let mut response = match result {
+            Ok(response) => response,
+            Err(error)
+                if error.to_string().to_ascii_lowercase().contains("already")
+                    || error.to_string().to_ascii_lowercase().contains("duplicate")
+                    || error.to_string().to_ascii_lowercase().contains("unique") =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(surreal_error(error)),
+        };
+        let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
+        Ok(!rows.is_empty())
     }
 
     async fn get(
@@ -1245,16 +1718,15 @@ impl DocumentBackend for SurrealDbDocumentBackend {
         pk: &str,
         sk: &str,
     ) -> PushStorageResult<bool> {
-        let existed = self.get(family, app_id, pk, sk).await?.is_some();
-        if existed {
-            self.db
-                .query("DELETE type::record($table, $id)")
-                .bind(("table", self.table.clone()))
-                .bind(("id", Self::record_id(family, app_id, pk, sk)))
-                .await
-                .map_err(surreal_error)?;
-        }
-        Ok(existed)
+        let mut response = self
+            .db
+            .query("DELETE type::record($table, $id) RETURN BEFORE")
+            .bind(("table", self.table.clone()))
+            .bind(("id", Self::record_id(family, app_id, pk, sk)))
+            .await
+            .map_err(surreal_error)?;
+        let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
+        Ok(!rows.is_empty())
     }
 
     async fn scan_app(
@@ -1280,6 +1752,95 @@ impl DocumentBackend for SurrealDbDocumentBackend {
                 data: row.data,
             })
             .collect())
+    }
+
+    async fn scan_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        let mut response = self
+            .db
+            .query(format!(
+                "SELECT pk, sk, data FROM {} WHERE family_app = $family_app AND pk = $pk ORDER BY sk ASC",
+                self.table
+            ))
+            .bind(("family_app", family_app(family, app_id)))
+            .bind(("pk", pk.to_owned()))
+            .await
+            .map_err(surreal_error)?;
+        let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| StoredDocument {
+                pk: row.pk,
+                sk: row.sk,
+                data: row.data,
+            })
+            .collect())
+    }
+
+    async fn scan_pk_page(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        let mut response = self
+            .db
+            .query(format!(
+                "SELECT pk, sk, data FROM {} WHERE family_app = $family_app AND pk = $pk AND sk > $start_after ORDER BY sk ASC LIMIT $limit",
+                self.table
+            ))
+            .bind(("family_app", family_app(family, app_id)))
+            .bind(("pk", pk.to_owned()))
+            .bind(("start_after", start_after.unwrap_or("").to_owned()))
+            .bind(("limit", limit.max(1)))
+            .await
+            .map_err(surreal_error)?;
+        let rows: Vec<SurrealDocumentRow> = response.take(0usize).map_err(surreal_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| StoredDocument {
+                pk: row.pk,
+                sk: row.sk,
+                data: row.data,
+            })
+            .collect())
+    }
+
+    async fn delete_many(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        keys: &[(String, String)],
+    ) -> PushStorageResult<u64> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let mut query = String::with_capacity(keys.len() * 64);
+        for index in 0..keys.len() {
+            query.push_str(&format!(
+                "DELETE type::record($table, $id{index}) RETURN BEFORE;"
+            ));
+        }
+        let mut request = self.db.query(query).bind(("table", self.table.clone()));
+        for (index, (pk, sk)) in keys.iter().enumerate() {
+            request = request.bind((
+                format!("id{index}"),
+                Self::record_id(family, app_id, pk, sk),
+            ));
+        }
+        let mut response = request.await.map_err(surreal_error)?;
+        let mut deleted = 0_u64;
+        for index in 0..keys.len() {
+            let rows: Vec<SurrealDocumentRow> = response.take(index).map_err(surreal_error)?;
+            deleted += rows.len() as u64;
+        }
+        Ok(deleted)
     }
 }
 
@@ -1433,20 +1994,21 @@ impl DocumentBackend for ScyllaDbDocumentBackend {
         pk: &str,
         sk: &str,
     ) -> PushStorageResult<bool> {
-        let existed = self.get(family, app_id, pk, sk).await?.is_some();
-        if existed {
-            self.session
-                .query_unpaged(
-                    format!(
-                        "DELETE FROM {} WHERE family_app = ? AND pk = ? AND sk = ?",
-                        self.fq_table()
-                    ),
-                    (family_app(family, app_id), pk, sk),
-                )
-                .await
-                .map_err(scylla_error)?;
-        }
-        Ok(existed)
+        let result = self
+            .session
+            .query_unpaged(
+                format!(
+                    "DELETE FROM {} WHERE family_app = ? AND pk = ? AND sk = ? IF EXISTS",
+                    self.fq_table()
+                ),
+                (family_app(family, app_id), pk, sk),
+            )
+            .await
+            .map_err(scylla_error)?;
+        let rows = result.into_rows_result().map_err(scylla_error)?;
+        rows.maybe_first_row::<(bool,)>()
+            .map_err(scylla_error)
+            .map(|row| row.map(|row| row.0).unwrap_or(false))
     }
 
     async fn scan_app(
@@ -1473,6 +2035,130 @@ impl DocumentBackend for ScyllaDbDocumentBackend {
                     .map_err(scylla_error)
             })
             .collect()
+    }
+
+    async fn scan_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        let result = self
+            .session
+            .query_unpaged(
+                format!(
+                    "SELECT pk, sk, data FROM {} WHERE family_app = ? AND pk = ?",
+                    self.fq_table()
+                ),
+                (family_app(family, app_id), pk),
+            )
+            .await
+            .map_err(scylla_error)?;
+        let rows = result.into_rows_result().map_err(scylla_error)?;
+        rows.rows::<(String, String, String)>()
+            .map_err(scylla_error)?
+            .map(|row| {
+                row.map(|(pk, sk, data)| StoredDocument { pk, sk, data })
+                    .map_err(scylla_error)
+            })
+            .collect()
+    }
+
+    async fn scan_pk_page(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        pk: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        let result = self
+            .session
+            .query_unpaged(
+                format!(
+                    "SELECT pk, sk, data FROM {} WHERE family_app = ? AND pk = ? AND sk > ? LIMIT ?",
+                    self.fq_table()
+                ),
+                (
+                    family_app(family, app_id),
+                    pk,
+                    start_after.unwrap_or(""),
+                    limit.max(1) as i32,
+                ),
+            )
+            .await
+            .map_err(scylla_error)?;
+        let rows = result.into_rows_result().map_err(scylla_error)?;
+        rows.rows::<(String, String, String)>()
+            .map_err(scylla_error)?
+            .map(|row| {
+                row.map(|(pk, sk, data)| StoredDocument { pk, sk, data })
+                    .map_err(scylla_error)
+            })
+            .collect()
+    }
+
+    async fn scan_app_page_by_pk(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        start_after_pk: Option<&str>,
+        limit: usize,
+    ) -> PushStorageResult<Vec<StoredDocument>> {
+        let result = self
+            .session
+            .query_unpaged(
+                format!(
+                    "SELECT pk, sk, data FROM {} WHERE family_app = ? AND pk > ? LIMIT ?",
+                    self.fq_table()
+                ),
+                (
+                    family_app(family, app_id),
+                    start_after_pk.unwrap_or(""),
+                    limit.max(1) as i32,
+                ),
+            )
+            .await
+            .map_err(scylla_error)?;
+        let rows = result.into_rows_result().map_err(scylla_error)?;
+        rows.rows::<(String, String, String)>()
+            .map_err(scylla_error)?
+            .map(|row| {
+                row.map(|(pk, sk, data)| StoredDocument { pk, sk, data })
+                    .map_err(scylla_error)
+            })
+            .collect()
+    }
+
+    async fn delete_many(
+        &self,
+        family: &'static str,
+        app_id: &str,
+        keys: &[(String, String)],
+    ) -> PushStorageResult<u64> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        use scylla::statement::batch::{Batch, BatchType};
+
+        let family_app = family_app(family, app_id);
+        for chunk in keys.chunks(64) {
+            let mut batch = Batch::new(BatchType::Unlogged);
+            let statement = scylla::statement::Statement::new(format!(
+                "DELETE FROM {} WHERE family_app = ? AND pk = ? AND sk = ?",
+                self.fq_table()
+            ));
+            let mut values = Vec::with_capacity(chunk.len());
+            for (pk, sk) in chunk {
+                batch.append_statement(statement.clone());
+                values.push((family_app.clone(), pk.clone(), sk.clone()));
+            }
+            self.session
+                .batch(&batch, values)
+                .await
+                .map_err(scylla_error)?;
+        }
+        Ok(keys.len() as u64)
     }
 }
 
@@ -1544,6 +2230,10 @@ fn delete_outcome(deleted: bool) -> PushStorageResult<DeleteDeviceOutcome> {
     })
 }
 
+fn limit_plus_one(limit: usize) -> usize {
+    limit.saturating_add(1).max(1)
+}
+
 fn day_bucket_for_ms(timestamp_ms: u64) -> String {
     (timestamp_ms / 86_400_000).to_string()
 }
@@ -1557,12 +2247,30 @@ fn document_key(pk: &str, sk: &str) -> String {
     format!("{pk}\0{sk}")
 }
 
+fn scheduled_due_position(job: &ScheduledPushJob) -> String {
+    format!("{:020}:{}", job.due_at_ms, job.publish_id)
+}
+
+fn delivery_event_position(event: &DeliveryEvent) -> String {
+    format!("{:020}:{}", event.occurred_at_ms, event.event_id)
+}
+
 fn to_json_string<T: Serialize>(value: &T) -> PushStorageResult<String> {
-    serde_json::to_string(value).map_err(json_error)
+    let data = serde_json::to_value(value).map_err(json_error)?;
+    serde_json::to_string(&serde_json::json!({ "_v": 1, "data": data })).map_err(json_error)
 }
 
 fn from_json_str<T: DeserializeOwned>(value: &str) -> PushStorageResult<T> {
-    serde_json::from_str(value).map_err(json_error)
+    let value = serde_json::from_str(value).map_err(json_error)?;
+    if let serde_json::Value::Object(mut object) = value {
+        if object.get("_v").and_then(serde_json::Value::as_u64) == Some(1)
+            && let Some(data) = object.remove("data")
+        {
+            return serde_json::from_value(data).map_err(json_error);
+        }
+        return serde_json::from_value(serde_json::Value::Object(object)).map_err(json_error);
+    }
+    serde_json::from_value(value).map_err(json_error)
 }
 
 fn json_error(error: serde_json::Error) -> PushStorageError {
