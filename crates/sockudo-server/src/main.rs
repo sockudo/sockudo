@@ -36,11 +36,7 @@ use futures_util::future::join_all;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use mimalloc::MiMalloc;
 use sockudo_core::error::Error;
-#[cfg(all(
-    feature = "push",
-    feature = "monolith",
-    any(feature = "push-apns", feature = "push-webpush")
-))]
+#[cfg(all(feature = "push", feature = "monolith"))]
 use std::env;
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
 use std::fs;
@@ -308,11 +304,112 @@ fn start_push_provider_workers(
         start_apns_provider_workers(config, store.clone(), queue.clone());
     }
 
-    if config.push.fcm_enabled || config.push.hms_enabled || config.push.wns_enabled {
-        warn!(
-            "monolith push provider dispatch currently starts Web Push and APNs workers only; FCM/HMS/WNS require a dedicated worker runtime"
-        );
+    if config.push.fcm_enabled {
+        start_fcm_provider_workers(config, queue.clone());
     }
+
+    if config.push.hms_enabled {
+        start_hms_provider_workers(config, queue.clone());
+    }
+
+    if config.push.wns_enabled {
+        start_wns_provider_workers(config, queue);
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
+fn static_push_token_provider(
+    provider: &'static str,
+    env_names: &[&str],
+) -> Result<sockudo_push::CachedTokenProvider> {
+    for env_name in env_names {
+        if let Ok(token) = env::var(env_name) {
+            if token.trim().is_empty() {
+                return Err(Error::Internal(format!("{env_name} is empty")));
+            }
+            return Ok(sockudo_push::CachedTokenProvider::new(Arc::new(
+                sockudo_push::StaticTokenSource::new(
+                    sockudo_push::SecretString::new(token).map_err(|error| {
+                        Error::Internal(format!("invalid {provider} provider token: {error}"))
+                    })?,
+                    u64::MAX,
+                ),
+            )));
+        }
+    }
+    Err(Error::Internal(format!(
+        "{provider} dispatch requires one of {}",
+        env_names.join("/")
+    )))
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-fcm"))]
+fn start_fcm_provider_workers(config: &ServerOptions, queue: sockudo_push::DynPushQueue) {
+    let project_id = env::var("FCM_PROJECT_ID").or_else(|_| env::var("PUSH_FCM_PROJECT_ID"));
+    let Ok(project_id) = project_id else {
+        warn!(
+            "push.fcm_enabled is true but FCM_PROJECT_ID/PUSH_FCM_PROJECT_ID is not set; FCM dispatch worker not started"
+        );
+        return;
+    };
+    if project_id.trim().is_empty() {
+        warn!("FCM_PROJECT_ID/PUSH_FCM_PROJECT_ID is empty; FCM dispatch worker not started");
+        return;
+    }
+
+    let token_provider =
+        match static_push_token_provider("FCM", &["FCM_PROVIDER_TOKEN", "PUSH_FCM_PROVIDER_TOKEN"])
+        {
+            Ok(provider) => provider,
+            Err(error) => {
+                warn!(error = %error, "FCM dispatch worker not started");
+                return;
+            }
+        };
+    let endpoint = env::var("FCM_ENDPOINT")
+        .or_else(|_| env::var("PUSH_FCM_ENDPOINT"))
+        .ok();
+
+    for worker_index in 0..config.push.dispatch_worker_count {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+            Ok(http) => Arc::new(http),
+            Err(error) => {
+                warn!(error = %error, "failed to create FCM HTTP client");
+                continue;
+            }
+        };
+        let mut dispatcher =
+            sockudo_push::FcmDispatcher::new(project_id.clone(), token_provider.clone(), http);
+        if let Some(endpoint) = endpoint.clone() {
+            dispatcher = dispatcher.with_base_url(endpoint);
+        }
+        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+            sockudo_push::PushProviderKind::Fcm,
+            queue.clone(),
+            Arc::new(dispatcher),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-fcm-{worker_index}");
+            warn!(worker = %group, "FCM dispatch worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "FCM dispatch worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "FCM dispatch worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", not(feature = "push-fcm")))]
+fn start_fcm_provider_workers(_config: &ServerOptions, _queue: sockudo_push::DynPushQueue) {
+    warn!("push.fcm_enabled is true but the binary was not compiled with the push-fcm feature");
 }
 
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-webpush"))]
@@ -509,6 +606,125 @@ fn start_apns_provider_workers(
     _queue: sockudo_push::DynPushQueue,
 ) {
     warn!("push.apns_enabled is true but the binary was not compiled with the push-apns feature");
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-hms"))]
+fn start_hms_provider_workers(config: &ServerOptions, queue: sockudo_push::DynPushQueue) {
+    let app_id = env::var("HMS_APP_ID").or_else(|_| env::var("PUSH_HMS_APP_ID"));
+    let Ok(app_id) = app_id else {
+        warn!(
+            "push.hms_enabled is true but HMS_APP_ID/PUSH_HMS_APP_ID is not set; HMS dispatch worker not started"
+        );
+        return;
+    };
+    if app_id.trim().is_empty() {
+        warn!("HMS_APP_ID/PUSH_HMS_APP_ID is empty; HMS dispatch worker not started");
+        return;
+    }
+
+    let token_provider =
+        match static_push_token_provider("HMS", &["HMS_PROVIDER_TOKEN", "PUSH_HMS_PROVIDER_TOKEN"])
+        {
+            Ok(provider) => provider,
+            Err(error) => {
+                warn!(error = %error, "HMS dispatch worker not started");
+                return;
+            }
+        };
+    let endpoint = env::var("HMS_ENDPOINT")
+        .or_else(|_| env::var("PUSH_HMS_ENDPOINT"))
+        .ok();
+
+    for worker_index in 0..config.push.dispatch_worker_count {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+            Ok(http) => Arc::new(http),
+            Err(error) => {
+                warn!(error = %error, "failed to create HMS HTTP client");
+                continue;
+            }
+        };
+        let mut dispatcher =
+            sockudo_push::HmsDispatcher::new(app_id.clone(), token_provider.clone(), http);
+        if let Some(endpoint) = endpoint.clone() {
+            dispatcher = dispatcher.with_base_url(endpoint);
+        }
+        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+            sockudo_push::PushProviderKind::Hms,
+            queue.clone(),
+            Arc::new(dispatcher),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-hms-{worker_index}");
+            warn!(worker = %group, "HMS dispatch worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "HMS dispatch worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "HMS dispatch worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", not(feature = "push-hms")))]
+fn start_hms_provider_workers(_config: &ServerOptions, _queue: sockudo_push::DynPushQueue) {
+    warn!("push.hms_enabled is true but the binary was not compiled with the push-hms feature");
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-wns"))]
+fn start_wns_provider_workers(config: &ServerOptions, queue: sockudo_push::DynPushQueue) {
+    let token_provider =
+        match static_push_token_provider("WNS", &["WNS_PROVIDER_TOKEN", "PUSH_WNS_PROVIDER_TOKEN"])
+        {
+            Ok(provider) => provider,
+            Err(error) => {
+                warn!(error = %error, "WNS dispatch worker not started");
+                return;
+            }
+        };
+
+    for worker_index in 0..config.push.dispatch_worker_count {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+            Ok(http) => Arc::new(http),
+            Err(error) => {
+                warn!(error = %error, "failed to create WNS HTTP client");
+                continue;
+            }
+        };
+        let dispatcher = sockudo_push::WnsDispatcher::new(token_provider.clone(), http);
+        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+            sockudo_push::PushProviderKind::Wns,
+            queue.clone(),
+            Arc::new(dispatcher),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-wns-{worker_index}");
+            warn!(worker = %group, "WNS dispatch worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "WNS dispatch worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "WNS dispatch worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", not(feature = "push-wns")))]
+fn start_wns_provider_workers(_config: &ServerOptions, _queue: sockudo_push::DynPushQueue) {
+    warn!("push.wns_enabled is true but the binary was not compiled with the push-wns feature");
 }
 
 #[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
