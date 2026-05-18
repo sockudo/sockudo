@@ -508,15 +508,15 @@ This document provides a detailed comparison of features available in **Ably**, 
 
 | Feature | Ably | Centrifugo | Sockudo | Priority | Difficulty |
 |---------|------|------------|---------|----------|------------|
-| **Push Notifications** | ✅ (FCM, APNs) | ❌ | 🔵 Release 4.5 planned / partial HTTP surfaces | 🔴 High | 🔴 Hard |
-| **Push to Device** | ✅ | ❌ | 🔵 Async admission planned | 🔴 High | 🔴 Hard |
-| **Push to Channel** | ✅ | ❌ | 🔵 Queue-based fanout planned | 🔴 High | 🔴 Hard |
-| **Push Activation** | ✅ | ❌ | 🔵 Registry and activation surfaces planned | 🔴 High | 🔴 Hard |
+| **Push Notifications** | ✅ (FCM, APNs) | ❌ | ✅ Release 4.5 optional platform | 🔴 High | 🔴 Hard |
+| **Push to Device** | ✅ | ❌ | ✅ Async admission and status APIs | 🔴 High | 🔴 Hard |
+| **Push to Channel** | ✅ | ❌ | ✅ Queue-based fanout pipeline | 🔴 High | 🔴 Hard |
+| **Push Activation** | ✅ | ❌ | ✅ Registry and activation surfaces | 🔴 High | 🔴 Hard |
 
 **Notes:**
 - Push notifications are optional and feature-gated. They are HTTP/admin
   surfaces, not V1 Pusher WebSocket extensions.
-- Release 4.5 planning covers FCM, APNs, Web Push, HMS, and WNS using a durable
+- Release 4.5 covers FCM, APNs, Web Push, HMS, and WNS using a durable
   queue-based pipeline. Async publish returns `202` only after initial status and
   publish-log durability.
 - Sockudo must not claim provider delivery beyond provider acknowledgement.

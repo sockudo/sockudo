@@ -24,9 +24,7 @@ use std::sync::atomic::AtomicBool;
 #[cfg(any(feature = "tag-filtering", feature = "delta"))]
 use std::sync::atomic::Ordering;
 use tokio::sync::Semaphore;
-#[cfg(feature = "delta")]
-use tracing::warn;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 fn filter_annotation_subscribers_in_place(
     channel: &str,

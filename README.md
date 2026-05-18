@@ -26,6 +26,7 @@
 - **🧠 Delta Compression + Conflation** - Fossil and Xdelta3 (VCDIFF) with per-channel controls
 - **✏️ Mutable Messages (V2)** - Update, delete, append, latest-visible history, and version-history retrieval
 - **💬 Message Annotations (V2)** - Reactions, read receipts, moderation votes, summary projections, and raw annotation streams
+- **📲 Push Notifications** - Optional HTTP/admin platform for FCM, APNs, Web Push, HMS, and WNS
 - **🏷️ Tag Filtering** - High-performance server-side filtering with optional tag emission controls
 - **🌐 Native WebSocket Engine** - `sockudo_ws` with advanced runtime tuning
 - **📦 Official SDKs** - Client and server SDKs for all major platforms
@@ -51,6 +52,7 @@ Additional v4 changes:
 - **Replay buffer** - Per-channel message buffer with configurable TTL and max size
 - **Mutable durable messages** - Protocol V2 latest-visible history substitution, version-history retrieval, and `sockudo:message.update|delete|append`
 - **Message annotations** - Release 4.4 adds V2 annotation summaries, raw annotation subscriptions, HTTP annotation APIs, and Prometheus coverage for reactions, receipts, and moderation workflows
+- **Push notifications** - Release 4.5 adds feature-gated push activation, registry, async publish admission, durable fanout, provider dispatch, quotas, and push observability
 
 ## Official Client SDKs
 

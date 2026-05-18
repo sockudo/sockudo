@@ -1,5 +1,41 @@
 # Changelog
 
+## [4.5.0] - 2026-05-18
+
+### Added
+
+- Optional push notification platform behind the `push` feature, with provider feature gates for FCM, APNs, Web Push, HMS, and WNS.
+- Push HTTP/admin surfaces for device activation, registry management, channel subscriptions, async publish admission, status lookup, credentials, templates, schedules, feedback, and cleanup workflows.
+- Durable push pipeline primitives including publish-log admission, fanout planning, provider delivery queues, weighted-fair dispatch, circuit breakers, retry/DLQ state, quotas, and stale-device cleanup.
+- Push storage migrations for PostgreSQL, MySQL, DynamoDB, ScyllaDB, and SurrealDB, plus Web Push and APNs probe tooling.
+- Push metrics, dashboard, benchmark, canary, and verification scripts for release-candidate operations.
+
+### Changed
+
+- Added `/live` and configurable `/up` subsystem timeout behavior for health checks.
+- Improved horizontal presence and adapter performance with batched disconnect queries, local fast paths, per-node NATS delivery, and opt-in chunked presence sync.
+- Started configured monolith push provider workers during server bootstrap.
+
+### Fixed
+
+- Prevent unsafe demo app and webhook configuration persistence during enabled-only app bootstrap.
+- Send WebSocket error messages before closing status transitions.
+- Replace per-request NATS inbox subscriptions with a shared wildcard subscription.
+- Downgrade expected channel-closed adapter logs from warn/error to debug.
+
+## [4.4.0] - 2026-04-29
+
+### Added
+
+- Protocol V2 message annotations with summary projections, raw annotation streams, HTTP annotation APIs, and operator metrics for reactions, receipts, moderation, and audit workflows.
+- Annotation policy controls at app and namespace scope, including retained message-state requirements for annotated channels.
+- Apache Iggy adapter and queue support, including durable transport configuration, operational docs, and local multinode verification tooling.
+
+### Fixed
+
+- Hardened Apache Iggy runtime lifecycle handling and broker partition semantics.
+- Tightened annotation authorization, projection rebuilds, delivery behavior, and release-matrix test coverage.
+
 ## [4.3.1] - 2026-04-26
 
 ### Fixed
