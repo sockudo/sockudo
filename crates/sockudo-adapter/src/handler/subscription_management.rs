@@ -671,7 +671,7 @@ impl ConnectionHandler {
             // Get current members and send presence data to new member
             let mut members_map = self
                 .connection_manager
-                .get_channel_members(&app_config.id, &request.channel)
+                .get_local_channel_members(&app_config.id, &request.channel)
                 .await?;
 
             // Ensure the subscribing member is included even if

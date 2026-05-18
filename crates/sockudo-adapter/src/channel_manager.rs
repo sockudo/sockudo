@@ -14,6 +14,13 @@ use sonic_rs::{Value, json};
 
 use std::sync::Arc;
 
+struct ChannelLeave {
+    channel_name: String,
+    app_id: String,
+    was_removed: bool,
+    local_remaining: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceMember {
     pub(crate) user_id: Box<str>,
@@ -225,9 +232,8 @@ impl ChannelManager {
                 .await?;
 
             let remaining = connection_manager
-                .get_channel_sockets(app_id, channel_name)
-                .await?
-                .len();
+                .get_channel_socket_count(app_id, channel_name)
+                .await;
 
             // Clean up empty channels
             if remaining == 0 {
@@ -448,8 +454,9 @@ impl ChannelManager {
             .await
     }
 
-    /// Batch unsubscribe operation - single lock acquisition for multiple operations
-    /// Returns results with channel names for explicit correlation
+    /// Batch unsubscribe operation for multiple channels
+    /// Returns results with channel names for explicit correlation.
+    /// Uses a single batched cross-node query instead of one per channel.
     pub async fn batch_unsubscribe(
         connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         operations: Vec<(String, String, String)>, // (socket_id, channel_name, app_id)
@@ -458,35 +465,105 @@ impl ChannelManager {
             return Ok(Vec::new());
         }
 
-        let mut results = Vec::with_capacity(operations.len());
-        let mut channels_to_cleanup = Vec::new();
+        // Remove sockets locally and collect local counts (no cross-node traffic)
+        let mut local_results: Vec<Result<ChannelLeave, (String, Error)>> =
+            Vec::with_capacity(operations.len());
 
-        for (socket_id, channel_name, app_id) in operations {
-            let socket_id_owned = SocketId::from_string(&socket_id)
-                .map_err(|e| Error::Connection(format!("Invalid socket ID: {}", e)))?;
+        for (socket_id, channel_name, app_id) in &operations {
+            let socket_id_owned = match SocketId::from_string(socket_id) {
+                Ok(sid) => sid,
+                Err(e) => {
+                    local_results.push(Err((
+                        channel_name.clone(),
+                        Error::Connection(format!("Invalid socket ID: {}", e)),
+                    )));
+                    continue;
+                }
+            };
+
             match connection_manager
-                .remove_from_channel(&app_id, &channel_name, &socket_id_owned)
+                .remove_from_channel(app_id, channel_name, &socket_id_owned)
                 .await
             {
                 Ok(was_removed) => {
-                    // Get remaining count
-                    match connection_manager
-                        .get_channel_sockets(&app_id, &channel_name)
-                        .await
-                    {
-                        Ok(sockets) => {
-                            let remaining = sockets.len();
-                            results.push((channel_name.clone(), Ok((was_removed, remaining))));
+                    let local_remaining = connection_manager
+                        .get_local_channel_socket_count(app_id, channel_name)
+                        .await;
+                    local_results.push(Ok(ChannelLeave {
+                        channel_name: channel_name.clone(),
+                        app_id: app_id.clone(),
+                        was_removed,
+                        local_remaining,
+                    }));
+                }
+                Err(e) => {
+                    local_results.push(Err((channel_name.clone(), e)));
+                }
+            }
+        }
 
-                            // Mark for cleanup if empty
-                            if remaining == 0 {
-                                channels_to_cleanup.push((app_id.clone(), channel_name.clone()));
-                            }
-                        }
-                        Err(e) => results.push((channel_name.clone(), Err(e))),
+        // Batched remote query for all channels (deduplicated per app)
+        let mut channels_by_app: AHashMap<String, Vec<String>> = AHashMap::new();
+        for r in local_results.iter().flatten() {
+            let (channel_name, app_id) = (&r.channel_name, &r.app_id);
+            channels_by_app
+                .entry(app_id.clone())
+                .or_default()
+                .push(channel_name.clone());
+        }
+        for channels in channels_by_app.values_mut() {
+            channels.sort_unstable();
+            channels.dedup();
+        }
+
+        let mut remote_counts: AHashMap<(String, String), usize> = AHashMap::new();
+        for (app_id, channels) in &channels_by_app {
+            let channel_refs: Vec<&str> = channels.iter().map(|s| s.as_str()).collect();
+            match connection_manager
+                .get_batch_channel_socket_counts(app_id, &channel_refs)
+                .await
+            {
+                Ok(counts) => {
+                    for (channel, count) in counts {
+                        remote_counts.insert((app_id.clone(), channel), count);
                     }
                 }
-                Err(e) => results.push((channel_name.clone(), Err(e))),
+                Err(e) => {
+                    tracing::error!(
+                        "Batch channel socket count failed for app {}: {}. \
+                         Webhook counts will reflect local node only.",
+                        app_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        // Merge local and remote counts, clean up empty channels
+        let mut results = Vec::with_capacity(local_results.len());
+        let mut channels_to_cleanup: Vec<(String, String)> = Vec::new();
+
+        for result in local_results {
+            match result {
+                Ok(ChannelLeave {
+                    channel_name,
+                    app_id,
+                    was_removed,
+                    local_remaining,
+                }) => {
+                    let remote = remote_counts
+                        .remove(&(app_id.clone(), channel_name.clone()))
+                        .unwrap_or(0);
+                    let total = local_remaining + remote;
+
+                    if total == 0 {
+                        channels_to_cleanup.push((app_id, channel_name.clone()));
+                    }
+                    results.push((channel_name, Ok((was_removed, total))));
+                }
+                Err((channel_name, e)) => {
+                    results.push((channel_name, Err(e)));
+                }
             }
         }
 

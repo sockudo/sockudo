@@ -429,6 +429,9 @@ pub struct ServerOptions {
     pub versioned_messages: VersionedMessagesConfig,
     pub annotations: AnnotationsConfig,
     pub push: PushConfig,
+    /// Timeout in milliseconds for each subsystem check in the `/up` health endpoint.
+    /// Applies to adapter, cache, queue, and app manager checks independently.
+    pub health_check_timeout_ms: u64,
 }
 
 // --- Configuration Sub-Structs ---
@@ -542,6 +545,10 @@ pub struct NatsAdapterConfig {
     pub nodes_number: Option<u32>,
     pub discovery_max_wait_ms: u64,
     pub discovery_idle_wait_ms: u64,
+    pub subscription_capacity: Option<usize>,
+    pub client_capacity: Option<usize>,
+    pub max_reconnects: Option<usize>,
+    pub presence_sync_chunk_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2065,6 +2072,7 @@ impl Default for ServerOptions {
             versioned_messages: VersionedMessagesConfig::default(),
             annotations: AnnotationsConfig::default(),
             push: PushConfig::default(),
+            health_check_timeout_ms: 400,
         }
     }
 }
@@ -2132,6 +2140,10 @@ impl Default for NatsAdapterConfig {
             nodes_number: None,
             discovery_max_wait_ms: 1000,
             discovery_idle_wait_ms: 150,
+            subscription_capacity: None,
+            client_capacity: None,
+            max_reconnects: None,
+            presence_sync_chunk_size: None,
         }
     }
 }
@@ -3199,6 +3211,18 @@ impl ServerOptions {
         if let Some(nodes) = parse_env_optional::<u32>("NATS_NODES_NUMBER") {
             self.adapter.nats.nodes_number = Some(nodes);
         }
+        if let Some(v) = parse_env_optional::<usize>("NATS_SUBSCRIPTION_CAPACITY") {
+            self.adapter.nats.subscription_capacity = Some(v);
+        }
+        if let Some(v) = parse_env_optional::<usize>("NATS_CLIENT_CAPACITY") {
+            self.adapter.nats.client_capacity = Some(v);
+        }
+        if let Some(v) = parse_env_optional::<usize>("NATS_MAX_RECONNECTS") {
+            self.adapter.nats.max_reconnects = Some(v);
+        }
+        if let Some(v) = parse_env_optional::<usize>("NATS_PRESENCE_SYNC_CHUNK_SIZE") {
+            self.adapter.nats.presence_sync_chunk_size = Some(v);
+        }
 
         // --- Pulsar Adapter ---
         if let Ok(url) = std::env::var("PULSAR_URL") {
@@ -3620,6 +3644,10 @@ impl ServerOptions {
             self.cluster_health.cleanup_interval_ms,
         );
 
+        // Health check endpoint timeout
+        self.health_check_timeout_ms =
+            parse_env::<u64>("HEALTH_CHECK_TIMEOUT_MS", self.health_check_timeout_ms);
+
         // Tag filtering configuration
         self.tag_filtering.enabled =
             parse_bool_env("TAG_FILTERING_ENABLED", self.tag_filtering.enabled);
@@ -3951,6 +3979,10 @@ impl ServerOptions {
         }
         if self.annotations.enabled && !self.versioned_messages.enabled {
             return Err("annotations require versioned_messages.enabled".to_string());
+        }
+
+        if self.adapter.nats.presence_sync_chunk_size == Some(0) {
+            return Err("nats.presence_sync_chunk_size must be > 0 when set".to_string());
         }
 
         Ok(())

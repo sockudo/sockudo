@@ -1,6 +1,7 @@
 use ahash::AHashMap as HashMap;
 use std::any::Any;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -13,9 +14,7 @@ use crate::horizontal_adapter::{
     AggregationStats, BroadcastMessage, DeadNodeEvent, HorizontalAdapter, OrphanedMember,
     PendingRequest, RequestBody, RequestType, ResponseBody, current_timestamp, generate_request_id,
 };
-use crate::horizontal_transport::{
-    HorizontalTransport, ResponseHandler, TransportConfig, TransportHandlers,
-};
+use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use crate::local_adapter::LocalAdapter;
 use async_trait::async_trait;
 use crossfire::mpsc;
@@ -31,6 +30,9 @@ use sockudo_ws::axum_integration::WebSocketWriter;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// Maximum hash-based spread (ms) when staggering presence-state sync on new-node detection
+const PRESENCE_SYNC_STAGGER_MAX_MS: u64 = 5_000;
 
 /// Generic base adapter that handles all common horizontal scaling logic
 pub struct HorizontalAdapterBase<T: HorizontalTransport> {
@@ -227,43 +229,28 @@ where
         self.enable_socket_counting = enable;
     }
 
-    /// Enhanced send_request that properly integrates with HorizontalAdapter
-    pub async fn send_request(
-        &self,
-        app_id: &str,
-        request_type: RequestType,
-        channel: Option<&str>,
-        socket_id: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<ResponseBody> {
+    /// Publish a pre-built RequestBody and collect responses from other nodes
+    pub async fn send_request_with_body(&self, request: RequestBody) -> Result<ResponseBody> {
+        let app_id = request.app_id.clone();
+        let request_type = request.request_type.clone();
+        let request_id = request.request_id.clone();
+
         let should_skip_horizontal = self.should_skip_horizontal_communication().await;
         let discovered_node_count = self.horizontal.get_effective_node_count().await;
         let node_count = if should_skip_horizontal {
             1
+        } else if self.transport.node_count_is_real_time() {
+            // Transport supports accurate node counting, use it directly
+            self.transport.get_node_count().await?
+        } else if self.cluster_health_enabled && discovered_node_count > 1 {
+            // Cluster health heartbeats are tracking peers
+            discovered_node_count
         } else {
+            // Fallback to transport hint
             std::cmp::max(
                 discovered_node_count,
                 self.transport.get_node_count().await?,
             )
-        };
-
-        // Create the request
-        let request_id = Uuid::new_v4().to_string();
-        let node_id = self.horizontal.node_id.clone();
-
-        let request = RequestBody {
-            request_id: request_id.clone(),
-            node_id,
-            app_id: app_id.to_string(),
-            request_type: request_type.clone(),
-            channel: channel.map(String::from),
-            socket_id: socket_id.map(String::from),
-            user_id: user_id.map(String::from),
-            // Cluster presence fields (not used for regular requests)
-            user_info: None,
-            timestamp: None,
-            dead_node_id: None,
-            target_node_id: None,
         };
 
         if should_skip_horizontal {
@@ -297,36 +284,19 @@ where
             );
 
             if let Some(metrics) = self.horizontal.metrics.get() {
-                metrics.mark_horizontal_adapter_request_sent(app_id);
+                metrics.mark_horizontal_adapter_request_sent(&app_id);
             }
         }
 
-        // Set up inbox for direct replies (eliminates O(N²) response fan-out).
-        let _inbox_guard = match self.transport.new_inbox() {
+        // Use direct reply routing if supported, otherwise fall back to global subject
+        match self.transport.new_inbox() {
             Some(inbox) => {
-                // Subscribe BEFORE publishing to avoid missing early replies
-                let horizontal = self.horizontal.clone();
-                let handler: ResponseHandler = Arc::new(move |response| {
-                    let horizontal = horizontal.clone();
-                    Box::pin(async move {
-                        let _ = horizontal.process_response(response).await;
-                    })
-                });
-
-                let guard = self
-                    .transport
-                    .subscribe_response_inbox(&inbox, handler)
-                    .await?;
-
                 self.transport
                     .publish_request_with_reply(&request, &inbox)
                     .await?;
-
-                guard
             }
             None => {
                 self.transport.publish_request(&request).await?;
-                None
             }
         };
 
@@ -489,7 +459,7 @@ where
         // Track metrics
         if let Some(metrics) = self.horizontal.metrics.get() {
             let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
-            metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
+            metrics.track_horizontal_adapter_resolve_time(&app_id, duration_ms);
 
             let resolved = combined_response.sockets_count > 0
                 || !combined_response.members.is_empty()
@@ -498,10 +468,36 @@ where
                 || combined_response.members_count > 0
                 || !combined_response.channels_with_sockets_count.is_empty();
 
-            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
+            metrics.track_horizontal_adapter_resolved_promises(&app_id, resolved);
         }
 
         Ok(combined_response)
+    }
+
+    /// Enhanced send_request that properly integrates with HorizontalAdapter
+    pub async fn send_request(
+        &self,
+        app_id: &str,
+        request_type: RequestType,
+        channel: Option<&str>,
+        socket_id: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<ResponseBody> {
+        let request = RequestBody {
+            request_id: Uuid::new_v4().to_string(),
+            node_id: self.horizontal.node_id.clone(),
+            app_id: app_id.to_string(),
+            request_type,
+            channel: channel.map(String::from),
+            socket_id: socket_id.map(String::from),
+            user_id: user_id.map(String::from),
+            user_info: None,
+            timestamp: None,
+            dead_node_id: None,
+            target_node_id: None,
+            channels: None,
+        };
+        self.send_request_with_body(request).await
     }
 
     pub async fn start_listeners(&self) -> Result<()> {
@@ -525,6 +521,7 @@ where
             .load(std::sync::atomic::Ordering::Relaxed);
 
         let handlers = TransportHandlers {
+            node_id: self.node_id.clone(),
             on_broadcast: Arc::new(move |broadcast| {
                 let horizontal_clone = broadcast_horizontal.clone();
                 let cache_manager_clone = broadcast_cache_manager.clone();
@@ -735,20 +732,23 @@ where
                         let new_node_id = request.node_id.clone();
                         let horizontal_clone_for_task = horizontal_clone.clone();
                         let transport_for_task = transport_clone.clone();
+                        let node_id = horizontal_clone.node_id.clone();
 
                         tokio::spawn(async move {
-                            // Small delay to let the new node finish initialization
-                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            let mut hasher = std::hash::DefaultHasher::new();
+                            node_id.hash(&mut hasher);
+                            let stagger_ms = hasher.finish() % PRESENCE_SYNC_STAGGER_MAX_MS;
+                            tokio::time::sleep(Duration::from_millis(100 + stagger_ms)).await;
 
-                            if let Err(e) = send_presence_state_to_node(
-                                &horizontal_clone_for_task,
-                                &transport_for_task,
-                                &new_node_id,
-                            )
-                            .await
+                            if let Err(e) = transport_for_task
+                                .sync_presence_state_to_node(
+                                    &horizontal_clone_for_task,
+                                    &new_node_id,
+                                )
+                                .await
                             {
                                 error!(
-                                    "Failed to send presence state to new node {}: {}",
+                                    "Failed to sync presence state to new node {}: {}",
                                     new_node_id, e
                                 );
                             }
@@ -821,6 +821,7 @@ where
                     timestamp: Some(current_timestamp()),
                     dead_node_id: None,
                     target_node_id: None,
+                    channels: None,
                 };
 
                 if let Err(e) = transport.publish_request(&heartbeat_request).await {
@@ -935,6 +936,7 @@ where
                                     timestamp: Some(current_timestamp()),
                                     dead_node_id: Some(dead_node_id.clone()),
                                     target_node_id: None,
+                                    channels: None,
                                 };
 
                                 if let Err(e) = transport.publish_request(&dead_node_request).await
@@ -1273,6 +1275,41 @@ where
         Ok(members)
     }
 
+    async fn get_local_channel_members(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HashMap<String, PresenceMemberInfo>> {
+        let mut members = self
+            .local_adapter
+            .get_channel_members(app_id, channel)
+            .await?;
+
+        {
+            let registry = self.horizontal.cluster_presence_registry.read().await;
+            for (node_id, node_data) in registry.iter() {
+                if node_id == &self.node_id {
+                    continue;
+                }
+                if let Some(channel_sockets) = node_data.get(channel) {
+                    for entry in channel_sockets.values() {
+                        if entry.app_id != app_id {
+                            continue;
+                        }
+                        members.entry(entry.user_id.clone()).or_insert_with(|| {
+                            PresenceMemberInfo {
+                                user_id: entry.user_id.clone(),
+                                user_info: entry.user_info.clone(),
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(members)
+    }
+
     async fn get_channel_sockets(&self, app_id: &str, channel: &str) -> Result<Vec<SocketId>> {
         // Get local sockets
         let mut all_socket_ids = self
@@ -1410,6 +1447,59 @@ where
             .count
     }
 
+    async fn get_local_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
+        self.local_adapter
+            .get_channel_socket_count(app_id, channel)
+            .await
+    }
+
+    async fn get_batch_channel_socket_counts(
+        &self,
+        app_id: &str,
+        channels: &[&str],
+    ) -> Result<HashMap<String, usize>> {
+        // Get local counts (no cross-node communication)
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for ch in channels {
+            let c = self
+                .local_adapter
+                .get_channel_socket_count(app_id, ch)
+                .await;
+            if c > 0 {
+                counts.insert(ch.to_string(), c);
+            }
+        }
+
+        if self.should_skip_horizontal_communication().await {
+            return Ok(counts);
+        }
+
+        // Single batched request for all channels
+        let request = RequestBody {
+            request_id: Uuid::new_v4().to_string(),
+            node_id: self.horizontal.node_id.clone(),
+            app_id: app_id.to_string(),
+            request_type: RequestType::BatchChannelSocketsCount,
+            channel: None,
+            socket_id: None,
+            user_id: None,
+            user_info: None,
+            timestamp: None,
+            dead_node_id: None,
+            target_node_id: None,
+            channels: Some(channels.iter().map(|c| c.to_string()).collect()),
+        };
+
+        let response = self.send_request_with_body(request).await?;
+
+        // Merge remote counts into local
+        for (ch, count) in response.channels_with_sockets_count {
+            *counts.entry(ch).or_insert(0) += count;
+        }
+
+        Ok(counts)
+    }
+
     async fn add_to_channel(
         &self,
         app_id: &str,
@@ -1500,6 +1590,40 @@ where
         }
     }
 
+    async fn user_has_connections_in_channel(
+        &self,
+        user_id: &str,
+        app_id: &str,
+        channel: &str,
+        excluding_socket: Option<&SocketId>,
+    ) -> Result<bool> {
+        let local_count = self
+            .local_adapter
+            .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+            .await?;
+
+        if local_count > 0 {
+            return Ok(true);
+        }
+
+        match self
+            .send_request(
+                app_id,
+                RequestType::CountUserConnectionsInChannel,
+                Some(channel),
+                None,
+                Some(user_id),
+            )
+            .await
+        {
+            Ok(response) => Ok(response.sockets_count > 0),
+            Err(e) => {
+                error!("Failed to get remote user connections count: {}", e);
+                Ok(false)
+            }
+        }
+    }
+
     async fn get_channels_with_socket_count(&self, app_id: &str) -> Result<HashMap<String, usize>> {
         // Get local channels
         let mut channels = self
@@ -1565,6 +1689,44 @@ where
         self.transport.check_health().await
     }
 
+    async fn announce_node_departure(&self) -> Result<()> {
+        let request = RequestBody {
+            request_id: generate_request_id(),
+            node_id: self.node_id.clone(),
+            app_id: "cluster".to_string(),
+            request_type: RequestType::NodeDead,
+            channel: None,
+            socket_id: None,
+            user_id: None,
+            user_info: None,
+            timestamp: Some(current_timestamp()),
+            dead_node_id: Some(self.node_id.clone()),
+            target_node_id: None,
+            channels: None,
+        };
+
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            self.transport.publish_request(&request),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                info!("Announced node departure to cluster peers");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                warn!("Failed to announce node departure: {}", e);
+                Ok(())
+            }
+            Err(_) => {
+                warn!("Node departure announcement timed out");
+                Ok(())
+            }
+        }
+    }
+
     fn get_node_id(&self) -> String {
         self.node_id.clone()
     }
@@ -1621,6 +1783,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            channels: None,
         };
 
         // Send without waiting for response (broadcast) - skip if single node
@@ -1662,6 +1825,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            channels: None,
         };
 
         // Send without waiting for response (broadcast) - skip if single node
@@ -1671,56 +1835,4 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             Ok(())
         }
     }
-}
-
-/// Helper function to send presence state to a new node
-async fn send_presence_state_to_node<T: HorizontalTransport>(
-    horizontal: &Arc<HorizontalAdapter>,
-    transport: &T,
-    target_node_id: &str,
-) -> Result<()> {
-    // Get our presence data
-    let (our_node_id, data_to_send) = {
-        let registry = horizontal.cluster_presence_registry.read().await;
-
-        // Get only our node's data
-        if let Some(our_presence_data) = registry.get(&horizontal.node_id) {
-            // Clone the data to avoid holding the lock
-            (horizontal.node_id.clone(), Some(our_presence_data.clone()))
-        } else {
-            (horizontal.node_id.clone(), None)
-        }
-    };
-
-    if let Some(data_to_send) = data_to_send {
-        // Serialize the presence data
-        let serialized_data = sonic_rs::to_value(&data_to_send)?;
-
-        let sync_request = RequestBody {
-            request_id: generate_request_id(),
-            node_id: our_node_id,
-            app_id: "cluster".to_string(),
-            request_type: RequestType::PresenceStateSync,
-            target_node_id: Some(target_node_id.to_string()),
-            user_info: Some(serialized_data), // Reuse this field for bulk data
-            channel: None,
-            socket_id: None,
-            user_id: None,
-            timestamp: None,
-            dead_node_id: None,
-        };
-
-        // This broadcasts but only target_node will process it
-        transport.publish_request(&sync_request).await?;
-
-        info!(
-            "Sent presence state to new node: {} ({} channels)",
-            target_node_id,
-            data_to_send.len()
-        );
-    } else {
-        debug!("No presence data to send to new node: {}", target_node_id);
-    }
-
-    Ok(())
 }
