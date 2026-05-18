@@ -1,5 +1,6 @@
 /target
 **/target
+target-codex-*/
 **/node_modules
 .env
 .DS_Store
@@ -13,7 +14,17 @@ server-sdks/
 test/interactive/sockudo-js/
 /coolify/
 /sockudo-website/
-docs/research/
 sockudo-blog
 .omx
+.sisyphus/
+.webpush-e2e/
 .tmp
+
+# Local push provider secrets and canary inputs
+AuthKey_*.p8
+*.p8
+apns_tokens.txt
+fcm_tokens.txt
+hms_tokens.txt
+wns_channel_uris.txt
+*_service_account.json

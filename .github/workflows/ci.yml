@@ -218,6 +218,16 @@ jobs:
           DYNAMODB_ENDPOINT: http://localhost:18000
           DYNAMODB_REGION: us-east-1
 
+      - name: Check push feature matrix
+        run: |
+          cargo check -p sockudo-push --all-features
+          cargo check -p sockudo-push --features push-fcm,push-apns,push-webpush,push-hms,push-wns
+          cargo check -p sockudo-push --features dynamodb,surrealdb,scylladb,postgres,mysql
+          cargo clippy -p sockudo-push --all-targets --features push-fcm,push-apns,push-webpush,push-hms,push-wns,dynamodb,surrealdb,scylladb,postgres,mysql -- -D warnings
+
+      - name: Check push benchmarks compile
+        run: cargo bench -p sockudo-push --bench push_pipeline_bench --no-run
+
       - name: Cleanup test services
         if: always()
         run: |

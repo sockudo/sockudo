@@ -69,6 +69,80 @@ cleanup_interval_ms = 10000
 
 [database]
 
+[push]
+# memory is for local development/tests. Use a durable storage driver for clustered push.
+storage_driver = "memory"
+# memory is for local development/tests. Durable queue driver values mirror [queue].driver.
+queue_driver = "memory"
+fcm_enabled = false
+apns_enabled = false
+webpush_enabled = false
+hms_enabled = false
+wns_enabled = false
+# fcm_credential_ref = "secret://sockudo/push/fcm"
+# apns_credential_ref = "secret://sockudo/push/apns"
+# webpush_credential_ref = "secret://sockudo/push/webpush"
+# hms_credential_ref = "secret://sockudo/push/hms"
+# wns_credential_ref = "secret://sockudo/push/wns"
+# FCM/HMS/WNS monolith dispatch workers require provider-specific feature flags,
+# the matching push.*_enabled setting, and pre-generated provider bearer tokens:
+# PUSH_FCM_PROJECT_ID + PUSH_FCM_PROVIDER_TOKEN, PUSH_HMS_APP_ID +
+# PUSH_HMS_PROVIDER_TOKEN, or PUSH_WNS_PROVIDER_TOKEN.
+# APNs monolith dispatch workers require PUSH_APNS_TOPIC. Set PUSH_APNS_APP_ID
+# to load a stored push/credentials/apns credential, optionally with
+# PUSH_APNS_CREDENTIAL_ID (defaults to apns). Without PUSH_APNS_APP_ID the
+# worker falls back to env token auth via PUSH_APNS_TEAM_ID, PUSH_APNS_KEY_ID,
+# and PUSH_APNS_PRIVATE_KEY_PATH or PUSH_APNS_PRIVATE_KEY. Set
+# PUSH_APNS_ENDPOINT=https://api.sandbox.push.apple.com for sandbox devices.
+accept_worker_count = 1
+planner_worker_count = 1
+shard_worker_count = 1
+dispatch_worker_count = 1
+feedback_worker_count = 1
+queue_partition_count = 1
+channel_shard_count = 1
+fanout_fast_threshold = 10000
+fanout_shard_size = 100000
+# 0 means the Publish API remains async-only and returns 202 after durable admission.
+fanout_sync_threshold = 0
+backpressure_lag_threshold_secs = 60
+publish_status_ttl_days = 30
+stale_device_max_age_days = 90
+# Set PUSH_CREDENTIAL_ENCRYPTION_KEY before uploading credentials to store
+# decryptable AES-GCM envelopes that workers can load later.
+# credential_encryption_key = "env://PUSH_CREDENTIAL_ENCRYPTION_KEY"
+# kms_key_ref = "aws-kms://alias/sockudo-push"
+# vault_secret_ref = "kv/sockudo/push"
+dry_run = false
+analytics_enabled = false
+analytics_retention_days = 30
+scheduler_interval_secs = 5
+
+[push.retry]
+max_attempts = 5
+initial_backoff_ms = 1000
+max_backoff_ms = 60000
+max_elapsed_secs = 86400
+jitter = true
+respect_retry_after = true
+
+[push.circuit_breaker]
+failure_threshold = 5
+cooldown_secs = 60
+half_open_max_inflight = 10
+
+[push.default_quotas]
+acceptance_rps = 100
+delivery_quota_daily = 0
+fanout_max = 0
+inflight_max = 1000
+
+[push.payload_redaction]
+redact_payload = true
+redact_template_data = true
+redact_provider_overrides = true
+allow_debug_payload_logging = false
+
 [database.surrealdb]
 url = "ws://127.0.0.1:8000"
 namespace = "sockudo"

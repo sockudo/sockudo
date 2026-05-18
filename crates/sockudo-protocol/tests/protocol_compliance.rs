@@ -901,6 +901,7 @@ fn test_extras_round_trip_serialize_deserialize() {
         headers: Some(headers),
         ephemeral: Some(true),
         idempotency_key: Some("abc-123".to_string()),
+        push: None,
         echo: Some(false),
     };
 
@@ -925,6 +926,7 @@ fn test_extras_default_is_all_none() {
     assert!(extras.headers.is_none());
     assert!(extras.ephemeral.is_none());
     assert!(extras.idempotency_key.is_none());
+    assert!(extras.push.is_none());
     assert!(extras.echo.is_none());
 }
 
@@ -1051,6 +1053,24 @@ fn test_v2_delivery_includes_extras() {
     let extras = json.get("extras").unwrap();
     assert_eq!(extras["ephemeral"], true);
     assert_eq!(extras["echo"], false);
+}
+
+#[test]
+fn test_v2_extras_push_is_serialized_inside_extras() {
+    let mut msg =
+        PusherMessage::channel_event("test-event", "test-channel", json!({"hello": "world"}));
+    msg.extras = Some(MessageExtras {
+        push: Some(json!({
+            "title": "Hello",
+            "body": "Push body",
+            "templateData": {"id": "42"}
+        })),
+        ..Default::default()
+    });
+
+    let json = message_to_json(&msg);
+    assert_eq!(json["extras"]["push"]["title"], "Hello");
+    assert_eq!(json["extras"]["push"]["templateData"]["id"], "42");
 }
 
 #[test]

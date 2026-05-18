@@ -21,12 +21,12 @@ use tracing::{debug, error, info, warn};
 type RedisPushChannelFlavor = mpsc::List<redis::PushInfo>;
 type RedisPushReceiver = crossfire::AsyncRx<RedisPushChannelFlavor>;
 
-/// Helper function to convert redis::Value to String
-fn value_to_string(v: &redis::Value) -> Option<String> {
+/// Helper function to borrow a string view from redis::Value when possible.
+fn value_to_str(v: &redis::Value) -> Option<&str> {
     match v {
-        redis::Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
-        redis::Value::SimpleString(s) => Some(s.clone()),
-        redis::Value::VerbatimString { format: _, text } => Some(text.clone()),
+        redis::Value::BulkString(bytes) => std::str::from_utf8(bytes).ok(),
+        redis::Value::SimpleString(s) => Some(s.as_str()),
+        redis::Value::VerbatimString { format: _, text } => Some(text.as_str()),
         _ => None,
     }
 }
@@ -436,7 +436,7 @@ impl HorizontalTransport for RedisClusterTransport {
                         continue;
                     }
 
-                    let channel = match value_to_string(&push_info.data[0]) {
+                    let channel = match value_to_str(&push_info.data[0]) {
                         Some(s) => s,
                         None => {
                             if let Some(metrics) = metrics.get() {
@@ -447,7 +447,23 @@ impl HorizontalTransport for RedisClusterTransport {
                         }
                     };
 
-                    let payload = match value_to_string(&push_info.data[1]) {
+                    enum ChannelKind {
+                        Broadcast,
+                        Request,
+                        Response,
+                    }
+
+                    let channel_kind = if channel == broadcast_channel.as_str() {
+                        ChannelKind::Broadcast
+                    } else if channel == request_channel.as_str() {
+                        ChannelKind::Request
+                    } else if channel == response_channel.as_str() {
+                        ChannelKind::Response
+                    } else {
+                        continue;
+                    };
+
+                    let payload = match value_to_str(&push_info.data[1]).map(str::to_owned) {
                         Some(s) => s,
                         None => {
                             if let Some(metrics) = metrics.get() {
@@ -458,51 +474,64 @@ impl HorizontalTransport for RedisClusterTransport {
                         }
                     };
 
-                    // Process the message in a separate task
-                    let broadcast_handler = handlers.on_broadcast.clone();
-                    let request_handler = handlers.on_request.clone();
-                    let response_handler = handlers.on_response.clone();
-                    let publish_conn = publish_connection.clone(); // Cheap clone per redis-rs docs
-                    let metrics_clone = metrics.clone();
-                    let broadcast_channel_clone = broadcast_channel.clone();
-                    let request_channel_clone = request_channel.clone();
-                    let response_channel_clone = response_channel.clone();
+                    match channel_kind {
+                        ChannelKind::Broadcast => {
+                            let broadcast_handler = handlers.on_broadcast.clone();
+                            let metrics_clone = metrics.clone();
 
-                    tokio::spawn(async move {
-                        if channel == broadcast_channel_clone {
-                            // Handle broadcast message
-                            if let Ok(broadcast) = sonic_rs::from_str::<BroadcastMessage>(&payload)
-                            {
-                                broadcast_handler(broadcast).await;
-                            } else if let Some(metrics) = metrics_clone.get() {
-                                metrics.mark_horizontal_transport_message_dropped("redis_cluster");
-                            }
-                        } else if channel == request_channel_clone {
-                            // Handle request message
-                            if let Ok(request) = sonic_rs::from_str::<RequestBody>(&payload) {
-                                let response_result = request_handler(request).await;
-
-                                if let Ok(response) = response_result
-                                    && let Ok(response_json) = sonic_rs::to_string(&response)
+                            tokio::spawn(async move {
+                                if let Ok(broadcast) =
+                                    sonic_rs::from_str::<BroadcastMessage>(&payload)
                                 {
-                                    // Clone connection (cheap) instead of creating new one
-                                    let mut conn = publish_conn.clone();
-                                    let _ = conn
-                                        .publish::<_, _, ()>(&response_channel_clone, response_json)
-                                        .await;
+                                    broadcast_handler(broadcast).await;
+                                } else if let Some(metrics) = metrics_clone.get() {
+                                    metrics
+                                        .mark_horizontal_transport_message_dropped("redis_cluster");
                                 }
-                            } else if let Some(metrics) = metrics_clone.get() {
-                                metrics.mark_horizontal_transport_message_dropped("redis_cluster");
-                            }
-                        } else if channel == response_channel_clone {
-                            // Handle response message
-                            if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
-                                response_handler(response).await;
-                            } else if let Some(metrics) = metrics_clone.get() {
-                                metrics.mark_horizontal_transport_message_dropped("redis_cluster");
-                            }
+                            });
                         }
-                    });
+                        ChannelKind::Request => {
+                            let request_handler = handlers.on_request.clone();
+                            let publish_conn = publish_connection.clone();
+                            let response_channel_clone = response_channel.clone();
+                            let metrics_clone = metrics.clone();
+
+                            tokio::spawn(async move {
+                                if let Ok(request) = sonic_rs::from_str::<RequestBody>(&payload) {
+                                    let response_result = request_handler(request).await;
+
+                                    if let Ok(response) = response_result
+                                        && let Ok(response_json) = sonic_rs::to_string(&response)
+                                    {
+                                        // Clone connection (cheap) instead of creating new one
+                                        let mut conn = publish_conn.clone();
+                                        let _ = conn
+                                            .publish::<_, _, ()>(
+                                                &response_channel_clone,
+                                                response_json,
+                                            )
+                                            .await;
+                                    }
+                                } else if let Some(metrics) = metrics_clone.get() {
+                                    metrics
+                                        .mark_horizontal_transport_message_dropped("redis_cluster");
+                                }
+                            });
+                        }
+                        ChannelKind::Response => {
+                            let response_handler = handlers.on_response.clone();
+                            let metrics_clone = metrics.clone();
+
+                            tokio::spawn(async move {
+                                if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
+                                    response_handler(response).await;
+                                } else if let Some(metrics) = metrics_clone.get() {
+                                    metrics
+                                        .mark_horizontal_transport_message_dropped("redis_cluster");
+                                }
+                            });
+                        }
+                    }
                 }
 
                 // Connection ended, reconnect with exponential backoff

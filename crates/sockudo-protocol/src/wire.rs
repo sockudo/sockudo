@@ -632,6 +632,7 @@ impl From<ProtoMessageExtras> for MessageExtras {
             ),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
+            push: None,
             echo: value.echo,
         }
     }
@@ -645,6 +646,7 @@ impl From<MsgpackMessageExtras> for MessageExtras {
                 .map(|headers| headers.into_iter().map(|(k, v)| (k, v.into())).collect()),
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
+            push: None,
             echo: value.echo,
         }
     }
@@ -798,6 +800,7 @@ mod tests {
                 ])),
                 ephemeral: Some(true),
                 idempotency_key: Some("extra-idem".to_string()),
+                push: None,
                 echo: Some(false),
             }),
             delta_sequence: Some(11),

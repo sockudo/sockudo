@@ -45,6 +45,28 @@ impl RateLimiterFactory {
         .await
     }
 
+    pub async fn create_push_acceptance(
+        config: &RateLimiterConfig,
+        max_requests: u32,
+        window_seconds: u64,
+        global_redis_conn_details: &RedisConnection,
+    ) -> Result<Arc<dyn RateLimiter + Send + Sync>> {
+        let limit = RateLimit {
+            max_requests,
+            window_seconds,
+            identifier: Some("push_acceptance".to_owned()),
+            trust_hops: Some(0),
+        };
+        Self::create_for_limit(
+            config,
+            &limit,
+            "Push acceptance",
+            "rl_push_accept:",
+            global_redis_conn_details,
+        )
+        .await
+    }
+
     pub async fn create(
         config: &RateLimiterConfig,
         global_redis_conn_details: &RedisConnection,
@@ -275,5 +297,39 @@ mod tests {
 
         assert!(limiter.increment("same-key").await.unwrap().allowed);
         assert!(!limiter.increment("same-key").await.unwrap().allowed);
+    }
+
+    #[tokio::test]
+    async fn create_push_acceptance_uses_existing_driver_limit() {
+        let limiter = RateLimiterFactory::create_push_acceptance(
+            &test_config(),
+            2,
+            60,
+            &test_redis_connection(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            limiter
+                .increment("push:acceptance:app-1")
+                .await
+                .unwrap()
+                .allowed
+        );
+        assert!(
+            limiter
+                .increment("push:acceptance:app-1")
+                .await
+                .unwrap()
+                .allowed
+        );
+        assert!(
+            !limiter
+                .increment("push:acceptance:app-1")
+                .await
+                .unwrap()
+                .allowed
+        );
     }
 }

@@ -1992,6 +1992,7 @@ mod tests {
                 )])),
                 ephemeral: Some(true),
                 idempotency_key: Some("extra-idem".to_string()),
+                push: None,
                 echo: Some(false),
             }),
             delta_sequence: None,

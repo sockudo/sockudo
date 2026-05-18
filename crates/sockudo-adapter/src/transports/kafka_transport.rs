@@ -22,10 +22,13 @@ use tracing::{debug, error, info, warn};
 
 pub struct KafkaTransport {
     producer: FutureProducer,
+    client_config: ClientConfig,
     broadcast_topic: String,
     request_topic: String,
     response_topic: String,
-    listener_group_id: String,
+    broadcast_group_id: String,
+    request_group_id: String,
+    response_group_id: String,
     config: KafkaAdapterConfig,
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
@@ -58,14 +61,28 @@ impl HorizontalTransport for KafkaTransport {
         let broadcast_topic = format!("{prefix}.broadcast");
         let request_topic = format!("{prefix}.requests");
         let response_topic = format!("{prefix}.responses");
-        let listener_group_id = format!("{prefix}-{}", uuid::Uuid::new_v4().simple());
+        let listener_group_prefix = format!("{prefix}-{}", uuid::Uuid::new_v4().simple());
+        let broadcast_group_id = format!("{listener_group_prefix}-broadcast");
+        let request_group_id = format!("{listener_group_prefix}-request");
+        let response_group_id = format!("{listener_group_prefix}-response");
+        let client_config = kafka_config(&config);
 
-        let admin: AdminClient<DefaultClientContext> = kafka_config(&config)
+        let admin: AdminClient<DefaultClientContext> = client_config
+            .clone()
             .create()
             .map_err(|e| Error::Internal(format!("Failed to create Kafka admin client: {e}")))?;
-        ensure_topics(&admin, [&broadcast_topic, &request_topic, &response_topic]).await?;
+        ensure_topics(
+            &admin,
+            [
+                broadcast_topic.as_str(),
+                request_topic.as_str(),
+                response_topic.as_str(),
+            ],
+        )
+        .await?;
 
-        let producer: FutureProducer = kafka_config(&config)
+        let producer: FutureProducer = client_config
+            .clone()
             .create()
             .map_err(|e| Error::Internal(format!("Failed to create Kafka producer: {e}")))?;
 
@@ -76,10 +93,13 @@ impl HorizontalTransport for KafkaTransport {
 
         Ok(Self {
             producer,
+            client_config,
             broadcast_topic,
             request_topic,
             response_topic,
-            listener_group_id,
+            broadcast_group_id,
+            request_group_id,
+            response_group_id,
             config,
             metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
@@ -102,15 +122,21 @@ impl HorizontalTransport for KafkaTransport {
 
     async fn start_listeners(&self, handlers: TransportHandlers) -> Result<()> {
         self.spawn_consumer(
-            self.broadcast_topic.clone(),
+            &self.broadcast_topic,
+            &self.broadcast_group_id,
             "broadcast",
             handlers.on_broadcast.clone(),
         )?;
 
-        self.spawn_request_consumer(self.request_topic.clone(), handlers.on_request.clone())?;
+        self.spawn_request_consumer(
+            &self.request_topic,
+            &self.request_group_id,
+            handlers.on_request.clone(),
+        )?;
 
         self.spawn_consumer(
-            self.response_topic.clone(),
+            &self.response_topic,
+            &self.response_group_id,
             "response",
             handlers.on_response.clone(),
         )?;
@@ -141,7 +167,8 @@ impl HorizontalTransport for KafkaTransport {
 impl KafkaTransport {
     fn spawn_consumer<T>(
         &self,
-        topic: String,
+        topic: &str,
+        group_id: &str,
         kind: &'static str,
         handler: Arc<
             dyn Fn(T) -> crate::horizontal_transport::BoxFuture<'static, ()> + Send + Sync,
@@ -150,11 +177,7 @@ impl KafkaTransport {
     where
         T: serde::de::DeserializeOwned + Send + 'static,
     {
-        let consumer = create_consumer(
-            &self.config,
-            &format!("{}-{kind}", self.listener_group_id),
-            &[topic.as_str()],
-        )?;
+        let consumer = create_consumer(&self.client_config, group_id, &[topic])?;
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
         let metrics = self.metrics.clone();
@@ -201,7 +224,8 @@ impl KafkaTransport {
 
     fn spawn_request_consumer(
         &self,
-        topic: String,
+        topic: &str,
+        group_id: &str,
         handler: Arc<
             dyn Fn(
                     RequestBody,
@@ -211,11 +235,7 @@ impl KafkaTransport {
                 + Sync,
         >,
     ) -> Result<()> {
-        let consumer = create_consumer(
-            &self.config,
-            &format!("{}-request", self.listener_group_id),
-            &[topic.as_str()],
-        )?;
+        let consumer = create_consumer(&self.client_config, group_id, &[topic])?;
         let producer = self.producer.clone();
         let response_topic = self.response_topic.clone();
         let shutdown = self.shutdown.clone();
@@ -279,10 +299,13 @@ impl Clone for KafkaTransport {
         self.owner_count.fetch_add(1, Ordering::Relaxed);
         Self {
             producer: self.producer.clone(),
+            client_config: self.client_config.clone(),
             broadcast_topic: self.broadcast_topic.clone(),
             request_topic: self.request_topic.clone(),
             response_topic: self.response_topic.clone(),
-            listener_group_id: self.listener_group_id.clone(),
+            broadcast_group_id: self.broadcast_group_id.clone(),
+            request_group_id: self.request_group_id.clone(),
+            response_group_id: self.response_group_id.clone(),
             config: self.config.clone(),
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
@@ -323,15 +346,13 @@ async fn publish_message<T: serde::Serialize>(
     Ok(())
 }
 
-async fn ensure_topics(
-    admin: &AdminClient<DefaultClientContext>,
-    topics: [&String; 3],
-) -> Result<()> {
-    let new_topics: Vec<_> = topics
-        .iter()
-        .map(|topic| NewTopic::new(topic.as_str(), 1, TopicReplication::Fixed(1)))
-        .collect();
-    let topic_refs: Vec<_> = new_topics.iter().collect();
+async fn ensure_topics(admin: &AdminClient<DefaultClientContext>, topics: [&str; 3]) -> Result<()> {
+    let new_topics = [
+        NewTopic::new(topics[0], 1, TopicReplication::Fixed(1)),
+        NewTopic::new(topics[1], 1, TopicReplication::Fixed(1)),
+        NewTopic::new(topics[2], 1, TopicReplication::Fixed(1)),
+    ];
+    let topic_refs = [&new_topics[0], &new_topics[1], &new_topics[2]];
 
     let results = admin
         .create_topics(topic_refs, &AdminOptions::new())
@@ -354,11 +375,12 @@ async fn ensure_topics(
 }
 
 fn create_consumer(
-    config: &KafkaAdapterConfig,
+    client_config: &ClientConfig,
     group_id: &str,
     topics: &[&str],
 ) -> Result<StreamConsumer> {
-    let consumer: StreamConsumer = kafka_config(config)
+    let consumer: StreamConsumer = client_config
+        .clone()
         .set("group.id", group_id)
         .set("enable.auto.commit", "false")
         .set("enable.auto.offset.store", "false")
