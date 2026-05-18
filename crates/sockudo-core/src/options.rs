@@ -2581,7 +2581,69 @@ mod tests {
         DeltaCoordinationBackend, PushQueueDriver, PushStorageDriver, QueueDriver, ServerOptions,
         VersionStoreDriver,
     };
+    use crate::app::{App, AppPolicy};
     use std::str::FromStr;
+
+    const APP_BOOTSTRAP_ENV_KEYS: &[&str] = &[
+        "SOCKUDO_DEFAULT_APP_ID",
+        "SOCKUDO_DEFAULT_APP_KEY",
+        "SOCKUDO_DEFAULT_APP_SECRET",
+        "SOCKUDO_DEFAULT_APP_ENABLED",
+        "SOCKUDO_SKIP_INLINE_APPS",
+        "APP_MANAGER_REGISTER_INLINE_APPS",
+    ];
+
+    struct EnvGuard {
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn app_bootstrap(overrides: &[(&'static str, &'static str)]) -> Self {
+            let previous = APP_BOOTSTRAP_ENV_KEYS
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+
+            // SAFETY: These tests isolate the app-bootstrap environment keys
+            // before applying per-test overrides and restore them in Drop.
+            unsafe {
+                for key in APP_BOOTSTRAP_ENV_KEYS {
+                    std::env::remove_var(key);
+                }
+                for (key, value) in overrides {
+                    std::env::set_var(key, value);
+                }
+            }
+
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: Restores each key to its pre-test value or removes it if
+            // it did not exist before the test.
+            unsafe {
+                for (key, value) in &self.previous {
+                    if let Some(value) = value {
+                        std::env::set_var(key, value);
+                    } else {
+                        std::env::remove_var(key);
+                    }
+                }
+            }
+        }
+    }
+
+    fn inline_test_app() -> App {
+        App::from_policy(
+            "app-id".to_string(),
+            "app-key".to_string(),
+            "app-secret".to_string(),
+            true,
+            AppPolicy::default(),
+        )
+    }
 
     #[test]
     fn queue_driver_parses_broker_backends() {
@@ -2614,6 +2676,49 @@ mod tests {
             DeltaCoordinationBackend::from_str("nats").unwrap(),
             DeltaCoordinationBackend::Nats
         );
+    }
+
+    #[tokio::test]
+    async fn app_bootstrap_env_overrides_inline_apps() {
+        {
+            let _env = EnvGuard::app_bootstrap(&[("SOCKUDO_DEFAULT_APP_ENABLED", "false")]);
+            let mut options = ServerOptions::default();
+            options.app_manager.array.apps.push(inline_test_app());
+
+            options.override_from_env().await.unwrap();
+
+            assert!(options.app_manager.array.apps.is_empty());
+        }
+
+        {
+            let _env = EnvGuard::app_bootstrap(&[
+                ("SOCKUDO_DEFAULT_APP_ID", "prod-app"),
+                ("SOCKUDO_DEFAULT_APP_KEY", "prod-key"),
+                ("SOCKUDO_DEFAULT_APP_SECRET", "prod-secret"),
+                ("SOCKUDO_DEFAULT_APP_ENABLED", "true"),
+            ]);
+            let mut options = ServerOptions::default();
+            options.app_manager.array.apps.push(inline_test_app());
+
+            options.override_from_env().await.unwrap();
+
+            assert_eq!(options.app_manager.array.apps.len(), 1);
+            let app = &options.app_manager.array.apps[0];
+            assert_eq!(app.id, "prod-app");
+            assert_eq!(app.key, "prod-key");
+            assert_eq!(app.secret, "prod-secret");
+            assert!(app.enabled);
+        }
+
+        {
+            let _env = EnvGuard::app_bootstrap(&[("APP_MANAGER_REGISTER_INLINE_APPS", "false")]);
+            let mut options = ServerOptions::default();
+            options.app_manager.array.apps.push(inline_test_app());
+
+            options.override_from_env().await.unwrap();
+
+            assert!(options.app_manager.array.apps.is_empty());
+        }
     }
 
     #[tokio::test]
@@ -3442,12 +3547,40 @@ impl ServerOptions {
             self.cache.memory.max_capacity = max_capacity;
         }
 
-        let default_app_id = std::env::var("SOCKUDO_DEFAULT_APP_ID");
-        let default_app_key = std::env::var("SOCKUDO_DEFAULT_APP_KEY");
-        let default_app_secret = std::env::var("SOCKUDO_DEFAULT_APP_SECRET");
+        let skip_inline_apps = parse_bool_env("SOCKUDO_SKIP_INLINE_APPS", false)
+            || !parse_bool_env("APP_MANAGER_REGISTER_INLINE_APPS", true);
+        if skip_inline_apps {
+            let app_count = self.app_manager.array.apps.len();
+            self.app_manager.array.apps.clear();
+            if app_count > 0 {
+                info!(
+                    "Skipping {} inline app(s) from configuration due to environment override",
+                    app_count
+                );
+            }
+        }
+
+        let default_app_id = std::env::var("SOCKUDO_DEFAULT_APP_ID").ok();
+        let default_app_key = std::env::var("SOCKUDO_DEFAULT_APP_KEY").ok();
+        let default_app_secret = std::env::var("SOCKUDO_DEFAULT_APP_SECRET").ok();
+        let default_app_env_configured = default_app_id.is_some()
+            || default_app_key.is_some()
+            || default_app_secret.is_some()
+            || std::env::var("SOCKUDO_DEFAULT_APP_ENABLED").is_ok();
         let default_app_enabled = parse_bool_env("SOCKUDO_DEFAULT_APP_ENABLED", true);
 
-        if let (Ok(app_id), Ok(app_key), Ok(app_secret)) =
+        if default_app_env_configured {
+            let app_count = self.app_manager.array.apps.len();
+            self.app_manager.array.apps.clear();
+            if app_count > 0 {
+                info!(
+                    "Replacing {} inline app(s) from configuration with SOCKUDO_DEFAULT_APP_* settings",
+                    app_count
+                );
+            }
+        }
+
+        if let (Some(app_id), Some(app_key), Some(app_secret)) =
             (default_app_id, default_app_key, default_app_secret)
             && default_app_enabled
         {
@@ -3563,6 +3696,12 @@ impl ServerOptions {
 
             self.app_manager.array.apps.push(default_app);
             info!("Successfully registered default app from env");
+        } else if default_app_env_configured && !default_app_enabled {
+            info!("Default app registration disabled by SOCKUDO_DEFAULT_APP_ENABLED=false");
+        } else if default_app_env_configured {
+            warn!(
+                "SOCKUDO_DEFAULT_APP_* environment was configured but id, key, and secret were not all provided; no default app registered"
+            );
         }
 
         // Special handling for REDIS_URL

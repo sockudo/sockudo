@@ -46,9 +46,18 @@ pub struct WebhookRetryPolicy {
     pub max_backoff_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WebhookHeaders {
     pub headers: AHashMap<String, String>,
+}
+
+impl Serialize for WebhookHeaders {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.headers.serialize(serializer)
+    }
 }
 
 impl<'de> Deserialize<'de> for WebhookHeaders {

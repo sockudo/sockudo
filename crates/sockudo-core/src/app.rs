@@ -873,6 +873,28 @@ mod tests {
     }
 
     #[test]
+    fn cache_round_trip_preserves_flat_webhook_headers() {
+        let json = test_app_json(
+            "",
+            r#","webhooks":[{"url":"https://example.com/hook","event_types":["channel_vacated"],"headers":{"X-HOOK-KEY":"secret"},"filter":{"channel_prefix":"private-"}}]"#,
+        );
+        let app: App = sonic_rs::from_str(&json).unwrap();
+
+        let cached = sonic_rs::to_string(&app).unwrap();
+        assert!(cached.contains(r#""headers":{"X-HOOK-KEY":"secret"}"#));
+        assert!(!cached.contains(r#""headers":{"headers":"#));
+
+        let restored: App = sonic_rs::from_str(&cached).unwrap();
+        let webhooks = restored.policy.webhooks.unwrap();
+        let webhook_headers = webhooks[0].headers.as_ref().unwrap();
+
+        assert_eq!(
+            webhook_headers.headers.get("X-HOOK-KEY"),
+            Some(&"secret".to_string())
+        );
+    }
+
+    #[test]
     fn deserialize_channel_namespaces() {
         let json = test_app_json(
             "",
