@@ -2691,6 +2691,17 @@ mod tests {
         }
 
         {
+            let _env = EnvGuard::app_bootstrap(&[("SOCKUDO_DEFAULT_APP_ENABLED", "true")]);
+            let mut options = ServerOptions::default();
+            options.app_manager.array.apps.push(inline_test_app());
+
+            options.override_from_env().await.unwrap();
+
+            assert_eq!(options.app_manager.array.apps.len(), 1);
+            assert_eq!(options.app_manager.array.apps[0].id, "app-id");
+        }
+
+        {
             let _env = EnvGuard::app_bootstrap(&[
                 ("SOCKUDO_DEFAULT_APP_ID", "prod-app"),
                 ("SOCKUDO_DEFAULT_APP_KEY", "prod-key"),
@@ -3563,13 +3574,16 @@ impl ServerOptions {
         let default_app_id = std::env::var("SOCKUDO_DEFAULT_APP_ID").ok();
         let default_app_key = std::env::var("SOCKUDO_DEFAULT_APP_KEY").ok();
         let default_app_secret = std::env::var("SOCKUDO_DEFAULT_APP_SECRET").ok();
-        let default_app_env_configured = default_app_id.is_some()
-            || default_app_key.is_some()
-            || default_app_secret.is_some()
-            || std::env::var("SOCKUDO_DEFAULT_APP_ENABLED").is_ok();
+        let default_app_enabled_env = std::env::var("SOCKUDO_DEFAULT_APP_ENABLED").ok();
         let default_app_enabled = parse_bool_env("SOCKUDO_DEFAULT_APP_ENABLED", true);
+        let default_app_credentials_configured =
+            default_app_id.is_some() || default_app_key.is_some() || default_app_secret.is_some();
+        let default_app_env_configured =
+            default_app_credentials_configured || default_app_enabled_env.is_some();
+        let default_app_should_override_inline = default_app_credentials_configured
+            || default_app_enabled_env.is_some_and(|_| !default_app_enabled);
 
-        if default_app_env_configured {
+        if default_app_should_override_inline {
             let app_count = self.app_manager.array.apps.len();
             self.app_manager.array.apps.clear();
             if app_count > 0 {
@@ -3698,7 +3712,7 @@ impl ServerOptions {
             info!("Successfully registered default app from env");
         } else if default_app_env_configured && !default_app_enabled {
             info!("Default app registration disabled by SOCKUDO_DEFAULT_APP_ENABLED=false");
-        } else if default_app_env_configured {
+        } else if default_app_credentials_configured {
             warn!(
                 "SOCKUDO_DEFAULT_APP_* environment was configured but id, key, and secret were not all provided; no default app registered"
             );
