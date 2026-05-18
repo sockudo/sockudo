@@ -51,3 +51,15 @@ mod local_adapter_fallback_tests;
 
 #[cfg(test)]
 mod single_node_optimization_tests;
+
+#[cfg(test)]
+mod graceful_departure_tests;
+
+#[cfg(test)]
+mod local_channel_members_tests;
+
+#[cfg(test)]
+mod user_has_connections_tests;
+
+#[cfg(test)]
+mod presence_state_sync_default_test;

@@ -487,14 +487,9 @@ impl PresenceManager {
         user_id: &str,
         excluding_socket: Option<&SocketId>,
     ) -> Result<bool> {
-        // Use cluster-wide connection check for multi-node support
-        let subscribed_count = connection_manager
-            .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
-            .await?;
-
-        let has_other_connections = subscribed_count > 0;
-
-        Ok(has_other_connections)
+        connection_manager
+            .user_has_connections_in_channel(user_id, app_id, channel, excluding_socket)
+            .await
     }
 
     /// Broadcast a message to all clients in a channel, optionally excluding one socket

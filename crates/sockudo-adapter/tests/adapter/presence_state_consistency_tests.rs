@@ -110,6 +110,7 @@ async fn test_presence_state_with_clock_skew() {
         timestamp: Some(1000), // Earlier timestamp
         dead_node_id: None,
         target_node_id: None,
+        channels: None,
     };
 
     let request_late = RequestBody {
@@ -124,6 +125,7 @@ async fn test_presence_state_with_clock_skew() {
         timestamp: Some(2000), // Later timestamp
         dead_node_id: None,
         target_node_id: None,
+        channels: None,
     };
 
     // Process requests (late one first to test handling)

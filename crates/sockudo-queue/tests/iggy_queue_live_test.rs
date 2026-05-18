@@ -1,3 +1,5 @@
+#![cfg(feature = "iggy")]
+
 use sockudo_core::options::IggyConfig;
 use sockudo_core::queue::QueueInterface;
 use sockudo_core::webhook_types::{JobData, JobPayload};

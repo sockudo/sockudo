@@ -66,8 +66,8 @@ use crate::http_handler::{
     channel_history_reset, channel_history_state, channel_message, channel_message_annotations,
     channel_message_versions, channel_presence_history, channel_presence_history_reset,
     channel_presence_history_snapshot, channel_presence_history_state, channel_users, channels,
-    delete_annotation, delete_message, events, fallback_404, metrics, publish_annotation, stats,
-    terminate_user_connections, up, update_message, usage,
+    delete_annotation, delete_message, events, fallback_404, live, metrics, publish_annotation,
+    stats, terminate_user_connections, up, update_message, usage,
 };
 use crate::presence_history::create_presence_history_store;
 #[cfg(feature = "push")]
@@ -3042,6 +3042,7 @@ impl SockudoServer {
             .merge(api_router)
             .route("/up", get(up))
             .route("/up/{appId}", get(up))
+            .route("/live", get(live))
             .layer(DefaultBodyLimit::max(body_limit_bytes))
             .layer(cors);
 
@@ -3361,6 +3362,16 @@ impl SockudoServer {
     async fn stop(&self) -> Result<()> {
         info!("Stopping server...");
         self.state.running.store(false, Ordering::SeqCst);
+
+        // Tell cluster peers this node is leaving and no responses are expected
+        if let Err(e) = self
+            .state
+            .connection_manager
+            .announce_node_departure()
+            .await
+        {
+            warn!("Failed to announce node departure: {}", e);
+        }
 
         let mut connections_to_cleanup: Vec<(String, WebSocketRef)> = Vec::new();
 

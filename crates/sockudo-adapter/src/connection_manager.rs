@@ -114,6 +114,15 @@ pub trait ConnectionManager: Send + Sync {
         app_id: &str,
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>>;
+
+    async fn get_local_channel_members(
+        &self,
+        app_id: &str,
+        channel: &str,
+    ) -> Result<HashMap<String, PresenceMemberInfo>> {
+        self.get_channel_members(app_id, channel).await
+    }
+
     async fn get_channel_sockets(&self, app_id: &str, channel: &str) -> Result<Vec<SocketId>>;
     async fn remove_channel(&self, app_id: &str, channel: &str);
     async fn is_in_channel(
@@ -166,11 +175,47 @@ pub trait ConnectionManager: Send + Sync {
         channel: &str,
         excluding_socket: Option<&SocketId>,
     ) -> Result<usize>;
+
+    /// Returns true if the user has any connections in the channel (excluding one socket).
+    async fn user_has_connections_in_channel(
+        &self,
+        user_id: &str,
+        app_id: &str,
+        channel: &str,
+        excluding_socket: Option<&SocketId>,
+    ) -> Result<bool> {
+        Ok(self
+            .count_user_connections_in_channel(user_id, app_id, channel, excluding_socket)
+            .await?
+            > 0)
+    }
+
     async fn get_channels_with_socket_count(&self, app_id: &str) -> Result<HashMap<String, usize>>;
 
     async fn get_sockets_count(&self, app_id: &str) -> Result<usize>;
     async fn get_namespaces(&self) -> Result<Vec<(String, Arc<Namespace>)>>;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Local-only socket count (no cross-node query)
+    async fn get_local_channel_socket_count(&self, app_id: &str, channel: &str) -> usize {
+        self.get_channel_socket_count(app_id, channel).await
+    }
+
+    /// Batch cross-node channel socket counts in one round-trip
+    async fn get_batch_channel_socket_counts(
+        &self,
+        app_id: &str,
+        channels: &[&str],
+    ) -> Result<HashMap<String, usize>> {
+        let mut result = HashMap::new();
+        for channel in channels {
+            let count = self.get_channel_socket_count(app_id, channel).await;
+            if count > 0 {
+                result.insert(channel.to_string(), count);
+            }
+        }
+        Ok(result)
+    }
 
     /// Check the health of the connection manager and its underlying adapter
     /// Returns Ok(()) if healthy, Err(error_message) if unhealthy with specific reason
@@ -186,5 +231,11 @@ pub trait ConnectionManager: Send + Sync {
     /// Returns Some(receiver) if configured, None if not supported
     fn configure_dead_node_events(&self) -> Option<DeadNodeEventBusReceiver> {
         None // Default: no clustering support
+    }
+
+    /// Tell cluster peers this node is leaving so they prune
+    /// heartbeat tracking without waiting for the timeout window
+    async fn announce_node_departure(&self) -> Result<()> {
+        Ok(())
     }
 }

@@ -380,6 +380,10 @@ impl HorizontalTransport for RedisTransport {
         }
     }
 
+    fn node_count_is_real_time(&self) -> bool {
+        true
+    }
+
     async fn check_health(&self) -> Result<()> {
         // Use a dedicated connection for health check to avoid impacting main operations
         let mut conn = self

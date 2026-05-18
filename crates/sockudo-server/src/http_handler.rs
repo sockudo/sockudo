@@ -17,7 +17,7 @@ use sockudo_core::annotations::{
     AnnotationSerial, AnnotationType, RawAnnotationReplayRequest,
 };
 use sockudo_core::app::App;
-use sockudo_core::error::{HEALTH_CHECK_TIMEOUT_MS, HealthStatus};
+use sockudo_core::error::HealthStatus;
 use sockudo_core::history::{
     HistoryCursor, HistoryDirection, HistoryPurgeMode, HistoryPurgeRequest, HistoryQueryBounds,
     HistoryReadRequest,
@@ -3486,18 +3486,40 @@ pub async fn terminate_user_connections(
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
-/// System health check function
-async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
+/// System health check function. Subsystem checks (adapter, cache, webhook
+/// queue) run in parallel under per-check timeouts so a slow subsystem cannot
+/// starve the others.
+async fn check_system_health(
+    handler: &Arc<ConnectionHandler>,
+    timeout_duration: Duration,
+) -> HealthStatus {
+    let cache_enabled =
+        handler.server_options().cache.driver != sockudo_core::options::CacheDriver::None;
+    let webhook_integration = handler.webhook_integration();
+
+    let adapter_fut = timeout(
+        timeout_duration,
+        handler.connection_manager().check_health(),
+    );
+    let cache_fut = async {
+        if !cache_enabled {
+            return None;
+        }
+        Some(timeout(timeout_duration, handler.cache_manager().check_health()).await)
+    };
+    let queue_fut = async {
+        let Some(integration) = webhook_integration else {
+            return None;
+        };
+        Some(timeout(timeout_duration, integration.check_queue_health()).await)
+    };
+
+    let (adapter_check, cache_check, queue_check) = tokio::join!(adapter_fut, cache_fut, queue_fut);
+
     let mut critical_issues = Vec::new();
     let mut non_critical_issues = Vec::new();
 
     // CRITICAL CHECK 1: Adapter health
-    let adapter_check = timeout(
-        Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
-        handler.connection_manager().check_health(),
-    )
-    .await;
-
     match adapter_check {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
@@ -3509,13 +3531,7 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
     }
 
     // CRITICAL CHECK 2: Cache manager health
-    if handler.server_options().cache.driver != sockudo_core::options::CacheDriver::None {
-        let cache_check = timeout(
-            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
-            handler.cache_manager().check_health(),
-        )
-        .await;
-
+    if let Some(cache_check) = cache_check {
         match cache_check {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -3528,13 +3544,7 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
     }
 
     // NON-CRITICAL CHECK: Queue system health
-    if let Some(webhook_integration) = handler.webhook_integration() {
-        let queue_check = timeout(
-            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
-            webhook_integration.check_queue_health(),
-        )
-        .await;
-
+    if let Some(queue_check) = queue_check {
         match queue_check {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -3555,29 +3565,35 @@ async fn check_system_health(handler: &Arc<ConnectionHandler>) -> HealthStatus {
     }
 }
 
+/// GET /live
+pub async fn live() -> StatusCode {
+    StatusCode::OK
+}
+
 /// GET /up or /up/{app_id}
 #[instrument(skip(handler), fields(app_id = field::Empty))]
 pub async fn up(
     app_id: Option<Path<String>>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
+    let timeout_duration = Duration::from_millis(handler.server_options().health_check_timeout_ms);
+
     let (health_status, app_id_str) = if let Some(Path(app_id)) = app_id {
         tracing::Span::current().record("app_id", &app_id);
         debug!("Health check received for app_id: {}", app_id);
 
-        let app_check = timeout(
-            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
-            handler.app_manager().find_by_id(&app_id),
-        )
-        .await;
+        let app_check = timeout(timeout_duration, handler.app_manager().find_by_id(&app_id)).await;
 
         let app_status = match app_check {
-            Ok(Ok(Some(app))) if app.enabled => check_system_health(&handler).await,
+            Ok(Ok(Some(app))) if app.enabled => {
+                check_system_health(&handler, timeout_duration).await
+            }
             Ok(Ok(Some(_))) => HealthStatus::Error(vec!["App is disabled".to_string()]),
             Ok(Ok(None)) => HealthStatus::NotFound,
             Ok(Err(e)) => HealthStatus::Error(vec![format!("App manager: {e}")]),
             Err(_) => HealthStatus::Error(vec![format!(
-                "App manager timeout (>{HEALTH_CHECK_TIMEOUT_MS}ms)"
+                "App manager timeout (>{}ms)",
+                timeout_duration.as_millis()
             )]),
         };
 
@@ -3585,21 +3601,18 @@ pub async fn up(
     } else {
         debug!("General health check received (no app_id)");
 
-        let apps_check = timeout(
-            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
-            handler.app_manager().get_apps(),
-        )
-        .await;
+        let apps_check = timeout(timeout_duration, handler.app_manager().get_apps()).await;
 
         let app_status = match apps_check {
             Ok(Ok(apps)) if !apps.is_empty() => {
                 debug!("Found {} configured apps", apps.len());
-                check_system_health(&handler).await
+                check_system_health(&handler, timeout_duration).await
             }
             Ok(Ok(_)) => HealthStatus::Error(vec!["No apps configured".to_string()]),
             Ok(Err(e)) => HealthStatus::Error(vec![format!("App manager: {e}")]),
             Err(_) => HealthStatus::Error(vec![format!(
-                "App manager timeout (>{HEALTH_CHECK_TIMEOUT_MS}ms)"
+                "App manager timeout (>{}ms)",
+                timeout_duration.as_millis()
             )]),
         };
 
