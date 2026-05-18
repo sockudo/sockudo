@@ -14,10 +14,6 @@ server-sdks/
 test/interactive/sockudo-js/
 /coolify/
 /sockudo-website/
-docs/research/*
-!docs/research/ably-parity/
-docs/research/ably-parity/*
-!docs/research/ably-parity/sockudo-push-perf-results-4.5.md
 sockudo-blog
 .omx
 .sisyphus/
