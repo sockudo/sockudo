@@ -7,6 +7,8 @@ mod history;
 mod http_handler;
 mod middleware;
 mod presence_history;
+#[cfg(feature = "push")]
+mod push_http;
 mod ws_handler;
 
 #[cfg(unix)]
@@ -23,10 +25,21 @@ use axum::routing::{delete, get, post};
 use axum::serve::IncomingStream;
 use axum::{BoxError, Router, ServiceExt, middleware as axum_middleware};
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
 use clap::Parser;
 use futures_util::future::join_all;
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use mimalloc::MiMalloc;
 use sockudo_core::error::Error;
+#[cfg(all(feature = "push", feature = "monolith"))]
+use std::env;
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+use std::fs;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -53,6 +66,15 @@ use crate::http_handler::{
     stats, terminate_user_connections, up, update_message, usage,
 };
 use crate::presence_history::create_presence_history_store;
+#[cfg(feature = "push")]
+use crate::push_http::{
+    batch_publish as push_batch_publish, decrypt_credential_secret, delete_channel_subscriptions,
+    delete_device, delete_devices_where, delete_scheduled_job, delete_template, get_device,
+    get_publish_status, get_template, list_channel_subscriptions, list_credentials, list_devices,
+    list_subscription_channels, list_templates, post_apns_credential, post_delivery_status,
+    post_fcm_credential, post_hms_credential, post_template, post_webpush_credential,
+    post_wns_credential, publish as push_publish, register_device, upsert_channel_subscription,
+};
 use sockudo_adapter::factory::AdapterFactory;
 use sockudo_app::AppManagerFactory;
 use sockudo_cache::CacheManagerFactory;
@@ -60,6 +82,8 @@ use sockudo_core::error::Result;
 
 use crate::ws_handler::handle_ws_upgrade;
 use sockudo_core::options::{AdapterDriver, DeltaCoordinationBackend, QueueDriver, ServerOptions};
+#[cfg(feature = "push")]
+use sockudo_core::options::{PushQueueDriver, PushStorageDriver};
 use sockudo_core::origin_validation::OriginValidator;
 use sockudo_core::rate_limiter::RateLimiter;
 use sockudo_queue::QueueManagerFactory;
@@ -67,6 +91,10 @@ use sockudo_rate_limiter::factory::RateLimiterFactory;
 use sockudo_rate_limiter::middleware::IpKeyExtractor;
 use sockudo_webhook::integration::QueueManager;
 use sockudo_webhook::{BatchingConfig, WebhookConfig, WebhookIntegration};
+#[cfg(all(feature = "push", feature = "mysql"))]
+use sqlx::mysql::MySqlPoolOptions;
+#[cfg(all(feature = "push", feature = "postgres"))]
+use sqlx::postgres::PgPoolOptions;
 use tower::Layer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{debug, error, info, warn};
@@ -88,6 +116,1473 @@ fn resolve_delta_coordination_backend(config: &ServerOptions) -> DeltaCoordinati
         },
         ref backend => backend.clone(),
     }
+}
+
+#[cfg(feature = "push")]
+async fn create_push_store(config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    match config.push.storage_driver {
+        PushStorageDriver::Memory => {
+            if config.mode.eq_ignore_ascii_case("production") {
+                warn!(
+                    "Push storage driver is memory; this is intended only for tests and local development"
+                );
+            }
+            Ok(Arc::new(sockudo_push::MemoryPushStore::new()))
+        }
+        PushStorageDriver::Postgres => create_postgres_push_store(config).await,
+        PushStorageDriver::Mysql => create_mysql_push_store(config).await,
+        PushStorageDriver::DynamoDb => create_dynamodb_push_store(config).await,
+        PushStorageDriver::SurrealDb => create_surrealdb_push_store(config).await,
+        PushStorageDriver::ScyllaDb => create_scylladb_push_store(config).await,
+    }
+}
+
+#[cfg(feature = "push")]
+fn create_push_queue(
+    config: &ServerOptions,
+    queue_manager: Option<Arc<QueueManager>>,
+) -> Result<sockudo_push::DynPushQueue> {
+    let backend = match config.push.queue_driver {
+        PushQueueDriver::Memory => sockudo_push::PushQueueBackendKind::Memory,
+        PushQueueDriver::Redis => sockudo_push::PushQueueBackendKind::Redis,
+        PushQueueDriver::RedisCluster => sockudo_push::PushQueueBackendKind::RedisCluster,
+        PushQueueDriver::Nats => sockudo_push::PushQueueBackendKind::Nats,
+        PushQueueDriver::Pulsar => sockudo_push::PushQueueBackendKind::Pulsar,
+        PushQueueDriver::RabbitMq => sockudo_push::PushQueueBackendKind::RabbitMq,
+        PushQueueDriver::GooglePubsub => sockudo_push::PushQueueBackendKind::GooglePubsub,
+        PushQueueDriver::Kafka => sockudo_push::PushQueueBackendKind::Kafka,
+        PushQueueDriver::Iggy => sockudo_push::PushQueueBackendKind::Iggy,
+        PushQueueDriver::Sqs => sockudo_push::PushQueueBackendKind::Sqs,
+        PushQueueDriver::Sns => sockudo_push::PushQueueBackendKind::Sns,
+    };
+    backend
+        .startup_check()
+        .map_err(|e| Error::Internal(format!("Failed to create push queue: {e}")))?;
+    if backend == sockudo_push::PushQueueBackendKind::Memory {
+        return Ok(Arc::new(sockudo_push::MemoryPushQueue::new()));
+    }
+    let queue_manager = queue_manager.ok_or_else(|| {
+        Error::Internal(format!(
+            "push queue driver {:?} requires an initialized queue manager",
+            backend
+        ))
+    })?;
+    Ok(Arc::new(QueueManagerPushQueue::new(backend, queue_manager)))
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
+fn push_fanout_config(config: &ServerOptions) -> sockudo_push::FanoutConfig {
+    sockudo_push::FanoutConfig {
+        fast_threshold: config.push.fanout_fast_threshold,
+        shard_size: config.push.fanout_shard_size,
+        status_retention_days: config.push.publish_status_ttl_days,
+        ..sockudo_push::FanoutConfig::default()
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
+fn start_push_monolith_workers(
+    config: &ServerOptions,
+    store: sockudo_push::DynPushStore,
+    queue: sockudo_push::DynPushQueue,
+) {
+    let fanout_config = push_fanout_config(config);
+
+    for worker_index in 0..config.push.planner_worker_count {
+        let planner =
+            sockudo_push::PushPlanner::new(store.clone(), queue.clone(), fanout_config.clone());
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-planner-{worker_index}");
+            warn!(worker = %group, "push planner worker started");
+            loop {
+                match planner.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "push planner worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "push planner worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+
+    for worker_index in 0..config.push.shard_worker_count {
+        let worker =
+            sockudo_push::PushShardWorker::new(store.clone(), queue.clone(), fanout_config.clone());
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-shard-{worker_index}");
+            warn!(worker = %group, "push shard worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "push shard worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "push shard worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+
+    for worker_index in 0..config.push.feedback_worker_count {
+        let processor = sockudo_push::PushFeedbackProcessor::new(store.clone(), queue.clone());
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-feedback-{worker_index}");
+            warn!(worker = %group, "push feedback worker started");
+            loop {
+                match processor.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "push feedback worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "push feedback worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+
+    {
+        let scheduler = sockudo_push::PushScheduler::new(
+            store.clone(),
+            queue.clone(),
+            "sockudo-monolith-scheduler",
+            fanout_config.clone(),
+        );
+        let store = store.clone();
+        tokio::spawn(async move {
+            let group = "sockudo-monolith-scheduler";
+            warn!(worker = %group, "push scheduler worker started");
+            loop {
+                let now = push_queue_now_ms();
+                let due_minute_ms = now - (now % 60_000);
+                match store.list_scheduled_apps().await {
+                    Ok(app_ids) => {
+                        for app_id in app_ids {
+                            match scheduler.poll_due_bucket(&app_id, due_minute_ms, now).await {
+                                Ok(processed) if processed > 0 => {
+                                    warn!(worker = %group, app_id = %app_id, processed, "push scheduler worker emitted due jobs");
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    warn!(worker = %group, app_id = %app_id, error = %error, "push scheduler app tick failed");
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "push scheduler app discovery failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+    }
+
+    start_push_provider_workers(config, store, queue);
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
+fn start_push_provider_workers(
+    config: &ServerOptions,
+    store: sockudo_push::DynPushStore,
+    queue: sockudo_push::DynPushQueue,
+) {
+    if config.push.webpush_enabled {
+        start_webpush_provider_workers(config, queue.clone());
+    }
+
+    if config.push.apns_enabled {
+        start_apns_provider_workers(config, store.clone(), queue.clone());
+    }
+
+    if config.push.fcm_enabled {
+        start_fcm_provider_workers(config, queue.clone());
+    }
+
+    if config.push.hms_enabled {
+        start_hms_provider_workers(config, queue.clone());
+    }
+
+    if config.push.wns_enabled {
+        start_wns_provider_workers(config, queue);
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith"))]
+fn static_push_token_provider(
+    provider: &'static str,
+    env_names: &[&str],
+) -> Result<sockudo_push::CachedTokenProvider> {
+    for env_name in env_names {
+        if let Ok(token) = env::var(env_name) {
+            if token.trim().is_empty() {
+                return Err(Error::Internal(format!("{env_name} is empty")));
+            }
+            return Ok(sockudo_push::CachedTokenProvider::new(Arc::new(
+                sockudo_push::StaticTokenSource::new(
+                    sockudo_push::SecretString::new(token).map_err(|error| {
+                        Error::Internal(format!("invalid {provider} provider token: {error}"))
+                    })?,
+                    u64::MAX,
+                ),
+            )));
+        }
+    }
+    Err(Error::Internal(format!(
+        "{provider} dispatch requires one of {}",
+        env_names.join("/")
+    )))
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-fcm"))]
+fn start_fcm_provider_workers(config: &ServerOptions, queue: sockudo_push::DynPushQueue) {
+    let project_id = env::var("FCM_PROJECT_ID").or_else(|_| env::var("PUSH_FCM_PROJECT_ID"));
+    let Ok(project_id) = project_id else {
+        warn!(
+            "push.fcm_enabled is true but FCM_PROJECT_ID/PUSH_FCM_PROJECT_ID is not set; FCM dispatch worker not started"
+        );
+        return;
+    };
+    if project_id.trim().is_empty() {
+        warn!("FCM_PROJECT_ID/PUSH_FCM_PROJECT_ID is empty; FCM dispatch worker not started");
+        return;
+    }
+
+    let token_provider =
+        match static_push_token_provider("FCM", &["FCM_PROVIDER_TOKEN", "PUSH_FCM_PROVIDER_TOKEN"])
+        {
+            Ok(provider) => provider,
+            Err(error) => {
+                warn!(error = %error, "FCM dispatch worker not started");
+                return;
+            }
+        };
+    let endpoint = env::var("FCM_ENDPOINT")
+        .or_else(|_| env::var("PUSH_FCM_ENDPOINT"))
+        .ok();
+
+    for worker_index in 0..config.push.dispatch_worker_count {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+            Ok(http) => Arc::new(http),
+            Err(error) => {
+                warn!(error = %error, "failed to create FCM HTTP client");
+                continue;
+            }
+        };
+        let mut dispatcher =
+            sockudo_push::FcmDispatcher::new(project_id.clone(), token_provider.clone(), http);
+        if let Some(endpoint) = endpoint.clone() {
+            dispatcher = dispatcher.with_base_url(endpoint);
+        }
+        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+            sockudo_push::PushProviderKind::Fcm,
+            queue.clone(),
+            Arc::new(dispatcher),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-fcm-{worker_index}");
+            warn!(worker = %group, "FCM dispatch worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "FCM dispatch worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "FCM dispatch worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", not(feature = "push-fcm")))]
+fn start_fcm_provider_workers(_config: &ServerOptions, _queue: sockudo_push::DynPushQueue) {
+    warn!("push.fcm_enabled is true but the binary was not compiled with the push-fcm feature");
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-webpush"))]
+fn start_webpush_provider_workers(config: &ServerOptions, queue: sockudo_push::DynPushQueue) {
+    let vapid_private_key =
+        env::var("VAPID_PRIVATE_KEY").or_else(|_| env::var("PUSH_WEBPUSH_VAPID_PRIVATE_KEY"));
+    let Ok(vapid_private_key) = vapid_private_key else {
+        warn!(
+            "push.webpush_enabled is true but VAPID_PRIVATE_KEY/PUSH_WEBPUSH_VAPID_PRIVATE_KEY is not set; Web Push dispatch worker not started"
+        );
+        return;
+    };
+    let vapid_contact = env::var("VAPID_CONTACT")
+        .or_else(|_| env::var("PUSH_WEBPUSH_VAPID_CONTACT"))
+        .unwrap_or_else(|_| "mailto:sockudo-webpush@example.com".to_owned());
+
+    for worker_index in 0..config.push.dispatch_worker_count {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+            Ok(http) => Arc::new(http),
+            Err(error) => {
+                warn!(error = %error, "failed to create Web Push HTTP client");
+                continue;
+            }
+        };
+        let dispatcher = sockudo_push::WebPushDispatcher::new(
+            "webpush",
+            sockudo_push::CachedTokenProvider::new(Arc::new(sockudo_push::StaticTokenSource::new(
+                sockudo_push::SecretString::new("unused-for-vapid")
+                    .expect("static webpush fallback token is non-empty"),
+                u64::MAX,
+            ))),
+            Arc::new(sockudo_push::NativeWebPushCrypto::new(
+                vapid_private_key.clone(),
+                vapid_contact.clone(),
+            )),
+            http,
+        );
+        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+            sockudo_push::PushProviderKind::WebPush,
+            queue.clone(),
+            Arc::new(dispatcher),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-webpush-{worker_index}");
+            warn!(worker = %group, "Web Push dispatch worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "Web Push dispatch worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "Web Push dispatch worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", not(feature = "push-webpush")))]
+fn start_webpush_provider_workers(_config: &ServerOptions, _queue: sockudo_push::DynPushQueue) {
+    warn!(
+        "push.webpush_enabled is true but the binary was not compiled with the push-webpush feature"
+    );
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+fn start_apns_provider_workers(
+    config: &ServerOptions,
+    store: sockudo_push::DynPushStore,
+    queue: sockudo_push::DynPushQueue,
+) {
+    let topic = env::var("APNS_TOPIC").or_else(|_| env::var("PUSH_APNS_TOPIC"));
+    let Ok(topic) = topic else {
+        warn!(
+            "push.apns_enabled is true but APNS_TOPIC/PUSH_APNS_TOPIC is not set; APNs dispatch worker not started"
+        );
+        return;
+    };
+    if topic.trim().is_empty() {
+        warn!("APNS_TOPIC/PUSH_APNS_TOPIC is empty; APNs dispatch worker not started");
+        return;
+    }
+
+    let endpoint = env::var("APNS_ENDPOINT")
+        .or_else(|_| env::var("PUSH_APNS_ENDPOINT"))
+        .unwrap_or_else(|_| "https://api.push.apple.com".to_owned());
+    let stored_app_id = env::var("APNS_APP_ID").or_else(|_| env::var("PUSH_APNS_APP_ID"));
+    let stored_credential_id = env::var("APNS_CREDENTIAL_ID")
+        .or_else(|_| env::var("PUSH_APNS_CREDENTIAL_ID"))
+        .unwrap_or_else(|_| "apns".to_owned());
+
+    if let Ok(stored_app_id) = stored_app_id {
+        if stored_app_id.trim().is_empty() {
+            warn!("APNS_APP_ID/PUSH_APNS_APP_ID is empty; APNs dispatch worker not started");
+            return;
+        }
+        for worker_index in 0..config.push.dispatch_worker_count {
+            let store = store.clone();
+            let queue = queue.clone();
+            let topic = topic.clone();
+            let endpoint = endpoint.clone();
+            let app_id = stored_app_id.clone();
+            let credential_id = stored_credential_id.clone();
+            tokio::spawn(async move {
+                let dispatcher = match create_stored_apns_dispatcher(
+                    &store,
+                    &app_id,
+                    &credential_id,
+                    &topic,
+                    &endpoint,
+                )
+                .await
+                {
+                    Ok(dispatcher) => dispatcher,
+                    Err(error) => {
+                        warn!(worker = worker_index, app_id = %app_id, credential_id = %credential_id, error = %error, "APNs dispatch worker not started");
+                        return;
+                    }
+                };
+                let mut worker = sockudo_push::ProviderDispatchWorker::new(
+                    sockudo_push::PushProviderKind::Apns,
+                    queue,
+                    Arc::new(dispatcher),
+                );
+                let group = format!("sockudo-monolith-apns-{worker_index}");
+                warn!(worker = %group, app_id = %app_id, credential_id = %credential_id, "APNs dispatch worker started with stored credential");
+                loop {
+                    match worker.run_once(&group).await {
+                        Ok(processed) if processed > 0 => {
+                            warn!(worker = %group, processed, "APNs dispatch worker processed messages");
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            warn!(worker = %group, error = %error, "APNs dispatch worker tick failed");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            });
+        }
+        return;
+    }
+
+    let token_provider = match create_apns_token_provider() {
+        Ok(provider) => provider,
+        Err(error) => {
+            warn!(error = %error, "APNs dispatch worker not started");
+            return;
+        }
+    };
+
+    for worker_index in 0..config.push.dispatch_worker_count {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+            Ok(http) => Arc::new(http),
+            Err(error) => {
+                warn!(error = %error, "failed to create APNs HTTP client");
+                continue;
+            }
+        };
+        let dispatcher =
+            sockudo_push::ApnsDispatcher::new(topic.clone(), token_provider.clone(), http)
+                .with_base_url(endpoint.clone());
+        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+            sockudo_push::PushProviderKind::Apns,
+            queue.clone(),
+            Arc::new(dispatcher),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-apns-{worker_index}");
+            warn!(worker = %group, "APNs dispatch worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "APNs dispatch worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "APNs dispatch worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", not(feature = "push-apns")))]
+fn start_apns_provider_workers(
+    _config: &ServerOptions,
+    _store: sockudo_push::DynPushStore,
+    _queue: sockudo_push::DynPushQueue,
+) {
+    warn!("push.apns_enabled is true but the binary was not compiled with the push-apns feature");
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-hms"))]
+fn start_hms_provider_workers(config: &ServerOptions, queue: sockudo_push::DynPushQueue) {
+    let app_id = env::var("HMS_APP_ID").or_else(|_| env::var("PUSH_HMS_APP_ID"));
+    let Ok(app_id) = app_id else {
+        warn!(
+            "push.hms_enabled is true but HMS_APP_ID/PUSH_HMS_APP_ID is not set; HMS dispatch worker not started"
+        );
+        return;
+    };
+    if app_id.trim().is_empty() {
+        warn!("HMS_APP_ID/PUSH_HMS_APP_ID is empty; HMS dispatch worker not started");
+        return;
+    }
+
+    let token_provider =
+        match static_push_token_provider("HMS", &["HMS_PROVIDER_TOKEN", "PUSH_HMS_PROVIDER_TOKEN"])
+        {
+            Ok(provider) => provider,
+            Err(error) => {
+                warn!(error = %error, "HMS dispatch worker not started");
+                return;
+            }
+        };
+    let endpoint = env::var("HMS_ENDPOINT")
+        .or_else(|_| env::var("PUSH_HMS_ENDPOINT"))
+        .ok();
+
+    for worker_index in 0..config.push.dispatch_worker_count {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+            Ok(http) => Arc::new(http),
+            Err(error) => {
+                warn!(error = %error, "failed to create HMS HTTP client");
+                continue;
+            }
+        };
+        let mut dispatcher =
+            sockudo_push::HmsDispatcher::new(app_id.clone(), token_provider.clone(), http);
+        if let Some(endpoint) = endpoint.clone() {
+            dispatcher = dispatcher.with_base_url(endpoint);
+        }
+        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+            sockudo_push::PushProviderKind::Hms,
+            queue.clone(),
+            Arc::new(dispatcher),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-hms-{worker_index}");
+            warn!(worker = %group, "HMS dispatch worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "HMS dispatch worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "HMS dispatch worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", not(feature = "push-hms")))]
+fn start_hms_provider_workers(_config: &ServerOptions, _queue: sockudo_push::DynPushQueue) {
+    warn!("push.hms_enabled is true but the binary was not compiled with the push-hms feature");
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-wns"))]
+fn start_wns_provider_workers(config: &ServerOptions, queue: sockudo_push::DynPushQueue) {
+    let token_provider =
+        match static_push_token_provider("WNS", &["WNS_PROVIDER_TOKEN", "PUSH_WNS_PROVIDER_TOKEN"])
+        {
+            Ok(provider) => provider,
+            Err(error) => {
+                warn!(error = %error, "WNS dispatch worker not started");
+                return;
+            }
+        };
+
+    for worker_index in 0..config.push.dispatch_worker_count {
+        let http = match sockudo_push::ReqwestProviderHttpClient::new() {
+            Ok(http) => Arc::new(http),
+            Err(error) => {
+                warn!(error = %error, "failed to create WNS HTTP client");
+                continue;
+            }
+        };
+        let dispatcher = sockudo_push::WnsDispatcher::new(token_provider.clone(), http);
+        let mut worker = sockudo_push::ProviderDispatchWorker::new(
+            sockudo_push::PushProviderKind::Wns,
+            queue.clone(),
+            Arc::new(dispatcher),
+        );
+        tokio::spawn(async move {
+            let group = format!("sockudo-monolith-wns-{worker_index}");
+            warn!(worker = %group, "WNS dispatch worker started");
+            loop {
+                match worker.run_once(&group).await {
+                    Ok(processed) if processed > 0 => {
+                        warn!(worker = %group, processed, "WNS dispatch worker processed messages");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(worker = %group, error = %error, "WNS dispatch worker tick failed");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", not(feature = "push-wns")))]
+fn start_wns_provider_workers(_config: &ServerOptions, _queue: sockudo_push::DynPushQueue) {
+    warn!("push.wns_enabled is true but the binary was not compiled with the push-wns feature");
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+async fn create_stored_apns_dispatcher(
+    store: &sockudo_push::DynPushStore,
+    app_id: &str,
+    credential_id: &str,
+    topic: &str,
+    endpoint: &str,
+) -> Result<sockudo_push::ApnsDispatcher> {
+    let credential = store
+        .get_credential(app_id, credential_id)
+        .await
+        .map_err(|error| Error::Internal(format!("failed to load APNs credential: {error}")))?
+        .ok_or_else(|| {
+            Error::Internal(format!(
+                "APNs credential {credential_id:?} was not found for app {app_id:?}"
+            ))
+        })?;
+    if credential.provider != sockudo_push::PushProviderKind::Apns {
+        return Err(Error::Internal(format!(
+            "stored credential {credential_id:?} for app {app_id:?} is {:?}, not APNs",
+            credential.provider
+        )));
+    }
+
+    let sockudo_push::ProviderCredentialMaterial::Apns {
+        p12,
+        p12_password,
+        pem,
+        team_id,
+        key_id,
+        private_key,
+    } = credential.material
+    else {
+        return Err(Error::Internal(
+            "stored credential material is not APNs".to_owned(),
+        ));
+    };
+
+    if let (Some(team_id), Some(key_id), Some(private_key)) = (team_id, key_id, private_key) {
+        let private_key = decrypt_credential_secret(&private_key)
+            .map_err(|error| {
+                Error::Internal(format!("failed to decrypt APNs private key: {error}"))
+            })?
+            .replace("\\n", "\n");
+        let token_provider = sockudo_push::CachedTokenProvider::new(Arc::new(
+            ApnsJwtTokenSource::new(team_id, key_id, private_key)?,
+        ));
+        let http = Arc::new(
+            sockudo_push::ReqwestProviderHttpClient::new().map_err(|error| {
+                Error::Internal(format!("failed to create APNs HTTP client: {error}"))
+            })?,
+        );
+        return Ok(
+            sockudo_push::ApnsDispatcher::new(topic.to_owned(), token_provider, http)
+                .with_base_url(endpoint.to_owned()),
+        );
+    }
+
+    if let Some(pem) = pem {
+        let pem = decrypt_credential_secret(&pem)
+            .map_err(|error| Error::Internal(format!("failed to decrypt APNs PEM: {error}")))?;
+        let http = Arc::new(
+            sockudo_push::ReqwestProviderHttpClient::new_with_pem_identity(&pem).map_err(
+                |error| Error::Internal(format!("failed to create APNs PEM HTTP client: {error}")),
+            )?,
+        );
+        return Ok(
+            sockudo_push::ApnsDispatcher::new_with_tls_identity(topic.to_owned(), http)
+                .with_base_url(endpoint.to_owned()),
+        );
+    }
+
+    if let Some(p12) = p12 {
+        let p12 = decrypt_credential_secret(&p12)
+            .map_err(|error| Error::Internal(format!("failed to decrypt APNs p12: {error}")))?;
+        let p12_password = p12_password
+            .as_ref()
+            .map(decrypt_credential_secret)
+            .transpose()
+            .map_err(|error| {
+                Error::Internal(format!("failed to decrypt APNs p12 password: {error}"))
+            })?
+            .unwrap_or_default();
+        let der = decode_apns_p12(&p12)?;
+        let http = Arc::new(
+            sockudo_push::ReqwestProviderHttpClient::new_with_pkcs12_identity(&der, &p12_password)
+                .map_err(|error| {
+                    Error::Internal(format!(
+                        "failed to create APNs PKCS#12 HTTP client: {error}"
+                    ))
+                })?,
+        );
+        return Ok(
+            sockudo_push::ApnsDispatcher::new_with_tls_identity(topic.to_owned(), http)
+                .with_base_url(endpoint.to_owned()),
+        );
+    }
+
+    Err(Error::Internal(
+        "APNs credential requires p12, pem, or teamId/keyId/privateKey material".to_owned(),
+    ))
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+fn decode_apns_p12(value: &str) -> Result<Vec<u8>> {
+    let compact = value.lines().map(str::trim).collect::<Vec<_>>().join("");
+    BASE64_STANDARD
+        .decode(&compact)
+        .or_else(|_| URL_SAFE_NO_PAD.decode(&compact))
+        .map_err(|error| Error::Internal(format!("APNs p12 must be base64-encoded DER: {error}")))
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+fn create_apns_token_provider() -> Result<sockudo_push::CachedTokenProvider> {
+    if let Ok(token) =
+        env::var("APNS_PROVIDER_TOKEN").or_else(|_| env::var("PUSH_APNS_PROVIDER_TOKEN"))
+    {
+        if token.trim().is_empty() {
+            return Err(Error::Internal(
+                "APNS_PROVIDER_TOKEN/PUSH_APNS_PROVIDER_TOKEN is empty".to_owned(),
+            ));
+        }
+        return Ok(sockudo_push::CachedTokenProvider::new(Arc::new(
+            sockudo_push::StaticTokenSource::new(
+                sockudo_push::SecretString::new(token).map_err(|error| {
+                    Error::Internal(format!("invalid APNs provider token: {error}"))
+                })?,
+                u64::MAX,
+            ),
+        )));
+    }
+
+    let team_id = env::var("APNS_TEAM_ID").or_else(|_| env::var("PUSH_APNS_TEAM_ID"));
+    let key_id = env::var("APNS_KEY_ID").or_else(|_| env::var("PUSH_APNS_KEY_ID"));
+    let private_key = env::var("APNS_PRIVATE_KEY").or_else(|_| env::var("PUSH_APNS_PRIVATE_KEY"));
+    let private_key_path =
+        env::var("APNS_PRIVATE_KEY_PATH").or_else(|_| env::var("PUSH_APNS_PRIVATE_KEY_PATH"));
+
+    let team_id = team_id.map_err(|_| {
+        Error::Internal(
+            "APNs token auth requires APNS_TEAM_ID/PUSH_APNS_TEAM_ID or APNS_PROVIDER_TOKEN"
+                .to_owned(),
+        )
+    })?;
+    let key_id = key_id.map_err(|_| {
+        Error::Internal(
+            "APNs token auth requires APNS_KEY_ID/PUSH_APNS_KEY_ID or APNS_PROVIDER_TOKEN"
+                .to_owned(),
+        )
+    })?;
+    let private_key = match (private_key, private_key_path) {
+        (Ok(value), _) => value,
+        (Err(_), Ok(path)) => fs::read_to_string(path).map_err(|error| {
+            Error::Internal(format!("failed to read APNs private key: {error}"))
+        })?,
+        (Err(_), Err(_)) => {
+            return Err(Error::Internal(
+                "APNs token auth requires APNS_PRIVATE_KEY/PUSH_APNS_PRIVATE_KEY, APNS_PRIVATE_KEY_PATH/PUSH_APNS_PRIVATE_KEY_PATH, or APNS_PROVIDER_TOKEN".to_owned(),
+            ));
+        }
+    };
+    let private_key = private_key.replace("\\n", "\n");
+
+    Ok(sockudo_push::CachedTokenProvider::new(Arc::new(
+        ApnsJwtTokenSource::new(team_id, key_id, private_key)?,
+    )))
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+struct ApnsJwtTokenSource {
+    team_id: String,
+    key_id: String,
+    encoding_key: EncodingKey,
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+impl ApnsJwtTokenSource {
+    fn new(team_id: String, key_id: String, private_key: String) -> Result<Self> {
+        if team_id.trim().is_empty() {
+            return Err(Error::Internal("APNS_TEAM_ID is empty".to_owned()));
+        }
+        if key_id.trim().is_empty() {
+            return Err(Error::Internal("APNS_KEY_ID is empty".to_owned()));
+        }
+        let encoding_key = EncodingKey::from_ec_pem(private_key.as_bytes())
+            .map_err(|error| Error::Internal(format!("invalid APNs .p8 private key: {error}")))?;
+        Ok(Self {
+            team_id,
+            key_id,
+            encoding_key,
+        })
+    }
+}
+
+#[cfg(all(feature = "push", feature = "monolith", feature = "push-apns"))]
+#[async_trait::async_trait]
+impl sockudo_push::ProviderTokenSource for ApnsJwtTokenSource {
+    async fn fetch_token(
+        &self,
+        now_ms: u64,
+    ) -> std::result::Result<sockudo_push::ProviderAccessToken, sockudo_push::ProviderAuthError>
+    {
+        #[derive(serde::Serialize)]
+        struct Claims<'a> {
+            iss: &'a str,
+            iat: u64,
+        }
+
+        let issued_at_secs = now_ms / 1_000;
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(self.key_id.clone());
+        let token = jsonwebtoken::encode(
+            &header,
+            &Claims {
+                iss: &self.team_id,
+                iat: issued_at_secs,
+            },
+            &self.encoding_key,
+        )
+        .map_err(|error| sockudo_push::ProviderAuthError {
+            class: "auth_failure",
+            reason: format!("failed to sign APNs provider token: {error}"),
+        })?;
+
+        let token = sockudo_push::SecretString::new(token).map_err(|error| {
+            sockudo_push::ProviderAuthError {
+                class: "auth_failure",
+                reason: error.to_string(),
+            }
+        })?;
+
+        Ok(sockudo_push::ProviderAccessToken {
+            token,
+            expires_at_ms: now_ms.saturating_add(55 * 60 * 1_000),
+        })
+    }
+}
+
+#[cfg(feature = "push")]
+#[derive(Clone)]
+struct QueueManagerPushQueue {
+    backend: sockudo_push::PushQueueBackendKind,
+    manager: Arc<QueueManager>,
+    state: Arc<tokio::sync::Mutex<QueueManagerPushQueueState>>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(feature = "push")]
+struct QueueManagerPushQueueState {
+    next_id: u64,
+    started: std::collections::BTreeSet<sockudo_push::PushQueueStage>,
+    ready: std::collections::BTreeMap<
+        sockudo_push::PushQueueStage,
+        std::collections::VecDeque<sockudo_push::QueueMessage>,
+    >,
+    pending: std::collections::BTreeMap<
+        (sockudo_push::PushQueueStage, String),
+        tokio::sync::oneshot::Sender<PushQueueAction>,
+    >,
+}
+
+#[cfg(feature = "push")]
+impl Default for QueueManagerPushQueueState {
+    fn default() -> Self {
+        Self {
+            next_id: 1,
+            started: std::collections::BTreeSet::new(),
+            ready: std::collections::BTreeMap::new(),
+            pending: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+#[cfg(feature = "push")]
+#[derive(Debug)]
+enum PushQueueAction {
+    Ack,
+    Nack(Option<u64>),
+    DeadLetter(String),
+}
+
+#[cfg(feature = "push")]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PushQueueEnvelope {
+    message_id: String,
+    stage: sockudo_push::PushQueueStage,
+    key: String,
+    payload: sockudo_push::PushQueuePayload,
+    attempt: u32,
+    not_before_ms: Option<u64>,
+}
+
+#[cfg(feature = "push")]
+impl QueueManagerPushQueue {
+    fn new(backend: sockudo_push::PushQueueBackendKind, manager: Arc<QueueManager>) -> Self {
+        Self {
+            backend,
+            manager,
+            state: Arc::new(tokio::sync::Mutex::new(
+                QueueManagerPushQueueState::default(),
+            )),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    async fn next_message_id(&self) -> String {
+        let mut state = self.state.lock().await;
+        let id = state.next_id;
+        state.next_id = state.next_id.saturating_add(1);
+        format!("push-{:020}", id)
+    }
+
+    async fn enqueue_envelope(
+        &self,
+        envelope: PushQueueEnvelope,
+    ) -> sockudo_push::PushQueueResult<()> {
+        let queue_name = envelope.stage.logical_topic();
+        let job = push_queue_job_data(&envelope)?;
+        self.manager
+            .add_to_queue(&queue_name, job)
+            .await
+            .map_err(push_queue_manager_error)
+    }
+
+    async fn ensure_stage_processor(
+        &self,
+        stage: sockudo_push::PushQueueStage,
+    ) -> sockudo_push::PushQueueResult<()> {
+        {
+            let mut state = self.state.lock().await;
+            if !state.started.insert(stage) {
+                return Ok(());
+            }
+        }
+
+        let queue_name = stage.logical_topic();
+        let queue = self.clone();
+        self.manager
+            .process_queue(
+                &queue_name,
+                Box::new(move |job| {
+                    let queue = queue.clone();
+                    Box::pin(async move {
+                        queue
+                            .handle_queue_job(job)
+                            .await
+                            .map_err(|error| Error::Internal(error.to_string()))
+                    })
+                }),
+            )
+            .await
+            .map_err(push_queue_manager_error)
+    }
+
+    async fn handle_queue_job(
+        &self,
+        job: sockudo_core::webhook_types::JobData,
+    ) -> sockudo_push::PushQueueResult<()> {
+        let envelope = parse_push_queue_job(job)?;
+        if let Some(not_before_ms) = envelope.not_before_ms {
+            let now = push_queue_now_ms();
+            if not_before_ms > now {
+                tokio::time::sleep(Duration::from_millis(not_before_ms - now)).await;
+            }
+        }
+
+        let route =
+            sockudo_push::QueueRoute::for_message(envelope.stage, &envelope.key, &envelope.payload);
+        let token = sockudo_push::QueueAckToken {
+            stage: envelope.stage,
+            message_id: envelope.message_id.clone(),
+        };
+        let message = sockudo_push::QueueMessage {
+            message_id: envelope.message_id.clone(),
+            stage: envelope.stage,
+            key: envelope.key.clone(),
+            partition_key: route.partition_key,
+            partition: route.partition,
+            payload: envelope.payload.clone(),
+            attempt: envelope.attempt,
+            not_before_ms: envelope.not_before_ms,
+            lease_deadline_ms: push_queue_now_ms().saturating_add(30_000),
+            ack: token.clone(),
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut state = self.state.lock().await;
+            state
+                .pending
+                .insert((envelope.stage, envelope.message_id.clone()), tx);
+            state
+                .ready
+                .entry(envelope.stage)
+                .or_default()
+                .push_back(message);
+        }
+        self.notify.notify_waiters();
+
+        match rx.await.unwrap_or(PushQueueAction::Ack) {
+            PushQueueAction::Ack => Ok(()),
+            PushQueueAction::Nack(retry_at_ms) => {
+                let mut retry = envelope;
+                retry.attempt = retry.attempt.saturating_add(1);
+                retry.not_before_ms = retry_at_ms;
+                self.enqueue_envelope(retry).await
+            }
+            PushQueueAction::DeadLetter(reason) => {
+                let dead_letter = sockudo_push::DeadLetter {
+                    app_id: push_queue_payload_app_id(&envelope.payload),
+                    publish_id: push_queue_payload_publish_id(&envelope.payload),
+                    key: envelope.key,
+                    stage: format!("{:?}", envelope.stage),
+                    reason,
+                    occurred_at_ms: push_queue_now_ms(),
+                };
+                let dlq = PushQueueEnvelope {
+                    message_id: self.next_message_id().await,
+                    stage: sockudo_push::PushQueueStage::DeadLetters,
+                    key: dead_letter.key.clone(),
+                    payload: sockudo_push::PushQueuePayload::DeadLetter(Box::new(dead_letter)),
+                    attempt: 1,
+                    not_before_ms: None,
+                };
+                self.enqueue_envelope(dlq).await
+            }
+        }
+    }
+
+    async fn complete(
+        &self,
+        token: sockudo_push::QueueAckToken,
+        action: PushQueueAction,
+    ) -> sockudo_push::PushQueueResult<()> {
+        if let Some(tx) = self
+            .state
+            .lock()
+            .await
+            .pending
+            .remove(&(token.stage, token.message_id))
+        {
+            let _ = tx.send(action);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "push")]
+#[async_trait::async_trait]
+impl sockudo_push::PushQueue for QueueManagerPushQueue {
+    fn backend(&self) -> sockudo_push::PushQueueBackendKind {
+        self.backend
+    }
+
+    async fn produce(
+        &self,
+        stage: sockudo_push::PushQueueStage,
+        key: String,
+        payload: sockudo_push::PushQueuePayload,
+    ) -> sockudo_push::PushQueueResult<String> {
+        self.ensure_stage_processor(stage).await?;
+        let message_id = self.next_message_id().await;
+        self.enqueue_envelope(PushQueueEnvelope {
+            message_id: message_id.clone(),
+            stage,
+            key,
+            payload,
+            attempt: 1,
+            not_before_ms: None,
+        })
+        .await?;
+        Ok(message_id)
+    }
+
+    async fn retry_at(
+        &self,
+        stage: sockudo_push::PushQueueStage,
+        key: String,
+        payload: sockudo_push::PushQueuePayload,
+        not_before_ms: u64,
+    ) -> sockudo_push::PushQueueResult<String> {
+        self.ensure_stage_processor(stage).await?;
+        let message_id = self.next_message_id().await;
+        self.enqueue_envelope(PushQueueEnvelope {
+            message_id: message_id.clone(),
+            stage,
+            key,
+            payload,
+            attempt: 1,
+            not_before_ms: Some(not_before_ms),
+        })
+        .await?;
+        Ok(message_id)
+    }
+
+    async fn consume(
+        &self,
+        stage: sockudo_push::PushQueueStage,
+        _consumer_group: &str,
+        max_messages: usize,
+        lease_timeout_ms: u64,
+    ) -> sockudo_push::PushQueueResult<Vec<sockudo_push::QueueMessage>> {
+        self.ensure_stage_processor(stage).await?;
+        if self
+            .state
+            .lock()
+            .await
+            .ready
+            .get(&stage)
+            .is_none_or(|queue| queue.is_empty())
+        {
+            let _ = tokio::time::timeout(Duration::from_millis(50), self.notify.notified()).await;
+        }
+
+        let now = push_queue_now_ms();
+        let mut state = self.state.lock().await;
+        let queue = state.ready.entry(stage).or_default();
+        let mut messages = Vec::new();
+        for _ in 0..max_messages.max(1) {
+            let Some(mut message) = queue.pop_front() else {
+                break;
+            };
+            message.lease_deadline_ms = now.saturating_add(lease_timeout_ms);
+            messages.push(message);
+        }
+        Ok(messages)
+    }
+
+    async fn ack(&self, token: sockudo_push::QueueAckToken) -> sockudo_push::PushQueueResult<()> {
+        self.complete(token, PushQueueAction::Ack).await
+    }
+
+    async fn nack(
+        &self,
+        token: sockudo_push::QueueAckToken,
+        retry_at_ms: Option<u64>,
+    ) -> sockudo_push::PushQueueResult<()> {
+        self.complete(token, PushQueueAction::Nack(retry_at_ms))
+            .await
+    }
+
+    async fn dead_letter(
+        &self,
+        token: sockudo_push::QueueAckToken,
+        reason: String,
+    ) -> sockudo_push::PushQueueResult<()> {
+        self.complete(token, PushQueueAction::DeadLetter(reason))
+            .await
+    }
+
+    async fn health(&self) -> sockudo_push::PushQueueResult<sockudo_push::QueueHealth> {
+        self.manager
+            .check_health()
+            .await
+            .map_err(push_queue_manager_error)?;
+        Ok(sockudo_push::QueueHealth {
+            backend: self.backend,
+            healthy: true,
+            details: "push queue is backed by the configured Sockudo queue manager".to_owned(),
+        })
+    }
+
+    async fn lag(
+        &self,
+        stage: sockudo_push::PushQueueStage,
+    ) -> sockudo_push::PushQueueResult<sockudo_push::QueueLagMetrics> {
+        let state = self.state.lock().await;
+        Ok(sockudo_push::QueueLagMetrics {
+            ready_depth: state
+                .ready
+                .get(&stage)
+                .map_or(0, |queue| queue.len() as u64),
+            delayed_depth: 0,
+            inflight_depth: state
+                .pending
+                .keys()
+                .filter(|(pending_stage, _)| pending_stage == &stage)
+                .count() as u64,
+            dead_letter_depth: state
+                .ready
+                .get(&sockudo_push::PushQueueStage::DeadLetters)
+                .map_or(0, |queue| queue.len() as u64),
+        })
+    }
+}
+
+#[cfg(feature = "push")]
+fn push_queue_job_data(
+    envelope: &PushQueueEnvelope,
+) -> sockudo_push::PushQueueResult<sockudo_core::webhook_types::JobData> {
+    Ok(sockudo_core::webhook_types::JobData {
+        app_key: String::new(),
+        app_id: push_queue_payload_app_id(&envelope.payload),
+        app_secret: String::new(),
+        payload: sockudo_core::webhook_types::JobPayload {
+            time_ms: push_queue_now_ms().min(i64::MAX as u64) as i64,
+            events: vec![
+                sonic_rs::from_str(
+                    &serde_json::to_string(envelope).map_err(|error| {
+                        sockudo_push::PushQueueError::Backend(error.to_string())
+                    })?,
+                )
+                .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?,
+            ],
+        },
+        original_signature: "push-queue".to_owned(),
+    })
+}
+
+#[cfg(feature = "push")]
+fn parse_push_queue_job(
+    job: sockudo_core::webhook_types::JobData,
+) -> sockudo_push::PushQueueResult<PushQueueEnvelope> {
+    let event = job.payload.events.into_iter().next().ok_or_else(|| {
+        sockudo_push::PushQueueError::Backend("push queue job missing envelope".to_owned())
+    })?;
+    let json = sonic_rs::to_string(&event)
+        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?;
+    serde_json::from_str(&json)
+        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))
+}
+
+#[cfg(feature = "push")]
+fn push_queue_manager_error(error: Error) -> sockudo_push::PushQueueError {
+    sockudo_push::PushQueueError::Backend(format!("push queue manager error: {error}"))
+}
+
+#[cfg(feature = "push")]
+fn push_queue_payload_app_id(payload: &sockudo_push::PushQueuePayload) -> String {
+    match payload {
+        sockudo_push::PushQueuePayload::PublishLog(event) => event.app_id.clone(),
+        sockudo_push::PushQueuePayload::ShardJob(job) => job.app_id.clone(),
+        sockudo_push::PushQueuePayload::DeliveryBatch(batch) => batch.app_id.clone(),
+        sockudo_push::PushQueuePayload::DeliveryResult(result) => result.app_id.clone(),
+        sockudo_push::PushQueuePayload::DeadLetter(dead_letter) => dead_letter.app_id.clone(),
+        sockudo_push::PushQueuePayload::RetrySchedule(entry) => entry.app_id.clone(),
+    }
+}
+
+#[cfg(feature = "push")]
+fn push_queue_payload_publish_id(payload: &sockudo_push::PushQueuePayload) -> String {
+    match payload {
+        sockudo_push::PushQueuePayload::PublishLog(event) => event.publish_id.clone(),
+        sockudo_push::PushQueuePayload::ShardJob(job) => job.publish_id.clone(),
+        sockudo_push::PushQueuePayload::DeliveryBatch(batch) => batch.publish_id.clone(),
+        sockudo_push::PushQueuePayload::DeliveryResult(result) => result.publish_id.clone(),
+        sockudo_push::PushQueuePayload::DeadLetter(dead_letter) => dead_letter.publish_id.clone(),
+        sockudo_push::PushQueuePayload::RetrySchedule(entry) => entry.publish_id.clone(),
+    }
+}
+
+#[cfg(feature = "push")]
+fn push_queue_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+#[cfg(all(feature = "push", feature = "dynamodb"))]
+async fn create_dynamodb_push_store(config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    let db = &config.database.dynamodb;
+    let mut aws_config_builder =
+        aws_config::from_env().region(aws_sdk_dynamodb::config::Region::new(db.region.clone()));
+
+    if let Some(endpoint) = &db.endpoint_url {
+        aws_config_builder = aws_config_builder.endpoint_url(endpoint);
+    }
+    if let (Some(access_key), Some(secret_key)) = (&db.aws_access_key_id, &db.aws_secret_access_key)
+    {
+        let credentials_provider = aws_sdk_dynamodb::config::Credentials::new(
+            access_key, secret_key, None, None, "static",
+        );
+        aws_config_builder = aws_config_builder.credentials_provider(credentials_provider);
+    }
+    if let Some(profile) = &db.aws_profile_name {
+        aws_config_builder = aws_config_builder.profile_name(profile);
+    }
+
+    let client = aws_sdk_dynamodb::Client::new(&aws_config_builder.load().await);
+    let table = push_table_name(&db.table_name);
+    let store = sockudo_push::DynamoDbPushStore::new(client, table)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to create DynamoDB push store: {e}")))?;
+    Ok(Arc::new(store))
+}
+
+#[cfg(all(feature = "push", not(feature = "dynamodb")))]
+async fn create_dynamodb_push_store(_config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    Err(Error::Internal(
+        "push storage driver 'dynamodb' requires the 'dynamodb' feature".to_owned(),
+    ))
+}
+
+#[cfg(all(feature = "push", feature = "surrealdb"))]
+async fn create_surrealdb_push_store(config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    use surrealdb::engine::any::connect;
+    use surrealdb::opt::auth::Root;
+
+    let db_config = &config.database.surrealdb;
+    let db = connect(db_config.url.as_str())
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to connect push store to SurrealDB: {e}")))?;
+    db.signin(Root {
+        username: db_config.username.clone(),
+        password: db_config.password.clone(),
+    })
+    .await
+    .map_err(|e| {
+        Error::Internal(format!(
+            "Failed to authenticate push store to SurrealDB: {e}"
+        ))
+    })?;
+    db.use_ns(db_config.namespace.as_str())
+        .use_db(db_config.database.as_str())
+        .await
+        .map_err(|e| {
+            Error::Internal(format!(
+                "Failed to select push store SurrealDB namespace/database: {e}"
+            ))
+        })?;
+
+    let table = push_table_name(&db_config.table_name);
+    let store = sockudo_push::SurrealDbPushStore::new(db, table)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to create SurrealDB push store: {e}")))?;
+    Ok(Arc::new(store))
+}
+
+#[cfg(all(feature = "push", not(feature = "surrealdb")))]
+async fn create_surrealdb_push_store(
+    _config: &ServerOptions,
+) -> Result<sockudo_push::DynPushStore> {
+    Err(Error::Internal(
+        "push storage driver 'surrealdb' requires the 'surrealdb' feature".to_owned(),
+    ))
+}
+
+#[cfg(all(feature = "push", feature = "scylladb"))]
+async fn create_scylladb_push_store(config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    let db = &config.database.scylladb;
+    let mut builder =
+        scylla::client::session_builder::SessionBuilder::new().known_nodes(db.nodes.clone());
+    if let (Some(username), Some(password)) = (&db.username, &db.password) {
+        builder = builder.user(username, password);
+    }
+    let session =
+        Arc::new(builder.build().await.map_err(|e| {
+            Error::Internal(format!("Failed to connect push store to ScyllaDB: {e}"))
+        })?);
+
+    let table = push_table_name(&db.table_name);
+    let store = sockudo_push::ScyllaDbPushStore::new(
+        session,
+        db.keyspace.clone(),
+        table,
+        db.replication_class.clone(),
+        db.replication_factor,
+    )
+    .await
+    .map_err(|e| Error::Internal(format!("Failed to create ScyllaDB push store: {e}")))?;
+    Ok(Arc::new(store))
+}
+
+#[cfg(all(feature = "push", not(feature = "scylladb")))]
+async fn create_scylladb_push_store(_config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    Err(Error::Internal(
+        "push storage driver 'scylladb' requires the 'scylladb' feature".to_owned(),
+    ))
+}
+
+#[cfg(feature = "push")]
+fn push_table_name(base: &str) -> String {
+    let normalized = base
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("{normalized}_push_records")
+}
+
+#[cfg(all(feature = "push", feature = "postgres"))]
+async fn create_postgres_push_store(config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    let db = &config.database.postgres;
+    let password = urlencoding::encode(&db.password);
+    let connection_string = format!(
+        "postgresql://{}:{}@{}:{}/{}",
+        db.username, password, db.host, db.port, db.database
+    );
+    let mut opts = PgPoolOptions::new();
+    opts = if config.database_pooling.enabled {
+        opts.min_connections(db.pool_min.unwrap_or(config.database_pooling.min))
+            .max_connections(db.pool_max.unwrap_or(config.database_pooling.max))
+    } else {
+        opts.max_connections(db.connection_pool_size)
+    };
+    let pool = opts
+        .acquire_timeout(Duration::from_secs(5))
+        .idle_timeout(Duration::from_secs(180))
+        .connect(&connection_string)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to connect push store to PostgreSQL: {e}")))?;
+    let store = sockudo_push::PostgresPushStore::new(pool);
+    store
+        .assert_schema_version()
+        .await
+        .map_err(|e| Error::Internal(format!("PostgreSQL push schema check failed: {e}")))?;
+    Ok(Arc::new(store))
+}
+
+#[cfg(all(feature = "push", not(feature = "postgres")))]
+async fn create_postgres_push_store(_config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    Err(Error::Internal(
+        "push storage driver 'postgres' requires the 'postgres' feature".to_owned(),
+    ))
+}
+
+#[cfg(all(feature = "push", feature = "mysql"))]
+async fn create_mysql_push_store(config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    let db = &config.database.mysql;
+    let password = urlencoding::encode(&db.password);
+    let connection_string = format!(
+        "mysql://{}:{}@{}:{}/{}",
+        db.username, password, db.host, db.port, db.database
+    );
+    let mut opts = MySqlPoolOptions::new();
+    opts = if config.database_pooling.enabled {
+        opts.min_connections(db.pool_min.unwrap_or(config.database_pooling.min))
+            .max_connections(db.pool_max.unwrap_or(config.database_pooling.max))
+    } else {
+        opts.max_connections(db.connection_pool_size)
+    };
+    let pool = opts
+        .acquire_timeout(Duration::from_secs(5))
+        .idle_timeout(Duration::from_secs(180))
+        .connect(&connection_string)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to connect push store to MySQL: {e}")))?;
+    let store = sockudo_push::MySqlPushStore::new(pool);
+    store
+        .assert_schema_version()
+        .await
+        .map_err(|e| Error::Internal(format!("MySQL push schema check failed: {e}")))?;
+    Ok(Arc::new(store))
+}
+
+#[cfg(all(feature = "push", not(feature = "mysql")))]
+async fn create_mysql_push_store(_config: &ServerOptions) -> Result<sockudo_push::DynPushStore> {
+    Err(Error::Internal(
+        "push storage driver 'mysql' requires the 'mysql' feature".to_owned(),
+    ))
 }
 use crate::middleware::pusher_api_auth_middleware;
 use sockudo_cache::MemoryCacheManager;
@@ -188,6 +1683,8 @@ struct ServerState {
     running: AtomicBool,
     http_api_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     websocket_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
+    #[cfg(feature = "push")]
+    push_acceptance_rate_limiter: Arc<dyn RateLimiter + Send + Sync>,
     debug_enabled: bool,
     cleanup_queue: Option<CleanupSender>,
     cleanup_worker_handles: Option<Vec<tokio::task::JoinHandle<()>>>,
@@ -196,6 +1693,10 @@ struct ServerState {
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
     /// Typed adapter for configuration and runtime type inspection
     typed_adapter: sockudo_adapter::factory::TypedAdapter,
+    #[cfg(feature = "push")]
+    push_store: sockudo_push::DynPushStore,
+    #[cfg(feature = "push")]
+    push_queue: sockudo_push::DynPushQueue,
 }
 
 /// Main server struct
@@ -476,6 +1977,46 @@ impl SockudoServer {
         info!(
             "WebSocket RateLimiter initialized (enabled: {}) with driver: {:?}",
             config.rate_limiter.enabled, config.rate_limiter.driver
+        );
+
+        #[cfg(feature = "push")]
+        let push_acceptance_rps = std::env::var("PUSH_ACCEPTANCE_RATE_LIMIT")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(config.push.default_quotas.acceptance_rps);
+
+        #[cfg(feature = "push")]
+        let push_acceptance_rate_limiter_instance = if config.rate_limiter.enabled
+            && push_acceptance_rps > 0
+        {
+            let limit = push_acceptance_rps.min(u64::from(u32::MAX)) as u32;
+            RateLimiterFactory::create_push_acceptance(
+                &config.rate_limiter,
+                limit,
+                1,
+                &config.database.redis,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                error!(
+                    "Failed to initialize Push acceptance rate limiter: {}. Using a permissive limiter.",
+                    e
+                );
+                Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(
+                    u32::MAX,
+                    1,
+                ))
+            })
+        } else {
+            info!("Push acceptance rate limiting is disabled. Using a permissive limiter.");
+            Arc::new(sockudo_rate_limiter::memory_limiter::MemoryRateLimiter::new(u32::MAX, 1))
+        };
+        #[cfg(feature = "push")]
+        info!(
+            "Push acceptance RateLimiter initialized (enabled: {}) with driver: {:?}, limit: {}/s",
+            config.rate_limiter.enabled && push_acceptance_rps > 0,
+            config.rate_limiter.driver,
+            push_acceptance_rps
         );
 
         let owned_default_queue_redis_url: String;
@@ -932,6 +2473,11 @@ impl SockudoServer {
             );
         }
 
+        #[cfg(feature = "push")]
+        let push_store = create_push_store(&config).await?;
+        #[cfg(feature = "push")]
+        let push_queue = create_push_queue(&config, queue_manager_opt.clone())?;
+
         let state = ServerState {
             app_manager: app_manager.clone(),
             connection_manager: connection_manager.clone(),
@@ -944,6 +2490,8 @@ impl SockudoServer {
             running: AtomicBool::new(true),
             http_api_rate_limiter: Some(http_api_rate_limiter_instance.clone()),
             websocket_rate_limiter: Some(websocket_rate_limiter_instance.clone()),
+            #[cfg(feature = "push")]
+            push_acceptance_rate_limiter: push_acceptance_rate_limiter_instance.clone(),
             debug_enabled,
             cleanup_queue,
             cleanup_worker_handles,
@@ -951,7 +2499,14 @@ impl SockudoServer {
             #[cfg(feature = "delta")]
             delta_compression: delta_compression_manager.clone(),
             typed_adapter: typed_adapter.clone(),
+            #[cfg(feature = "push")]
+            push_store,
+            #[cfg(feature = "push")]
+            push_queue,
         };
+
+        #[cfg(all(feature = "push", feature = "monolith"))]
+        start_push_monolith_workers(&config, state.push_store.clone(), state.push_queue.clone());
 
         let mut builder = ConnectionHandler::builder(
             state.app_manager.clone(),
@@ -1539,6 +3094,149 @@ impl SockudoServer {
                     pusher_api_auth_middleware,
                 )),
             );
+
+        #[cfg(feature = "push")]
+        {
+            api_router = api_router
+                .route(
+                    "/apps/{appId}/push/credentials/fcm",
+                    post(post_fcm_credential).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/credentials/apns",
+                    post(post_apns_credential).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/credentials/webpush",
+                    post(post_webpush_credential).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/credentials/hms",
+                    post(post_hms_credential).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/credentials/wns",
+                    post(post_wns_credential).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/credentials",
+                    get(list_credentials).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/templates",
+                    post(post_template).get(list_templates).route_layer(
+                        axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        ),
+                    ),
+                )
+                .route(
+                    "/apps/{appId}/push/templates/{id}",
+                    get(get_template).delete(delete_template).route_layer(
+                        axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        ),
+                    ),
+                )
+                .route(
+                    "/apps/{appId}/push/deviceRegistrations",
+                    post(register_device)
+                        .get(list_devices)
+                        .delete(delete_devices_where)
+                        .route_layer(axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        )),
+                )
+                .route(
+                    "/apps/{appId}/push/deviceRegistrations/{id}",
+                    get(get_device).delete(delete_device).route_layer(
+                        axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        ),
+                    ),
+                )
+                .route(
+                    "/apps/{appId}/push/channelSubscriptions",
+                    post(upsert_channel_subscription)
+                        .get(list_channel_subscriptions)
+                        .delete(delete_channel_subscriptions)
+                        .route_layer(axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        )),
+                )
+                .route(
+                    "/apps/{appId}/push/channelSubscriptions/channels",
+                    get(list_subscription_channels).route_layer(
+                        axum_middleware::from_fn_with_state(
+                            self.handler.clone(),
+                            pusher_api_auth_middleware,
+                        ),
+                    ),
+                )
+                .route(
+                    "/apps/{appId}/push/publish",
+                    post(push_publish).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/batch/publish",
+                    post(push_batch_publish).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/publish/{publishId}/status",
+                    get(get_publish_status).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/scheduled/{jobId}",
+                    delete(delete_scheduled_job).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .route(
+                    "/apps/{appId}/push/deliveryStatus",
+                    post(post_delivery_status).route_layer(axum_middleware::from_fn_with_state(
+                        self.handler.clone(),
+                        pusher_api_auth_middleware,
+                    )),
+                )
+                .layer(axum::Extension(self.state.push_queue.clone()))
+                .layer(axum::Extension(self.state.push_store.clone()))
+                .layer(axum::Extension(
+                    self.state.push_acceptance_rate_limiter.clone(),
+                ));
+        }
 
         // Prevent idle HTTP connection buildup on API routes
         api_router = api_router.layer(axum_middleware::map_response(

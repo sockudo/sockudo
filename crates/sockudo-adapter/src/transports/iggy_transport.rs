@@ -2,7 +2,7 @@ use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use iggy::prelude::{
     AutoCommit, Client, CompressionAlgorithm, Consumer, ConsumerOffsetClient, IggyClient,
     IggyDuration, IggyError, IggyExpiry, IggyMessage, IggyProducer, MaxTopicSize, Partitioning,
@@ -208,19 +208,40 @@ impl IggyTransport {
                         received = consumer.next() => {
                             match received {
                                 Some(Ok(received)) => {
-                                    let partition_id = received.partition_id;
-                                    let offset = received.message.header.offset;
-                                    match sonic_rs::from_slice::<T>(&received.message.payload) {
-                                        Ok(payload) => handler(payload).await,
-                                        Err(error) => {
-                                            if let Some(metrics) = metrics.get() {
-                                                metrics.mark_horizontal_transport_message_dropped("iggy");
+                                    process_consumer_message(
+                                        &mut consumer,
+                                        &metrics,
+                                        kind,
+                                        &handler,
+                                        received,
+                                    )
+                                    .await;
+
+                                    let mut consumer_exhausted = false;
+                                    while is_running.load(Ordering::Relaxed) {
+                                        match consumer.next().now_or_never() {
+                                            Some(Some(Ok(received))) => {
+                                                process_consumer_message(
+                                                    &mut consumer,
+                                                    &metrics,
+                                                    kind,
+                                                    &handler,
+                                                    received,
+                                                )
+                                                .await;
                                             }
-                                            warn!("Failed to parse Apache Iggy {kind} payload: {}", error);
+                                            Some(Some(Err(error))) => {
+                                                warn!("Apache Iggy {kind} consumer failed: {}", error);
+                                            }
+                                            Some(None) => {
+                                                consumer_exhausted = true;
+                                                break;
+                                            }
+                                            None => break,
                                         }
                                     }
-                                    if let Err(error) = consumer.store_offset(offset, Some(partition_id)).await {
-                                        warn!("Failed to commit Apache Iggy {kind} offset: {error}");
+                                    if consumer_exhausted {
+                                        break;
                                     }
                                 }
                                 Some(Err(error)) => warn!("Apache Iggy {kind} consumer failed: {}", error),
@@ -343,34 +364,42 @@ impl IggyTransport {
                         received = consumer.next() => {
                             match received {
                                 Some(Ok(received)) => {
-                                    let partition_id = received.partition_id;
-                                    let offset = received.message.header.offset;
-                                    let mut should_commit = false;
-                                    match sonic_rs::from_slice::<RequestBody>(&received.message.payload) {
-                                        Ok(request) => match handler(request).await {
-                                            Ok(response) => {
-                                                match publish_message(&config, &response_producer, &response).await {
-                                                    Ok(()) => should_commit = true,
-                                                    Err(error) => warn!("Failed to publish Apache Iggy response: {error}"),
-                                                }
+                                    process_request_message(
+                                        &config,
+                                        &mut consumer,
+                                        &response_producer,
+                                        &metrics,
+                                        &handler,
+                                        received,
+                                    )
+                                    .await;
+
+                                    let mut consumer_exhausted = false;
+                                    while is_running.load(Ordering::Relaxed) {
+                                        match consumer.next().now_or_never() {
+                                            Some(Some(Ok(received))) => {
+                                                process_request_message(
+                                                    &config,
+                                                    &mut consumer,
+                                                    &response_producer,
+                                                    &metrics,
+                                                    &handler,
+                                                    received,
+                                                )
+                                                .await;
                                             }
-                                            Err(Error::OwnRequestIgnored | Error::RequestNotForThisNode) => {
-                                                should_commit = true;
+                                            Some(Some(Err(error))) => {
+                                                warn!("Apache Iggy request consumer failed: {}", error);
                                             }
-                                            Err(error) => warn!("Apache Iggy request handler failed: {}", error),
-                                        }
-                                        Err(error) => {
-                                            if let Some(metrics) = metrics.get() {
-                                                metrics.mark_horizontal_transport_message_dropped("iggy");
+                                            Some(None) => {
+                                                consumer_exhausted = true;
+                                                break;
                                             }
-                                            warn!("Failed to parse Apache Iggy request payload: {}", error);
-                                            should_commit = true;
+                                            None => break,
                                         }
                                     }
-                                    if should_commit
-                                        && let Err(error) = consumer.store_offset(offset, Some(partition_id)).await
-                                    {
-                                        warn!("Failed to commit Apache Iggy request offset: {error}");
+                                    if consumer_exhausted {
+                                        break;
                                     }
                                 }
                                 Some(Err(error)) => warn!("Apache Iggy request consumer failed: {}", error),
@@ -396,6 +425,70 @@ impl IggyTransport {
         });
 
         Ok(())
+    }
+}
+
+async fn process_consumer_message<T>(
+    consumer: &mut iggy::prelude::IggyConsumer,
+    metrics: &OnceLock<Arc<dyn MetricsInterface + Send + Sync>>,
+    kind: &'static str,
+    handler: &Arc<dyn Fn(T) -> crate::horizontal_transport::BoxFuture<'static, ()> + Send + Sync>,
+    received: iggy::prelude::ReceivedMessage,
+) where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    let partition_id = received.partition_id;
+    let offset = received.message.header.offset;
+    match sonic_rs::from_slice::<T>(&received.message.payload) {
+        Ok(payload) => handler(payload).await,
+        Err(error) => {
+            if let Some(metrics) = metrics.get() {
+                metrics.mark_horizontal_transport_message_dropped("iggy");
+            }
+            warn!("Failed to parse Apache Iggy {kind} payload: {}", error);
+        }
+    }
+    if let Err(error) = consumer.store_offset(offset, Some(partition_id)).await {
+        warn!("Failed to commit Apache Iggy {kind} offset: {error}");
+    }
+}
+
+async fn process_request_message(
+    config: &IggyConfig,
+    consumer: &mut iggy::prelude::IggyConsumer,
+    response_producer: &IggyProducer,
+    metrics: &OnceLock<Arc<dyn MetricsInterface + Send + Sync>>,
+    handler: &Arc<
+        dyn Fn(RequestBody) -> crate::horizontal_transport::BoxFuture<'static, Result<ResponseBody>>
+            + Send
+            + Sync,
+    >,
+    received: iggy::prelude::ReceivedMessage,
+) {
+    let partition_id = received.partition_id;
+    let offset = received.message.header.offset;
+    let mut should_commit = false;
+    match sonic_rs::from_slice::<RequestBody>(&received.message.payload) {
+        Ok(request) => match handler(request).await {
+            Ok(response) => match publish_message(config, response_producer, &response).await {
+                Ok(()) => should_commit = true,
+                Err(error) => warn!("Failed to publish Apache Iggy response: {error}"),
+            },
+            Err(Error::OwnRequestIgnored | Error::RequestNotForThisNode) => {
+                should_commit = true;
+            }
+            Err(error) => warn!("Apache Iggy request handler failed: {}", error),
+        },
+        Err(error) => {
+            if let Some(metrics) = metrics.get() {
+                metrics.mark_horizontal_transport_message_dropped("iggy");
+            }
+            warn!("Failed to parse Apache Iggy request payload: {}", error);
+            should_commit = true;
+        }
+    }
+    if should_commit && let Err(error) = consumer.store_offset(offset, Some(partition_id)).await {
+        warn!("Failed to commit Apache Iggy request offset: {error}");
     }
 }
 

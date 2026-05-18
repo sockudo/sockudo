@@ -9,6 +9,10 @@ How to use it:
   [mysql/001_fresh_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/001_fresh_schema.sql)
 - Fresh PostgreSQL database: use
   [postgresql/001_fresh_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgresql/001_fresh_schema.sql)
+- Push PostgreSQL schema: use
+  [postgres/001_push_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgres/001_push_schema.sql)
+- Push MySQL schema: use
+  [mysql/003_push_schema.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/003_push_schema.sql)
 - Test-only MySQL grants/user setup: use
   [mysql/002_test_access.sql](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql/002_test_access.sql)
 
@@ -17,6 +21,9 @@ Backend notes:
 - MySQL and PostgreSQL have checked-in fresh schema files.
 - DynamoDB, SurrealDB, and ScyllaDB are provisioned by the runtime/backend and
   do not use checked-in SQL bootstrap files here.
+- Push storage has checked-in bootstrap contracts for DynamoDB, SurrealDB, and
+  ScyllaDB under their backend directories. Runtime provisioning must match
+  those contracts or fail closed at startup.
 - Release 4.3 mutable-message storage and release 4.4 annotation storage are
   additive and side by side with immutable history. Fresh schemas now include
   version-store and annotation tables for SQL backends, and runtime-provisioned
