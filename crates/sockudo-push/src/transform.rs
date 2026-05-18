@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::domain::{
     MAX_RENDERED_TEMPLATE_BYTES, ProviderOverridePayload, PushPayload, PushProviderKind,
+    validate_web_push_endpoint,
 };
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -180,10 +181,23 @@ fn render_template_string(raw: &str, data: &Value) -> Result<String, PayloadTran
 }
 
 fn lookup_template_value(data: &Value, key: &str) -> Result<String, PayloadTransformError> {
+    if !key.starts_with("data.")
+        || key == "data."
+        || key.matches('.').count() > 4
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
+    {
+        return Err(PayloadTransformError::InvalidTemplate {
+            reason: "placeholder key must use a bounded data.* path",
+        });
+    }
+
+    let key = &key["data.".len()..];
     if key.is_empty()
         || !key
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
     {
         return Err(PayloadTransformError::InvalidTemplate {
             reason: "placeholder key is not allowed",
@@ -310,13 +324,13 @@ fn validate_web_push_fields(payload: &Value) -> Result<(), PayloadTransformError
             reason: "invalid topic",
         });
     }
-    if let Some(audience) = headers.get("vapidAudience").and_then(Value::as_str)
-        && !audience.starts_with("https://")
-    {
-        return Err(PayloadTransformError::InvalidOverride {
-            provider: "webPush",
-            reason: "invalid vapidAudience",
-        });
+    if let Some(audience) = headers.get("vapidAudience").and_then(Value::as_str) {
+        validate_web_push_endpoint(audience).map_err(|_| {
+            PayloadTransformError::InvalidOverride {
+                provider: "webPush",
+                reason: "invalid vapidAudience",
+            }
+        })?;
     }
     Ok(())
 }
@@ -410,7 +424,7 @@ mod tests {
     #[test]
     fn template_substitution_is_sandboxed_and_output_bounded() {
         let mut payload = payload();
-        payload.title = Some("Hello {{ user.name }}".to_owned());
+        payload.title = Some("Hello {{ data.user.name }}".to_owned());
         payload.template_data = json!({"user": {"name": "Ada"}});
 
         let rendered = render_provider_payload(PushProviderKind::Fcm, &payload, &[]).unwrap();
@@ -419,7 +433,7 @@ mod tests {
             "Hello Ada"
         );
 
-        payload.title = Some("{{ user }}".to_owned());
+        payload.title = Some("{{ data.user }}".to_owned());
         payload.template_data = json!({"user": {"name": "Ada"}});
         assert_eq!(
             render_provider_payload(PushProviderKind::Fcm, &payload, &[]).unwrap_err(),
@@ -429,7 +443,7 @@ mod tests {
         );
 
         payload.title = Some(format!(
-            "{{{{ name }}}}{}",
+            "{{{{ data.name }}}}{}",
             "x".repeat(MAX_RENDERED_TEMPLATE_BYTES)
         ));
         payload.template_data = json!({"name": "Ada"});

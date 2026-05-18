@@ -1,9 +1,11 @@
+use futures_util::StreamExt;
+
 use crate::domain::{
     DeliveryEvent, DeliveryOutcome, DeliveryResult, DevicePushState, PublishLifecycleState,
     RetryScheduleEntry,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
-use crate::metrics::PushMetrics;
+use crate::metrics::{PushMetrics, provider_label};
 use crate::pipeline::{PushPipelineResult, PushQueuePayload, PushQueueStage, QueueMessage, now_ms};
 use crate::storage::{DynPushStore, IdempotencyRecord};
 
@@ -16,6 +18,8 @@ pub struct PushFeedbackProcessor {
 }
 
 impl PushFeedbackProcessor {
+    const FEEDBACK_IDEMPOTENCY_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
     pub fn new(store: DynPushStore, queue: crate::pipeline::DynPushQueue) -> Self {
         Self {
             store,
@@ -30,17 +34,36 @@ impl PushFeedbackProcessor {
         self
     }
 
+    pub fn with_failure_threshold(mut self, failure_threshold: u32) -> Self {
+        self.failure_threshold = failure_threshold.max(1);
+        self
+    }
+
     pub async fn run_once(&self, consumer_group: &str) -> PushPipelineResult<usize> {
         let messages = self
             .queue
             .consume(PushQueueStage::DeliveryResults, consumer_group, 64, 30_000)
             .await?;
-        let mut processed = 0;
-        for message in messages {
-            self.handle_message(message).await?;
-            processed += 1;
-        }
-        Ok(processed)
+        let outcomes = futures_util::stream::iter(messages.into_iter().map(|message| {
+            let processor = self.clone();
+            async move {
+                let ack = message.ack.clone();
+                match processor.handle_message(message).await {
+                    Ok(()) => Ok(1_usize),
+                    Err(error) => {
+                        processor.queue.dead_letter(ack, error.to_string()).await?;
+                        Ok(0)
+                    }
+                }
+            }
+        }))
+        .buffer_unordered(16)
+        .collect::<Vec<PushPipelineResult<usize>>>()
+        .await;
+
+        outcomes.into_iter().try_fold(0_usize, |count, outcome| {
+            outcome.map(|processed| count + processed)
+        })
     }
 
     async fn handle_message(&self, message: QueueMessage) -> PushPipelineResult<()> {
@@ -50,6 +73,7 @@ impl PushFeedbackProcessor {
                 .await?;
             return Ok(());
         };
+        let result = *result;
 
         self.apply_result(result).await?;
         self.queue.ack(message.ack).await?;
@@ -65,7 +89,7 @@ impl PushFeedbackProcessor {
                 app_id: result.app_id.clone(),
                 key: dedupe_key,
                 publish_id: result.publish_id.clone(),
-                expires_at_ms: u64::MAX,
+                expires_at_ms: now_ms().saturating_add(Self::FEEDBACK_IDEMPOTENCY_TTL_MS),
             })
             .await?;
         if !inserted {
@@ -262,7 +286,7 @@ impl PushFeedbackProcessor {
                 .retry_at(
                     PushQueueStage::RetrySchedule,
                     entry.key.clone(),
-                    PushQueuePayload::RetrySchedule(entry),
+                    PushQueuePayload::RetrySchedule(Box::new(entry)),
                     not_before_ms,
                 )
                 .await?;
@@ -283,7 +307,7 @@ impl PushFeedbackProcessor {
                 .produce(
                     PushQueueStage::DeadLetters,
                     dead_letter.key.clone(),
-                    PushQueuePayload::DeadLetter(dead_letter),
+                    PushQueuePayload::DeadLetter(Box::new(dead_letter)),
                 )
                 .await?;
             emit_push_meta_event(PushMetaEvent::dead_letter(
@@ -303,8 +327,8 @@ impl PushFeedbackProcessor {
 
 fn result_event_id(result: &DeliveryResult) -> String {
     format!(
-        "result-{:?}-{}-{}-{}-{}",
-        result.provider,
+        "result-{}-{}-{}-{}-{}",
+        provider_label(result.provider),
         result.batch_id,
         result.device_id.as_deref().unwrap_or("provider-target"),
         result.attempt,

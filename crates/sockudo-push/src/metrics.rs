@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{DeliveryOutcome, DevicePushState, PushProviderKind};
@@ -63,7 +64,11 @@ pub const PUSH_METRIC_SPECS: &[PushMetricSpec] = &[
     PushMetricSpec::counter("sockudo_push_quota_delivery_rejections_total", &["app"]),
     PushMetricSpec::gauge("sockudo_push_quota_consumed_acceptance", &["app"]),
     PushMetricSpec::gauge("sockudo_push_quota_consumed_delivery", &["app"]),
-    PushMetricSpec::counter("sockudo_push_channel_publish_total", &["channel"]),
+    PushMetricSpec::counter("sockudo_push_channel_publish_total", &[]),
+    PushMetricSpec::counter(
+        "sockudo_push_circuit_breaker_deferred_total",
+        &["provider", "app"],
+    ),
     PushMetricSpec::gauge("sockudo_push_scheduled_jobs_total", &["status"]),
     PushMetricSpec::gauge("sockudo_push_scheduler_lag_seconds", &[]),
     PushMetricSpec::counter("sockudo_push_stale_devices_removed_total", &["app"]),
@@ -121,6 +126,8 @@ pub struct PushMetricSnapshot {
     pub value: f64,
     pub count: u64,
     pub sum: f64,
+    #[serde(default)]
+    pub buckets: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -129,15 +136,13 @@ struct MetricKey {
     labels: Vec<(&'static str, String)>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct PushMetrics {
-    samples: Arc<Mutex<BTreeMap<MetricKey, PushMetricSnapshot>>>,
+    samples: Arc<DashMap<MetricKey, PushMetricSnapshot>>,
 }
 
 impl PushMetrics {
-    pub fn increment(&self, name: impl Into<String>, value: u64) {
-        let name = name.into();
-        let name = Box::leak(name.into_boxed_str());
+    pub fn increment(&self, name: &'static str, value: u64) {
         self.counter(name, &[], value);
     }
 
@@ -153,11 +158,24 @@ impl PushMetrics {
         });
     }
 
+    pub fn add_gauge(&self, name: &'static str, labels: &[(&'static str, &str)], delta: f64) {
+        self.with_sample(name, labels, |sample| {
+            sample.value = (sample.value + delta).max(0.0);
+        });
+    }
+
     pub fn observe(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
         self.with_sample(name, labels, |sample| {
             sample.value = value;
             sample.count = sample.count.saturating_add(1);
             sample.sum += value;
+            for bucket in HISTOGRAM_BUCKETS {
+                if value <= *bucket {
+                    let key = bucket.to_string();
+                    *sample.buckets.entry(key).or_default() += 1;
+                }
+            }
+            *sample.buckets.entry("+Inf".to_owned()).or_default() += 1;
         });
     }
 
@@ -211,7 +229,7 @@ impl PushMetrics {
     }
 
     pub fn dispatch_started(&self, provider: PushProviderKind, app_id: &str) {
-        self.gauge(
+        self.add_gauge(
             "sockudo_push_dispatch_inflight",
             &[("provider", provider_label(provider)), ("app", app_id)],
             1.0,
@@ -239,10 +257,10 @@ impl PushMetrics {
             &[("provider", provider_label(provider)), ("app", app_id)],
             duration.as_secs_f64(),
         );
-        self.gauge(
+        self.add_gauge(
             "sockudo_push_dispatch_inflight",
             &[("provider", provider_label(provider)), ("app", app_id)],
-            0.0,
+            -1.0,
         );
     }
 
@@ -367,12 +385,8 @@ impl PushMetrics {
         );
     }
 
-    pub fn channel_publish(&self, channel: &str) {
-        self.counter(
-            "sockudo_push_channel_publish_total",
-            &[("channel", channel)],
-            1,
-        );
+    pub fn channel_publish(&self, _channel: &str) {
+        self.counter("sockudo_push_channel_publish_total", &[], 1);
     }
 
     pub fn scheduled_jobs(&self, status: &str, count: u64) {
@@ -427,13 +441,13 @@ impl PushMetrics {
         );
     }
 
-    pub fn delivery_result(&self, provider: PushProviderKind, outcome: &str) {
+    pub fn delivery_result(&self, provider: PushProviderKind, app_id: &str, outcome: &str) {
         self.counter(
             "sockudo_push_dispatched_total",
             &[
                 ("provider", provider_label(provider)),
                 ("status", outcome),
-                ("app", "unknown"),
+                ("app", app_id),
             ],
             1,
         );
@@ -441,28 +455,22 @@ impl PushMetrics {
 
     pub fn get(&self, name: &str) -> u64 {
         self.samples
-            .lock()
-            .ok()
-            .map(|samples| {
-                samples
-                    .iter()
-                    .filter(|(key, _)| key.name == name)
-                    .map(|(_, sample)| sample.value as u64)
-                    .sum()
-            })
-            .unwrap_or(0)
+            .iter()
+            .filter(|entry| entry.key().name == name)
+            .map(|entry| entry.value().value as u64)
+            .sum()
     }
 
     pub fn snapshot(&self) -> PushMetricSnapshotMap {
         self.samples
-            .lock()
-            .map(|samples| {
-                samples
-                    .iter()
-                    .map(|(key, sample)| ((key.name, key.labels.clone()), sample.clone()))
-                    .collect()
+            .iter()
+            .map(|entry| {
+                (
+                    (entry.key().name, entry.key().labels.clone()),
+                    entry.value().clone(),
+                )
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     pub fn to_prometheus_text(&self) -> String {
@@ -471,6 +479,7 @@ impl PushMetrics {
             .map(|spec| (spec.name, spec))
             .collect::<BTreeMap<_, _>>();
         let mut out = String::new();
+        let mut emitted_metadata = BTreeSet::new();
         for ((name, labels), sample) in self.snapshot() {
             let kind = specs
                 .get(name)
@@ -478,17 +487,21 @@ impl PushMetrics {
                 .unwrap_or(PushMetricKind::Gauge);
             match kind {
                 PushMetricKind::Counter | PushMetricKind::Gauge => {
+                    push_metric_help_and_type(&mut out, name, kind, &mut emitted_metadata);
                     push_metric_line(&mut out, name, &labels, sample.value);
                 }
                 PushMetricKind::Histogram => {
-                    let mut bucket_labels = labels.clone();
-                    bucket_labels.push(("le", "+Inf".to_owned()));
-                    push_metric_line(
-                        &mut out,
-                        &format!("{name}_bucket"),
-                        &bucket_labels,
-                        sample.count as f64,
-                    );
+                    push_metric_help_and_type(&mut out, name, kind, &mut emitted_metadata);
+                    for (bucket, count) in sample.buckets {
+                        let mut bucket_labels = labels.clone();
+                        bucket_labels.push(("le", bucket));
+                        push_metric_line(
+                            &mut out,
+                            &format!("{name}_bucket"),
+                            &bucket_labels,
+                            count as f64,
+                        );
+                    }
                     push_metric_line(&mut out, &format!("{name}_sum"), &labels, sample.sum);
                     push_metric_line(
                         &mut out,
@@ -508,17 +521,43 @@ impl PushMetrics {
         labels: &[(&'static str, &str)],
         update: impl FnOnce(&mut PushMetricSnapshot),
     ) {
-        if let Ok(mut samples) = self.samples.lock() {
-            let key = MetricKey {
-                name,
-                labels: labels
-                    .iter()
-                    .map(|(label, value)| (*label, (*value).to_owned()))
-                    .collect(),
-            };
-            update(samples.entry(key).or_default());
-        }
+        let key = MetricKey {
+            name,
+            labels: labels
+                .iter()
+                .map(|(label, value)| (*label, (*value).to_owned()))
+                .collect(),
+        };
+        let mut sample = self.samples.entry(key).or_default();
+        update(&mut sample);
     }
+}
+
+const HISTOGRAM_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+fn push_metric_help_and_type(
+    out: &mut String,
+    name: &'static str,
+    kind: PushMetricKind,
+    emitted: &mut BTreeSet<&'static str>,
+) {
+    if !emitted.insert(name) {
+        return;
+    }
+    let metric_type = match kind {
+        PushMetricKind::Counter => "counter",
+        PushMetricKind::Gauge => "gauge",
+        PushMetricKind::Histogram => "histogram",
+    };
+    out.push_str("# HELP ");
+    out.push_str(name);
+    out.push_str(" Sockudo push metric.\n# TYPE ");
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(metric_type);
+    out.push('\n');
 }
 
 fn push_metric_line(out: &mut String, name: &str, labels: &[(&'static str, String)], value: f64) {

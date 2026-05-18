@@ -1,5 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(any(
+    feature = "push-fcm",
+    feature = "push-apns",
+    feature = "push-webpush",
+    feature = "push-hms",
+    feature = "push-wns"
+))]
+use std::error::Error as StdError;
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::Arc;
 #[cfg(any(
     feature = "push-fcm",
@@ -17,11 +26,11 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use url::Url;
+use url::{Host, Url};
 
 use crate::domain::{
     DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind,
-    PushRecipient, SecretString,
+    PushRecipient, SecretString, provider_key,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::PushMetrics;
@@ -84,8 +93,31 @@ impl ProviderTokenSource for StaticTokenSource {
 #[derive(Clone)]
 pub struct CachedTokenProvider {
     source: Arc<dyn ProviderTokenSource + Send + Sync>,
-    cache: Arc<tokio::sync::RwLock<Option<ProviderAccessToken>>>,
+    cache: Arc<tokio::sync::RwLock<Option<CachedProviderAccessToken>>>,
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
     refresh_skew_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CachedProviderAccessToken {
+    token: SecretString,
+    bearer_token: SecretString,
+    expires_at_ms: u64,
+}
+
+impl CachedProviderAccessToken {
+    fn new(token: ProviderAccessToken) -> Result<Self, ProviderAuthError> {
+        let bearer_token = SecretString::new(format!("Bearer {}", token.token.expose_secret()))
+            .map_err(|error| ProviderAuthError {
+                class: "auth_failure",
+                reason: error.to_string(),
+            })?;
+        Ok(Self {
+            token: token.token,
+            bearer_token,
+            expires_at_ms: token.expires_at_ms,
+        })
+    }
 }
 
 impl CachedTokenProvider {
@@ -93,21 +125,55 @@ impl CachedTokenProvider {
         Self {
             source,
             cache: Arc::new(tokio::sync::RwLock::new(None)),
+            refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
             refresh_skew_ms: 5 * 60 * 1000,
         }
     }
 
     pub async fn access_token(&self, now_ms: u64) -> Result<SecretString, ProviderAuthError> {
-        if let Some(cached) = self.cache.read().await.as_ref()
+        let cached = self.cache.read().await.clone();
+        if let Some(cached) = cached
             && cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms)
         {
             return Ok(cached.token.clone());
         }
 
-        let refreshed = self.source.fetch_token(now_ms).await?;
+        let _refresh = self.refresh_lock.lock().await;
+        let cached = self.cache.read().await.clone();
+        if let Some(cached) = cached
+            && cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms)
+        {
+            return Ok(cached.token.clone());
+        }
+        let refreshed = CachedProviderAccessToken::new(self.source.fetch_token(now_ms).await?)?;
         let token = refreshed.token.clone();
         *self.cache.write().await = Some(refreshed);
         Ok(token)
+    }
+
+    pub async fn bearer_token(&self, now_ms: u64) -> Result<SecretString, ProviderAuthError> {
+        let cached = self.cache.read().await.clone();
+        if let Some(cached) = cached
+            && cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms)
+        {
+            return Ok(cached.bearer_token.clone());
+        }
+
+        let _refresh = self.refresh_lock.lock().await;
+        let cached = self.cache.read().await.clone();
+        if let Some(cached) = cached
+            && cached.expires_at_ms > now_ms.saturating_add(self.refresh_skew_ms)
+        {
+            return Ok(cached.bearer_token.clone());
+        }
+        let refreshed = CachedProviderAccessToken::new(self.source.fetch_token(now_ms).await?)?;
+        let bearer_token = refreshed.bearer_token.clone();
+        *self.cache.write().await = Some(refreshed);
+        Ok(bearer_token)
+    }
+
+    pub async fn invalidate(&self) {
+        *self.cache.write().await = None;
     }
 }
 
@@ -128,6 +194,7 @@ pub struct ProviderHttpRequest {
     pub method: ProviderHttpMethod,
     pub url: String,
     pub headers: BTreeMap<String, String>,
+    pub authorization: Option<SecretString>,
     pub body: Vec<u8>,
 }
 
@@ -137,6 +204,10 @@ impl fmt::Debug for ProviderHttpRequest {
             .field("method", &self.method)
             .field("url", &redact_url(&self.url))
             .field("headers", &redacted_headers(&self.headers))
+            .field(
+                "authorization",
+                &self.authorization.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("body", &"[REDACTED]")
             .finish()
     }
@@ -186,6 +257,34 @@ impl ReqwestProviderHttpClient {
             .map_err(|error| error.to_string())?;
         Ok(Self { client })
     }
+
+    #[cfg(feature = "push-apns")]
+    pub fn new_with_pem_identity(pem: &str) -> Result<Self, String> {
+        let identity = reqwest::Identity::from_pem(pem.as_bytes())
+            .map_err(|error| format!("invalid APNs PEM identity: {error}"))?;
+        let client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .identity(identity)
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|error| error.to_string())?;
+        Ok(Self { client })
+    }
+
+    #[cfg(feature = "push-apns")]
+    pub fn new_with_pkcs12_identity(der: &[u8], password: &str) -> Result<Self, String> {
+        let identity = reqwest::Identity::from_pkcs12_der(der, password)
+            .map_err(|error| format!("invalid APNs PKCS#12 identity: {error}"))?;
+        let client = reqwest::Client::builder()
+            .use_native_tls()
+            .identity(identity)
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|error| error.to_string())?;
+        Ok(Self { client })
+    }
 }
 
 #[cfg(any(
@@ -198,6 +297,7 @@ impl ReqwestProviderHttpClient {
 #[async_trait]
 impl ProviderHttpClient for ReqwestProviderHttpClient {
     async fn send(&self, request: ProviderHttpRequest) -> Result<ProviderHttpResponse, String> {
+        validate_delivery_destination(&request.url).await?;
         let method = match request.method {
             ProviderHttpMethod::Get => reqwest::Method::GET,
             ProviderHttpMethod::Post => reqwest::Method::POST,
@@ -206,11 +306,14 @@ impl ProviderHttpClient for ReqwestProviderHttpClient {
         for (name, value) in request.headers {
             builder = builder.header(name, value);
         }
+        if let Some(authorization) = request.authorization {
+            builder = builder.header("authorization", authorization.expose_secret());
+        }
         let response = builder
             .body(request.body)
             .send()
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(reqwest_error_chain)?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -222,13 +325,31 @@ impl ProviderHttpClient for ReqwestProviderHttpClient {
                     .map(|value| (name.as_str().to_ascii_lowercase(), value.to_owned()))
             })
             .collect();
-        let body = response.bytes().await.map_err(|error| error.to_string())?;
+        let body = response.bytes().await.map_err(reqwest_error_chain)?;
         Ok(ProviderHttpResponse {
             status,
             headers,
             body: body.to_vec(),
         })
     }
+}
+
+#[cfg(any(
+    feature = "push-fcm",
+    feature = "push-apns",
+    feature = "push-webpush",
+    feature = "push-hms",
+    feature = "push-wns"
+))]
+fn reqwest_error_chain(error: reqwest::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        message.push_str(": ");
+        message.push_str(&error.to_string());
+        source = error.source();
+    }
+    message
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -347,13 +468,20 @@ impl ProviderDispatchWorker {
                 .await?;
             return Ok(());
         };
+        let batch = *batch;
         let app_id = batch.app_id.clone();
         self.metrics
             .worker_pool(self.provider, self.max_batches_per_tick, 1);
 
         if self.circuit_breaker.is_open(now_ms()) {
-            self.metrics
-                .increment(format!("circuit.{:?}.deferred", self.provider), 1);
+            self.metrics.counter(
+                "sockudo_push_circuit_breaker_deferred_total",
+                &[
+                    ("provider", crate::metrics::provider_label(self.provider)),
+                    ("app", &app_id),
+                ],
+                1,
+            );
             self.metrics
                 .circuit_breaker_state(self.provider, &app_id, true);
             self.queue
@@ -388,6 +516,8 @@ impl ProviderDispatchWorker {
                     batch_id = %result.batch_id,
                     outcome = ?result.outcome,
                     error_class = result.error.as_ref().map(|error| error.class.as_str()),
+                    error_reason = result.error.as_ref().and_then(|error| error.reason.as_deref()),
+                    retry_after_ms = result.error.as_ref().and_then(|error| error.retry_after_ms),
                     "push dispatch failure"
                 );
             } else {
@@ -414,7 +544,7 @@ impl ProviderDispatchWorker {
                 .produce(
                     PushQueueStage::DeliveryResults,
                     result_key(&result),
-                    PushQueuePayload::DeliveryResult(result),
+                    PushQueuePayload::DeliveryResult(Box::new(result)),
                 )
                 .await?;
         }
@@ -448,8 +578,6 @@ impl ProviderDispatchWorker {
     }
 
     fn emit_circuit_event(&self, action: &'static str, retry_at_ms: u64) {
-        self.metrics
-            .increment(format!("circuit.{:?}.{action}", self.provider), 1);
         emit_push_meta_event(PushMetaEvent::circuit_breaker_event(
             "unknown",
             self.provider,
@@ -571,8 +699,13 @@ impl AdaptiveRateLimiter {
 
     pub fn record_throttle(&mut self, app_id: &str, provider: PushProviderKind, now_ms: u64) {
         let min_limit = self.min_limit;
+        let grow_after_ms = self.grow_after_ms;
         let lane = self.lane(app_id, provider);
-        lane.limit = (lane.limit / 2).max(min_limit);
+        if lane.last_throttle_ms == 0
+            || now_ms.saturating_sub(lane.last_throttle_ms) >= grow_after_ms / 2
+        {
+            lane.limit = (lane.limit / 2).max(min_limit);
+        }
         lane.last_throttle_ms = now_ms;
         lane.last_growth_ms = now_ms;
     }
@@ -585,7 +718,7 @@ impl AdaptiveRateLimiter {
             && now_ms.saturating_sub(lane.last_growth_ms) >= grow_after_ms
         {
             lane.limit = lane.limit.saturating_add(1).min(max_limit);
-            lane.last_growth_ms = now_ms;
+            lane.last_growth_ms = now_ms.saturating_add(jitter_ms(grow_after_ms / 5));
         }
     }
 
@@ -603,6 +736,13 @@ impl AdaptiveRateLimiter {
                 last_growth_ms: 0,
             })
     }
+}
+
+fn jitter_ms(spread_ms: u64) -> u64 {
+    if spread_ms == 0 {
+        return 0;
+    }
+    u64::from(rand::random::<u32>()) % spread_ms.saturating_add(1)
 }
 
 pub struct WeightedFairScheduler {
@@ -627,7 +767,7 @@ struct TenantLane {
     messages: VecDeque<QueueMessage>,
     deficit: u32,
     weight_units: u32,
-    dispatched: usize,
+    dispatched_this_tick: usize,
 }
 
 impl WeightedFairScheduler {
@@ -664,7 +804,7 @@ impl WeightedFairScheduler {
                 messages: VecDeque::new(),
                 deficit: 0,
                 weight_units,
-                dispatched: 0,
+                dispatched_this_tick: 0,
             })
             .messages
             .push_back(message);
@@ -678,7 +818,7 @@ impl WeightedFairScheduler {
             let Some(lane) = self.lanes.get_mut(&app_id) else {
                 continue;
             };
-            if lane.dispatched >= self.tenant_inflight_cap {
+            if lane.dispatched_this_tick >= self.tenant_inflight_cap {
                 self.order.push_back(app_id);
                 if scanned >= scan_limit {
                     return None;
@@ -695,7 +835,7 @@ impl WeightedFairScheduler {
             }
             if let Some(message) = lane.messages.pop_front() {
                 lane.deficit = lane.deficit.saturating_sub(Self::MESSAGE_COST_UNITS);
-                lane.dispatched = lane.dispatched.saturating_add(1);
+                lane.dispatched_this_tick = lane.dispatched_this_tick.saturating_add(1);
                 if lane.messages.is_empty() {
                     self.lanes.remove(&app_id);
                 } else {
@@ -753,21 +893,22 @@ impl FcmDispatcher {
         &self,
         job: &DeliveryJob,
     ) -> Result<ProviderHttpRequest, ProviderError> {
-        let token = self
+        let authorization = self
             .token_provider
-            .access_token(now_ms())
+            .bearer_token(now_ms())
             .await
             .map_err(auth_error)?;
         let mut payload = render_payload_json(PushProviderKind::Fcm, job)?;
         if let Some(token) = recipient_token(&job.recipient) {
-            payload["message"]["token"] = Value::String(token);
+            payload["message"]["token"] = Value::String(token.to_owned());
         }
-        Ok(json_request(
+        json_request(
             self.endpoint
                 .joined_url(&format!("/v1/projects/{}/messages:send", self.project_id)),
-            bearer_headers(token),
+            BTreeMap::new(),
+            Some(authorization),
             payload,
-        ))
+        )
     }
 }
 
@@ -802,7 +943,7 @@ impl PushDispatcher for FcmDispatcher {
 pub struct ApnsDispatcher {
     topic: String,
     endpoint: ProviderEndpointConfig,
-    token_provider: CachedTokenProvider,
+    token_provider: Option<CachedTokenProvider>,
     http: Arc<dyn ProviderHttpClient + Send + Sync>,
 }
 
@@ -818,7 +959,22 @@ impl ApnsDispatcher {
                 base_url: "https://api.push.apple.com".to_owned(),
                 credential_id: "apns".to_owned(),
             },
-            token_provider,
+            token_provider: Some(token_provider),
+            http,
+        }
+    }
+
+    pub fn new_with_tls_identity(
+        topic: impl Into<String>,
+        http: Arc<dyn ProviderHttpClient + Send + Sync>,
+    ) -> Self {
+        Self {
+            topic: topic.into(),
+            endpoint: ProviderEndpointConfig {
+                base_url: "https://api.push.apple.com".to_owned(),
+                credential_id: "apns".to_owned(),
+            },
+            token_provider: None,
             http,
         }
     }
@@ -832,11 +988,16 @@ impl ApnsDispatcher {
         &self,
         job: &DeliveryJob,
     ) -> Result<ProviderHttpRequest, ProviderError> {
-        let token = self
-            .token_provider
-            .access_token(now_ms())
-            .await
-            .map_err(auth_error)?;
+        let authorization = if let Some(token_provider) = &self.token_provider {
+            Some(
+                token_provider
+                    .bearer_token(now_ms())
+                    .await
+                    .map_err(auth_error)?,
+            )
+        } else {
+            None
+        };
         let device_token = recipient_token(&job.recipient).ok_or_else(|| ProviderError {
             class: "invalid_token".to_owned(),
             reason: Some("apns device token is missing".to_owned()),
@@ -848,7 +1009,7 @@ impl ApnsDispatcher {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let mut request_headers = bearer_headers(token);
+        let mut request_headers = BTreeMap::new();
         request_headers.insert("apns-topic".to_owned(), self.topic.clone());
         request_headers.insert(
             "apns-push-type".to_owned(),
@@ -865,14 +1026,15 @@ impl ApnsDispatcher {
             request_headers.insert("apns-expiration".to_owned(), expiration);
         }
 
-        Ok(json_request(
+        json_request(
             self.endpoint.joined_url(&format!("/3/device/{device_token}")),
             request_headers,
+            authorization,
             rendered
                 .get("aps")
                 .map(|aps| json!({ "aps": aps, "data": rendered.get("data").cloned().unwrap_or(Value::Null) }))
                 .unwrap_or(rendered),
-        ))
+        )
     }
 }
 
@@ -888,7 +1050,23 @@ impl PushDispatcher for ApnsDispatcher {
                 Ok(request) => request,
                 Err(error) => return result_from_error(job, DeliveryOutcome::Rejected, error),
             };
-            classify_http_result(job, self.http.send(request).await, classify_apns_response)
+            let mut response = self.http.send(request).await;
+            if self.token_provider.is_some()
+                && response
+                    .as_ref()
+                    .is_ok_and(is_apns_expired_provider_token_response)
+            {
+                if let Some(token_provider) = &self.token_provider {
+                    token_provider.invalidate().await;
+                }
+                response = match self.build_request(&job).await {
+                    Ok(request) => self.http.send(request).await,
+                    Err(error) => {
+                        return result_from_error(job, DeliveryOutcome::Retryable, error);
+                    }
+                };
+            }
+            classify_http_result(job, response, classify_apns_response)
         });
         join_all(futures).await
     }
@@ -911,6 +1089,7 @@ pub struct WebPushDispatcher {
 
 pub struct WebPushPreparedRequest {
     pub headers: BTreeMap<String, String>,
+    pub authorization: Option<SecretString>,
     pub body: Vec<u8>,
 }
 
@@ -939,12 +1118,13 @@ impl WebPushCrypto for PassthroughWebPushCrypto {
         payload: &[u8],
         fallback_bearer: SecretString,
     ) -> Result<WebPushPreparedRequest, ProviderError> {
-        let mut headers = bearer_headers(fallback_bearer);
+        let mut headers = BTreeMap::new();
         headers.insert("content-encoding".to_owned(), "aes128gcm".to_owned());
         headers.insert("ttl".to_owned(), "2419200".to_owned());
         headers.insert("urgency".to_owned(), "normal".to_owned());
         Ok(WebPushPreparedRequest {
             headers,
+            authorization: Some(fallback_bearer),
             body: payload.to_vec(),
         })
     }
@@ -953,16 +1133,33 @@ impl WebPushCrypto for PassthroughWebPushCrypto {
 #[cfg(feature = "push-webpush")]
 #[derive(Clone)]
 pub struct NativeWebPushCrypto {
-    vapid_private_key: String,
+    vapid_key:
+        Result<Arc<web_push_native::jwt_simple::algorithms::ES256KeyPair>, NativeWebPushKeyError>,
     contact: String,
     valid_for: std::time::Duration,
 }
 
 #[cfg(feature = "push-webpush")]
+#[derive(Clone, Copy)]
+enum NativeWebPushKeyError {
+    Encoding,
+    Key,
+}
+
+#[cfg(feature = "push-webpush")]
 impl NativeWebPushCrypto {
     pub fn new(vapid_private_key: impl Into<String>, contact: impl Into<String>) -> Self {
+        let vapid_private_key = vapid_private_key.into();
+        let vapid_key = URL_SAFE_NO_PAD
+            .decode(vapid_private_key.as_bytes())
+            .map_err(|_| NativeWebPushKeyError::Encoding)
+            .and_then(|bytes| {
+                web_push_native::jwt_simple::algorithms::ES256KeyPair::from_bytes(&bytes)
+                    .map(Arc::new)
+                    .map_err(|_| NativeWebPushKeyError::Key)
+            });
         Self {
-            vapid_private_key: vapid_private_key.into(),
+            vapid_key,
             contact: contact.into(),
             valid_for: std::time::Duration::from_secs(12 * 60 * 60),
         }
@@ -985,21 +1182,19 @@ impl WebPushCrypto for NativeWebPushCrypto {
         payload: &[u8],
         _fallback_bearer: SecretString,
     ) -> Result<WebPushPreparedRequest, ProviderError> {
-        use web_push_native::{
-            Auth, WebPushBuilder, jwt_simple::algorithms::ES256KeyPair, p256::PublicKey,
-        };
+        use web_push_native::{Auth, WebPushBuilder, p256::PublicKey};
 
-        let vapid_key_bytes = URL_SAFE_NO_PAD
-            .decode(self.vapid_private_key.as_bytes())
-            .map_err(|_| ProviderError {
+        let vapid_key = self.vapid_key.as_ref().map_err(|error| match error {
+            NativeWebPushKeyError::Encoding => ProviderError {
                 class: "auth_failure".to_owned(),
                 reason: Some("invalid VAPID private key encoding".to_owned()),
                 retry_after_ms: None,
-            })?;
-        let vapid_key = ES256KeyPair::from_bytes(&vapid_key_bytes).map_err(|_| ProviderError {
-            class: "auth_failure".to_owned(),
-            reason: Some("invalid VAPID private key".to_owned()),
-            retry_after_ms: None,
+            },
+            NativeWebPushKeyError::Key => ProviderError {
+                class: "auth_failure".to_owned(),
+                reason: Some("invalid VAPID private key".to_owned()),
+                retry_after_ms: None,
+            },
         })?;
         let p256dh_bytes = URL_SAFE_NO_PAD
             .decode(p256dh.expose_secret().as_bytes())
@@ -1037,7 +1232,7 @@ impl WebPushCrypto for NativeWebPushCrypto {
             Auth::clone_from_slice(&auth_bytes),
         )
         .with_valid_duration(self.valid_for)
-        .with_vapid(&vapid_key, &self.contact)
+        .with_vapid(vapid_key.as_ref(), &self.contact)
         .build(payload.to_vec())
         .map_err(|error| ProviderError {
             class: "invalid_payload".to_owned(),
@@ -1045,19 +1240,25 @@ impl WebPushCrypto for NativeWebPushCrypto {
             retry_after_ms: None,
         })?;
 
+        let mut authorization = None;
         let headers = request
             .headers()
             .iter()
             .filter_map(|(name, value)| {
-                value
-                    .to_str()
-                    .ok()
-                    .map(|value| (name.as_str().to_ascii_lowercase(), value.to_owned()))
+                let name = name.as_str().to_ascii_lowercase();
+                let value = value.to_str().ok()?;
+                if name == "authorization" {
+                    authorization = SecretString::new(value.to_owned()).ok();
+                    None
+                } else {
+                    Some((name, value.to_owned()))
+                }
             })
             .collect();
 
         Ok(WebPushPreparedRequest {
             headers,
+            authorization,
             body: request.into_body(),
         })
     }
@@ -1095,9 +1296,9 @@ impl WebPushDispatcher {
         };
         let endpoint = endpoint.expose_secret().to_owned();
         validate_webpush_target(&endpoint)?;
-        let token = self
+        let authorization = self
             .token_provider
-            .access_token(now_ms())
+            .bearer_token(now_ms())
             .await
             .map_err(auth_error)?;
         let rendered = render_payload_json(PushProviderKind::WebPush, job)?;
@@ -1108,12 +1309,13 @@ impl WebPushDispatcher {
         })?;
         let prepared = self
             .crypto
-            .prepare_request(&endpoint, p256dh, auth, &body, token)
+            .prepare_request(&endpoint, p256dh, auth, &body, authorization)
             .await?;
         Ok(ProviderHttpRequest {
             method: ProviderHttpMethod::Post,
             url: endpoint,
             headers: prepared.headers,
+            authorization: prepared.authorization,
             body: prepared.body,
         })
     }
@@ -1184,21 +1386,22 @@ impl HmsDispatcher {
         &self,
         job: &DeliveryJob,
     ) -> Result<ProviderHttpRequest, ProviderError> {
-        let token = self
+        let authorization = self
             .token_provider
-            .access_token(now_ms())
+            .bearer_token(now_ms())
             .await
             .map_err(auth_error)?;
         let mut rendered = render_payload_json(PushProviderKind::Hms, job)?;
         if let Some(token) = recipient_token(&job.recipient) {
             rendered["message"]["token"] = json!([token]);
         }
-        Ok(json_request(
+        json_request(
             self.endpoint
                 .joined_url(&format!("/v1/{}/messages:send", self.app_id)),
-            bearer_headers(token),
+            BTreeMap::new(),
+            Some(authorization),
             rendered,
-        ))
+        )
     }
 }
 
@@ -1254,17 +1457,28 @@ impl WnsDispatcher {
             reason: Some("wns channel URI is missing".to_owned()),
             retry_after_ms: None,
         })?;
-        validate_https_url(&channel_uri, "invalid_token")?;
-        let token = self
+        validate_webpush_target(channel_uri)?;
+        let authorization = self
             .token_provider
-            .access_token(now_ms())
+            .bearer_token(now_ms())
             .await
             .map_err(auth_error)?;
         let rendered = render_payload_json(PushProviderKind::Wns, job)?;
         validate_wns_payload(&rendered)?;
-        let mut headers = bearer_headers(token);
+        let mut headers = BTreeMap::new();
         headers.insert("x-wns-type".to_owned(), wns_type(&rendered));
-        Ok(json_request(channel_uri, headers, rendered))
+        let content_type = if wns_type(&rendered) == "wns/raw" {
+            Some("application/octet-stream")
+        } else {
+            None
+        };
+        json_request_with_content_type(
+            channel_uri.to_owned(),
+            headers,
+            Some(authorization),
+            rendered,
+            content_type,
+        )
     }
 }
 
@@ -1403,35 +1617,45 @@ fn render_payload_json(
 
 fn json_request(
     url: String,
-    mut headers: BTreeMap<String, String>,
+    headers: BTreeMap<String, String>,
+    authorization: Option<SecretString>,
     payload: Value,
-) -> ProviderHttpRequest {
+) -> Result<ProviderHttpRequest, ProviderError> {
+    json_request_with_content_type(url, headers, authorization, payload, None)
+}
+
+fn json_request_with_content_type(
+    url: String,
+    mut headers: BTreeMap<String, String>,
+    authorization: Option<SecretString>,
+    payload: Value,
+    content_type: Option<&'static str>,
+) -> Result<ProviderHttpRequest, ProviderError> {
     headers
         .entry("content-type".to_owned())
-        .or_insert_with(|| "application/json".to_owned());
-    ProviderHttpRequest {
+        .or_insert_with(|| content_type.unwrap_or("application/json").to_owned());
+    let body = serde_json::to_vec(&payload).map_err(|_| ProviderError {
+        class: "invalid_payload".to_owned(),
+        reason: Some("provider payload serialization failed".to_owned()),
+        retry_after_ms: None,
+    })?;
+    Ok(ProviderHttpRequest {
         method: ProviderHttpMethod::Post,
         url,
         headers,
-        body: serde_json::to_vec(&payload).unwrap_or_default(),
-    }
+        authorization,
+        body,
+    })
 }
 
-fn bearer_headers(token: SecretString) -> BTreeMap<String, String> {
-    BTreeMap::from([(
-        "authorization".to_owned(),
-        format!("Bearer {}", token.expose_secret()),
-    )])
-}
-
-fn recipient_token(recipient: &PushRecipient) -> Option<String> {
+fn recipient_token(recipient: &PushRecipient) -> Option<&str> {
     match recipient {
         PushRecipient::Fcm { registration_token } | PushRecipient::Hms { registration_token } => {
-            Some(registration_token.expose_secret().to_owned())
+            Some(registration_token.expose_secret())
         }
-        PushRecipient::Apns { device_token } => Some(device_token.expose_secret().to_owned()),
-        PushRecipient::Web { endpoint, .. } => Some(endpoint.expose_secret().to_owned()),
-        PushRecipient::Wns { channel_uri } => Some(channel_uri.expose_secret().to_owned()),
+        PushRecipient::Apns { device_token } => Some(device_token.expose_secret()),
+        PushRecipient::Web { endpoint, .. } => Some(endpoint.expose_secret()),
+        PushRecipient::Wns { channel_uri } => Some(channel_uri.expose_secret()),
     }
 }
 
@@ -1476,10 +1700,15 @@ fn classify_fcm_response(response: &ProviderHttpResponse) -> ProviderClassificat
         );
     }
     let body = String::from_utf8_lossy(&response.body).to_ascii_uppercase();
-    if body.contains("UNREGISTERED") || body.contains("NOT_FOUND") {
+    if matches!(response.status, 404 | 410)
+        || body.contains("UNREGISTERED")
+        || body.contains("NOT_FOUND")
+    {
         rejected("invalid_token", response, None)
-    } else if response.status == 400 {
+    } else if matches!(response.status, 400 | 413) {
         rejected("invalid_payload", response, None)
+    } else if response.status == 403 && body.contains("SENDER_ID_MISMATCH") {
+        rejected("invalid_token", response, Some("sender_id_mismatch"))
     } else if matches!(response.status, 401 | 403) {
         rejected("auth_failure", response, None)
     } else if response.status == 429 {
@@ -1501,6 +1730,9 @@ fn classify_apns_response(response: &ProviderHttpResponse) -> ProviderClassifica
     }
     match response.status {
         400 => rejected("invalid_payload", response, None),
+        403 if is_apns_expired_provider_token_response(response) => {
+            retryable("auth_failure", response)
+        }
         403 => rejected("auth_failure", response, None),
         410 => rejected("invalid_token", response, Some("unregistered")),
         429 => retryable("quota", response),
@@ -1539,8 +1771,12 @@ fn classify_hms_response(response: &ProviderHttpResponse) -> ProviderClassificat
         );
     }
     let body = String::from_utf8_lossy(&response.body).to_ascii_lowercase();
-    if body.contains("token") && (body.contains("invalid") || body.contains("not exist")) {
+    if matches!(response.status, 404 | 410)
+        || (body.contains("token") && (body.contains("invalid") || body.contains("not exist")))
+    {
         rejected("invalid_token", response, None)
+    } else if response.status == 413 {
+        rejected("invalid_payload", response, Some("payload_too_large"))
     } else if response.status == 429 || body.contains("quota") {
         retryable("quota", response)
     } else if matches!(response.status, 401 | 403) {
@@ -1615,9 +1851,35 @@ fn provider_error(
 fn retry_after_ms(headers: &BTreeMap<String, String>) -> Option<u64> {
     headers
         .get("retry-after")
-        .or_else(|| headers.get("Retry-After"))
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .map(|seconds| now_ms().saturating_add(seconds.saturating_mul(1000)))
+        .and_then(|raw| {
+            raw.parse::<u64>()
+                .ok()
+                .map(|seconds| now_ms().saturating_add(seconds.saturating_mul(1000)))
+                .or_else(|| {
+                    httpdate::parse_http_date(raw).ok().and_then(|deadline| {
+                        deadline
+                            .duration_since(std::time::SystemTime::now())
+                            .ok()
+                            .map(|duration| {
+                                now_ms().saturating_add(
+                                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+                                )
+                            })
+                    })
+                })
+        })
+        .map(apply_retry_jitter)
+}
+
+fn apply_retry_jitter(deadline_ms: u64) -> u64 {
+    let now = now_ms();
+    let delay = deadline_ms.saturating_sub(now);
+    if delay < 1_000 {
+        return deadline_ms;
+    }
+    let spread = (delay / 5).max(1);
+    let offset = u64::from(rand::random::<u32>()) % (spread.saturating_mul(2).saturating_add(1));
+    now.saturating_add(delay.saturating_sub(spread).saturating_add(offset))
 }
 
 fn result_from_error(
@@ -1664,14 +1926,16 @@ fn json_field(body: &[u8], path: &[&str]) -> Option<String> {
 }
 
 fn validate_webpush_target(endpoint: &str) -> Result<(), ProviderError> {
-    validate_https_url(endpoint, "invalid_token")?;
     let parsed = Url::parse(endpoint).map_err(|_| ProviderError {
         class: "invalid_token".to_owned(),
         reason: Some("web push endpoint must be a URL".to_owned()),
         retry_after_ms: None,
     })?;
+    validate_parsed_https_url(&parsed, "invalid_token")?;
     let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
-    if host == "localhost" || host.ends_with(".local") {
+    if parsed.host().is_some_and(host_variant_is_private_or_local)
+        || host_is_private_or_local(&host)
+    {
         return Err(ProviderError {
             class: "invalid_token".to_owned(),
             reason: Some("web push endpoint host is not allowed".to_owned()),
@@ -1681,16 +1945,92 @@ fn validate_webpush_target(endpoint: &str) -> Result<(), ProviderError> {
     Ok(())
 }
 
-fn validate_https_url(url: &str, class: &str) -> Result<(), ProviderError> {
-    let parsed = Url::parse(url).map_err(|_| ProviderError {
-        class: class.to_owned(),
-        reason: Some("provider URL is invalid".to_owned()),
-        retry_after_ms: None,
+#[cfg(any(
+    feature = "push-fcm",
+    feature = "push-apns",
+    feature = "push-webpush",
+    feature = "push-hms",
+    feature = "push-wns"
+))]
+async fn validate_delivery_destination(url: &str) -> Result<(), String> {
+    let parsed = Url::parse(url).map_err(|_| "provider URL is invalid".to_owned())?;
+    validate_parsed_https_url(&parsed, "invalid_token").map_err(|error| {
+        error
+            .reason
+            .unwrap_or_else(|| "provider URL is not allowed".to_owned())
     })?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "provider URL must include a host".to_owned())?
+        .to_ascii_lowercase();
+    if parsed.host().is_some_and(host_variant_is_private_or_local)
+        || host_is_private_or_local(&host)
+    {
+        return Err("provider URL host is not allowed".to_owned());
+    }
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addresses = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|error| format!("provider URL DNS lookup failed: {error}"))?;
+    for address in addresses {
+        if ip_is_private_or_local(address.ip()) {
+            return Err("provider URL resolved to a disallowed address".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn host_is_private_or_local(host: &str) -> bool {
+    host == "localhost"
+        || host.ends_with(".local")
+        || host.parse::<IpAddr>().is_ok_and(ip_is_private_or_local)
+}
+
+fn ip_is_private_or_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_multicast()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.octets()[0] == 0
+        }
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return ip_is_private_or_local(IpAddr::V4(mapped));
+            }
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+        }
+    }
+}
+
+fn host_variant_is_private_or_local(host: Host<&str>) -> bool {
+    match host {
+        Host::Domain(_) => false,
+        Host::Ipv4(ip) => ip_is_private_or_local(IpAddr::V4(ip)),
+        Host::Ipv6(ip) => ip_is_private_or_local(IpAddr::V6(ip)),
+    }
+}
+
+fn validate_parsed_https_url(parsed: &Url, class: &str) -> Result<(), ProviderError> {
     if parsed.scheme() != "https" {
         return Err(ProviderError {
             class: class.to_owned(),
             reason: Some("provider URL must use https".to_owned()),
+            retry_after_ms: None,
+        });
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ProviderError {
+            class: class.to_owned(),
+            reason: Some("provider URL must not include userinfo".to_owned()),
             retry_after_ms: None,
         });
     }
@@ -1725,14 +2065,47 @@ fn wns_type(payload: &Value) -> String {
     .to_owned()
 }
 
+fn is_apns_expired_provider_token_response(response: &ProviderHttpResponse) -> bool {
+    response.status == 403
+        && String::from_utf8_lossy(&response.body)
+            .to_ascii_lowercase()
+            .contains("expiredprovidertoken")
+}
+
 fn redact_url(url: &str) -> String {
     Url::parse(url)
         .ok()
         .map(|mut parsed| {
             parsed.set_query(None);
+            if parsed.path().starts_with("/3/device/") {
+                parsed.set_path("/3/device/[REDACTED]");
+            } else {
+                let redacted_path = parsed
+                    .path_segments()
+                    .map(|segments| {
+                        segments
+                            .map(redact_path_segment)
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    })
+                    .unwrap_or_default();
+                parsed.set_path(&format!("/{redacted_path}"));
+            }
             parsed.to_string()
         })
         .unwrap_or_else(|| "[REDACTED_URL]".to_owned())
+}
+
+fn redact_path_segment(segment: &str) -> String {
+    let long_token_shape = segment.len() >= 24
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'='));
+    if long_token_shape {
+        "[REDACTED]".to_owned()
+    } else {
+        segment.to_owned()
+    }
 }
 
 fn redacted_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -1754,10 +2127,10 @@ fn redacted_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, Stri
 
 fn result_key(result: &DeliveryResult) -> String {
     format!(
-        "{}:{}:{:?}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}",
         result.app_id,
         result.publish_id,
-        result.provider,
+        provider_key(result.provider),
         result.batch_id,
         result.device_id.as_deref().unwrap_or("[provider-target]"),
         result.attempt
@@ -1882,7 +2255,13 @@ mod tests {
         assert!(requests[3].url.contains("/v1/hms-app/messages:send"));
         assert_eq!(requests[4].headers["x-wns-type"], "wns/toast");
         for request in requests {
-            assert_eq!(request.headers["authorization"], "Bearer access-token");
+            assert_eq!(
+                request
+                    .authorization
+                    .as_ref()
+                    .map(SecretString::expose_secret),
+                Some("Bearer access-token")
+            );
         }
     }
 
@@ -2014,11 +2393,13 @@ mod tests {
                 ("authorization".to_owned(), "Bearer secret".to_owned()),
                 ("x-test".to_owned(), "visible".to_owned()),
             ]),
+            authorization: SecretString::new("Bearer stored-secret").ok(),
             body: br#"{"token":"secret-token"}"#.to_vec(),
         };
         let debug = format!("{request:?}");
         assert!(!debug.contains("secret-token"));
         assert!(!debug.contains("Bearer secret"));
+        assert!(!debug.contains("stored-secret"));
         assert!(debug.contains("[REDACTED]"));
     }
 
@@ -2093,7 +2474,7 @@ mod tests {
                 batch_id: "batch-1".to_owned(),
                 device_id: Some("device-1".to_owned()),
                 recipient: recipient(provider),
-                payload: PushPayload {
+                payload: Arc::new(PushPayload {
                     template_id: None,
                     template_data: json!({"k": "v"}),
                     title: Some("Hello".to_owned()),
@@ -2101,7 +2482,7 @@ mod tests {
                     icon: None,
                     sound: None,
                     collapse_key: Some("collapse".to_owned()),
-                },
+                }),
                 attempt: 1,
                 not_before_ms: None,
                 expires_at_ms: None,
@@ -2145,7 +2526,7 @@ mod tests {
             key: batch.queue_key(),
             partition_key: app_id.to_owned(),
             partition: 0,
-            payload: PushQueuePayload::DeliveryBatch(batch),
+            payload: PushQueuePayload::DeliveryBatch(Box::new(batch)),
             attempt: 1,
             not_before_ms: None,
             lease_deadline_ms: 0,

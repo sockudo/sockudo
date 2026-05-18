@@ -10,6 +10,7 @@ use crate::domain::{
 
 pub type PushStorageResult<T> = Result<T, PushStorageError>;
 pub type DynPushStore = Arc<dyn PushStore + Send + Sync>;
+pub const EXPECTED_PUSH_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Error)]
 pub enum PushStorageError {
@@ -327,6 +328,8 @@ pub trait PushScheduleStore: Send + Sync {
         publish_id: &str,
     ) -> PushStorageResult<DeleteDeviceOutcome>;
 
+    async fn list_scheduled_apps(&self) -> PushStorageResult<Vec<String>>;
+
     async fn list_due_scheduled_jobs(
         &self,
         app_id: &str,
@@ -457,6 +460,8 @@ mod migration_smoke_tests {
             "push_delivery_events",
             "push_dead_letters",
             "push_idempotency",
+            "push_schema_version",
+            "VALUES (1, 0)",
             "Online rollout",
             "Credential security",
             "Rollback",
@@ -477,6 +482,8 @@ mod migration_smoke_tests {
             "push_delivery_events",
             "push_dead_letters",
             "push_idempotency",
+            "push_schema_version",
+            "VALUES (1, 0)",
             "Online rollout",
             "Credential security",
             "Rollback",

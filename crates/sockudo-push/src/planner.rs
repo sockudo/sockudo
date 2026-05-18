@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::domain::{
     DeliveryBatch, DeliveryJob, DeviceDetails, FanoutConfig, FanoutRegime, PublishLifecycleState,
-    PublishLogEvent, PublishTarget, PushProviderKind, ShardJob, ShardJobStatus,
+    PublishLogEvent, PublishTarget, PushProviderKind, ShardJob, ShardJobStatus, provider_key,
 };
 use crate::metrics::PushMetrics;
 use crate::pipeline::{
@@ -97,9 +98,15 @@ impl PushPlanner {
             self.config.provider_batch_size,
             self.metrics.clone(),
         );
+        let payload = Arc::new(event.intent.payload.clone());
         for target in &event.intent.targets {
-            self.stream_target(target, &event.intent.payload, &mut batcher, None)
-                .await?;
+            self.stream_target(
+                target,
+                Arc::clone(&payload),
+                &mut batcher,
+                Some(event.fast_threshold),
+            )
+            .await?;
         }
         batcher.flush(&self.queue).await
     }
@@ -127,7 +134,7 @@ impl PushPlanner {
                         .produce(
                             PushQueueStage::ShardJobs,
                             shard.queue_key(),
-                            PushQueuePayload::ShardJob(shard),
+                            PushQueuePayload::ShardJob(Box::new(shard)),
                         )
                         .await?;
                 }
@@ -139,8 +146,13 @@ impl PushPlanner {
                         self.config.provider_batch_size,
                         self.metrics.clone(),
                     );
-                    self.stream_target(target, &event.intent.payload, &mut batcher, None)
-                        .await?;
+                    self.stream_target(
+                        target,
+                        Arc::new(event.intent.payload.clone()),
+                        &mut batcher,
+                        None,
+                    )
+                    .await?;
                     batcher.flush(&self.queue).await?;
                 }
             }
@@ -151,7 +163,7 @@ impl PushPlanner {
     async fn stream_target(
         &self,
         target: &PublishTarget,
-        payload: &crate::domain::PushPayload,
+        payload: Arc<crate::domain::PushPayload>,
         batcher: &mut ProviderBatcher,
         max_recipients: Option<u64>,
     ) -> PushPipelineResult<Option<crate::domain::PushCursor>> {
@@ -159,7 +171,9 @@ impl PushPlanner {
         match target {
             PublishTarget::Device { device_id } => {
                 if let Some(device) = self.store.get_device(&batcher.app_id, device_id).await? {
-                    batcher.push_device(device, payload, &self.queue).await?;
+                    batcher
+                        .push_device(device, Arc::clone(&payload), &self.queue)
+                        .await?;
                 }
                 Ok(None)
             }
@@ -176,7 +190,9 @@ impl PushPlanner {
                         .into_iter()
                         .filter(|device| device.client_id.as_deref() == Some(client_id))
                     {
-                        batcher.push_device(device, payload, &self.queue).await?;
+                        batcher
+                            .push_device(device, Arc::clone(&payload), &self.queue)
+                            .await?;
                         emitted += 1;
                         if max_recipients.is_some_and(|max| emitted >= max) {
                             return Ok(next_cursor);
@@ -207,7 +223,9 @@ impl PushPlanner {
                             .get_device(&batcher.app_id, &subscription.device_id)
                             .await?
                         {
-                            batcher.push_device(device, payload, &self.queue).await?;
+                            batcher
+                                .push_device(device, Arc::clone(&payload), &self.queue)
+                                .await?;
                             emitted += 1;
                             if max_recipients.is_some_and(|max| emitted >= max) {
                                 return Ok(next_cursor);
@@ -221,6 +239,7 @@ impl PushPlanner {
                 }
             }
             PublishTarget::Recipient { recipient } => {
+                recipient.validate()?;
                 batcher
                     .push_job(
                         recipient.provider(),
@@ -231,7 +250,7 @@ impl PushPlanner {
                             batch_id: String::new(),
                             device_id: None,
                             recipient: recipient.clone(),
-                            payload: payload.clone(),
+                            payload: Arc::clone(&payload),
                             attempt: 1,
                             not_before_ms: None,
                             expires_at_ms: None,
@@ -291,7 +310,7 @@ impl PushShardWorker {
     }
 
     async fn handle_shard_message(&self, message: QueueMessage) -> PushPipelineResult<()> {
-        let PushQueuePayload::ShardJob(mut shard) = message.payload.clone() else {
+        let PushQueuePayload::ShardJob(shard) = message.payload.clone() else {
             self.queue
                 .dead_letter(
                     message.ack,
@@ -300,6 +319,7 @@ impl PushShardWorker {
                 .await?;
             return Ok(());
         };
+        let mut shard = *shard;
 
         shard.status = ShardJobStatus::Running;
         self.store.put_fanout_shard(shard.clone()).await?;
@@ -332,7 +352,7 @@ impl PushShardWorker {
                 .produce(
                     PushQueueStage::ShardJobs,
                     next.queue_key(),
-                    PushQueuePayload::ShardJob(next),
+                    PushQueuePayload::ShardJob(Box::new(next)),
                 )
                 .await?;
         }
@@ -348,6 +368,7 @@ impl PushShardWorker {
     ) -> PushPipelineResult<Option<crate::domain::PushCursor>> {
         let mut cursor = shard.cursor.clone();
         let mut emitted = 0_u64;
+        let payload = Arc::new(shard.payload.clone());
         match &shard.target {
             PublishTarget::Channel { channel } => loop {
                 let remaining = shard.shard_size.saturating_sub(emitted).max(1);
@@ -364,7 +385,7 @@ impl PushShardWorker {
                         .await?
                     {
                         batcher
-                            .push_device(device, &shard.payload, &self.queue)
+                            .push_device(device, Arc::clone(&payload), &self.queue)
                             .await?;
                         emitted += 1;
                         if emitted >= shard.shard_size {
@@ -391,7 +412,7 @@ impl PushShardWorker {
                     .filter(|device| device.client_id.as_deref() == Some(client_id))
                 {
                     batcher
-                        .push_device(device, &shard.payload, &self.queue)
+                        .push_device(device, Arc::clone(&payload), &self.queue)
                         .await?;
                     emitted += 1;
                     if emitted >= shard.shard_size {
@@ -444,7 +465,7 @@ impl ProviderBatcher {
     async fn push_device(
         &mut self,
         device: DeviceDetails,
-        payload: &crate::domain::PushPayload,
+        payload: Arc<crate::domain::PushPayload>,
         queue: &crate::pipeline::DynPushQueue,
     ) -> PushPipelineResult<()> {
         let provider = device.push.recipient.provider();
@@ -457,7 +478,7 @@ impl ProviderBatcher {
                 batch_id: String::new(),
                 device_id: Some(device.id),
                 recipient: device.push.recipient,
-                payload: payload.clone(),
+                payload,
                 attempt: 1,
                 not_before_ms: None,
                 expires_at_ms: None,
@@ -506,8 +527,12 @@ impl ProviderBatcher {
         }
         let index = self.batch_indexes.entry(provider).or_default();
         *index += 1;
-        let batch_id =
-            format!("{}-batch-{provider:?}-{}", self.batch_prefix, *index).to_ascii_lowercase();
+        let batch_id = format!(
+            "{}-batch-{}-{}",
+            self.batch_prefix,
+            provider_key(provider),
+            *index
+        );
         for job in &mut jobs {
             job.batch_id = batch_id.clone();
         }
@@ -523,7 +548,7 @@ impl ProviderBatcher {
             .produce(
                 PushQueueStage::DeliveryJobs(provider),
                 batch.queue_key(),
-                PushQueuePayload::DeliveryBatch(batch),
+                PushQueuePayload::DeliveryBatch(Box::new(batch)),
             )
             .await?;
         self.metrics

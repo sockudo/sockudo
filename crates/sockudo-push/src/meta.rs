@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -14,11 +16,12 @@ pub struct PushMetaEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publish_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<&'static str>,
+    pub provider: Option<Cow<'static, str>>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub detail: Value,
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PushMetaEventKind {
@@ -83,7 +86,7 @@ impl PushMetaEvent {
             event: PushMetaEventKind::ProviderRejected,
             app_id: app_id.to_owned(),
             publish_id: Some(publish_id.to_owned()),
-            provider: Some(provider_label(provider)),
+            provider: Some(Cow::Borrowed(provider_label(provider))),
             detail: json!({
                 "outcome": delivery_outcome_label(outcome),
                 "class": class
@@ -96,7 +99,7 @@ impl PushMetaEvent {
             event: PushMetaEventKind::TokenInvalidated,
             app_id: app_id.to_owned(),
             publish_id: Some(publish_id.to_owned()),
-            provider: Some(provider_label(provider)),
+            provider: Some(Cow::Borrowed(provider_label(provider))),
             detail: Value::Null,
         }
     }
@@ -131,7 +134,7 @@ impl PushMetaEvent {
             event: PushMetaEventKind::CircuitBreakerEvent,
             app_id: app_id.to_owned(),
             publish_id: None,
-            provider: Some(provider_label(provider)),
+            provider: Some(Cow::Borrowed(provider_label(provider))),
             detail: json!({ "action": action, "retryAtMs": retry_at_ms }),
         }
     }
@@ -152,7 +155,7 @@ pub fn emit_push_meta_event(event: PushMetaEvent) {
         target: PUSH_META_LOG_TARGET,
         app_id = %event.app_id,
         publish_id = event.publish_id.as_deref(),
-        provider = event.provider,
+        provider = event.provider.as_deref(),
         event = ?event.event,
         detail = %event.detail,
         "push meta-channel event"
