@@ -2438,7 +2438,8 @@ mod tests {
 
         assert_eq!(prepared.headers["content-encoding"], "aes128gcm");
         assert_eq!(prepared.headers["content-type"], "application/octet-stream");
-        assert!(prepared.headers["authorization"].starts_with("vapid t="));
+        let authorization = prepared.authorization.as_ref().unwrap();
+        assert!(authorization.expose_secret().starts_with("vapid t="));
         assert!(!String::from_utf8_lossy(&prepared.body).contains("Hello"));
 
         let auth = web_push_native::Auth::clone_from_slice(&auth_bytes);
