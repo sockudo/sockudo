@@ -436,7 +436,7 @@ impl PrometheusMetricsDriver {
                 format!("{prefix}horizontal_delta_compression_enabled_total"),
                 "Total number of horizontal broadcasts with delta compression enabled"
             ),
-            &["app_id", "port", "channel_name"]
+            &["app_id", "port"]
         )
         .unwrap();
 
@@ -445,7 +445,7 @@ impl PrometheusMetricsDriver {
                 format!("{prefix}delta_compression_bandwidth_saved_bytes"),
                 "Total bytes saved by delta compression"
             ),
-            &["app_id", "port", "channel_name"]
+            &["app_id", "port"]
         )
         .unwrap();
 
@@ -454,7 +454,7 @@ impl PrometheusMetricsDriver {
                 format!("{prefix}delta_compression_bandwidth_original_bytes"),
                 "Total original bytes before delta compression"
             ),
-            &["app_id", "port", "channel_name"]
+            &["app_id", "port"]
         )
         .unwrap();
 
@@ -463,7 +463,7 @@ impl PrometheusMetricsDriver {
                 format!("{prefix}delta_compression_full_messages_total"),
                 "Total number of full messages sent (not deltas)"
             ),
-            &["app_id", "port", "channel_name"]
+            &["app_id", "port"]
         )
         .unwrap();
 
@@ -472,7 +472,7 @@ impl PrometheusMetricsDriver {
                 format!("{prefix}delta_compression_delta_messages_total"),
                 "Total number of delta messages sent"
             ),
-            &["app_id", "port", "channel_name"]
+            &["app_id", "port"]
         )
         .unwrap();
 
@@ -1736,14 +1736,24 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.update_process_metrics();
         self.update_tokio_runtime_metrics();
 
-        let encoder = TextEncoder::new();
-        let metric_families = prometheus::gather(); // Gather from the default registry
-        encoder
-            .encode_to_string(&metric_families)
-            .unwrap_or_else(|e| {
-                error!("{}", format!("Failed to encode metrics to string: {}", e));
-                String::from("Error encoding metrics")
-            })
+        // prometheus::gather() + encode_to_string() are synchronous and can block for
+        // hundreds of milliseconds under high cardinality. Run off the tokio thread pool
+        // so we don't stall async tasks or cause readiness probe timeouts.
+        tokio::task::spawn_blocking(|| {
+            let encoder = TextEncoder::new();
+            let metric_families = prometheus::gather();
+            encoder
+                .encode_to_string(&metric_families)
+                .unwrap_or_else(|e| {
+                    error!("{}", format!("Failed to encode metrics to string: {}", e));
+                    String::from("Error encoding metrics")
+                })
+        })
+        .await
+        .unwrap_or_else(|e| {
+            error!("Metrics gather task panicked: {}", e);
+            String::from("Error encoding metrics")
+        })
     }
 
     /// Get metrics data as a JSON object
@@ -1868,7 +1878,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
     fn track_horizontal_delta_compression(&self, app_id: &str, channel_name: &str, enabled: bool) {
         if enabled {
             self.horizontal_delta_compression_enabled
-                .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+                .with_label_values(&[app_id, &self.port.to_string()])
                 .inc();
 
             debug!(
@@ -1888,11 +1898,11 @@ impl MetricsInterface for PrometheusMetricsDriver {
         let saved_bytes = original_bytes.saturating_sub(compressed_bytes);
 
         self.delta_compression_bandwidth_original
-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+            .with_label_values(&[app_id, &self.port.to_string()])
             .inc_by(original_bytes as f64);
 
         self.delta_compression_bandwidth_saved
-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+            .with_label_values(&[app_id, &self.port.to_string()])
             .inc_by(saved_bytes as f64);
 
         debug!(
@@ -1908,7 +1918,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
     fn track_delta_compression_full_message(&self, app_id: &str, channel_name: &str) {
         self.delta_compression_full_messages
-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+            .with_label_values(&[app_id, &self.port.to_string()])
             .inc();
 
         debug!(
@@ -1919,7 +1929,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
     fn track_delta_compression_delta_message(&self, app_id: &str, channel_name: &str) {
         self.delta_compression_delta_messages
-            .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+            .with_label_values(&[app_id, &self.port.to_string()])
             .inc();
 
         debug!(
