@@ -1,0 +1,47 @@
+---
+title: Compatibility
+description: Understand which Sockudo features are Pusher-compatible and which require Protocol V2 or Sockudo-native SDKs.
+icon: BadgeCheck
+---
+
+Sockudo's compatibility rule is simple: Protocol V1 preserves Pusher behavior; Protocol V2 adds Sockudo-native behavior.
+
+## Pusher-compatible
+
+| Feature | Compatibility |
+| --- | --- |
+| Public channels | V1 and V2 |
+| Private channels | V1 and V2 |
+| Presence channels | V1 and V2 |
+| Encrypted channels | V1 and V2 with compatible auth |
+| HTTP publish | Pusher-compatible |
+| Batch publish | Pusher-compatible |
+| Channel state | Pusher-compatible |
+| Webhook validation | Pusher-compatible shape |
+| Laravel Echo | Use Protocol V1 / Pusher-compatible settings |
+| pusher-js | Use Protocol V1 / Pusher-compatible settings |
+
+## Sockudo-native
+
+| Feature | Requirement |
+| --- | --- |
+| `message_id` | Protocol V2 |
+| `serial` and `stream_id` | Protocol V2 |
+| Connection recovery | Protocol V2 |
+| Subscribe-time rewind | Protocol V2 |
+| Delta compression | Protocol V2 and Sockudo client SDK |
+| Tag filtering | Protocol V2 and Sockudo client SDK |
+| Mutable messages | Protocol V2 |
+| Annotations | Protocol V2 APIs and SDK helpers |
+| Push management | Sockudo HTTP API and server SDK push helpers |
+
+## Migration strategy
+
+1. Run Pusher-compatible clients against Sockudo first.
+2. Verify public, private, presence, encrypted, webhook, and backend publish flows.
+3. Adopt Sockudo server SDKs where you need idempotency, history, annotations, or push.
+4. Move selected clients to Sockudo-native SDKs and enable V2.
+
+## Push compatibility
+
+Push notifications are not part of the Pusher WebSocket protocol. They are Sockudo-native HTTP APIs. Existing Pusher-compatible realtime clients can still coexist with Sockudo push because push is managed by backend services and device registration flows.

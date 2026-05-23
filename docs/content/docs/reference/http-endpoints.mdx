@@ -1,0 +1,204 @@
+---
+title: HTTP endpoints
+description: Complete Sockudo endpoint matrix for WebSocket upgrades, HTTP APIs, push notifications, health checks, stats, and metrics.
+icon: ListTree
+---
+
+Sockudo exposes three endpoint groups:
+
+- the main server port, usually `6001`, for WebSocket upgrades and the signed app HTTP API
+- optional operational endpoints on the main server port
+- the metrics server port, usually `9601`, for Prometheus scraping
+
+Every route under `/apps/{appId}` requires Pusher-compatible signed query authentication. Push routes also evaluate the push capability headers described below.
+
+## WebSocket
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/app/{appKey}` | App key and channel-level protocol auth after connect | WebSocket upgrade for Protocol V1 and Protocol V2 clients. |
+
+Supported query parameters:
+
+| Parameter | Scope | Meaning |
+| --- | --- | --- |
+| `protocol` | WebSocket | `1` or omitted uses Pusher-compatible Protocol V1. `2` enables Sockudo Protocol V2. |
+| `client` | WebSocket | Client library identifier. Accepted for compatibility and observability. |
+| `version` | WebSocket | Client library version. Accepted for compatibility and observability. |
+| `format` | Protocol V2 | Wire format selector. Unknown V2 formats are rejected with `400 Bad Request`. |
+| `echo_messages` | Protocol V2 | Overrides per-connection echo behavior when echo control is enabled. |
+
+## Publish
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/apps/{appId}/events` | Signed app API | Publish one event to one or more channels. |
+| `POST` | `/apps/{appId}/batch_events` | Signed app API | Publish multiple events in one request. |
+| `POST` | `/apps/{appId}/users/{userId}/terminate_connections` | Signed app API | Disconnect every active socket for the supplied user ID. |
+
+Useful request controls:
+
+| Field or header | Endpoints | Meaning |
+| --- | --- | --- |
+| `socket_id` | publish endpoints | Suppresses echo to the originating socket. |
+| `info` | publish endpoints | Optional response info such as `subscription_count`. |
+| `x-idempotency-key` | publish endpoints | Deduplicates accepted publishes when idempotency is enabled. |
+| `idempotency_key` | publish bodies | Body-level idempotency key accepted by Sockudo publish paths. |
+
+## Channel state
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/apps/{appId}/channels` | Signed app API | List occupied channels. |
+| `GET` | `/apps/{appId}/channels/{channelName}` | Signed app API | Read state for one channel. |
+| `GET` | `/apps/{appId}/channels/{channelName}/users` | Signed app API | List current members of a presence channel. |
+
+Supported `info` tokens:
+
+| Token | Endpoints | Meaning |
+| --- | --- | --- |
+| `subscription_count` | `/channels`, `/channels/{channelName}`, publish responses | Include active subscription counts. |
+| `user_count` | presence channel state | Include presence user count. |
+| `cache` | cache channel state | Include cache-channel occupancy details. |
+
+## Durable history
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/apps/{appId}/channels/{channelName}/history` | Signed app API | Read durable event history for one channel. |
+| `GET` | `/apps/{appId}/channels/{channelName}/history/state` | Signed app API | Inspect stream continuity and degradation state. |
+| `POST` | `/apps/{appId}/channels/{channelName}/history/reset` | Signed app API | Rotate and reset a damaged or intentionally abandoned stream. |
+| `POST` | `/apps/{appId}/channels/{channelName}/history/purge` | Signed app API | Purge retained history without rotating continuity state. |
+
+History query parameters:
+
+| Parameter | Meaning |
+| --- | --- |
+| `limit` | Page size, bounded by server configuration. |
+| `cursor` | Opaque cursor returned by a previous page. |
+| `direction` | `newest_first` or `oldest_first`. |
+| `start_serial`, `end_serial` | Serial range filter. |
+| `start_time_ms`, `end_time_ms` | Millisecond timestamp range filter. |
+
+## Presence history
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/apps/{appId}/channels/{channelName}/presence/history` | Signed app API | Read retained presence join/leave history. |
+| `GET` | `/apps/{appId}/channels/{channelName}/presence/history/state` | Signed app API | Inspect presence-history continuity and degradation state. |
+| `POST` | `/apps/{appId}/channels/{channelName}/presence/history/reset` | Signed app API | Rotate and reset a presence-history stream. |
+| `GET` | `/apps/{appId}/channels/{channelName}/presence/history/snapshot` | Signed app API | Reconstruct a presence membership snapshot from retained history. |
+
+Presence history uses the same pagination and range controls as durable channel history. The `snapshot` endpoint is for operational reconstruction and should not be confused with `/users`, which returns current live members.
+
+## Versioned messages
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}` | Signed app API | Read the latest visible version of a mutable V2 message. |
+| `GET` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions` | Signed app API | List preserved versions of a mutable V2 message. |
+| `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/update` | Signed app API | Apply a shallow mixin update and store a new version. |
+| `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/delete` | Signed app API | Apply a soft delete version. |
+| `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/append` | Signed app API | Append string content and store the rolled-up result. |
+
+Versioned-message endpoints require `versioned_messages.enabled = true` and a channel policy that permits mutable messages. They are Sockudo Protocol V2 surfaces.
+
+## Annotations
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/annotations` | Signed app API | List annotation create/delete events. |
+| `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/annotations` | Signed app API | Publish an annotation event. |
+| `DELETE` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/annotations/{annotationSerial}` | Signed app API | Publish a delete event for an annotation. |
+
+Annotation request fields:
+
+| Field | Endpoint | Meaning |
+| --- | --- | --- |
+| `type` | create, list filter | Annotation type such as `reactions:distinct.v1`. |
+| `name` | create | Optional logical annotation name. |
+| `clientId` / `client_id` | create | User or client identity associated with the annotation. |
+| `socketId` / `socket_id` | create/delete/list | Optional socket used for capability checks and audit linkage. |
+| `count` | create | Numeric annotation count. |
+| `data` | create | Arbitrary JSON payload. |
+| `encoding` | create | Payload encoding marker. |
+| `from_serial` | list | Return annotations after a known annotation serial. |
+| `limit` | list | Page size. |
+
+Annotations require versioned messages, global `annotations.enabled`, and channel-level annotation permission.
+
+## Push notifications
+
+Push notifications are a core Sockudo API surface. Push endpoints are available when the binary is built with the `push` feature. They use signed app authentication plus capability headers.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/apps/{appId}/push/credentials/fcm` | Signed app API, push admin | Create or replace Firebase Cloud Messaging credential material. |
+| `POST` | `/apps/{appId}/push/credentials/apns` | Signed app API, push admin | Create or replace APNs credential material. |
+| `POST` | `/apps/{appId}/push/credentials/webpush` | Signed app API, push admin | Create or replace Web Push VAPID credential material. |
+| `POST` | `/apps/{appId}/push/credentials/hms` | Signed app API, push admin | Create or replace Huawei Mobile Services credential material. |
+| `POST` | `/apps/{appId}/push/credentials/wns` | Signed app API, push admin | Create or replace Windows Notification Service credential material. |
+| `GET` | `/apps/{appId}/push/credentials` | Signed app API, push admin | List provider credentials with secrets redacted. |
+| `POST` | `/apps/{appId}/push/templates` | Signed app API, push admin | Create or update a push payload template. |
+| `GET` | `/apps/{appId}/push/templates` | Signed app API, push admin | List push templates. |
+| `GET` | `/apps/{appId}/push/templates/{id}` | Signed app API, push admin | Read one push template. |
+| `DELETE` | `/apps/{appId}/push/templates/{id}` | Signed app API, push admin | Delete one push template. |
+| `POST` | `/apps/{appId}/push/deviceRegistrations` | Signed app API, push admin or subscribe | Register or update a device. |
+| `GET` | `/apps/{appId}/push/deviceRegistrations` | Signed app API, push admin | List device registrations. |
+| `DELETE` | `/apps/{appId}/push/deviceRegistrations` | Signed app API, push admin | Delete devices by filter. Empty filters are rejected. |
+| `GET` | `/apps/{appId}/push/deviceRegistrations/{id}` | Signed app API, push admin or device token | Read one device registration. |
+| `DELETE` | `/apps/{appId}/push/deviceRegistrations/{id}` | Signed app API, push admin or device token | Delete one device registration. |
+| `POST` | `/apps/{appId}/push/channelSubscriptions` | Signed app API, push admin or subscribe | Upsert a channel push subscription. |
+| `GET` | `/apps/{appId}/push/channelSubscriptions` | Signed app API, push admin | List channel push subscriptions. |
+| `DELETE` | `/apps/{appId}/push/channelSubscriptions` | Signed app API, push admin or subscribe | Delete subscriptions by channel or device. |
+| `GET` | `/apps/{appId}/push/channelSubscriptions/channels` | Signed app API, push admin | List channels with push subscriptions. |
+| `POST` | `/apps/{appId}/push/publish` | Signed app API, push admin | Admit one push publish request. |
+| `POST` | `/apps/{appId}/push/batch/publish` | Signed app API, push admin | Admit multiple push publish requests. |
+| `GET` | `/apps/{appId}/push/publish/{publishId}/status` | Signed app API, push admin | Read aggregate push publish status. |
+| `DELETE` | `/apps/{appId}/push/scheduled/{jobId}` | Signed app API, push admin | Cancel a scheduled publish before dispatch when possible. |
+| `POST` | `/apps/{appId}/push/deliveryStatus` | Signed app API, push admin | Ingest worker or provider delivery feedback. |
+
+Push headers:
+
+| Header | Values | Meaning |
+| --- | --- | --- |
+| `x-sockudo-push-capability` | `push-admin`, `push-subscribe` | Omitted defaults to admin capability for trusted server calls. Client-assisted subscription flows use `push-subscribe`. |
+| `x-sockudo-device-identity-token` | Bearer-style device token | Required when a non-admin request reads, updates, or deletes an existing device. |
+| `x-sockudo-rotate-device-identity-token` | boolean | Admin-only device registration control that rotates the device identity token. |
+| `x-sockudo-push-quota-override` | implementation-defined | Admin-only quota override hook for controlled operations. |
+
+Push list endpoints use cursor pagination with `limit` and opaque `cursor`.
+
+## Operational endpoints
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/live` | None | Liveness probe. Does not perform dependency checks. |
+| `GET` | `/up` | None | Global health probe. |
+| `GET` | `/up/{appId}` | None | App-specific health probe. |
+| `GET` | `/usage` | None, when enabled | Memory usage snapshot. Enabled by `HTTP_API_USAGE_ENABLED`. |
+| `GET` | `/stats` | None, when enabled | Server occupancy, memory, and history-health summary. Enabled by `HTTP_API_USAGE_ENABLED`. |
+
+Disable `/usage` and `/stats` in exposed production environments unless they are behind trusted ingress controls.
+
+## Metrics endpoint
+
+| Method | Path | Port | Auth | Purpose |
+| --- | --- | --- | --- | --- |
+| `GET` | `/metrics` | Metrics port, default `9601` | None by default | Prometheus plaintext scrape endpoint. |
+
+The metrics server is independent from the main WebSocket/API listener and is enabled by `METRICS_ENABLED`.
+
+## Signed app API parameters
+
+All `/apps/*` requests use Pusher-style query signing:
+
+| Parameter | Meaning |
+| --- | --- |
+| `auth_key` | App key. |
+| `auth_timestamp` | Unix timestamp used to reject stale requests. |
+| `auth_version` | Signing protocol version, usually `1.0`. |
+| `body_md5` | MD5 of the raw JSON body for body-bearing requests. |
+| `auth_signature` | HMAC-SHA256 over method, path, and sorted query string. |
+
+Use server SDKs for signing when possible. Custom signers must sign the canonical path exactly as routed, including `/apps/{appId}`.

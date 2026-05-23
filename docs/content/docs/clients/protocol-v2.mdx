@@ -1,0 +1,63 @@
+---
+title: Protocol V2
+description: Use Sockudo-native realtime semantics for recovery, rewind, deltas, filters, history, annotations, and mutable messages.
+icon: GitBranch
+---
+
+Protocol V2 is Sockudo's native protocol. It keeps the channel model familiar while adding metadata and events that are intentionally not part of Pusher compatibility mode.
+
+## Enable V2
+
+```ts
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  protocolVersion: 2,
+  connectionRecovery: true,
+});
+```
+
+## V2 metadata
+
+V2 broadcasts can include:
+
+| Field | Purpose |
+| --- | --- |
+| `message_id` | Stable broadcast identity for deduplication. |
+| `serial` | Stream position used for continuity. |
+| `stream_id` | Opaque stream identity. |
+| `extras` | Headers, tags, echo controls, idempotency metadata, and feature-specific data. |
+
+## Native events
+
+Protocol V2 uses `sockudo:` and `sockudo_internal:` prefixes for system events. Protocol V1 keeps `pusher:` and `pusher_internal:` prefixes.
+
+## Recovery contract
+
+Recovery is authoritative only when Sockudo returns a successful resume. If the stream reset, buffer expired, or continuity cannot be proven, the client must resubscribe and rebuild state.
+
+```ts
+client.bind("sockudo:resume_success", (payload) => {
+  console.log("recovered", payload.recovered);
+});
+
+client.bind("sockudo:resume_failed", (payload) => {
+  console.warn("rebuild state", payload);
+});
+```
+
+## Heartbeats
+
+Protocol V2 prefers native WebSocket ping/pong frames. Browser-like runtimes may still use lightweight `sockudo:ping` and `sockudo:pong` fallback messages for liveness checks. Fallback heartbeat messages are not broadcast continuity events and do not carry `message_id`, `serial`, or `stream_id`.
+
+## Use cases
+
+Use V2 for:
+
+- collaboration documents that need reconnect continuity
+- dashboards that benefit from deltas
+- market data streams with tag filters
+- chat systems with mutable messages and annotations
+- mobile apps combining realtime channels and push notifications
+- operators who need history and recovery visibility

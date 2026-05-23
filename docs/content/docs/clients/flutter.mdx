@@ -1,0 +1,148 @@
+---
+title: Flutter and Dart
+description: Use sockudo_flutter in Flutter apps and pure Dart runtimes.
+icon: Smartphone
+---
+
+`sockudo_flutter` is the official Flutter and Dart realtime SDK. It supports public, private, presence, encrypted channels, auth, V2 recovery, rewind, filters, deltas, mutable messages, presence history proxies, and push registration workflows.
+
+## Install
+
+```yaml
+dependencies:
+  sockudo_flutter: ^0.1.0
+```
+
+```dart
+import 'package:sockudo_flutter/sockudo_flutter.dart';
+```
+
+## Connect
+
+```dart
+final client = SockudoClient(
+  'app-key',
+  const SockudoOptions(
+    cluster: 'local',
+    forceTls: false,
+    enabledTransports: <SockudoTransport>[SockudoTransport.ws],
+    wsHost: '127.0.0.1',
+    wsPort: 6001,
+    wssPort: 6001,
+    protocolVersion: 2,
+    connectionRecovery: true,
+  ),
+);
+
+final channel = client.subscribe('public-updates');
+channel.bind('price-updated', (data, _) {
+  print(data);
+});
+
+client.connect();
+```
+
+## Auth
+
+```dart
+final client = SockudoClient(
+  'app-key',
+  SockudoOptions(
+    cluster: 'local',
+    forceTls: false,
+    wsHost: '127.0.0.1',
+    wsPort: 6001,
+    channelAuthorization: ChannelAuthorizationOptions(
+      endpoint: 'https://api.example.com/sockudo/auth',
+    ),
+  ),
+);
+```
+
+## Filters and deltas
+
+```dart
+final channel = client.subscribe(
+  'price:btc',
+  options: const SubscriptionOptions(
+    filter: FilterNode(key: 'market', cmp: 'eq', val: 'spot'),
+    delta: ChannelDeltaSettings(
+      enabled: true,
+      algorithm: DeltaAlgorithm.xdelta3,
+    ),
+  ),
+);
+```
+
+## Recovery and rewind
+
+```dart
+final channel = client.subscribe(
+  'market:BTC',
+  options: const SubscriptionOptions(
+    rewind: SubscriptionRewind.seconds(30),
+  ),
+);
+
+channel.bind('message', (_, __) {
+  print(client.getRecoveryPosition('market:BTC'));
+});
+
+client.bind('sockudo:resume_success', (data, _) {
+  print(data);
+});
+```
+
+## Mutable messages
+
+```dart
+MutableMessageState? state;
+
+final channel = client.subscribe('chat:room-1');
+channel.bindGlobal((eventName, data) {
+  if (data is! SockudoEvent || !isMutableMessageEvent(data)) return;
+  state = reduceMutableMessageEvent(state, data);
+});
+```
+
+## Presence history proxy
+
+```dart
+final client = SockudoClient(
+  'app-key',
+  SockudoOptions(
+    cluster: 'local',
+    forceTls: false,
+    wsHost: '127.0.0.1',
+    wsPort: 6001,
+    presenceHistory: const PresenceHistoryOptions(
+      endpoint: 'https://api.example.com/sockudo/presence-history',
+    ),
+  ),
+);
+
+final channel = client.subscribe('presence-lobby') as PresenceChannel;
+final page = await channel.history(
+  const PresenceHistoryParams(limit: 50, direction: 'newest_first'),
+);
+```
+
+## Push registration
+
+Use a platform push plugin to get the provider token, then send the token to your backend.
+
+```dart
+final token = await FirebaseMessaging.instance.getToken();
+
+await http.post(
+  Uri.parse('https://api.example.com/sockudo/push/devices'),
+  headers: {'Content-Type': 'application/json'},
+  body: jsonEncode({
+    'device_id': deviceId,
+    'platform': 'fcm',
+    'provider_token': token,
+  }),
+);
+```
+
+The backend registers the device with Sockudo and enforces user ownership.

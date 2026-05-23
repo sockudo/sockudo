@@ -1,0 +1,12 @@
+{
+  "title": "Getting Started",
+  "icon": "Rocket",
+  "pages": [
+    "overview",
+    "installation",
+    "first-connection",
+    "authentication",
+    "migration",
+    "troubleshooting"
+  ]
+}

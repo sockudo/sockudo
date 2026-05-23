@@ -1,0 +1,78 @@
+---
+title: Protocol reference
+description: Compare Pusher-compatible Protocol V1 with Sockudo-native Protocol V2.
+icon: GitCompare
+---
+
+Sockudo exposes two protocol layers on the same server.
+
+## Protocol V1
+
+Protocol V1 is Pusher-compatible. It preserves familiar event prefixes, channel names, subscription flows, auth response shapes, and HTTP API semantics.
+
+Use V1 for:
+
+- existing `pusher-js` clients
+- Laravel Echo migrations
+- backend SDK compatibility
+- minimal drop-in deployments
+
+## Protocol V2
+
+Protocol V2 is Sockudo-native and uses `sockudo:` system event prefixes.
+
+Use V2 for:
+
+- `message_id`
+- `serial`
+- `stream_id`
+- connection recovery
+- subscribe-time rewind
+- delta compression
+- tag filtering
+- durable history
+- mutable messages
+- annotations
+- push-helper client workflows through backend proxies
+
+## Prefixes
+
+| Event family | V1 | V2 |
+| --- | --- | --- |
+| Public system events | `pusher:` | `sockudo:` |
+| Internal events | `pusher_internal:` | `sockudo_internal:` |
+| Mutable messages | not available | `sockudo:message.*` |
+| Recovery | not available | `sockudo:resume_*` |
+| Rewind | not available | `sockudo:rewind_complete` |
+
+## Channel names
+
+| Channel | Prefix |
+| --- | --- |
+| Public | none |
+| Private | `private-` |
+| Presence | `presence-` |
+| Encrypted | `private-encrypted-` |
+
+## Broadcast metadata
+
+```json
+{
+  "event": "order.updated",
+  "channel": "orders",
+  "data": { "id": "ord_123" },
+  "message_id": "msg_01HX",
+  "stream_id": "orders",
+  "serial": 42,
+  "extras": {
+    "headers": { "tenant": "acme" },
+    "tags": { "status": "packed" }
+  }
+}
+```
+
+V1 clients should not depend on V2-only fields.
+
+## Push is outside the WebSocket protocol
+
+Push notifications are HTTP-driven. They target device registrations, channel push subscriptions, clients, or explicit recipients. A push payload may reference a realtime channel or message serial, but provider delivery is not part of WebSocket ordering.

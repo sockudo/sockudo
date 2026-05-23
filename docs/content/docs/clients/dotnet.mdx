@@ -1,0 +1,137 @@
+---
+title: .NET realtime
+description: Use Sockudo.Client for .NET realtime applications with Protocol V2, recovery, filters, deltas, and push proxy helpers.
+icon: MonitorSmartphone
+---
+
+`Sockudo.Client` is the official .NET realtime SDK. It defaults to Protocol V2 and supports V1 compatibility, public, private, presence, encrypted channels, recovery, filters, MessagePack, Protobuf, and delta reconstruction.
+
+## Install
+
+```bash
+dotnet add package Sockudo.Client
+```
+
+```powershell
+Install-Package Sockudo.Client
+```
+
+## Connect
+
+```csharp
+using Sockudo.Client;
+
+var client = new SockudoClient(
+    "app-key",
+    new SockudoOptions
+    {
+        Cluster = "local",
+        ForceTls = false,
+        WsHost = "127.0.0.1",
+        WsPort = 6001,
+        ProtocolVersion = 2,
+        ConnectionRecovery = true,
+    }
+);
+
+var channel = client.Subscribe("public-updates");
+channel.Bind("price-updated", (data, meta) => Console.WriteLine(data));
+
+await client.ConnectAsync();
+```
+
+## Auth
+
+```csharp
+var client = new SockudoClient(
+    "app-key",
+    new SockudoOptions
+    {
+        Cluster = "local",
+        WsHost = "127.0.0.1",
+        WsPort = 6001,
+        ChannelAuthorization = new ChannelAuthorizationOptions(
+            Endpoint: "https://api.example.com/sockudo/auth"
+        ),
+    }
+);
+```
+
+## Presence
+
+```csharp
+var channel = client.Subscribe("presence-lobby");
+
+channel.Bind("pusher:subscription_succeeded", (data, meta) =>
+    Console.WriteLine($"members: {data}"));
+channel.Bind("pusher:member_added", (data, meta) =>
+    Console.WriteLine($"joined: {data}"));
+channel.Bind("pusher:member_removed", (data, meta) =>
+    Console.WriteLine($"left: {data}"));
+```
+
+## Filters
+
+```csharp
+var channel = client.Subscribe(
+    "price:btc",
+    new SubscriptionOptions(
+        Filter: Filter.And(
+            Filter.Eq("market", "spot"),
+            Filter.Gt("spread", "0")
+        )
+    )
+);
+```
+
+## Presence history proxy
+
+```csharp
+var client = new SockudoClient(
+    "app-key",
+    new SockudoOptions(
+        Cluster: "local",
+        WsHost: "127.0.0.1",
+        WsPort: 6001,
+        PresenceHistory: new PresenceHistoryOptions(
+            Endpoint: "https://api.example.com/sockudo/presence-history"
+        )
+    )
+);
+
+var channel = (PresenceChannel)client.Subscribe("presence-lobby");
+var page = await channel.HistoryAsync(
+    new PresenceHistoryParams(Limit: 50, Direction: "newest_first")
+);
+```
+
+## Push proxy helper
+
+```csharp
+var push = new SockudoPushRegistration(
+    new PushRegistrationOptions(
+        Endpoint: "https://api.example.com/sockudo/push",
+        Headers: new Dictionary<string, string>
+        {
+            ["Authorization"] = "Bearer session-token",
+        }
+    )
+);
+
+var publish = await push.PublishAsync(
+    new Dictionary<string, object?>
+    {
+        ["recipients"] = new[]
+        {
+            new Dictionary<string, object?> { ["type"] = "channel", ["channel"] = "orders" },
+        },
+        ["payload"] = new Dictionary<string, object?>
+        {
+            ["title"] = "Order updated",
+            ["body"] = "Ready for pickup",
+        },
+    }
+);
+```
+
+The helper points at your backend proxy. Keep Sockudo app secrets on the backend.

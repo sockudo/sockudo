@@ -1,0 +1,45 @@
+---
+title: Sockudo Documentation
+description: "Build, operate, and extend Sockudo: the Rust realtime server with Pusher compatibility, Protocol V2, clustered fanout, recovery, history, push, and official SDKs."
+icon: House
+---
+
+Sockudo is a self-hosted realtime platform for teams that want Pusher-compatible APIs with deeper control over protocol evolution, horizontal scaling, history, recovery, observability, and SDK behavior.
+
+The server has two protocol surfaces:
+
+<Cards>
+  <Card title="Protocol V1" href="/docs/reference/protocol" description="Pusher-compatible wire behavior for existing pusher-js, Laravel Echo, and Channels-compatible backend integrations." />
+  <Card title="Protocol V2" href="/docs/clients/protocol-v2" description="Sockudo-native event prefixes, serial continuity, message IDs, recovery, rewind, tag filters, deltas, annotations, and mutable messages." />
+  <Card title="Server operations" href="/docs/server/scaling" description="Configuration, app managers, adapters, queues, cache backends, metrics, webhooks, rate limits, TLS, and cluster behavior." />
+  <Card title="SDKs" href="/docs/server-sdks" description="Realtime client SDKs and server HTTP SDKs with language-specific examples and production notes." />
+</Cards>
+
+## Recommended path
+
+1. Run a local Sockudo server from [Installation](/docs/getting-started/installation).
+2. Publish and receive your first event from [First connection](/docs/getting-started/first-connection).
+3. Add private and presence channel auth from [Authentication](/docs/getting-started/authentication).
+4. Choose Protocol V1 or V2 from [Compatibility](/docs/reference/compatibility).
+5. Wire your client from [Realtime Clients](/docs/clients) and your backend from [Server SDKs](/docs/server-sdks).
+6. Harden the deployment with [Scaling](/docs/server/scaling), [Security](/docs/server/security), and [Observability](/docs/server/observability).
+
+## Local baseline
+
+The examples use the default development app:
+
+```toml
+port = 6001
+host = "0.0.0.0"
+
+[app_manager]
+driver = "memory"
+
+[[app_manager.array.apps]]
+id = "app-id"
+key = "app-key"
+secret = "app-secret"
+enabled = true
+```
+
+For production, replace every example credential, enable TLS at the edge, use managed app storage, and keep app secrets only on trusted servers.

@@ -1,0 +1,77 @@
+---
+title: Realtime clients
+description: Choose the official Sockudo realtime client SDK for web, mobile, desktop, Flutter, Kotlin, Swift, JavaScript, or .NET.
+icon: Smartphone
+---
+
+Realtime client SDKs connect to Sockudo over WebSocket, subscribe to channels, receive events, authorize protected channels through your backend, and expose Protocol V2 features.
+
+## Official clients
+
+| SDK | Package | Runtime | Default |
+| --- | --- | --- | --- |
+| JavaScript / TypeScript | `@sockudo/client` | Web, Node, worker, React, Vue, React Native, NativeScript | Protocol V1 compatibility |
+| Swift | `SockudoSwift` | iOS, macOS, tvOS, watchOS, visionOS | Protocol V1 compatibility |
+| Kotlin | `io.sockudo:sockudo-kotlin` | Android and JVM | Protocol V1 compatibility |
+| Flutter / Dart | `sockudo_flutter` | Flutter and Dart | Protocol V1 compatibility |
+| .NET realtime | `Sockudo.Client` | .NET apps | Protocol V2 by default |
+
+Use Protocol V1 when migrating existing Pusher clients. Use Protocol V2 for recovery, rewind, delta compression, tag filters, mutable messages, annotations, and native Sockudo metadata.
+
+## Client responsibilities
+
+Client SDKs should:
+
+- connect with public app key only
+- call your backend for private, presence, encrypted, push, and history proxy operations
+- keep app secrets out of the client bundle
+- bind events and update UI state
+- store recovery positions when V2 recovery is enabled
+- register devices for push through trusted backend endpoints
+
+## Server responsibilities
+
+Server SDKs should:
+
+- publish events over the HTTP API
+- sign channel and user authentication responses
+- proxy presence history and versioned message reads for clients
+- validate webhooks
+- manage push registration, credentials, channel push subscriptions, and publish workflows
+
+## Common V2 setup
+
+```ts
+const client = new Sockudo("app-key", {
+  wsHost: "realtime.example.com",
+  forceTLS: true,
+  protocolVersion: 2,
+  connectionRecovery: true,
+});
+```
+
+## Push from clients
+
+Mobile and browser clients can collect provider tokens, but they should not call Sockudo push admin APIs directly. Send provider tokens to your backend, bind them to the authenticated user, and let the backend call Sockudo.
+
+```ts
+await fetch("/api/push/devices", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    device_id: "browser-device-1",
+    platform: "webpush",
+    provider_token: subscription,
+  }),
+});
+```
+
+## Next steps
+
+<Cards>
+  <Card title="JavaScript" href="/docs/clients/javascript" description="Browser, Node, React, Vue, worker, React Native, and NativeScript examples." />
+  <Card title="Swift" href="/docs/clients/swift" description="Apple platforms with auth, recovery, filters, deltas, and push proxy notes." />
+  <Card title="Kotlin" href="/docs/clients/kotlin" description="Android and JVM WebSocket client examples." />
+  <Card title="Flutter" href="/docs/clients/flutter" description="Flutter and pure Dart client examples." />
+  <Card title=".NET realtime" href="/docs/clients/dotnet" description="Protocol V2 by default for .NET applications." />
+</Cards>

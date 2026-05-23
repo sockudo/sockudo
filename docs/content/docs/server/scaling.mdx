@@ -1,0 +1,112 @@
+---
+title: Scaling
+description: Design multi-node Sockudo deployments with shared adapters, cache, queues, recovery, and push fanout.
+icon: Network
+---
+
+Sockudo scales horizontally when every node shares the dependencies that carry cross-node state: adapter, cache, queue, app manager, and optional history store.
+
+## Architecture
+
+![Horizontal scaling diagram](/diagrams/horizontal-scaling.svg)
+
+At minimum, a production cluster has:
+
+- a load balancer with WebSocket upgrade support
+- multiple Sockudo nodes
+- a shared adapter for cross-node fanout
+- shared cache for rate limits, idempotency, and coordination
+- shared queue for webhooks and push delivery
+- shared app manager for dynamic app credentials
+- metrics and logs from every node
+
+## Adapter choices
+
+| Adapter | Strength |
+| --- | --- |
+| Redis | Simple, common, low-latency local and regional deployments. |
+| Redis Cluster | Higher Redis scale and shard-aware deployments. |
+| NATS | Lightweight pub/sub with strong operational ergonomics. |
+| Kafka | Durable stream backbone and high-volume integration pipelines. |
+| RabbitMQ | Enterprise messaging and routing patterns. |
+| Pulsar | Multi-tenant stream workloads. |
+| Google Pub/Sub | Managed GCP fanout. |
+| Apache Iggy | High-throughput persistent log workloads. |
+
+## Load balancing
+
+Sockudo does not require sticky sessions for basic pub/sub when the adapter is shared. Sticky sessions can still reduce reconnect churn and preserve local buffers during rolling updates.
+
+Use:
+
+- WebSocket upgrade headers
+- idle timeouts longer than heartbeat intervals
+- health and readiness checks
+- draining before pod termination
+- disruption budgets for production clusters
+
+## Duplicate delivery
+
+Distributed realtime systems must tolerate retries and duplicate delivery. Sockudo features that help:
+
+- HTTP `idempotency_key`
+- V2 `message_id`
+- client-side message deduplication in native SDKs
+- adapter-level duplicate suppression visibility
+- recovery continuity checks
+
+Consumers should treat application event IDs as stable and idempotent.
+
+## Recovery across nodes
+
+V2 recovery uses stream continuity. A reconnect to a different node can recover only if the required replay state is available through the configured shared backend or still present in a valid buffer.
+
+Fail closed if continuity cannot be proven. Do not display a recovered state unless the server returns a successful resume.
+
+## Push fanout at scale
+
+Push notification fanout is queue-oriented. A realtime publish and a push publish may target the same logical event, but they have different latency, retry, and delivery semantics.
+
+Operational recommendations:
+
+- keep push `sync` false in production
+- use idempotency keys for publish retries
+- partition high-volume channel pushes by tenant or campaign
+- set publish status retention high enough for support workflows
+- alert on provider error rates and queue backlog
+- store provider credentials in secrets, not config maps
+- use capacity planning before large campaigns
+
+## Rolling deploys
+
+1. Mark the node unready.
+2. Stop accepting new connections.
+3. Let existing connections drain or close with a reconnect-friendly code.
+4. Keep adapter and cache dependencies available.
+5. Watch reconnect, resume, and missed-message metrics.
+6. Roll nodes in small batches.
+
+## Metrics to watch
+
+- active connections by node
+- subscription count by channel class
+- publish accepted and failed counters
+- fanout latency and adapter errors
+- recovery success and failure counters
+- replay buffer pressure
+- webhook queue depth and failure count
+- push publish accepted, dispatched, failed, and scheduled counters
+- push provider latency and error labels
+
+## Capacity checklist
+
+Before increasing traffic, run a scenario that covers:
+
+- peak connected clients
+- high-frequency channel fanout
+- private and presence auth throughput
+- durable history writes
+- recovery after node restart
+- push burst admission
+- push provider throttling
+- webhook retry behavior

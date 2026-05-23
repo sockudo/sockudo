@@ -1,0 +1,130 @@
+---
+title: Troubleshooting
+description: Diagnose connection, authentication, publish, cluster, history, recovery, and push notification issues.
+icon: Wrench
+---
+
+Start with the path that failed: connection, subscription, publish, fanout, history, or push. Sockudo is easier to debug when each boundary is checked separately.
+
+## Connection fails
+
+Verify the server is reachable:
+
+```bash
+curl -f http://127.0.0.1:6001/up
+```
+
+Check the client host options:
+
+```ts
+new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  enabledTransports: ["ws"],
+});
+```
+
+Common causes:
+
+- using `forceTLS: true` against an HTTP-only local server
+- forgetting `enabledTransports: ["ws"]` in local browser tests
+- proxying WebSockets without `Upgrade` and `Connection` headers
+- sending clients to one host while HTTP publish uses another app environment
+
+## Private or presence subscription fails
+
+Inspect the auth endpoint response. Private auth must return an `auth` value. Presence auth must return both `auth` and `channel_data`.
+
+```json
+{
+  "auth": "app-key:signature",
+  "channel_data": "{\"user_id\":\"42\",\"user_info\":{\"name\":\"Ada\"}}"
+}
+```
+
+If signatures fail, verify:
+
+- `socket_id` is exact
+- `channel_name` is exact
+- app key and secret match the Sockudo app
+- presence `channel_data` is serialized before signing
+- framework body parsers are not dropping form fields
+
+## Events publish but clients do not receive them
+
+Check the channel name and protocol mode first. Protocol V1 clients receive Pusher-shaped event prefixes. Protocol V2 clients receive Sockudo-native prefixes and V2 metadata.
+
+```bash
+curl -s http://127.0.0.1:9601/metrics | rg "publish|connection|subscription"
+```
+
+In a cluster, verify all nodes share the same adapter and cache configuration. Local memory adapters do not fan out between nodes.
+
+## Recovery or rewind is incomplete
+
+Recovery depends on continuity. Sockudo should fail closed when the stream cannot be proven.
+
+Check:
+
+- `protocolVersion: 2`
+- `connectionRecovery: true`
+- replay buffer TTL and size
+- channel-specific rewind limits
+- adapter delivery latency and duplicate suppression metrics
+
+## Push notification publish is accepted but nothing arrives
+
+Push is asynchronous by design. A successful admission response means Sockudo accepted the publish, not that every provider delivered it.
+
+Check in order:
+
+1. The device registration exists and is active.
+2. The device has a provider token for the target platform.
+3. The channel push subscription exists when targeting a channel.
+4. Provider credentials are configured for the platform.
+5. The publish returned a `publish_id`.
+6. The publish status endpoint shows accepted, dispatched, failed, or scheduled.
+7. Provider delivery callbacks are reaching Sockudo when configured.
+
+```bash
+curl -s "http://127.0.0.1:6001/apps/app-id/push/publish/pub_123/status"
+```
+
+Common push causes:
+
+- APNs topic or environment mismatch
+- Web Push VAPID key mismatch
+- FCM project credentials for the wrong app
+- expired device provider token
+- client registration stored under a different `client_id`
+- publish targeting `sync: true` under production fanout pressure
+
+## Webhooks are rejected
+
+Webhook validation uses the raw body, not a parsed JSON object.
+
+```ts
+const webhook = sockudo.webhook({
+  rawBody,
+  headers: req.headers,
+});
+
+if (!webhook.isValid()) {
+  return res.status(401).send("invalid signature");
+}
+```
+
+Keep the raw request bytes from your framework before JSON parsing mutates whitespace or key order.
+
+## Escalation bundle
+
+When reporting an issue, include:
+
+- Sockudo version and feature flags
+- protocol version used by affected clients
+- app manager, adapter, cache, and queue drivers
+- relevant configuration with secrets redacted
+- server logs around the failure
+- metrics for connection, publish, fanout, history, and push
+- a minimal client and server SDK reproduction

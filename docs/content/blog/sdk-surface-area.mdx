@@ -1,0 +1,29 @@
+---
+title: Choosing SDK Surfaces for Product Teams
+description: How Sockudo divides responsibilities between realtime client SDKs, server HTTP SDKs, backend proxies, and push provider flows.
+date: "2026-05-19"
+author: "Sockudo Team"
+category: "SDKs"
+tags:
+  - sdk
+  - auth
+  - push
+---
+
+Realtime applications often blur client and server responsibilities. Sockudo's SDK split is designed to keep secrets and authority on the server while giving clients ergonomic realtime APIs.
+
+## Clients subscribe
+
+Client SDKs connect with public app keys, subscribe to channels, bind events, and call backend auth endpoints. Native clients can also use Protocol V2 recovery, rewind, deltas, filters, and history proxy helpers.
+
+## Servers decide
+
+Server SDKs hold app secrets. They decide whether a user can subscribe, publish events, validate webhooks, read durable state, and manage push notification resources.
+
+## Push requires both sides
+
+Mobile and browser clients collect provider tokens. Backends register those tokens with Sockudo, bind them to users or channels, and publish notifications. This split keeps APNs keys, FCM credentials, Web Push private keys, and Sockudo app secrets out of untrusted runtimes.
+
+## A clean production boundary
+
+Use the client SDK for live UI state. Use the server SDK for authority. Use backend proxy endpoints when the client needs to request history, presence snapshots, versioned messages, or push registration. That boundary is easier to audit and safer to scale.

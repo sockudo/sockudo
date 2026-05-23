@@ -1,0 +1,99 @@
+---
+title: Migration
+description: Move from Pusher Channels or Soketi to Sockudo while preserving compatibility and choosing where to adopt Protocol V2.
+icon: Replace
+---
+
+Sockudo can be adopted in phases. Start with Protocol V1 compatibility, then opt selected clients into Protocol V2 when you want native Sockudo features.
+
+## Compatibility-first migration
+
+For existing Pusher clients, point the host and ports at Sockudo:
+
+```ts
+import Pusher from "pusher-js";
+
+const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
+  wsHost: "realtime.example.com",
+  wsPort: 80,
+  wssPort: 443,
+  forceTLS: true,
+  enabledTransports: ["ws", "wss"],
+  cluster: "local",
+});
+```
+
+Backend SDKs continue to publish through Pusher-compatible REST endpoints. Change host, port, TLS, and credentials, then run your existing private and presence auth tests.
+
+## Native migration
+
+After compatibility is stable, migrate clients to Sockudo SDKs and enable Protocol V2:
+
+```ts
+import Sockudo from "@sockudo/client";
+
+const client = new Sockudo("app-key", {
+  wsHost: "realtime.example.com",
+  forceTLS: true,
+  protocolVersion: 2,
+  connectionRecovery: true,
+});
+```
+
+Protocol V2 is the right choice for recovery, rewind, deltas, filters, versioned messages, annotations, and push helper workflows.
+
+## Server configuration differences
+
+Sockudo prefers TOML:
+
+```toml
+[app_manager]
+driver = "postgres"
+
+[adapter]
+driver = "redis"
+
+[cache]
+driver = "redis"
+
+[queue]
+driver = "redis"
+```
+
+Keep one source of truth for app credentials. If you previously hardcoded credentials in application config, move them into Secret Manager, Kubernetes Secrets, or the persistent app manager.
+
+## Push notification migration
+
+If your old realtime stack only handled WebSockets, plan push as part of the migration instead of after it. Sockudo's push platform covers:
+
+- device registration and activation
+- provider credentials for FCM, APNs, Web Push, HMS, and WNS
+- channel push subscriptions
+- async publish admission
+- scheduled push
+- provider delivery status callbacks
+- push metrics and capacity planning
+
+Keep push provider credentials in Sockudo or your trusted backend. Clients should only receive short-lived activation or identity tokens.
+
+## Cutover checklist
+
+1. Run Sockudo next to the existing realtime provider.
+2. Mirror app credentials into Sockudo.
+3. Point staging clients at Sockudo in Protocol V1 mode.
+4. Verify public, private, presence, encrypted, webhook, and push flows.
+5. Enable metrics and alerting before production traffic.
+6. Move a small tenant, region, or traffic shard first.
+7. Migrate selected applications to Protocol V2 only after V1 parity is verified.
+
+## Rollback
+
+Rollback is simplest when client configuration is environment-driven:
+
+```bash
+REALTIME_HOST=realtime.example.com
+REALTIME_PROTOCOL_VERSION=1
+REALTIME_FORCE_TLS=true
+```
+
+Keep idempotency keys on backend publishes during cutover. If a retry crosses providers, use an application-level operation ID so downstream consumers can suppress duplicates.

@@ -12,7 +12,10 @@ sockudo-core = { workspace = true }
 
 async-trait = { workspace = true }
 chrono = { workspace = true }
-prometheus = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+metrics-exporter-tcp = { workspace = true }
+metrics-util = { workspace = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

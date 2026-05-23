@@ -171,6 +171,12 @@
     "port": 9601,
     "prometheus": {
       "prefix": "sockudo_"
+    },
+    "tcp_exporter": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 5000,
+      "buffer_size": 1024
     }
   },
   "ssl": {
