@@ -19,6 +19,7 @@ sockudo-blog
 .sisyphus/
 .webpush-e2e/
 .tmp
+.macos-push-probe/DerivedData/
 
 # Local push provider secrets and canary inputs
 AuthKey_*.p8

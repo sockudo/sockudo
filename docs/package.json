@@ -1,23 +1,37 @@
 {
-  "name": "sockudo-docs",
+  "name": "docs-fumadocs",
+  "version": "0.0.0",
+  "private": true,
   "scripts": {
-    "dev": "bunx nuxt dev --extends docus",
-    "build": "bunx nuxt build --extends docus"
+    "build": "next build",
+    "dev": "next dev --webpack",
+    "dev:turbo": "next dev --turbo",
+    "start": "next start",
+    "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
+    "postinstall": "fumadocs-mdx",
+    "lint": "eslint"
   },
   "dependencies": {
-    "@nuxt/fonts": "^0.14.0",
-    "@nuxt/hints": "^1.0.3",
-    "@nuxt/icon": "^2.2.1",
-    "@nuxtjs/sitemap": "^8.0.12",
-    "@vueuse/core": "^14.2.1",
-    "@vueuse/nuxt": "^14.2.1",
-    "docus": "latest",
-    "nuxt": "^4.4.2",
-    "nuxt-link-checker": "^5.0.8",
-    "nuxt-schema-org": "^6.0.4",
-    "nuxt-site-config": "^4.0.8"
+    "fumadocs-core": "16.8.12",
+    "fumadocs-mdx": "15.0.7",
+    "fumadocs-ui": "16.8.12",
+    "lucide-react": "^1.16.0",
+    "next": "16.2.6",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "tailwind-merge": "^3.6.0",
+    "zod": "^4.4.3"
   },
-  "overrides": {
-    "@nuxtjs/robots": "latest"
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/mdx": "^2.0.13",
+    "@types/node": "^25.8.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^6.0.3",
+    "eslint-config-next": "16.2.6",
+    "eslint": "^9.39.1"
   }
 }

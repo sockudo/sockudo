@@ -1,0 +1,133 @@
+---
+title: First connection
+description: Connect a realtime client, subscribe to a channel, and publish the first event through a trusted backend.
+icon: Cable
+---
+
+This guide proves the full loop: Sockudo accepts a WebSocket connection, the client subscribes, and a server-side SDK publishes an event over the HTTP API.
+
+## Start Sockudo
+
+```bash
+docker compose up sockudo redis
+```
+
+Use the default development app credentials:
+
+```bash
+export SOCKUDO_APP_ID=app-id
+export SOCKUDO_APP_KEY=app-key
+export SOCKUDO_APP_SECRET=app-secret
+export SOCKUDO_HOST=127.0.0.1
+export SOCKUDO_PORT=6001
+```
+
+## Subscribe from JavaScript
+
+```ts
+import Sockudo from "@sockudo/client";
+
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  enabledTransports: ["ws"],
+  protocolVersion: 2,
+});
+
+const channel = client.subscribe("orders");
+
+channel.bind("order.created", (payload) => {
+  console.log("received", payload);
+});
+```
+
+Protocol V1 clients use the same server with Pusher-compatible options:
+
+```ts
+import Pusher from "pusher-js";
+
+const pusher = new Pusher("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  cluster: "local",
+  enabledTransports: ["ws"],
+});
+
+pusher.subscribe("orders").bind("order.created", console.log);
+```
+
+## Publish from Node.js
+
+```ts
+import { Sockudo } from "sockudo";
+
+const sockudo = new Sockudo({
+  appId: "app-id",
+  key: "app-key",
+  secret: "app-secret",
+  host: "127.0.0.1",
+  port: 6001,
+  useTLS: false,
+});
+
+await sockudo.trigger("orders", "order.created", {
+  id: "ord_123",
+  total: 42_00,
+});
+```
+
+## Publish over raw HTTP
+
+Server SDKs are preferred because they handle signing, but the underlying API is simple:
+
+```bash
+curl -X POST "http://127.0.0.1:6001/apps/app-id/events" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "order.created",
+    "channel": "orders",
+    "data": {"id": "ord_123", "total": 4200}
+  }'
+```
+
+Production requests must include Sockudo/Pusher HMAC authentication query parameters. Use a server SDK unless you are implementing a new SDK.
+
+## Use idempotency for retries
+
+When a backend may retry a publish after a timeout, attach an idempotency key. Sockudo deduplicates matching keys inside the configured window.
+
+```ts
+await sockudo.trigger(
+  "orders",
+  "order.created",
+  { id: "ord_124" },
+  { idempotency_key: "order-created-ord_124" },
+);
+```
+
+## Add push notification fanout
+
+Realtime events and push notifications are complementary. Use WebSockets for connected clients, and push for devices that are offline, backgrounded, or outside the active channel session.
+
+```ts
+await sockudo.publishPush({
+  recipients: [{ type: "channel", channel: "orders" }],
+  payload: {
+    title: "Order created",
+    body: "Order ord_124 is ready for review",
+    data: { order_id: "ord_124" },
+  },
+  sync: false,
+});
+```
+
+Push publishes should be async in production. Expect `202 Accepted` and track the returned `publish_id`.
+
+## Expected result
+
+1. The client receives `order.created` in the console.
+2. The HTTP publish returns success.
+3. If push is configured, the push publish returns a `publish_id`.
+4. Metrics under `/metrics` show connection and publish counters moving.

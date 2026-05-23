@@ -1,0 +1,155 @@
+---
+title: Swift
+description: Use SockudoSwift on iOS, macOS, tvOS, watchOS, and visionOS.
+icon: Smartphone
+---
+
+`SockudoSwift` is the official realtime client for Apple platforms. It supports public, private, presence, encrypted channels, auth endpoints, V2 recovery, rewind, filters, deltas, mutable messages, and proxy-backed history helpers.
+
+## Install
+
+```swift
+.package(url: "https://github.com/sockudo/sockudo-swift.git", from: "0.1.0")
+```
+
+```swift
+.target(
+    name: "YourApp",
+    dependencies: [
+        .product(name: "SockudoSwift", package: "sockudo-swift"),
+    ]
+)
+```
+
+## Connect
+
+```swift
+import SockudoSwift
+
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        forceTLS: false,
+        enabledTransports: [.ws],
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        wssPort: 6001,
+        protocolVersion: 2,
+        connectionRecovery: true
+    )
+)
+
+let channel = client.subscribe("public-updates")
+channel.bind("price-updated") { data, _ in
+    print(data ?? "")
+}
+
+client.connect()
+```
+
+## Auth
+
+```swift
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        forceTLS: false,
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        channelAuthorization: .init(
+            endpoint: "https://api.example.com/sockudo/auth"
+        )
+    )
+)
+```
+
+## Filters and deltas
+
+```swift
+let channel = client.subscribe(
+    "price:btc",
+    options: .init(
+        filter: .eq("market", "spot"),
+        delta: .init(enabled: true, algorithm: .xdelta3)
+    )
+)
+```
+
+## Recovery and rewind
+
+```swift
+let channel = client.subscribe(
+    "market:BTC",
+    options: .init(rewind: .seconds(30))
+)
+
+channel.bind("message") { _, _ in
+    print(client.recoveryPosition(for: "market:BTC") as Any)
+}
+
+client.bind("sockudo:resume_success") { data, _ in
+    print(data as Any)
+}
+```
+
+## Mutable messages
+
+```swift
+var state: MutableMessageState? = nil
+
+let channel = client.subscribe("chat:room-1")
+channel.bindGlobal { _, data in
+    guard
+        let event = data as? SockudoEvent,
+        isMutableMessageEvent(event)
+    else { return }
+
+    state = try? reduceMutableMessageEvent(current: state, event: event)
+}
+```
+
+## Presence history proxy
+
+```swift
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        forceTLS: false,
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        presenceHistory: .init(
+            endpoint: "https://api.example.com/sockudo/presence-history"
+        )
+    )
+)
+
+let channel = client.subscribe("presence-lobby") as! PresenceChannel
+channel.history(.init(limit: 50, direction: "newest_first")) { result in
+    print(result)
+}
+```
+
+## Push notifications on Apple platforms
+
+Use APNs to obtain a device token, then send it to your backend. Your backend registers the device with Sockudo and keeps APNs credentials server-side.
+
+```swift
+func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+) {
+    let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+    Task {
+        await registerDeviceWithBackend(
+            deviceId: UIDevice.current.identifierForVendor?.uuidString ?? token,
+            platform: "apns",
+            providerToken: token
+        )
+    }
+}
+```
+
+Do not embed APNs private keys or Sockudo app secrets in the app.

@@ -1,0 +1,117 @@
+---
+title: History and recovery
+description: Use Protocol V2 stream continuity, replay buffers, channel history, presence history, rewind, and mutable messages.
+icon: History
+---
+
+Sockudo separates connection recovery from durable history. Recovery keeps a connection continuous after a short interruption. History is an application feature for reading and reconstructing past state.
+
+## Recovery
+
+Protocol V2 broadcasts carry stream metadata:
+
+```json
+{
+  "event": "order.updated",
+  "channel": "orders",
+  "data": { "id": "ord_123" },
+  "message_id": "msg_01HX",
+  "stream_id": "orders:main",
+  "serial": 42
+}
+```
+
+Clients store recovery positions and provide them during reconnect. Sockudo replays missed messages if continuity can be proven.
+
+```ts
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  protocolVersion: 2,
+  connectionRecovery: true,
+});
+
+client.bind("sockudo:resume_success", (payload) => {
+  console.log(payload.recovered, payload.failed);
+});
+```
+
+## Rewind
+
+Subscribe-time rewind asks Sockudo to send recent history when a client joins:
+
+```ts
+const channel = client.subscribe("orders", {
+  rewind: { seconds: 30 },
+});
+
+channel.bind("sockudo:rewind_complete", (payload) => {
+  console.log(payload.historical_count, payload.complete);
+});
+```
+
+## Durable channel history
+
+Server SDKs expose channel history helpers. Use history for views that need pagination or late reconstruction.
+
+```python
+page = sockudo.get_channel_history(
+    "orders",
+    HistoryParams(limit=50, direction="newest_first"),
+)
+```
+
+Opaque cursors make storage implementation details private. Store the cursor as a token and pass it back unchanged.
+
+## Presence history
+
+Presence history records joins, leaves, causes, and continuity metadata. It is different from the current presence member list.
+
+```ts
+const channel = client.subscribe("presence-lobby");
+const page = await channel.history({
+  limit: 50,
+  direction: "newest_first",
+});
+
+const snapshot = await channel.snapshot({ atSerial: 4 });
+```
+
+Client helpers call your backend proxy. They do not sign Sockudo REST requests directly.
+
+## Mutable messages
+
+Protocol V2 mutable messages use action events:
+
+- `sockudo:message.update`
+- `sockudo:message.delete`
+- `sockudo:message.append`
+
+Clients reduce those events into local state. Server SDKs can fetch the latest visible state or list preserved versions.
+
+```ts
+const latest = await channel.getMessage("42");
+const versions = await channel.getMessageVersions("42", {
+  limit: 20,
+  direction: "oldest_first",
+});
+```
+
+## Push and history
+
+Push notifications should include stable identifiers that let the app fetch authoritative state after the user opens the notification.
+
+```json
+{
+  "title": "Order updated",
+  "body": "Order ord_123 is now packed",
+  "data": {
+    "channel": "orders",
+    "message_serial": "42",
+    "order_id": "ord_123"
+  }
+}
+```
+
+Do not encode the entire durable state into the push payload. Use push to wake the app, then read the latest message or application API state.

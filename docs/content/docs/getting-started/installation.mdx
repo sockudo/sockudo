@@ -1,0 +1,118 @@
+---
+title: Installation
+description: Run Sockudo locally or build a production binary with the right feature set.
+icon: Download
+---
+
+The fastest way to evaluate Sockudo is Docker Compose. The most controlled production path is a Cargo build with only the features you need.
+
+## Docker Compose
+
+```bash
+git clone https://github.com/sockudo/sockudo.git
+cd sockudo
+docker compose up sockudo redis
+```
+
+The default server listens on:
+
+| Service | URL |
+| --- | --- |
+| HTTP and WebSocket API | `http://127.0.0.1:6001` |
+| Prometheus metrics | `http://127.0.0.1:9601/metrics` |
+
+Use Compose when you want Redis, local configuration, and repeatable development infrastructure without compiling Rust first.
+
+## Run from source
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+git clone https://github.com/sockudo/sockudo.git
+cd sockudo
+cargo run --release
+```
+
+The default feature set is intentionally local-friendly. Add only the backends your deployment needs:
+
+```bash
+cargo build --release --features "redis,postgres"
+cargo build --release --features "redis-cluster,mysql"
+cargo build --release --features "nats,postgres"
+cargo build --release --features "kafka,postgres"
+cargo build --release --features "iggy,postgres"
+cargo build --release --features full
+```
+
+## Feature flags
+
+| Feature | Enables |
+| --- | --- |
+| `local` | In-memory app, cache, queue, adapter, and rate limit implementations. |
+| `v2` | Sockudo-native protocol features. Enabled by default. |
+| `recovery` | Serial continuity, `message_id`, replay buffers, resume events, and rewind. |
+| `delta` | Fossil and Xdelta3/VCDIFF delta compression for V2 clients. |
+| `tag-filtering` | Server-side tag filter expressions for V2 subscriptions. |
+| `redis` | Redis adapter, cache, queue, and rate limiter support. |
+| `redis-cluster` | Cluster-aware Redis transport and adapter support. |
+| `nats`, `kafka`, `rabbitmq`, `pulsar`, `google-pubsub`, `iggy` | Horizontal transport adapters. |
+| `mysql`, `postgres`, `dynamodb`, `scylladb`, `surrealdb` | Persistent app manager backends. |
+| `full` | All production backends and optional integrations. |
+
+## Minimal Pusher-compatible build
+
+If you only need a small Pusher-compatible server, build without default features:
+
+```bash
+cargo build --release --no-default-features
+```
+
+Add V2 features explicitly when needed:
+
+```bash
+cargo build --release --no-default-features --features "recovery,delta,tag-filtering"
+```
+
+## Configuration file
+
+Sockudo prefers TOML configuration. The server looks for `config/config.toml` first, with JSON kept as a fallback.
+
+```toml
+port = 6001
+host = "0.0.0.0"
+debug = false
+
+[app_manager]
+driver = "memory"
+
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "app-id"
+key = "app-key"
+secret = "app-secret"
+enabled = true
+max_connections = 10000
+enable_client_messages = false
+```
+
+## Kubernetes with Helm
+
+```bash
+helm install sockudo ./charts/sockudo \
+  --set config.adapterDriver=redis \
+  --set redis.host=redis-master \
+  --set autoscaling.enabled=true \
+  --set pdb.enabled=true \
+  --set ingress.enabled=true \
+  --set serviceMonitor.enabled=true
+```
+
+Use Kubernetes when you need autoscaling, service monitors, disruption budgets, secret-backed app credentials, and cluster-level rollout controls.
+
+## Verify
+
+```bash
+curl -f http://127.0.0.1:6001/up
+curl -f http://127.0.0.1:9601/metrics | head
+```
+
+When health is green, continue with [First connection](/docs/getting-started/first-connection).

@@ -1,0 +1,147 @@
+---
+title: Kotlin
+description: Use sockudo-kotlin on Android and JVM with auth, recovery, rewind, filters, deltas, history proxies, and push registration.
+icon: Smartphone
+---
+
+`sockudo-kotlin` is the official Android and JVM realtime SDK. It uses OkHttp for WebSockets and exposes the same channel model as other Sockudo clients.
+
+## Install
+
+```kotlin
+dependencies {
+    implementation("io.sockudo:sockudo-kotlin:0.1.0")
+}
+```
+
+For local workspace development:
+
+```bash
+./gradlew :lib:publishToMavenLocal
+```
+
+## Connect
+
+```kotlin
+import io.sockudo.client.SockudoClient
+import io.sockudo.client.SockudoOptions
+import io.sockudo.client.SockudoTransport
+
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            forceTls = false,
+            enabledTransports = listOf(SockudoTransport.ws),
+            wsHost = "127.0.0.1",
+            wsPort = 6001,
+            wssPort = 6001,
+            protocolVersion = 2,
+            connectionRecovery = true,
+        ),
+    )
+
+val channel = client.subscribe("public-updates")
+channel.bind("price-updated") { data, _ ->
+    println(data)
+}
+
+client.connect()
+```
+
+## Auth
+
+```kotlin
+import io.sockudo.client.*
+
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            forceTls = false,
+            wsHost = "127.0.0.1",
+            wsPort = 6001,
+            channelAuthorization =
+                ChannelAuthorizationOptions(
+                    endpoint = "https://api.example.com/sockudo/auth",
+                ),
+        ),
+    )
+```
+
+## Filters and deltas
+
+```kotlin
+val channel =
+    client.subscribe(
+        "price:btc",
+        SubscriptionOptions(
+            filter = Filter.eq("market", "spot"),
+            delta = ChannelDeltaSettings(
+                enabled = true,
+                algorithm = DeltaAlgorithm.xdelta3,
+            ),
+        ),
+    )
+```
+
+## Recovery and rewind
+
+```kotlin
+val channel =
+    client.subscribe(
+        "market:BTC",
+        SubscriptionOptions(rewind = SubscriptionRewind.Seconds(30)),
+    )
+
+channel.bind("message") { _, _ ->
+    println(client.getRecoveryPosition("market:BTC"))
+}
+
+client.bind("sockudo:resume_success") { data, _ ->
+    println(data)
+}
+```
+
+## Presence history proxy
+
+```kotlin
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            forceTls = false,
+            wsHost = "127.0.0.1",
+            wsPort = 6001,
+            presenceHistory =
+                PresenceHistoryOptions(
+                    endpoint = "https://api.example.com/sockudo/presence-history",
+                ),
+        ),
+    )
+
+val channel = client.subscribe("presence-lobby") as PresenceChannel
+val page = channel.history(PresenceHistoryParams(limit = 50, direction = "newest_first"))
+val snapshot = channel.snapshot(PresenceSnapshotParams(atSerial = 4))
+```
+
+## Android push registration
+
+Use Firebase Messaging or the platform provider to obtain a token, then register through your backend.
+
+```kotlin
+class PushTokenService : FirebaseMessagingService() {
+    override fun onNewToken(token: String) {
+        registerDeviceWithBackend(
+            deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID),
+            platform = "fcm",
+            providerToken = token,
+        )
+    }
+}
+```
+
+The backend should call Sockudo push registration APIs with app credentials. The Android app should not hold Sockudo secrets.

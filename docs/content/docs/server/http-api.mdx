@@ -1,0 +1,215 @@
+---
+title: HTTP API
+description: Publish events, query channels, read history, mutate messages, manage annotations, and operate push notifications.
+icon: Braces
+---
+
+Sockudo's HTTP API is a trusted server interface. Every production request must be signed with app credentials. Use a server SDK unless you are writing a custom integration.
+
+## Signing model
+
+Signed requests include:
+
+| Parameter | Purpose |
+| --- | --- |
+| `auth_key` | App key. |
+| `auth_timestamp` | Unix timestamp used to reject stale requests. |
+| `auth_version` | Signing protocol version. |
+| `body_md5` | MD5 of the JSON body for body-bearing requests. |
+| `auth_signature` | HMAC SHA-256 signature over method, path, and sorted query. |
+
+## Publish an event
+
+```http
+POST /apps/{app_id}/events
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "order.created",
+  "channel": "orders",
+  "data": {
+    "id": "ord_123"
+  },
+  "idempotency_key": "order-created-ord_123"
+}
+```
+
+Use `socket_id` to suppress echo back to the originating connection.
+
+## Batch publish
+
+```http
+POST /apps/{app_id}/batch_events
+Content-Type: application/json
+```
+
+```json
+{
+  "batch": [
+    {
+      "channel": "orders",
+      "name": "order.created",
+      "data": { "id": "ord_123" }
+    },
+    {
+      "channel": "orders",
+      "name": "order.paid",
+      "data": { "id": "ord_123" }
+    }
+  ]
+}
+```
+
+Batching reduces HTTP overhead, but do not use it to hide unbounded payloads. Keep per-event data compact.
+
+## Channel state
+
+```http
+GET /apps/{app_id}/channels
+GET /apps/{app_id}/channels/{channel_name}
+GET /apps/{app_id}/channels/{channel_name}/users
+```
+
+Use state APIs for dashboards and admin tooling. Do not poll them as a substitute for realtime subscription events.
+
+## History
+
+```http
+GET /apps/{app_id}/channels/{channel_name}/history?limit=50&direction=newest_first
+```
+
+History responses use opaque cursors. Store and replay cursors as strings; do not parse them.
+
+## Versioned messages
+
+Protocol V2 mutable messages expose latest visible state and preserved versions:
+
+```http
+GET /apps/{app_id}/channels/{channel_name}/messages/{message_serial}
+GET /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/versions
+POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/update
+POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/delete
+POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/append
+```
+
+```json
+{
+  "data": {
+    "body": "edited message"
+  },
+  "description": "user edit",
+  "idempotency_key": "edit-msg-1-v2"
+}
+```
+
+## Annotations
+
+Annotations attach secondary state to a message without rewriting the message itself.
+
+```http
+POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/annotations
+GET /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/annotations
+DELETE /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/annotations/{annotation_serial}
+```
+
+```json
+{
+  "type": "reactions:distinct.v1",
+  "name": "like",
+  "client_id": "user-1",
+  "count": 1
+}
+```
+
+Use annotations for reactions, read receipts, moderation signals, and summary projections.
+
+## Push notifications
+
+Push APIs are first-class HTTP APIs, not separate infrastructure. They cover device registration, channel subscriptions, credential management, publish admission, status inspection, scheduling, cancellation, and provider callbacks.
+
+### Register a device
+
+```http
+POST /apps/{app_id}/push/deviceRegistrations
+Content-Type: application/json
+```
+
+```json
+{
+  "device_id": "ios-device-1",
+  "client_id": "user-42",
+  "platform": "apns",
+  "provider_token": "provider-token",
+  "metadata": {
+    "app_version": "4.5.0"
+  }
+}
+```
+
+### Subscribe a device to a channel
+
+```http
+POST /apps/{app_id}/push/channelSubscriptions
+Content-Type: application/json
+```
+
+```json
+{
+  "device_id": "ios-device-1",
+  "channel": "orders",
+  "client_id": "user-42"
+}
+```
+
+### Publish push
+
+```http
+POST /apps/{app_id}/push/publish
+Content-Type: application/json
+```
+
+```json
+{
+  "recipients": [
+    { "type": "channel", "channel": "orders" }
+  ],
+  "payload": {
+    "title": "Order updated",
+    "body": "Order ord_123 moved to packing",
+    "data": { "order_id": "ord_123" }
+  },
+  "sync": false,
+  "idempotency_key": "push-order-ord_123-packing"
+}
+```
+
+Async push returns `202 Accepted` with a `publish_id`.
+
+### Inspect publish status
+
+```http
+GET /apps/{app_id}/push/publish/{publish_id}/status
+```
+
+Use this endpoint for operator tools, not user-facing busy loops.
+
+## Complete endpoint reference
+
+This page explains the common server workflows. The complete route matrix, including health probes, stats, metrics, all push credential/template/device/subscription endpoints, presence history state, durable history repair, and annotation filters, is in the [HTTP endpoint reference](/docs/reference/http-endpoints).
+
+## Error handling
+
+Treat HTTP status codes as authoritative:
+
+| Status | Meaning |
+| --- | --- |
+| `202` | Async work accepted, usually push delivery. |
+| `400` | Invalid request shape or unsupported option. |
+| `401` | Signature or key failure. |
+| `403` | App or feature disabled. |
+| `404` | Resource does not exist. |
+| `413` | Payload too large. |
+| `429` | Rate limited. |
+| `5xx` | Server or backend dependency failure. |

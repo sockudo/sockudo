@@ -1,0 +1,428 @@
+---
+title: Environment variables
+description: Complete Sockudo runtime environment variable reference.
+icon: Settings2
+---
+
+Sockudo loads configuration from files first, then applies environment variable overrides. Values are parsed as strings unless the target option is numeric or boolean. Boolean values follow the server parser and accept common true/false forms.
+
+This page lists every runtime environment variable referenced by the server, core configuration loader, push subsystem, app managers, adapters, queues, and provider workers.
+
+## Process and listener
+
+| Variable | Purpose |
+| --- | --- |
+| `ENVIRONMENT` | Runtime mode label. |
+| `DEBUG` | Forces debug mode on when truthy. |
+| `DEBUG_MODE` | Overrides the configured debug flag. |
+| `HOST` | Main HTTP and WebSocket bind host. |
+| `PORT` | Main HTTP and WebSocket bind port. |
+| `ACTIVITY_TIMEOUT` | Pusher protocol activity timeout. |
+| `SHUTDOWN_GRACE_PERIOD` | Grace period for server shutdown. |
+| `USER_AUTHENTICATION_TIMEOUT` | Timeout used by user authentication flows. |
+| `WEBSOCKET_MAX_PAYLOAD_KB` | Legacy maximum WebSocket payload size in KiB. |
+| `INSTANCE_PROCESS_ID` | Stable node/process identity used by clustering and Iggy consumers. |
+| `HOSTNAME` | Fallback node identity for Iggy when `INSTANCE_PROCESS_ID` is not set. |
+| `HEALTH_CHECK_TIMEOUT_MS` | Dependency timeout for health checks. |
+| `HTTP_API_USAGE_ENABLED` | Enables `/usage` and `/stats` operational endpoints. |
+
+## Logging
+
+| Variable | Purpose |
+| --- | --- |
+| `SOCKUDO_LOG_DEBUG` | Default log filter when debug mode is active. |
+| `SOCKUDO_LOG_PROD` | Default log filter when debug mode is not active. |
+| `LOG_OUTPUT_FORMAT` | Set to `json` for JSON logs. |
+| `LOG_COLORS_ENABLED` | Enables or disables colored text logs. |
+| `LOG_INCLUDE_TARGET` | Includes tracing targets in text logs. |
+
+## Driver selection
+
+| Variable | Purpose |
+| --- | --- |
+| `ADAPTER_DRIVER` | Horizontal fanout driver. |
+| `CACHE_DRIVER` | Cache driver. |
+| `QUEUE_DRIVER` | Queue driver. |
+| `APP_MANAGER_DRIVER` | App manager driver. |
+| `RATE_LIMITER_DRIVER` | Rate limiter backend driver. |
+| `ADAPTER_BUFFER_MULTIPLIER_PER_CPU` | Adapter fanout buffer sizing multiplier. |
+| `ADAPTER_ENABLE_SOCKET_COUNTING` | Enables adapter socket counting. |
+| `ADAPTER_FALLBACK_TO_LOCAL` | Falls back to the local adapter when a configured adapter cannot start. |
+| `APP_MANAGER_REGISTER_INLINE_APPS` | Allows inline app definitions from config to be registered. |
+| `SOCKUDO_SKIP_INLINE_APPS` | Skips inline apps even if present in the config file. |
+
+## Default app bootstrap
+
+| Variable | Purpose |
+| --- | --- |
+| `SOCKUDO_DEFAULT_APP_ID` | Default app ID created from environment. |
+| `SOCKUDO_DEFAULT_APP_KEY` | Default app key created from environment. |
+| `SOCKUDO_DEFAULT_APP_SECRET` | Default app secret created from environment. |
+| `SOCKUDO_DEFAULT_APP_ENABLED` | Enables or disables default app registration. |
+| `SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS` | Default app connection limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_BACKEND_EVENTS_PER_SECOND` | Default app backend publish rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND` | Default app client event rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_READ_REQUESTS_PER_SECOND` | Default app read API rate limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBERS_PER_CHANNEL` | Default app presence member limit per channel. |
+| `SOCKUDO_DEFAULT_APP_MAX_PRESENCE_MEMBER_SIZE_IN_KB` | Default app presence member payload size limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_CHANNEL_NAME_LENGTH` | Default app channel name length limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_EVENT_CHANNELS_AT_ONCE` | Default app maximum fanout channels per event. |
+| `SOCKUDO_DEFAULT_APP_MAX_EVENT_NAME_LENGTH` | Default app event name length limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_EVENT_PAYLOAD_IN_KB` | Default app event payload size limit. |
+| `SOCKUDO_DEFAULT_APP_MAX_EVENT_BATCH_SIZE` | Default app batch publish item limit. |
+| `SOCKUDO_DEFAULT_APP_ENABLE_CLIENT_MESSAGES` | Enables client events for the default app. |
+| `SOCKUDO_ENABLE_CLIENT_MESSAGES` | Legacy fallback for default app client events. |
+| `SOCKUDO_DEFAULT_APP_ENABLE_USER_AUTHENTICATION` | Enables user authentication features for the default app. |
+| `SOCKUDO_DEFAULT_APP_ENABLE_WATCHLIST_EVENTS` | Enables watchlist events for the default app. |
+| `SOCKUDO_DEFAULT_APP_ALLOWED_ORIGINS` | Comma-separated origin allowlist for the default app. |
+| `SOCKUDO_DEFAULT_APP_ANNOTATIONS_ENABLED` | Enables annotations for the default app channel policy. |
+
+## Redis
+
+| Variable | Purpose |
+| --- | --- |
+| `REDIS_URL` | Shared Redis URL override for adapter, cache, queue, and rate limiter Redis clients. |
+| `DATABASE_REDIS_HOST` | Redis host. |
+| `DATABASE_REDIS_PORT` | Redis port. |
+| `DATABASE_REDIS_USERNAME` | Redis username. |
+| `DATABASE_REDIS_PASSWORD` | Redis password. |
+| `DATABASE_REDIS_DB` | Redis database index. |
+| `DATABASE_REDIS_KEY_PREFIX` | Redis key prefix. |
+| `DATABASE_REDIS_CLUSTER_NODES` | Comma-separated Redis Cluster seed nodes. |
+| `REDIS_CLUSTER_NODES` | Comma-separated Redis Cluster seed nodes, also applied to adapter and queue cluster config. |
+| `DATABASE_REDIS_CLUSTER_USERNAME` | Redis Cluster username. |
+| `DATABASE_REDIS_CLUSTER_PASSWORD` | Redis Cluster password. |
+| `DATABASE_REDIS_CLUSTER_USE_TLS` | Enables TLS for Redis Cluster. |
+| `REDIS_CLUSTER_QUEUE_CONCURRENCY` | Redis Cluster queue worker concurrency. |
+| `REDIS_CLUSTER_QUEUE_PREFIX` | Redis Cluster queue key prefix. |
+
+## SQL and app storage
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_MYSQL_HOST` | MySQL host. |
+| `DATABASE_MYSQL_PORT` | MySQL port. |
+| `DATABASE_MYSQL_USERNAME` | MySQL username. |
+| `DATABASE_MYSQL_PASSWORD` | MySQL password. |
+| `DATABASE_MYSQL_DATABASE` | MySQL database name. |
+| `DATABASE_MYSQL_TABLE_NAME` | MySQL app table name. |
+| `DATABASE_MYSQL_POOL_MIN` | MySQL minimum pool size. |
+| `DATABASE_MYSQL_POOL_MAX` | MySQL maximum pool size. |
+| `DATABASE_POSTGRES_HOST` | PostgreSQL host. |
+| `DATABASE_POSTGRES_PORT` | PostgreSQL port. |
+| `DATABASE_POSTGRES_USERNAME` | PostgreSQL username used by the core config loader. |
+| `DATABASE_POSTGRES_USER` | PostgreSQL username fallback used by the PostgreSQL app manager. |
+| `DATABASE_POSTGRES_PASSWORD` | PostgreSQL password. |
+| `DATABASE_POSTGRES_DATABASE` | PostgreSQL database name. |
+| `DATABASE_POSTGRES_POOL_MIN` | PostgreSQL minimum pool size. |
+| `DATABASE_POSTGRES_POOL_MAX` | PostgreSQL maximum pool size. |
+| `DATABASE_POOLING_ENABLED` | Enables database pooling. |
+| `DATABASE_POOL_MIN` | Global minimum pool size. |
+| `DATABASE_POOL_MAX` | Global maximum pool size. |
+| `DATABASE_CONNECTION_POOL_SIZE` | Global connection pool size applied to MySQL and PostgreSQL. |
+
+## DynamoDB, SurrealDB, and ScyllaDB
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_DYNAMODB_REGION` | DynamoDB region. |
+| `DATABASE_DYNAMODB_TABLE_NAME` | DynamoDB table name. |
+| `DATABASE_DYNAMODB_ENDPOINT_URL` | DynamoDB custom endpoint URL. |
+| `AWS_ACCESS_KEY_ID` | AWS access key used by DynamoDB and AWS-backed queues. |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key used by DynamoDB and AWS-backed queues. |
+| `DATABASE_SURREALDB_URL` | SurrealDB connection URL. |
+| `DATABASE_SURREALDB_NAMESPACE` | SurrealDB namespace. |
+| `DATABASE_SURREALDB_DATABASE` | SurrealDB database. |
+| `DATABASE_SURREALDB_USERNAME` | SurrealDB username. |
+| `DATABASE_SURREALDB_PASSWORD` | SurrealDB password. |
+| `DATABASE_SURREALDB_TABLE_NAME` | SurrealDB app table name. |
+| `SCYLLADB_NODES` | Comma-separated ScyllaDB nodes. |
+| `SCYLLADB_KEYSPACE` | ScyllaDB keyspace. |
+| `SCYLLADB_REPLICATION_CLASS` | ScyllaDB replication class. |
+| `SCYLLADB_REPLICATION_FACTOR` | ScyllaDB replication factor. |
+
+## Cache
+
+| Variable | Purpose |
+| --- | --- |
+| `CACHE_TTL_SECONDS` | Cache TTL applied to app, channel, database, and memory cache settings. |
+| `CACHE_CLEANUP_INTERVAL` | Cache cleanup interval for in-memory and database cache paths. |
+| `CACHE_MAX_CAPACITY` | Cache maximum capacity for supported cache stores. |
+
+## TLS, Unix sockets, and CORS
+
+| Variable | Purpose |
+| --- | --- |
+| `SSL_ENABLED` | Enables TLS listener mode. |
+| `SSL_CERT_PATH` | TLS certificate path. |
+| `SSL_KEY_PATH` | TLS private key path. |
+| `SSL_REDIRECT_HTTP` | Enables HTTP-to-HTTPS redirect support. |
+| `SSL_HTTP_PORT` | HTTP redirect listener port. |
+| `UNIX_SOCKET_ENABLED` | Enables Unix socket listener mode. |
+| `UNIX_SOCKET_PATH` | Unix socket filesystem path. |
+| `UNIX_SOCKET_PERMISSION_MODE` | Unix socket permission mode in octal. |
+| `CORS_ORIGINS` | Comma-separated CORS origin patterns. |
+| `CORS_METHODS` | Comma-separated CORS methods. |
+| `CORS_HEADERS` | Comma-separated allowed headers. |
+| `CORS_CREDENTIALS` | Enables CORS credentials. |
+
+## Metrics and rate limiting
+
+| Variable | Purpose |
+| --- | --- |
+| `METRICS_DRIVER` | Metrics backend driver. |
+| `METRICS_ENABLED` | Enables the metrics server. |
+| `METRICS_HOST` | Metrics bind host. |
+| `METRICS_PORT` | Metrics bind port. |
+| `METRICS_PROMETHEUS_PREFIX` | Prefix for Prometheus metric names. |
+| `METRICS_TCP_EXPORTER_ENABLED` | Enables the metrics-rs TCP event exporter. |
+| `METRICS_TCP_EXPORTER_HOST` | TCP exporter bind host. |
+| `METRICS_TCP_EXPORTER_PORT` | TCP exporter bind port. |
+| `METRICS_TCP_EXPORTER_BUFFER_SIZE` | TCP exporter internal and per-client buffer size. |
+| `RATE_LIMITER_ENABLED` | Enables HTTP and WebSocket rate limiting. |
+| `RATE_LIMITER_API_MAX_REQUESTS` | API requests allowed per rate limit window. |
+| `RATE_LIMITER_API_WINDOW_SECONDS` | API rate limit window length. |
+| `RATE_LIMITER_API_TRUST_HOPS` | Trusted proxy hops for API client IP extraction. |
+| `RATE_LIMITER_WS_MAX_REQUESTS` | WebSocket upgrade attempts allowed per window. |
+| `RATE_LIMITER_WS_WINDOW_SECONDS` | WebSocket rate limit window length. |
+| `RATE_LIMITER_REDIS_PREFIX` | Redis key prefix for rate limiter state. |
+
+## Queue backends
+
+| Variable | Purpose |
+| --- | --- |
+| `QUEUE_REDIS_CONCURRENCY` | Redis queue worker concurrency. |
+| `QUEUE_REDIS_PREFIX` | Redis queue key prefix. |
+| `QUEUE_SQS_REGION` | SQS region. |
+| `QUEUE_SQS_VISIBILITY_TIMEOUT` | SQS visibility timeout. |
+| `QUEUE_SQS_MAX_MESSAGES` | SQS receive batch size. |
+| `QUEUE_SQS_WAIT_TIME_SECONDS` | SQS long-poll wait time. |
+| `QUEUE_SQS_CONCURRENCY` | SQS worker concurrency. |
+| `QUEUE_SQS_FIFO` | Enables FIFO queue behavior. |
+| `QUEUE_SQS_ENDPOINT_URL` | SQS custom endpoint URL. |
+| `QUEUE_SNS_REGION` | SNS region. |
+| `QUEUE_SNS_TOPIC_ARN` | SNS topic ARN. |
+| `QUEUE_SNS_ENDPOINT_URL` | SNS custom endpoint URL. |
+
+## NATS, Pulsar, RabbitMQ, Pub/Sub, Kafka, and Iggy
+
+| Variable | Purpose |
+| --- | --- |
+| `NATS_SERVERS` | Comma-separated NATS server URLs. |
+| `NATS_USERNAME` | NATS username. |
+| `NATS_PASSWORD` | NATS password. |
+| `NATS_TOKEN` | NATS token. |
+| `NATS_PREFIX` | NATS subject prefix. |
+| `NATS_CONNECTION_TIMEOUT_MS` | NATS connection timeout. |
+| `NATS_REQUEST_TIMEOUT_MS` | NATS request timeout. |
+| `NATS_DISCOVERY_MAX_WAIT_MS` | NATS node discovery maximum wait. |
+| `NATS_DISCOVERY_IDLE_WAIT_MS` | NATS node discovery idle wait. |
+| `NATS_NODES_NUMBER` | Expected NATS node count. |
+| `NATS_SUBSCRIPTION_CAPACITY` | NATS subscription channel capacity. |
+| `NATS_CLIENT_CAPACITY` | NATS client channel capacity. |
+| `NATS_MAX_RECONNECTS` | NATS reconnect limit. |
+| `NATS_PRESENCE_SYNC_CHUNK_SIZE` | Presence sync chunk size for NATS. |
+| `PULSAR_URL` | Pulsar service URL. |
+| `PULSAR_PREFIX` | Pulsar topic prefix. |
+| `PULSAR_TOKEN` | Pulsar auth token. |
+| `PULSAR_REQUEST_TIMEOUT_MS` | Pulsar request timeout. |
+| `PULSAR_NODES_NUMBER` | Expected Pulsar node count. |
+| `RABBITMQ_URL` | RabbitMQ connection URL. |
+| `RABBITMQ_PREFIX` | RabbitMQ exchange or routing prefix. |
+| `RABBITMQ_CONNECTION_TIMEOUT_MS` | RabbitMQ connection timeout. |
+| `RABBITMQ_REQUEST_TIMEOUT_MS` | RabbitMQ request timeout. |
+| `RABBITMQ_NODES_NUMBER` | Expected RabbitMQ node count. |
+| `GOOGLE_PUBSUB_PROJECT_ID` | Google Pub/Sub project ID. |
+| `GOOGLE_PUBSUB_PREFIX` | Google Pub/Sub topic prefix. |
+| `PUBSUB_EMULATOR_HOST` | Pub/Sub emulator host. |
+| `GOOGLE_PUBSUB_REQUEST_TIMEOUT_MS` | Google Pub/Sub request timeout. |
+| `GOOGLE_PUBSUB_NODES_NUMBER` | Expected Pub/Sub node count. |
+| `KAFKA_BROKERS` | Comma-separated Kafka brokers. |
+| `KAFKA_PREFIX` | Kafka topic prefix. |
+| `KAFKA_SECURITY_PROTOCOL` | Kafka security protocol. |
+| `KAFKA_SASL_MECHANISM` | Kafka SASL mechanism. |
+| `KAFKA_SASL_USERNAME` | Kafka SASL username. |
+| `KAFKA_SASL_PASSWORD` | Kafka SASL password. |
+| `KAFKA_REQUEST_TIMEOUT_MS` | Kafka request timeout. |
+| `KAFKA_NODES_NUMBER` | Expected Kafka node count. |
+| `IGGY_CONNECTION_STRING` | Apache Iggy connection string. |
+| `IGGY_USERNAME` | Apache Iggy username. |
+| `IGGY_PASSWORD` | Apache Iggy password. |
+| `IGGY_CONSUMER_NAME` | Apache Iggy consumer name. |
+| `IGGY_STREAM` | Apache Iggy stream name. |
+| `IGGY_TOPIC_PREFIX` | Apache Iggy adapter topic prefix. |
+| `IGGY_QUEUE_TOPIC_PREFIX` | Apache Iggy queue topic prefix. |
+| `IGGY_CONSUMER_GROUP_PREFIX` | Apache Iggy consumer group prefix. |
+| `IGGY_REQUEST_TIMEOUT_MS` | Apache Iggy request timeout. |
+| `IGGY_POLL_INTERVAL_MS` | Apache Iggy poll interval. |
+| `IGGY_POLL_BATCH_SIZE` | Apache Iggy poll batch size. |
+| `IGGY_PARTITIONS_COUNT` | Shared Apache Iggy partition count. |
+| `ADAPTER_IGGY_PARTITIONS_COUNT` | Adapter-specific Apache Iggy partition count. |
+| `QUEUE_IGGY_PARTITIONS_COUNT` | Queue-specific Apache Iggy partition count. |
+| `IGGY_PARTITION_ID` | Shared Apache Iggy partition ID. |
+| `ADAPTER_IGGY_PARTITION_ID` | Adapter-specific Apache Iggy partition ID. |
+| `QUEUE_IGGY_PARTITION_ID` | Queue-specific Apache Iggy partition ID. |
+| `IGGY_AUTO_CREATE` | Auto-create Apache Iggy streams and topics. |
+| `IGGY_START_FROM_LATEST` | Start adapter consumption from latest messages. |
+| `IGGY_NODES_NUMBER` | Expected Apache Iggy node count. |
+
+## Cleanup and cluster health
+
+| Variable | Purpose |
+| --- | --- |
+| `CLEANUP_ASYNC_ENABLED` | Enables asynchronous cleanup. |
+| `CLEANUP_FALLBACK_TO_SYNC` | Falls back to synchronous cleanup when async cleanup fails. |
+| `CLEANUP_QUEUE_BUFFER_SIZE` | Cleanup queue buffer size. |
+| `CLEANUP_BATCH_SIZE` | Cleanup batch size. |
+| `CLEANUP_BATCH_TIMEOUT_MS` | Cleanup batch timeout. |
+| `CLEANUP_WORKER_THREADS` | Cleanup worker count or `auto`. |
+| `CLEANUP_MAX_RETRY_ATTEMPTS` | Cleanup retry limit. |
+| `CLUSTER_HEALTH_ENABLED` | Enables cluster health tracking. |
+| `CLUSTER_HEALTH_HEARTBEAT_INTERVAL` | Cluster heartbeat interval. |
+| `CLUSTER_HEALTH_NODE_TIMEOUT` | Node timeout before a peer is considered stale. |
+| `CLUSTER_HEALTH_CLEANUP_INTERVAL` | Cleanup interval for cluster health state. |
+
+## WebSocket and Protocol V2 features
+
+| Variable | Purpose |
+| --- | --- |
+| `TAG_FILTERING_ENABLED` | Enables Protocol V2 tag filtering. |
+| `WEBSOCKET_MAX_MESSAGES` | Maximum buffered outbound WebSocket messages, or `none`/`0` for unlimited. |
+| `WEBSOCKET_MAX_BYTES` | Maximum buffered outbound WebSocket bytes, or `none`/`0` for unlimited. |
+| `WEBSOCKET_DISCONNECT_ON_BUFFER_FULL` | Disconnects slow clients instead of dropping messages when buffers fill. |
+| `WEBSOCKET_MAX_MESSAGE_SIZE` | WebSocket message size limit. |
+| `WEBSOCKET_MAX_FRAME_SIZE` | WebSocket frame size limit. |
+| `WEBSOCKET_WRITE_BUFFER_SIZE` | WebSocket write buffer size. |
+| `WEBSOCKET_MAX_BACKPRESSURE` | WebSocket backpressure limit. |
+| `WEBSOCKET_AUTO_PING` | Enables automatic WebSocket ping frames. |
+| `WEBSOCKET_PING_INTERVAL` | WebSocket ping interval. |
+| `WEBSOCKET_IDLE_TIMEOUT` | WebSocket idle timeout. |
+| `WEBSOCKET_COMPRESSION` | WebSocket compression mode. |
+| `CONNECTION_RECOVERY_ENABLED` | Enables Protocol V2 connection recovery. |
+| `CONNECTION_RECOVERY_BUFFER_TTL` | Recovery buffer TTL. |
+| `CONNECTION_RECOVERY_MAX_BUFFER_SIZE` | Recovery buffer maximum size. |
+| `EPHEMERAL_ENABLED` | Enables ephemeral event handling. |
+| `ECHO_CONTROL_ENABLED` | Enables per-connection echo control. |
+| `ECHO_CONTROL_DEFAULT_ECHO_MESSAGES` | Default echo behavior when echo control is enabled. |
+| `EVENT_NAME_FILTERING_ENABLED` | Enables event-name filtering for subscriptions. |
+| `EVENT_NAME_FILTERING_MAX_EVENTS_PER_FILTER` | Maximum event names in one subscription filter. |
+| `EVENT_NAME_FILTERING_MAX_EVENT_NAME_LENGTH` | Maximum event name length inside a filter. |
+
+## History, idempotency, versioning, and annotations
+
+| Variable | Purpose |
+| --- | --- |
+| `HISTORY_ENABLED` | Enables durable channel history. |
+| `HISTORY_REWIND_ENABLED` | Enables rewind reads from history. |
+| `HISTORY_RETENTION_WINDOW_SECONDS` | Durable history retention window. |
+| `HISTORY_MAX_PAGE_SIZE` | Maximum history page size. |
+| `HISTORY_WRITER_SHARDS` | Durable history writer shard count. |
+| `HISTORY_WRITER_QUEUE_CAPACITY` | Durable history writer queue capacity. |
+| `HISTORY_BACKEND` | Durable history backend. |
+| `HISTORY_MAX_MESSAGES_PER_CHANNEL` | Optional retained message count limit per channel. |
+| `HISTORY_MAX_BYTES_PER_CHANNEL` | Optional retained byte limit per channel. |
+| `HISTORY_POSTGRES_TABLE_PREFIX` | PostgreSQL history table prefix. |
+| `HISTORY_POSTGRES_WRITE_TIMEOUT_MS` | PostgreSQL history write timeout. |
+| `HISTORY_PURGE_INTERVAL_SECONDS` | History purge interval. |
+| `HISTORY_PURGE_BATCH_SIZE` | History purge batch size. |
+| `HISTORY_MAX_PURGE_PER_TICK` | Maximum purged history rows per purge tick. |
+| `PRESENCE_HISTORY_ENABLED` | Enables retained presence history. |
+| `PRESENCE_HISTORY_RETENTION_WINDOW_SECONDS` | Presence history retention window. |
+| `PRESENCE_HISTORY_MAX_PAGE_SIZE` | Maximum presence history page size. |
+| `PRESENCE_HISTORY_MAX_EVENTS_PER_CHANNEL` | Optional retained presence event limit per channel. |
+| `PRESENCE_HISTORY_MAX_BYTES_PER_CHANNEL` | Optional retained presence byte limit per channel. |
+| `IDEMPOTENCY_ENABLED` | Enables HTTP publish idempotency. |
+| `IDEMPOTENCY_TTL_SECONDS` | Idempotency cache TTL. |
+| `IDEMPOTENCY_MAX_KEY_LENGTH` | Maximum idempotency key length. |
+| `VERSIONED_MESSAGES_ENABLED` | Enables Protocol V2 mutable messages. |
+| `VERSIONED_MESSAGES_DRIVER` | Versioned message backend driver. |
+| `VERSIONED_MESSAGES_MAX_PAGE_SIZE` | Maximum versioned-message page size. |
+| `VERSIONED_MESSAGES_RETENTION_WINDOW_SECONDS` | Versioned-message retention window. |
+| `VERSIONED_MESSAGES_PURGE_INTERVAL_SECONDS` | Versioned-message purge interval. |
+| `VERSIONED_MESSAGES_PURGE_BATCH_SIZE` | Versioned-message purge batch size. |
+| `VERSIONED_MESSAGES_MAX_PURGE_PER_TICK` | Maximum versioned-message rows purged per tick. |
+| `ANNOTATIONS_ENABLED` | Enables message annotations globally. |
+
+## Webhooks
+
+| Variable | Purpose |
+| --- | --- |
+| `WEBHOOK_BATCHING_ENABLED` | Enables webhook batching. |
+| `WEBHOOK_BATCHING_DURATION` | Webhook batching duration. |
+| `WEBHOOK_BATCHING_SIZE` | Webhook batching size. |
+
+## Push core
+
+| Variable | Purpose |
+| --- | --- |
+| `PUSH_STORAGE_DRIVER` | Push storage backend driver. |
+| `PUSH_QUEUE_DRIVER` | Push queue backend driver. |
+| `PUSH_CREDENTIAL_ENCRYPTION_KEY` | Master key for encrypted push credential material. |
+| `PUSH_ACCEPTANCE_RATE_LIMIT` | Admission rate limit for push publish requests. |
+| `PUSH_ANALYTICS_ENABLED` | Enables push analytics collection. |
+| `PUSH_FANOUT_FAST_THRESHOLD` | Recipient threshold for fast-path push fanout. |
+| `PUSH_FANOUT_SHARD_SIZE` | Recipient shard size for large fanout. |
+| `PUSH_FANOUT_SYNC_THRESHOLD` | Threshold below which fanout can remain synchronous. |
+| `PUSH_BACKPRESSURE_LAG_THRESHOLD_SECS` | Queue lag threshold that marks push backpressure. |
+| `PUSH_BACKPRESSURE` | Forces push backpressure responses in the HTTP layer. |
+| `PUSH_BACKPRESSURE_RETRY_AFTER_SECONDS` | Retry-After value emitted for push backpressure. |
+| `PUSH_PUBLISH_LOG_MAX_LAG` | Maximum publish-log lag tolerated before push backpressure. |
+| `PUSH_PUBLISH_STATUS_TTL_DAYS` | Retention for push publish status records. |
+| `PUSH_FAILURE_THRESHOLD` | Push circuit-breaker failure threshold. |
+| `PUSH_SCHEDULER_INTERVAL_SECS` | Scheduled push scan interval. |
+| `PUSH_STALE_DEVICE_MAX_AGE_DAYS` | Stale device age threshold. |
+| `PUSH_DEFAULT_ACCEPTANCE_RPS` | Default per-app push acceptance RPS quota. |
+| `PUSH_DEFAULT_DELIVERY_QUOTA_DAILY` | Default per-app daily delivery quota. |
+| `PUSH_DEFAULT_FANOUT_MAX` | Default per-app maximum fanout. |
+| `PUSH_DEFAULT_INFLIGHT_MAX` | Default per-app in-flight publish limit. |
+| `PUSH_FANOUT_MAX` | HTTP-layer fanout cap override. |
+| `PUSH_DELIVERY_QUOTA_DAILY` | HTTP-layer daily delivery quota override. |
+
+## Push providers
+
+| Variable | Purpose |
+| --- | --- |
+| `PUSH_FCM_ENABLED` | Enables FCM dispatch. |
+| `FCM_PROJECT_ID` | FCM project ID for monolith dispatch workers. |
+| `PUSH_FCM_PROJECT_ID` | FCM project ID alias. |
+| `FCM_PROVIDER_TOKEN` | FCM provider OAuth token for static-token dispatch. |
+| `PUSH_FCM_PROVIDER_TOKEN` | FCM provider token alias. |
+| `FCM_ENDPOINT` | FCM endpoint override. |
+| `PUSH_FCM_ENDPOINT` | FCM endpoint alias. |
+| `PUSH_APNS_ENABLED` | Enables APNs dispatch. |
+| `APNS_TOPIC` | APNs topic or bundle ID. |
+| `PUSH_APNS_TOPIC` | APNs topic alias. |
+| `APNS_ENDPOINT` | APNs endpoint override. |
+| `PUSH_APNS_ENDPOINT` | APNs endpoint alias. |
+| `APNS_APP_ID` | App ID used to load stored APNs credentials. |
+| `PUSH_APNS_APP_ID` | Stored APNs app ID alias. |
+| `APNS_CREDENTIAL_ID` | Stored APNs credential ID. |
+| `PUSH_APNS_CREDENTIAL_ID` | Stored APNs credential ID alias. |
+| `APNS_PROVIDER_TOKEN` | Static APNs provider token. |
+| `PUSH_APNS_PROVIDER_TOKEN` | Static APNs provider token alias. |
+| `APNS_TEAM_ID` | APNs token-auth team ID. |
+| `PUSH_APNS_TEAM_ID` | APNs team ID alias. |
+| `APNS_KEY_ID` | APNs token-auth key ID. |
+| `PUSH_APNS_KEY_ID` | APNs key ID alias. |
+| `APNS_PRIVATE_KEY` | APNs token-auth private key content. |
+| `PUSH_APNS_PRIVATE_KEY` | APNs private key content alias. |
+| `APNS_PRIVATE_KEY_PATH` | Filesystem path to APNs token-auth private key. |
+| `PUSH_APNS_PRIVATE_KEY_PATH` | APNs private key path alias. |
+| `PUSH_WEBPUSH_ENABLED` | Enables Web Push dispatch. |
+| `VAPID_PRIVATE_KEY` | Web Push VAPID private key. |
+| `PUSH_WEBPUSH_VAPID_PRIVATE_KEY` | Web Push VAPID private key alias. |
+| `VAPID_CONTACT` | Web Push VAPID contact subject. |
+| `PUSH_WEBPUSH_VAPID_CONTACT` | Web Push VAPID contact alias. |
+| `PUSH_ALLOW_LOCAL_WEB_PUSH_ENDPOINTS` | Allows local Web Push endpoints for development and tests. |
+| `PUSH_WEBPUSH_ALLOWED_HOSTS` | Comma-separated Web Push endpoint allowlist. |
+| `PUSH_WEBPUSH_DENIED_HOSTS` | Comma-separated Web Push endpoint denylist. |
+| `PUSH_HMS_ENABLED` | Enables HMS dispatch. |
+| `HMS_APP_ID` | HMS app ID for dispatch workers. |
+| `PUSH_HMS_APP_ID` | HMS app ID alias. |
+| `HMS_PROVIDER_TOKEN` | HMS provider token. |
+| `PUSH_HMS_PROVIDER_TOKEN` | HMS provider token alias. |
+| `HMS_ENDPOINT` | HMS endpoint override. |
+| `PUSH_HMS_ENDPOINT` | HMS endpoint alias. |
+| `PUSH_WNS_ENABLED` | Enables WNS dispatch. |
+| `WNS_PROVIDER_TOKEN` | WNS provider token. |
+| `PUSH_WNS_PROVIDER_TOKEN` | WNS provider token alias. |

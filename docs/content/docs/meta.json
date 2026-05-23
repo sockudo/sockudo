@@ -1,0 +1,17 @@
+{
+  "title": "Sockudo",
+  "root": true,
+  "pages": [
+    "index",
+    "---Start---",
+    "getting-started",
+    "---Operate---",
+    "server",
+    "---Build---",
+    "clients",
+    "server-sdks",
+    "---Reference---",
+    "reference",
+    "[Blog](/blog)"
+  ]
+}

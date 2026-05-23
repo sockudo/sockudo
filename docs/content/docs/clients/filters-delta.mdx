@@ -1,0 +1,84 @@
+---
+title: Filters and delta compression
+description: Reduce delivered traffic with Protocol V2 server-side tag filtering and delta reconstruction.
+icon: Funnel
+---
+
+Filters and deltas solve different bandwidth problems. Filters prevent irrelevant messages from being delivered. Deltas shrink relevant messages by sending changes against a known base.
+
+## Tag filtering
+
+The publisher attaches tags:
+
+```ts
+await sockudo.trigger("market:btc", "tick", { price: 67210 }, {
+  tags: {
+    market: "spot",
+    asset: "BTC",
+    region: "us",
+  },
+});
+```
+
+The client subscribes with a filter expression:
+
+```ts
+import { Filter } from "@sockudo/client/filter";
+
+client.subscribe("market:btc", {
+  filter: Filter.and(
+    Filter.eq("market", "spot"),
+    Filter.eq("asset", "BTC"),
+  ),
+});
+```
+
+## Supported comparisons
+
+| Comparison | Meaning |
+| --- | --- |
+| `eq`, `neq` | equality and inequality |
+| `in`, `nin` | membership |
+| `ex`, `nex` | exists and not exists |
+| `sw`, `ew`, `ct` | starts with, ends with, contains |
+| `gt`, `gte`, `lt`, `lte` | lexical or numeric-style comparisons, depending on tag convention |
+
+## Delta compression
+
+Enable delta compression per subscription:
+
+```ts
+client.subscribe("doc:123", {
+  delta: {
+    enabled: true,
+    algorithm: "xdelta3",
+  },
+});
+```
+
+Sockudo supports Fossil and Xdelta3/VCDIFF paths in native clients. Use deltas when messages are frequent and similar, such as document snapshots, sports state, price books, or device telemetry.
+
+## Conflation keys
+
+Conflation groups messages by logical entity so the right base is used.
+
+```json
+{
+  "event": "price.update",
+  "channel": "market",
+  "data": { "symbol": "BTC", "price": 67210 },
+  "extras": {
+    "delta": {
+      "conflation_key": "BTC"
+    }
+  }
+}
+```
+
+## Operational guidance
+
+- Start with tag filtering when clients receive too many irrelevant events.
+- Add deltas when relevant events are large or highly repetitive.
+- Track raw bytes, compressed bytes, reconstruction failures, and resync requests.
+- Do not use deltas for tiny messages unless measurements show a real win.
+- Include stable IDs in push payloads instead of attempting delta-style push notifications.

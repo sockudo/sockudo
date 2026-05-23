@@ -1,40 +1,26 @@
-# Nuxt dev/build outputs
-.output
-.data
-.nuxt
-.nitro
-.cache
-dist
+# deps
+/node_modules
 
-# Node dependencies
-node_modules
+# generated content
+.source
 
-# Logs
-logs
-*.log
+# test & build
+/coverage
+/.next/
+/out/
+/build
+*.tsbuildinfo
 
-# Misc
+# misc
 .DS_Store
-.fleet
-.idea
-.eslintcache
+*.pem
+/.pnp
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Local env files
-.env
-.env.*
-!.env.example
-
-# npm pack
-*.tgz
-
-# Temp files
-.tmp
-.profile
-*.0x
-
-#VSC
-.history
-.wrangler
-
-# Sockudo server repo (separate repository)
-sockudo/
+# others
+.env*.local
+.vercel
+next-env.d.ts

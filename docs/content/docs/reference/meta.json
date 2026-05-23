@@ -1,0 +1,12 @@
+{
+  "title": "Reference",
+  "icon": "FileText",
+  "pages": [
+    "protocol",
+    "http-endpoints",
+    "configuration",
+    "environment-variables",
+    "compatibility",
+    "errors"
+  ]
+}

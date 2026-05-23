@@ -1659,10 +1659,16 @@ impl MetricsFactory {
         driver_type: &str,
         port: u16,
         prefix: Option<&str>,
+        tcp_exporter: Option<sockudo_metrics::TcpExporterOptions>,
     ) -> Option<Arc<dyn MetricsInterface + Send + Sync>> {
         match driver_type.to_lowercase().as_str() {
             "prometheus" => {
-                let driver = sockudo_metrics::PrometheusMetricsDriver::new(port, prefix).await;
+                let driver = sockudo_metrics::PrometheusMetricsDriver::with_tcp_exporter(
+                    port,
+                    prefix,
+                    tcp_exporter,
+                )
+                .await;
                 Some(Arc::new(driver))
             }
             _ => None,
@@ -1911,31 +1917,39 @@ impl SockudoServer {
 
         let auth_validator = Arc::new(AuthValidator::new(app_manager.clone()));
 
-        let metrics = if config.metrics.enabled {
-            info!(
-                "Initializing metrics with driver: {:?}",
-                config.metrics.driver
-            );
-            match MetricsFactory::create(
-                config.metrics.driver.as_ref(),
-                config.metrics.port,
-                Some(&config.metrics.prometheus.prefix),
-            )
-            .await
-            {
-                Some(metrics_driver) => {
-                    info!("Metrics driver initialized successfully");
-                    Some(metrics_driver)
+        let metrics =
+            if config.metrics.enabled {
+                info!(
+                    "Initializing metrics with driver: {:?}",
+                    config.metrics.driver
+                );
+                match MetricsFactory::create(
+                    config.metrics.driver.as_ref(),
+                    config.metrics.port,
+                    Some(&config.metrics.prometheus.prefix),
+                    config.metrics.tcp_exporter.enabled.then(|| {
+                        sockudo_metrics::TcpExporterOptions {
+                            host: config.metrics.tcp_exporter.host.clone(),
+                            port: config.metrics.tcp_exporter.port,
+                            buffer_size: config.metrics.tcp_exporter.buffer_size,
+                        }
+                    }),
+                )
+                .await
+                {
+                    Some(metrics_driver) => {
+                        info!("Metrics driver initialized successfully");
+                        Some(metrics_driver)
+                    }
+                    None => {
+                        warn!("Failed to initialize metrics driver, metrics will be disabled");
+                        None
+                    }
                 }
-                None => {
-                    warn!("Failed to initialize metrics driver, metrics will be disabled");
-                    None
-                }
-            }
-        } else {
-            info!("Metrics are disabled in configuration");
-            None
-        };
+            } else {
+                info!("Metrics are disabled in configuration");
+                None
+            };
 
         let http_api_rate_limiter_instance = if config.rate_limiter.enabled {
             RateLimiterFactory::create_api(&config.rate_limiter, &config.database.redis)

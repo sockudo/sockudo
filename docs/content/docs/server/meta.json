@@ -1,0 +1,14 @@
+{
+  "title": "Server",
+  "icon": "Server",
+  "pages": [
+    "configuration",
+    "http-api",
+    "scaling",
+    "security",
+    "observability",
+    "history-recovery",
+    "webhooks",
+    "push-notifications"
+  ]
+}

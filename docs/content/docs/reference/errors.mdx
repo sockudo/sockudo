@@ -1,0 +1,58 @@
+---
+title: Error codes
+description: Interpret Sockudo HTTP, WebSocket, authentication, history, recovery, webhook, and push errors.
+icon: OctagonAlert
+---
+
+Sockudo uses HTTP status codes for REST failures and protocol events for WebSocket failures.
+
+## HTTP status
+
+| Status | Meaning | Action |
+| --- | --- | --- |
+| `202` | Async work accepted. | Store returned IDs and inspect status later. |
+| `400` | Invalid request. | Validate request body and feature flags. |
+| `401` | Authentication failed. | Check app key, secret, timestamp, and signature. |
+| `403` | Forbidden or disabled. | Check app policy and feature enablement. |
+| `404` | Not found. | Check app ID, channel, message serial, device ID, or publish ID. |
+| `409` | Conflict. | Check idempotency, version, or resource lifecycle. |
+| `413` | Payload too large. | Reduce event or push payload size. |
+| `429` | Rate limited. | Back off and inspect quota policy. |
+| `5xx` | Server or dependency failure. | Inspect logs, metrics, adapter, cache, queue, or provider status. |
+
+## Auth failures
+
+Most auth failures are caused by:
+
+- wrong app key or secret
+- stale timestamp
+- mismatched `socket_id`
+- signing a different `channel_name` than the client requested
+- mutating presence `channel_data` after signing
+- missing raw body for webhook validation
+
+## Recovery failures
+
+Recovery can fail when:
+
+- the client did not use Protocol V2
+- the replay buffer expired
+- the stream reset
+- the reconnect landed after retention was purged
+- adapter or cache state was unavailable
+
+Clients should rebuild state after recovery failure.
+
+## Push errors
+
+| Error class | Typical cause |
+| --- | --- |
+| Device not found | Registration missing or deleted. |
+| Provider token invalid | APNs, FCM, Web Push, HMS, or WNS rejected the token. |
+| Credential missing | Provider credentials are not configured. |
+| Publish not found | Status retention expired or ID is wrong. |
+| Scheduled push invalid | Missing `notBeforeMs` or scheduled time is invalid. |
+| Provider throttled | Provider rate limits or campaign burst. |
+| Payload too large | Platform-specific push payload limit exceeded. |
+
+Push publish admission can succeed while provider delivery fails later. Always inspect publish status for notification incidents.

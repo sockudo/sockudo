@@ -1,0 +1,36 @@
+---
+title: Designing a Realtime Protocol That Can Evolve
+description: Why Sockudo keeps Pusher compatibility stable while adding native Protocol V2 semantics for recovery, history, and richer clients.
+date: "2026-05-19"
+author: "Sockudo Team"
+category: "Architecture"
+tags:
+  - protocol
+  - recovery
+  - compatibility
+---
+
+Compatibility is valuable because it lets teams migrate without rewriting every client. It is also constraining because compatibility is a contract. Sockudo treats those facts as two different protocol surfaces instead of trying to hide new behavior inside old event shapes.
+
+Protocol V1 keeps the Pusher model intact: public, private, presence, encrypted channels, Pusher prefixes, and signed HTTP publish APIs.
+
+Protocol V2 adds the metadata Sockudo needs for native features:
+
+- `message_id` for stable broadcast identity
+- `serial` for stream position
+- `stream_id` for continuity boundaries
+- Sockudo-native event prefixes
+- recovery and rewind events
+- extras for tags, headers, echo controls, and feature metadata
+
+## Why separate prefixes matter
+
+Pusher-compatible clients should not be surprised by Sockudo-native events. The `sockudo:` namespace makes native behavior explicit and keeps V1 migrations quiet.
+
+## Recovery needs proof
+
+Recovery is not a best-effort cache lookup. The server should only claim recovery when stream continuity can be proven. If the stream reset or the replay window expired, clients need a clean resubscribe and state rebuild.
+
+## Push fits beside realtime
+
+Push notifications are part of the same product surface but not the same transport. WebSockets deliver ordered channel events to connected clients. Push wakes devices and carries stable identifiers back into application state. Protocol V2 and push complement each other when a notification references the channel and message serial the app can fetch after opening.

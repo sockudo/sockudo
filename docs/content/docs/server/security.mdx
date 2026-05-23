@@ -1,0 +1,115 @@
+---
+title: Security
+description: Secure Sockudo credentials, auth endpoints, origin policy, encrypted channels, webhooks, and push provider credentials.
+icon: ShieldCheck
+---
+
+Sockudo security depends on clear trust boundaries. Client SDKs connect and subscribe; server SDKs hold secrets, sign auth responses, publish events, validate webhooks, and manage push.
+
+## Secrets
+
+Keep these server-side only:
+
+- app secret
+- encryption master key
+- webhook signing tokens
+- database credentials
+- Redis or adapter credentials
+- push provider credentials
+- APNs private key
+- FCM service account JSON
+- Web Push VAPID private key
+
+Use secret managers or Kubernetes Secrets. Do not bake secrets into images or public environment bundles.
+
+## Origin policy
+
+Configure allowed origins for browser clients. Do not use wildcard origins for authenticated apps.
+
+```toml
+[[app_manager.array.apps]]
+id = "app-id"
+key = "app-key"
+secret = "app-secret"
+allowed_origins = [
+  "https://app.example.com",
+  "https://admin.example.com"
+]
+```
+
+## Client messages
+
+Client events allow subscribed clients to publish events to private or presence channels. Disable them unless the product explicitly needs peer-to-peer client events.
+
+```toml
+enable_client_messages = false
+```
+
+When enabled, validate channel authorization carefully and use event names that are easy to audit.
+
+## Auth endpoints
+
+Auth endpoints must:
+
+1. authenticate the current user
+2. validate `socket_id`
+3. validate `channel_name`
+4. enforce tenant and resource policy
+5. sign with the server SDK
+6. avoid logging full signatures or secrets
+
+## Encrypted channels
+
+Encrypted channels protect payload contents from the transport. They do not replace channel authorization.
+
+Rules:
+
+- channel names must start with `private-encrypted-`
+- only one encrypted channel should be targeted per encrypted publish
+- keep the encryption master key server-side
+- rotate keys with a planned client migration window
+
+## Webhook validation
+
+Validate webhooks with the raw body:
+
+```ts
+const webhook = sockudo.webhook({ rawBody, headers });
+if (!webhook.isValid()) {
+  return res.status(401).end();
+}
+```
+
+Support key rotation by accepting old and new webhook tokens during the migration window.
+
+## Push security
+
+Push is a privileged subsystem. Treat it like an outbound messaging platform:
+
+- device registration must be tied to an authenticated user or device identity flow
+- provider tokens should be updateable and revocable
+- channel push subscriptions must obey the same authorization model as realtime channels
+- provider credentials must never be exposed to clients
+- push publish APIs should be rate limited per tenant and workflow
+- scheduled push should have cancellation and audit trails
+
+## Rate limiting
+
+Rate limit:
+
+- connection attempts by IP
+- auth requests by user and IP
+- client events by socket
+- HTTP publish by app
+- push registration and publish by tenant
+- webhook retries
+
+Use shared Redis-backed limits in multi-node deployments.
+
+## Operational hardening
+
+- terminate TLS at a trusted proxy or enable TLS directly
+- set proxy idle timeouts above heartbeat intervals
+- use readiness checks during deploys
+- emit audit logs for denied auth and push admin operations
+- alert on authentication failures, signature failures, and provider credential errors
