@@ -1,0 +1,111 @@
+---
+title: Observability
+description: Monitor Sockudo connections, subscriptions, publishes, fanout, history, recovery, webhooks, and push notifications.
+icon: Activity
+---
+
+Observability is part of the runtime contract. A realtime system should tell operators when it is connected, degraded, delayed, retrying, or dropping work.
+
+## Metrics endpoint
+
+```bash
+curl http://127.0.0.1:9601/metrics
+```
+
+Scrape the endpoint with Prometheus and label metrics by environment, region, node, adapter, and app where possible. Sockudo emits metrics through the `metrics-rs` recorder and exposes them through the Prometheus exporter by default.
+
+## TCP metrics exporter
+
+For live debugging or sidecar consumers, Sockudo can also fan out metric events over TCP using `metrics-exporter-tcp`. This exporter streams protobuf-encoded metric events to connected clients; it is useful for local inspection and custom collectors, but Prometheus scraping should remain the primary production monitoring path.
+
+```toml
+[metrics.tcp_exporter]
+enabled = true
+host = "127.0.0.1"
+port = 5000
+buffer_size = 1024
+```
+
+The TCP exporter has bounded buffering by default. When buffers fill, event samples can be dropped to avoid blocking the server, so do not use it as the only source for alerts or SLO dashboards.
+
+## Core signals
+
+| Area | Watch |
+| --- | --- |
+| Connections | active sockets, connection attempts, disconnect reasons, heartbeat failures |
+| Subscriptions | subscribe successes, auth failures, presence joins and leaves |
+| Publish | accepted, rejected, idempotency hits, payload-too-large failures |
+| Fanout | adapter publish latency, adapter receive latency, duplicate suppression |
+| Recovery | resume successes, resume failures, replay counts, buffer misses |
+| History | writes, reads, retention purges, cursor errors |
+| Webhooks | queued, delivered, failed, retried, dead-lettered |
+| Push | accepted, scheduled, dispatched, provider errors, publish status outcomes |
+
+## Logs
+
+Use structured logs for events that operators need to investigate:
+
+```json
+{
+  "level": "warn",
+  "target": "sockudo_push",
+  "app_id": "app-id",
+  "publish_id": "pub_123",
+  "provider": "apns",
+  "error": "BadDeviceToken"
+}
+```
+
+Avoid logging secrets, raw auth signatures, provider tokens, or encrypted payloads.
+
+## Grafana dashboards
+
+Recommended panels:
+
+- active connections by node
+- connection churn
+- publish rate by app
+- fanout latency histogram
+- subscription auth failure rate
+- recovery success ratio
+- replay buffer pressure
+- queue depth for webhooks and push
+- push provider failure rate by provider
+- APNs, FCM, Web Push latency by outcome
+
+## Alerts
+
+Alert on symptoms operators can act on:
+
+- readiness failures
+- adapter connection loss
+- rising publish failures
+- high auth rejection rate after deploy
+- recovery success ratio dropping
+- history write failures
+- webhook retry backlog
+- push queue backlog
+- push provider credential failures
+- push delivery status callback failures
+
+## Push status workflow
+
+Push publishes are asynchronous. Store the `publish_id` returned by the API when a business workflow needs support visibility.
+
+```ts
+const response = await sockudo.publishPush({
+  recipients: [{ type: "channel", channel: "orders" }],
+  payload: { title: "Order updated", body: "Packed" },
+  sync: false,
+});
+
+console.log(response.publish_id);
+```
+
+Then inspect status:
+
+```bash
+curl "https://realtime.example.com/apps/app-id/push/publish/pub_123/status"
+```
+
+Status records should be retained long enough for customer support and incident review.

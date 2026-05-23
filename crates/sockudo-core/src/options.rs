@@ -1651,6 +1651,7 @@ pub struct MetricsConfig {
     pub driver: MetricsDriver,
     pub host: String,
     pub prometheus: PrometheusConfig,
+    pub tcp_exporter: MetricsTcpExporterConfig,
     pub port: u16,
 }
 
@@ -1658,6 +1659,15 @@ pub struct MetricsConfig {
 #[serde(default)]
 pub struct PrometheusConfig {
     pub prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsTcpExporterConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub buffer_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2442,6 +2452,7 @@ impl Default for MetricsConfig {
             driver: MetricsDriver::default(),
             host: "0.0.0.0".to_string(),
             prometheus: PrometheusConfig::default(),
+            tcp_exporter: MetricsTcpExporterConfig::default(),
             port: 9601,
         }
     }
@@ -2451,6 +2462,17 @@ impl Default for PrometheusConfig {
     fn default() -> Self {
         Self {
             prefix: "sockudo_".to_string(),
+        }
+    }
+}
+
+impl Default for MetricsTcpExporterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "127.0.0.1".to_string(),
+            port: 5000,
+            buffer_size: Some(1024),
         }
     }
 }
@@ -3213,6 +3235,18 @@ impl ServerOptions {
         self.metrics.port = parse_env::<u16>("METRICS_PORT", self.metrics.port);
         if let Ok(val) = std::env::var("METRICS_PROMETHEUS_PREFIX") {
             self.metrics.prometheus.prefix = val;
+        }
+        self.metrics.tcp_exporter.enabled = parse_bool_env(
+            "METRICS_TCP_EXPORTER_ENABLED",
+            self.metrics.tcp_exporter.enabled,
+        );
+        if let Ok(val) = std::env::var("METRICS_TCP_EXPORTER_HOST") {
+            self.metrics.tcp_exporter.host = val;
+        }
+        self.metrics.tcp_exporter.port =
+            parse_env::<u16>("METRICS_TCP_EXPORTER_PORT", self.metrics.tcp_exporter.port);
+        if let Some(buffer_size) = parse_env_optional::<usize>("METRICS_TCP_EXPORTER_BUFFER_SIZE") {
+            self.metrics.tcp_exporter.buffer_size = Some(buffer_size);
         }
 
         // --- HTTP API ---

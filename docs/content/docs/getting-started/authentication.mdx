@@ -1,0 +1,133 @@
+---
+title: Authentication
+description: Sign private, presence, encrypted, and user authentication requests with trusted server SDKs.
+icon: KeyRound
+---
+
+Sockudo never trusts client-provided access to protected channels. Clients request a subscription, your application server decides whether the user is allowed, then the server returns a signed response.
+
+## Channel authorization flow
+
+1. Client subscribes to `private-orders` or `presence-room`.
+2. The client SDK sends `socket_id` and `channel_name` to your auth endpoint.
+3. Your backend validates the current user and channel policy.
+4. A server SDK signs the response using the app secret.
+5. Sockudo validates the signature and completes the subscription.
+
+## Node.js auth endpoint
+
+```ts
+import express from "express";
+import { Sockudo } from "sockudo";
+
+const app = express();
+app.use(express.urlencoded({ extended: false }));
+
+const sockudo = new Sockudo({
+  appId: process.env.SOCKUDO_APP_ID!,
+  key: process.env.SOCKUDO_APP_KEY!,
+  secret: process.env.SOCKUDO_APP_SECRET!,
+  host: "127.0.0.1",
+  port: 6001,
+  useTLS: false,
+});
+
+app.post("/sockudo/auth", (req, res) => {
+  const { socket_id, channel_name } = req.body;
+  const user = requireUser(req);
+
+  if (!canAccessChannel(user, channel_name)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  if (channel_name.startsWith("presence-")) {
+    return res.json(
+      sockudo.authorizeChannel(socket_id, channel_name, {
+        user_id: user.id,
+        user_info: { name: user.name, role: user.role },
+      }),
+    );
+  }
+
+  return res.json(sockudo.authorizeChannel(socket_id, channel_name));
+});
+```
+
+## Client configuration
+
+```ts
+import Sockudo from "@sockudo/client";
+
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  channelAuthorization: {
+    endpoint: "/sockudo/auth",
+  },
+});
+
+client.subscribe("private-orders");
+```
+
+## User authentication
+
+User authentication signs a connection identity. It powers watchlists and user-targeted server events.
+
+```ts
+app.post("/sockudo/user-auth", (req, res) => {
+  const user = requireUser(req);
+
+  res.json(
+    sockudo.authenticateUser(req.body.socket_id, {
+      id: user.id,
+      user_info: { name: user.name },
+    }),
+  );
+});
+```
+
+## Encrypted channels
+
+Encrypted channels start with `private-encrypted-`. The server signs the subscription and returns a per-channel shared secret derived from your encryption master key.
+
+```ts
+const sockudo = new Sockudo({
+  appId: "app-id",
+  key: "app-key",
+  secret: "app-secret",
+  host: "127.0.0.1",
+  port: 6001,
+  encryptionMasterKeyBase64: process.env.SOCKUDO_ENCRYPTION_MASTER_KEY!,
+});
+```
+
+Keep the master key outside the browser. Client SDKs only receive the derived shared secret for authorized encrypted channels.
+
+## Push authorization boundary
+
+Push registration and push publish helpers are also authentication boundaries. Mobile and browser clients should call your backend proxy, not Sockudo directly with app secrets.
+
+```ts
+app.post("/sockudo/push", async (req, res) => {
+  const user = requireUser(req);
+  await assertDeviceBelongsToUser(user, req.body.device_id);
+
+  const response = await sockudo.publishPush({
+    recipients: [{ type: "client", client_id: user.id }],
+    payload: req.body.payload,
+    sync: false,
+  });
+
+  res.status(202).json(response);
+});
+```
+
+## Security checklist
+
+- Read `socket_id` and `channel_name` from the request body; do not accept them from query parameters unless your framework requires it.
+- Authenticate the user before signing anything.
+- Enforce channel ownership and tenant boundaries before calling the SDK signing helper.
+- Return presence user data that is safe for all channel members to see.
+- Keep app secrets, webhook secrets, push provider credentials, and encryption master keys server-side only.
+- Use short request timeouts and structured audit logs for denied auth attempts.

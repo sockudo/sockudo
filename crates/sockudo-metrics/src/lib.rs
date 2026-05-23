@@ -1,3 +1,3 @@
 pub mod prometheus;
 
-pub use prometheus::PrometheusMetricsDriver;
+pub use prometheus::{PrometheusMetricsDriver, TcpExporterOptions};

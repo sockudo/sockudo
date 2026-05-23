@@ -1,0 +1,96 @@
+---
+title: Configuration reference
+description: Reference major Sockudo configuration sections and the deployment decisions they control.
+icon: Settings2
+---
+
+Sockudo's TOML configuration is organized by runtime responsibility.
+
+For deployment overrides and secrets, use the complete [environment variable reference](/docs/reference/environment-variables). It lists every runtime variable parsed by the server and push subsystem.
+
+## Top-level
+
+| Key | Purpose |
+| --- | --- |
+| `host` | Bind host for WebSocket and HTTP API. |
+| `port` | Bind port for WebSocket and HTTP API. |
+| `debug` | Enables verbose diagnostics for local development. |
+
+## App manager
+
+| Section | Purpose |
+| --- | --- |
+| `[app_manager]` | Select app storage driver. |
+| `[app_manager.array]` | Static in-config app definitions. |
+| `[[app_manager.array.apps]]` | App ID, key, secret, enabled flag, limits, and policy. |
+
+## Runtime backends
+
+| Section | Purpose |
+| --- | --- |
+| `[adapter]` | Cross-node fanout. |
+| `[cache]` | Shared cache and coordination. |
+| `[queue]` | Webhook and push background work. |
+| `[rate_limiter]` | Request, connection, event, and push limits. |
+
+## Protocol features
+
+| Section | Purpose |
+| --- | --- |
+| `[recovery]` | V2 replay buffers and resume behavior. |
+| `[history]` | Durable channel history. |
+| `[delta]` | Delta algorithms, cache size, and conflation behavior. |
+| `[tag_filtering]` | V2 filter parsing and match controls. |
+| `[webhooks]` | Webhook delivery, batching, and retry. |
+
+## Push
+
+| Section | Purpose |
+| --- | --- |
+| `[push]` | Enables push, async behavior, limits, status retention. |
+| `[push.providers.fcm]` | Firebase Cloud Messaging credentials. |
+| `[push.providers.apns]` | Apple Push Notification service credentials. |
+| `[push.providers.webpush]` | Web Push VAPID configuration. |
+| `[push.providers.hms]` | Huawei Mobile Services credentials. |
+| `[push.providers.wns]` | Windows Notification Service credentials. |
+
+## Observability
+
+| Section | Purpose |
+| --- | --- |
+| `[metrics]` | Enables metrics and configures the Prometheus scrape endpoint. |
+| `[metrics.prometheus]` | Prometheus metric naming options. |
+| `[metrics.tcp_exporter]` | Optional metrics-rs TCP event exporter for live clients and sidecars. |
+| logging environment | Runtime log level and structured output. |
+
+## Example production skeleton
+
+```toml
+host = "0.0.0.0"
+port = 6001
+debug = false
+
+[adapter]
+driver = "redis"
+
+[cache]
+driver = "redis"
+
+[queue]
+driver = "redis"
+
+[metrics]
+enabled = true
+port = 9601
+
+[metrics.tcp_exporter]
+enabled = false
+host = "127.0.0.1"
+port = 5000
+buffer_size = 1024
+
+[push]
+enabled = true
+async_only = true
+publish_status_ttl_seconds = 86400
+```

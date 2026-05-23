@@ -1,0 +1,94 @@
+---
+title: Webhooks
+description: Deliver channel lifecycle, client event, presence, history, annotation, and push events to your backend.
+icon: Webhook
+---
+
+Webhooks let Sockudo notify your backend about lifecycle and operational events. They are delivered asynchronously and should be idempotent.
+
+## Configure
+
+```toml
+[webhooks]
+enabled = true
+batching_enabled = true
+max_batch_size = 50
+flush_interval_ms = 500
+timeout_ms = 5000
+```
+
+## Validate signatures
+
+Use the raw request body:
+
+```ts
+app.post("/sockudo/webhooks", rawBodyMiddleware, (req, res) => {
+  const webhook = sockudo.webhook({
+    rawBody: req.rawBody,
+    headers: req.headers,
+  });
+
+  if (!webhook.isValid()) {
+    return res.status(401).send("invalid");
+  }
+
+  for (const event of webhook.getEvents()) {
+    handleWebhookEvent(event);
+  }
+
+  res.send("ok");
+});
+```
+
+## Event handling
+
+Webhook handlers should:
+
+- deduplicate by event ID or stable business ID
+- return quickly
+- enqueue expensive work
+- tolerate retries
+- preserve raw payloads for audit when compliance requires it
+
+## Push webhooks
+
+Push provider status callbacks and push lifecycle webhooks are core to operating notifications. Use them to reconcile provider outcomes with Sockudo publish status.
+
+Typical push events include:
+
+- publish accepted
+- publish dispatched
+- provider accepted
+- provider rejected
+- device token invalidated
+- scheduled push cancelled
+- delivery status callback received
+
+Example handler:
+
+```ts
+function handleWebhookEvent(event: SockudoWebhookEvent) {
+  switch (event.name) {
+    case "push.publish_failed":
+      alertPushFailure(event.data.publish_id, event.data.provider);
+      break;
+    case "push.device_invalidated":
+      deactivateDevice(event.data.device_id);
+      break;
+    default:
+      recordEvent(event);
+  }
+}
+```
+
+## Retry behavior
+
+Return a non-2xx status only when you want Sockudo to retry. If the event is valid but not useful, record it as ignored and return success.
+
+## Security
+
+- accept webhooks only over HTTPS
+- validate signature before parsing business logic
+- rotate tokens with overlap
+- avoid logging provider tokens or encrypted payloads
+- rate limit webhook endpoints separately from public API endpoints

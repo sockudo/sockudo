@@ -1,0 +1,64 @@
+---
+title: Presence history
+description: Read current presence, historical presence events, and reconstructed snapshots through trusted proxy endpoints.
+icon: UsersRound
+---
+
+Presence answers two separate questions:
+
+- Who is subscribed now?
+- What membership transitions happened over time?
+
+Current presence is realtime channel state. Presence history is a durable event log.
+
+## Current members
+
+```ts
+const channel = client.subscribe("presence-lobby");
+
+channel.bind("pusher:subscription_succeeded", (members) => {
+  console.log("members", members);
+});
+
+channel.bind("pusher:member_added", console.log);
+channel.bind("pusher:member_removed", console.log);
+```
+
+## History proxy
+
+Client SDKs call your backend proxy. The proxy signs the Sockudo HTTP API request.
+
+```ts
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  presenceHistory: {
+    endpoint: "/sockudo/presence-history",
+  },
+});
+
+const channel = client.subscribe("presence-lobby");
+const page = await channel.history({
+  limit: 50,
+  direction: "newest_first",
+});
+```
+
+## Snapshot
+
+Snapshots reconstruct effective membership at a point in the presence stream.
+
+```ts
+const snapshot = await channel.snapshot({
+  atSerial: 42,
+});
+
+console.log(snapshot.members);
+```
+
+## Push relationship
+
+Presence is about connected clients. Push registrations are about reachable devices. A user can be absent from a presence channel and still have a device eligible for push.
+
+Use presence for live collaboration indicators. Use push channel subscriptions for offline notification eligibility.

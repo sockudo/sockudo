@@ -1,0 +1,33 @@
+---
+title: Running Realtime Infrastructure Across Nodes
+description: How to reason about adapters, duplicate delivery, recovery windows, and push queues in a Sockudo cluster.
+date: "2026-05-19"
+author: "Sockudo Team"
+category: "Operations"
+tags:
+  - scaling
+  - adapters
+  - push
+---
+
+Single-node realtime systems are easy to reason about because local memory looks authoritative. Multi-node systems are different. Every useful guarantee has to survive retries, disconnects, duplicate messages, node death, and backend latency.
+
+Sockudo clusters should share the dependencies that carry state across nodes:
+
+- adapter for fanout
+- cache for rate limits and idempotency
+- queue for webhooks and push
+- app manager for credentials
+- history storage when durable reads matter
+
+## Duplicate delivery is normal
+
+Distributed transports retry. Clients and consumers should use `message_id`, application IDs, and idempotency keys to make duplicates harmless.
+
+## Recovery is a window
+
+Replay buffers are bounded by size and TTL. They protect reconnects, not indefinite offline periods. Durable history and push notifications solve different product needs and should be configured separately.
+
+## Push changes the capacity model
+
+Push does not scale like WebSocket fanout. Provider rate limits, platform payload sizes, queue depth, credentials, and delivery callbacks matter. A production cluster should alert on push admission, dispatch, provider failures, and status retention just like it alerts on WebSocket publish failures.

@@ -1,0 +1,179 @@
+---
+title: Configuration
+description: Configure apps, adapters, cache, queues, rate limits, history, recovery, webhooks, and push notifications.
+icon: SlidersHorizontal
+---
+
+Sockudo configuration should describe the runtime shape explicitly: app storage, fanout adapter, cache, queue, protocol features, security controls, metrics, webhooks, and push notification providers.
+
+## Minimal local config
+
+```toml
+port = 6001
+host = "0.0.0.0"
+debug = true
+
+[app_manager]
+driver = "memory"
+
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "app-id"
+key = "app-key"
+secret = "app-secret"
+enabled = true
+enable_client_messages = false
+max_connections = 1000
+```
+
+## Production shape
+
+```toml
+port = 6001
+host = "0.0.0.0"
+debug = false
+
+[app_manager]
+driver = "postgres"
+
+[adapter]
+driver = "redis"
+
+[cache]
+driver = "redis"
+
+[queue]
+driver = "redis"
+
+[metrics]
+enabled = true
+host = "0.0.0.0"
+port = 9601
+
+[metrics.tcp_exporter]
+enabled = false
+host = "127.0.0.1"
+port = 5000
+buffer_size = 1024
+```
+
+## App manager
+
+The app manager stores app credentials and app-level policy. Memory is useful for local development; persistent managers are preferred for production.
+
+| Driver | Use when |
+| --- | --- |
+| `memory` | Credentials are static and local to one process. |
+| `postgres` or `mysql` | You need relational app records and standard operational tooling. |
+| `redis` | You need lightweight shared app state. |
+| `dynamodb` | You run on AWS and want managed key-value storage. |
+| `scylladb` | You need wide-column scale. |
+| `surrealdb` | You use SurrealDB 3 for app metadata. |
+
+## Adapter
+
+The adapter controls cross-node fanout.
+
+```toml
+[adapter]
+driver = "redis"
+
+[adapter.redis]
+host = "redis"
+port = 6379
+prefix = "sockudo"
+```
+
+Use a shared adapter for every multi-node deployment. Local memory adapters are intentionally process-local.
+
+## Recovery and history
+
+```toml
+[recovery]
+enabled = true
+buffer_size = 1000
+ttl_seconds = 120
+
+[history]
+enabled = true
+retention_seconds = 86400
+max_items_per_channel = 10000
+```
+
+Recovery buffers are for reconnect continuity. Durable history is for API reads, rewind, versioned messages, and operational inspection. Keep those concerns separate.
+
+## Push notifications
+
+Push is a core Sockudo subsystem. Configure it with a queue, provider credentials, retention, admission limits, and metrics before sending production traffic.
+
+```toml
+[push]
+enabled = true
+default_ttl_seconds = 3600
+publish_status_ttl_seconds = 86400
+max_recipients_per_publish = 10000
+async_only = true
+
+[push.providers.fcm]
+enabled = true
+credentials_path = "/var/run/secrets/fcm-service-account.json"
+
+[push.providers.apns]
+enabled = true
+team_id = "TEAMID1234"
+key_id = "KEYID12345"
+bundle_id = "com.example.app"
+private_key_path = "/var/run/secrets/apns-auth-key.p8"
+
+[push.providers.webpush]
+enabled = true
+vapid_subject = "mailto:ops@example.com"
+vapid_public_key = "${WEB_PUSH_PUBLIC_KEY}"
+vapid_private_key = "${WEB_PUSH_PRIVATE_KEY}"
+```
+
+Use the queue backend for push fanout. Direct synchronous provider delivery is only suitable for tests and can hide production latency.
+
+## Webhooks
+
+```toml
+[webhooks]
+enabled = true
+batching_enabled = true
+max_batch_size = 50
+flush_interval_ms = 500
+timeout_ms = 5000
+```
+
+Webhook consumers must validate signatures with the raw request body. Configure retry behavior and dead-letter visibility before relying on webhooks for workflows.
+
+## Rate limits
+
+```toml
+[rate_limiter]
+enabled = true
+driver = "redis"
+
+[rate_limiter.limits]
+connection_per_ip = 50
+events_per_second = 100
+```
+
+Keep limits close to product intent. A collaboration app, trading dashboard, and push-heavy mobile app need different ceilings.
+
+## Environment variables
+
+Use environment variables for secrets and deployment-specific settings:
+
+```bash
+SOCKUDO_DEFAULT_APP_ID=app-id
+SOCKUDO_DEFAULT_APP_KEY=app-key
+SOCKUDO_DEFAULT_APP_SECRET=app-secret
+REDIS_URL=redis://redis:6379/0
+PUSH_FCM_PROJECT_ID=project-id
+PUSH_FCM_PROVIDER_TOKEN=oauth2-access-token
+```
+
+Avoid putting app secrets, encryption master keys, webhook secrets, and push provider credentials in committed config files.
+
+Every runtime environment override is listed in the [environment variable reference](/docs/reference/environment-variables).

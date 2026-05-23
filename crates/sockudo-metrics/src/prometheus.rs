@@ -3,16 +3,20 @@
 use sockudo_core::error::Result;
 
 use async_trait::async_trait;
-use prometheus::{
-    CounterVec, Gauge, GaugeVec, HistogramVec, Opts, TextEncoder, histogram_opts,
-    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec,
-};
+use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_tcp::TcpBuilder;
+use metrics_util::layers::FanoutBuilder;
 use sockudo_core::channel::ChannelType;
 use sockudo_core::metrics::MetricsInterface;
+use sockudo_core::utils::resolve_socket_addr;
 use sockudo_core::websocket::SocketId;
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
-use tracing::{debug, error};
+use std::net::SocketAddr;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, warn};
 
 // Histogram buckets for internal operations (in milliseconds)
 // Optimized for sub-millisecond to low-millisecond measurements
@@ -26,10 +30,388 @@ const END_TO_END_LATENCY_HISTOGRAM_BUCKETS: &[f64] = &[
     0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
 ];
 
+const ANNOTATION_REBUILD_HISTOGRAM_BUCKETS: &[f64] = &[
+    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+];
+
+static PROMETHEUS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+
+/// Optional TCP metrics exporter settings.
+#[derive(Debug, Clone)]
+pub struct TcpExporterOptions {
+    /// Host or IP address for the TCP exporter listener.
+    pub host: String,
+    /// TCP exporter listener port.
+    pub port: u16,
+    /// Internal and per-client buffer size. `None` makes the exporter unbounded.
+    pub buffer_size: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedTcpExporterOptions {
+    listen_addr: SocketAddr,
+    buffer_size: Option<usize>,
+}
+
+#[derive(Debug)]
+struct MetricsRegistrationError;
+
+struct Opts {
+    name: String,
+    help: String,
+}
+
+impl Opts {
+    fn new(name: impl Into<String>, help: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            help: help.into(),
+        }
+    }
+}
+
+struct HistogramOpts {
+    name: String,
+    help: String,
+}
+
+macro_rules! histogram_opts {
+    ($name:expr, $help:expr, $buckets:expr) => {{
+        let _ = $buckets;
+        HistogramOpts {
+            name: $name.into(),
+            help: $help.into(),
+        }
+    }};
+}
+
+macro_rules! register_gauge {
+    ($opts:expr) => {{
+        let opts = $opts;
+        describe_gauge!(opts.name.clone(), opts.help.clone());
+        Ok::<Gauge, MetricsRegistrationError>(Gauge {
+            name: opts.name,
+            value: AtomicU64::new(0),
+        })
+    }};
+}
+
+macro_rules! register_gauge_vec {
+    ($opts:expr, $labels:expr) => {{
+        let opts = $opts;
+        describe_gauge!(opts.name.clone(), opts.help.clone());
+        Ok::<GaugeVec, MetricsRegistrationError>(GaugeVec {
+            name: opts.name,
+            label_names: $labels,
+        })
+    }};
+}
+
+macro_rules! register_counter_vec {
+    ($opts:expr, $labels:expr) => {{
+        let opts = $opts;
+        describe_counter!(opts.name.clone(), opts.help.clone());
+        Ok::<CounterVec, MetricsRegistrationError>(CounterVec {
+            name: opts.name,
+            label_names: $labels,
+        })
+    }};
+}
+
+macro_rules! register_histogram_vec {
+    ($opts:expr, $labels:expr) => {{
+        let opts = $opts;
+        describe_histogram!(opts.name.clone(), opts.help.clone());
+        Ok::<HistogramVec, MetricsRegistrationError>(HistogramVec {
+            name: opts.name,
+            label_names: $labels,
+        })
+    }};
+}
+
+fn install_prometheus_recorder(
+    prefix: &str,
+    tcp_exporter: Option<ResolvedTcpExporterOptions>,
+) -> PrometheusHandle {
+    PROMETHEUS_HANDLE
+        .get_or_init(|| {
+            #[allow(deprecated)]
+            let mut builder = PrometheusBuilder::new()
+                .set_enable_unit_suffix(false)
+                .set_buckets(END_TO_END_LATENCY_HISTOGRAM_BUCKETS)
+                .expect("valid Prometheus histogram buckets");
+
+            for (metric, buckets) in [
+                (
+                    format!("{prefix}horizontal_adapter_resolve_time"),
+                    INTERNAL_LATENCY_HISTOGRAM_BUCKETS,
+                ),
+                (
+                    format!("{prefix}annotation_projection_rebuild_duration_seconds"),
+                    ANNOTATION_REBUILD_HISTOGRAM_BUCKETS,
+                ),
+            ] {
+                builder = builder
+                    .set_buckets_for_metric(Matcher::Full(metric), buckets)
+                    .expect("valid Prometheus histogram bucket override");
+            }
+
+            let prometheus_recorder = builder.build_recorder();
+            let handle = prometheus_recorder.handle();
+
+            if let Some(tcp_exporter) = tcp_exporter {
+                let tcp_recorder = TcpBuilder::new()
+                    .listen_address(tcp_exporter.listen_addr)
+                    .buffer_size(tcp_exporter.buffer_size)
+                    .build();
+
+                match tcp_recorder {
+                    Ok(tcp_recorder) => {
+                        let fanout = FanoutBuilder::default()
+                            .add_recorder(prometheus_recorder)
+                            .add_recorder(tcp_recorder)
+                            .build();
+                        metrics::set_global_recorder(fanout)
+                            .expect("failed to install metrics-rs fanout recorder");
+                    }
+                    Err(error) => {
+                        warn!(
+                            "Failed to start metrics-rs TCP exporter on {}: {}. Continuing with Prometheus exporter only.",
+                            tcp_exporter.listen_addr, error
+                        );
+                        metrics::set_global_recorder(prometheus_recorder)
+                            .expect("failed to install metrics-rs Prometheus recorder");
+                    }
+                }
+            } else {
+                metrics::set_global_recorder(prometheus_recorder)
+                    .expect("failed to install metrics-rs Prometheus recorder");
+            }
+
+            handle
+        })
+        .clone()
+}
+
+trait MetricLabelValues {
+    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)>;
+}
+
+fn labels_from_iter<'a>(
+    label_names: &[&str],
+    values: impl IntoIterator<Item = &'a str>,
+) -> Vec<(String, String)> {
+    let values = values.into_iter().collect::<Vec<_>>();
+    debug_assert_eq!(
+        label_names.len(),
+        values.len(),
+        "metric label/value count mismatch"
+    );
+
+    label_names
+        .iter()
+        .zip(values)
+        .map(|(name, value)| ((*name).to_owned(), value.to_owned()))
+        .collect()
+}
+
+impl<'a> MetricLabelValues for &'a [&'a str] {
+    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+        labels_from_iter(label_names, self.iter().copied())
+    }
+}
+
+impl<'a, const N: usize> MetricLabelValues for &'a [&'a str; N] {
+    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+        labels_from_iter(label_names, self.iter().copied())
+    }
+}
+
+impl<'a, const N: usize> MetricLabelValues for &'a [&'a String; N] {
+    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+        labels_from_iter(label_names, self.iter().map(|value| value.as_str()))
+    }
+}
+
+impl<'a> MetricLabelValues for &'a [&'a String] {
+    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+        labels_from_iter(label_names, self.iter().map(|value| value.as_str()))
+    }
+}
+
+impl MetricLabelValues for &Vec<String> {
+    fn to_pairs(self, label_names: &[&str]) -> Vec<(String, String)> {
+        labels_from_iter(label_names, self.iter().map(String::as_str))
+    }
+}
+
+struct Gauge {
+    name: String,
+    value: AtomicU64,
+}
+
+impl Gauge {
+    fn set(&self, value: f64) {
+        self.value.store(value.to_bits(), Ordering::Relaxed);
+        gauge!(self.name.clone()).set(value);
+    }
+
+    fn get(&self) -> f64 {
+        f64::from_bits(self.value.load(Ordering::Relaxed))
+    }
+}
+
+struct GaugeVec {
+    name: String,
+    label_names: &'static [&'static str],
+}
+
+impl GaugeVec {
+    fn with_label_values(&self, values: impl MetricLabelValues) -> GaugeWithLabels {
+        GaugeWithLabels {
+            name: self.name.clone(),
+            labels: values.to_pairs(self.label_names),
+        }
+    }
+
+    fn reset(&self) {}
+}
+
+struct GaugeWithLabels {
+    name: String,
+    labels: Vec<(String, String)>,
+}
+
+impl GaugeWithLabels {
+    fn inc(&self) {
+        gauge!(self.name.clone(), &self.labels).increment(1.0);
+    }
+
+    fn dec(&self) {
+        gauge!(self.name.clone(), &self.labels).decrement(1.0);
+    }
+
+    fn set(&self, value: f64) {
+        gauge!(self.name.clone(), &self.labels).set(value);
+    }
+}
+
+struct CounterVec {
+    name: String,
+    label_names: &'static [&'static str],
+}
+
+impl CounterVec {
+    fn with_label_values(&self, values: impl MetricLabelValues) -> CounterWithLabels {
+        CounterWithLabels {
+            name: self.name.clone(),
+            labels: values.to_pairs(self.label_names),
+        }
+    }
+}
+
+struct CounterWithLabels {
+    name: String,
+    labels: Vec<(String, String)>,
+}
+
+impl CounterWithLabels {
+    fn inc(&self) {
+        counter!(self.name.clone(), &self.labels).increment(1);
+    }
+
+    fn inc_by(&self, value: f64) {
+        if value.is_sign_positive() {
+            counter!(self.name.clone(), &self.labels).increment(value as u64);
+        }
+    }
+}
+
+struct HistogramVec {
+    name: String,
+    label_names: &'static [&'static str],
+}
+
+impl HistogramVec {
+    fn with_label_values(&self, values: impl MetricLabelValues) -> HistogramWithLabels {
+        HistogramWithLabels {
+            name: self.name.clone(),
+            labels: values.to_pairs(self.label_names),
+        }
+    }
+}
+
+struct HistogramWithLabels {
+    name: String,
+    labels: Vec<(String, String)>,
+}
+
+impl HistogramWithLabels {
+    fn observe(&self, value: f64) {
+        histogram!(self.name.clone(), &self.labels).record(value);
+    }
+}
+
+fn prometheus_text_to_json(text: &str) -> Value {
+    let mut raw = json!({});
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((metric, value)) = line.rsplit_once(' ') else {
+            continue;
+        };
+        let Ok(value) = value.parse::<f64>() else {
+            continue;
+        };
+
+        let (name, labels) = parse_metric_and_labels(metric);
+        if labels.as_object().is_some_and(|labels| labels.is_empty()) {
+            raw[name] = json!(value);
+        } else {
+            if !raw.as_object().unwrap().contains_key(&name) {
+                raw[name] = json!([]);
+            }
+            let mut metric_with_labels = labels;
+            metric_with_labels["value"] = json!(value);
+            raw[name].as_array_mut().unwrap().push(metric_with_labels);
+        }
+    }
+
+    raw
+}
+
+fn parse_metric_and_labels(metric: &str) -> (&str, Value) {
+    let Some(label_start) = metric.find('{') else {
+        return (metric, json!({}));
+    };
+    let Some(label_end) = metric.rfind('}') else {
+        return (metric, json!({}));
+    };
+
+    let name = &metric[..label_start];
+    let labels = &metric[label_start + 1..label_end];
+    let mut label_json = json!({});
+
+    for label in labels.split(',') {
+        let Some((key, value)) = label.split_once("=\"") else {
+            continue;
+        };
+        let value = value.strip_suffix('"').unwrap_or(value);
+        label_json[key] = json!(value);
+    }
+
+    (name, label_json)
+}
+
 /// A Prometheus implementation of the metrics interface
 pub struct PrometheusMetricsDriver {
     prefix: String,
     port: u16,
+    handle: PrometheusHandle,
 
     // Process metrics (for memory leak detection)
     process_resident_memory_bytes: Gauge,
@@ -132,7 +514,27 @@ pub struct PrometheusMetricsDriver {
 impl PrometheusMetricsDriver {
     /// Creates a new Prometheus metrics driver
     pub async fn new(port: u16, prefix_opt: Option<&str>) -> Self {
+        Self::with_tcp_exporter(port, prefix_opt, None).await
+    }
+
+    /// Creates a new Prometheus metrics driver with an optional TCP exporter fanout.
+    pub async fn with_tcp_exporter(
+        port: u16,
+        prefix_opt: Option<&str>,
+        tcp_exporter: Option<TcpExporterOptions>,
+    ) -> Self {
         let prefix = prefix_opt.unwrap_or("sockudo_").to_string();
+        let tcp_exporter = if let Some(options) = tcp_exporter {
+            let listen_addr =
+                resolve_socket_addr(&options.host, options.port, "Metrics TCP exporter").await;
+            Some(ResolvedTcpExporterOptions {
+                listen_addr,
+                buffer_size: options.buffer_size,
+            })
+        } else {
+            None
+        };
+        let handle = install_prometheus_recorder(&prefix, tcp_exporter);
 
         // Initialize process metrics (standard Prometheus naming, no prefix)
         let process_resident_memory_bytes = register_gauge!(Opts::new(
@@ -903,6 +1305,7 @@ impl PrometheusMetricsDriver {
         Self {
             prefix,
             port,
+            handle,
             process_resident_memory_bytes,
             process_virtual_memory_bytes,
             process_cpu_seconds_total,
@@ -1736,14 +2139,8 @@ impl MetricsInterface for PrometheusMetricsDriver {
         self.update_process_metrics();
         self.update_tokio_runtime_metrics();
 
-        let encoder = TextEncoder::new();
-        let metric_families = prometheus::gather(); // Gather from the default registry
-        encoder
-            .encode_to_string(&metric_families)
-            .unwrap_or_else(|e| {
-                error!("{}", format!("Failed to encode metrics to string: {}", e));
-                String::from("Error encoding metrics")
-            })
+        self.handle.run_upkeep();
+        self.handle.render()
     }
 
     /// Get metrics data as a JSON object
@@ -1793,69 +2190,7 @@ impl MetricsInterface for PrometheusMetricsDriver {
             "timestamp": chrono::Utc::now().to_rfc3339()
         });
 
-        // Gather metrics from Prometheus
-        let metric_families = prometheus::gather();
-
-        // Convert Prometheus metrics to JSON
-        let mut json_metrics = json!({});
-
-        for mf in metric_families {
-            let name = mf.name();
-            let metric_type = mf.type_();
-
-            for m in mf.get_metric() {
-                let labels = m.get_label();
-                let mut label_json = json!({});
-
-                // Process labels
-                for label in labels {
-                    label_json[label.name()] = json!(label.value());
-                }
-
-                // Get metric value based on type
-                let value = match metric_type {
-                    prometheus::proto::MetricType::COUNTER => {
-                        json!(m.get_counter().value())
-                    }
-                    prometheus::proto::MetricType::GAUGE => {
-                        json!(m.get_gauge().value())
-                    }
-                    prometheus::proto::MetricType::HISTOGRAM => {
-                        let h = m.get_histogram();
-                        let mut buckets = Vec::new();
-                        for b in h.get_bucket() {
-                            buckets.push(json!({
-                                "upper_bound": b.upper_bound(),
-                                "cumulative_count": b.cumulative_count()
-                            }));
-                        }
-                        json!({
-                            "sample_count": h.get_sample_count(),
-                            "sample_sum": h.get_sample_sum(),
-                            "buckets": buckets
-                        })
-                    }
-                    _ => {
-                        json!(null)
-                    }
-                };
-
-                // Add to json_metrics
-                if labels.is_empty() {
-                    json_metrics[name] = value;
-                } else {
-                    if !json_metrics.as_object().unwrap().contains_key(&name) {
-                        json_metrics[name] = json!([]);
-                    }
-                    let mut metric_with_labels = label_json;
-                    metric_with_labels["value"] = value;
-                    json_metrics[name]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(metric_with_labels);
-                }
-            }
-        }
+        let json_metrics = prometheus_text_to_json(&self.get_metrics_as_plaintext().await);
 
         // Return raw metrics JSON for maximum flexibility
         json!({

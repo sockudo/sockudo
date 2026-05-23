@@ -1,0 +1,183 @@
+---
+title: JavaScript and TypeScript
+description: Use @sockudo/client in browsers, Node.js, workers, React, Vue, React Native, and NativeScript.
+icon: Braces
+---
+
+`@sockudo/client` is the official JavaScript and TypeScript realtime SDK. It preserves the Pusher subscribe/bind model and adds runtime-specific entrypoints.
+
+## Install
+
+```bash
+npm install @sockudo/client
+bun add @sockudo/client
+pnpm add @sockudo/client
+```
+
+## Runtime imports
+
+```ts
+import Sockudo from "@sockudo/client";
+import { Filter } from "@sockudo/client/filter";
+import SockudoEncrypted from "@sockudo/client/with-encryption";
+import WorkerSockudo from "@sockudo/client/worker";
+import { SockudoProvider, useChannel } from "@sockudo/client/react";
+import { createSockudoPlugin, useChannel as useSockudoChannel } from "@sockudo/client/vue";
+import ReactNativeSockudo from "@sockudo/client/react-native";
+import NativeScriptSockudo from "@sockudo/client/nativescript";
+```
+
+## Connect
+
+```ts
+import Sockudo from "@sockudo/client";
+
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  enabledTransports: ["ws"],
+  protocolVersion: 2,
+  connectionRecovery: true,
+});
+
+const channel = client.subscribe("public-updates");
+channel.bind("price-updated", (payload) => {
+  console.log(payload);
+});
+```
+
+## Private and presence auth
+
+```ts
+const client = new Sockudo("app-key", {
+  wsHost: "realtime.example.com",
+  forceTLS: true,
+  channelAuthorization: {
+    endpoint: "/sockudo/auth",
+  },
+  userAuthentication: {
+    endpoint: "/sockudo/user-auth",
+  },
+});
+
+const presence = client.subscribe("presence-lobby");
+presence.bind("pusher:member_added", console.log);
+```
+
+## React
+
+```tsx
+import Sockudo from "@sockudo/client";
+import { SockudoProvider, useChannel } from "@sockudo/client/react";
+
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+});
+
+client.connect();
+
+function Orders() {
+  const { subscribed, events } = useChannel("orders", ["order.created"]);
+  return <pre>{JSON.stringify({ subscribed, events }, null, 2)}</pre>;
+}
+
+export function App() {
+  return (
+    <SockudoProvider client={client}>
+      <Orders />
+    </SockudoProvider>
+  );
+}
+```
+
+## Vue
+
+```ts
+import Sockudo from "@sockudo/client";
+import { createSockudoPlugin, useChannel } from "@sockudo/client/vue";
+
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+});
+
+app.use(createSockudoPlugin(client));
+
+const { subscribed, bind } = useChannel("orders");
+bind("order.created", (payload) => console.log(payload));
+```
+
+## Filters and deltas
+
+```ts
+const channel = client.subscribe("market:btc", {
+  filter: Filter.and(
+    Filter.eq("market", "spot"),
+    Filter.gte("price", "100"),
+  ),
+  delta: {
+    enabled: true,
+    algorithm: "xdelta3",
+  },
+});
+```
+
+## Recovery and rewind
+
+```ts
+const channel = client.subscribe("market:BTC", {
+  rewind: { seconds: 30 },
+});
+
+channel.bind("message", () => {
+  console.log(client.getRecoveryPosition("market:BTC"));
+});
+
+client.bind("sockudo:resume_success", (payload) => {
+  console.log(payload.recovered, payload.failed);
+});
+```
+
+## Versioned messages
+
+Configure a backend proxy for REST reads:
+
+```ts
+const client = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  forceTLS: false,
+  versionedMessages: {
+    endpoint: "/sockudo/versioned",
+  },
+});
+
+const channel = client.subscribe("chat:room-1");
+const latest = await channel.getMessage("42");
+const versions = await channel.getMessageVersions("42", {
+  limit: 20,
+  direction: "oldest_first",
+});
+```
+
+## Push proxy helpers
+
+Browser push registration should flow through your backend. Keep app secrets and provider credentials server-side.
+
+```ts
+await fetch("/sockudo/push/devices", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    device_id: "browser-device-1",
+    platform: "webpush",
+    provider_token: pushSubscription,
+  }),
+});
+```
+
+Use a server SDK to publish push after validating user and tenant policy.
