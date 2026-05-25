@@ -105,10 +105,14 @@ spec:
               value: {{ .Values.config.rateLimiter.apiMaxRequests | quote }}
             - name: RATE_LIMITER_API_WINDOW_SECONDS
               value: {{ .Values.config.rateLimiter.apiWindowSeconds | quote }}
+            - name: RATE_LIMITER_API_TRUST_HOPS
+              value: {{ .Values.config.rateLimiter.apiTrustHops | quote }}
             - name: RATE_LIMITER_WS_MAX_REQUESTS
               value: {{ .Values.config.rateLimiter.wsMaxRequests | quote }}
             - name: RATE_LIMITER_WS_WINDOW_SECONDS
               value: {{ .Values.config.rateLimiter.wsWindowSeconds | quote }}
+            - name: RATE_LIMITER_WS_TRUST_HOPS
+              value: {{ .Values.config.rateLimiter.wsTrustHops | quote }}
             # Metrics
             {{- if .Values.config.metrics.enabled }}
             - name: METRICS_ENABLED

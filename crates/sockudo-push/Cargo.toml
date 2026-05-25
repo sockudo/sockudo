@@ -12,7 +12,7 @@ default = ["memory"]
 memory = []
 testing = []
 monolith = []
-push-fcm = ["dep:reqwest"]
+push-fcm = ["dep:jsonwebtoken", "dep:reqwest"]
 push-apns = ["dep:reqwest"]
 push-webpush = ["dep:reqwest", "dep:web-push-native"]
 push-hms = ["dep:reqwest"]
@@ -48,6 +48,7 @@ futures-util = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 httpdate = { workspace = true }
+jsonwebtoken = { workspace = true, optional = true }
 rand = { workspace = true }
 reqwest = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }

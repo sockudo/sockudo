@@ -185,6 +185,7 @@ This page lists every runtime environment variable referenced by the server, cor
 | `RATE_LIMITER_API_TRUST_HOPS` | Trusted proxy hops for API client IP extraction. |
 | `RATE_LIMITER_WS_MAX_REQUESTS` | WebSocket upgrade attempts allowed per window. |
 | `RATE_LIMITER_WS_WINDOW_SECONDS` | WebSocket rate limit window length. |
+| `RATE_LIMITER_WS_TRUST_HOPS` | Trusted proxy hops for WebSocket client IP extraction. |
 | `RATE_LIMITER_REDIS_PREFIX` | Redis key prefix for rate limiter state. |
 
 ## Queue backends
@@ -385,8 +386,16 @@ This page lists every runtime environment variable referenced by the server, cor
 | `PUSH_FCM_ENABLED` | Enables FCM dispatch. |
 | `FCM_PROJECT_ID` | FCM project ID for monolith dispatch workers. |
 | `PUSH_FCM_PROJECT_ID` | FCM project ID alias. |
-| `FCM_PROVIDER_TOKEN` | FCM provider OAuth token for static-token dispatch. |
-| `PUSH_FCM_PROVIDER_TOKEN` | FCM provider token alias. |
+| `FCM_SERVICE_ACCOUNT_JSON_PATH` | Path to FCM service account JSON for auto-refreshing OAuth tokens. |
+| `PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH` | FCM service account JSON path alias. |
+| `FCM_SERVICE_ACCOUNT_JSON` | Inline FCM service account JSON for auto-refreshing OAuth tokens. |
+| `PUSH_FCM_SERVICE_ACCOUNT_JSON` | Inline FCM service account JSON alias. |
+| `FCM_APP_ID` | App ID used to load stored FCM credentials. |
+| `PUSH_FCM_APP_ID` | Stored FCM credential app ID alias. |
+| `FCM_CREDENTIAL_ID` | Stored FCM credential ID. |
+| `PUSH_FCM_CREDENTIAL_ID` | Stored FCM credential ID alias. |
+| `FCM_PROVIDER_TOKEN` | Legacy static FCM OAuth token for short-lived dispatch. |
+| `PUSH_FCM_PROVIDER_TOKEN` | Legacy static FCM token alias. |
 | `FCM_ENDPOINT` | FCM endpoint override. |
 | `PUSH_FCM_ENDPOINT` | FCM endpoint alias. |
 | `PUSH_APNS_ENABLED` | Enables APNs dispatch. |

@@ -76,8 +76,10 @@ config:
     enabled: true
     apiMaxRequests: 100
     apiWindowSeconds: 60
+    apiTrustHops: 0
     wsMaxRequests: 20
     wsWindowSeconds: 60
+    wsTrustHops: 0
 
   # -- Metrics settings
   metrics:

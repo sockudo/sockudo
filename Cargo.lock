@@ -8278,6 +8278,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "httpdate",
+ "jsonwebtoken",
  "rand 0.9.4",
  "reqwest 0.12.28",
  "scylla",

@@ -27,9 +27,10 @@ default_ttl_seconds = 3600
 publish_status_ttl_seconds = 86400
 max_recipients_per_publish = 10000
 
-[push.providers.fcm]
-enabled = true
-credentials_path = "/run/secrets/fcm-service-account.json"
+# Runtime env for FCM monolith workers:
+# PUSH_FCM_ENABLED=true
+# PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH=/run/secrets/fcm-service-account.json
+# PUSH_FCM_PROJECT_ID is optional when the service account JSON has project_id.
 
 [push.providers.apns]
 enabled = true

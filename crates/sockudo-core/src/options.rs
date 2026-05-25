@@ -2820,6 +2820,30 @@ mod tests {
         assert_eq!(options.push.queue_driver, PushQueueDriver::RedisCluster);
     }
 
+    #[tokio::test]
+    async fn websocket_rate_limit_trust_hops_overrides_from_env() {
+        let previous = std::env::var("RATE_LIMITER_WS_TRUST_HOPS").ok();
+        // SAFETY: This test controls the environment variable lifecycle for a
+        // single key and restores the prior value before it returns.
+        unsafe { std::env::set_var("RATE_LIMITER_WS_TRUST_HOPS", "2") };
+
+        let mut options = ServerOptions::default();
+        options.override_from_env().await.unwrap();
+
+        if let Some(previous) = previous {
+            // SAFETY: Restoring the pre-test value for the same key.
+            unsafe { std::env::set_var("RATE_LIMITER_WS_TRUST_HOPS", previous) };
+        } else {
+            // SAFETY: Removing the test-only environment variable before exit.
+            unsafe { std::env::remove_var("RATE_LIMITER_WS_TRUST_HOPS") };
+        }
+
+        assert_eq!(
+            options.rate_limiter.websocket_rate_limit.trust_hops,
+            Some(2)
+        );
+    }
+
     #[test]
     fn push_config_defaults_follow_capacity_model() {
         let options = ServerOptions::default();
@@ -3275,6 +3299,9 @@ impl ServerOptions {
             "RATE_LIMITER_WS_WINDOW_SECONDS",
             self.rate_limiter.websocket_rate_limit.window_seconds,
         );
+        if let Some(hops) = parse_env_optional::<u32>("RATE_LIMITER_WS_TRUST_HOPS") {
+            self.rate_limiter.websocket_rate_limit.trust_hops = Some(hops);
+        }
         if let Ok(prefix) = std::env::var("RATE_LIMITER_REDIS_PREFIX") {
             self.rate_limiter.redis.prefix = Some(prefix);
         }

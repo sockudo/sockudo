@@ -84,10 +84,16 @@ wns_enabled = false
 # webpush_credential_ref = "secret://sockudo/push/webpush"
 # hms_credential_ref = "secret://sockudo/push/hms"
 # wns_credential_ref = "secret://sockudo/push/wns"
-# FCM/HMS/WNS monolith dispatch workers require provider-specific feature flags,
+# FCM monolith dispatch workers should use service account JSON so OAuth tokens
+# can refresh automatically:
+# PUSH_FCM_SERVICE_ACCOUNT_JSON_PATH=/run/secrets/fcm-service-account.json
+# or upload a stored push/credentials/fcm credential and set PUSH_FCM_APP_ID.
+# PUSH_FCM_PROJECT_ID is optional when the service account JSON contains
+# project_id. PUSH_FCM_PROVIDER_TOKEN remains available only for short-lived
+# legacy static-token dispatch.
+# HMS/WNS monolith dispatch workers require provider-specific feature flags,
 # the matching push.*_enabled setting, and pre-generated provider bearer tokens:
-# PUSH_FCM_PROJECT_ID + PUSH_FCM_PROVIDER_TOKEN, PUSH_HMS_APP_ID +
-# PUSH_HMS_PROVIDER_TOKEN, or PUSH_WNS_PROVIDER_TOKEN.
+# PUSH_HMS_APP_ID + PUSH_HMS_PROVIDER_TOKEN, or PUSH_WNS_PROVIDER_TOKEN.
 # APNs monolith dispatch workers require PUSH_APNS_TOPIC. Set PUSH_APNS_APP_ID
 # to load a stored push/credentials/apns credential, optionally with
 # PUSH_APNS_CREDENTIAL_ID (defaults to apns). Without PUSH_APNS_APP_ID the

@@ -31,6 +31,8 @@ pub mod transformer;
 
 #[cfg(any(test, feature = "testing"))]
 pub use conformance::PushStoreConformance;
+#[cfg(feature = "push-fcm")]
+pub use dispatch::FcmServiceAccountTokenSource;
 #[cfg(feature = "push-webpush")]
 pub use dispatch::NativeWebPushCrypto;
 #[cfg(any(
