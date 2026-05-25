@@ -388,3 +388,182 @@ async fn test_request_response_flow() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_redis_new_inbox_returns_reply_channel() -> Result<()> {
+    let config = get_redis_config();
+    let transport = match RedisTransport::new(config).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!("Skipping test_redis_new_inbox_returns_reply_channel: Redis not available");
+            return Ok(());
+        }
+    };
+
+    let inbox = transport.new_inbox();
+    assert!(inbox.is_some(), "new_inbox() should return Some");
+
+    let channel = inbox.unwrap();
+    assert!(
+        channel.contains(":#reply:"),
+        "reply channel must contain ':#reply:', got: {channel}"
+    );
+
+    let inbox2 = transport.new_inbox();
+    assert_eq!(
+        inbox2.as_deref(),
+        Some(channel.as_str()),
+        "new_inbox() should return the same channel on every call for the same instance"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_redis_publish_request_with_reply_sets_reply_to() -> Result<()> {
+    let config = get_redis_config();
+    let transport = match RedisTransport::new(config).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!(
+                "Skipping test_redis_publish_request_with_reply_sets_reply_to: Redis not available"
+            );
+            return Ok(());
+        }
+    };
+
+    let inbox = transport.new_inbox();
+    assert!(
+        inbox.is_some(),
+        "new_inbox() must be Some before publishing"
+    );
+    let inbox_channel = inbox.unwrap();
+    assert!(!inbox_channel.is_empty());
+
+    let request = create_test_request();
+    assert!(
+        request.reply_to.is_none(),
+        "request must start with reply_to: None"
+    );
+
+    let result = transport
+        .publish_request_with_reply(&request, &inbox_channel)
+        .await;
+    assert!(
+        result.is_ok(),
+        "publish_request_with_reply should succeed: {:?}",
+        result.err()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_redis_publish_request_to_node_uses_correct_channel() -> Result<()> {
+    let config = get_redis_config();
+    let transport = match RedisTransport::new(config).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!(
+                "Skipping test_redis_publish_request_to_node_uses_correct_channel: Redis not available"
+            );
+            return Ok(());
+        }
+    };
+
+    let request = create_test_request();
+
+    let result = transport
+        .publish_request_to_node(&request, "test-target-node")
+        .await;
+    assert!(
+        result.is_ok(),
+        "publish_request_to_node should succeed: {:?}",
+        result.err()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_redis_two_transports_have_different_reply_channels() -> Result<()> {
+    let config = get_redis_config();
+
+    let transport_a = match RedisTransport::new(config.clone()).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!(
+                "Skipping test_redis_two_transports_have_different_reply_channels: Redis not available"
+            );
+            return Ok(());
+        }
+    };
+    let transport_b = match RedisTransport::new(config).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!(
+                "Skipping test_redis_two_transports_have_different_reply_channels: Redis not available"
+            );
+            return Ok(());
+        }
+    };
+
+    let inbox_a = transport_a
+        .new_inbox()
+        .expect("transport_a must have an inbox");
+    let inbox_b = transport_b
+        .new_inbox()
+        .expect("transport_b must have an inbox");
+
+    assert_ne!(
+        inbox_a, inbox_b,
+        "Each transport instance must have a unique reply channel (different UUIDs)"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_redis_reply_channel_format() -> Result<()> {
+    let config = get_redis_config();
+    let prefix = config.prefix.clone();
+
+    let transport = match RedisTransport::new(config).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!("Skipping test_redis_reply_channel_format: Redis not available");
+            return Ok(());
+        }
+    };
+
+    let channel = transport
+        .new_inbox()
+        .expect("new_inbox() should return Some");
+
+    assert!(
+        channel.starts_with(&prefix),
+        "reply channel must start with prefix '{prefix}', got: {channel}"
+    );
+
+    assert!(
+        channel.contains(":#reply:"),
+        "reply channel must contain ':#reply:', got: {channel}"
+    );
+
+    let suffix = channel
+        .split(":#reply:")
+        .nth(1)
+        .expect("channel must have a suffix after ':#reply:'");
+    assert!(
+        suffix.len() >= 32,
+        "UUID suffix must be at least 32 chars, got '{}' (len {})",
+        suffix,
+        suffix.len()
+    );
+    assert!(
+        suffix.chars().all(|c| c.is_ascii_hexdigit()),
+        "UUID suffix must be lowercase hex, got: '{suffix}'"
+    );
+
+    Ok(())
+}

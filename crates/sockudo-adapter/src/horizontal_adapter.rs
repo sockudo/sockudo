@@ -73,6 +73,10 @@ pub struct RequestBody {
     // List of channels for BatchChannelSocketsCount
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channels: Option<Vec<String>>,
+
+    // Inbox channel for targeted response routing, falls back to global channel
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 /// Response body for horizontal requests
@@ -706,6 +710,7 @@ impl HorizontalAdapter {
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            reply_to: None,
             channels: None,
         };
 
