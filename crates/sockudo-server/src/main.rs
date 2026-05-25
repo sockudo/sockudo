@@ -1152,6 +1152,7 @@ impl sockudo_push::ProviderTokenSource for ApnsJwtTokenSource {
         let issued_at_secs = now_ms / 1_000;
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.key_id.clone());
+        let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
         let token = jsonwebtoken::encode(
             &header,
             &Claims {

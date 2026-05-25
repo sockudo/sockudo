@@ -207,6 +207,7 @@ impl FcmServiceAccountTokenSource {
         let issued_at_secs = now_ms / 1_000;
         let mut header = Header::new(Algorithm::RS256);
         header.kid.clone_from(&self.private_key_id);
+        let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
         jsonwebtoken::encode(
             &header,
             &Claims {
