@@ -26,6 +26,35 @@ type ShardedPushSender = crossfire::MAsyncTx<ShardedPushChannelFlavor>;
 /// Receiver end of the bounded fan-in channel returned by `ShardedSubscriber::start`.
 pub type ShardedPushReceiver = crossfire::AsyncRx<ShardedPushChannelFlavor>;
 
+#[derive(Debug, Clone, Copy)]
+enum PubSubMode {
+    Standard,
+    Sharded,
+}
+
+impl PubSubMode {
+    fn subscribe_command(self) -> &'static str {
+        match self {
+            Self::Standard => "SUBSCRIBE",
+            Self::Sharded => "SSUBSCRIBE",
+        }
+    }
+
+    fn metrics_transport(self) -> &'static str {
+        match self {
+            Self::Standard => "redis_cluster",
+            Self::Sharded => "redis_cluster_sharded",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Sharded => "sharded",
+        }
+    }
+}
+
 /// Address of a single Redis Cluster shard master.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct NodeAddr {
@@ -329,6 +358,7 @@ fn value_to_string(v: &redis::Value) -> Option<String> {
 pub(crate) struct ShardListenerParams {
     url: String,
     channels: Vec<String>,
+    mode: PubSubMode,
     fan_in_tx: ShardedPushSender,
     is_running: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
@@ -339,10 +369,10 @@ pub(crate) struct ShardListenerParams {
 
 /// Long-running task for one shard master.
 ///
-/// Connects via a non-cluster `redis::Client`, issues `SSUBSCRIBE` for each
-/// assigned channel (one per call to avoid `CROSSSLOT`), and forwards
-/// `SMessage` pushes to the bounded fan-in sender.  Reconnects with
-/// exponential back-off (500 ms to 10 s) on any failure.
+/// Connects via a non-cluster `redis::Client`, issues the configured
+/// subscription command for each assigned channel, and forwards Pub/Sub pushes
+/// to the bounded fan-in sender. Reconnects with exponential back-off
+/// (500 ms to 10 s) on any failure.
 pub(crate) async fn shard_listener_loop(params: ShardListenerParams) {
     // Unbounded because push_sender must not block the redis runtime;
     // backpressure is applied at the bounded fan-in boundary.
@@ -410,7 +440,7 @@ pub(crate) async fn shard_listener_loop(params: ShardListenerParams) {
                     params.shard_addr, reconnection_count
                 );
                 if let Some(m) = params.metrics.get() {
-                    m.mark_horizontal_transport_reconnection("redis_cluster_sharded");
+                    m.mark_horizontal_transport_reconnection(params.mode.metrics_transport());
                 }
                 consecutive_failures += 1;
                 if consecutive_failures >= TOPOLOGY_REFRESH_FAILURE_THRESHOLD {
@@ -426,17 +456,19 @@ pub(crate) async fn shard_listener_loop(params: ShardListenerParams) {
             }
         };
 
-        // One SSUBSCRIBE per channel to avoid CROSSSLOT errors on multi-slot batches.
+        // One subscription command per channel keeps cluster routing explicit
+        // and avoids CROSSSLOT errors on multi-slot batches.
+        let subscribe_command = params.mode.subscribe_command();
         let mut subscribe_ok = true;
         for ch in &params.channels {
-            if let Err(e) = redis::cmd("SSUBSCRIBE")
+            if let Err(e) = redis::cmd(subscribe_command)
                 .arg(ch.as_str())
                 .exec_async(&mut conn)
                 .await
             {
                 warn!(
-                    "shard_listener[{}]: SSUBSCRIBE failed for {ch}: {e}",
-                    params.shard_addr
+                    "shard_listener[{}]: {} failed for {ch}: {e}",
+                    params.shard_addr, subscribe_command
                 );
                 subscribe_ok = false;
                 break;
@@ -445,7 +477,7 @@ pub(crate) async fn shard_listener_loop(params: ShardListenerParams) {
 
         if !subscribe_ok {
             if let Some(m) = params.metrics.get() {
-                m.mark_horizontal_transport_reconnection("redis_cluster_sharded");
+                m.mark_horizontal_transport_reconnection(params.mode.metrics_transport());
             }
             tokio::select! {
                 _ = params.shutdown.notified() => break 'outer,
@@ -456,8 +488,9 @@ pub(crate) async fn shard_listener_loop(params: ShardListenerParams) {
         }
 
         info!(
-            "shard_listener[{}]: subscribed to {} channel(s)",
+            "shard_listener[{}]: {} subscribed to {} channel(s)",
             params.shard_addr,
+            params.mode.label(),
             params.channels.len()
         );
         reconnection_count = 0;
@@ -516,6 +549,7 @@ pub(crate) async fn shard_listener_loop(params: ShardListenerParams) {
 pub(crate) struct ShardedSubscriber {
     channels: Vec<String>,
     seed_urls: Vec<String>,
+    mode: PubSubMode,
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     is_running: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
@@ -531,9 +565,45 @@ impl ShardedSubscriber {
         is_running: Arc<AtomicBool>,
         shutdown: Arc<Notify>,
     ) -> Self {
+        Self::with_mode(
+            channels,
+            seed_urls,
+            PubSubMode::Sharded,
+            metrics,
+            is_running,
+            shutdown,
+        )
+    }
+
+    pub(crate) fn new_standard(
+        channels: Vec<String>,
+        seed_urls: Vec<String>,
+        metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
+        is_running: Arc<AtomicBool>,
+        shutdown: Arc<Notify>,
+    ) -> Self {
+        Self::with_mode(
+            channels,
+            seed_urls,
+            PubSubMode::Standard,
+            metrics,
+            is_running,
+            shutdown,
+        )
+    }
+
+    fn with_mode(
+        channels: Vec<String>,
+        seed_urls: Vec<String>,
+        mode: PubSubMode,
+        metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
+        is_running: Arc<AtomicBool>,
+        shutdown: Arc<Notify>,
+    ) -> Self {
         Self {
             channels,
             seed_urls,
+            mode,
             metrics,
             is_running,
             shutdown,
@@ -558,7 +628,8 @@ impl ShardedSubscriber {
         }
 
         info!(
-            "ShardedSubscriber: {} channel(s) across {} shard(s)",
+            "ShardedSubscriber: {} {} channel(s) across {} shard(s)",
+            self.mode.label(),
             self.channels.len(),
             by_shard.len()
         );
@@ -605,6 +676,7 @@ impl ShardedSubscriber {
                 let params = ShardListenerParams {
                     url,
                     channels: shard_channels,
+                    mode: self.mode,
                     fan_in_tx: fan_tx.clone(),
                     is_running: self.is_running.clone(),
                     shutdown: self.shutdown.clone(),
@@ -625,6 +697,7 @@ impl ShardedSubscriber {
         let metrics_clone = self.metrics.clone();
         let scheme_clone = scheme.to_owned();
         let password_clone = password.clone();
+        let mode = self.mode;
 
         let refresh_task = tokio::spawn(async move {
             loop {
@@ -686,6 +759,7 @@ impl ShardedSubscriber {
                     let params = ShardListenerParams {
                         url,
                         channels,
+                        mode,
                         fan_in_tx: fan_tx_for_refresh.clone(),
                         is_running: is_running_clone.clone(),
                         shutdown: shutdown_clone.clone(),

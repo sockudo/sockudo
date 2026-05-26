@@ -1,7 +1,6 @@
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use async_trait::async_trait;
-use crossfire::mpsc;
 use redis::cluster_read_routing::RandomReplicaStrategy;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::metrics::MetricsInterface;
@@ -18,17 +17,6 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-
-type RedisPushChannelFlavor = mpsc::List<redis::PushInfo>;
-type RedisPushReceiver = crossfire::AsyncRx<RedisPushChannelFlavor>;
-
-use crate::transports::redis_cluster_sharded_pubsub::ShardedPushReceiver;
-use futures::future::Either as FutureEither;
-
-enum UnifiedRx {
-    Unbounded(RedisPushReceiver),
-    Bounded(ShardedPushReceiver),
-}
 
 /// Helper function to borrow a string view from redis::Value when possible.
 fn value_to_str(v: &redis::Value) -> Option<&str> {
@@ -353,128 +341,54 @@ impl HorizontalTransport for RedisClusterTransport {
                 if !is_running.load(Ordering::Relaxed) {
                     break;
                 }
-                let rx: UnifiedRx = if use_sharded_pubsub {
+                let channels_owned = vec![
+                    broadcast_channel.clone(),
+                    request_channel.clone(),
+                    response_channel.clone(),
+                    node_channel.clone(),
+                    reply_channel.clone(),
+                ];
+
+                let subscriber = if use_sharded_pubsub {
                     use crate::transports::redis_cluster_sharded_pubsub::ShardedSubscriber;
 
-                    let channels_owned = vec![
-                        broadcast_channel.clone(),
-                        request_channel.clone(),
-                        response_channel.clone(),
-                        node_channel.clone(),
-                        reply_channel.clone(),
-                    ];
-
-                    let subscriber = ShardedSubscriber::new(
+                    ShardedSubscriber::new(
                         channels_owned,
                         nodes.clone(),
                         metrics.clone(),
                         is_running.clone(),
                         shutdown.clone(),
-                    );
-
-                    match subscriber.start().await {
-                        Ok(sharded_rx) => {
-                            retry_delay = 500;
-                            if reconnection_count > 0 {
-                                debug!(
-                                    "Redis Cluster ShardedSubscriber reconnected after {} attempt(s)",
-                                    reconnection_count
-                                );
-                            }
-                            UnifiedRx::Bounded(sharded_rx)
-                        }
-                        Err(e) => {
-                            reconnection_count += 1;
-                            if let Some(metrics) = metrics.get() {
-                                metrics.mark_horizontal_transport_reconnection("redis_cluster");
-                            }
-                            error!(
-                                "ShardedSubscriber start failed: {e}, retrying in {retry_delay}ms"
-                            );
-                            tokio::select! {
-                                _ = shutdown.notified() => break,
-                                _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
-                            }
-                            retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
-                            continue;
-                        }
-                    }
+                    )
                 } else {
-                    // Create a new channel and client for each connection attempt.
-                    // This is necessary because the push_sender moves tx into the client,
-                    // and when the channel closes, we need a fresh one for reconnection.
-                    let (tx, rx): (crossfire::MTx<RedisPushChannelFlavor>, RedisPushReceiver) =
-                        mpsc::unbounded_async();
-                    let push_sender = move |msg| tx.send(msg).map_err(|_| redis::aio::SendError);
+                    use crate::transports::redis_cluster_sharded_pubsub::ShardedSubscriber;
 
-                    let sub_client = match ClusterClientBuilder::new(nodes.clone())
-                        .use_protocol(redis::ProtocolVersion::RESP3)
-                        .push_sender(push_sender)
-                        .build()
-                    {
-                        Ok(client) => client,
-                        Err(e) => {
-                            error!(
-                                "Failed to create PubSub client: {}, retrying in {}ms",
-                                e, retry_delay
+                    ShardedSubscriber::new_standard(
+                        channels_owned,
+                        nodes.clone(),
+                        metrics.clone(),
+                        is_running.clone(),
+                        shutdown.clone(),
+                    )
+                };
+
+                let rx = match subscriber.start().await {
+                    Ok(rx) => {
+                        retry_delay = 500;
+                        if reconnection_count > 0 {
+                            debug!(
+                                "Redis Cluster PubSub reconnected successfully after {} attempt(s)",
+                                reconnection_count
                             );
-                            tokio::select! {
-                                _ = shutdown.notified() => break,
-                                _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
-                            }
-                            retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
-                            continue;
                         }
-                    };
-
-                    // Create a connection for PubSub with retry logic
-                    let mut pubsub = match sub_client.get_async_connection().await {
-                        Ok(conn) => {
-                            retry_delay = 500; // Reset retry delay on success
-                            if reconnection_count > 0 {
-                                debug!(
-                                    "Redis Cluster PubSub reconnected successfully after {} attempts",
-                                    reconnection_count
-                                );
-                            }
-                            conn
-                        }
-                        Err(e) => {
-                            reconnection_count += 1;
-                            if let Some(metrics) = metrics.get() {
-                                metrics.mark_horizontal_transport_reconnection("redis_cluster");
-                            }
-                            error!(
-                                "Failed to get pubsub connection: {}, retrying in {}ms (attempt {})",
-                                e, retry_delay, reconnection_count
-                            );
-                            tokio::select! {
-                                _ = shutdown.notified() => break,
-                                _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
-                            }
-                            retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
-                            continue;
-                        }
-                    };
-
-                    // Subscribe to all channels with retry logic
-                    let subscribe_result = pubsub
-                        .subscribe(&[
-                            &broadcast_channel,
-                            &request_channel,
-                            &response_channel,
-                            &node_channel,
-                            &reply_channel,
-                        ])
-                        .await;
-
-                    if let Err(e) = subscribe_result {
+                        rx
+                    }
+                    Err(e) => {
+                        reconnection_count += 1;
                         if let Some(metrics) = metrics.get() {
                             metrics.mark_horizontal_transport_reconnection("redis_cluster");
                         }
                         error!(
-                            "Failed to subscribe to channels: {}, retrying in {}ms",
-                            e, retry_delay
+                            "Redis Cluster PubSub subscriber start failed: {e}, retrying in {retry_delay}ms"
                         );
                         tokio::select! {
                             _ = shutdown.notified() => break,
@@ -483,8 +397,6 @@ impl HorizontalTransport for RedisClusterTransport {
                         retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                         continue;
                     }
-
-                    UnifiedRx::Unbounded(rx)
                 };
 
                 debug!(
@@ -504,13 +416,9 @@ impl HorizontalTransport for RedisClusterTransport {
                     if !is_running.load(Ordering::Relaxed) {
                         break;
                     }
-                    let recv_future = match &rx {
-                        UnifiedRx::Unbounded(r) => FutureEither::Left(r.recv()),
-                        UnifiedRx::Bounded(r) => FutureEither::Right(r.recv()),
-                    };
                     let recv_result = tokio::select! {
                         _ = shutdown.notified() => break,
-                        result = tokio::time::timeout(Duration::from_millis(100), recv_future) => result,
+                        result = tokio::time::timeout(Duration::from_millis(100), rx.recv()) => result,
                     };
                     let Ok(Ok(push_info)) = recv_result else {
                         if matches!(recv_result, Ok(Err(_))) {
