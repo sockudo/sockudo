@@ -161,12 +161,11 @@ fn parse_cluster_shards(raw: redis::Value) -> Result<Topology> {
                 Some("nodes") => {
                     if let redis::Value::Array(nodes) = &shard_arr[i + 1] {
                         for node_val in nodes {
-                            if let redis::Value::Array(fields) = node_val {
-                                if let Some((addr, role)) = parse_node_entry(fields) {
-                                    if role == "master" || role == "primary" {
-                                        master_node = Some(addr);
-                                    }
-                                }
+                            if let redis::Value::Array(fields) = node_val
+                                && let Some((addr, role)) = parse_node_entry(fields)
+                                && (role == "master" || role == "primary")
+                            {
+                                master_node = Some(addr);
                             }
                         }
                     }
@@ -216,23 +215,17 @@ fn parse_node_entry(fields: &[redis::Value]) -> Option<(NodeAddr, String)> {
         match key.as_deref() {
             // Prefer "endpoint" (ElastiCache/Valkey) over "ip" (OSS Redis).
             Some("endpoint") => host = value_to_string(&fields[i + 1]),
-            Some("ip") => {
-                if host.is_none() {
-                    host = value_to_string(&fields[i + 1]);
-                }
-            }
+            Some("ip") if host.is_none() => host = value_to_string(&fields[i + 1]),
             Some("tls-port") => {
-                if let redis::Value::Int(n) = &fields[i + 1] {
-                    if *n > 0 {
-                        port = Some(*n as u16);
-                    }
+                if let redis::Value::Int(n) = &fields[i + 1]
+                    && *n > 0
+                {
+                    port = Some(*n as u16);
                 }
             }
-            Some("port") => {
-                if port.is_none() {
-                    if let redis::Value::Int(n) = &fields[i + 1] {
-                        port = Some(*n as u16);
-                    }
+            Some("port") if port.is_none() => {
+                if let redis::Value::Int(n) = &fields[i + 1] {
+                    port = Some(*n as u16);
                 }
             }
             Some("role") => role = value_to_string(&fields[i + 1]),
