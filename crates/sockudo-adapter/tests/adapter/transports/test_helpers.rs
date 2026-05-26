@@ -93,6 +93,7 @@ pub fn create_test_request() -> RequestBody {
         timestamp: None,
         dead_node_id: None,
         target_node_id: None,
+        reply_to: None,
         channels: None,
     }
 }
