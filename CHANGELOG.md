@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.5.1] - 2026-05-26
+
+### Added
+
+- Redis Cluster transport now supports targeted node request routing, per-transport reply inboxes, and optional sharded Pub/Sub for cluster-aware fanout.
+- Metrics recorder access was modernized and the documentation surface was migrated to the new docs structure.
+- CI can now be triggered manually with `workflow_dispatch` for recovery when GitHub drops automatic push events.
+
+### Changed
+
+- Long-running push provider workers keep their authentication context available across dispatch loops.
+- Push signing now selects an explicit JWT crypto provider before creating provider tokens.
+- Redis Cluster listeners use publishable shard-aware subscriptions for reliable cluster Pub/Sub delivery.
+
+### Fixed
+
+- Redis Cluster CI test services now advertise only the ports exposed by `docker-compose.test.yml`, keeping host-side transport tests reachable.
+- Redis Cluster sharded Pub/Sub code was kept clippy-clean after the transport merge.
+
 ## [4.5.0] - 2026-05-18
 
 ### Added
