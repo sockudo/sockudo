@@ -17,9 +17,18 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 type RedisPushChannelFlavor = mpsc::List<redis::PushInfo>;
 type RedisPushReceiver = crossfire::AsyncRx<RedisPushChannelFlavor>;
+
+use crate::transports::redis_cluster_sharded_pubsub::ShardedPushReceiver;
+use futures::future::Either as FutureEither;
+
+enum UnifiedRx {
+    Unbounded(RedisPushReceiver),
+    Bounded(ShardedPushReceiver),
+}
 
 /// Helper function to borrow a string view from redis::Value when possible.
 fn value_to_str(v: &redis::Value) -> Option<&str> {
@@ -61,6 +70,8 @@ pub struct RedisClusterTransport {
     response_channel: String,
     config: RedisClusterAdapterConfig,
     use_sharded_pubsub: bool,
+    prefix: String,
+    reply_channel: String,
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
@@ -97,6 +108,9 @@ impl HorizontalTransport for RedisClusterTransport {
         let broadcast_channel = format!("{}:#broadcast", config.prefix);
         let request_channel = format!("{}:#requests", config.prefix);
         let response_channel = format!("{}:#responses", config.prefix);
+        let prefix = config.prefix.clone();
+        let uuid = Uuid::new_v4();
+        let reply_channel = format!("{}:#reply:{}", prefix, uuid.as_simple());
 
         let use_sharded_pubsub = config.use_sharded_pubsub;
 
@@ -121,6 +135,8 @@ impl HorizontalTransport for RedisClusterTransport {
             response_channel,
             config,
             use_sharded_pubsub,
+            prefix,
+            reply_channel,
             metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
@@ -142,10 +158,7 @@ impl HorizontalTransport for RedisClusterTransport {
 
             // Use SPUBLISH for sharded pub/sub if enabled, otherwise standard PUBLISH
             let publish_result: redis::RedisResult<()> = if self.use_sharded_pubsub {
-                redis::cmd("SPUBLISH")
-                    .arg(&self.broadcast_channel)
-                    .arg(&broadcast_json)
-                    .query_async(&mut conn)
+                conn.spublish(&self.broadcast_channel, &broadcast_json)
                     .await
             } else {
                 conn.publish(&self.broadcast_channel, &broadcast_json).await
@@ -194,11 +207,7 @@ impl HorizontalTransport for RedisClusterTransport {
 
             // Use SPUBLISH for sharded pub/sub if enabled, otherwise standard PUBLISH
             let publish_result: redis::RedisResult<i32> = if self.use_sharded_pubsub {
-                redis::cmd("SPUBLISH")
-                    .arg(&self.request_channel)
-                    .arg(&request_json)
-                    .query_async(&mut conn)
-                    .await
+                conn.spublish(&self.request_channel, &request_json).await
             } else {
                 conn.publish(&self.request_channel, &request_json).await
             };
@@ -246,11 +255,7 @@ impl HorizontalTransport for RedisClusterTransport {
 
             // Use SPUBLISH for sharded pub/sub if enabled, otherwise standard PUBLISH
             let publish_result: redis::RedisResult<()> = if self.use_sharded_pubsub {
-                redis::cmd("SPUBLISH")
-                    .arg(&self.response_channel)
-                    .arg(&response_json)
-                    .query_async(&mut conn)
-                    .await
+                conn.spublish(&self.response_channel, &response_json).await
             } else {
                 conn.publish(&self.response_channel, &response_json).await
             };
@@ -283,6 +288,46 @@ impl HorizontalTransport for RedisClusterTransport {
         unreachable!("Retry loop should have returned");
     }
 
+    fn new_inbox(&self) -> Option<String> {
+        Some(self.reply_channel.clone())
+    }
+
+    async fn publish_request_with_reply(
+        &self,
+        request: &RequestBody,
+        reply_to: &str,
+    ) -> Result<()> {
+        let mut request = request.clone();
+        request.reply_to = Some(reply_to.to_string());
+        self.publish_request(&request).await
+    }
+
+    async fn publish_request_to_node(
+        &self,
+        request: &RequestBody,
+        target_node_id: &str,
+    ) -> Result<()> {
+        let target_channel = format!("{}:#node:{}", self.prefix, target_node_id);
+        let request_json = sonic_rs::to_string(request)
+            .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        let mut conn = self.publish_connection.clone();
+
+        let publish_result: redis::RedisResult<()> = if self.use_sharded_pubsub {
+            conn.spublish(&target_channel, &request_json).await
+        } else {
+            conn.publish(&target_channel, &request_json).await
+        };
+
+        publish_result.map_err(|e| {
+            Error::Redis(format!("Failed to publish to node {target_node_id}: {e}"))
+        })?;
+        debug!(
+            "Published request {} to node {} via Redis Cluster",
+            request.request_id, target_node_id
+        );
+        Ok(())
+    }
+
     async fn start_listeners(&self, handlers: TransportHandlers) -> Result<()> {
         // Clone needed values for the async task
         let broadcast_channel = self.broadcast_channel.clone();
@@ -295,6 +340,8 @@ impl HorizontalTransport for RedisClusterTransport {
         let metrics = self.metrics.clone();
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
+        let node_channel = format!("{}:#node:{}", self.prefix, handlers.node_id);
+        let reply_channel = self.reply_channel.clone();
 
         // Spawn the main listener task with reconnection logic
         tokio::spawn(async move {
@@ -306,22 +353,127 @@ impl HorizontalTransport for RedisClusterTransport {
                 if !is_running.load(Ordering::Relaxed) {
                     break;
                 }
-                // Create a new channel and client for each connection attempt
-                // This is necessary because the push_sender moves tx into the client,
-                // and when the channel closes, we need a fresh one for reconnection
-                let (tx, rx): (crossfire::MTx<RedisPushChannelFlavor>, RedisPushReceiver) =
-                    mpsc::unbounded_async();
-                let push_sender = move |msg| tx.send(msg).map_err(|_| redis::aio::SendError);
+                let rx: UnifiedRx = if use_sharded_pubsub {
+                    use crate::transports::redis_cluster_sharded_pubsub::ShardedSubscriber;
 
-                let sub_client = match ClusterClientBuilder::new(nodes.clone())
-                    .use_protocol(redis::ProtocolVersion::RESP3)
-                    .push_sender(push_sender)
-                    .build()
-                {
-                    Ok(client) => client,
-                    Err(e) => {
+                    let channels_owned = vec![
+                        broadcast_channel.clone(),
+                        request_channel.clone(),
+                        response_channel.clone(),
+                        node_channel.clone(),
+                        reply_channel.clone(),
+                    ];
+
+                    let subscriber = ShardedSubscriber::new(
+                        channels_owned,
+                        nodes.clone(),
+                        metrics.clone(),
+                        is_running.clone(),
+                        shutdown.clone(),
+                    );
+
+                    match subscriber.start().await {
+                        Ok(sharded_rx) => {
+                            retry_delay = 500;
+                            if reconnection_count > 0 {
+                                debug!(
+                                    "Redis Cluster ShardedSubscriber reconnected after {} attempt(s)",
+                                    reconnection_count
+                                );
+                            }
+                            UnifiedRx::Bounded(sharded_rx)
+                        }
+                        Err(e) => {
+                            reconnection_count += 1;
+                            if let Some(metrics) = metrics.get() {
+                                metrics.mark_horizontal_transport_reconnection("redis_cluster");
+                            }
+                            error!(
+                                "ShardedSubscriber start failed: {e}, retrying in {retry_delay}ms"
+                            );
+                            tokio::select! {
+                                _ = shutdown.notified() => break,
+                                _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
+                            }
+                            retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+                            continue;
+                        }
+                    }
+                } else {
+                    // Create a new channel and client for each connection attempt.
+                    // This is necessary because the push_sender moves tx into the client,
+                    // and when the channel closes, we need a fresh one for reconnection.
+                    let (tx, rx): (crossfire::MTx<RedisPushChannelFlavor>, RedisPushReceiver) =
+                        mpsc::unbounded_async();
+                    let push_sender = move |msg| tx.send(msg).map_err(|_| redis::aio::SendError);
+
+                    let sub_client = match ClusterClientBuilder::new(nodes.clone())
+                        .use_protocol(redis::ProtocolVersion::RESP3)
+                        .push_sender(push_sender)
+                        .build()
+                    {
+                        Ok(client) => client,
+                        Err(e) => {
+                            error!(
+                                "Failed to create PubSub client: {}, retrying in {}ms",
+                                e, retry_delay
+                            );
+                            tokio::select! {
+                                _ = shutdown.notified() => break,
+                                _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
+                            }
+                            retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+                            continue;
+                        }
+                    };
+
+                    // Create a connection for PubSub with retry logic
+                    let mut pubsub = match sub_client.get_async_connection().await {
+                        Ok(conn) => {
+                            retry_delay = 500; // Reset retry delay on success
+                            if reconnection_count > 0 {
+                                debug!(
+                                    "Redis Cluster PubSub reconnected successfully after {} attempts",
+                                    reconnection_count
+                                );
+                            }
+                            conn
+                        }
+                        Err(e) => {
+                            reconnection_count += 1;
+                            if let Some(metrics) = metrics.get() {
+                                metrics.mark_horizontal_transport_reconnection("redis_cluster");
+                            }
+                            error!(
+                                "Failed to get pubsub connection: {}, retrying in {}ms (attempt {})",
+                                e, retry_delay, reconnection_count
+                            );
+                            tokio::select! {
+                                _ = shutdown.notified() => break,
+                                _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
+                            }
+                            retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
+                            continue;
+                        }
+                    };
+
+                    // Subscribe to all channels with retry logic
+                    let subscribe_result = pubsub
+                        .subscribe(&[
+                            &broadcast_channel,
+                            &request_channel,
+                            &response_channel,
+                            &node_channel,
+                            &reply_channel,
+                        ])
+                        .await;
+
+                    if let Err(e) = subscribe_result {
+                        if let Some(metrics) = metrics.get() {
+                            metrics.mark_horizontal_transport_reconnection("redis_cluster");
+                        }
                         error!(
-                            "Failed to create PubSub client: {}, retrying in {}ms",
+                            "Failed to subscribe to channels: {}, retrying in {}ms",
                             e, retry_delay
                         );
                         tokio::select! {
@@ -331,72 +483,17 @@ impl HorizontalTransport for RedisClusterTransport {
                         retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
                         continue;
                     }
-                };
 
-                // Create a connection for PubSub with retry logic
-                let mut pubsub = match sub_client.get_async_connection().await {
-                    Ok(conn) => {
-                        retry_delay = 500; // Reset retry delay on success
-                        if reconnection_count > 0 {
-                            debug!(
-                                "Redis Cluster PubSub reconnected successfully after {} attempts",
-                                reconnection_count
-                            );
-                        }
-                        conn
-                    }
-                    Err(e) => {
-                        reconnection_count += 1;
-                        if let Some(metrics) = metrics.get() {
-                            metrics.mark_horizontal_transport_reconnection("redis_cluster");
-                        }
-                        error!(
-                            "Failed to get pubsub connection: {}, retrying in {}ms (attempt {})",
-                            e, retry_delay, reconnection_count
-                        );
-                        tokio::select! {
-                            _ = shutdown.notified() => break,
-                            _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
-                        }
-                        retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
-                        continue;
-                    }
+                    UnifiedRx::Unbounded(rx)
                 };
-
-                // Subscribe to all channels with retry logic
-                // Use SSUBSCRIBE for sharded pub/sub if enabled, otherwise standard SUBSCRIBE
-                let subscribe_result: redis::RedisResult<()> = if use_sharded_pubsub {
-                    redis::cmd("SSUBSCRIBE")
-                        .arg(&broadcast_channel)
-                        .arg(&request_channel)
-                        .arg(&response_channel)
-                        .query_async(&mut pubsub)
-                        .await
-                } else {
-                    pubsub
-                        .subscribe(&[&broadcast_channel, &request_channel, &response_channel])
-                        .await
-                };
-
-                if let Err(e) = subscribe_result {
-                    if let Some(metrics) = metrics.get() {
-                        metrics.mark_horizontal_transport_reconnection("redis_cluster");
-                    }
-                    error!(
-                        "Failed to subscribe to channels: {}, retrying in {}ms",
-                        e, retry_delay
-                    );
-                    tokio::select! {
-                        _ = shutdown.notified() => break,
-                        _ = tokio::time::sleep(Duration::from_millis(retry_delay)) => {}
-                    }
-                    retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
-                    continue;
-                }
 
                 debug!(
-                    "Redis Cluster transport listening on channels: {}, {}, {}",
-                    broadcast_channel, request_channel, response_channel
+                    "Redis Cluster transport listening on channels: {}, {}, {}, {}, {}",
+                    broadcast_channel,
+                    request_channel,
+                    response_channel,
+                    node_channel,
+                    reply_channel
                 );
 
                 // Reset reconnection count on successful subscription
@@ -407,9 +504,13 @@ impl HorizontalTransport for RedisClusterTransport {
                     if !is_running.load(Ordering::Relaxed) {
                         break;
                     }
+                    let recv_future = match &rx {
+                        UnifiedRx::Unbounded(r) => FutureEither::Left(r.recv()),
+                        UnifiedRx::Bounded(r) => FutureEither::Right(r.recv()),
+                    };
                     let recv_result = tokio::select! {
                         _ = shutdown.notified() => break,
-                        result = tokio::time::timeout(Duration::from_millis(100), rx.recv()) => result,
+                        result = tokio::time::timeout(Duration::from_millis(100), recv_future) => result,
                     };
                     let Ok(Ok(push_info)) = recv_result else {
                         if matches!(recv_result, Ok(Err(_))) {
@@ -451,6 +552,8 @@ impl HorizontalTransport for RedisClusterTransport {
                         Broadcast,
                         Request,
                         Response,
+                        NodeRequest,
+                        Reply,
                     }
 
                     let channel_kind = if channel == broadcast_channel.as_str() {
@@ -459,6 +562,10 @@ impl HorizontalTransport for RedisClusterTransport {
                         ChannelKind::Request
                     } else if channel == response_channel.as_str() {
                         ChannelKind::Response
+                    } else if channel == node_channel.as_str() {
+                        ChannelKind::NodeRequest
+                    } else if channel == reply_channel.as_str() {
+                        ChannelKind::Reply
                     } else {
                         continue;
                     };
@@ -490,27 +597,30 @@ impl HorizontalTransport for RedisClusterTransport {
                                 }
                             });
                         }
-                        ChannelKind::Request => {
+                        ChannelKind::Request | ChannelKind::NodeRequest => {
                             let request_handler = handlers.on_request.clone();
                             let publish_conn = publish_connection.clone();
                             let response_channel_clone = response_channel.clone();
                             let metrics_clone = metrics.clone();
+                            let sharded = use_sharded_pubsub;
 
                             tokio::spawn(async move {
                                 if let Ok(request) = sonic_rs::from_str::<RequestBody>(&payload) {
+                                    let reply_to = request.reply_to.clone();
                                     let response_result = request_handler(request).await;
 
                                     if let Ok(response) = response_result
                                         && let Ok(response_json) = sonic_rs::to_string(&response)
                                     {
-                                        // Clone connection (cheap) instead of creating new one
+                                        let target = reply_to.unwrap_or(response_channel_clone);
+                                        // Clone connection (cheap, thread-safe per redis-rs docs)
                                         let mut conn = publish_conn.clone();
-                                        let _ = conn
-                                            .publish::<_, _, ()>(
-                                                &response_channel_clone,
-                                                response_json,
-                                            )
-                                            .await;
+
+                                        let _: redis::RedisResult<()> = if sharded {
+                                            conn.spublish(&target, &response_json).await
+                                        } else {
+                                            conn.publish(&target, response_json).await
+                                        };
                                     }
                                 } else if let Some(metrics) = metrics_clone.get() {
                                     metrics
@@ -519,6 +629,19 @@ impl HorizontalTransport for RedisClusterTransport {
                             });
                         }
                         ChannelKind::Response => {
+                            let response_handler = handlers.on_response.clone();
+                            let metrics_clone = metrics.clone();
+
+                            tokio::spawn(async move {
+                                if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
+                                    response_handler(response).await;
+                                } else if let Some(metrics) = metrics_clone.get() {
+                                    metrics
+                                        .mark_horizontal_transport_message_dropped("redis_cluster");
+                                }
+                            });
+                        }
+                        ChannelKind::Reply => {
                             let response_handler = handlers.on_response.clone();
                             let metrics_clone = metrics.clone();
 
@@ -551,36 +674,45 @@ impl HorizontalTransport for RedisClusterTransport {
     }
 
     async fn get_node_count(&self) -> Result<usize> {
+        if !self.use_sharded_pubsub {
+            return Ok(1);
+        }
+
+        use redis::cluster_routing::{Route, RoutingInfo, SingleNodeRoutingInfo, Slot, SlotAddr};
+
+        // PUBSUB SHARDNUMSUB must target the shard master that owns the
+        // request channel's slot. redis-rs routes this command to AllNodes
+        // by default, so we force SpecificNode routing via route_command.
+        let slot = Slot::for_key(&self.request_channel);
+        let routing = RoutingInfo::SingleNode(SingleNodeRoutingInfo::SpecificNode(
+            Route::with_slot(slot, SlotAddr::Master),
+        ));
+
+        let mut cmd = redis::cmd("PUBSUB");
+        cmd.arg("SHARDNUMSUB").arg(&self.request_channel);
+
         // Clone connection (cheap, thread-safe per redis-rs docs)
         let mut conn = self.publish_connection.clone();
-
-        let result: redis::RedisResult<Vec<redis::Value>> = redis::cmd("PUBSUB")
-            .arg("NUMSUB")
-            .arg(&self.request_channel)
-            .query_async(&mut conn)
-            .await;
+        let result = conn.route_command(cmd, routing).await;
 
         match result {
-            Ok(values) => {
-                if values.len() >= 2 {
-                    if let redis::Value::Int(count) = values[1] {
-                        Ok((count as usize).max(1))
-                    } else {
-                        Ok(1)
-                    }
+            Ok(redis::Value::Array(values)) if values.len() >= 2 => {
+                if let redis::Value::Int(count) = values[1] {
+                    Ok((count as usize).max(1))
                 } else {
                     Ok(1)
                 }
             }
+            Ok(_) => Ok(1),
             Err(e) => {
-                error!("Failed to execute PUBSUB NUMSUB: {}", e);
+                error!("get_node_count: SHARDNUMSUB on shard master failed: {e}");
                 Ok(1)
             }
         }
     }
 
     fn node_count_is_real_time(&self) -> bool {
-        true
+        self.use_sharded_pubsub
     }
 
     async fn check_health(&self) -> Result<()> {
@@ -628,6 +760,8 @@ impl Clone for RedisClusterTransport {
             response_channel: self.response_channel.clone(),
             config: self.config.clone(),
             use_sharded_pubsub: self.use_sharded_pubsub,
+            prefix: self.prefix.clone(),
+            reply_channel: self.reply_channel.clone(),
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),
