@@ -740,6 +740,7 @@ impl HorizontalTransport for NatsTransport {
                 user_id: None,
                 timestamp: None,
                 dead_node_id: None,
+                reply_to: None,
                 channels: None,
             };
 

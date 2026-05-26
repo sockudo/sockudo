@@ -356,3 +356,155 @@ async fn test_cluster_sharding() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_redis_cluster_new_inbox_returns_reply_channel() {
+    let config = get_redis_cluster_config();
+    let Ok(transport) = RedisClusterTransport::new(config).await else {
+        return; // Skip if Redis Cluster not available
+    };
+
+    let inbox = transport.new_inbox();
+    assert!(inbox.is_some(), "new_inbox() should return Some");
+    let channel = inbox.unwrap();
+    assert!(
+        channel.contains(":#reply:"),
+        "Channel name should contain ':#reply:', got: {channel}"
+    );
+
+    let inbox2 = transport.new_inbox();
+    assert_eq!(
+        inbox2,
+        Some(channel),
+        "new_inbox() should return the same value on repeated calls"
+    );
+}
+
+#[tokio::test]
+async fn test_redis_cluster_publish_request_to_node() {
+    let config = get_redis_cluster_config();
+    let Ok(transport) = RedisClusterTransport::new(config).await else {
+        return; // Skip if Redis Cluster not available
+    };
+
+    let request = create_test_request();
+    let result = transport
+        .publish_request_to_node(&request, "test-target-node")
+        .await;
+    assert!(
+        result.is_ok(),
+        "publish_request_to_node should return Ok, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_redis_cluster_node_count_is_real_time_conditional() {
+    let config_sharded = RedisClusterAdapterConfig {
+        nodes: vec![
+            "redis://127.0.0.1:7003".to_string(),
+            "redis://127.0.0.1:7001".to_string(),
+            "redis://127.0.0.1:7002".to_string(),
+        ],
+        prefix: "test_sharded_rt".to_string(),
+        request_timeout_ms: 1000,
+        use_connection_manager: false,
+        use_sharded_pubsub: true,
+    };
+    let Ok(transport_sharded) = RedisClusterTransport::new(config_sharded).await else {
+        return; // Skip if Redis Cluster not available
+    };
+    assert!(
+        transport_sharded.node_count_is_real_time(),
+        "node_count_is_real_time() should return true when use_sharded_pubsub is true"
+    );
+
+    let config_standard = get_redis_cluster_config();
+    let Ok(transport_standard) = RedisClusterTransport::new(config_standard).await else {
+        return;
+    };
+    assert!(
+        !transport_standard.node_count_is_real_time(),
+        "node_count_is_real_time() should return false when use_sharded_pubsub is false"
+    );
+}
+
+#[tokio::test]
+async fn test_redis_cluster_two_transports_have_different_reply_channels() {
+    let config = get_redis_cluster_config();
+    let Ok(transport1) = RedisClusterTransport::new(config.clone()).await else {
+        return; // Skip if Redis Cluster not available
+    };
+    let Ok(transport2) = RedisClusterTransport::new(config).await else {
+        return;
+    };
+
+    let channel1 = transport1.new_inbox();
+    let channel2 = transport2.new_inbox();
+
+    assert!(
+        channel1.is_some(),
+        "transport1 new_inbox() should return Some"
+    );
+    assert!(
+        channel2.is_some(),
+        "transport2 new_inbox() should return Some"
+    );
+    assert_ne!(
+        channel1, channel2,
+        "Two transport instances should have different reply channels"
+    );
+}
+
+#[tokio::test]
+async fn test_redis_cluster_reply_channel_format() {
+    let known_prefix = "test_reply_format_prefix";
+    let config = RedisClusterAdapterConfig {
+        nodes: vec![
+            "redis://127.0.0.1:7003".to_string(),
+            "redis://127.0.0.1:7001".to_string(),
+            "redis://127.0.0.1:7002".to_string(),
+        ],
+        prefix: known_prefix.to_string(),
+        request_timeout_ms: 1000,
+        use_connection_manager: false,
+        use_sharded_pubsub: false,
+    };
+    let Ok(transport) = RedisClusterTransport::new(config).await else {
+        return; // Skip if Redis Cluster not available
+    };
+
+    let inbox = transport.new_inbox();
+    assert!(inbox.is_some(), "new_inbox() should return Some");
+    let channel = inbox.unwrap();
+
+    assert!(
+        channel.starts_with(known_prefix),
+        "Reply channel should start with prefix '{known_prefix}', got: {channel}"
+    );
+    assert!(
+        channel.contains(":#reply:"),
+        "Reply channel should contain ':#reply:', got: {channel}"
+    );
+}
+
+#[tokio::test]
+async fn test_redis_cluster_publish_request_with_reply() {
+    let config = get_redis_cluster_config();
+    let Ok(transport) = RedisClusterTransport::new(config).await else {
+        return;
+    };
+
+    let inbox = transport.new_inbox().expect("new_inbox() must return Some");
+    let request = create_test_request();
+    assert!(
+        request.reply_to.is_none(),
+        "request must start with reply_to: None"
+    );
+
+    let result = transport.publish_request_with_reply(&request, &inbox).await;
+    assert!(
+        result.is_ok(),
+        "publish_request_with_reply should succeed: {:?}",
+        result.err()
+    );
+}
