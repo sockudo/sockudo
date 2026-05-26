@@ -35,6 +35,7 @@ async fn test_heartbeat_tracking_updates_node_registry() {
         timestamp: Some(1234567890),
         dead_node_id: None,
         target_node_id: None,
+        reply_to: None,
         channels: None,
     };
 
@@ -384,6 +385,7 @@ async fn test_follower_cleanup_only_removes_registry_data() {
         timestamp: Some(1234567890),
         dead_node_id: Some(dead_node_id.to_string()),
         target_node_id: None,
+        reply_to: None,
         channels: None,
     };
 

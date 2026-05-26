@@ -495,6 +495,7 @@ where
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            reply_to: None,
             channels: None,
         };
         self.send_request_with_body(request).await
@@ -821,6 +822,7 @@ where
                     timestamp: Some(current_timestamp()),
                     dead_node_id: None,
                     target_node_id: None,
+                    reply_to: None,
                     channels: None,
                 };
 
@@ -936,6 +938,7 @@ where
                                     timestamp: Some(current_timestamp()),
                                     dead_node_id: Some(dead_node_id.clone()),
                                     target_node_id: None,
+                                    reply_to: None,
                                     channels: None,
                                 };
 
@@ -1487,6 +1490,7 @@ where
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            reply_to: None,
             channels: Some(channels.iter().map(|c| c.to_string()).collect()),
         };
 
@@ -1702,6 +1706,7 @@ where
             timestamp: Some(current_timestamp()),
             dead_node_id: Some(self.node_id.clone()),
             target_node_id: None,
+            reply_to: None,
             channels: None,
         };
 
@@ -1783,6 +1788,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            reply_to: None,
             channels: None,
         };
 
@@ -1825,6 +1831,7 @@ impl<T: HorizontalTransport> HorizontalAdapterInterface for HorizontalAdapterBas
             timestamp: None,
             dead_node_id: None,
             target_node_id: None,
+            reply_to: None,
             channels: None,
         };
 
