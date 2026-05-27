@@ -62,7 +62,7 @@ jobs:
         if: runner.os == 'Linux' && runner.arch == 'X64' && !contains(inputs.target_triple, 'musl')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake protobuf-compiler
+          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
           sudo apt-get install -y libssl-dev libcurl4-openssl-dev
 
       - name: Build musl binary (Linux x86_64)
@@ -76,9 +76,10 @@ jobs:
             rust:1.93-alpine \
             sh -c '
               apk add --no-cache musl-dev pkgconf \
-                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc
+                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc protobuf-dev
               mkdir -p .cargo
               printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.x86_64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
+              export PROTOC_INCLUDE=/usr/include
               cargo build -p sockudo --release --features full --target x86_64-unknown-linux-musl
             '
 
@@ -86,7 +87,7 @@ jobs:
         if: runner.os == 'Linux' && runner.arch == 'ARM64' && !contains(inputs.target_triple, 'musl')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake protobuf-compiler
+          sudo apt-get install -y pkg-config libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
           sudo apt-get install -y libssl-dev libcurl4-openssl-dev
 
       - name: Install system dependencies (Windows x86_64)
@@ -115,9 +116,10 @@ jobs:
             rust:1.93-alpine \
             sh -c '
               apk add --no-cache musl-dev pkgconf \
-                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc
+                postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc protobuf-dev
               mkdir -p .cargo
               printf "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n\n[target.aarch64-unknown-linux-musl]\nlinker = \"gcc\"\n" > .cargo/config.toml
+              export PROTOC_INCLUDE=/usr/include
               cargo build -p sockudo --release --features full --target aarch64-unknown-linux-musl
             '
 

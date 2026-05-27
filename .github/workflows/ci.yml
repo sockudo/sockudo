@@ -45,7 +45,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler
+          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -72,7 +72,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev libpq-dev libmariadb-dev cmake protobuf-compiler mysql-client postgresql-client
+          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev mysql-client postgresql-client
 
       - name: Start test services with docker-compose
         run: |

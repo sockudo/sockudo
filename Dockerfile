@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     libmariadb-dev \
     cmake \
     protobuf-compiler \
+    libprotobuf-dev \
     libclang-dev \
     clang \
     && rm -rf /var/lib/apt/lists/*
