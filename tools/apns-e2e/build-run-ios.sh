@@ -7,7 +7,7 @@ PROJECT="$SCRIPT_DIR/SockudoAPNSProbe.xcodeproj"
 DERIVED_DATA="$REPO_ROOT/.apns-e2e/DerivedData"
 
 BUNDLE_ID="${BUNDLE_ID:-com.sockudo.apnsprobe}"
-DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-YOUR_TEAM_ID}"
+DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
 DEVICE_ID="${DEVICE_ID:-}"
 BRIDGE_URL="${BRIDGE_URL:-}"
 
@@ -31,8 +31,13 @@ if [[ -z "$BRIDGE_URL" ]]; then
   BRIDGE_URL="http://${HOST_IP}:8765"
 fi
 
+if [[ -z "$DEVELOPMENT_TEAM" ]]; then
+  echo "DEVELOPMENT_TEAM is required for iOS code signing." >&2
+  exit 2
+fi
+
 echo "Bundle ID / APNs topic: $BUNDLE_ID"
-echo "Development team: $DEVELOPMENT_TEAM"
+echo "Development team: set"
 echo "Device: $DEVICE_ID"
 echo "Bridge URL: $BRIDGE_URL"
 

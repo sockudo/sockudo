@@ -21,6 +21,9 @@ const sockudoSecret = process.env.SOCKUDO_SECRET || "app-secret";
 
 const vapidPrivateKey =
   process.env.VAPID_PRIVATE_KEY || base64url(randomBytes(32));
+if (!process.env.VAPID_PRIVATE_KEY) {
+  console.warn("VAPID_PRIVATE_KEY is not set; generated an ephemeral key for this run.");
+}
 const vapidPublicKey = derivePublicKey(vapidPrivateKey);
 const vapidContact =
   process.env.VAPID_CONTACT || "mailto:sockudo-webpush-e2e@example.com";

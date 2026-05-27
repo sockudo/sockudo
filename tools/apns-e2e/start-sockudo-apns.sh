@@ -6,11 +6,23 @@ cd "$REPO_ROOT"
 
 BUNDLE_ID="${BUNDLE_ID:-com.sockudo.apnsprobe}"
 
+if [[ -z "${PUSH_APNS_TEAM_ID:-}" ]]; then
+  echo "PUSH_APNS_TEAM_ID is required." >&2
+  exit 2
+fi
+if [[ -z "${PUSH_APNS_KEY_ID:-}" ]]; then
+  echo "PUSH_APNS_KEY_ID is required." >&2
+  exit 2
+fi
+if [[ -z "${PUSH_APNS_PRIVATE_KEY_PATH:-}" && -z "${PUSH_APNS_PRIVATE_KEY:-}" && -z "${PUSH_APNS_PROVIDER_TOKEN:-}" ]]; then
+  echo "Set PUSH_APNS_PRIVATE_KEY_PATH, PUSH_APNS_PRIVATE_KEY, or PUSH_APNS_PROVIDER_TOKEN." >&2
+  exit 2
+fi
+
 export PUSH_APNS_ENABLED="${PUSH_APNS_ENABLED:-true}"
 export PUSH_APNS_ENDPOINT="${PUSH_APNS_ENDPOINT:-https://api.sandbox.push.apple.com}"
-export PUSH_APNS_TEAM_ID="${PUSH_APNS_TEAM_ID:-YOUR_TEAM_ID}"
-export PUSH_APNS_KEY_ID="${PUSH_APNS_KEY_ID:-YOUR_KEY_ID}"
-export PUSH_APNS_PRIVATE_KEY_PATH="${PUSH_APNS_PRIVATE_KEY_PATH:-/path/to/AuthKey_YOUR_KEY_ID.p8}"
+export PUSH_APNS_TEAM_ID
+export PUSH_APNS_KEY_ID
 export PUSH_APNS_TOPIC="${PUSH_APNS_TOPIC:-$BUNDLE_ID}"
 export PUSH_STORAGE_DRIVER="${PUSH_STORAGE_DRIVER:-memory}"
 export PUSH_QUEUE_DRIVER="${PUSH_QUEUE_DRIVER:-memory}"

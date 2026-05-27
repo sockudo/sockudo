@@ -18,6 +18,7 @@ sockudo-blog
 .omx
 .sisyphus/
 .webpush-e2e/
+.apns-e2e/
 .tmp
 .macos-push-probe/DerivedData/
 

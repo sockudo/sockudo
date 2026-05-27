@@ -19,6 +19,9 @@ a different explicit App ID. The APNs key team, signing team, bundle ID, and
 Start Sockudo with the APNs sandbox credentials:
 
 ```bash
+export PUSH_APNS_TEAM_ID=YOUR_TEAM_ID
+export PUSH_APNS_KEY_ID=YOUR_KEY_ID
+export PUSH_APNS_PRIVATE_KEY_PATH=/path/to/AuthKey_YOUR_KEY_ID.p8
 BUNDLE_ID=com.sockudo.apnsprobe tools/apns-e2e/start-sockudo-apns.sh
 ```
 
@@ -31,7 +34,7 @@ node tools/apns-e2e/apns-bridge.mjs
 Build, install, and launch the iOS probe on the connected iPhone:
 
 ```bash
-BUNDLE_ID=com.sockudo.apnsprobe tools/apns-e2e/build-run-ios.sh
+DEVELOPMENT_TEAM=YOUR_TEAM_ID BUNDLE_ID=com.sockudo.apnsprobe tools/apns-e2e/build-run-ios.sh
 ```
 
 The app prints and displays the APNs token. The bridge writes:
@@ -40,4 +43,4 @@ The app prints and displays the APNs token. The bridge writes:
 - `.apns-e2e/latest-summary.json`
 
 If signing fails, the usual cause is that the Xcode account cannot create or
-use the explicit App ID under team `YOUR_TEAM_ID`.
+use the explicit App ID under the supplied `DEVELOPMENT_TEAM`.
