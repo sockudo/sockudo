@@ -97,6 +97,13 @@ body {
   min-width: 0;
 }
 
+.hero-eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
 .hero-kicker {
   display: inline-flex;
   width: fit-content;
@@ -138,7 +145,8 @@ body {
 }
 
 .button-primary,
-.button-secondary {
+.button-secondary,
+.button-support {
   display: inline-flex;
   min-height: 2.875rem;
   align-items: center;
@@ -168,8 +176,20 @@ body {
   color: var(--color-fd-foreground);
 }
 
+.button-support {
+  border: 1px solid color-mix(in srgb, #f6b23c 58%, var(--color-fd-border));
+  background: color-mix(in srgb, #f6b23c 16%, var(--color-fd-card));
+  color: #442600;
+  box-shadow: 0 12px 28px color-mix(in srgb, #f6b23c 15%, transparent);
+}
+
+.dark .button-support {
+  color: #ffe6b5;
+}
+
 .button-primary:hover,
-.button-secondary:hover {
+.button-secondary:hover,
+.button-support:hover {
   transform: translateY(-1px);
 }
 
@@ -467,5 +487,9 @@ body {
 
   .hero-actions a {
     width: 100%;
+  }
+
+  .hero-eyebrow .button-support {
+    width: fit-content;
   }
 }

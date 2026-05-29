@@ -3,6 +3,7 @@ import {
   ArrowRight,
   BellRing,
   Blocks,
+  Coffee,
   Database,
   GitBranch,
   History,
@@ -93,9 +94,19 @@ export default function HomePage() {
     <div>
       <section className="home-shell hero-grid">
         <div className="hero-copy">
-          <div className="hero-kicker">
-            <Radar className="size-4" />
-            Rust realtime infrastructure for teams that need ownership
+          <div className="hero-eyebrow">
+            <div className="hero-kicker">
+              <Radar className="size-4" />
+              Rust realtime infrastructure for teams that need ownership
+            </div>
+            <Link
+              className="button-support"
+              href="https://buymeacoffee.com/radooku"
+              rel="noreferrer"
+              target="_blank"
+            >
+              Buy me a coffee <Coffee className="size-4" />
+            </Link>
           </div>
           <h1 className="hero-title">
             Pusher-compatible realtime, <span className="accent">without the black box.</span>
