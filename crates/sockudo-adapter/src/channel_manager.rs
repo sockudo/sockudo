@@ -33,6 +33,10 @@ pub struct JoinResponse {
     pub(crate) success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_connections: Option<usize>,
+    /// This subscribe took the channel from 0 to 1 on the local node. Drives the
+    /// per-pod active-channels gauge.
+    #[serde(default)]
+    pub activated_locally: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,11 +83,13 @@ impl ChannelManager {
 
     fn create_success_join_response(
         channel_connections: usize,
+        activated_locally: bool,
         member: Option<PresenceMember>,
     ) -> JoinResponse {
         JoinResponse {
             success: true,
             channel_connections: Some(channel_connections),
+            activated_locally,
             member,
             auth_error: None,
             error_message: None,
@@ -136,7 +142,7 @@ impl ChannelManager {
 
         // Single lock acquisition for check and add (reduces lock contention)
         let t_before_lock = t_start.elapsed().as_micros();
-        let (is_already_in_channel, total_connections) = {
+        let (is_already_in_channel, total_connections, activated_locally) = {
             // Check if already in channel
             let already_in = connection_manager
                 .is_in_channel(app_id, channel_name, &socket_id_owned)
@@ -147,7 +153,7 @@ impl ChannelManager {
                 let count = connection_manager
                     .get_channel_socket_count(app_id, channel_name)
                     .await;
-                (true, count)
+                (true, count, false)
             } else {
                 // Need to add to channel
                 connection_manager
@@ -156,7 +162,11 @@ impl ChannelManager {
                 let count = connection_manager
                     .get_channel_socket_count(app_id, channel_name)
                     .await;
-                (false, count)
+                // Local count drives the per-pod gauge: activate on the first local subscriber.
+                let local = connection_manager
+                    .get_local_channel_socket_count(app_id, channel_name)
+                    .await;
+                (false, count, local == 1)
             }
         };
         let t_after_lock = t_start.elapsed().as_micros();
@@ -172,6 +182,7 @@ impl ChannelManager {
             return Ok(JoinResponse {
                 success: true,
                 channel_connections: Some(total_connections),
+                activated_locally,
                 member: None,
                 auth_error: None,
                 error_message: None,
@@ -192,6 +203,7 @@ impl ChannelManager {
 
         Ok(Self::create_success_join_response(
             total_connections,
+            activated_locally,
             member,
         ))
     }
@@ -454,13 +466,17 @@ impl ChannelManager {
             .await
     }
 
-    /// Batch unsubscribe operation for multiple channels
+    /// Batch unsubscribe operation for multiple channels.
     /// Returns results with channel names for explicit correlation.
     /// Uses a single batched cross-node query instead of one per channel.
+    ///
+    /// Each result is `(was_removed, total_remaining, local_vacated)`.
+    /// `total_remaining` is cluster-wide (for webhooks and subscription_count).
+    /// `local_vacated` is true when the channel became empty on the local node.
     pub async fn batch_unsubscribe(
         connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         operations: Vec<(String, String, String)>, // (socket_id, channel_name, app_id)
-    ) -> Result<Vec<(String, Result<(bool, usize), Error>)>, Error> {
+    ) -> Result<Vec<(String, Result<(bool, usize, bool), Error>)>, Error> {
         if operations.is_empty() {
             return Ok(Vec::new());
         }
@@ -559,7 +575,8 @@ impl ChannelManager {
                     if total == 0 {
                         channels_to_cleanup.push((app_id, channel_name.clone()));
                     }
-                    results.push((channel_name, Ok((was_removed, total))));
+                    let local_vacated = was_removed && local_remaining == 0;
+                    results.push((channel_name, Ok((was_removed, total, local_vacated))));
                 }
                 Err((channel_name, e)) => {
                     results.push((channel_name, Err(e)));

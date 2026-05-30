@@ -197,11 +197,10 @@ impl CleanupWorker {
                 Ok(results) => {
                     for (channel_name, result) in &results {
                         match result {
-                            Ok((_, remaining_connections)) => {
+                            Ok((_was_removed, _remaining_connections, local_vacated)) => {
                                 total_success += 1;
-                                if *remaining_connections == 0
-                                    && let Some(ref metrics) = self.metrics
-                                {
+                                // Per-pod gauge: decrement when the channel empties on this node.
+                                if *local_vacated && let Some(ref metrics) = self.metrics {
                                     let channel_type =
                                         ChannelType::from_name(channel_name).as_str();
                                     metrics.mark_channel_deactivated(&app_id, channel_type);
