@@ -104,7 +104,7 @@ impl ConnectionHandler {
                 }
 
                 match fast_result {
-                    Some(channel_connections) => {
+                    Some((channel_connections, newly_subscribed)) => {
                         let t_after_fast = t_start.elapsed().as_micros();
                         tracing::debug!(
                             "PERF[FAST_PATH] socket_id={} channel={} total={}μs channel_type={}μs",
@@ -116,6 +116,8 @@ impl ConnectionHandler {
                         JoinResponse {
                             success: true,
                             channel_connections: Some(channel_connections),
+                            // Fast path is local-only, so this is the local count.
+                            activated_locally: newly_subscribed && channel_connections == 1,
                             member: None,
                             auth_error: None,
                             error_message: None,
@@ -212,8 +214,8 @@ impl ConnectionHandler {
                 metrics.mark_channel_subscription(&app_config.id, channel_type_str);
             }
 
-            // Sync active channel gauge if this is the first connection to the channel
-            if subscription_result.channel_connections == Some(1) {
+            // Per-pod gauge: count this channel only on the first local subscriber.
+            if subscription_result.activated_locally {
                 metrics.mark_channel_activated(&app_config.id, channel_type_str);
             }
         }
