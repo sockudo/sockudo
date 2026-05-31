@@ -365,7 +365,7 @@ where
                 ))
             })?;
 
-        let responses = loop {
+        let (responses, timed_out) = loop {
             // Wait for notification or timeout
             let result = tokio::select! {
                 _ = notify.notified() => {
@@ -404,7 +404,7 @@ where
                             }
                             // Extract responses without removing the entry yet to avoid race condition
                             let responses = pending_request.responses.clone();
-                            Some(responses)
+                            Some((responses, false))
                         } else {
                             None // Continue waiting
                         }
@@ -426,12 +426,12 @@ where
                     } else {
                         Vec::new()
                     };
-                    Some(responses)
+                    Some((responses, true))
                 }
             };
 
-            if let Some(responses) = result {
-                break responses;
+            if let Some(outcome) = result {
+                break outcome;
             }
             // If result is None, continue waiting (notification came but not enough responses yet)
         };
@@ -461,14 +461,8 @@ where
             let duration_ms = start.elapsed().as_micros() as f64 / 1000.0; // Convert to milliseconds with 3 decimal places
             metrics.track_horizontal_adapter_resolve_time(&app_id, duration_ms);
 
-            let resolved = combined_response.sockets_count > 0
-                || !combined_response.members.is_empty()
-                || combined_response.exists
-                || !combined_response.channels.is_empty()
-                || combined_response.members_count > 0
-                || !combined_response.channels_with_sockets_count.is_empty();
-
-            metrics.track_horizontal_adapter_resolved_promises(&app_id, resolved);
+            // Empty results are still resolved — only a timeout is uncomplete
+            metrics.track_horizontal_adapter_resolved_promises(&app_id, !timed_out);
         }
 
         Ok(combined_response)

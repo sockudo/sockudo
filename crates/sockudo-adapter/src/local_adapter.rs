@@ -1319,12 +1319,16 @@ impl LocalAdapter {
 
     /// Fast-path channel join for LocalAdapter - atomic operation without locks
     /// Returns Some(connection_count) if successful, None if socket not found or already in channel
+    /// Fast-path channel join for the local adapter.
+    ///
+    /// Returns `(socket_count, newly_subscribed)`, where `newly_subscribed` is
+    /// `false` when the socket was already in the channel.
     pub fn join_channel_fast(
         &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Option<usize> {
+    ) -> Option<(usize, bool)> {
         let t_start = std::time::Instant::now();
 
         // Get namespace (read-only operation on DashMap)
@@ -1360,13 +1364,13 @@ impl LocalAdapter {
                 t_before_count - t_before_chan_check,
                 t_after_count - t_before_count
             );
-            return Some(count);
+            return Some((count, false));
         }
         let t_after_chan_check = t_start.elapsed().as_nanos();
 
         // Atomically add socket to channel
         let t_before_add = t_start.elapsed().as_nanos();
-        namespace.add_channel_to_socket(channel, socket_id);
+        let newly_subscribed = namespace.add_channel_to_socket(channel, socket_id);
         let t_after_add = t_start.elapsed().as_nanos();
 
         // Return the new connection count
@@ -1386,7 +1390,7 @@ impl LocalAdapter {
             t_after_count - t_before_count
         );
 
-        Some(count)
+        Some((count, newly_subscribed))
     }
 }
 
