@@ -592,13 +592,14 @@ impl HorizontalAdapter {
         Ok(())
     }
 
+    /// Returns the responses and whether the wait timed out.
     async fn wait_for_request_responses(
         &self,
         request_id: &str,
         start: Instant,
         timeout_duration: Duration,
         max_expected_responses: usize,
-    ) -> Vec<ResponseBody> {
+    ) -> (Vec<ResponseBody>, bool) {
         let deadline = start + timeout_duration;
 
         loop {
@@ -607,7 +608,7 @@ impl HorizontalAdapter {
                 .get(request_id)
                 .map(|request| Arc::clone(&request.notify))
             else {
-                return Vec::new();
+                return (Vec::new(), false);
             };
             let notified = notify.notified();
             tokio::pin!(notified);
@@ -626,14 +627,15 @@ impl HorizontalAdapter {
                         max_expected_responses,
                         start.elapsed().as_millis()
                     );
-                    return self
+                    let responses = self
                         .pending_requests
                         .remove(request_id)
                         .map(|(_, req)| req.responses)
                         .unwrap_or_default();
+                    return (responses, false);
                 }
                 Some(_) => {}
-                None => return Vec::new(),
+                None => return (Vec::new(), false),
             }
 
             let now = Instant::now();
@@ -650,11 +652,12 @@ impl HorizontalAdapter {
                     current_responses,
                     max_expected_responses
                 );
-                return self
+                let responses = self
                     .pending_requests
                     .remove(request_id)
                     .map(|(_, req)| req.responses)
                     .unwrap_or_default();
+                return (responses, true);
             }
 
             let remaining = deadline.saturating_duration_since(now);
@@ -674,11 +677,12 @@ impl HorizontalAdapter {
                     current_responses,
                     max_expected_responses
                 );
-                return self
+                let responses = self
                     .pending_requests
                     .remove(request_id)
                     .map(|(_, req)| req.responses)
                     .unwrap_or_default();
+                return (responses, true);
             }
         }
     }
@@ -767,7 +771,7 @@ impl HorizontalAdapter {
             });
         }
 
-        let responses = self
+        let (responses, timed_out) = self
             .wait_for_request_responses(
                 &request_id,
                 start,
@@ -806,15 +810,8 @@ impl HorizontalAdapter {
 
             metrics.track_horizontal_adapter_resolve_time(app_id, duration_ms);
 
-            let resolved = combined_response.sockets_count > 0
-                || !combined_response.members.is_empty()
-                || combined_response.exists
-                || !combined_response.channels.is_empty()
-                || combined_response.members_count > 0
-                || !combined_response.channels_with_sockets_count.is_empty()
-                || max_expected_responses == 0;
-
-            metrics.track_horizontal_adapter_resolved_promises(app_id, resolved);
+            // Empty results are still resolved — only a timeout is uncomplete
+            metrics.track_horizontal_adapter_resolved_promises(app_id, !timed_out);
         }
 
         Ok(combined_response)
@@ -1303,9 +1300,11 @@ mod tests {
             .await
             .unwrap();
 
-        let responses = timeout(Duration::from_millis(20), waiter)
+        let result = timeout(Duration::from_millis(20), waiter)
             .await
             .expect("notify should wake waiter before timeout");
-        assert_eq!(responses.unwrap().len(), 1);
+        let (responses, timed_out) = result.unwrap();
+        assert_eq!(responses.len(), 1);
+        assert!(!timed_out, "waiter should complete via notify, not timeout");
     }
 }
