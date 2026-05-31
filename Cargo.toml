@@ -23,6 +23,7 @@ edition = "2024"
 rust-version = "1.90"
 repository = "https://github.com/sockudo/sockudo"
 license-file = "LICENSE"
+readme = "README.md"
 
 [workspace.dependencies]
 # Internal crates

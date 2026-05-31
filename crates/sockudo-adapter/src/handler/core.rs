@@ -67,7 +67,7 @@ impl ConnectionHandler {
             .clear_channel_state(socket_id, &channel_name);
 
         // Perform unsubscription through channel manager
-        ChannelManager::unsubscribe(
+        let leave_response = ChannelManager::unsubscribe(
             &self.connection_manager,
             &socket_id.to_string(),
             &channel_name,
@@ -80,7 +80,8 @@ impl ConnectionHandler {
         self.update_connection_unsubscribe_state(socket_id, app_config, &channel_name)
             .await?;
 
-        // Get current subscription count after unsubscribe
+        // Get current subscription count after unsubscribe (cluster-wide, used
+        // for subscription_count / channel_vacated events and webhooks below).
         let current_sub_count = self
             .connection_manager
             .get_channel_socket_count(&app_config.id, &channel_name)
@@ -96,8 +97,12 @@ impl ConnectionHandler {
                 metrics.mark_channel_unsubscription(&app_config.id, channel_type_str);
             }
 
-            // Update active channel count if this was the last connection to the channel
-            if current_sub_count == 0 {
+            // Per-pod gauge: deactivate when the channel empties on this node, not cluster-wide.
+            let local_sub_count = self
+                .connection_manager
+                .get_local_channel_socket_count(&app_config.id, &channel_name)
+                .await;
+            if leave_response.left && local_sub_count == 0 {
                 metrics.mark_channel_deactivated(&app_config.id, channel_type_str);
             }
         }
@@ -601,10 +606,9 @@ impl ConnectionHandler {
                 // Process webhook events for each successful unsubscribe
                 for (channel_name, result) in &results {
                     match result {
-                        Ok((was_removed, remaining_connections)) => {
-                            if *remaining_connections == 0
-                                && let Some(ref metrics) = self.metrics
-                            {
+                        Ok((was_removed, remaining_connections, local_vacated)) => {
+                            // Per-pod gauge: decrement when the channel empties on this node.
+                            if *local_vacated && let Some(ref metrics) = self.metrics {
                                 let channel_type =
                                     sockudo_core::channel::ChannelType::from_name(channel_name)
                                         .as_str();

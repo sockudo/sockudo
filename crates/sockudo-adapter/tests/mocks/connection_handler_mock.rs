@@ -311,6 +311,8 @@ impl CacheManager for MockCacheManager {
 pub struct MockMetricsInterface {
     annotation_projection_rebuilds: Arc<AtomicUsize>,
     annotation_projection_rebuild_durations: Arc<AtomicUsize>,
+    horizontal_resolved_promises: Arc<AtomicUsize>,
+    horizontal_uncomplete_promises: Arc<AtomicUsize>,
 }
 impl Default for MockMetricsInterface {
     fn default() -> Self {
@@ -323,6 +325,8 @@ impl MockMetricsInterface {
         Self {
             annotation_projection_rebuilds: Arc::new(AtomicUsize::new(0)),
             annotation_projection_rebuild_durations: Arc::new(AtomicUsize::new(0)),
+            horizontal_resolved_promises: Arc::new(AtomicUsize::new(0)),
+            horizontal_uncomplete_promises: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -333,6 +337,14 @@ impl MockMetricsInterface {
     pub fn annotation_projection_rebuild_durations(&self) -> usize {
         self.annotation_projection_rebuild_durations
             .load(Ordering::Relaxed)
+    }
+
+    pub fn horizontal_resolved_promises(&self) -> usize {
+        self.horizontal_resolved_promises.load(Ordering::Relaxed)
+    }
+
+    pub fn horizontal_uncomplete_promises(&self) -> usize {
+        self.horizontal_uncomplete_promises.load(Ordering::Relaxed)
     }
 }
 
@@ -375,7 +387,15 @@ impl MetricsInterface for MockMetricsInterface {
     }
     fn mark_ws_message_received(&self, _app_id: &str, _message_size: usize) {}
     fn track_horizontal_adapter_resolve_time(&self, _app_id: &str, _time_ms: f64) {}
-    fn track_horizontal_adapter_resolved_promises(&self, _app_id: &str, _resolved: bool) {}
+    fn track_horizontal_adapter_resolved_promises(&self, _app_id: &str, resolved: bool) {
+        if resolved {
+            self.horizontal_resolved_promises
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.horizontal_uncomplete_promises
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
     fn mark_horizontal_adapter_request_sent(&self, _app_id: &str) {}
     fn mark_horizontal_adapter_request_received(&self, _app_id: &str) {}
     fn mark_horizontal_adapter_response_received(&self, _app_id: &str) {}

@@ -63,3 +63,9 @@ mod user_has_connections_tests;
 
 #[cfg(test)]
 mod presence_state_sync_default_test;
+
+#[cfg(test)]
+mod active_channels_gauge_tests;
+
+#[cfg(test)]
+mod clustered_active_channels_gauge_tests;

@@ -1,4 +1,5 @@
 use super::horizontal_adapter_helpers::{MockConfig, MockTransport};
+use crate::mocks::connection_handler_mock::MockMetricsInterface;
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::horizontal_adapter::RequestType;
 use sockudo_adapter::horizontal_adapter_base::HorizontalAdapterBase;
@@ -194,6 +195,70 @@ async fn test_send_request_timeout_with_partial_responses() -> Result<()> {
         response.socket_ids,
         vec![SocketId::from_string("socket-1").unwrap().to_string()]
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_completed_empty_resolve_counts_as_resolved_promise() -> Result<()> {
+    // channel-1 has sockets but no presence members: both nodes respond, answer empty
+    let config = MockConfig::default();
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    adapter.start_listeners().await?;
+    let adapter = adapter
+        .with_discovered_nodes(vec!["node-1", "node-2"])
+        .await?;
+
+    let metrics = Arc::new(MockMetricsInterface::new());
+    adapter.set_metrics(metrics.clone()).await?;
+
+    let response = adapter
+        .send_request(
+            "test-app",
+            RequestType::ChannelMembersCount,
+            Some("channel-1"),
+            None,
+            None,
+        )
+        .await?;
+
+    assert_eq!(response.members_count, 0);
+
+    // Empty-but-complete counts as resolved, not uncomplete
+    assert_eq!(metrics.horizontal_resolved_promises(), 1);
+    assert_eq!(metrics.horizontal_uncomplete_promises(), 0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_timed_out_resolve_counts_as_uncomplete_promise() -> Result<()> {
+    // node-2 never responds, node-3 responds after the 500ms timeout: partial answer
+    let config = MockTransport::partial_failures();
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config).await?;
+    adapter.start_listeners().await?;
+    let adapter = adapter
+        .with_discovered_nodes(vec!["node-1", "node-2", "node-3"])
+        .await?;
+
+    let metrics = Arc::new(MockMetricsInterface::new());
+    adapter.set_metrics(metrics.clone()).await?;
+
+    let response = adapter
+        .send_request(
+            "test-app",
+            RequestType::ChannelSockets,
+            Some("test-channel"),
+            None,
+            None,
+        )
+        .await?;
+
+    assert_eq!(response.sockets_count, 1);
+
+    // Timeout counts as uncomplete even though partial data arrived
+    assert_eq!(metrics.horizontal_uncomplete_promises(), 1);
+    assert_eq!(metrics.horizontal_resolved_promises(), 0);
 
     Ok(())
 }
