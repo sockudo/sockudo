@@ -1846,15 +1846,15 @@ impl ConnectionManager for LocalAdapter {
     ) -> Result<bool> {
         let namespace = self.get_or_create_namespace(app_id).await;
 
-        // MEMORY LEAK FIX: Clean up filter index BEFORE removing from channel
-        // Get the socket's filter for this channel so we can remove it from the index
+        // Clean the filter index unconditionally. On disconnect the socket is
+        // already gone from the namespace and its filter can no longer be read.
         #[cfg(feature = "tag-filtering")]
-        if let Some(socket_ref) = namespace.sockets.get(socket_id) {
-            let filter_node = socket_ref.get_channel_filter_sync(channel);
+        {
             self.filter_index
-                .remove_socket_filter(channel, *socket_id, filter_node.as_deref());
-            // Also remove from the socket's channel_filters map
-            socket_ref.channel_filters.remove(channel);
+                .remove_socket_all_filters(channel, *socket_id);
+            if let Some(socket_ref) = namespace.sockets.get(socket_id) {
+                socket_ref.channel_filters.remove(channel);
+            }
         }
 
         Ok(namespace.remove_channel_from_socket(channel, socket_id))

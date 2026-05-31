@@ -69,3 +69,6 @@ mod active_channels_gauge_tests;
 
 #[cfg(test)]
 mod clustered_active_channels_gauge_tests;
+
+#[cfg(test)]
+mod filter_index_disconnect_cleanup_tests;
