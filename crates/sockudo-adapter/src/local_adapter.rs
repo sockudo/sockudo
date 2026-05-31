@@ -192,7 +192,7 @@ impl LocalAdapter {
 struct SocketMessageParams<'a> {
     socket_ref: WebSocketRef,
     base_message: PusherMessage,
-    base_message_bytes: Vec<u8>,
+    base_message_bytes: Bytes,
     channel: &'a str,
     event_name: &'a str,
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
@@ -206,7 +206,7 @@ struct SocketMessageParams<'a> {
 struct PrecomputedDeltaParams<'a> {
     socket_ref: WebSocketRef,
     base_message: PusherMessage,
-    base_message_bytes: Vec<u8>,
+    base_message_bytes: Bytes,
     channel: &'a str,
     event_name: &'a str,
     delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
@@ -332,7 +332,7 @@ impl LocalAdapter {
         &self,
         target_socket_refs: Vec<WebSocketRef>,
         base_message: PusherMessage,
-        base_message_bytes: Vec<u8>,
+        base_message_bytes: Bytes,
         channel: &str,
         event_name: &str,
         compression: crate::connection_manager::CompressionParams<'_>,
@@ -775,7 +775,7 @@ impl LocalAdapter {
                         result.push_str(&format!(",\"__conflation_key\":\"{}\"", conflation_key));
                     }
                     result.push('}');
-                    result.into_bytes()
+                    Bytes::from(result.into_bytes())
                 } else {
                     base_message_bytes.clone()
                 }
@@ -815,7 +815,7 @@ impl LocalAdapter {
                         socket_id,
                         channel,
                         event_name,
-                        base_message_bytes.clone(),
+                        base_message_bytes.to_vec(),
                         true,
                         channel_settings,
                     )
@@ -901,7 +901,7 @@ impl LocalAdapter {
                         socket_id,
                         channel,
                         event_name,
-                        base_message_bytes.clone(),
+                        base_message_bytes.to_vec(),
                         false,
                         channel_settings,
                     )
@@ -1065,7 +1065,7 @@ impl LocalAdapter {
                     socket_id,
                     channel,
                     event_name,
-                    base_message_bytes.clone(),
+                    base_message_bytes.to_vec(),
                     false,
                     channel_settings,
                 )
@@ -1102,7 +1102,7 @@ impl LocalAdapter {
                         result.push_str(&format!(",\"__conflation_key\":\"{}\"", conflation_key));
                     }
                     result.push('}');
-                    result.into_bytes()
+                    Bytes::from(result.into_bytes())
                 } else {
                     base_message_bytes.clone()
                 }
@@ -1121,7 +1121,7 @@ impl LocalAdapter {
                     socket_id,
                     channel,
                     event_name,
-                    base_message_bytes.clone(),
+                    base_message_bytes.to_vec(),
                     true,
                     channel_settings,
                 )
@@ -1594,11 +1594,21 @@ impl ConnectionManager for LocalAdapter {
 
         // Send to filtered V2 sockets (Sockudo-native: sockudo: prefix, serial + message_id)
         if !filtered_socket_refs.is_empty() {
-            let (v2_message, _v2_bytes) = crate::v2_broadcast::prepare_v2_message(message)?;
+            let (v2_message, v2_bytes) = crate::v2_broadcast::prepare_v2_message(message)?;
+            let (json_socket_refs, binary_socket_refs): (Vec<_>, Vec<_>) = filtered_socket_refs
+                .into_iter()
+                .partition(|socket| socket.wire_format == sockudo_protocol::WireFormat::Json);
+
             Self::log_send_errors(
-                self.send_protocol_messages_concurrent(filtered_socket_refs, v2_message)
+                self.send_messages_concurrent(json_socket_refs, v2_bytes)
                     .await,
             );
+            if !binary_socket_refs.is_empty() {
+                Self::log_send_errors(
+                    self.send_protocol_messages_concurrent(binary_socket_refs, v2_message)
+                        .await,
+                );
+            }
         }
 
         Ok(())
@@ -1674,8 +1684,10 @@ impl ConnectionManager for LocalAdapter {
             v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
             v2_message.idempotency_key = None;
             let v2_event_name = v2_message.event.as_deref().unwrap_or("").to_string();
-            let v2_bytes = sonic_rs::to_vec(&v2_message)
-                .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+            let v2_bytes =
+                Bytes::from(sonic_rs::to_vec(&v2_message).map_err(|e| {
+                    Error::InvalidMessageFormat(format!("Serialization failed: {e}"))
+                })?);
             Self::log_send_errors(
                 self.send_messages_with_compression(
                     filtered_socket_refs,

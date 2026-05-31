@@ -1246,6 +1246,7 @@ async fn process_single_event_parallel(
         .as_deref()
         .ok_or_else(|| AppError::InvalidInput("Event name is required".to_string()))?;
     tracing::Span::current().record("event_name", event_name_str);
+    let event_name_owned = event_name_str.to_string();
 
     let max_event_name_len = app
         .event_name_limit()
@@ -1300,41 +1301,41 @@ async fn process_single_event_parallel(
         }
     };
 
+    let message_name = Arc::new(name);
+    let message_data = Arc::new(match event_payload_data {
+        Some(ApiMessageData::String(s)) => MessageData::String(s),
+        Some(ApiMessageData::Json(j_val)) => MessageData::String(j_val.to_string()),
+        None => MessageData::String("null".to_string()),
+    });
+    let message_tags: Arc<Option<std::collections::BTreeMap<String, String>>> =
+        Arc::new(tags.map(|h| h.into_iter().collect()));
+    let message_idempotency_key = Arc::new(idempotency_key);
+    let message_extras = Arc::new(extras);
+
     let channel_processing_futures = target_channels.into_iter().map(|target_channel_str| {
         let handler_clone = Arc::clone(handler);
-        let name_for_task = name.clone();
-        let payload_for_task = event_payload_data.clone();
+        let name_for_task = Arc::clone(&message_name);
+        let payload_for_task = Arc::clone(&message_data);
         let socket_id_for_task = mapped_socket_id;
         let info_for_task = info.clone();
-        let event_name_for_task = event_name_str.to_string();
-        let tags_for_task: Option<std::collections::BTreeMap<String, String>> = tags
-            .clone()
-            .map(|h| h.into_iter().collect());
+        let event_name_for_task = event_name_owned.clone();
+        let tags_for_task = Arc::clone(&message_tags);
         let delta_flag_for_task = delta_flag;
-        let idempotency_key_for_task = idempotency_key.clone();
-        let extras_for_task = extras.clone();
+        let idempotency_key_for_task = Arc::clone(&message_idempotency_key);
+        let extras_for_task = Arc::clone(&message_extras);
 
         async move {
             debug!(channel = %target_channel_str, "Processing channel for event (parallel task)");
 
             validate_channel_name(app, &target_channel_str).await?;
 
-            let message_data = match payload_for_task {
-                Some(ApiMessageData::String(s)) => {
-                    MessageData::String(s)
-                },
-                Some(ApiMessageData::Json(j_val)) => {
-                    MessageData::String(j_val.to_string())
-                },
-                None => MessageData::String("null".to_string()),
-            };
             let _message_to_send = PusherMessage {
                 channel: Some(target_channel_str.clone()),
                 name: None,
-                event: name_for_task,
-                data: Some(message_data.clone()),
+                event: (*name_for_task).clone(),
+                data: Some((*payload_for_task).clone()),
                 user_id: None,
-                tags: tags_for_task.clone(),
+                tags: (*tags_for_task).clone(),
                 sequence: None,
                 conflation_key: None,
                 message_id: if handler_clone.server_options().connection_recovery.enabled {
@@ -1344,8 +1345,8 @@ async fn process_single_event_parallel(
                 },
                 stream_id: None,
                 serial: None,
-                idempotency_key: idempotency_key_for_task.clone(),
-                extras: extras_for_task.clone(),
+                idempotency_key: (*idempotency_key_for_task).clone(),
+                extras: (*extras_for_task).clone(),
                 delta_sequence: None,
                 delta_conflation_key: None,
             };
@@ -1431,7 +1432,7 @@ async fn process_single_event_parallel(
 
             // Handle caching for cacheable channels.
             if utils::is_cache_channel(&target_channel_str) {
-                let message_data = sonic_rs::to_value(&message_data)
+                let message_data = sonic_rs::to_value(&*payload_for_task)
                     .map_err(AppError::SerializationError)?;
                 match build_cache_payload(&event_name_for_task, &message_data, &target_channel_str) {
                     Ok(cache_payload_str) => {

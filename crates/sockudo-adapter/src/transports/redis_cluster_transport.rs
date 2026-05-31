@@ -28,6 +28,15 @@ fn value_to_str(v: &redis::Value) -> Option<&str> {
     }
 }
 
+fn value_to_bytes(v: &redis::Value) -> Option<&[u8]> {
+    match v {
+        redis::Value::BulkString(bytes) => Some(bytes),
+        redis::Value::SimpleString(s) => Some(s.as_bytes()),
+        redis::Value::VerbatimString { format: _, text } => Some(text.as_bytes()),
+        _ => None,
+    }
+}
+
 impl TransportConfig for RedisClusterAdapterConfig {
     fn request_timeout_ms(&self) -> u64 {
         self.request_timeout_ms
@@ -478,8 +487,8 @@ impl HorizontalTransport for RedisClusterTransport {
                         continue;
                     };
 
-                    let payload = match value_to_str(&push_info.data[1]).map(str::to_owned) {
-                        Some(s) => s,
+                    let payload = match value_to_bytes(&push_info.data[1]).map(<[u8]>::to_vec) {
+                        Some(bytes) => bytes,
                         None => {
                             if let Some(metrics) = metrics.get() {
                                 metrics.mark_horizontal_transport_message_dropped("redis_cluster");
@@ -496,7 +505,7 @@ impl HorizontalTransport for RedisClusterTransport {
 
                             tokio::spawn(async move {
                                 if let Ok(broadcast) =
-                                    sonic_rs::from_str::<BroadcastMessage>(&payload)
+                                    sonic_rs::from_slice::<BroadcastMessage>(&payload)
                                 {
                                     broadcast_handler(broadcast).await;
                                 } else if let Some(metrics) = metrics_clone.get() {
@@ -513,7 +522,7 @@ impl HorizontalTransport for RedisClusterTransport {
                             let sharded = use_sharded_pubsub;
 
                             tokio::spawn(async move {
-                                if let Ok(request) = sonic_rs::from_str::<RequestBody>(&payload) {
+                                if let Ok(request) = sonic_rs::from_slice::<RequestBody>(&payload) {
                                     let reply_to = request.reply_to.clone();
                                     let response_result = request_handler(request).await;
 
@@ -541,7 +550,8 @@ impl HorizontalTransport for RedisClusterTransport {
                             let metrics_clone = metrics.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
+                                if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&payload)
+                                {
                                     response_handler(response).await;
                                 } else if let Some(metrics) = metrics_clone.get() {
                                     metrics
@@ -554,7 +564,8 @@ impl HorizontalTransport for RedisClusterTransport {
                             let metrics_clone = metrics.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
+                                if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&payload)
+                                {
                                     response_handler(response).await;
                                 } else if let Some(metrics) = metrics_clone.get() {
                                     metrics

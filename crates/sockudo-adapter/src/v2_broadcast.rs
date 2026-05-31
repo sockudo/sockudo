@@ -108,13 +108,8 @@ pub(crate) fn apply_tag_filter_in_place(
     }
 
     let _ = (filter_index, except, namespace);
-    let tags_btree = message.tags.as_ref().map(|tags| {
-        tags.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect::<std::collections::BTreeMap<String, String>>()
-    });
 
-    v2_sockets.retain(|socket| should_deliver_for_tags(socket, channel, tags_btree.as_ref()));
+    v2_sockets.retain(|socket| should_deliver_for_tags(socket, channel, message.tags.as_ref()));
 }
 
 #[cfg(feature = "tag-filtering")]
@@ -132,15 +127,9 @@ pub(crate) fn apply_tag_filter_v2_only_in_place(
     }
 
     let _ = (filter_index, except, namespace);
-    let tags_btree = message.tags.as_ref().map(|tags| {
-        tags.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect::<std::collections::BTreeMap<String, String>>()
-    });
-
     v2_sockets.retain(|socket| {
         socket.protocol_version == sockudo_protocol::ProtocolVersion::V2
-            && should_deliver_for_tags(socket, channel, tags_btree.as_ref())
+            && should_deliver_for_tags(socket, channel, message.tags.as_ref())
     });
 }
 

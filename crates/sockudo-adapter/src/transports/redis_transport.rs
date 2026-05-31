@@ -309,7 +309,7 @@ impl HorizontalTransport for RedisTransport {
                         break;
                     };
                     let channel = msg.get_channel_name();
-                    let payload_result: redis::RedisResult<String> = msg.get_payload();
+                    let payload_result: redis::RedisResult<Vec<u8>> = msg.get_payload();
 
                     if let Ok(payload) = payload_result {
                         if channel == broadcast_channel.as_str() {
@@ -318,7 +318,7 @@ impl HorizontalTransport for RedisTransport {
 
                             tokio::spawn(async move {
                                 if let Ok(broadcast) =
-                                    sonic_rs::from_str::<BroadcastMessage>(&payload)
+                                    sonic_rs::from_slice::<BroadcastMessage>(&payload)
                                 {
                                     broadcast_handler(broadcast).await;
                                 } else if let Some(metrics) = metrics_clone.get() {
@@ -334,7 +334,7 @@ impl HorizontalTransport for RedisTransport {
                             let metrics_clone = metrics.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(request) = sonic_rs::from_str::<RequestBody>(&payload) {
+                                if let Ok(request) = sonic_rs::from_slice::<RequestBody>(&payload) {
                                     let reply_to = request.reply_to.clone();
                                     let response_result = request_handler(request).await;
 
@@ -358,13 +358,17 @@ impl HorizontalTransport for RedisTransport {
                             let metrics_clone = metrics.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(response) = sonic_rs::from_str::<ResponseBody>(&payload) {
+                                if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&payload)
+                                {
                                     response_handler(response).await;
                                 } else {
                                     if let Some(metrics) = metrics_clone.get() {
                                         metrics.mark_horizontal_transport_message_dropped("redis");
                                     }
-                                    warn!("Failed to parse response message: {}", payload);
+                                    warn!(
+                                        "Failed to parse response message: {}",
+                                        String::from_utf8_lossy(&payload)
+                                    );
                                 }
                             });
                         }
