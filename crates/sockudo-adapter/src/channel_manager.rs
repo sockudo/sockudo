@@ -338,7 +338,7 @@ impl ChannelManager {
     }
 
     pub fn signature_is_valid(
-        app_config: App,
+        app_config: &App,
         socket_id: &SocketId,
         signature: &str,
         message: PusherMessage,
@@ -348,11 +348,11 @@ impl ChannelManager {
     }
 
     pub fn get_expected_signature(
-        app_config: App,
+        app_config: &App,
         socket_id: &SocketId,
         message: PusherMessage,
     ) -> String {
-        let token = Token::new(app_config.key.clone(), app_config.secret);
+        let token = Token::new(app_config.key.clone(), app_config.secret.clone());
         format!(
             "{}:{}",
             app_config.key,

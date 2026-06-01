@@ -360,6 +360,7 @@ pub(crate) struct ShardListenerParams {
     channels: Vec<String>,
     mode: PubSubMode,
     fan_in_tx: ShardedPushSender,
+    ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
     is_running: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
     shard_addr: String,
@@ -373,7 +374,7 @@ pub(crate) struct ShardListenerParams {
 /// subscription command for each assigned channel, and forwards Pub/Sub pushes
 /// to the bounded fan-in sender. Reconnects with exponential back-off
 /// (500 ms to 10 s) on any failure.
-pub(crate) async fn shard_listener_loop(params: ShardListenerParams) {
+pub(crate) async fn shard_listener_loop(mut params: ShardListenerParams) {
     // Unbounded because push_sender must not block the redis runtime;
     // backpressure is applied at the bounded fan-in boundary.
     type InternalFlavor = mpsc::List<redis::PushInfo>;
@@ -493,6 +494,9 @@ pub(crate) async fn shard_listener_loop(params: ShardListenerParams) {
             params.mode.label(),
             params.channels.len()
         );
+        if let Some(ready_tx) = params.ready_tx.take() {
+            let _ = ready_tx.send(());
+        }
         reconnection_count = 0;
 
         loop {
@@ -667,17 +671,20 @@ impl ShardedSubscriber {
 
         {
             let mut shard_map = shard_handles.lock().await;
+            let mut ready_receivers = Vec::new();
             for (shard_addr, shard_channels) in by_shard {
                 if shard_channels.is_empty() {
                     continue;
                 }
                 let url = shard_addr.to_url(scheme, password.as_deref());
                 let shard_addr_str = format!("{}:{}", shard_addr.host, shard_addr.port);
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
                 let params = ShardListenerParams {
                     url,
                     channels: shard_channels,
                     mode: self.mode,
                     fan_in_tx: fan_tx.clone(),
+                    ready_tx: Some(ready_tx),
                     is_running: self.is_running.clone(),
                     shutdown: self.shutdown.clone(),
                     shard_addr: shard_addr_str.clone(),
@@ -685,6 +692,20 @@ impl ShardedSubscriber {
                     refresh_notify: self.refresh_notify.clone(),
                 };
                 shard_map.insert(shard_addr_str, tokio::spawn(shard_listener_loop(params)));
+                ready_receivers.push(ready_rx);
+            }
+            drop(shard_map);
+
+            let readiness = ready_receivers
+                .into_iter()
+                .map(|ready_rx| tokio::time::timeout(Duration::from_secs(5), ready_rx));
+            for result in futures::future::join_all(readiness).await {
+                if !matches!(result, Ok(Ok(()))) {
+                    warn!(
+                        "ShardedSubscriber: timed out waiting for initial {} subscription readiness",
+                        self.mode.label()
+                    );
+                }
             }
         }
 
@@ -761,6 +782,7 @@ impl ShardedSubscriber {
                         channels,
                         mode,
                         fan_in_tx: fan_tx_for_refresh.clone(),
+                        ready_tx: None,
                         is_running: is_running_clone.clone(),
                         shutdown: shutdown_clone.clone(),
                         shard_addr: new_str.clone(),

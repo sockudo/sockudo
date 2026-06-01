@@ -49,12 +49,8 @@ impl ConnectionHandler {
             delta_conflation_key: None,
         };
 
-        let is_valid = ChannelManager::signature_is_valid(
-            app_config.clone(),
-            socket_id,
-            signature,
-            temp_message,
-        );
+        let is_valid =
+            ChannelManager::signature_is_valid(app_config, socket_id, signature, temp_message);
 
         Ok(is_valid)
     }
