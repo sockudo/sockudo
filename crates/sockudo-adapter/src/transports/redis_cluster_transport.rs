@@ -339,12 +339,14 @@ impl HorizontalTransport for RedisClusterTransport {
         let is_running = self.is_running.clone();
         let node_channel = format!("{}:#node:{}", self.prefix, handlers.node_id);
         let reply_channel = self.reply_channel.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
         // Spawn the main listener task with reconnection logic
         tokio::spawn(async move {
             let mut retry_delay = 500u64; // Start with 500ms delay
             const MAX_RETRY_DELAY: u64 = 10_000; // Max 10 seconds
             let mut reconnection_count = 0u64;
+            let mut ready_tx = Some(ready_tx);
 
             loop {
                 if !is_running.load(Ordering::Relaxed) {
@@ -388,6 +390,9 @@ impl HorizontalTransport for RedisClusterTransport {
                                 "Redis Cluster PubSub reconnected successfully after {} attempt(s)",
                                 reconnection_count
                             );
+                        }
+                        if let Some(ready_tx) = ready_tx.take() {
+                            let _ = ready_tx.send(());
                         }
                         rx
                     }
@@ -588,6 +593,15 @@ impl HorizontalTransport for RedisClusterTransport {
                 retry_delay = std::cmp::min(retry_delay * 2, MAX_RETRY_DELAY);
             }
         });
+
+        tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .map_err(|_| {
+                Error::Redis("Redis Cluster PubSub initial subscription timed out".to_string())
+            })?
+            .map_err(|_| {
+                Error::Redis("Redis Cluster PubSub listener stopped before subscribing".to_string())
+            })?;
 
         Ok(())
     }
