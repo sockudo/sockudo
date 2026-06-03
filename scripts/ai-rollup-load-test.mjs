@@ -10,9 +10,10 @@ const config = {
   secret: args.secret ?? "app-secret",
   channel: args.channel ?? "private-ai-rollup-load",
   event: args.event ?? "ai-output",
-  tokensPerSecond: numberArg(args.tokensPerSecond, 200),
+  tokensPerSecond: numberArg(args.tokensPerSecond, 1000),
   durationSeconds: numberArg(args.duration, 60),
   tokenBytes: numberArg(args.tokenBytes, 8),
+  maxP99Ms: numberArg(args.maxP99Ms, 20),
   messageSerial: args.messageSerial,
 };
 
@@ -30,14 +31,15 @@ for (let index = 0; index < appendCount; index += 1) {
     await sleep(waitMs);
   }
 
-  content += tokenFor(index);
+  const fragment = tokenFor(index);
+  content += fragment;
   const requestStarted = performance.now();
   try {
     await signedJson(
       "POST",
       `/channels/${encodeURIComponent(config.channel)}/messages/${encodeURIComponent(messageSerial)}/append`,
       {
-        data: content,
+        data: fragment,
         op_id: `rollup-load-${Date.now()}-${index}`,
         extras: {
           ai: {
@@ -63,6 +65,7 @@ const latest = await signedJson(
 );
 const latestContent = latest?.item?.data;
 const expectedRate = appendCount / config.durationSeconds;
+const appendLatencyMs = summarize(latencies);
 
 console.log(JSON.stringify({
   messageSerial,
@@ -71,10 +74,20 @@ console.log(JSON.stringify({
   configuredTokensPerSecond: config.tokensPerSecond,
   requestRatePerSecond: Number(expectedRate.toFixed(2)),
   durationSeconds: secondsSince(started),
-  appendLatencyMs: summarize(latencies),
+  appendLatencyMs,
   finalContentMatches: latestContent === content,
   finalContentBytes: Buffer.byteLength(content),
 }, null, 2));
+
+if (failures !== 0) {
+  fail(`expected zero failed appends, got ${failures}`);
+}
+if (appendLatencyMs.p99 !== undefined && appendLatencyMs.p99 > config.maxP99Ms) {
+  fail(`append p99 ${appendLatencyMs.p99}ms exceeded ${config.maxP99Ms}ms budget`);
+}
+if (latestContent !== content) {
+  fail("latest message content did not match appended fragments");
+}
 
 async function createMessage() {
   const response = await signedJson("POST", "/events", {
@@ -180,6 +193,11 @@ function numberArg(value, fallback) {
     throw new Error(`invalid numeric argument: ${value}`);
   }
   return parsed;
+}
+
+function fail(message) {
+  console.error(message);
+  process.exitCode = 1;
 }
 
 function parseArgs(argv) {

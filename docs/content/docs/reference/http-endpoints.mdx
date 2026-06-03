@@ -46,6 +46,7 @@ Useful request controls:
 | `info` | publish endpoints | Optional response info such as `subscription_count`. |
 | `x-idempotency-key` | publish endpoints | Deduplicates accepted publishes when idempotency is enabled. |
 | `idempotency_key` | publish bodies | Body-level idempotency key accepted by Sockudo publish paths. |
+| `message_id` | publish bodies | SDK-facing idempotent create key for AI/versioned-message publishes. Duplicate values return the original serial acknowledgement. |
 
 Revocation request body:
 
@@ -76,6 +77,9 @@ Supported `info` tokens:
 | `subscription_count` | `/channels`, `/channels/{channelName}`, publish responses | Include active subscription counts. |
 | `user_count` | presence channel state | Include presence user count. |
 | `cache` | cache channel state | Include cache-channel occupancy details. |
+
+For channels matched by `[ai_transport]`, `/channels/{channelName}` includes an
+`ai` object with `active_streams`, `last_history_serial`, and `message_count`.
 
 ## Durable history
 
@@ -117,7 +121,7 @@ Presence history uses the same pagination and range controls as durable channel 
 | `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/delete` | Signed app API | Apply a soft delete version. |
 | `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/append` | Signed app API | Append string content and store the rolled-up result. |
 
-Versioned-message endpoints require `versioned_messages.enabled = true` and a channel policy that permits mutable messages. They are Sockudo Protocol V2 surfaces.
+Versioned-message endpoints require `versioned_messages.enabled = true` and a channel policy that permits mutable messages. They are Sockudo Protocol V2 surfaces. `update`, `delete`, and `append` accept optional `op_id` for mutation replay dedupe. Mutation responses include `channel`, `message_serial`, `action`, `accepted`, `version_serial`, `history_serial`, `delivery_serial`, and `status`.
 
 ## Annotations
 

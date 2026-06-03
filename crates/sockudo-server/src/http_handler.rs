@@ -1148,6 +1148,66 @@ async fn record_api_metrics(
     }
 }
 
+async fn ai_channel_stats(
+    handler: &Arc<ConnectionHandler>,
+    app: &App,
+    app_id: &str,
+    channel: &str,
+) -> Result<Option<Value>, AppError> {
+    if !handler
+        .server_options()
+        .ai_transport
+        .matches_channel(channel)
+    {
+        return Ok(None);
+    }
+
+    let history_policy = app.resolved_history(channel, &handler.server_options().history);
+    let last_history_serial = if history_policy.enabled {
+        let page = handler
+            .history_store()
+            .read_page(HistoryReadRequest {
+                app_id: app_id.to_string(),
+                channel: channel.to_string(),
+                direction: HistoryDirection::NewestFirst,
+                limit: 1,
+                cursor: None,
+                bounds: HistoryQueryBounds::default(),
+            })
+            .await?;
+        page.items.first().map(|item| item.serial)
+    } else {
+        None
+    };
+
+    let latest_messages = if handler.server_options().versioned_messages.enabled {
+        handler
+            .version_store()
+            .latest_by_history(app_id, channel)
+            .await?
+    } else {
+        Vec::new()
+    };
+    let active_streams = latest_messages
+        .iter()
+        .filter(|record| {
+            record
+                .message
+                .extras
+                .as_ref()
+                .and_then(|extras| extras.ai_transport_headers())
+                .and_then(|headers| headers.status())
+                == Some("streaming")
+        })
+        .count();
+
+    Ok(Some(json!({
+        "active_streams": active_streams,
+        "last_history_serial": last_history_serial,
+        "message_count": latest_messages.len()
+    })))
+}
+
 // --- API Handlers ---
 
 /// GET /usage
@@ -3323,6 +3383,9 @@ pub async fn channel(
     if wants_subscription_count && !socket_count_info.complete {
         response_payload["subscription_count_complete"] = json!(false);
     }
+    if let Some(ai_stats) = ai_channel_stats(&handler, &app, &app_id, &channel_name).await? {
+        response_payload["ai"] = ai_stats;
+    }
     let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     debug!("Channel info for '{}' retrieved successfully", channel_name);
@@ -4332,7 +4395,7 @@ mod tests {
         ConnectionCapabilities, SocketId, UserInfo, WebSocketBufferConfig,
     };
     use sockudo_protocol::messages::{
-        ApiMessageData, MessageData, PusherApiMessage, PusherMessage,
+        AiExtras, ApiMessageData, MessageData, PusherApiMessage, PusherMessage,
     };
     use sockudo_protocol::versioned_messages::{
         AppendMessageRequest, DeleteMessageRequest, MessageVersionsQuery, UpdateMessageRequest,
@@ -4570,6 +4633,73 @@ mod tests {
                 None,
             ),
         }
+    }
+
+    fn ai_extras(status: &str) -> MessageExtras {
+        MessageExtras {
+            ai: Some(AiExtras {
+                transport: Some(HashMap::from([("status".to_string(), status.to_string())])),
+                codec: Some(HashMap::from([(
+                    "content-type".to_string(),
+                    "text/plain".to_string(),
+                )])),
+            }),
+            ..Default::default()
+        }
+    }
+
+    async fn publish_ai_http_event(
+        handler: Arc<ConnectionHandler>,
+        app: App,
+        event_name: &str,
+        message_id: Option<&str>,
+        idempotency_header: Option<&str>,
+        status: &str,
+        data: &str,
+    ) -> Value {
+        let mut headers = HeaderMap::new();
+        if let Some(key) = idempotency_header {
+            headers.insert(
+                header::HeaderName::from_static("x-idempotency-key"),
+                HeaderValue::from_str(key).unwrap(),
+            );
+        }
+
+        let response = events(
+            Path("app-1".to_string()),
+            Query(empty_event_query()),
+            Extension(app),
+            #[cfg(feature = "push")]
+            test_push_store(),
+            #[cfg(feature = "push")]
+            test_push_queue(),
+            State(handler),
+            headers,
+            Uri::from_static("/apps/app-1/events"),
+            RawQuery(None),
+            Json(PusherApiMessage {
+                name: Some(event_name.to_string()),
+                data: Some(ApiMessageData::String(data.to_string())),
+                channel: Some("versioned-room".to_string()),
+                channels: None,
+                socket_id: None,
+                info: None,
+                tags: None,
+                delta: None,
+                idempotency_key: None,
+                message_id: message_id.map(str::to_string),
+                extras: Some(ai_extras(status)),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        sonic_rs::from_slice(&body).unwrap()
     }
 
     async fn test_websocket_writer() -> WebSocketWriter {
@@ -6943,6 +7073,330 @@ mod tests {
         assert_eq!(json["items"][0]["message"]["data"], "hello world");
         assert_eq!(json["items"][0]["event_name"], "sockudo:message.append");
         assert_eq!(json["items"][0]["operation_kind"], "message.append");
+    }
+
+    #[tokio::test]
+    async fn ai_http_publish_returns_serial_ack_and_message_id_dedupes() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_ai_versioned_handler_with_store(100, store.clone(), 1024, 4096, 1024);
+        let app = test_app();
+
+        let first = publish_ai_http_event(
+            handler.clone(),
+            app.clone(),
+            "ai-output",
+            Some("sdk-msg-1"),
+            None,
+            "streaming",
+            "hello",
+        )
+        .await;
+        let first_ack = &first["channels"]["versioned-room"];
+        assert!(first_ack["message_serial"].as_str().is_some());
+        assert_eq!(first_ack["history_serial"].as_u64(), Some(1));
+        assert_eq!(first_ack["delivery_serial"].as_u64(), Some(1));
+        assert!(first_ack["version_serial"].as_str().is_some());
+
+        let duplicate = publish_ai_http_event(
+            handler.clone(),
+            app,
+            "ai-output",
+            Some("sdk-msg-1"),
+            None,
+            "streaming",
+            "hello again",
+        )
+        .await;
+        assert_eq!(
+            duplicate["channels"]["versioned-room"],
+            first["channels"]["versioned-room"]
+        );
+
+        let latest = store
+            .latest_by_history("app-1", "versioned-room")
+            .await
+            .unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(
+            latest[0].message.data.as_ref().unwrap().as_string(),
+            Some("hello")
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_http_publish_idempotency_key_header_returns_cached_serial_ack() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_ai_versioned_handler_with_store(100, store.clone(), 1024, 4096, 1024);
+        let app = test_app();
+
+        let first = publish_ai_http_event(
+            handler.clone(),
+            app.clone(),
+            "ai-turn-start",
+            None,
+            Some("turn-start-request-1"),
+            "streaming",
+            "{\"turn\":\"1\"}",
+        )
+        .await;
+        let duplicate = publish_ai_http_event(
+            handler,
+            app,
+            "ai-turn-start",
+            None,
+            Some("turn-start-request-1"),
+            "streaming",
+            "{\"turn\":\"1-retry\"}",
+        )
+        .await;
+
+        assert_eq!(
+            duplicate["channels"]["versioned-room"],
+            first["channels"]["versioned-room"]
+        );
+        assert_eq!(
+            store
+                .latest_by_history("app-1", "versioned-room")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_batch_http_publish_returns_serial_acks_in_request_order() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_ai_versioned_handler_with_store(100, store.clone(), 1024, 4096, 1024);
+        let app = test_app();
+
+        let response = batch_events(
+            Path("app-1".to_string()),
+            Query(empty_event_query()),
+            Extension(app),
+            #[cfg(feature = "push")]
+            test_push_store(),
+            #[cfg(feature = "push")]
+            test_push_queue(),
+            State(handler),
+            HeaderMap::new(),
+            Uri::from_static("/apps/app-1/batch_events"),
+            RawQuery(None),
+            Json(BatchPusherApiMessage {
+                batch: vec![
+                    PusherApiMessage {
+                        name: Some("ai-output".to_string()),
+                        data: Some(ApiMessageData::String("first".to_string())),
+                        channel: Some("versioned-room".to_string()),
+                        channels: None,
+                        socket_id: None,
+                        info: None,
+                        tags: None,
+                        delta: None,
+                        idempotency_key: None,
+                        message_id: Some("batch-msg-1".to_string()),
+                        extras: Some(ai_extras("streaming")),
+                    },
+                    PusherApiMessage {
+                        name: Some("ai-output".to_string()),
+                        data: Some(ApiMessageData::String("second".to_string())),
+                        channel: Some("versioned-room".to_string()),
+                        channels: None,
+                        socket_id: None,
+                        info: None,
+                        tags: None,
+                        delta: None,
+                        idempotency_key: None,
+                        message_id: Some("batch-msg-2".to_string()),
+                        extras: Some(ai_extras("complete")),
+                    },
+                ],
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["batch"].as_array().unwrap().len(), 2);
+        assert_eq!(json["batch"][0]["history_serial"].as_u64(), Some(1));
+        assert_eq!(json["batch"][0]["delivery_serial"].as_u64(), Some(1));
+        assert_eq!(json["batch"][1]["history_serial"].as_u64(), Some(2));
+        assert_eq!(json["batch"][1]["delivery_serial"].as_u64(), Some(2));
+        assert_ne!(
+            json["batch"][0]["message_serial"],
+            json["batch"][1]["message_serial"]
+        );
+        assert_eq!(
+            store
+                .latest_by_history("app-1", "versioned-room")
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn append_message_op_id_replay_returns_duplicate_serial_ack() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_ai_versioned_handler_with_store(100, store.clone(), 1024, 4096, 1024);
+        let app = test_app();
+
+        store
+            .append_version(test_versioned_record(
+                "msg:1",
+                "00000000000000000001:test:00000000000000000001",
+                10,
+                1,
+                "hello",
+            ))
+            .await
+            .unwrap();
+
+        let request = AppendMessageRequest {
+            data: " world".to_string(),
+            extras: Some(ai_extras("complete")),
+            client_id: None,
+            socket_id: None,
+            description: Some("append".to_string()),
+            metadata: None,
+            op_id: Some("append-op-1".to_string()),
+        };
+
+        let first = append_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app.clone()),
+            State(handler.clone()),
+            Json(request.clone()),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(first.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first_json["status"], "applied");
+        assert_eq!(first_json["history_serial"].as_u64(), Some(10));
+        assert_eq!(first_json["delivery_serial"].as_u64(), Some(2));
+
+        let duplicate = append_message(
+            Path(VersionMutationPath {
+                app_id: "app-1".to_string(),
+                channel_name: "versioned-room".to_string(),
+                message_serial: "msg:1".to_string(),
+            }),
+            Extension(app),
+            State(handler),
+            Json(request),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let duplicate_json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(duplicate.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(duplicate_json["status"], "duplicate");
+        assert_eq!(
+            duplicate_json["version_serial"],
+            first_json["version_serial"]
+        );
+        assert_eq!(
+            duplicate_json["history_serial"],
+            first_json["history_serial"]
+        );
+        assert_eq!(
+            duplicate_json["delivery_serial"],
+            first_json["delivery_serial"]
+        );
+        assert_eq!(
+            store
+                .get_versions(VersionStoreReadRequest {
+                    app_id: "app-1".to_string(),
+                    channel: "versioned-room".to_string(),
+                    message_serial: MessageSerial::new("msg:1").unwrap(),
+                    direction: VersionStoreDirection::OldestFirst,
+                    limit: 10,
+                    cursor: None,
+                })
+                .await
+                .unwrap()
+                .items
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_state_includes_ai_block_for_ai_transport_channels() {
+        let store = Arc::new(MemoryVersionStore::new());
+        let handler = test_ai_versioned_handler_with_store(100, store, 1024, 4096, 1024);
+        let app = test_app();
+
+        publish_ai_http_event(
+            handler.clone(),
+            app.clone(),
+            "ai-output",
+            Some("sdk-msg-streaming"),
+            None,
+            "streaming",
+            "streaming",
+        )
+        .await;
+        publish_ai_http_event(
+            handler.clone(),
+            app.clone(),
+            "ai-output",
+            Some("sdk-msg-complete"),
+            None,
+            "complete",
+            "complete",
+        )
+        .await;
+
+        let response = channel(
+            Path(("app-1".to_string(), "versioned-room".to_string())),
+            Query(ChannelQuery {
+                info: Some("subscription_count".to_string()),
+                auth_params: empty_event_query(),
+            }),
+            Extension(app),
+            State(handler),
+            Uri::from_static("/apps/app-1/channels/versioned-room?info=subscription_count"),
+            RawQuery(Some("info=subscription_count".to_string())),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json: Value = sonic_rs::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["ai"]["active_streams"].as_u64(), Some(1));
+        assert_eq!(json["ai"]["last_history_serial"].as_u64(), Some(2));
+        assert_eq!(json["ai"]["message_count"].as_u64(), Some(2));
     }
 
     #[tokio::test]
