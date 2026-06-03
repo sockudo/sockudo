@@ -33,7 +33,19 @@ jobs:
         run: cargo install cargo-fuzz --locked
 
       - name: AI header validator smoke
-        run: cargo fuzz run ai_header_validator -- -max_total_time=30
+        run: cargo fuzz run ai_header_validator -- -max_total_time=10
 
       - name: Wire message parser smoke
-        run: cargo fuzz run wire_message -- -max_total_time=30
+        run: cargo fuzz run wire_message -- -max_total_time=10
+
+      - name: Capability map parser smoke
+        run: cargo fuzz run capability_map -- -max_total_time=10
+
+      - name: History cursor parser smoke
+        run: cargo fuzz run history_cursor -- -max_total_time=10
+
+      - name: Push payload mapping smoke
+        run: cargo fuzz run push_payload_mapping -- -max_total_time=10
+
+      - name: Mutation request parser smoke
+        run: cargo fuzz run mutation_request -- -max_total_time=10

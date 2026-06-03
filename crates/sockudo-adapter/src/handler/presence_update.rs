@@ -54,7 +54,7 @@ impl ConnectionHandler {
             .await
             .ok_or_else(|| ai_presence_error("presence_update requires active membership"))?;
 
-        self.check_presence_update_rate_limit(app_config, &channel, &member.user_id)
+        self.check_presence_update_rate_limit(socket_id, app_config, &channel, &member.user_id)
             .await?;
 
         let presence_history_policy =
@@ -79,6 +79,7 @@ impl ConnectionHandler {
 
     async fn check_presence_update_rate_limit(
         &self,
+        socket_id: &SocketId,
         app_config: &App,
         channel: &str,
         user_id: &str,
@@ -87,10 +88,10 @@ impl ConnectionHandler {
             .server_options()
             .presence
             .update_rate_limit_per_member_per_second;
-        let key = format!("{}:{channel}:{user_id}", app_config.id);
+        let key = presence_update_rate_key(&app_config.id, channel, user_id);
         let limiter = self
             .presence_update_limiters
-            .entry(key.clone())
+            .entry(*socket_id)
             .or_insert_with(|| Arc::new(MemoryRateLimiter::new(limit, 1)));
 
         let result = limiter.value().increment(&key).await?;
@@ -137,6 +138,10 @@ fn ai_presence_error(message: &str) -> Error {
         name: "ai_presence_update_invalid",
         message: message.to_string(),
     }
+}
+
+fn presence_update_rate_key(app_id: &str, channel: &str, user_id: &str) -> String {
+    format!("{app_id}:{channel}:{user_id}")
 }
 
 #[cfg(test)]
@@ -194,5 +199,13 @@ mod tests {
         };
 
         assert!(parse_presence_update(&message).is_err());
+    }
+
+    #[test]
+    fn presence_update_rate_key_preserves_member_scope() {
+        assert_eq!(
+            presence_update_rate_key("app-1", "presence-room", "user-1"),
+            "app-1:presence-room:user-1"
+        );
     }
 }
