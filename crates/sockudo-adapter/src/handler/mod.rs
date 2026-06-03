@@ -72,7 +72,7 @@ pub struct ConnectionHandler {
     webhook_integration: Option<Arc<WebhookIntegration>>,
     client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
     message_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
-    presence_update_limiters: Arc<DashMap<String, Arc<dyn RateLimiter + Send + Sync>>>,
+    presence_update_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
     history_request_limits: Arc<DashMap<SocketId, Arc<Semaphore>>>,
     watchlist_manager: Arc<WatchlistManager>,
     server_options: Arc<ServerOptions>,

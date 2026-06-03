@@ -19,7 +19,8 @@ Sockudo AI Transport is exposed to hostile multi-tenant internet clients. Attack
 | Crypto compare | SQL app-manager signature helpers now use constant-time `secure_compare`. |
 | Push credentials | New push credential writes require `PUSH_CREDENTIAL_ENCRYPTION_KEY` and always store AES-GCM envelopes. Legacy local plaintext envelopes remain readable only for migration/rotation. |
 | Limiter cleanup | Per-socket `channel_history` semaphores are removed on socket cleanup. |
-| Parser smoke | CI fuzz smoke covers AI header validation and generic wire-message deserialization; seed corpora are committed. |
+| Presence update limiters | Presence update rate limiters are scoped to socket lifetime while retaining per `(app, channel, user)` counters inside the limiter. |
+| Parser smoke | CI fuzz smoke covers AI header validation, generic wire-message deserialization, capability maps, history cursors, push payload mapping, and mutation requests; seed corpora are committed. |
 
 ## AuthZ Matrix Summary
 
@@ -38,16 +39,16 @@ Sockudo AI Transport is exposed to hostile multi-tenant internet clients. Attack
 | Push subscribe | Deny without device token | Signed app HTTP or push-subscribe device flow | Signed app HTTP or push-subscribe device flow | Not accepted as app auth | Deny | Allow signed app HTTP | Deny |
 | Token revocation admin | Deny | Signed app HTTP only | Signed app HTTP only | Not accepted as app auth | Deny | Allow signed app HTTP | Deny |
 
-## Remaining Accepted Risks
+## GA Blockers
 
-| Risk | Status |
+No residual security risk is accepted for GA. Items below are blockers, not waivers.
+
+| Blocker | Required closure |
 | --- | --- |
-| Pending presence removals still use one delayed task per ungraceful disconnect and a global pending map scan. | Accepted for this pass; requires a larger timer-wheel/per-channel-index change. |
-| Open-stream and append-count admission still read historical state (`latest_by_history`, `get_versions`) rather than constant-time counters. | Accepted with benchmarks required before GA. |
-| AI orphan janitor scans a fixed prefix limit without cursoring across all active-stream keys. | Accepted; needs sharded/cursor sweep for large keyspaces. |
-| Presence update limiter entries are keyed by `(app, channel, user)` and are not TTL-evicted. | Accepted; should move to a bounded cache. |
-| Full authZ matrix is summarized here, but a generated table-driven integration suite for every principal/operation pair is still incomplete. | Not accepted for GA. |
-| Fuzzing now has CI smoke for two parser surfaces, but dedicated targets for capability maps, history cursors, push mapping, and mutation requests are still missing. | Not accepted for GA. |
+| Pending presence removals still use one delayed task per ungraceful disconnect and a global pending map scan. | Replace with bounded timer-wheel/per-channel index before GA. |
+| Open-stream and append-count admission still read historical state (`latest_by_history`, `get_versions`) rather than constant-time counters. | Add authoritative counters with tests and benchmarks before GA. |
+| AI orphan janitor scans a fixed prefix limit without cursoring across all active-stream keys. | Add a cursor/sharded cache scan API and sweep implementation before GA. |
+| Full authZ matrix is summarized here, but a generated table-driven integration suite for every principal/operation pair is still incomplete. | Land generated table-driven integration tests before GA. |
 
 ## Verification Notes
 
