@@ -122,6 +122,27 @@ pub trait MetricsInterface: Send + Sync {
     /// Track an AI Transport message rejected by edge validation.
     fn mark_ai_transport_rejected(&self, _app_id: &str, _code: u32) {}
 
+    /// Track a malformed AI Transport header observed outside the validation path.
+    fn mark_ai_transport_unparseable(&self, _app_id: &str) {}
+
+    /// Track an AI turn start event.
+    fn mark_ai_turn_started(&self, _app_id: &str) {}
+
+    /// Track an AI turn end event by bounded reason label.
+    fn mark_ai_turn_ended(&self, _app_id: &str, _reason: &str) {}
+
+    /// Track an AI cancel signal.
+    fn mark_ai_cancel_signal(&self, _app_id: &str) {}
+
+    /// Update currently active AI streams.
+    fn update_ai_active_streams(&self, _app_id: &str, _streams: u64) {}
+
+    /// Observe AI stream lifetime in seconds.
+    fn observe_ai_stream_duration(&self, _app_id: &str, _duration_seconds: f64) {}
+
+    /// Track AI stream payload bytes observed at transport boundaries.
+    fn mark_ai_stream_bytes(&self, _app_id: &str, _bytes: usize) {}
+
     /// Track a versioned AI append received by the rollup egress path.
     fn mark_ai_rollup_append_received(&self, _app_id: &str) {}
 

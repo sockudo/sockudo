@@ -1,4 +1,6 @@
-//! AI Transport egress helpers.
+//! AI Transport egress and observability helpers.
+
+pub mod observability;
 
 use ahash::AHashMap;
 use bytes::{Bytes, BytesMut};

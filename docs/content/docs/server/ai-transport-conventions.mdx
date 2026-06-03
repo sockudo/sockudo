@@ -55,7 +55,7 @@ Under AI Transport, versioned-message delivery serials are leased in 128-positio
 
 Append rollup is egress-only and defaults to a 40 ms window. Streaming messages are tracked in the shared cache while their `extras.ai.transport.status` is `streaming`. Any node can claim a stale stream after `ai_transport.rollup.orphan_ttl_ms`, which defaults to 60000 ms, then append a normal versioned `message.update` with `status=cancelled` and `error-code=orphan_timeout`. The claim key prevents duplicate cancellation across nodes, and the latest version is re-read before mutation so active streams that advanced meanwhile are refreshed instead of cancelled.
 
-Apps can subscribe to the webhook event type `ai_stream_cancelled` to observe synthetic orphan cancellation. The event payload includes `channel`, `message_serial`, and `reason`.
+Apps can subscribe to the webhook event type `ai_stream_orphaned` to observe synthetic orphan cancellation. The event payload includes `channel`, `message_serial`, and `reason`.
 
 ## Scale-out verification
 

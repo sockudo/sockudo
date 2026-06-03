@@ -1782,6 +1782,104 @@ fn mutation_op_cache_key(
     )
 }
 
+fn enqueue_message_version_webhook(
+    handler: &ConnectionHandler,
+    app: &App,
+    channel: &str,
+    message_serial: &str,
+    version_serial: &str,
+    action: ProtocolMessageAction,
+) {
+    let Some(webhook_integration) = handler.webhook_integration().as_ref().cloned() else {
+        return;
+    };
+    let app = app.clone();
+    let channel = channel.to_string();
+    let message_serial = message_serial.to_string();
+    let version_serial = version_serial.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = webhook_integration
+            .send_message_version_created(
+                &app,
+                &channel,
+                &message_serial,
+                &version_serial,
+                action.as_str(),
+            )
+            .await
+        {
+            warn!(error = %error, "failed to emit message_version_created webhook");
+        }
+    });
+}
+
+fn enqueue_annotation_created_webhook(
+    handler: &ConnectionHandler,
+    app: &App,
+    channel: &str,
+    message_serial: &str,
+    annotation_serial: &str,
+    annotation_type: &str,
+) {
+    let Some(webhook_integration) = handler.webhook_integration().as_ref().cloned() else {
+        return;
+    };
+    let app = app.clone();
+    let channel = channel.to_string();
+    let message_serial = message_serial.to_string();
+    let annotation_serial = annotation_serial.to_string();
+    let annotation_type = annotation_type.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = webhook_integration
+            .send_annotation_created(
+                &app,
+                &channel,
+                &message_serial,
+                &annotation_serial,
+                &annotation_type,
+            )
+            .await
+        {
+            warn!(error = %error, "failed to emit annotation_created webhook");
+        }
+    });
+}
+
+fn enqueue_annotation_deleted_webhook(
+    handler: &ConnectionHandler,
+    app: &App,
+    channel: &str,
+    message_serial: &str,
+    annotation_serial: &str,
+    deleted_annotation_serial: &str,
+    annotation_type: &str,
+) {
+    let Some(webhook_integration) = handler.webhook_integration().as_ref().cloned() else {
+        return;
+    };
+    let app = app.clone();
+    let channel = channel.to_string();
+    let message_serial = message_serial.to_string();
+    let annotation_serial = annotation_serial.to_string();
+    let deleted_annotation_serial = deleted_annotation_serial.to_string();
+    let annotation_type = annotation_type.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = webhook_integration
+            .send_annotation_deleted(
+                &app,
+                &channel,
+                &message_serial,
+                &annotation_serial,
+                &deleted_annotation_serial,
+                &annotation_type,
+            )
+            .await
+        {
+            warn!(error = %error, "failed to emit annotation_deleted webhook");
+        }
+    });
+}
+
 fn idempotency_ttl(app: &App, handler: &ConnectionHandler) -> u64 {
     app.resolved_idempotency(&handler.server_options().idempotency)
         .ttl_seconds
@@ -1798,6 +1896,12 @@ fn ai_validation_app_error(error: AiHeaderValidationError) -> AppError {
         code: error.code,
         name: error.name,
         message: error.message,
+    }
+}
+
+fn record_ai_rejection(handler: &ConnectionHandler, app_id: &str, code: u32) {
+    if let Some(metrics) = handler.metrics() {
+        metrics.mark_ai_transport_rejected(app_id, code);
     }
 }
 
@@ -1849,6 +1953,7 @@ async fn validate_ai_append_caps(
     let current_bytes = message_data_bytes(current.message.data.as_ref())?;
     let next_bytes = current_bytes.saturating_add(append_bytes);
     if next_bytes > config.max_accumulated_message_bytes {
+        record_ai_rejection(handler, &current.app_id, AI_ERROR_PAYLOAD_TOO_LARGE);
         return Err(ai_payload_too_large(format!(
             "accumulated message content exceeds {} bytes",
             config.max_accumulated_message_bytes
@@ -1872,6 +1977,7 @@ async fn validate_ai_append_caps(
         .filter(|record| record.message.action == CoreMessageAction::Append)
         .count();
     if append_count >= config.max_appends_per_message {
+        record_ai_rejection(handler, &current.app_id, AI_ERROR_PAYLOAD_TOO_LARGE);
         return Err(ai_payload_too_large(format!(
             "message append count exceeds {}",
             config.max_appends_per_message
@@ -1883,6 +1989,7 @@ async fn validate_ai_append_caps(
 
 fn validate_ai_update_caps(
     handler: &ConnectionHandler,
+    app_id: &str,
     channel: &str,
     data: Option<&MessageData>,
 ) -> Result<(), AppError> {
@@ -1895,6 +2002,7 @@ fn validate_ai_update_caps(
         .max_accumulated_message_bytes;
     let bytes = message_data_bytes(data)?;
     if bytes > max_bytes {
+        record_ai_rejection(handler, app_id, AI_ERROR_PAYLOAD_TOO_LARGE);
         return Err(ai_payload_too_large(format!(
             "accumulated message content exceeds {max_bytes} bytes"
         )));
@@ -1920,6 +2028,7 @@ async fn validate_ai_http_publish(
     }
 
     if !ai_channel {
+        record_ai_rejection(handler, &app.id, AI_ERROR_EVENT_NOT_PERMITTED);
         return Err(AppError::AiTransport {
             status: StatusCode::FORBIDDEN,
             code: AI_ERROR_EVENT_NOT_PERMITTED,
@@ -1940,6 +2049,7 @@ async fn validate_ai_http_publish(
 
     if let Some(message_id) = message_id {
         if message_id.is_empty() {
+            record_ai_rejection(handler, &app.id, AI_ERROR_INVALID_TRANSPORT_HEADER);
             return Err(AppError::AiTransport {
                 status: StatusCode::BAD_REQUEST,
                 code: AI_ERROR_INVALID_TRANSPORT_HEADER,
@@ -1948,6 +2058,7 @@ async fn validate_ai_http_publish(
             });
         }
         if message_id.len() > AI_MESSAGE_ID_MAX_BYTES {
+            record_ai_rejection(handler, &app.id, AI_ERROR_HEADER_TOO_LARGE);
             return Err(AppError::AiTransport {
                 status: StatusCode::BAD_REQUEST,
                 code: AI_ERROR_HEADER_TOO_LARGE,
@@ -1958,9 +2069,10 @@ async fn validate_ai_http_publish(
     }
 
     if let Some(extras) = extras {
-        extras
-            .validate_ai_headers()
-            .map_err(ai_validation_app_error)?;
+        extras.validate_ai_headers().map_err(|error| {
+            record_ai_rejection(handler, &app.id, error.code);
+            ai_validation_app_error(error)
+        })?;
         let probe = PusherMessage {
             event: Some(event_name.to_string()),
             channel: Some(channel.to_string()),
@@ -1983,7 +2095,10 @@ async fn validate_ai_http_publish(
             None,
             AiPublishTrust::TrustedApp,
         )
-        .map_err(ai_validation_app_error)?;
+        .map_err(|error| {
+            record_ai_rejection(handler, &app.id, error.code);
+            ai_validation_app_error(error)
+        })?;
     }
 
     Ok(())
@@ -2726,7 +2841,12 @@ pub async fn update_message(
         metrics.mark_versioned_message_mutation(&path.app_id, "message.update", "applied");
     }
     if request.data.is_some() {
-        validate_ai_update_caps(&handler, &path.channel_name, request.data.as_ref())?;
+        validate_ai_update_caps(
+            &handler,
+            &path.app_id,
+            &path.channel_name,
+            request.data.as_ref(),
+        )?;
     }
 
     let reservation = handler
@@ -2761,6 +2881,14 @@ pub async fn update_message(
         .version_store()
         .append_version(updated.clone())
         .await?;
+    enqueue_message_version_webhook(
+        &handler,
+        &app,
+        &path.channel_name,
+        path.message_serial.as_str(),
+        updated.version_serial().as_str(),
+        ProtocolMessageAction::Update,
+    );
     #[cfg(feature = "ai-transport")]
     handler
         .record_ai_stream_activity(&path.app_id, &path.channel_name, &updated)
@@ -2923,6 +3051,14 @@ pub async fn delete_message(
         .version_store()
         .append_version(deleted.clone())
         .await?;
+    enqueue_message_version_webhook(
+        &handler,
+        &app,
+        &path.channel_name,
+        path.message_serial.as_str(),
+        deleted.version_serial().as_str(),
+        ProtocolMessageAction::Delete,
+    );
     #[cfg(feature = "ai-transport")]
     handler
         .record_ai_stream_activity(&path.app_id, &path.channel_name, &deleted)
@@ -3088,6 +3224,14 @@ pub async fn append_message(
         .version_store()
         .append_version(appended.clone())
         .await?;
+    enqueue_message_version_webhook(
+        &handler,
+        &app,
+        &path.channel_name,
+        path.message_serial.as_str(),
+        appended.version_serial().as_str(),
+        ProtocolMessageAction::Append,
+    );
     #[cfg(feature = "ai-transport")]
     handler
         .record_ai_stream_activity(&path.app_id, &path.channel_name, &appended)
@@ -3178,6 +3322,10 @@ pub async fn publish_annotation(
         request.socket_id.as_deref(),
     )
     .await?;
+    let webhook_app = app.clone();
+    let webhook_channel = path.channel_name.clone();
+    let webhook_message_serial = path.message_serial.clone();
+    let webhook_annotation_type = request.annotation_type.clone();
     let result = handler
         .publish_annotation_runtime(PublishAnnotationRuntimeRequest {
             app,
@@ -3191,6 +3339,14 @@ pub async fn publish_annotation(
             encoding: request.encoding,
         })
         .await?;
+    enqueue_annotation_created_webhook(
+        &handler,
+        &webhook_app,
+        &webhook_channel,
+        &webhook_message_serial,
+        result.annotation_serial.as_str(),
+        &webhook_annotation_type,
+    );
 
     Ok((
         StatusCode::OK,
@@ -3273,6 +3429,11 @@ pub async fn delete_annotation(
             .into_response());
     }
 
+    let webhook_app = app.clone();
+    let webhook_channel = path.channel_name.clone();
+    let webhook_message_serial = path.message_serial.clone();
+    let webhook_deleted_annotation_serial = target.annotation.serial.as_str().to_string();
+    let webhook_annotation_type = target.annotation.annotation_type.as_str().to_string();
     let result = handler
         .delete_annotation_runtime(DeleteAnnotationRuntimeRequest {
             app,
@@ -3281,6 +3442,15 @@ pub async fn delete_annotation(
             target_serial,
         })
         .await?;
+    enqueue_annotation_deleted_webhook(
+        &handler,
+        &webhook_app,
+        &webhook_channel,
+        &webhook_message_serial,
+        result.annotation_serial.as_str(),
+        &webhook_deleted_annotation_serial,
+        &webhook_annotation_type,
+    );
 
     Ok((
         StatusCode::OK,

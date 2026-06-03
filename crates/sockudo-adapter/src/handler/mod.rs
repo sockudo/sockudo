@@ -1,5 +1,7 @@
 // src/adapter/handler/mod.rs
 #[cfg(feature = "ai-transport")]
+pub mod ai_observability;
+#[cfg(feature = "ai-transport")]
 pub mod ai_orphans;
 pub mod annotations;
 pub mod auth_tokens;
@@ -24,7 +26,7 @@ use crate::ConnectionManager;
 use crate::presence::PresenceManager;
 use crate::watchlist::WatchlistManager;
 #[cfg(feature = "ai-transport")]
-use sockudo_ai_transport::{RollupConfig, RollupEngine};
+use sockudo_ai_transport::{RollupConfig, RollupEngine, observability::AiObservabilityTracker};
 use sockudo_core::annotations::{AnnotationStore, MemoryAnnotationStore};
 use sockudo_core::app::App;
 use sockudo_core::app::AppManager;
@@ -64,6 +66,8 @@ pub struct ConnectionHandler {
     pub(crate) version_store: Arc<dyn VersionStore + Send + Sync>,
     #[cfg(feature = "ai-transport")]
     pub(crate) ai_rollup_engine: Option<Arc<RollupEngine>>,
+    #[cfg(feature = "ai-transport")]
+    pub(crate) ai_observability_tracker: Option<Arc<AiObservabilityTracker>>,
     pub(crate) presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
     client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
@@ -241,6 +245,12 @@ impl ConnectionHandlerBuilder {
                 .unwrap_or_else(|| Arc::new(NoopVersionStore)),
             #[cfg(feature = "ai-transport")]
             ai_rollup_engine,
+            #[cfg(feature = "ai-transport")]
+            ai_observability_tracker: self
+                .server_options
+                .ai_transport
+                .enabled
+                .then(|| Arc::new(AiObservabilityTracker::default())),
             presence_history_store: self
                 .presence_history_store
                 .unwrap_or_else(|| Arc::new(NoopPresenceHistoryStore)),

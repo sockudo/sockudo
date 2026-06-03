@@ -465,6 +465,15 @@ pub struct PrometheusMetricsDriver {
     idempotency_duplicates_total: CounterVec,
     // Ephemeral message metrics
     ephemeral_messages_total: CounterVec,
+    ai_messages_validated_total: CounterVec,
+    ai_messages_rejected_total: CounterVec,
+    ai_messages_unparseable_total: CounterVec,
+    ai_turns_started_total: CounterVec,
+    ai_turns_ended_total: CounterVec,
+    ai_cancel_signals_total: CounterVec,
+    ai_active_streams: GaugeVec,
+    ai_stream_duration_seconds: HistogramVec,
+    ai_stream_bytes_total: CounterVec,
     appends_received_total: CounterVec,
     appends_delivered_total: CounterVec,
     rollup_ratio: HistogramVec,
@@ -906,6 +915,88 @@ impl PrometheusMetricsDriver {
             Opts::new(
                 format!("{prefix}ephemeral_messages_total"),
                 "Total number of ephemeral messages delivered (V2 only)"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let ai_messages_validated_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_messages_validated_total"),
+                "Total number of AI Transport messages accepted by validation"
+            ),
+            &["app_id", "port", "event"]
+        )
+        .unwrap();
+
+        let ai_messages_rejected_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_messages_rejected_total"),
+                "Total number of AI Transport messages rejected by validation"
+            ),
+            &["app_id", "port", "code"]
+        )
+        .unwrap();
+
+        let ai_messages_unparseable_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_messages_unparseable_total"),
+                "Total number of malformed AI Transport headers observed outside validation"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let ai_turns_started_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_turns_started_total"),
+                "Total number of AI Transport turns started"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let ai_turns_ended_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_turns_ended_total"),
+                "Total number of AI Transport turns ended by bounded reason"
+            ),
+            &["app_id", "port", "reason"]
+        )
+        .unwrap();
+
+        let ai_cancel_signals_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_cancel_signals_total"),
+                "Total number of AI Transport cancel signals"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let ai_active_streams = register_gauge_vec!(
+            Opts::new(
+                format!("{prefix}ai_active_streams"),
+                "Number of active AI Transport streams"
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let ai_stream_duration_seconds = register_histogram_vec!(
+            histogram_opts!(
+                format!("{prefix}ai_stream_duration_seconds"),
+                "AI Transport stream duration in seconds",
+                vec![0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0]
+            ),
+            &["app_id", "port"]
+        )
+        .unwrap();
+
+        let ai_stream_bytes_total = register_counter_vec!(
+            Opts::new(
+                format!("{prefix}ai_stream_bytes_total"),
+                "Total AI Transport stream payload bytes observed"
             ),
             &["app_id", "port"]
         )
@@ -1402,6 +1493,15 @@ impl PrometheusMetricsDriver {
             idempotency_publish_total,
             idempotency_duplicates_total,
             ephemeral_messages_total,
+            ai_messages_validated_total,
+            ai_messages_rejected_total,
+            ai_messages_unparseable_total,
+            ai_turns_started_total,
+            ai_turns_ended_total,
+            ai_cancel_signals_total,
+            ai_active_streams,
+            ai_stream_duration_seconds,
+            ai_stream_bytes_total,
             appends_received_total,
             appends_delivered_total,
             rollup_ratio,
@@ -1934,6 +2034,60 @@ impl MetricsInterface for PrometheusMetricsDriver {
             .inc();
 
         debug!("Metrics: Idempotency duplicate caught for app {}", app_id);
+    }
+
+    fn mark_ai_transport_validated(&self, app_id: &str, event: &str) {
+        self.ai_messages_validated_total
+            .with_label_values(&[app_id, &self.port.to_string(), event])
+            .inc();
+    }
+
+    fn mark_ai_transport_rejected(&self, app_id: &str, code: u32) {
+        self.ai_messages_rejected_total
+            .with_label_values(&[app_id, &self.port.to_string(), &code.to_string()])
+            .inc();
+    }
+
+    fn mark_ai_transport_unparseable(&self, app_id: &str) {
+        self.ai_messages_unparseable_total
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .inc();
+    }
+
+    fn mark_ai_turn_started(&self, app_id: &str) {
+        self.ai_turns_started_total
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .inc();
+    }
+
+    fn mark_ai_turn_ended(&self, app_id: &str, reason: &str) {
+        self.ai_turns_ended_total
+            .with_label_values(&[app_id, &self.port.to_string(), reason])
+            .inc();
+    }
+
+    fn mark_ai_cancel_signal(&self, app_id: &str) {
+        self.ai_cancel_signals_total
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .inc();
+    }
+
+    fn update_ai_active_streams(&self, app_id: &str, streams: u64) {
+        self.ai_active_streams
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .set(streams as f64);
+    }
+
+    fn observe_ai_stream_duration(&self, app_id: &str, duration_seconds: f64) {
+        self.ai_stream_duration_seconds
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .observe(duration_seconds);
+    }
+
+    fn mark_ai_stream_bytes(&self, app_id: &str, bytes: usize) {
+        self.ai_stream_bytes_total
+            .with_label_values(&[app_id, &self.port.to_string()])
+            .inc_by(bytes as f64);
     }
 
     fn mark_ephemeral_message(&self, app_id: &str) {

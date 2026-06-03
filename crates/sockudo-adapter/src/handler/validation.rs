@@ -16,6 +16,12 @@ use sockudo_protocol::messages::{
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
 
+fn record_ai_rejection(handler: &ConnectionHandler, app_id: &str, code: u32) {
+    if let Some(metrics) = handler.metrics() {
+        metrics.mark_ai_transport_rejected(app_id, code);
+    }
+}
+
 fn validate_namespace_permission(
     namespace: &ChannelNamespace,
     channel: &str,
@@ -112,21 +118,25 @@ impl ConnectionHandler {
         app_config: &App,
         message: &PusherMessage,
     ) -> Result<()> {
-        let channel = message
-            .channel
-            .as_deref()
-            .ok_or_else(|| Error::AiTransport {
+        let channel = message.channel.as_deref().ok_or_else(|| {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_INVALID_TRANSPORT_HEADER);
+            Error::AiTransport {
                 code: AI_ERROR_INVALID_TRANSPORT_HEADER,
                 name: "ai_invalid_transport_header",
                 message: "channel required for AI event".to_string(),
-            })?;
-        let event = message.event.as_deref().ok_or_else(|| Error::AiTransport {
-            code: AI_ERROR_INVALID_TRANSPORT_HEADER,
-            name: "ai_invalid_transport_header",
-            message: "event required for AI event".to_string(),
+            }
+        })?;
+        let event = message.event.as_deref().ok_or_else(|| {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_INVALID_TRANSPORT_HEADER);
+            Error::AiTransport {
+                code: AI_ERROR_INVALID_TRANSPORT_HEADER,
+                name: "ai_invalid_transport_header",
+                message: "event required for AI event".to_string(),
+            }
         })?;
 
         if !self.server_options.ai_transport.matches_channel(channel) {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_EVENT_NOT_PERMITTED);
             return Err(Error::AiTransport {
                 code: AI_ERROR_EVENT_NOT_PERMITTED,
                 name: "ai_event_not_permitted",
@@ -143,6 +153,7 @@ impl ConnectionHandler {
         };
 
         if connection.protocol_version != ProtocolVersion::V2 {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_EVENT_NOT_PERMITTED);
             return Err(Error::AiTransport {
                 code: AI_ERROR_EVENT_NOT_PERMITTED,
                 name: "ai_event_not_permitted",
@@ -151,6 +162,7 @@ impl ConnectionHandler {
         }
 
         if !is_ai_client_publish_event(event) {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_EVENT_NOT_PERMITTED);
             return Err(Error::AiTransport {
                 code: AI_ERROR_EVENT_NOT_PERMITTED,
                 name: "ai_event_not_permitted",
@@ -158,14 +170,20 @@ impl ConnectionHandler {
             });
         }
 
-        message.validate_ai_headers().map_err(ai_header_error)?;
+        message.validate_ai_headers().map_err(|error| {
+            record_ai_rejection(self, &app_config.id, error.code);
+            ai_header_error(error)
+        })?;
         let verified_client_id = connection.get_user_id().await;
         validate_ai_client_id_headers(
             message,
             verified_client_id.as_deref(),
             AiPublishTrust::Client,
         )
-        .map_err(ai_header_error)?;
+        .map_err(|error| {
+            record_ai_rejection(self, &app_config.id, error.code);
+            ai_header_error(error)
+        })?;
 
         self.validate_v2_namespace_publish_permissions(app_config, channel)
             .await?;
@@ -173,6 +191,10 @@ impl ConnectionHandler {
             .await?;
         self.validate_v2_channel_access(socket_id, app_config, channel)
             .await?;
+
+        if let Some(metrics) = self.metrics() {
+            metrics.mark_ai_transport_validated(&app_config.id, event);
+        }
 
         Ok(())
     }

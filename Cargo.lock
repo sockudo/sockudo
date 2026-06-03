@@ -8135,6 +8135,7 @@ dependencies = [
  "bytes",
  "criterion",
  "sockudo-protocol",
+ "sonic-rs",
 ]
 
 [[package]]

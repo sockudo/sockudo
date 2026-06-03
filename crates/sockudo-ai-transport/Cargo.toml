@@ -11,6 +11,7 @@ license-file.workspace = true
 ahash = { workspace = true }
 bytes = { workspace = true }
 sockudo-protocol = { workspace = true }
+sonic-rs = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -18,4 +19,9 @@ criterion = { workspace = true }
 [[bench]]
 name = "rollup_engine"
 path = "benches/rollup_engine.rs"
+harness = false
+
+[[bench]]
+name = "observability"
+path = "benches/observability.rs"
 harness = false

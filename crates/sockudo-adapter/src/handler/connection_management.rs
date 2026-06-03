@@ -483,6 +483,30 @@ impl ConnectionHandler {
                         ),
                     };
                     self.version_store().append_version(record.clone()).await?;
+                    if let Some(webhook_integration) = self.webhook_integration().as_ref().cloned()
+                    {
+                        let app_for_webhook = app_config.clone();
+                        let channel_for_webhook = channel.to_string();
+                        let message_serial_for_webhook = message_serial_value.clone();
+                        let version_serial_for_webhook = version_serial_value.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = webhook_integration
+                                .send_message_version_created(
+                                    &app_for_webhook,
+                                    &channel_for_webhook,
+                                    &message_serial_for_webhook,
+                                    &version_serial_for_webhook,
+                                    "message.create",
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %error,
+                                    "failed to emit message_version_created webhook"
+                                );
+                            }
+                        });
+                    }
                     #[cfg(feature = "ai-transport")]
                     self.record_ai_stream_activity(&app_config.id, channel, &record)
                         .await?;
@@ -554,6 +578,12 @@ impl ConnectionHandler {
                         .await?;
                 }
             }
+        }
+
+        #[cfg(feature = "ai-transport")]
+        if self.server_options().ai_transport.enabled {
+            self.record_ai_observability(app_config, channel, &message)
+                .await;
         }
 
         // Calculate message size for metrics

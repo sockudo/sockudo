@@ -211,7 +211,7 @@ impl ConnectionHandler {
 
         if let Some(webhooks) = self.webhook_integration().as_ref()
             && let Err(error) = webhooks
-                .send_ai_stream_cancelled(
+                .send_ai_stream_orphaned(
                     &app,
                     &entry.channel,
                     &entry.message_serial,
@@ -224,7 +224,7 @@ impl ConnectionHandler {
                 channel = %entry.channel,
                 message_serial = %entry.message_serial,
                 error = %error,
-                "failed to emit AI stream cancelled webhook"
+                "failed to emit AI stream orphaned webhook"
             );
         }
 
