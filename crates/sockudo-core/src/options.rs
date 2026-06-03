@@ -430,6 +430,7 @@ pub struct ServerOptions {
     pub annotations: AnnotationsConfig,
     pub ai_transport: AiTransportConfig,
     pub push: PushConfig,
+    pub push_rules: Vec<PushRuleConfig>,
     /// Timeout in milliseconds for each subsystem check in the `/up` health endpoint.
     /// Applies to adapter, cache, queue, and app manager checks independently.
     pub health_check_timeout_ms: u64,
@@ -1600,6 +1601,112 @@ pub struct PushConfig {
     pub scheduler_interval_secs: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PushRulePayloadMappingConfig {
+    pub title_field: String,
+    pub body_field: String,
+    pub template_data_field: String,
+    pub include_remaining_fields: bool,
+}
+
+impl Default for PushRulePayloadMappingConfig {
+    fn default() -> Self {
+        Self {
+            title_field: "title".to_string(),
+            body_field: "body".to_string(),
+            template_data_field: "data".to_string(),
+            include_remaining_fields: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PushRuleConfig {
+    pub enabled: bool,
+    pub channel_pattern: String,
+    pub event_filter: Vec<String>,
+    pub payload_mapping: PushRulePayloadMappingConfig,
+    pub rate_limit_per_second: u64,
+}
+
+impl Default for PushRuleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            channel_pattern: String::new(),
+            event_filter: Vec::new(),
+            payload_mapping: PushRulePayloadMappingConfig::default(),
+            rate_limit_per_second: 100,
+        }
+    }
+}
+
+impl PushRuleConfig {
+    fn validate(&self, index: usize) -> Result<(), String> {
+        if self.channel_pattern.is_empty() {
+            return Err(format!(
+                "push_rules[{index}].channel_pattern must not be empty"
+            ));
+        }
+        if self.channel_pattern.len() > 256 {
+            return Err(format!(
+                "push_rules[{index}].channel_pattern must be at most 256 bytes"
+            ));
+        }
+        if self.channel_pattern != "*" {
+            if let Some(prefix) = self.channel_pattern.strip_suffix('*') {
+                if prefix.is_empty() || prefix.contains('*') {
+                    return Err(format!(
+                        "push_rules[{index}].channel_pattern supports only exact, *, or trailing wildcard patterns"
+                    ));
+                }
+            } else if self.channel_pattern.contains('*') {
+                return Err(format!(
+                    "push_rules[{index}].channel_pattern supports only exact, *, or trailing wildcard patterns"
+                ));
+            }
+        }
+        if self.event_filter.is_empty() {
+            return Err(format!(
+                "push_rules[{index}].event_filter must contain at least one event name"
+            ));
+        }
+        if self.event_filter.len() > 32 {
+            return Err(format!(
+                "push_rules[{index}].event_filter must contain at most 32 event names"
+            ));
+        }
+        for event in &self.event_filter {
+            if event.is_empty() {
+                return Err(format!(
+                    "push_rules[{index}].event_filter must not contain empty event names"
+                ));
+            }
+            if event.len() > 200 {
+                return Err(format!(
+                    "push_rules[{index}].event_filter event names must be at most 200 bytes"
+                ));
+            }
+        }
+        if self.rate_limit_per_second == 0 {
+            return Err(format!(
+                "push_rules[{index}].rate_limit_per_second must be greater than 0"
+            ));
+        }
+        if self.payload_mapping.title_field.is_empty()
+            || self.payload_mapping.body_field.is_empty()
+            || self.payload_mapping.template_data_field.is_empty()
+        {
+            return Err(format!(
+                "push_rules[{index}].payload_mapping fields must not be empty"
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for PushConfig {
     fn default() -> Self {
         Self {
@@ -2208,6 +2315,7 @@ impl Default for ServerOptions {
             annotations: AnnotationsConfig::default(),
             ai_transport: AiTransportConfig::default(),
             push: PushConfig::default(),
+            push_rules: Vec::new(),
             health_check_timeout_ms: 400,
         }
     }
@@ -2729,7 +2837,7 @@ impl Default for DeltaCompressionOptionsConfig {
 mod tests {
     use super::{
         AdapterDriver, CacheDriver, DeltaCoordinationBackend, HistoryBackend, PushQueueDriver,
-        PushStorageDriver, QueueDriver, ServerOptions, VersionStoreDriver,
+        PushRuleConfig, PushStorageDriver, QueueDriver, ServerOptions, VersionStoreDriver,
     };
     use crate::app::{App, AppPolicy};
     use std::str::FromStr;
@@ -3046,6 +3154,23 @@ mod tests {
         assert_eq!(options.push.default_quotas.acceptance_rps, 100);
         assert_eq!(options.push.circuit_breaker.failure_threshold, 5);
         assert!(options.push.payload_redaction.redact_payload);
+    }
+
+    #[test]
+    fn push_rules_default_off_and_validate_startup_shape() {
+        let mut options = ServerOptions::default();
+        assert!(options.push_rules.is_empty());
+
+        options.push_rules.push(PushRuleConfig {
+            channel_pattern: "notifications:*".to_string(),
+            event_filter: vec!["agent-complete".to_string()],
+            ..PushRuleConfig::default()
+        });
+        assert!(options.validate().is_ok());
+
+        options.push_rules[0].event_filter.clear();
+        let error = options.validate().unwrap_err();
+        assert!(error.contains("push_rules[0].event_filter"));
     }
 
     #[tokio::test]
@@ -4482,6 +4607,10 @@ impl ServerOptions {
             if self.ai_transport.rollup.shards == 0 {
                 return Err("ai_transport.rollup.shards must be greater than 0".to_string());
             }
+        }
+
+        for (index, rule) in self.push_rules.iter().enumerate() {
+            rule.validate(index)?;
         }
 
         if self.adapter.nats.presence_sync_chunk_size == Some(0) {

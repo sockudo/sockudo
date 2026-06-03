@@ -149,6 +149,20 @@ redact_template_data = true
 redact_provider_overrides = true
 allow_debug_payload_logging = false
 
+# Channel push rules are disabled by default. Enable a rule to turn matching
+# realtime publishes into async channel-targeted push notifications.
+# [[push_rules]]
+# enabled = true
+# channel_pattern = "notifications:*"
+# event_filter = ["agent-complete"]
+# rate_limit_per_second = 100
+#
+# [push_rules.payload_mapping]
+# title_field = "title"
+# body_field = "body"
+# template_data_field = "data"
+# include_remaining_fields = true
+
 [database.surrealdb]
 url = "ws://127.0.0.1:8000"
 namespace = "sockudo"

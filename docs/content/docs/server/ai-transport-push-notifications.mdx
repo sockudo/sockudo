@@ -1,0 +1,79 @@
+---
+title: Push notifications for AI Transport
+description: Wake users when an AI agent finishes while they are away.
+icon: BellRing
+---
+
+AI Transport uses normal Sockudo channel events for lifecycle and output. Push rules let those same channel publishes wake devices through the existing push notification pipeline.
+
+## Channel rule recipe
+
+Configure a rule that watches each user's notification channel:
+
+```toml
+[[push_rules]]
+enabled = true
+channel_pattern = "notifications:*"
+event_filter = ["agent-complete"]
+rate_limit_per_second = 100
+
+[push_rules.payload_mapping]
+title_field = "title"
+body_field = "body"
+template_data_field = "data"
+include_remaining_fields = true
+```
+
+Register each device and subscribe it to the same channel the app is allowed to read:
+
+```http
+POST /apps/{appId}/push/channelSubscriptions
+```
+
+The long-running agent publishes a normal event when the answer is ready:
+
+```json
+{
+  "name": "agent-complete",
+  "channel": "notifications:user-123",
+  "data": {
+    "title": "Agent finished",
+    "body": "Your answer is ready",
+    "sessionId": "sess_123"
+  }
+}
+```
+
+Sockudo maps `title` and `body` into the push notification and copies the remaining fields into provider data under `data`. The push target is `Channel { channel: "notifications:user-123" }`, so existing channel subscriptions determine which devices receive FCM, APNs, Web Push, HMS, or WNS delivery.
+
+When the user taps the notification, the client should load `sessionId`, attach to the realtime session channel, and read history/recovery state for the authoritative transcript.
+
+## Webhook recipe
+
+For teams that keep push orchestration in their backend, enable the `ai_turn_ended` webhook. On `reason = "complete"`, the backend can call the existing push publish API:
+
+```json
+{
+  "recipients": [
+    { "type": "channel", "channel": "notifications:user-123" }
+  ],
+  "payload": {
+    "title": "Agent finished",
+    "body": "Your answer is ready",
+    "templateData": {
+      "data": { "sessionId": "sess_123" }
+    }
+  },
+  "sync": false
+}
+```
+
+This path is useful when the backend enriches notifications, applies product-specific quiet hours, or joins turn metadata with an application database before sending push.
+
+## Authorization
+
+Use capability patterns so clients can subscribe only to their own notification channels, for example `notifications:user-123`, while trusted backends or agent workers publish `agent-complete`. Do not accept `client_id` from the message body when choosing a notification channel; derive the channel from verified auth state or server-side session ownership.
+
+## Verification surface
+
+The recipe relies on existing push device registration, channel subscriptions, channel publish targets, scheduled/status handling, delivery feedback, retries, and dead-letter behavior. Push rules add only the channel-to-push trigger; accepted work still goes through the same durable status, fanout, queue, retry, and feedback transitions as explicit push publishes.

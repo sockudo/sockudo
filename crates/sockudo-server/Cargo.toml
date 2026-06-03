@@ -26,6 +26,7 @@ monolith = ["push", "sockudo-push/monolith"]
 full = [
   "v2",
   "versioned-messages",
+  "ai-transport",
   "push",
   "push-fcm",
   "push-apns",

@@ -1740,6 +1740,14 @@ fn resolve_idempotency_key(
     Ok(key)
 }
 
+#[cfg(feature = "push")]
+fn push_rule_target_channels(event: &PusherApiMessage) -> Vec<String> {
+    if let Some(channels) = event.channels.as_ref() {
+        return channels.clone();
+    }
+    event.channel.iter().cloned().collect()
+}
+
 /// Build the cache key used for idempotency storage.
 fn idempotency_cache_key(app_id: &str, key: &str) -> String {
     format!("app:{}:idempotency:{}", app_id, key)
@@ -2119,6 +2127,23 @@ pub async fn events(
         || event_payload.name.as_deref().is_some_and(is_ai_event);
 
     #[cfg(feature = "push")]
+    let push_rule_requests = {
+        let rules = &handler.server_options().push_rules;
+        if rules.is_empty() {
+            Vec::new()
+        } else {
+            let channels = push_rule_target_channels(&event_payload);
+            crate::push_http::build_channel_push_rule_requests(
+                &app_id,
+                event_payload.name.as_deref(),
+                event_payload.data.as_ref(),
+                &channels,
+                rules,
+            )?
+        }
+    };
+
+    #[cfg(feature = "push")]
     if let Some(extras_push) = event_payload
         .extras
         .as_ref()
@@ -2161,6 +2186,14 @@ pub async fn events(
         },
     )
     .await?;
+
+    #[cfg(feature = "push")]
+    crate::push_http::spawn_channel_push_rule_requests(
+        app_id.clone(),
+        push_rule_requests,
+        push_store.clone(),
+        push_queue.clone(),
+    );
 
     let response_payload = if need_channel_info && !channels_info_map.is_empty() {
         json!({
@@ -2345,6 +2378,24 @@ pub async fn batch_events(
                 .name
                 .as_deref()
                 .is_some_and(is_ai_event);
+
+        #[cfg(feature = "push")]
+        let push_rule_requests = {
+            let rules = &handler.server_options().push_rules;
+            if rules.is_empty() {
+                Vec::new()
+            } else {
+                let channels = push_rule_target_channels(&single_event_message);
+                crate::push_http::build_channel_push_rule_requests(
+                    &app_id,
+                    single_event_message.name.as_deref(),
+                    single_event_message.data.as_ref(),
+                    &channels,
+                    rules,
+                )?
+            }
+        };
+
         #[cfg(feature = "push")]
         if let Some(extras_push) = single_event_message
             .extras
@@ -2388,6 +2439,14 @@ pub async fn batch_events(
             },
         )
         .await?;
+
+        #[cfg(feature = "push")]
+        crate::push_http::spawn_channel_push_rule_requests(
+            app_id.clone(),
+            push_rule_requests,
+            push_store.clone(),
+            push_queue.clone(),
+        );
 
         // Store per-event idempotency key
         if let Some(ref evt_key) = single_event_message.idempotency_key
@@ -4426,6 +4485,12 @@ mod tests {
         VersionDirection,
     };
     use sockudo_protocol::{ProtocolVersion, WireFormat};
+    #[cfg(feature = "push")]
+    use sockudo_push::{
+        ChannelSubscription, DeviceDetails, DevicePushDetails, DevicePushState, FormFactor,
+        MemoryPushQueue, MemoryPushStore, Platform, PushDeviceStore, PushPublishLogStore,
+        PushRecipient, PushSubscriptionStore, SecretString, hash_device_identity_token,
+    };
     use sockudo_ws::axum_integration::WebSocketWriter;
     use sockudo_ws::client::WebSocketClient;
     use sockudo_ws::{Config as WsConfig, Http1, Stream as WsStream, WebSocketStream};
@@ -4453,6 +4518,28 @@ mod tests {
         test_app_with_policy(AppPolicy {
             channels: AppChannelsPolicy {
                 annotations_enabled: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[cfg(feature = "push")]
+    fn test_notifications_app() -> App {
+        test_app_with_policy(AppPolicy {
+            channels: AppChannelsPolicy {
+                channel_namespaces: Some(vec![ChannelNamespace {
+                    name: "notifications".to_string(),
+                    channel_name_pattern: None,
+                    max_channel_name_length: None,
+                    annotations_enabled: None,
+                    allow_user_limited_channels: None,
+                    allow_subscribe_for_client: None,
+                    allow_publish_for_client: None,
+                    allow_presence_for_client: None,
+                    history: None,
+                    presence_history: None,
+                }]),
                 ..Default::default()
             },
             ..Default::default()
@@ -4628,6 +4715,48 @@ mod tests {
                 .version_store(version_store)
                 .build(),
         )
+    }
+
+    #[cfg(feature = "push")]
+    fn test_handler_with_push_rules(
+        rules: Vec<sockudo_core::options::PushRuleConfig>,
+    ) -> Arc<ConnectionHandler> {
+        let app_manager = Arc::new(MemoryAppManager::new()) as Arc<dyn AppManager + Send + Sync>;
+        let adapter = Arc::new(LocalAdapter::new())
+            as Arc<dyn sockudo_adapter::ConnectionManager + Send + Sync>;
+        let cache = Arc::new(MemoryCacheManager::new(
+            "test".to_string(),
+            MemoryCacheOptions::default(),
+        ));
+        let mut options = sockudo_core::options::ServerOptions::default();
+        options.push_rules = rules;
+
+        Arc::new(ConnectionHandlerBuilder::new(app_manager, adapter, cache, options).build())
+    }
+
+    #[cfg(feature = "push")]
+    fn test_push_device(device_id: &str) -> DeviceDetails {
+        DeviceDetails {
+            app_id: "app-1".to_string(),
+            id: device_id.to_string(),
+            client_id: Some("user-1".to_string()),
+            form_factor: FormFactor::Phone,
+            platform: Platform::Android,
+            metadata: serde_json::json!({}),
+            device_secret: hash_device_identity_token(&SecretString::new("device-token").unwrap()),
+            timezone: "UTC".to_string(),
+            locale: "en".to_string(),
+            last_active_at_ms: 1,
+            push: DevicePushDetails {
+                recipient: PushRecipient::Fcm {
+                    registration_token: SecretString::new(format!("token-{device_id}")).unwrap(),
+                },
+                state: DevicePushState::Active,
+                failure_count: 0,
+                error_reason: None,
+            },
+            push_rate_policy: None,
+        }
     }
 
     fn test_versioned_record(
@@ -7186,6 +7315,146 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[cfg(feature = "push")]
+    #[tokio::test]
+    async fn matching_channel_push_rule_accepts_existing_channel_subscription_fanout() {
+        let handler = test_handler_with_push_rules(vec![sockudo_core::options::PushRuleConfig {
+            channel_pattern: "notifications:*".to_string(),
+            event_filter: vec!["agent-complete".to_string()],
+            ..Default::default()
+        }]);
+        let app = test_notifications_app();
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        let device = test_push_device("device-1");
+        store.upsert_device(device.clone()).await.unwrap();
+        store
+            .upsert_subscription(ChannelSubscription::from_device(
+                "notifications:user-1",
+                &device,
+            ))
+            .await
+            .unwrap();
+
+        let response = events(
+            Path("app-1".to_string()),
+            Query(empty_event_query()),
+            Extension(app),
+            #[cfg(feature = "push")]
+            Extension(store.clone() as sockudo_push::DynPushStore),
+            #[cfg(feature = "push")]
+            Extension(queue.clone() as sockudo_push::DynPushQueue),
+            State(handler),
+            HeaderMap::new(),
+            Uri::from_static("/apps/app-1/events"),
+            RawQuery(None),
+            Json(PusherApiMessage {
+                name: Some("agent-complete".to_string()),
+                data: Some(ApiMessageData::Json(json!({
+                    "title": "Agent complete",
+                    "body": "Your answer is ready",
+                    "sessionId": "sess-1"
+                }))),
+                channel: Some("notifications:user-1".to_string()),
+                channels: None,
+                socket_id: None,
+                info: None,
+                tags: None,
+                delta: None,
+                idempotency_key: None,
+                message_id: None,
+                extras: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut log_event = None;
+        for _ in 0..20 {
+            let page = store
+                .list_publish_log_events("app-1", 10, None)
+                .await
+                .unwrap();
+            if let Some(event) = page.items.into_iter().next() {
+                log_event = Some(event);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let log_event = log_event.expect("rule-triggered push publish log event");
+        assert_eq!(log_event.expected_recipients, 1);
+        assert_eq!(
+            log_event.intent.targets,
+            vec![sockudo_push::PublishTarget::Channel {
+                channel: "notifications:user-1".to_string()
+            }]
+        );
+        assert_eq!(
+            log_event.intent.payload.title.as_deref(),
+            Some("Agent complete")
+        );
+        assert_eq!(
+            log_event.intent.payload.template_data["data"]["sessionId"],
+            "sess-1"
+        );
+    }
+
+    #[cfg(feature = "push")]
+    #[tokio::test]
+    async fn non_matching_channel_push_rule_does_not_enqueue_push() {
+        let handler = test_handler_with_push_rules(vec![sockudo_core::options::PushRuleConfig {
+            channel_pattern: "notifications:*".to_string(),
+            event_filter: vec!["agent-complete".to_string()],
+            ..Default::default()
+        }]);
+        let app = test_notifications_app();
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+
+        let response = events(
+            Path("app-1".to_string()),
+            Query(empty_event_query()),
+            Extension(app),
+            #[cfg(feature = "push")]
+            Extension(store.clone() as sockudo_push::DynPushStore),
+            #[cfg(feature = "push")]
+            Extension(queue.clone() as sockudo_push::DynPushQueue),
+            State(handler),
+            HeaderMap::new(),
+            Uri::from_static("/apps/app-1/events"),
+            RawQuery(None),
+            Json(PusherApiMessage {
+                name: Some("agent-start".to_string()),
+                data: Some(ApiMessageData::Json(json!({
+                    "title": "Agent started",
+                    "body": "Working",
+                    "sessionId": "sess-1"
+                }))),
+                channel: Some("notifications:user-1".to_string()),
+                channels: None,
+                socket_id: None,
+                info: None,
+                tags: None,
+                delta: None,
+                idempotency_key: None,
+                message_id: None,
+                extras: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let page = store
+            .list_publish_log_events("app-1", 10, None)
+            .await
+            .unwrap();
+        assert!(page.items.is_empty());
     }
 
     #[tokio::test]

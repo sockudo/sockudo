@@ -259,6 +259,42 @@ Request data:
 
 `limit` MUST be `1..=1000` with default `100`; server policy may lower the effective page size. `direction` defaults to backwards/newest-first and accepts `backwards`, `reverse`, `newest_first`, `forwards`, `forward`, and `oldest_first`. `until_attach=true` bounds `end_serial` to the subscription attach serial and gives gaplessness: history returns messages with `history_serial <= attach_serial`; live delivery continues with `history_serial > attach_serial`. Returned messages are aggregated via version-store latest projection, matching HTTP history substitution. Access requires `history` capability once capability tokens land. Existing rewind remains subscribe-time replay; client history is request/response pagination.
 
+### Push Rules For AI Completion
+
+Top-level `[[push_rules]]` entries bridge ordinary channel publishes to the existing push pipeline. A rule contains:
+
+```toml
+[[push_rules]]
+enabled = true
+channel_pattern = "notifications:*"
+event_filter = ["agent-complete"]
+rate_limit_per_second = 100
+
+[push_rules.payload_mapping]
+title_field = "title"
+body_field = "body"
+template_data_field = "data"
+include_remaining_fields = true
+```
+
+`channel_pattern` accepts exact names, `*`, or a single trailing wildcard such as `notifications:*`. `event_filter` is a non-empty allowlist. Matching is O(number of rules). When a publish succeeds and a rule matches, Sockudo builds a `PublishTarget::Channel` push request and submits it through the existing push acceptance, status, idempotency, fanout, and queue pipeline. Provider delivery remains async through push workers.
+
+The default payload convention expects message data to be a JSON object with string `title` and `body`; all remaining fields are copied into `PushPayload.template_data.data`. For the AI recipe, an agent publishes:
+
+```json
+{
+  "name": "agent-complete",
+  "channel": "notifications:user-123",
+  "data": {
+    "title": "Agent finished",
+    "body": "Your answer is ready",
+    "sessionId": "sess_123"
+  }
+}
+```
+
+Devices subscribed to `notifications:user-123` through the existing channel-subscription API receive provider payloads that include the notification title/body and `data.sessionId`. Apps should open the session and load authoritative history/recovery state after the tap. The alternative server-owned recipe is `ai_turn_ended` webhook delivery to the customer backend, followed by the existing push publish API with an explicit `PublishTarget::Channel`.
+
 ### Capability Tokens
 
 Capability tokens are V2-only JWTs signed with HS256. Header `kid` identifies the app key. Claims:
@@ -453,6 +489,11 @@ AIT-S80 [NEW] Capability token expiry emits 40142 flow.
 AIT-S81 [NEW] Revoked `jti` fails closed.
 AIT-S82 [NEW] `sockudo:auth` can refresh credentials without reconnect.
 AIT-S83 [NEW] `sockudo:presence_update` changes member data without member flap.
+AIT-S84 [VERIFIED] `[[push_rules]]` validates channel patterns, event allowlists, payload mapping fields, and per-rule rate limits at startup.
+AIT-S85 [VERIFIED] Matching channel publishes enqueue `PublishTarget::Channel` push work through the existing push pipeline.
+AIT-S86 [VERIFIED] Non-matching channel publishes do not enqueue push work.
+AIT-S87 [VERIFIED] Push rule payload mapping extracts string `title` and `body` and copies remaining object fields into `template_data.data`.
+AIT-S88 [VERIFIED] Push rule no-match scanning has a criterion benchmark with a <200 ns one-rule budget.
 AIT-S84 [NEW] Presence timeout defaults off for existing clients.
 AIT-S85 [NEW] Enabled presence timeout uses 15 s default grace.
 AIT-S86 [NEW] V2 resume cancels pending presence removal.
