@@ -592,9 +592,12 @@ impl ConnectionHandler {
                     .await;
             }
 
-            // Register with filter index for O(1) message routing (if local adapter is available)
+            // Register with filter index for O(1) message routing (if local adapter is available).
+            // Skip when tag filtering is off, since the index is never read on the broadcast path.
             #[cfg(feature = "tag-filtering")]
-            if let Some(ref local_adapter) = self.local_adapter {
+            if let Some(ref local_adapter) = self.local_adapter
+                && local_adapter.is_tag_filtering_enabled()
+            {
                 let filter_index = local_adapter.get_filter_index();
                 // Get the filter we just stored on the socket
                 let filter_node = conn_arc.get_channel_filter_sync(&request.channel);

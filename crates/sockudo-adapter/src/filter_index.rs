@@ -205,6 +205,24 @@ impl FilterIndex {
         // 3. The socket won't receive messages anyway since it's unsubscribed from the channel
     }
 
+    /// Remove a socket from every index for `channel` without needing its filter.
+    /// eq_index is swept via the channel's tracked composite keys.
+    pub fn remove_socket_all_filters(&self, channel: &str, socket_id: SocketId) {
+        if let Some(set) = self.no_filter.get(channel) {
+            set.remove(&socket_id);
+        }
+        if let Some(set) = self.complex_filters.get(channel) {
+            set.remove(&socket_id);
+        }
+        if let Some(hashes) = self.channel_keys.get(channel) {
+            for hash in hashes.iter() {
+                if let Some(set) = self.eq_index.get(&hash) {
+                    set.remove(&socket_id);
+                }
+            }
+        }
+    }
+
     /// Look up sockets that should receive a message with the given tags.
     ///
     /// Returns categorized results for efficient processing.
