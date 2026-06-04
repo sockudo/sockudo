@@ -9,7 +9,9 @@ use sockudo_core::error::{Error, Result};
 #[cfg(feature = "tag-filtering")]
 use sockudo_core::namespace::Namespace;
 use sockudo_core::utils::{is_wildcard_subscription_pattern, wildcard_pattern_matches};
-use sockudo_core::websocket::{SocketId, WebSocketRef};
+#[cfg(feature = "tag-filtering")]
+use sockudo_core::websocket::SocketId;
+use sockudo_core::websocket::WebSocketRef;
 use sockudo_protocol::messages::PusherMessage;
 
 /// Prepare and serialize a V2 message (rewrite prefix, keep serial/message_id).

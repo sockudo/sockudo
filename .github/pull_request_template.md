@@ -24,6 +24,15 @@
 - [ ] My changes generate no new warnings
 - [ ] Any dependent changes have been merged and published
 
+## Protocol Change Checklist
+<!-- Required when this PR touches wire payloads, event names, protocol constants, HTTP API shapes, SDK fixtures, or compatibility docs. Mark N/A only when no protocol-visible surface changed. -->
+- [ ] N/A - no protocol-visible changes
+- [ ] Change is additive under AI Transport wire-protocol v1
+- [ ] `docs/specs/ai-transport-wire-protocol.md` updated or confirmed unchanged
+- [ ] Golden transcripts / forward-compat fixtures updated or confirmed unchanged
+- [ ] Cross-SDK compatibility matrix registry updated or confirmed unchanged
+- [ ] Default Protocol V1/Pusher output remains byte-identical
+
 ## Build Artifacts
 <!-- A bot comment will appear with build instructions once this PR is created -->
 

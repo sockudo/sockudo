@@ -1,0 +1,143 @@
+---
+title: Authentication for AI Transport
+description: Capability tokens, claims, channel patterns, refresh, revocation, and server-authorized requests.
+icon: ShieldCheck
+---
+
+AI Transport uses three layers of authority:
+
+| Layer | Used for | Authority |
+| --- | --- | --- |
+| App-key HTTP auth | Server publishes, mutations, history reads, push management, revocation | Trusted backend with app secret |
+| Private/presence channel auth | Subscription admission | Customer backend signs channel auth |
+| Protocol V2 capability token | Client connection identity and channel-scoped capabilities | Customer backend issues short-lived JWT |
+
+Never trust `client_id` from message bodies or AI headers. Verified identity comes from signed-in
+socket state, capability-token claims, or trusted server app-key context.
+
+## Capability token claims
+
+Capability tokens are HS256 JWTs signed with the app secret. Header `kid` must equal the app key.
+Claims are:
+
+```json
+{
+  "x-sockudo-client-id": "user-42",
+  "x-sockudo-capability": "{\"subscribe\":[\"private-ai:user-42:*\"],\"publish\":[\"private-ai:user-42:*\"],\"history\":[\"private-ai:user-42:*\"],\"message_append_own\":[\"private-ai:user-42:*\"]}",
+  "iat": 1764835200,
+  "nbf": 1764835200,
+  "exp": 1764838800,
+  "jti": "tok_01J..."
+}
+```
+
+Limits from code: token at most 8 KiB, `client_id` at most 128 bytes, `jti` at most 128 bytes,
+lifetime at most 24 hours, and 30 seconds clock skew.
+
+## Node example
+
+```js
+import crypto from "node:crypto";
+
+function base64url(value) {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+export function issueSockudoToken({ appKey, appSecret, clientId, capabilities, now = Math.floor(Date.now() / 1000) }) {
+  const header = { alg: "HS256", typ: "JWT", kid: appKey };
+  const payload = {
+    "x-sockudo-client-id": clientId,
+    "x-sockudo-capability": JSON.stringify(capabilities),
+    iat: now,
+    nbf: now,
+    exp: now + 3600,
+    jti: crypto.randomUUID()
+  };
+  const signingInput = `${base64url(header)}.${base64url(payload)}`;
+  const signature = crypto.createHmac("sha256", appSecret).update(signingInput).digest("base64url");
+  return `${signingInput}.${signature}`;
+}
+```
+
+## Rust example
+
+```rust
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use serde::Serialize;
+use std::collections::BTreeMap;
+
+#[derive(Serialize)]
+struct Claims {
+    #[serde(rename = "x-sockudo-client-id")]
+    client_id: String,
+    #[serde(rename = "x-sockudo-capability")]
+    capability: String,
+    iat: i64,
+    nbf: i64,
+    exp: i64,
+    jti: String,
+}
+
+fn issue_sockudo_token(
+    app_key: &str,
+    app_secret: &str,
+    client_id: &str,
+    capabilities: BTreeMap<String, Vec<String>>,
+    now: i64,
+    jti: String,
+) -> jsonwebtoken::errors::Result<String> {
+    let mut header = Header::new(Algorithm::HS256);
+    header.kid = Some(app_key.to_owned());
+    encode(
+        &header,
+        &Claims {
+            client_id: client_id.to_owned(),
+            capability: serde_json::to_string(&capabilities).expect("capabilities serialize"),
+            iat: now,
+            nbf: now,
+            exp: now + 3600,
+            jti,
+        },
+        &EncodingKey::from_secret(app_secret.as_bytes()),
+    )
+}
+```
+
+## Refresh and revocation
+
+Refresh a V2 connection with `sockudo:auth`:
+
+```json
+{
+  "event": "sockudo:auth",
+  "data": { "token": "<new-token>" }
+}
+```
+
+Refresh cannot change `client_id`. To revoke tokens, call signed HTTP:
+
+```http
+POST /apps/{appId}/revocations
+```
+
+with `jti`, `client_id`, or both. Matching local sockets receive token expiry/revocation handling
+and close with the configured grace path.
+
+## Capability patterns
+
+Patterns accept exact channel names, `*`, and wildcard matching as implemented by
+`ConnectionCapabilities`. Keep user tokens narrow:
+
+```json
+{
+  "subscribe": ["private-ai:user-42:*"],
+  "publish": ["private-ai:user-42:*"],
+  "history": ["private-ai:user-42:*"],
+  "presence": ["presence-ai:user-42:*"],
+  "message_append_own": ["private-ai:user-42:*"],
+  "message_update_own": ["private-ai:user-42:*"],
+  "annotation-subscribe": ["private-ai:user-42:*"]
+}
+```
+
+Agent/server workers should use trusted app-key HTTP or a deliberately scoped server-issued token.

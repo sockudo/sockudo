@@ -3,8 +3,7 @@
 pub mod observability;
 
 use ahash::AHashMap;
-use bytes::{Bytes, BytesMut};
-use sockudo_protocol::messages::{MessageData, PusherMessage};
+use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::{
     MessageAction, extract_runtime_action, extract_runtime_message_serial,
 };
@@ -87,8 +86,6 @@ struct PendingStream {
     last_seen_ms: u64,
     deadline_ms: u64,
     latest_message: PusherMessage,
-    segments: Vec<Bytes>,
-    segment_bytes: usize,
     appended_count: usize,
 }
 
@@ -99,17 +96,11 @@ impl PendingStream {
             last_seen_ms: first_seen_ms,
             deadline_ms,
             latest_message,
-            segments: Vec::new(),
-            segment_bytes: 0,
             appended_count: 0,
         }
     }
 
     fn push(&mut self, now_ms: u64, message: PusherMessage) {
-        if let Some(bytes) = data_bytes(message.data.as_ref()) {
-            self.segment_bytes += bytes.len();
-            self.segments.push(bytes);
-        }
         self.last_seen_ms = now_ms;
         self.latest_message = message;
         self.appended_count += 1;
@@ -122,17 +113,10 @@ impl PendingStream {
         channel: &str,
     ) -> RollupDelivery {
         let coalesced = self.appended_count.max(1);
-        let mut message = self.latest_message.clone();
-        if should_fold_segments(&message, &self.segments) {
-            message.data = Some(MessageData::String(fold_segments(
-                &self.segments,
-                self.segment_bytes,
-            )));
-        }
         RollupDelivery {
             app_id: app_id.to_string(),
             channel: channel.to_string(),
-            message,
+            message: self.latest_message.clone(),
             reason,
             coalesced,
             latency_ms: self.last_seen_ms.saturating_sub(self.first_seen_ms),
@@ -486,26 +470,6 @@ fn delivery(
     }
 }
 
-fn data_bytes(data: Option<&MessageData>) -> Option<Bytes> {
-    match data {
-        Some(MessageData::String(value)) => Some(Bytes::copy_from_slice(value.as_bytes())),
-        _ => None,
-    }
-}
-
-fn should_fold_segments(message: &PusherMessage, segments: &[Bytes]) -> bool {
-    let _ = (message, segments);
-    false
-}
-
-fn fold_segments(segments: &[Bytes], total_len: usize) -> String {
-    let mut bytes = BytesMut::with_capacity(total_len);
-    for segment in segments {
-        bytes.extend_from_slice(segment);
-    }
-    String::from_utf8(bytes.to_vec()).unwrap_or_default()
-}
-
 fn is_terminal_append(message: &PusherMessage) -> bool {
     message
         .ai_transport_headers()
@@ -532,7 +496,7 @@ fn fast_shard_index(key: &StreamKey, shards: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sockudo_protocol::messages::{AiExtras, MessageExtras};
+    use sockudo_protocol::messages::{AiExtras, MessageData, MessageExtras};
     use sockudo_protocol::versioned_messages::{MessageVersionMetadata, apply_runtime_metadata};
     use std::collections::HashMap;
 

@@ -39,6 +39,15 @@ client.bind("sockudo:resume_success", (payload) => {
 
 If a channel emits `sockudo:resume_failed` with `code: "position_expired"`, the hot replay buffer and durable recovery window could not prove continuity. Resubscribe, then backfill with V2 channel history using `until_attach: true` so the history page is bounded at the subscription's attach serial.
 
+Recovery is two-tier:
+
+1. Hot replay uses the bounded per-channel replay buffer.
+2. Durable recovery uses `HistoryStore` when `stream_id`, serial bounds, and retention prove
+   continuity.
+
+If the durable stream is degraded or reset-required, Sockudo fails closed instead of pretending the
+stream is continuous.
+
 ## Rewind
 
 Subscribe-time rewind asks Sockudo to send recent history when a client joins:
@@ -84,6 +93,10 @@ Protocol V2 clients use WebSocket `channel_history` frames instead of direct HTT
 ```
 
 The response uses the same history payload shape as app-key HTTP history: `items`, `direction`, `limit`, `has_more`, `next_cursor`, `bounds`, `continuity`, and `stream_state`. Limits are capped at `1000` and may be lowered by channel policy. `direction` defaults to backwards/newest-first. `until_attach: true` bounds results to `history_serial <= attach_serial`, while live delivery after subscribe continues above that attach serial. Mutable messages are returned as the latest aggregated V2 message, not raw operation log rows.
+
+`until_attach` is the late-join gaplessness rule: the history page stops at the serial captured when
+the subscription succeeded, and live fanout continues above that serial. Clients should reduce
+history first, then live messages.
 
 ## Presence history
 

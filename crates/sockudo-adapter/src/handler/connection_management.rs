@@ -26,7 +26,7 @@ use sockudo_protocol::versioned_messages::{
 };
 use sockudo_ws::Message;
 use sockudo_ws::axum_integration::WebSocketWriter;
-#[cfg(any(feature = "ai-transport", feature = "delta"))]
+#[cfg(feature = "delta")]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;

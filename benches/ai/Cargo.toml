@@ -1,0 +1,23 @@
+[package]
+name = "sockudo-ai-benches"
+description = "Aggregate AI Transport hot-path benchmark suite for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+publish = false
+
+[dependencies]
+async-trait = { workspace = true }
+criterion = { workspace = true }
+sockudo-ai-transport = { workspace = true }
+sockudo-core = { workspace = true, features = ["ai-transport"] }
+sockudo-protocol = { workspace = true, features = ["ai-transport"] }
+sonic-rs = { workspace = true }
+tokio = { workspace = true }
+
+[[bench]]
+name = "ai_hot_paths"
+path = "benches/ai_hot_paths.rs"
+harness = false

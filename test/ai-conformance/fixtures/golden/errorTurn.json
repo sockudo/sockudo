@@ -1,0 +1,21 @@
+[
+  {
+    "event": "sockudo:subscription_succeeded",
+    "channel": "private-ai-error-golden",
+    "data": {}
+  },
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-error-golden",
+    "data": {
+      "scenario": "private-ai-error"
+    }
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-error-golden",
+    "data": {
+      "scenario": "private-ai-error"
+    }
+  }
+]

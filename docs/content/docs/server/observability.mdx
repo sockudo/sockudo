@@ -58,8 +58,26 @@ Metrics exposed at `/metrics` include:
 - `sockudo_appends_received_total`
 - `sockudo_appends_delivered_total`
 - `sockudo_rollup_ratio`
+- `sockudo_flush_latency`
+- `sockudo_history_recovery_success_total{source}`
+- `sockudo_history_recovery_failures_total{code}`
+- `sockudo_versioned_message_mutations_total{action,result}`
+- `sockudo_versioned_message_retrieval_total{surface,result}`
 
 The four production signals are turn outcomes, stream rate, rejects by code, and rollup efficiency. Use `docs/public/grafana/ai-transport-observability.json` as the starting Grafana dashboard.
+
+Dashboard starter panels:
+
+| Panel | Metric |
+| --- | --- |
+| Active AI streams | `sockudo_ai_active_streams` |
+| Turn outcomes | `sockudo_ai_turns_started_total`, `sockudo_ai_turns_ended_total` |
+| Rejects by code | `sockudo_ai_messages_rejected_total` |
+| Rollup efficiency | `sockudo_appends_received_total` vs `sockudo_appends_delivered_total`, `sockudo_rollup_ratio` |
+| Rollup latency | `sockudo_flush_latency` |
+| Recovery health | `sockudo_history_recovery_success_total`, `sockudo_history_recovery_failures_total` |
+| Durable state | `sockudo_history_degraded_channels`, `sockudo_history_reset_required_channels` |
+| Push backlog | push queue/status/provider metrics from the push dashboard |
 
 For support escalation, capture the channel, wall-clock time window, verified `clientId`, and first error code before collecting logs. Do not ask customers for provider payloads unless the codec layer explicitly requires them.
 

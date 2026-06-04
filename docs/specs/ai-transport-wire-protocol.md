@@ -1,10 +1,20 @@
 # Sockudo AI Transport Wire Protocol
 
-Status: Draft locked for S1+ implementation
+Status: Wire-protocol v1 locked for GA release candidates
+Wire protocol version: 1
 Scope: Sockudo server platform primitives for Ably AI Transport parity
 Source of truth: code audit on 2026-06-02, plus `plans/ai-transport/01-server-parity-prompts.md` sections 1 and 2
 
 This document defines the canonical server wire protocol and architecture for Sockudo AI Transport parity. Part A documents the existing Sockudo primitives with source references. Part B specifies the remaining platform gaps. The AI SDK owns turns, trees, view reduction, codecs, and agent orchestration; Sockudo supplies validated realtime, history, recovery, identity, presence, push, and error primitives.
+
+## Compatibility Promise
+
+Wire-protocol v1 is additive-only for the 4.x release line. Sockudo will not remove or reshape the
+AI event names, `extras.ai.transport` key registry, error codes, publish/mutation acknowledgement
+fields, `channel_history` request/response shape, capability-token claims, or V1 Pusher delivery
+stripping rules documented here without a new wire-protocol version and matching SDK major-release
+plan. New fields may be added only when they are optional, ignored safely by existing SDKs, and
+covered by the cross-SDK compatibility matrix.
 
 ## Part A: Audited Existing Behavior
 

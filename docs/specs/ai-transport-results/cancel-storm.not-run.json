@@ -1,0 +1,13 @@
+{
+  "schema": "sockudo.ai-transport.scale-result.v1",
+  "status": "not_executed_local",
+  "profile": "ai-cancel-storm",
+  "profilePath": "test/load/profiles/cancel-storm.json",
+  "reason": "Requires production-scale stream fanout and cancel routing capacity.",
+  "requiredEvidence": [
+    "10k cancel signals accepted within 10 seconds",
+    "cancel routing reached the owning stream nodes",
+    "no stuck active streams after cancel TTL",
+    "sampled transcripts end with the expected cancel/terminal state"
+  ]
+}

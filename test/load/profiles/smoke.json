@@ -1,0 +1,17 @@
+{
+  "name": "ai-smoke",
+  "description": "Developer-scale executable AI Transport load smoke.",
+  "logicalConnections": 1000,
+  "sessions": 100,
+  "activeStreams": 12,
+  "durationSeconds": 15,
+  "tokensPerSecond": 100,
+  "meanResponseTokens": 120,
+  "subscribersPerSession": { "min": 1, "max": 2 },
+  "cancelProbability": 0.02,
+  "reconnectProbability": 0.02,
+  "historyOnJoinProbability": 0.25,
+  "sampleTranscriptCount": 12,
+  "maxAppendDeliveryP99Ms": 25,
+  "planOnly": false
+}

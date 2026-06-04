@@ -1,0 +1,22 @@
+{
+  "time_ms": 1710000000000,
+  "events": [
+    {
+      "name": "member_updated",
+      "channel": "presence-ai-forward",
+      "user_id": "user-1",
+      "future_field": "must-pass-through"
+    },
+    {
+      "name": "ai_turn_started",
+      "channel": "private-ai-forward",
+      "turn_id": "turn-1"
+    },
+    {
+      "name": "message_version_created",
+      "channel": "private-ai-forward",
+      "message_serial": "msg-1",
+      "version_serial": "ver-1"
+    }
+  ]
+}

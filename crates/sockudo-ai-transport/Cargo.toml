@@ -15,6 +15,8 @@ sonic-rs = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+sockudo-core = { workspace = true, features = ["ai-transport"] }
+tokio = { workspace = true }
 
 [[bench]]
 name = "rollup_engine"

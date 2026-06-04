@@ -14,6 +14,7 @@ members = [
   "crates/sockudo-ai-transport",
   "crates/sockudo-adapter",
   "crates/sockudo-server",
+  "benches/ai",
 ]
 exclude = ["server-sdks/pusher-http-rust"]
 resolver = "3"
