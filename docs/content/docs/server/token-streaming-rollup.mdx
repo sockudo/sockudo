@@ -44,4 +44,19 @@ Prometheus exposes low-cardinality rollup metrics per app:
 - `sockudo_active_streams`
 - `sockudo_flush_latency`
 
+Billing, rate limits, durable history, version storage, webhooks, and push accounting count original
+create/update/delete/append requests. Rollup metrics count both original append receipt and
+coalesced egress delivery, so operators can see the reduction ratio without hiding ingress load.
+
+Important edge cases:
+
+- A terminal append flushes pending state before delivering the terminal operation.
+- `message.update` and `message.delete` flush pending append state first.
+- A late subscriber reconstructs state from history/version storage, not from rollup buffers.
+- A node that sees a stale stream after `orphan_ttl_ms` claims it through shared cache and appends a
+  normal cancellation update; the latest version is re-read before mutation to avoid cancelling a
+  stream that advanced on another node.
+- `append_rollup_window=0` disables egress coalescing but does not change persistence or rate-limit
+  behavior.
+
 Run `scripts/ai-rollup-load-test.mjs` against a local server to exercise a synthetic `200 tok/s` stream and inspect delivery rate, final content, and append mutation latency.

@@ -7946,14 +7946,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "sockudo-ai-benches"
+version = "4.5.1"
+dependencies = [
+ "async-trait",
+ "criterion",
+ "sockudo-ai-transport",
+ "sockudo-core",
+ "sockudo-protocol",
+ "sonic-rs",
+ "tokio",
+]
+
+[[package]]
 name = "sockudo-ai-transport"
 version = "4.5.1"
 dependencies = [
  "ahash 0.8.12",
  "bytes",
  "criterion",
+ "sockudo-core",
  "sockudo-protocol",
  "sonic-rs",
+ "tokio",
 ]
 
 [[package]]

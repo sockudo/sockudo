@@ -1,0 +1,14 @@
+{
+  "event": "sockudo:message.future",
+  "channel": "private-ai-forward",
+  "data": "opaque",
+  "action": "future",
+  "message_serial": "future-message",
+  "history_serial": 9007199254740993,
+  "delivery_serial": 9007199254740994,
+  "version": {
+    "serial": "future-version",
+    "timestamp_ms": 1710000000000,
+    "future_metadata": "must-not-break-sdk"
+  }
+}

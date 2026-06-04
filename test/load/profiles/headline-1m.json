@@ -1,0 +1,19 @@
+{
+  "name": "ai-headline-1m",
+  "description": "Headline production-readiness run: 1M connections and 50k active AI streams for 30 minutes.",
+  "logicalConnections": 1000000,
+  "sessions": 250000,
+  "activeStreams": 50000,
+  "durationSeconds": 1800,
+  "tokensPerSecond": 100,
+  "meanResponseTokens": 800,
+  "subscribersPerSession": { "min": 1, "max": 5 },
+  "cancelProbability": 0.03,
+  "reconnectProbability": 0.02,
+  "historyOnJoinProbability": 0.35,
+  "sampleTranscriptCount": 1000,
+  "maxAppendDeliveryP99Ms": 25,
+  "loadGenerators": 32,
+  "planOnly": true,
+  "requiresFleet": true
+}

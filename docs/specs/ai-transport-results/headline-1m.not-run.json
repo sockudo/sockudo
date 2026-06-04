@@ -1,0 +1,15 @@
+{
+  "schema": "sockudo.ai-transport.scale-result.v1",
+  "status": "not_executed_local",
+  "profile": "ai-headline-1m",
+  "profilePath": "test/load/profiles/headline-1m.json",
+  "reason": "Requires a prepared multi-node fleet capable of 1M concurrent connections and 50k active streams. Do not fabricate capacity numbers from developer hardware.",
+  "requiredEvidence": [
+    "30-minute raw scale-runner manifest",
+    "sampled transcript audit with zero mismatches",
+    "serial monotonicity audit clean",
+    "p99 append-to-delivery below 25 ms intra-region",
+    "RSS/task/fd curves flat after warm-up",
+    "before/after Prometheus metric snapshots"
+  ]
+}

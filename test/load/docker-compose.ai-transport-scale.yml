@@ -1,0 +1,141 @@
+services:
+  sockudo-node-4:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        SOCKUDO_FEATURES: "v2,ai-transport,redis,postgres"
+    command: ["sockudo", "--config", "/app/config/config.ai-transport-compose.toml"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RUST_LOG: "info"
+      DEBUG: "false"
+      HOST: "0.0.0.0"
+      PORT: "6001"
+      METRICS_PORT: "9601"
+      ADAPTER_DRIVER: "redis"
+      CACHE_DRIVER: "redis"
+      QUEUE_DRIVER: "redis"
+      APP_MANAGER_DRIVER: "memory"
+      HISTORY_ENABLED: "true"
+      HISTORY_BACKEND: "postgres"
+      VERSIONED_MESSAGES_ENABLED: "true"
+      VERSIONED_MESSAGES_DRIVER: "postgres"
+      AI_TRANSPORT_ENABLED: "true"
+      AI_TRANSPORT_ROLLUP_ORPHAN_TTL_MS: "60000"
+      DATABASE_REDIS_HOST: "redis"
+      DATABASE_REDIS_PORT: "6379"
+      DATABASE_REDIS_DB: "0"
+      DATABASE_REDIS_KEY_PREFIX: "sockudo-ai:"
+      DATABASE_POSTGRES_HOST: "postgres"
+      DATABASE_POSTGRES_PORT: "5432"
+      DATABASE_POSTGRES_USERNAME: "postgres"
+      DATABASE_POSTGRES_PASSWORD: "postgres123"
+      DATABASE_POSTGRES_DATABASE: "sockudo_ai"
+      SOCKUDO_DEFAULT_APP_ID: "app-id"
+      SOCKUDO_DEFAULT_APP_KEY: "app-key"
+      SOCKUDO_DEFAULT_APP_SECRET: "app-secret"
+      SOCKUDO_DEFAULT_APP_ENABLED: "true"
+      SOCKUDO_ENABLE_CLIENT_MESSAGES: "true"
+      INSTANCE_PROCESS_ID: "sockudo-node-4"
+    ports:
+      - "6004:6001"
+      - "9604:9601"
+    volumes:
+      - ../../config/config.ai-transport-compose.toml:/app/config/config.ai-transport-compose.toml:ro
+    networks:
+      - sockudo-ai-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:6001/up/app-id >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  sockudo-node-5:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        SOCKUDO_FEATURES: "v2,ai-transport,redis,postgres"
+    command: ["sockudo", "--config", "/app/config/config.ai-transport-compose.toml"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RUST_LOG: "info"
+      DEBUG: "false"
+      HOST: "0.0.0.0"
+      PORT: "6001"
+      METRICS_PORT: "9601"
+      ADAPTER_DRIVER: "redis"
+      CACHE_DRIVER: "redis"
+      QUEUE_DRIVER: "redis"
+      APP_MANAGER_DRIVER: "memory"
+      HISTORY_ENABLED: "true"
+      HISTORY_BACKEND: "postgres"
+      VERSIONED_MESSAGES_ENABLED: "true"
+      VERSIONED_MESSAGES_DRIVER: "postgres"
+      AI_TRANSPORT_ENABLED: "true"
+      AI_TRANSPORT_ROLLUP_ORPHAN_TTL_MS: "60000"
+      DATABASE_REDIS_HOST: "redis"
+      DATABASE_REDIS_PORT: "6379"
+      DATABASE_REDIS_DB: "0"
+      DATABASE_REDIS_KEY_PREFIX: "sockudo-ai:"
+      DATABASE_POSTGRES_HOST: "postgres"
+      DATABASE_POSTGRES_PORT: "5432"
+      DATABASE_POSTGRES_USERNAME: "postgres"
+      DATABASE_POSTGRES_PASSWORD: "postgres123"
+      DATABASE_POSTGRES_DATABASE: "sockudo_ai"
+      SOCKUDO_DEFAULT_APP_ID: "app-id"
+      SOCKUDO_DEFAULT_APP_KEY: "app-key"
+      SOCKUDO_DEFAULT_APP_SECRET: "app-secret"
+      SOCKUDO_DEFAULT_APP_ENABLED: "true"
+      SOCKUDO_ENABLE_CLIENT_MESSAGES: "true"
+      INSTANCE_PROCESS_ID: "sockudo-node-5"
+    ports:
+      - "6005:6001"
+      - "9605:9601"
+    volumes:
+      - ../../config/config.ai-transport-compose.toml:/app/config/config.ai-transport-compose.toml:ro
+    networks:
+      - sockudo-ai-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:6001/up/app-id >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  ai-loadgen:
+    image: node:22-alpine
+    working_dir: /repo
+    volumes:
+      - ../..:/repo:ro
+    environment:
+      SOCKUDO_NODE_URLS: "http://sockudo-node-1:6001,http://sockudo-node-2:6001,http://sockudo-node-3:6001,http://sockudo-node-4:6001,http://sockudo-node-5:6001"
+      SOCKUDO_APP_ID: "app-id"
+      SOCKUDO_APP_KEY: "app-key"
+      SOCKUDO_APP_SECRET: "app-secret"
+    command: ["node", "test/load/ai-scale-runner.mjs", "--profile", "test/load/profiles/smoke.json", "--output", "/tmp/ai-scale-result.json"]
+    depends_on:
+      sockudo-node-1:
+        condition: service_healthy
+      sockudo-node-2:
+        condition: service_healthy
+      sockudo-node-3:
+        condition: service_healthy
+      sockudo-node-4:
+        condition: service_healthy
+      sockudo-node-5:
+        condition: service_healthy
+    networks:
+      - sockudo-ai-network

@@ -1,337 +1,240 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file gives coding agents a compact, code-verified map of Sockudo. Trust the code over older
+notes if this file drifts.
 
 ## Project Overview
 
-Sockudo is a simple, fast, and secure WebSocket server for real-time applications built in Rust. It supports dual protocol versioning: V1 (strict Pusher compatibility) and V2 (Sockudo-native with serial numbers, message IDs, connection recovery, delta compression, and tag filtering built-in).
+Sockudo is a Pusher-compatible, high-performance Rust realtime server. Protocol V1 remains strict
+Pusher wire compatibility. Protocol V2 adds Sockudo-native features: serials, message IDs, recovery,
+durable history, mutable/versioned messages, annotations, tag filtering, delta compression,
+presence-history, capability-token auth, and optional AI Transport conventions.
+
+AI Transport is additive. Build it with Cargo feature `ai-transport`, enable it at runtime with
+`[ai_transport] enabled = true`, and extend the existing versioned-message, history, recovery,
+annotation, and push subsystems. Do not build parallel AI-only storage or fanout paths.
 
 ## Workspace Structure
 
-Sockudo is organized as a Cargo workspace with 12 crates under `crates/`:
+The Cargo workspace has 14 members. Thirteen production/library crates live under `crates/`; the
+fourteenth is the permanent AI benchmark crate under `benches/ai`.
 
-```
+```text
 crates/
-├── sockudo-protocol/       # Pusher protocol messages and constants (leaf crate)
-├── sockudo-filter/          # Zero-allocation tag-based publication filtering (leaf crate)
-├── sockudo-core/            # Core traits, types, error handling, config, websocket types
-├── sockudo-app/             # App manager implementations (Memory, MySQL, PG, DynamoDB, Scylla)
-├── sockudo-cache/           # Cache implementations (Memory, Redis, Redis Cluster)
-├── sockudo-queue/           # Queue implementations (Memory, Redis, SQS, SNS)
-├── sockudo-rate-limiter/    # Rate limiter implementations + HTTP middleware
-├── sockudo-metrics/         # Prometheus metrics driver
-├── sockudo-webhook/         # Webhook integration + HTTP/Lambda senders
-├── sockudo-delta/           # Delta compression manager (fossil_delta, xdelta3)
-├── sockudo-adapter/         # Connection management, horizontal scaling, handler logic, replay buffer
-└── sockudo-server/          # Binary: HTTP + WebSocket handlers, server bootstrap
+  sockudo-protocol        protocol message types, V1/V2 prefixes, wire payloads
+  sockudo-filter          tag filter parsing and matching
+  sockudo-core            shared traits, config, auth, history, version store, errors
+  sockudo-app             app-manager backends
+  sockudo-cache           cache backends
+  sockudo-queue           queue backends
+  sockudo-rate-limiter    rate limiters and middleware
+  sockudo-metrics         Prometheus metrics driver
+  sockudo-webhook         webhook delivery
+  sockudo-delta           delta compression runtime
+  sockudo-push            push domain, storage, queue, providers, scheduler
+  sockudo-ai-transport    AI Transport validation, rollup, and conformance helpers
+  sockudo-adapter         connection handling, presence, fanout, recovery, rollup egress
+  sockudo-server          binary, HTTP/WS routes, bootstrap, durable stores
+
+benches/ai               Criterion suite and budgets for AI hot paths
 ```
 
-### Dependency DAG
+## Dependency DAG
 
-```
+```text
 sockudo-protocol ──┐
-                   ├─→ sockudo-core ──┬─→ sockudo-app
-sockudo-filter ────┘                  ├─→ sockudo-cache
-                                      ├─→ sockudo-queue ──→ sockudo-webhook
-                                      ├─→ sockudo-rate-limiter
-                                      ├─→ sockudo-metrics
-                                      ├─→ sockudo-delta
-                                      └─→ sockudo-adapter ──→ sockudo-server (binary)
+sockudo-filter ────┼─→ sockudo-core ──┬─→ sockudo-app
+                   │                  ├─→ sockudo-cache
+                   │                  ├─→ sockudo-queue ──┬─→ sockudo-webhook
+                   │                  │                   └─→ sockudo-push
+                   │                  ├─→ sockudo-rate-limiter
+                   │                  ├─→ sockudo-metrics
+                   │                  └─→ sockudo-delta
+                   ├─→ sockudo-ai-transport
+                   └─→ sockudo-adapter ──→ sockudo-server
 ```
 
-### Crate Responsibilities
+`sockudo-server` wires the implementation crates together. Backend-specific stores for durable
+history and versioned messages live in the server crate because they depend on database clients and
+runtime bootstrap.
 
-| Crate | What it contains | Key traits/types |
-|---|---|---|
-| `sockudo-protocol` | Protocol message types, constants, versioning | `PusherMessage`, `MessageData`, `ProtocolVersion`, `ErrorData` |
-| `sockudo-filter` | Tag filter evaluation, zero-alloc matching | `FilterNode`, `CompareOp`, `LogicalOp`, `TagMap` |
-| `sockudo-core` | All shared traits, types, config, error handling | `AppManager`, `CacheManager`, `QueueInterface`, `RateLimiter`, `MetricsInterface`, `App`, `SocketId`, `WebSocketRef`, `ServerOptions`, `Error`, `Result` |
-| `sockudo-app` | App storage backends | `MemoryAppManager`, `CachedAppManager`, `AppManagerFactory` |
-| `sockudo-cache` | Cache backends | `MemoryCacheManager`, `FallbackCacheManager`, `CacheManagerFactory` |
-| `sockudo-queue` | Queue backends | `MemoryQueueManager`, `QueueManager`, `QueueManagerFactory` |
-| `sockudo-rate-limiter` | Rate limiting + Tower middleware | `MemoryRateLimiter`, `RateLimitLayer`, `RateLimiterFactory` |
-| `sockudo-metrics` | Metrics collection | `PrometheusMetricsDriver` |
-| `sockudo-webhook` | Webhook delivery | `WebhookSender`, `WebhookIntegration` |
-| `sockudo-delta` | Delta compression runtime | `DeltaCompressionManager`, `DeltaMessage` |
-| `sockudo-adapter` | Connection handling, adapters, horizontal scaling, replay buffer | `ConnectionHandler`, `ConnectionManager`, `LocalAdapter`, `ChannelManager`, `PresenceManager`, `ReplayBuffer` |
-| `sockudo-server` | Binary entry point, HTTP/WS handlers | `main()`, `http_handler`, `ws_handler`, cleanup workers |
+## Crate Responsibilities
+
+| Crate | Main responsibilities | Key files |
+| --- | --- | --- |
+| `sockudo-protocol` | Pusher-compatible messages, V2 prefixing, extras, versioned realtime frames | `src/messages.rs`, `src/protocol_version.rs`, `src/versioned_messages.rs` |
+| `sockudo-filter` | Tag-filter expression model and matching | `src/node.rs`, `src/ops.rs` |
+| `sockudo-core` | Traits, config, auth, errors, `HistoryStore`, `VersionStore`, annotations, presence-history | `src/options.rs`, `src/history.rs`, `src/version_store.rs`, `src/versioned_messages.rs`, `src/annotations.rs`, `src/presence_history.rs`, `src/capability_token.rs` |
+| `sockudo-app` | App-manager backends | `src/*_app_manager.rs` |
+| `sockudo-cache` | Memory/Redis cache managers | `src/*` |
+| `sockudo-queue` | Memory and external queue managers | `src/*` |
+| `sockudo-rate-limiter` | Rate limit drivers and Tower middleware | `src/*` |
+| `sockudo-metrics` | Prometheus metrics exporter and metric catalog | `src/prometheus.rs` |
+| `sockudo-webhook` | Webhook event transformation and delivery | `src/*` |
+| `sockudo-delta` | Delta compression state and algorithms | `src/*` |
+| `sockudo-push` | Push credentials, device registrations, channel subscriptions, publish planning, queues, provider dispatch, feedback, scheduler | `src/domain.rs`, `src/storage.rs`, `src/pipeline.rs`, `src/dispatch.rs`, `src/scheduler.rs` |
+| `sockudo-ai-transport` | AI extras validation, lifecycle conventions, append rollup, conformance helpers | `src/lib.rs`, `tests/` |
+| `sockudo-adapter` | Connection manager, local/horizontal fanout, subscriptions, presence, recovery, rollup egress | `src/handler/*`, `src/local_adapter.rs`, `src/replay_buffer.rs` |
+| `sockudo-server` | HTTP/WS routes, app startup, database-backed history/version stores, push HTTP API | `src/main.rs`, `src/http_handler.rs`, `src/push_http.rs`, `src/history_*.rs` |
 
 ## Feature Flags
 
-Features are defined **per-crate** and propagated through `sockudo-server`. The server crate's features activate the corresponding features in downstream crates.
+Features are crate-local and propagated through `crates/sockudo-server/Cargo.toml`.
 
-### Build Examples
+Important server features:
+
+- `v2`: Protocol V2 feature bundle.
+- `ai-transport`: AI Transport validation, rollup, and conformance surfaces. Not default.
+- `push`: push HTTP/runtime support through `sockudo-push`.
+- `redis`, `redis-cluster`, `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy`: adapter/cache/queue integrations as applicable.
+- `mysql`, `postgres`, `dynamodb`, `surrealdb`, `scylladb`: app, history, version-store, and push storage backends as applicable.
+- `sqs`, `sns`, `lambda`: queue/webhook/cloud integrations.
+- `full`: all production integrations plus `ai-transport` and `push` where wired.
+
+Build examples:
 
 ```bash
-# Local development (default - fastest compile times)
 cargo build -p sockudo
-
-# With Redis only
-cargo build -p sockudo --features redis
-
-# With Redis Cluster and PostgreSQL
-cargo build -p sockudo --features "redis-cluster,postgres"
-
-# Production build with all features
+cargo build -p sockudo --features "v2,ai-transport,redis,postgres,push"
 cargo build -p sockudo --release --features full
-
-# Build entire workspace (all crates, default features)
 cargo build --workspace
-
-# Build specific crate
-cargo build -p sockudo-adapter --features "redis,nats"
 ```
 
-### Feature Propagation
+## Core Subsystems
 
-Features on `sockudo-server` activate downstream crate features:
-- `redis` → `sockudo-adapter/redis`, `sockudo-cache/redis`, `sockudo-queue/redis`, `sockudo-rate-limiter/redis`
-- `mysql` → `sockudo-app/mysql`
-- `nats` → `sockudo-adapter/nats`
-- etc.
+### Protocol V1 and V2
+
+V1 clients receive byte-compatible Pusher frames with Sockudo-only fields stripped. V2 clients get
+`sockudo:` prefixes, `serial`, `message_id`, extras, recovery frames, delta/filter features,
+mutable-message actions, annotations, and AI Transport conventions when enabled.
+
+Key files: `sockudo-protocol/src/protocol_version.rs`,
+`sockudo-adapter/src/local_adapter.rs`, `sockudo-server/src/ws_handler.rs`.
+
+### Versioned Mutable Messages
+
+`MessageAction` supports `create`, `update`, `delete`, `append`, and `summary`. `VersionStore`
+reserves gapless delivery positions, appends versions, reads latest visible state, pages version
+history, replays after delivery serial, projects latest-by-history, and purges expired records.
+
+HTTP surfaces include publish-created mutable messages through `/events`, mutation endpoints under
+`/channels/{channel}/messages/{message_serial}/{update|delete|append}`, latest reads, and version
+history. Authorization uses `message_update_own/any`, `message_delete_own/any`, and
+`message_append_own/any`; own-scoped grants require verified connection identity.
+
+Key files: `sockudo-protocol/src/versioned_messages.rs`,
+`sockudo-core/src/versioned_messages.rs`, `sockudo-core/src/version_store.rs`,
+`sockudo-core/src/versioned_message_auth.rs`, `sockudo-server/src/http_handler.rs`.
+
+### Durable History, Rewind, and Recovery
+
+`HistoryStore` is distinct from the hot replay buffer. Durable history owns retention, cursors,
+stream state, reset/purge, and cold recovery. Protocol V2 recovery first tries hot replay, then
+durable history when continuity can be proven. Subscribe-time rewind reads recent history and
+`until_attach` bounds client history pages at the attach serial so late joiners get gapless history
+plus live delivery.
+
+Key files: `sockudo-core/src/history.rs`, `sockudo-adapter/src/replay_buffer.rs`,
+`sockudo-adapter/src/handler/recovery.rs`, `sockudo-adapter/src/handler/history_frames.rs`,
+`sockudo-adapter/src/handler/subscription_management.rs`, `sockudo-server/src/history_*.rs`.
+
+### Annotations
+
+Annotations are V2 mutable side records with publish/delete, summary projection, raw subscription
+mode, own/any delete authorization, and metrics. They are feature/config gated and delivered only
+to V2 clients that request annotation mode.
+
+Key files: `sockudo-core/src/annotations.rs`, `sockudo-adapter/src/handler/annotations.rs`,
+`sockudo-server/src/http_handler.rs`.
+
+### Push
+
+`sockudo-push` handles provider credentials, device registrations, channel subscriptions, publish
+requests, durable idempotency/status, fanout planning, queues, retries, circuit breakers,
+provider dispatch, feedback, scheduled-job cancellation, and cleanup. Realtime publishes may also
+trigger channel push through `extras.push` or `[[push_rules]]`.
+
+Key files: `sockudo-push/src/domain.rs`, `sockudo-push/src/storage.rs`,
+`sockudo-push/src/pipeline.rs`, `sockudo-push/src/dispatch.rs`,
+`sockudo-server/src/push_http.rs`.
+
+### Presence History
+
+Presence history records authoritative joins/leaves separately from current membership. It can use
+memory or durable history as storage and supports paging, snapshots, degraded/reset-required
+state, retention, and metrics.
+
+Key files: `sockudo-core/src/presence_history.rs`,
+`sockudo-adapter/src/presence.rs`, `sockudo-server/src/presence_history.rs`.
+
+### AI Transport
+
+AI Transport defines a session-as-channel model, five lifecycle events (`ai-input`, `ai-output`,
+`ai-turn-start`, `ai-turn-end`, `ai-cancel`), typed `extras.ai.transport` and `extras.ai.codec`,
+turn/stream validation, append rollup, orphan cancellation, conformance tests, load/chaos tooling,
+and capacity docs. It depends on versioned messages, durable history, recovery, presence, push, and
+capability-token auth rather than replacing them.
+
+Key files: `crates/sockudo-ai-transport/src/lib.rs`,
+`crates/sockudo-ai-transport/tests/`, `test/ai-conformance/`, `test/load/`, `tools/chaos/`,
+`docs/specs/ai-transport-wire-protocol.md`.
+
+## Configuration Surfaces
+
+Important sections:
+
+- `[versioned_messages]`
+- `[history]` and backend subsections
+- `[presence_history]`
+- `[annotations]`
+- `[push]`, `[push.retry]`, `[push.circuit_breaker]`, `[push.default_quotas]`,
+  `[push.payload_redaction]`
+- `[[push_rules]]`
+- `[ai_transport]`, `[[ai_transport.channels]]`, `[ai_transport.rollup]`
+- Protocol V2 capability tokens are not a TOML feature switch; they are accepted by V2 connection
+  query `token` and refreshed with `sockudo:auth`.
+
+Reference docs: `docs/content/docs/reference/configuration.mdx`,
+`docs/content/docs/reference/environment-variables.mdx`.
+
+## Test Locations
+
+- Rust unit tests: inline `#[cfg(test)]` modules in each crate.
+- Rust integration tests: each crate's `tests/` directory.
+- AI Transport Rust conformance: `crates/sockudo-ai-transport/tests/`.
+- SDK-facing AI conformance: `test/ai-conformance/`.
+- Scale and chaos: `test/load/`, `tools/chaos/`.
+- AI Criterion budgets: `benches/ai/`.
+- Push integration smoke: `crates/sockudo-push/tests/`.
+- Legacy/SDK tests: `test/interactive/`, `test/automated/` where present.
 
 ## Development Commands
 
-### Quick Start
 ```bash
-# Complete setup with Docker
-make quick-start
-
-# Development environment
-make dev
-
-# Run tests (entire workspace)
+cargo fmt --all
 cargo test --workspace
-
-# Run tests for a specific crate
-cargo test -p sockudo-adapter
-
-# Clippy (entire workspace)
-cargo clippy --workspace
-
-# Build the server binary (local development - fastest)
-cargo build -p sockudo --release
-
-# Run the server
-./target/release/sockudo --config config/config.toml
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build -p sockudo --features "v2,ai-transport,redis,postgres,push"
+scripts/ai-transport-bench-guard.sh
+AIT_CONFORMANCE_OFFLINE=1 scripts/ai-conformance-node.sh
 ```
 
-### Docker Operations
+Docs:
+
 ```bash
-make prod           # Production deployment
-make scale REPLICAS=3
-make logs-sockudo
-make health
+cd docs
+npm run types:check
+npm run build
 ```
 
-## Architecture
+## Compatibility Rules
 
-### Key Design Patterns
-
-**Trait-based abstraction**: All major components define traits in `sockudo-core` with implementations in dedicated crates:
-```rust
-// sockudo-core defines the trait
-pub trait CacheManager: Send + Sync { ... }
-
-// sockudo-cache provides implementations
-pub struct MemoryCacheManager { ... }
-pub struct RedisCacheManager { ... }   // #[cfg(feature = "redis")]
-```
-
-**Factory pattern**: Each implementation crate has a factory for creating backends based on config:
-```rust
-// sockudo-cache::factory
-CacheManagerFactory::create(&options) -> Arc<dyn CacheManager>
-```
-
-**Feature-gated compilation**: Backend implementations are behind Cargo features to minimize compile times and binary size.
-
-**Configuration Hierarchy** (highest priority wins):
-1. Default values (hardcoded)
-2. Config file (`config/config.toml` or `config/config.json`)
-3. Command-line arguments
-4. Environment variables
-
-**Config format**: TOML (preferred) or JSON (legacy). Server tries `config.toml` first, falls back to `config.json`.
-
-### Protocol Versioning
-
-Sockudo supports dual protocol versions, negotiated per-connection via `?protocol=` query param:
-
-| | Protocol V1 (default) | Protocol V2 |
-|---|---|---|
-| Event prefix | `pusher:` / `pusher_internal:` | `sockudo:` / `sockudo_internal:` |
-| `serial` | Never sent | Always on every message |
-| `message_id` | Never sent | Always on every broadcast |
-| Connection recovery | Not available | Always available |
-| Delta compression | Not available | Native |
-| Tag filtering | Not available | Native |
-| Message idempotency | Not available | Native (`message_id` on every broadcast) |
-| Compatible SDKs | Official Pusher SDKs | Sockudo client SDKs |
-
-V1 connections receive plain Pusher-compatible messages with no extensions. All Sockudo features (delta, tag filtering, serial, message_id, recovery) are V2-only and each is individually configurable via config/env.
-
-**Key files:**
-- `crates/sockudo-protocol/src/protocol_version.rs` - `ProtocolVersion` enum, canonical event names, prefix translation
-- `crates/sockudo-server/src/ws_handler.rs` - Parses `?protocol=2` from WebSocket URL
-- `crates/sockudo-adapter/src/handler/mod.rs` - Routes events using canonical names (accepts both prefixes)
-- `crates/sockudo-adapter/src/local_adapter.rs` - V1 gets plain Pusher JSON (no delta/tags/serial), V2 gets sockudo: prefix + all features
-
-### WebSocket Protocol
-
-- **Channel Types**: public, private, presence, private-encrypted
-- **Authentication**: HMAC-SHA256 signatures for private/presence channels
-- **Events**: Standard protocol events plus client events on private channels
-- **Connection Recovery** (V2 native): Serial-based replay buffer for exactly-once delivery on reconnect
-- **Message Idempotency** (V2 native): UUIDv4 `message_id` on every broadcast
-
-**Key files:**
-- `crates/sockudo-adapter/src/replay_buffer.rs` - Per-channel replay buffer (DashMap + VecDeque)
-- `crates/sockudo-adapter/src/handler/recovery.rs` - Resume event handler
-- `crates/sockudo-adapter/src/handler/connection_management.rs` - Serial assignment and message_id injection at broadcast time
-- `crates/sockudo-core/src/cache.rs` - `CacheManager::set_if_not_exists()` for atomic idempotency
-
-## Testing
-
-### Running Tests
-```bash
-# All workspace tests
-cargo test --workspace
-
-# Specific crate
-cargo test -p sockudo-core
-cargo test -p sockudo-adapter
-cargo test -p sockudo-filter
-
-# Interactive frontend test
-cd test/interactive && npm install && npm start
-
-# Automated integration tests
-cd test/automated && npm install && npm test
-```
-
-### Test Locations
-- Each crate has unit tests inline (`#[cfg(test)]` modules)
-- Integration tests live in each crate's `tests/` directory
-- `sockudo-adapter/tests/` has the largest integration test suite (159 tests)
-- `test/interactive/` - Browser-based WebSocket testing UI
-- `test/automated/` - Node.js integration tests using Pusher SDK
-
-## Configuration
-
-### Environment Variables
-Key variables (see `.env.example` for complete list):
-- `PORT` - Server port (default: 6001)
-- `HOST` - Server host (default: 0.0.0.0)
-- `ADAPTER_DRIVER` - Connection adapter (local|redis|redis-cluster|nats)
-- `APP_MANAGER_DRIVER` - App storage (memory|mysql|postgresql|dynamodb|surrealdb|scylladb)
-- `CACHE_DRIVER` - Cache backend (memory|redis|redis-cluster|none)
-- `QUEUE_DRIVER` - Queue backend (memory|redis|redis-cluster|sqs|none)
-- `RATE_LIMITER_DRIVER` - Rate limiter backend (memory|redis|redis-cluster|none)
-- `DEBUG` or `DEBUG_MODE` - Enable debug logging (DEBUG takes precedence)
-- `REDIS_URL` - Override all Redis configurations with single URL
-- `LOG_OUTPUT_FORMAT` - Log format (human|json, default: human) **[Must be set at startup]**
-
-Note: All Sockudo features are V2-only, gated by both **Cargo feature flags** (compile-time) and **config** (runtime):
-
-Cargo features (on `sockudo-server` and `sockudo-adapter`):
-- `v2` (default) — meta-feature enabling all V2 features
-- `delta` — delta compression
-- `tag-filtering` — server-side tag filtering
-- `recovery` — connection recovery (serial + message_id + replay buffer)
-
-Runtime config (only applies to V2 connections):
-- `delta_compression.enabled` — delta compression
-- `tag_filtering.enabled` — tag-based filtering
-- `connection_recovery.enabled` — serial numbers + message_id + replay buffer
-
-Build without V2: `cargo build -p sockudo --no-default-features` (pure Pusher-only server).
-V1 connections get plain Pusher protocol with none of these features regardless of config.
-
-Full configuration reference: see `docs/` (Nuxt-based documentation site).
-
-## Development Guidelines
-
-### Adding New Features
-
-1. **New Adapter**: Add to `crates/sockudo-adapter/src/`, implement `ConnectionManager` trait
-2. **New App Manager**: Add to `crates/sockudo-app/src/`, implement `AppManager` trait from `sockudo-core`
-3. **New Cache/Queue Driver**: Add to `crates/sockudo-cache/` or `crates/sockudo-queue/`, implement the trait from `sockudo-core`
-4. **New feature flag**: Define in the implementation crate's `Cargo.toml`, propagate through `sockudo-server/Cargo.toml`
-
-### Import Conventions
-
-When working across crates:
-```rust
-// Core types and traits
-use sockudo_core::app::App;
-use sockudo_core::error::{Error, Result};
-use sockudo_core::websocket::SocketId;
-use sockudo_core::cache::CacheManager;
-
-// Protocol types
-use sockudo_protocol::ProtocolVersion;
-use sockudo_protocol::messages::PusherMessage;
-use sockudo_protocol::constants::CLIENT_EVENT_PREFIX;
-use sockudo_protocol::protocol_version::CANONICAL_SUBSCRIBE; // canonical event names
-
-// Filter types
-use sockudo_filter::FilterNode;
-
-// Implementation types (from other crates)
-use sockudo_adapter::ConnectionHandler;
-use sockudo_delta::DeltaCompressionManager;
-```
-
-### Code Conventions
-
-- Use `sockudo_core::error::Result` for error handling (backed by `thiserror`)
-- Use `tracing` for logging (not `println!`)
-- Keep async functions small and focused
-- Validate all external inputs (especially WebSocket messages)
-- Feature-gate optional backends with `#[cfg(feature = "...")]`
-- Workspace dependency inheritance: declare shared dep versions in root `Cargo.toml` `[workspace.dependencies]`
-
-### Performance Considerations
-
-- Connection pools are managed automatically for database/Redis connections
-- Rate limiting is enforced at both API and WebSocket levels
-- Use batch operations when processing multiple channels/connections
-- Metrics are exposed at `/metrics` for Prometheus scraping
-- WebSocket buffers are bounded to prevent memory exhaustion from slow consumers
-- Delta compression provides 60-90% bandwidth savings for similar consecutive messages
-- Tag filtering uses zero-allocation evaluation in the broadcast path (~12-94ns per filter)
-
-## Documentation
-
-The `docs/` directory contains a Nuxt-based documentation site with:
-- `docs/content/1.getting-started/` - Installation, first connection, auth, migration
-- `docs/content/2.server/` - Configuration, env vars, HTTP API, scaling, security, observability, delta compression, tag filtering, app managers, queue, cache, webhooks, rate limiting, SSL
-- `docs/content/3.client/` - Client-side integration
-- `docs/content/4.integrations/` - Third-party integrations
-- `docs/content/5.reference/` - Protocol spec, HTTP endpoints, config reference, compatibility
-
-### Monitoring
-- Health endpoint: `GET /up/{app_id}`
-- Metrics endpoint: `GET /metrics` (Prometheus format on port 9601)
-- WebSocket stats: `GET /apps/{app_id}/channels`
-
-## Platform Support
-
-- **Linux**: x86_64 (GNU and musl), ARM64/AArch64 (GNU and musl)
-- **macOS**: x86_64 (Intel), ARM64 (Apple Silicon)
-- **Windows**: x86_64
-
-## Code Review Guidelines
-
-- **Comments**:
-  * Never add comment to note that you have removed a code block
-  * Don't add comment with no value or that over explain what you are doing or what you changed
-  * Add comments when it will help the developer understand your intent or complex code
-
-## Development Principles
-
-- **Implementation Guidelines**:
-  * Do not add placeholder implementations
-  * A comment that an implementation is not done yet or will be done later is fine
-  * Do not add config / env values for features that do not exist yet, unless asked directly
+- Preserve V1 wire output unless the task explicitly changes Pusher compatibility.
+- AI Transport, capability tokens, mutable messages, annotations, client history frames, and
+  rollup are V2-only.
+- No client-asserted `client_id` is authoritative; identity comes from signed-in socket state or
+  trusted app-key HTTP context.
+- No locks across `.await` in hot fanout paths, no unbounded queues, and no avoidable per-message
+  allocations on broadcast paths.
+- Update docs and tests whenever a protocol-visible shape, config key, feature flag, endpoint, or
+  recovery/history semantic changes.

@@ -1,0 +1,12 @@
+{
+  "name": "@sockudo/ai-conformance",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node src/run.mjs",
+    "test:offline": "AIT_CONFORMANCE_OFFLINE=1 node src/run.mjs"
+  }
+}

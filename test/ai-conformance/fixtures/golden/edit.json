@@ -1,0 +1,21 @@
+[
+  {
+    "event": "sockudo:subscription_succeeded",
+    "channel": "private-ai-edit-golden",
+    "data": {}
+  },
+  {
+    "event": "ai-input",
+    "channel": "private-ai-edit-golden",
+    "data": {
+      "scenario": "private-ai-edit"
+    }
+  },
+  {
+    "event": "ai-output",
+    "channel": "private-ai-edit-golden",
+    "data": {
+      "scenario": "private-ai-edit"
+    }
+  }
+]

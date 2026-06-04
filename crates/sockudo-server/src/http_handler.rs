@@ -4960,8 +4960,10 @@ mod tests {
             "test".to_string(),
             MemoryCacheOptions::default(),
         ));
-        let mut options = sockudo_core::options::ServerOptions::default();
-        options.push_rules = rules;
+        let options = sockudo_core::options::ServerOptions {
+            push_rules: rules,
+            ..Default::default()
+        };
 
         Arc::new(ConnectionHandlerBuilder::new(app_manager, adapter, cache, options).build())
     }

@@ -1,0 +1,19 @@
+{
+  "name": "ai-cancel-storm",
+  "description": "10k cancel signals over 10 seconds while streams continue appending.",
+  "logicalConnections": 250000,
+  "sessions": 100000,
+  "activeStreams": 10000,
+  "durationSeconds": 10,
+  "tokensPerSecond": 100,
+  "meanResponseTokens": 800,
+  "subscribersPerSession": { "min": 1, "max": 5 },
+  "cancelCount": 10000,
+  "cancelProbability": 1.0,
+  "historyOnJoinProbability": 0.2,
+  "sampleTranscriptCount": 500,
+  "maxAppendDeliveryP99Ms": 25,
+  "loadGenerators": 16,
+  "planOnly": true,
+  "requiresFleet": true
+}

@@ -1,0 +1,39 @@
+---
+title: Limits and quotas
+description: Canonical AI Transport, mutable-message, history, presence-history, push, and capability-token limits.
+icon: SlidersHorizontal
+---
+
+This is the canonical server-side limit table for AI Transport-adjacent features.
+
+| Area | Key or constant | Default | Notes |
+| --- | --- | --- | --- |
+| HTTP API | `http_api.request_limit_in_mb` | `100` | Whole request cap. |
+| Event payload | `event_limits.max_payload_in_kb` | `100` | App policy can lower effective limit. |
+| Event batch | `event_limits.max_batch_size` | `10` | Applies to batch publish. |
+| Version history page | `versioned_messages.max_page_size` | `100` | Server caps version pages. |
+| Version retention | `versioned_messages.retention_window_seconds` | `0` | `0` means no expiry. |
+| Version purge batch | `versioned_messages.purge_batch_size` | `1000` | SQL/memory purge worker bound. |
+| History page | `history.max_page_size` | `100` | Client history may be further capped at `1000`. |
+| History retention | `history.retention_window_seconds` | `86400` | Per-app/namespace policy can override. |
+| History writer queue | `history.writer_queue_capacity` | `4096` | Bounded writer queue. |
+| Presence history page | `presence_history.max_page_size` | `100` | Presence transition history, not current members. |
+| Presence history retention | `presence_history.retention_window_seconds` | `86400` | Durable or memory retention. |
+| AI accumulated content | `ai_transport.max_accumulated_message_bytes` | `1048576` | Latest aggregated mutable message content cap. |
+| AI appends per message | `ai_transport.max_appends_per_message` | `4096` | Per logical stream. |
+| AI open streams/channel | `ai_transport.max_open_streaming_messages_per_channel` | `1024` | Active streaming messages on one channel. |
+| Rollup windows | `append_rollup_window` | `0`, `20`, `40`, `100`, `500` | V2 query values accepted by validation. |
+| Rollup default | `ai_transport.rollup.default_window_ms` | `40` | Node-local egress coalescing window. |
+| Rollup orphan TTL | `ai_transport.rollup.orphan_ttl_ms` | `60000` | Stale stream claim/cancel threshold. |
+| Capability token size | constant | `8192` bytes | HS256 JWT only. |
+| Capability token lifetime | constant | `24h` | `iat` to `exp`. |
+| Capability `client_id` | constant | `128` bytes | Required. |
+| Capability `jti` | constant | `128` bytes | Required. |
+| Push fanout fast path | `push.fanout_fast_threshold` | `10000` | Planning threshold. |
+| Push shard size | `push.fanout_shard_size` | `100000` | Channel fanout shard size. |
+| Push acceptance quota | `push.default_quotas.acceptance_rps` | `100` | Per-app default quota. |
+| Push inflight quota | `push.default_quotas.inflight_max` | `1000` | Per-app default. |
+| Push status retention | `push.publish_status_ttl_days` | `30` | Support/audit retention. |
+| Push rule event filter | `push_rules.event_filter` | max `32` names | Each event name at most 200 bytes. |
+
+The machine-checked default block is in [Configuration reference](/docs/reference/configuration).

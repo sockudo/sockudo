@@ -1,0 +1,88 @@
+---
+title: Mutable messages
+description: Versioned message actions, aggregation, endpoints, authorization, limits, and error behavior.
+icon: Layers
+---
+
+Mutable messages are an existing Protocol V2 subsystem. They let one logical message evolve while
+preserving an ordered version log for history and recovery.
+
+## Actions
+
+| Action | Event | Meaning |
+| --- | --- | --- |
+| `create` | `sockudo:message.create` | Create the logical message and reserve its original history identity. |
+| `update` | `sockudo:message.update` | Shallow patch `name`, `data`, `extras`, or clear fields. |
+| `delete` | `sockudo:message.delete` | Mark/delete visible fields while preserving the version chain. |
+| `append` | `sockudo:message.append` | Append a string fragment to existing string data. |
+| `summary` | `sockudo:message.summary` | Emit a reduced summary/projection event. |
+
+Wire constants live in `sockudo-protocol/src/versioned_messages.rs`; store semantics live in
+`sockudo-core/src/versioned_messages.rs` and `sockudo-core/src/version_store.rs`.
+
+## Aggregation
+
+Sockudo stores each operation as a version. Latest reads and history substitution return the latest
+visible state, not a raw operation log, when versioned messages are enabled.
+
+- `create` establishes `message_serial` and original `history_serial`.
+- `update` and `delete` use tri-state field semantics: keep, clear, replace.
+- `append` concatenates string fragments and rejects empty/non-string append payloads.
+- `latest_by_history` returns one latest version per logical message sorted by original history
+  serial.
+- Replay continuity requires contiguous delivery serials.
+
+## HTTP surfaces
+
+Signed app HTTP auth can create mutable messages through `/events`. Mutation and read surfaces are:
+
+| Method | Path |
+| --- | --- |
+| `POST` | `/apps/{appId}/channels/{channel}/messages/{messageSerial}/update` |
+| `POST` | `/apps/{appId}/channels/{channel}/messages/{messageSerial}/delete` |
+| `POST` | `/apps/{appId}/channels/{channel}/messages/{messageSerial}/append` |
+| `GET` | `/apps/{appId}/channels/{channel}/messages/{messageSerial}` |
+| `GET` | `/apps/{appId}/channels/{channel}/messages/{messageSerial}/versions` |
+
+Mutation bodies may include `socket_id` and `client_id` to bind the operation to a connected V2
+actor. Without `socket_id`, signed app-key HTTP requests are privileged server operations.
+
+## Authorization
+
+Capabilities are channel-pattern maps:
+
+```json
+{
+  "message_append_own": ["private-ai:user-42:*"],
+  "message_update_own": ["private-ai:user-42:*"],
+  "message_delete_own": ["private-ai:user-42:*"],
+  "history": ["private-ai:user-42:*"]
+}
+```
+
+`*_any` grants are checked first. `*_own` grants require an identified actor, an identified
+original creator, and a constant-time match between actor `client_id` and original creator
+`client_id`. Trusted app-key server requests bypass as privileged operations.
+
+## Limits
+
+| Limit | Default |
+| --- | --- |
+| `versioned_messages.max_page_size` | `100` |
+| `versioned_messages.retention_window_seconds` | `0`, no expiry |
+| `versioned_messages.purge_batch_size` | `1000` |
+| `ai_transport.max_accumulated_message_bytes` | `1048576` |
+| `ai_transport.max_appends_per_message` | `4096` |
+| `ai_transport.max_open_streaming_messages_per_channel` | `1024` |
+| serial length | `1..=128` bytes, no whitespace |
+
+## Error parity
+
+Mutation errors use the same HTTP envelope as other app APIs:
+
+```json
+{ "error": "Connection is not allowed to append message on channel 'private-ai:x'", "code": "auth_failed", "status": 401 }
+```
+
+Feature-disabled, not-found, malformed-input, payload-too-large, and authorization failures are
+kept distinct so SDKs can preserve behavior across languages.
