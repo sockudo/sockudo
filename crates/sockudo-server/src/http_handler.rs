@@ -3577,6 +3577,13 @@ pub async fn up(
     app_id: Option<Path<String>>,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> Result<impl IntoResponse, AppError> {
+    if !handler.is_accepting() {
+        return Ok(axum::http::Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("X-Health-Check", "DRAINING")
+            .body("DRAINING".to_string())?);
+    }
+
     let timeout_duration = Duration::from_millis(handler.server_options().health_check_timeout_ms);
 
     let (health_status, app_id_str) = if let Some(Path(app_id)) = app_id {

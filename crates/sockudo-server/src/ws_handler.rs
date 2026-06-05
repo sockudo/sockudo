@@ -38,6 +38,11 @@ pub async fn handle_ws_upgrade(
         .map(|s| s.to_string());
 
     let server_options = handler.server_options();
+
+    if !handler.is_accepting() {
+        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
     // Parse protocol version from query params (?protocol=2 for Sockudo-native)
     let protocol_version = ProtocolVersion::from_query_param(params.protocol);
     let wire_format = if protocol_version == ProtocolVersion::V2 {
