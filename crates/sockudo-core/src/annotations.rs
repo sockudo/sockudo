@@ -266,7 +266,14 @@ impl AnnotationProjection {
         let mut sorted_events: Vec<_> = events.into_iter().collect();
         sorted_events.sort_by(|left, right| left.serial.cmp(&right.serial));
 
+        let create_ids = sorted_events
+            .iter()
+            .filter(|event| event.action == AnnotationAction::Create)
+            .map(|event| event.id.clone())
+            .collect::<HashSet<_>>();
         let mut seen_serials = HashSet::new();
+        let mut seen_create_ids = HashSet::new();
+        let mut deleted_create_ids = HashSet::new();
         let mut last_serial = None;
         let mut applied_events = 0;
 
@@ -277,6 +284,21 @@ impl AnnotationProjection {
             }
 
             last_serial = Some(event.serial.clone());
+            match event.action {
+                AnnotationAction::Create => {
+                    if deleted_create_ids.contains(&event.id) {
+                        continue;
+                    }
+                    seen_create_ids.insert(event.id.clone());
+                }
+                AnnotationAction::Delete if create_ids.contains(&event.id) => {
+                    deleted_create_ids.insert(event.id.clone());
+                    if !seen_create_ids.contains(&event.id) {
+                        continue;
+                    }
+                }
+                AnnotationAction::Delete => {}
+            }
             engine.apply(&event)?;
             applied_events += 1;
         }
@@ -1565,6 +1587,43 @@ mod tests {
         assert_eq!(projection.last_serial.as_ref().unwrap().as_str(), "ann:2");
         assert!(!names.contains_key("like"));
         assert_eq!(names["laugh"].client_ids, vec!["client-1".to_string()]);
+    }
+
+    #[test]
+    fn rebuild_honors_delete_tombstone_when_node_order_sorts_before_create() {
+        let create_a = event(
+            "00000000000000000001:node-z:00000000000000000001",
+            "reaction:distinct.v1",
+            AnnotationAction::Create,
+            Some("like"),
+            Some("client-a"),
+            None,
+        );
+        let create_b = event(
+            "00000000000000000001:node-a:00000000000000000003",
+            "reaction:distinct.v1",
+            AnnotationAction::Create,
+            Some("like"),
+            Some("client-b"),
+            None,
+        );
+        let mut delete_a = event(
+            "00000000000000000001:node-a:00000000000000000005",
+            "reaction:distinct.v1",
+            AnnotationAction::Delete,
+            Some("like"),
+            Some("client-a"),
+            None,
+        );
+        delete_a.id = create_a.id.clone();
+
+        let projection = projection("reaction:distinct.v1", vec![create_a, create_b, delete_a]);
+
+        let AnnotationSummary::Distinct(names) = projection.summary else {
+            panic!("expected distinct summary");
+        };
+        assert_eq!(projection.applied_events, 1);
+        assert_eq!(names["like"].client_ids, vec!["client-b".to_string()]);
     }
 
     #[test]
