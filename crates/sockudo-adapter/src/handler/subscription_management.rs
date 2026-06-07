@@ -346,7 +346,16 @@ impl ConnectionHandler {
             );
         }
 
-        self.spawn_subscription_count_notifications(app_config.clone(), request.channel.clone());
+        if let Err(e) = self
+            .send_subscription_count_notifications(app_config, &request.channel)
+            .await
+        {
+            tracing::warn!(
+                "Failed to emit subscription count notifications for {}: {}",
+                request.channel,
+                e
+            );
+        }
 
         // Handle cache channels
         if is_cache_channel(&request.channel) {
@@ -355,26 +364,6 @@ impl ConnectionHandler {
         }
 
         Ok(())
-    }
-
-    fn spawn_subscription_count_notifications(&self, app_config: App, channel: String) {
-        if sockudo_core::utils::is_meta_channel(&channel) {
-            return;
-        }
-
-        let handler = self.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handler
-                .send_subscription_count_notifications(&app_config, &channel)
-                .await
-            {
-                tracing::warn!(
-                    "Failed to emit subscription count notifications for {}: {}",
-                    channel,
-                    e
-                );
-            }
-        });
     }
 
     async fn send_subscription_count_notifications(
