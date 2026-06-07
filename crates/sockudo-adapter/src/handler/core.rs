@@ -127,28 +127,17 @@ impl ConnectionHandler {
                 .await?;
         }
 
-        self.spawn_unsubscribe_count_notifications(app_config.clone(), channel_name.clone());
-
-        Ok(())
-    }
-
-    fn spawn_unsubscribe_count_notifications(&self, app_config: App, channel_name: String) {
-        if sockudo_core::utils::is_meta_channel(&channel_name) {
-            return;
+        if let Err(e) = self
+            .send_unsubscribe_count_notifications(app_config, &channel_name)
+            .await
+        {
+            warn!(
+                "Failed to emit unsubscribe count notifications for {}: {}",
+                channel_name, e
+            );
         }
 
-        let handler = self.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handler
-                .send_unsubscribe_count_notifications(&app_config, &channel_name)
-                .await
-            {
-                warn!(
-                    "Failed to emit unsubscribe count notifications for {}: {}",
-                    channel_name, e
-                );
-            }
-        });
+        Ok(())
     }
 
     async fn send_unsubscribe_count_notifications(
