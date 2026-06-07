@@ -13,6 +13,14 @@
 
 [![Star History Chart](https://api.star-history.com/svg?repos=sockudo/sockudo&type=Date&theme=dark)](https://star-history.com/#sockudo/sockudo&Date)
 
+## Sponsors
+
+<p align="center">
+  <a href="https://swag.live/">
+    <img src="https://swag.live/static/img/favicon.2991446b.png" alt="SWAG" width="96">
+  </a>
+</p>
+
 ## Features
 
 - **🚀 High Performance** - Handle 100K+ concurrent connections
