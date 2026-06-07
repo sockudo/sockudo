@@ -19,6 +19,9 @@
   <a href="https://swag.live/">
     <img src="https://swag.live/static/img/favicon.2991446b.png" alt="SWAG" width="96">
   </a>
+  <a href="https://livecaller.io/">
+    <img src="https://cdn.prod.website-files.com/69159207dbb70153a0260551/69159207dbb70153a02605cc_logo.svg" alt="LiveCaller" width="180">
+  </a>
 </p>
 
 ## Features
