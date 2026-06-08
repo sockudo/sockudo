@@ -1,0 +1,18 @@
+[
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-concurrent-golden"
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-concurrent-golden"
+  },
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-concurrent-golden"
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-concurrent-golden"
+  }
+]

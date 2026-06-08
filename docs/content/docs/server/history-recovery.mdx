@@ -89,6 +89,7 @@ Protocol V2 mutable messages use action events:
 - `sockudo:message.append`
 
 Clients reduce those events into local state. Server SDKs can fetch the latest visible state or list preserved versions.
+When a V2 subscription uses rewind, historical rows that point at mutable messages are delivered as the latest visible version, so late joiners see accumulated appended content rather than only the original create payload.
 
 ```ts
 const latest = await channel.getMessage("42");

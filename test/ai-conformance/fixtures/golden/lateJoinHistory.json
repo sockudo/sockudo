@@ -1,0 +1,10 @@
+[
+  {
+    "event": "history:get_latest",
+    "channel": "private-ai-late-golden",
+    "data": {
+      "data": "late-state",
+      "message_serial": "msg-late"
+    }
+  }
+]

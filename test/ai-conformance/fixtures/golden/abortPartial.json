@@ -1,0 +1,19 @@
+[
+  {
+    "event": "ai-output",
+    "channel": "private-ai-abort-golden",
+    "data": ""
+  },
+  {
+    "event": "sockudo:message.append",
+    "channel": "private-ai-abort-golden",
+    "action": "append",
+    "data": "partial"
+  },
+  {
+    "event": "sockudo:message.update",
+    "channel": "private-ai-abort-golden",
+    "action": "update",
+    "data": "partial"
+  }
+]
