@@ -1,0 +1,14 @@
+[
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-suspended-golden"
+  },
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-suspended-golden"
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-suspended-golden"
+  }
+]

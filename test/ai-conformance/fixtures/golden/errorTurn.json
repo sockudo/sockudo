@@ -1,0 +1,10 @@
+[
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-error-golden"
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-error-golden"
+  }
+]

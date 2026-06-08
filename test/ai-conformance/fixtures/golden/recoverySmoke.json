@@ -1,0 +1,10 @@
+[
+  {
+    "event": "history:get_latest",
+    "channel": "private-ai-recovery-golden",
+    "data": {
+      "data": "recoverable",
+      "message_serial": "msg-recovery"
+    }
+  }
+]

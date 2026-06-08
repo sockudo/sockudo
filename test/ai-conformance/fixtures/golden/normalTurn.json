@@ -1,0 +1,27 @@
+[
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-normal-golden"
+  },
+  {
+    "event": "ai-output",
+    "channel": "private-ai-normal-golden",
+    "data": ""
+  },
+  {
+    "event": "sockudo:message.append",
+    "channel": "private-ai-normal-golden",
+    "action": "append",
+    "data": "hello"
+  },
+  {
+    "event": "sockudo:message.update",
+    "channel": "private-ai-normal-golden",
+    "action": "update",
+    "data": "hello world"
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-normal-golden"
+  }
+]

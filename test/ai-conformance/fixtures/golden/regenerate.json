@@ -1,0 +1,10 @@
+[
+  {
+    "event": "history:get_latest",
+    "channel": "private-ai-regenerate-golden",
+    "data": {
+      "data": "new answer",
+      "message_serial": "msg-regenerate"
+    }
+  }
+]

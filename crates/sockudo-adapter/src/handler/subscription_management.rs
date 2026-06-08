@@ -9,6 +9,7 @@ use sockudo_core::app::App;
 use sockudo_core::channel::{ChannelType, PresenceMemberInfo};
 use sockudo_core::error::Result;
 use sockudo_core::history::{HistoryDirection, HistoryItem, HistoryReadRequest, now_ms};
+use sockudo_core::versioned_messages::MessageSerial;
 #[cfg(feature = "delta")]
 use sockudo_delta::DeltaCompressionManager;
 
@@ -20,6 +21,7 @@ use sockudo_protocol::messages::{
     AnnotationSummaryEnvelope, MESSAGE_SUMMARY_EVENT_NAME, MessageData, MessageExtras,
     MessageSummaryData, PresenceData, PusherMessage,
 };
+use sockudo_protocol::versioned_messages::extract_runtime_message_serial;
 use sonic_rs::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -517,10 +519,48 @@ impl ConnectionHandler {
                         "Invalid stored history payload: {e}"
                     ))
                 })?;
+            let message = self
+                .substitute_latest_versioned_rewind_message(app_config, &message)
+                .await?;
             self.send_message_to_socket(&app_config.id, socket_id, message)
                 .await?;
         }
         Ok(())
+    }
+
+    async fn substitute_latest_versioned_rewind_message(
+        &self,
+        app_config: &App,
+        message: &PusherMessage,
+    ) -> Result<PusherMessage> {
+        if !self.server_options().versioned_messages.enabled {
+            return Ok(message.clone());
+        }
+
+        let Some(channel) = message.channel.as_deref() else {
+            return Ok(message.clone());
+        };
+        let Some(raw_message_serial) = extract_runtime_message_serial(message) else {
+            return Ok(message.clone());
+        };
+
+        let message_serial = MessageSerial::new(raw_message_serial.to_string())?;
+        let Some(latest) = self
+            .version_store()
+            .get_latest(&app_config.id, channel, &message_serial)
+            .await?
+        else {
+            return Ok(message.clone());
+        };
+
+        let stream_id = self
+            .version_store()
+            .stream_state(&app_config.id, channel)
+            .await?
+            .stream_id
+            .or_else(|| message.stream_id.clone());
+
+        Ok(self.build_runtime_message_from_record(&latest, stream_id))
     }
 
     #[allow(clippy::too_many_arguments)]
