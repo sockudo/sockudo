@@ -74,31 +74,25 @@ impl PresenceManager {
         );
 
         let lock_key = presence_lock_key(&app_config.id, channel, user_id);
-
-        // FIX: Acquire per-user lock to prevent TOCTOU race between checking connection count
-        // and sending member_added events. Without this lock:
-        // - Thread A: checks count=0, about to send member_added
-        // - Thread B: checks count=0, sends member_added (duplicate!)
-        // - Thread A: sends member_added (duplicate!)
-        //
-        // With lock:
-        // - Thread A: acquires lock, checks count=0, sends member_added, releases lock
-        // - Thread B: acquires lock, checks count=1, skips member_added, releases lock
         let presence_lock = self.get_presence_lock(&lock_key);
-        let _lock_guard = presence_lock.lock().await;
 
-        // Check if user already had connections in this presence channel (excluding current socket)
-        // This check is now protected by the lock
-        let had_other_connections = Self::user_has_other_connections_in_presence_channel(
-            Arc::clone(&connection_manager),
-            &app_config.id,
-            channel,
-            user_id,
-            excluding_socket,
-        )
-        .await?;
+        // TOCTOU check under the per-user lock.
+        // The lock is held ONLY for the connection-count check so the decision is atomic.
+        // The lock guard is dropped at the end of this block — BEFORE webhook, broadcast,
+        // and history I/O — keeping the critical section as short as possible.
+        let should_send_event = {
+            let _lock_guard = presence_lock.lock().await;
+            !Self::user_has_other_connections_in_presence_channel(
+                Arc::clone(&connection_manager),
+                &app_config.id,
+                channel,
+                user_id,
+                excluding_socket,
+            )
+            .await?
+        }; // _lock_guard dropped here
 
-        if !had_other_connections {
+        if should_send_event {
             debug!(
                 "User {} is joining channel {} for the first time, sending member_added events",
                 user_id, channel
@@ -202,14 +196,10 @@ impl PresenceManager {
             }
         } else {
             debug!(
-                "User {} already has {} connections in channel {}, skipping member_added events",
-                user_id,
-                if had_other_connections { "other" } else { "no" },
-                channel
+                "User {} already has other connections in channel {}, skipping member_added events",
+                user_id, channel
             );
         }
-
-        // Lock is released here when _lock_guard goes out of scope
 
         // Always broadcast presence join to all nodes for cluster replication (for every connection)
         // This is done OUTSIDE the lock to avoid holding it during network I/O
@@ -265,36 +255,25 @@ impl PresenceManager {
         );
 
         let lock_key = presence_lock_key(&app_config.id, channel, user_id);
-
-        // FIX: Acquire per-user lock to prevent TOCTOU race between checking connection count
-        // and sending member_removed events. Without this lock:
-        // - Thread A (disconnect socket 1): checks count=1, about to send member_removed
-        // - Thread B (disconnect socket 2): checks count=1, sends member_removed
-        // - Thread A: sends member_removed (duplicate! user still has socket 2... wait, no they don't)
-        //
-        // The real race is:
-        // - Thread A (disconnect): checks count=1 (only this socket), prepares member_removed
-        // - Thread B (connect): checks count=1 (sees socket being disconnected), skips member_added
-        // - Thread A: sends member_removed
-        // Result: User is connected but appears removed!
-        //
-        // With lock:
-        // - Operations are serialized per user+channel, ensuring consistent state
         let presence_lock = self.get_presence_lock(&lock_key);
-        let _lock_guard = presence_lock.lock().await;
 
-        // Check if user has other connections in this presence channel
-        // This check is now protected by the lock
-        let has_other_connections = Self::user_has_other_connections_in_presence_channel(
-            Arc::clone(connection_manager),
-            &app_config.id,
-            channel,
-            user_id,
-            excluding_socket,
-        )
-        .await?;
+        // TOCTOU check under the per-user lock.
+        // The lock is held ONLY for the connection-count check so the decision is atomic.
+        // The lock guard is dropped at the end of this block — BEFORE webhook, broadcast,
+        // and history I/O — keeping the critical section as short as possible.
+        let should_send_event = {
+            let _lock_guard = presence_lock.lock().await;
+            !Self::user_has_other_connections_in_presence_channel(
+                Arc::clone(connection_manager),
+                &app_config.id,
+                channel,
+                user_id,
+                excluding_socket,
+            )
+            .await?
+        }; // _lock_guard dropped here
 
-        if !has_other_connections {
+        if should_send_event {
             debug!(
                 "User {} has no other connections in channel {}, sending member_removed events",
                 user_id, channel
@@ -418,8 +397,6 @@ impl PresenceManager {
                 user_id, channel
             );
         }
-
-        // Lock is released here when _lock_guard goes out of scope
 
         // Always broadcast presence leave to all nodes for cluster replication (for every disconnection)
         // This is done OUTSIDE the lock to avoid holding it during network I/O
