@@ -12,10 +12,16 @@ struct BufferedMessage {
     timestamp: Instant,
 }
 
+struct ChannelBufferState {
+    messages: VecDeque<BufferedMessage>,
+    current_stream_id: Option<String>,
+}
+
 struct ChannelBuffer {
-    messages: Mutex<VecDeque<BufferedMessage>>,
+    state: Mutex<ChannelBufferState>,
     next_serial: AtomicU64,
-    current_stream_id: Mutex<Option<String>>,
+    max_size: usize,
+    ttl: Duration,
 }
 
 pub enum ReplayLookup {
@@ -68,9 +74,13 @@ impl ReplayBuffer {
     pub fn next_serial(&self, app_id: &str, channel: &str) -> u64 {
         let key = Self::buffer_key(app_id, channel);
         let entry = self.buffers.entry(key).or_insert_with(|| ChannelBuffer {
-            messages: Mutex::new(VecDeque::with_capacity(self.max_buffer_size)),
+            state: Mutex::new(ChannelBufferState {
+                messages: VecDeque::with_capacity(self.max_buffer_size),
+                current_stream_id: None,
+            }),
             next_serial: AtomicU64::new(1),
-            current_stream_id: Mutex::new(None),
+            max_size: self.max_buffer_size,
+            ttl: self.buffer_ttl,
         });
         entry.next_serial.fetch_add(1, Ordering::Relaxed)
     }
@@ -86,22 +96,23 @@ impl ReplayBuffer {
     ) {
         let key = Self::buffer_key(app_id, channel);
         let entry = self.buffers.entry(key).or_insert_with(|| ChannelBuffer {
-            messages: Mutex::new(VecDeque::with_capacity(self.max_buffer_size)),
+            state: Mutex::new(ChannelBufferState {
+                messages: VecDeque::with_capacity(self.max_buffer_size),
+                current_stream_id: stream_id.map(ToString::to_string),
+            }),
             next_serial: AtomicU64::new(serial + 1),
-            current_stream_id: Mutex::new(stream_id.map(ToString::to_string)),
+            max_size: self.max_buffer_size,
+            ttl: self.buffer_ttl,
         });
 
-        {
-            let mut current_stream_id = entry.current_stream_id.lock().unwrap();
-            *current_stream_id = stream_id.map(ToString::to_string);
-        }
-
-        let mut messages = entry.messages.lock().unwrap();
+        let max_size = entry.max_size;
+        let mut state = entry.state.lock().unwrap();
+        state.current_stream_id = stream_id.map(ToString::to_string);
         // Evict oldest if at capacity
-        while messages.len() >= self.max_buffer_size {
-            messages.pop_front();
+        while state.messages.len() >= max_size {
+            state.messages.pop_front();
         }
-        messages.push_back(BufferedMessage {
+        state.messages.push_back(BufferedMessage {
             stream_id: stream_id.map(ToString::to_string),
             serial,
             message_bytes,
@@ -137,18 +148,22 @@ impl ReplayBuffer {
         let Some(entry) = self.buffers.get(&key) else {
             return ReplayLookup::Expired;
         };
-        let current_stream_id = entry.current_stream_id.lock().unwrap().clone();
+
+        let ttl = entry.ttl;
+        let now = Instant::now();
+        let mut state = entry.state.lock().unwrap();
 
         if let Some(expected_stream_id) = stream_id
-            && current_stream_id.as_deref() != Some(expected_stream_id)
+            && state.current_stream_id.as_deref() != Some(expected_stream_id)
         {
-            return ReplayLookup::StreamReset { current_stream_id };
+            return ReplayLookup::StreamReset {
+                current_stream_id: state.current_stream_id.clone(),
+            };
         }
-        let now = Instant::now();
-        let mut messages = entry.messages.lock().unwrap();
-        Self::prune_expired_locked(&mut messages, self.buffer_ttl, now);
 
-        if messages.is_empty() {
+        Self::prune_expired_locked(&mut state.messages, ttl, now);
+
+        if state.messages.is_empty() {
             if stream_id.is_some() {
                 return ReplayLookup::Expired;
             }
@@ -162,19 +177,19 @@ impl ReplayBuffer {
             };
         }
 
-        let newest_serial = messages.back().map(|m| m.serial).unwrap_or(0);
+        let newest_serial = state.messages.back().map(|m| m.serial).unwrap_or(0);
         if last_serial >= newest_serial {
             return ReplayLookup::Recovered(Vec::new());
         }
 
         // Check if the buffer goes back far enough
-        let oldest_serial = messages.front().map(|m| m.serial).unwrap_or(0);
+        let oldest_serial = state.messages.front().map(|m| m.serial).unwrap_or(0);
         if last_serial > 0 && last_serial < oldest_serial.saturating_sub(1) {
             // The client missed messages that were already evicted
             return ReplayLookup::Expired;
         }
 
-        let contiguous = messages.make_contiguous();
+        let contiguous = state.messages.make_contiguous();
         let start_idx = contiguous.partition_point(|message| message.serial <= last_serial);
         let mut result = Vec::with_capacity(contiguous.len().saturating_sub(start_idx));
         for message in &contiguous[start_idx..] {
@@ -191,9 +206,10 @@ impl ReplayBuffer {
         let mut empty_keys = Vec::new();
 
         for entry in self.buffers.iter() {
-            let mut messages = entry.value().messages.lock().unwrap();
-            Self::prune_expired_locked(&mut messages, self.buffer_ttl, now);
-            if messages.is_empty() {
+            let ttl = entry.value().ttl;
+            let mut state = entry.value().state.lock().unwrap();
+            Self::prune_expired_locked(&mut state.messages, ttl, now);
+            if state.messages.is_empty() {
                 empty_keys.push(entry.key().clone());
             }
         }
@@ -201,7 +217,7 @@ impl ReplayBuffer {
         for key in empty_keys {
             // Only remove if still empty (avoid race with concurrent store)
             self.buffers
-                .remove_if(&key, |_, v| v.messages.lock().unwrap().is_empty());
+                .remove_if(&key, |_, v| v.state.lock().unwrap().messages.is_empty());
         }
     }
 }
