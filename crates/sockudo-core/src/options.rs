@@ -3051,6 +3051,8 @@ impl ServerOptions {
             "ADAPTER_ENABLE_SOCKET_COUNTING",
             self.adapter.enable_socket_counting,
         );
+        self.adapter.aggregate_counts =
+            parse_env::<bool>("ADAPTER_AGGREGATE_COUNTS", self.adapter.aggregate_counts);
         self.adapter.fallback_to_local =
             parse_env::<bool>("ADAPTER_FALLBACK_TO_LOCAL", self.adapter.fallback_to_local);
         if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
