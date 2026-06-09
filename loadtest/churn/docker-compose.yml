@@ -1,0 +1,62 @@
+# Subscription-churn reproduction harness.
+# Mirrors swaglive's driver setup that matters for the bug: NATS adapter, multi-node.
+# Cache/queue are memory here (they are NOT in the count fanout path — the team
+# confirmed NATS/Redis were healthy; the bottleneck is cross-node request/reply).
+#
+#   app "heavy" -> channel_occupied/channel_vacated/subscription_count webhooks
+#                  configured => count IS consumed => cluster-wide count fanout fires
+#                  on every subscribe/unsubscribe (== behaviour before the gate).
+#   app "light" -> no count consumer => the Tier 1B gate skips the fanout entirely.
+services:
+  nats:
+    image: nats:alpine
+    command: ["-m", "8222"]
+    ports: ["4222:4222", "8222:8222"]
+    networks: [churn]
+
+  webhook-sink:
+    image: hashicorp/http-echo
+    command: ["-text=ok", "-listen=:5678"]
+    networks: [churn]
+
+  sockudo1:
+    image: ${SOCKUDO_IMAGE:-sockudo:churn-test}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    volumes: ["./config.json:/app/config/config.json:ro"]
+    environment: { RUST_LOG: "warn,sockudo_adapter::horizontal_adapter_base=warn" }
+    ports: ["6011:6001", "9611:9601"]
+    depends_on: [nats, webhook-sink]
+    networks: [churn]
+
+  sockudo2:
+    image: ${SOCKUDO_IMAGE:-sockudo:churn-test}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    volumes: ["./config.json:/app/config/config.json:ro"]
+    environment: { RUST_LOG: "warn,sockudo_adapter::horizontal_adapter_base=warn" }
+    ports: ["6012:6001", "9612:9601"]
+    depends_on: [nats, webhook-sink]
+    networks: [churn]
+
+  sockudo3:
+    image: ${SOCKUDO_IMAGE:-sockudo:churn-test}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    volumes: ["./config.json:/app/config/config.json:ro"]
+    environment: { RUST_LOG: "warn,sockudo_adapter::horizontal_adapter_base=warn" }
+    ports: ["6013:6001", "9613:9601"]
+    depends_on: [nats, webhook-sink]
+    networks: [churn]
+
+networks:
+  churn: {}
