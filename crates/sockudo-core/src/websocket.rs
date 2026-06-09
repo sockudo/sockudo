@@ -849,6 +849,10 @@ impl MessageSender {
             code, reason,
         ))))
     }
+
+    pub(crate) fn sender_handle(&self) -> MessageSenderHandle {
+        self.sender.clone()
+    }
 }
 
 pub struct WebSocket {
@@ -1041,6 +1045,7 @@ impl Hash for WebSocket {
 #[derive(Clone)]
 pub struct WebSocketRef {
     pub broadcast_tx: SizedMessageSenderHandle,
+    pub message_sender: MessageSenderHandle,
     pub channel_filters: Arc<DashMap<String, Option<Arc<FilterNode>>>>,
     /// V2 event name filters per channel. None = receive all events.
     pub event_name_filters: Arc<DashMap<String, Option<Vec<String>>>>,
@@ -1061,6 +1066,7 @@ pub struct WebSocketRef {
 impl WebSocketRef {
     pub fn new(websocket: WebSocket) -> Self {
         let broadcast_tx = websocket.broadcast_tx.clone();
+        let message_sender = websocket.message_sender.sender_handle();
         let socket_id = *websocket.get_socket_id();
         let buffer_config = websocket.buffer_config;
         let byte_counter = websocket.byte_counter.clone();
@@ -1080,6 +1086,7 @@ impl WebSocketRef {
 
         Self {
             broadcast_tx,
+            message_sender,
             channel_filters,
             event_name_filters,
             annotation_subscriptions,
@@ -1159,14 +1166,43 @@ impl WebSocketRef {
         }
     }
 
-    pub async fn send_message(&self, message: &PusherMessage) -> Result<()> {
-        let ws = self.inner.lock().await;
-        ws.send_message(message)
+    pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
+        if self.shutdown_token.is_cancelled() {
+            return Err(Error::ConnectionClosed("Connection shutting down".into()));
+        }
+        let payload = sockudo_protocol::wire::serialize_message(message, self.wire_format)
+            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+        if self.wire_format.is_binary() {
+            self.message_sender
+                .try_send(Message::Binary(Bytes::from(payload)))
+                .map_err(|e| match e {
+                    TrySendError::Full(_) => Error::BufferFull("Message buffer full".into()),
+                    TrySendError::Disconnected(_) => {
+                        Error::ConnectionClosed("Channel closed".into())
+                    }
+                })
+        } else {
+            let text = String::from_utf8(payload).map_err(|e| {
+                Error::InvalidMessageFormat(format!("JSON payload is not UTF-8: {e}"))
+            })?;
+            self.message_sender
+                .try_send(Message::text(text))
+                .map_err(|e| match e {
+                    TrySendError::Full(_) => Error::BufferFull("Message buffer full".into()),
+                    TrySendError::Disconnected(_) => {
+                        Error::ConnectionClosed("Channel closed".into())
+                    }
+                })
+        }
     }
 
     pub async fn close(&self, code: u16, reason: String) -> Result<()> {
-        let mut ws = self.inner.lock().await;
-        ws.close(code, reason).await
+        let result = {
+            let mut ws = self.inner.lock().await;
+            ws.close(code, reason).await
+        };
+        self.shutdown_token.cancel();
+        result
     }
 
     /// Signal both reader and writer tasks to shut down.
@@ -1356,17 +1392,17 @@ pub trait WebSocketExt {
 
 impl WebSocketExt for WebSocketRef {
     async fn send_pusher_message(&self, message: PusherMessage) -> Result<()> {
-        self.send_message(&message).await
+        self.send_message(&message)
     }
 
     async fn send_error(&self, code: u16, message: String, channel: Option<String>) -> Result<()> {
         let error_msg = PusherMessage::error(code, message, channel);
-        self.send_message(&error_msg).await
+        self.send_message(&error_msg)
     }
 
     async fn send_pong(&self) -> Result<()> {
         let pong_msg = PusherMessage::pong();
-        self.send_message(&pong_msg).await
+        self.send_message(&pong_msg)
     }
 }
 
@@ -1713,6 +1749,212 @@ mod tests {
         assert!(
             matches!(second, Message::Close(_)),
             "expected close frame second, got: {second:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_message_serializes_and_delivers() {
+        use sockudo_ws::Message;
+
+        let socket_id = SocketId::new();
+        let (writer, mut client) = create_server_writer_with_client().await;
+        let ws = WebSocket::new(socket_id, writer);
+        let ws_ref = WebSocketRef::new(ws);
+
+        let msg = PusherMessage::pong();
+        let result = ws_ref.send_message(&msg);
+        assert!(
+            result.is_ok(),
+            "send_message should succeed on active connection: {result:?}"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), client.next())
+            .await
+            .expect("timed out waiting for frame")
+            .expect("client stream ended unexpectedly")
+            .expect("frame read error");
+
+        assert!(
+            matches!(frame, Message::Text(_)),
+            "Json wire format must deliver as Text frame, got: {frame:?}"
+        );
+        if let Message::Text(payload) = &frame {
+            let text = std::str::from_utf8(payload).expect("payload is not UTF-8");
+            assert!(
+                text.contains("pong"),
+                "serialized payload should contain 'pong', got: {text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_broadcast_delivers_without_lock() {
+        use sockudo_ws::Message;
+
+        let socket_id = SocketId::new();
+        let (writer, mut client) = create_server_writer_with_client().await;
+        let ws = WebSocket::new(socket_id, writer);
+        let ws_ref = WebSocketRef::new(ws);
+
+        let payload = Bytes::from_static(b"{\"event\":\"broadcast-test\"}");
+        let result = ws_ref.send_broadcast(payload);
+        assert!(
+            result.is_ok(),
+            "send_broadcast should succeed without acquiring the inner lock: {result:?}"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), client.next())
+            .await
+            .expect("timed out waiting for broadcast frame")
+            .expect("client stream ended unexpectedly")
+            .expect("frame read error");
+
+        assert!(
+            matches!(frame, Message::Text(_)),
+            "broadcast must arrive at client as a Text frame, got: {frame:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_after_close_returns_error() {
+        use crate::error::Error;
+
+        let socket_id = SocketId::new();
+        let (writer, _client) = create_server_writer_with_client().await;
+        let ws = WebSocket::new(socket_id, writer);
+        let ws_ref = WebSocketRef::new(ws);
+
+        let close_result = ws_ref.close(1000, "normal closure".to_string()).await;
+        assert!(
+            close_result.is_ok(),
+            "close() should succeed: {close_result:?}"
+        );
+
+        let msg = PusherMessage::pong();
+        let send_result = ws_ref.send_message(&msg);
+
+        assert!(
+            send_result.is_err(),
+            "send_message after close must return an error, not succeed"
+        );
+        assert!(
+            matches!(send_result.unwrap_err(), Error::ConnectionClosed(_)),
+            "error variant must be Error::ConnectionClosed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_message_respects_wire_format() {
+        use sockudo_protocol::WireFormat;
+        use sockudo_ws::Message;
+
+        {
+            let socket_id = SocketId::new();
+            let (writer, mut client) = create_server_writer_with_client().await;
+            let ws = WebSocket::new(socket_id, writer);
+            let ws_ref = WebSocketRef::new(ws);
+
+            ws_ref.send_message(&PusherMessage::pong()).unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(1), client.next())
+                .await
+                .expect("timed out (json)")
+                .expect("stream ended (json)")
+                .expect("read error (json)");
+            assert!(
+                matches!(frame, Message::Text(_)),
+                "WireFormat::Json must produce a Text frame, got: {frame:?}"
+            );
+        }
+
+        {
+            let socket_id = SocketId::new();
+            let (writer, mut client) = create_server_writer_with_client().await;
+            let mut ws = WebSocket::new(socket_id, writer);
+            ws.state.wire_format = WireFormat::MessagePack;
+            let ws_ref = WebSocketRef::new(ws);
+
+            ws_ref.send_message(&PusherMessage::pong()).unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(1), client.next())
+                .await
+                .expect("timed out (msgpack)")
+                .expect("stream ended (msgpack)")
+                .expect("read error (msgpack)");
+            assert!(
+                matches!(frame, Message::Binary(_)),
+                "WireFormat::MessagePack must produce a Binary frame, got: {frame:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_sends_preserve_ordering() {
+        let socket_id = SocketId::new();
+        let (writer, mut client) = create_server_writer_with_client().await;
+        let buffer_config = WebSocketBufferConfig::new(2000, true);
+        let ws = WebSocket::with_buffer_config(socket_id, writer, buffer_config);
+        let ws_ref = WebSocketRef::new(ws);
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let clone = ws_ref.clone();
+            handles.push(tokio::spawn(async move {
+                let mut ok_count = 0usize;
+                for _ in 0..100 {
+                    if clone.send_message(&PusherMessage::pong()).is_ok() {
+                        ok_count += 1;
+                    }
+                }
+                ok_count
+            }));
+        }
+
+        let mut total_sent = 0usize;
+        for h in handles {
+            total_sent += h.await.expect("sender task panicked");
+        }
+        assert_eq!(total_sent, 1000, "all 1000 sends must succeed (no drops)");
+
+        let mut received = 0usize;
+        while received < total_sent {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), client.next()).await {
+                Ok(Some(Ok(_))) => received += 1,
+                Ok(Some(Err(e))) => panic!("client read error after {received} messages: {e}"),
+                Ok(None) => break,
+                Err(_) => panic!("timed out after {received}/{total_sent} messages"),
+            }
+        }
+        assert_eq!(
+            received, total_sent,
+            "every sent message must arrive at client (no drops)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_token_cancels_receiver() {
+        let socket_id = SocketId::new();
+        let (writer, _client) = create_server_writer_with_client().await;
+        let ws = WebSocket::new(socket_id, writer);
+        let ws_ref = WebSocketRef::new(ws);
+
+        let token = ws_ref.cancellation_token();
+        assert!(
+            !token.is_cancelled(),
+            "token must not be cancelled before shutdown()"
+        );
+
+        ws_ref.shutdown();
+
+        assert!(
+            token.is_cancelled(),
+            "shutdown() must cancel the CancellationToken so the receiver task exits"
         );
     }
 }

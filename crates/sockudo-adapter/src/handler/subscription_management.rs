@@ -829,7 +829,7 @@ impl ConnectionHandler {
                 delta_sequence: None,
                 delta_conflation_key: None,
             };
-            connection.send_message(&message).await?;
+            connection.send_message(&message)?;
             if let Some(metrics) = self.metrics() {
                 metrics.mark_annotation_summary_delivery(channel);
             }

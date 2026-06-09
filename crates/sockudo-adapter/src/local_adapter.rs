@@ -247,7 +247,7 @@ impl LocalAdapter {
                     let chunk_results: Vec<Result<()>> = stream::iter(chunk_vec)
                         .map(|socket_ref| {
                             let msg = message.clone();
-                            async move { socket_ref.send_message(&msg).await }
+                            async move { socket_ref.send_message(&msg) }
                         })
                         .buffer_unordered(chunk_size)
                         .collect()
@@ -787,7 +787,7 @@ impl LocalAdapter {
         };
 
         match compression_result {
-            CompressionResult::Uncompressed => socket_ref.send_message(&base_message).await,
+            CompressionResult::Uncompressed => socket_ref.send_message(&base_message),
             CompressionResult::FullMessage {
                 sequence,
                 conflation_key,
@@ -827,7 +827,7 @@ impl LocalAdapter {
                 let mut full_message = base_message;
                 full_message.delta_sequence = Some(sequence.into());
                 full_message.delta_conflation_key = conflation_key;
-                socket_ref.send_message(&full_message).await
+                socket_ref.send_message(&full_message)
             }
             CompressionResult::Delta {
                 delta,
@@ -909,7 +909,7 @@ impl LocalAdapter {
                 {
                     warn!("Failed to store delta base message state: {e}");
                 }
-                socket_ref.send_message(&pusher_msg).await
+                socket_ref.send_message(&pusher_msg)
             }
         }
     }
@@ -1070,7 +1070,7 @@ impl LocalAdapter {
                     channel_settings,
                 )
                 .await;
-            socket_ref.send_message(&pusher_msg).await
+            socket_ref.send_message(&pusher_msg)
         } else {
             // No delta available (first message or delta not beneficial), send full message
             debug!(
@@ -1146,7 +1146,7 @@ impl LocalAdapter {
             if !conflation_key.is_empty() {
                 full_message.delta_conflation_key = Some(conflation_key);
             }
-            socket_ref.send_message(&full_message).await
+            socket_ref.send_message(&full_message)
         }
     }
 
@@ -1486,10 +1486,10 @@ impl ConnectionManager for LocalAdapter {
                     rewritten.message_id = Some(generate_message_id());
                 }
                 rewritten.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
-                connection.send_message(&rewritten).await
+                connection.send_message(&rewritten)
             }
             sockudo_protocol::ProtocolVersion::V1 => match Self::v1_compatible_message(&message) {
-                Some(v1_msg) => connection.send_message(&v1_msg).await,
+                Some(v1_msg) => connection.send_message(&v1_msg),
                 None => Ok(()),
             },
         }
