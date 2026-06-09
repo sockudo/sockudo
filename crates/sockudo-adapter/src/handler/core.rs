@@ -149,6 +149,16 @@ impl ConnectionHandler {
             return Ok(());
         }
 
+        // Skip the cluster-wide count request/reply entirely when nothing consumes
+        // it. This is the room-switch hot path; a fanout here per unsubscribe is the
+        // dominant churn cost on multi-node clusters.
+        if !self
+            .subscription_count_has_consumer(app_config, channel_name)
+            .await
+        {
+            return Ok(());
+        }
+
         let current_sub_count = self
             .connection_manager
             .get_channel_socket_count(&app_config.id, channel_name)
@@ -182,6 +192,7 @@ impl ConnectionHandler {
 
         if current_sub_count == 0
             && let Some(webhook_integration) = &self.webhook_integration
+            && webhook_integration.webhook_configured(app_config, "channel_vacated")
         {
             let wi = Arc::clone(webhook_integration);
             let cm = Arc::clone(&self.connection_manager);
@@ -197,6 +208,38 @@ impl ConnectionHandler {
         }
 
         Ok(())
+    }
+
+    /// Returns true when the cluster-wide subscription count for `channel` is
+    /// actually consumed by something — a configured webhook (channel_occupied /
+    /// channel_vacated / subscription_count) or local subscribers on the channel's
+    /// meta-channel. When false, the subscribe/unsubscribe hot path skips the
+    /// cross-node count request/reply entirely.
+    ///
+    /// Trade-off: with no local consumer we also skip the subscription_count
+    /// meta-channel update for subscribers living on a *different* node than the
+    /// membership change. Exact cluster-wide counts for that case need the
+    /// aggregate-count path (gossiped deltas), not per-event request/reply.
+    pub(crate) async fn subscription_count_has_consumer(
+        &self,
+        app_config: &App,
+        channel: &str,
+    ) -> bool {
+        if let Some(webhook_integration) = &self.webhook_integration
+            && webhook_integration.wants_subscription_count(app_config)
+        {
+            return true;
+        }
+
+        match sockudo_core::utils::meta_channel_for(channel) {
+            Some(meta_channel) => {
+                self.connection_manager
+                    .get_local_channel_socket_count(&app_config.id, &meta_channel)
+                    .await
+                    > 0
+            }
+            None => false,
+        }
     }
 
     async fn should_use_async_cleanup(&self) -> bool {
@@ -706,6 +749,7 @@ impl ConnectionHandler {
         // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects
         if current_sub_count == 0
             && let Some(webhook_integration) = &self.webhook_integration
+            && webhook_integration.webhook_configured(app_config, "channel_vacated")
         {
             let wi = Arc::clone(webhook_integration);
             let cm = Arc::clone(&self.connection_manager);

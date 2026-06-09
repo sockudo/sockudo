@@ -375,6 +375,16 @@ impl ConnectionHandler {
             return Ok(());
         }
 
+        // Skip the cluster-wide count request/reply entirely when nothing consumes
+        // it. This is the room-switch hot path; a fanout here per subscribe is the
+        // dominant churn cost on multi-node clusters.
+        if !self
+            .subscription_count_has_consumer(app_config, channel)
+            .await
+        {
+            return Ok(());
+        }
+
         let current_count = self
             .connection_manager
             .get_channel_socket_count(&app_config.id, channel)
