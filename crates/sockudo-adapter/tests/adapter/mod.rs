@@ -78,3 +78,6 @@ mod replay_buffer_tests;
 
 #[cfg(test)]
 mod cluster_presence_registry_tests;
+
+#[cfg(test)]
+mod presence_concurrency_tests;
