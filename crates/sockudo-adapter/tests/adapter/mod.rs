@@ -81,3 +81,6 @@ mod cluster_presence_registry_tests;
 
 #[cfg(test)]
 mod presence_concurrency_tests;
+
+#[cfg(test)]
+mod presence_lock_scope_tests;
