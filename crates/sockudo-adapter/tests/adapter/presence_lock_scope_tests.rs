@@ -12,9 +12,9 @@
 //! 4. The broadcast (proxied by the `PresenceHistoryStore` write) fires as
 //!    part of the atomic check-and-act for the last leave.
 //!
-//! P2 (T10) will move webhook and broadcast I/O **outside** the per-user lock
-//! while keeping the TOCTOU decision inside.  These tests must continue to
-//! pass after that change because they assert *what* fires, not the relative
+//! The member broadcasts run inside the per-user lock (so wire order matches
+//! decision order) while the webhook enqueue and history recording happen
+//! after lock release.  These tests assert *what* fires, not the relative
 //! ordering of I/O and lock release.
 
 use ahash::AHashMap;
@@ -465,15 +465,12 @@ async fn test_presence_lock_prevents_duplicate_member_removed() {
     assert_eq!(page.items[0].event, PresenceHistoryEventKind::MemberRemoved);
 }
 
-/// The webhook fires as part of the atomic check-and-act for the first join.
+/// The webhook fires as part of the check-and-act for the first join.
 ///
-/// `PresenceHistoryStore` is the observable proxy: the history write and the
-/// webhook call both happen inside the per-user `Mutex` scope in the current
-/// implementation.  After `handle_member_added` returns the record must exist,
-/// proving the webhook fired atomically with the connection-count check.
-///
-/// P2 (T10) will move the webhook call outside the lock but keep the TOCTOU
-/// decision inside.  This test must still pass after that change because it
+/// `PresenceHistoryStore` is the observable proxy: after `handle_member_added`
+/// returns the record must exist, proving the webhook fired for the
+/// connection-count decision made under the per-user lock.  The webhook
+/// enqueue and history write themselves run after lock release — this test
 /// asserts *that* the event fires, not *when* relative to lock release.
 #[tokio::test]
 async fn test_presence_webhook_order_with_member_added() {
@@ -515,21 +512,17 @@ async fn test_presence_webhook_order_with_member_added() {
     assert_eq!(
         page.items[0].event,
         PresenceHistoryEventKind::MemberAdded,
-        "first join must produce a MemberAdded record proving webhook fired inside the lock scope"
+        "first join must produce a MemberAdded record proving the webhook fired for the locked decision"
     );
 }
 
-/// The broadcast fires as part of the atomic check-and-act for the last leave.
+/// The broadcast fires as part of the check-and-act for the last leave.
 ///
-/// `PresenceHistoryStore` is the observable proxy: the history write and the
-/// broadcast call both happen inside the per-user `Mutex` scope in the current
-/// implementation.  After `handle_member_removed` returns the record must
-/// exist, proving the broadcast fired atomically with the connection-count
-/// check.
-///
-/// P2 (T10) will move the broadcast call outside the lock but keep the TOCTOU
-/// decision inside.  This test must still pass after that change because it
-/// asserts *that* the event fires, not *when* relative to lock release.
+/// `PresenceHistoryStore` is the observable proxy: after `handle_member_removed`
+/// returns the record must exist, proving the broadcast fired for the
+/// connection-count decision made under the per-user lock.  The broadcast runs
+/// inside the lock; the history write runs after release — this test asserts
+/// *that* the event fires, not *when* relative to lock release.
 #[tokio::test]
 async fn test_presence_broadcast_order_with_member_removed() {
     let manager = PresenceManager::new();
