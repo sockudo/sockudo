@@ -1056,6 +1056,10 @@ pub struct WebSocketRef {
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
     pub shutdown_token: CancellationToken,
+    // Set at the start of close(), before the close frame is queued, so no data
+    // frame can slip in behind it. The shutdown_token is only cancelled after the
+    // close frame is queued (cancelling earlier would make the writer task drop it)
+    closing: Arc<std::sync::atomic::AtomicBool>,
     pub inner: Arc<Mutex<WebSocket>>,
     pub protocol_version: ProtocolVersion,
     pub wire_format: WireFormat,
@@ -1095,6 +1099,7 @@ impl WebSocketRef {
             buffer_config,
             byte_counter,
             shutdown_token,
+            closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             protocol_version,
             wire_format,
             echo_messages,
@@ -1167,7 +1172,7 @@ impl WebSocketRef {
     }
 
     pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
-        if self.shutdown_token.is_cancelled() {
+        if self.closing.load(Ordering::Acquire) || self.shutdown_token.is_cancelled() {
             return Err(Error::ConnectionClosed("Connection shutting down".into()));
         }
         let payload = sockudo_protocol::wire::serialize_message(message, self.wire_format)
@@ -1197,6 +1202,10 @@ impl WebSocketRef {
     }
 
     pub async fn close(&self, code: u16, reason: String) -> Result<()> {
+        // Reject new sends before queueing the close frame so no data frame can be
+        // enqueued behind it. Token cancellation must stay AFTER ws.close(): the
+        // writer task breaks on cancellation and would drop the queued close frame
+        self.closing.store(true, Ordering::Release);
         let result = {
             let mut ws = self.inner.lock().await;
             ws.close(code, reason).await
