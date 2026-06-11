@@ -619,18 +619,17 @@ impl ConnectionHandler {
                 };
 
                 conn_locked.add_presence_info(request.channel.clone(), presence_info.clone());
+                // Release the connection lock before the mirror write and add_user
                 drop(conn_locked);
 
-                if let Some(ref local_adapter) = self.local_adapter
-                    && let Some(namespace) = local_adapter.namespaces.get(&app_config.id)
-                {
-                    namespace
-                        .presence_data
-                        .entry(*socket_id)
-                        .or_default()
-                        .insert(request.channel.clone(), presence_info);
-                }
+                self.set_namespace_presence(
+                    &app_config.id,
+                    socket_id,
+                    &request.channel,
+                    presence_info,
+                );
 
+                // Add user to the user-socket mapping so get_user_sockets() can find it
                 self.connection_manager.add_user(conn_arc.clone()).await?;
             } else {
                 drop(conn_locked);
