@@ -231,7 +231,7 @@ async fn test_presence_local_registry_update_always_happens() {
         let socket_entry = &channel_data["socket-789"];
         assert_eq!(socket_entry.user_id, "user-456");
         assert_eq!(socket_entry.app_id, "test-app");
-        assert_eq!(socket_entry.user_info, Some(user_info));
+        assert_eq!(socket_entry.user_info, Some(std::sync::Arc::new(user_info)));
     }
 
     // Now test leave
@@ -342,7 +342,10 @@ async fn test_multiple_presence_members_same_channel() {
                 .get(*socket_id)
                 .unwrap_or_else(|| panic!("Socket {} should exist", socket_id));
             assert_eq!(entry.user_id, *user_id);
-            assert_eq!(entry.user_info, Some(user_info.clone()));
+            assert_eq!(
+                entry.user_info,
+                Some(std::sync::Arc::new(user_info.clone()))
+            );
         }
     }
 

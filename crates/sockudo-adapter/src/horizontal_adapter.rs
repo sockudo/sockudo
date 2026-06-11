@@ -160,7 +160,9 @@ pub struct AggregationStats {
 /// Presence entry for cluster-wide presence tracking
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceEntry {
-    pub user_info: Option<sonic_rs::Value>,
+    // Arc keeps registry-lock hold times short: readers clone the pointer under
+    // the lock and deep-clone the value after releasing it (serializes as plain Value)
+    pub user_info: Option<Arc<sonic_rs::Value>>,
     pub node_id: String,      // Which node owns this connection
     pub app_id: String,       // Which app this member belongs to
     pub user_id: String,      // Which user this socket belongs to
@@ -1107,13 +1109,16 @@ impl HorizontalAdapter {
         &self,
         dead_node_id: &str,
     ) -> Result<Vec<(String, String, String, Option<sonic_rs::Value>)>> {
-        let mut registry = self.cluster_presence_registry.write().await;
+        let removed_node_data = {
+            let mut registry = self.cluster_presence_registry.write().await;
+            registry.remove(dead_node_id)
+        };
 
         // O(1) lookup and removal of entire node's data
-        if let Some(dead_node_data) = registry.remove(dead_node_id) {
+        if let Some(dead_node_data) = removed_node_data {
             // Group sockets by (app_id, channel, user_id) to avoid duplicate cleanup calls for same user
             let mut unique_members =
-                ahash::AHashMap::<(String, String, String), Option<sonic_rs::Value>>::new();
+                ahash::AHashMap::<(String, String, String), Option<Arc<sonic_rs::Value>>>::new();
 
             for (channel, sockets) in dead_node_data {
                 for (_socket_id, entry) in sockets {
@@ -1123,11 +1128,14 @@ impl HorizontalAdapter {
                 }
             }
 
-            // Convert to list format
+            // Convert to list format — entries were just removed from the registry,
+            // so the Arc is normally sole-owned and unwraps without a deep clone
             let cleanup_tasks: Vec<(String, String, String, Option<sonic_rs::Value>)> =
                 unique_members
                     .into_iter()
                     .map(|((app_id, channel, user_id), user_info)| {
+                        let user_info = user_info
+                            .map(|info| Arc::try_unwrap(info).unwrap_or_else(|arc| (*arc).clone()));
                         (app_id, channel, user_id, user_info)
                     })
                     .collect();
@@ -1155,6 +1163,7 @@ impl HorizontalAdapter {
         app_id: &str,
         user_info: Option<sonic_rs::Value>,
     ) {
+        let user_info = user_info.map(Arc::new);
         let mut registry = self.cluster_presence_registry.write().await;
         registry
             .entry(node_id.to_string())

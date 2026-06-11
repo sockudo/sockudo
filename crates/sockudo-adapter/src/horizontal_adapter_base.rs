@@ -1282,7 +1282,9 @@ where
             .get_channel_members(app_id, channel)
             .await?;
 
-        let collected: Vec<(String, Option<sonic_rs::Value>)> = {
+        // Only Arc pointer clones happen under the read guard; the deep
+        // sonic_rs::Value clone is deferred until after the lock is released
+        let collected: Vec<(String, Option<Arc<sonic_rs::Value>>)> = {
             let registry = self.horizontal.cluster_presence_registry.read().await;
             let mut collected = Vec::new();
             for (node_id, node_data) in registry.iter() {
@@ -1302,9 +1304,10 @@ where
         };
 
         for (user_id, user_info) in collected {
-            members
-                .entry(user_id.clone())
-                .or_insert_with(|| PresenceMemberInfo { user_id, user_info });
+            members.entry(user_id.clone()).or_insert_with(|| {
+                let user_info = user_info.map(|info| (*info).clone());
+                PresenceMemberInfo { user_id, user_info }
+            });
         }
 
         Ok(members)

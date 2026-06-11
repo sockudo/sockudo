@@ -217,7 +217,10 @@ async fn test_concurrent_read_write_registry() {
                                 }
                                 collected.push(PresenceMemberInfo {
                                     user_id: entry.user_id.clone(),
-                                    user_info: entry.user_info.clone(),
+                                    user_info: entry
+                                        .user_info
+                                        .as_ref()
+                                        .map(|info| (**info).clone()),
                                 });
                             }
                         }
