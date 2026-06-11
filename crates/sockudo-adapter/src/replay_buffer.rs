@@ -20,8 +20,6 @@ struct ChannelBufferState {
 struct ChannelBuffer {
     state: Mutex<ChannelBufferState>,
     next_serial: AtomicU64,
-    max_size: usize,
-    ttl: Duration,
 }
 
 pub enum ReplayLookup {
@@ -79,8 +77,6 @@ impl ReplayBuffer {
                 current_stream_id: None,
             }),
             next_serial: AtomicU64::new(1),
-            max_size: self.max_buffer_size,
-            ttl: self.buffer_ttl,
         });
         entry.next_serial.fetch_add(1, Ordering::Relaxed)
     }
@@ -101,15 +97,12 @@ impl ReplayBuffer {
                 current_stream_id: stream_id.map(ToString::to_string),
             }),
             next_serial: AtomicU64::new(serial + 1),
-            max_size: self.max_buffer_size,
-            ttl: self.buffer_ttl,
         });
 
-        let max_size = entry.max_size;
         let mut state = entry.state.lock().unwrap();
         state.current_stream_id = stream_id.map(ToString::to_string);
         // Evict oldest if at capacity
-        while state.messages.len() >= max_size {
+        while state.messages.len() >= self.max_buffer_size {
             state.messages.pop_front();
         }
         state.messages.push_back(BufferedMessage {
@@ -149,7 +142,6 @@ impl ReplayBuffer {
             return ReplayLookup::Expired;
         };
 
-        let ttl = entry.ttl;
         let now = Instant::now();
         let mut state = entry.state.lock().unwrap();
 
@@ -161,7 +153,7 @@ impl ReplayBuffer {
             };
         }
 
-        Self::prune_expired_locked(&mut state.messages, ttl, now);
+        Self::prune_expired_locked(&mut state.messages, self.buffer_ttl, now);
 
         if state.messages.is_empty() {
             if stream_id.is_some() {
@@ -206,9 +198,8 @@ impl ReplayBuffer {
         let mut empty_keys = Vec::new();
 
         for entry in self.buffers.iter() {
-            let ttl = entry.value().ttl;
             let mut state = entry.value().state.lock().unwrap();
-            Self::prune_expired_locked(&mut state.messages, ttl, now);
+            Self::prune_expired_locked(&mut state.messages, self.buffer_ttl, now);
             if state.messages.is_empty() {
                 empty_keys.push(entry.key().clone());
             }
