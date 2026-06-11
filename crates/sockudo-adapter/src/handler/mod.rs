@@ -41,7 +41,7 @@ use sockudo_ws::Message;
 use sockudo_ws::axum_integration::{WebSocket, WebSocketReader, WebSocketWriter};
 use sonic_rs::Value;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use tracing::{debug, error, warn};
 
 #[derive(Clone)]
@@ -70,6 +70,7 @@ pub struct ConnectionHandler {
     #[cfg(feature = "recovery")]
     /// Replay buffer for connection recovery (enabled via config)
     pub(crate) replay_buffer: Option<Arc<crate::replay_buffer::ReplayBuffer>>,
+    running: Arc<AtomicBool>,
 }
 
 /// Builder for constructing a `ConnectionHandler` without feature-gated function parameters.
@@ -88,6 +89,7 @@ pub struct ConnectionHandlerBuilder {
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
     #[cfg(feature = "delta")]
     delta_compression: Option<Arc<sockudo_delta::DeltaCompressionManager>>,
+    running: Option<Arc<AtomicBool>>,
 }
 
 impl ConnectionHandlerBuilder {
@@ -112,6 +114,7 @@ impl ConnectionHandlerBuilder {
             cleanup_queue: None,
             #[cfg(feature = "delta")]
             delta_compression: None,
+            running: None,
         }
     }
 
@@ -158,6 +161,11 @@ impl ConnectionHandlerBuilder {
 
     pub fn cleanup_queue(mut self, queue: crate::cleanup::CleanupSender) -> Self {
         self.cleanup_queue = Some(queue);
+        self
+    }
+
+    pub fn running(mut self, running: Arc<AtomicBool>) -> Self {
+        self.running = Some(running);
         self
     }
 
@@ -218,6 +226,9 @@ impl ConnectionHandlerBuilder {
             presence_manager: Arc::new(PresenceManager::new()),
             #[cfg(feature = "recovery")]
             replay_buffer,
+            running: self
+                .running
+                .unwrap_or_else(|| Arc::new(AtomicBool::new(true))),
         }
     }
 }
@@ -236,6 +247,10 @@ impl ConnectionHandler {
             cache_manager,
             server_options,
         )
+    }
+
+    pub fn is_accepting(&self) -> bool {
+        self.running.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Get a reference to the presence manager
@@ -399,32 +414,36 @@ impl ConnectionHandler {
         )
         .await?;
 
-        // Setup rate limiting if needed
-        self.setup_rate_limiting(&socket_id, &app_config).await?;
-        self.setup_message_rate_limiting(&socket_id, &app_config)
-            .await?;
+        // Socket is registered and counted. Run setup in an async block so any
+        // failure still falls through to cleanup_socket and decrements the count.
+        let result = async {
+            // Setup rate limiting if needed
+            self.setup_rate_limiting(&socket_id, &app_config).await?;
+            self.setup_message_rate_limiting(&socket_id, &app_config)
+                .await?;
 
-        // Get the cancellation token so the reader loop can be cancelled
-        // when the connection is cleaned up (e.g., ghost connection timeout)
-        let shutdown_token = self
-            .connection_manager
-            .get_connection(&socket_id, &app_config.id)
-            .await
-            .map(|conn| conn.cancellation_token());
+            // Get the cancellation token so the reader loop can be cancelled
+            // when the connection is cleaned up (e.g., ghost connection timeout)
+            let shutdown_token = self
+                .connection_manager
+                .get_connection(&socket_id, &app_config.id)
+                .await
+                .map(|conn| conn.cancellation_token());
 
-        // Send connection established
-        self.send_connection_established(&app_config.id, &socket_id)
-            .await?;
+            // Send connection established
+            self.send_connection_established(&app_config.id, &socket_id)
+                .await?;
 
-        // Setup timeouts
-        self.setup_initial_timeouts(&socket_id, &app_config).await?;
+            // Setup timeouts
+            self.setup_initial_timeouts(&socket_id, &app_config).await?;
 
-        // Main message loop
-        let result = self
-            .run_message_loop(socket_rx, &socket_id, &app_config, shutdown_token)
-            .await;
+            // Main message loop
+            self.run_message_loop(socket_rx, &socket_id, &app_config, shutdown_token)
+                .await
+        }
+        .await;
 
-        // Cleanup
+        // Runs on every exit. Idempotent via the `disconnecting` flag.
         self.cleanup_socket(&socket_id, &app_config).await;
 
         result
@@ -470,6 +489,9 @@ impl ConnectionHandler {
                 self.connection_manager
                     .cleanup_connection(&app_config.id, conn)
                     .await;
+                if let Some(ref metrics) = self.metrics {
+                    metrics.mark_disconnection(&app_config.id, &socket_id);
+                }
             }
 
             // Add the new socket - this must be in the same critical section as quota check
