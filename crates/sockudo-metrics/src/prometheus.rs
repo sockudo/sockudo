@@ -2200,13 +2200,16 @@ impl MetricsInterface for PrometheusMetricsDriver {
 
     fn track_horizontal_delta_compression(&self, app_id: &str, channel_name: &str, enabled: bool) {
         if enabled {
+            // Preserve the historical label key for dashboards while bounding
+            // cardinality by recording channel type instead of raw channel name.
+            let channel_type = ChannelType::from_name(channel_name).as_str();
             self.horizontal_delta_compression_enabled
-                .with_label_values(&[app_id, &self.port.to_string(), channel_name])
+                .with_label_values(&[app_id, &self.port.to_string(), channel_type])
                 .inc();
 
             debug!(
-                "Metrics: Horizontal delta compression enabled for app {}, channel: {}",
-                app_id, channel_name
+                "Metrics: Horizontal delta compression enabled for app {}, channel: {} ({})",
+                app_id, channel_name, channel_type
             );
         }
     }

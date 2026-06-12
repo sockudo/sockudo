@@ -477,6 +477,15 @@ pub struct AdapterConfig {
     pub enable_socket_counting: bool,
     #[serde(default = "default_fallback_to_local")]
     pub fallback_to_local: bool,
+    /// Tier 1A: maintain cluster-wide channel counts locally via gossip so count
+    /// reads (subscription_count, /channels, occupancy) become local with zero
+    /// cross-node fan-out. Off by default; falls back to request/reply when off.
+    #[serde(default = "default_aggregate_counts")]
+    pub aggregate_counts: bool,
+}
+
+fn default_aggregate_counts() -> bool {
+    false
 }
 
 fn default_enable_socket_counting() -> bool {
@@ -507,6 +516,7 @@ impl Default for AdapterConfig {
             cluster_health: ClusterHealthConfig::default(),
             enable_socket_counting: default_enable_socket_counting(),
             fallback_to_local: default_fallback_to_local(),
+            aggregate_counts: default_aggregate_counts(),
         }
     }
 }
@@ -3041,6 +3051,8 @@ impl ServerOptions {
             "ADAPTER_ENABLE_SOCKET_COUNTING",
             self.adapter.enable_socket_counting,
         );
+        self.adapter.aggregate_counts =
+            parse_env::<bool>("ADAPTER_AGGREGATE_COUNTS", self.adapter.aggregate_counts);
         self.adapter.fallback_to_local =
             parse_env::<bool>("ADAPTER_FALLBACK_TO_LOCAL", self.adapter.fallback_to_local);
         if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {

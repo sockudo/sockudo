@@ -47,6 +47,9 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub node_timeout_ms: u64,
     pub cleanup_interval_ms: u64,
     pub enable_socket_counting: bool,
+    /// Tier 1A: when true, channel counts are read from the gossiped registry
+    /// (local + peers) instead of cross-node request/reply.
+    pub aggregate_counts: bool,
     #[cfg(feature = "delta")]
     // Delta compression manager for bandwidth optimization
     delta_compression: Option<Arc<sockudo_delta::DeltaCompressionManager>>,
@@ -123,6 +126,7 @@ where
             node_timeout_ms: cluster_health_defaults.node_timeout_ms,
             cleanup_interval_ms: cluster_health_defaults.cleanup_interval_ms,
             enable_socket_counting: true, // Default to enabled
+            aggregate_counts: false,      // Tier 1A: opt-in via config
             #[cfg(feature = "delta")]
             delta_compression: None,
             #[cfg(feature = "delta")]
@@ -227,6 +231,11 @@ where
     /// Set socket counting configuration
     pub fn set_socket_counting(&mut self, enable: bool) {
         self.enable_socket_counting = enable;
+    }
+
+    /// Tier 1A: enable reading channel counts from the gossiped registry.
+    pub fn set_aggregate_counts(&mut self, enable: bool) {
+        self.aggregate_counts = enable;
     }
 
     /// Publish a pre-built RequestBody and collect responses from other nodes
@@ -786,6 +795,109 @@ where
 
         // Start dead node detection
         self.start_dead_node_detection().await;
+
+        // Tier 1A: gossip local channel counts so peers answer counts locally
+        if self.aggregate_counts {
+            self.start_count_gossip_loop().await;
+        }
+    }
+
+    /// Tier 1A: periodically gossip this node's local channel counts so every node
+    /// answers count queries locally. Per-tick diffs (ChannelCountUpdate) plus a
+    /// periodic full snapshot (ChannelCountSync) that seeds new nodes and heals drift.
+    async fn start_count_gossip_loop(&self) {
+        let transport = self.transport.clone();
+        let local_adapter = self.local_adapter.clone();
+        let horizontal = self.horizontal.clone();
+        let node_id = self.node_id.clone();
+        let is_running = self.is_running.clone();
+
+        tokio::spawn(async move {
+            const FLUSH_INTERVAL_MS: u64 = 100;
+            const FULL_SNAPSHOT_EVERY_TICKS: u64 = 50; // ~5s
+            let mut interval = tokio::time::interval(Duration::from_millis(FLUSH_INTERVAL_MS));
+            let mut last: std::collections::HashMap<String, ahash::AHashMap<String, usize>> =
+                std::collections::HashMap::new();
+            let mut tick: u64 = 0;
+
+            loop {
+                interval.tick().await;
+                if !is_running.load(Ordering::Relaxed) {
+                    break;
+                }
+                tick = tick.wrapping_add(1);
+                let full = tick.is_multiple_of(FULL_SNAPSHOT_EVERY_TICKS);
+
+                // Only gossip when there are peers to receive it.
+                if horizontal.get_effective_node_count().await <= 1 {
+                    continue;
+                }
+
+                let namespaces = match local_adapter.get_namespaces().await {
+                    Ok(ns) => ns,
+                    Err(_) => continue,
+                };
+
+                let mut seen_apps = std::collections::HashSet::new();
+                for (app_id, namespace) in namespaces {
+                    seen_apps.insert(app_id.clone());
+                    let current = namespace
+                        .get_channels_with_socket_count()
+                        .await
+                        .unwrap_or_default();
+                    let prev = last.entry(app_id.clone()).or_default();
+
+                    let payload: ahash::AHashMap<String, usize> = if full {
+                        current.clone()
+                    } else {
+                        let mut changed = ahash::AHashMap::new();
+                        for (ch, cnt) in &current {
+                            if prev.get(ch) != Some(cnt) {
+                                changed.insert(ch.clone(), *cnt);
+                            }
+                        }
+                        for ch in prev.keys() {
+                            if !current.contains_key(ch) {
+                                changed.insert(ch.clone(), 0);
+                            }
+                        }
+                        changed
+                    };
+
+                    *prev = current;
+
+                    // Diff ticks skip when nothing changed; full ticks always send
+                    // (an empty full snapshot clears this node's contribution).
+                    if payload.is_empty() && !full {
+                        continue;
+                    }
+
+                    if let Ok(user_info) = sonic_rs::to_value(&payload) {
+                        let request = RequestBody {
+                            request_id: generate_request_id(),
+                            node_id: node_id.clone(),
+                            app_id,
+                            request_type: if full {
+                                RequestType::ChannelCountSync
+                            } else {
+                                RequestType::ChannelCountUpdate
+                            },
+                            channel: None,
+                            socket_id: None,
+                            user_id: None,
+                            user_info: Some(user_info),
+                            timestamp: Some(current_timestamp()),
+                            dead_node_id: None,
+                            target_node_id: None,
+                            reply_to: None,
+                            channels: None,
+                        };
+                        let _ = transport.publish_request(&request).await;
+                    }
+                }
+                last.retain(|app, _| seen_apps.contains(app));
+            }
+        });
     }
 
     /// Start heartbeat broadcasting loop
@@ -866,6 +978,8 @@ where
 
                             // 1. Remove from local heartbeat tracking
                             horizontal.remove_dead_node(&dead_node_id).await;
+                            // Tier 1A: drop the dead node's channel-count contributions
+                            horizontal.purge_node_channel_counts(&dead_node_id);
 
                             // 2. Get orphaned members and clean up local registry
                             let cleanup_tasks = match horizontal
@@ -1413,6 +1527,15 @@ where
             .get_channel_socket_count(app_id, channel)
             .await;
 
+        // Tier 1A: read peer contributions from the gossiped registry instead of a
+        // cross-node request/reply.
+        if self.aggregate_counts {
+            return crate::connection_manager::ChannelSocketCount {
+                count: local_count + self.horizontal.remote_channel_count(app_id, channel),
+                complete: true,
+            };
+        }
+
         // Get distributed count
         match self
             .send_request(
@@ -1510,6 +1633,17 @@ where
             .await
     }
 
+    async fn add_to_channel_and_count_local(
+        &self,
+        app_id: &str,
+        channel: &str,
+        socket_id: &SocketId,
+    ) -> Result<(bool, usize)> {
+        self.local_adapter
+            .add_to_channel_and_count_local(app_id, channel, socket_id)
+            .await
+    }
+
     async fn remove_from_channel(
         &self,
         app_id: &str,
@@ -1519,6 +1653,17 @@ where
         // Fast path: direct local adapter access without locking horizontal
         self.local_adapter
             .remove_from_channel(app_id, channel, socket_id)
+            .await
+    }
+
+    async fn remove_from_channel_and_count_local(
+        &self,
+        app_id: &str,
+        channel: &str,
+        socket_id: &SocketId,
+    ) -> Result<(bool, usize)> {
+        self.local_adapter
+            .remove_from_channel_and_count_local(app_id, channel, socket_id)
             .await
     }
 
@@ -1628,6 +1773,14 @@ where
             .local_adapter
             .get_channels_with_socket_count(app_id)
             .await?;
+
+        // Tier 1A: merge peer counts from the gossiped registry, no fan-out.
+        if self.aggregate_counts {
+            for (channel, count) in self.horizontal.remote_channels_with_counts(app_id) {
+                *channels.entry(channel).or_insert(0) += count;
+            }
+            return Ok(channels);
+        }
 
         // Get distributed channels
         match self

@@ -33,6 +33,34 @@ At minimum, a production cluster has:
 | Google Pub/Sub | Managed GCP fanout. |
 | Apache Iggy | High-throughput persistent log workloads. |
 
+### NATS notes
+
+NATS is a good fit for lightweight cross-node fanout, but Sockudo clusters should avoid turning every client subscribe or unsubscribe into a distributed request/reply round trip. Keep room-switch churn on local channel state where possible, and reserve cluster-wide socket counts for post-ack meta events, webhooks, HTTP inspection, and operator views.
+
+For Kubernetes NATS clusters, prefer explicit StatefulSet pod DNS entries over a single headless service URL when you want better initial client spread:
+
+```json
+{
+  "adapter": {
+    "driver": "nats",
+    "nats": {
+      "servers": [
+        "nats://sockudo-nats-0.sockudo-nats-headless:4222",
+        "nats://sockudo-nats-1.sockudo-nats-headless:4222",
+        "nats://sockudo-nats-2.sockudo-nats-headless:4222"
+      ],
+      "request_timeout_ms": 5000,
+      "connection_timeout_ms": 5000,
+      "subscription_capacity": 131072,
+      "client_capacity": 131072,
+      "max_reconnects": 60
+    }
+  }
+}
+```
+
+If `nodes_number` is set, it means expected Sockudo nodes, not NATS server replicas. Use it only when the Sockudo replica count is fixed or injected from deployment automation; otherwise leave discovery enabled.
+
 ## Load balancing
 
 Sockudo does not require sticky sessions for basic pub/sub when the adapter is shared. Sticky sessions can still reduce reconnect churn and preserve local buffers during rolling updates.
@@ -44,6 +72,23 @@ Use:
 - health and readiness checks
 - draining before pod termination
 - disruption budgets for production clusters
+
+For Kubernetes probes, use `/live` for liveness and startup probes. `/up` checks configured apps and shared dependencies, so it is appropriate for readiness but too expensive for liveness under backend pressure. A slow app manager, cache, queue, or adapter should make the pod unready, not restart it.
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /live
+    port: http
+startupProbe:
+  httpGet:
+    path: /live
+    port: http
+readinessProbe:
+  httpGet:
+    path: /up/<app-id>
+    port: http
+```
 
 ## Duplicate delivery
 
@@ -110,3 +155,16 @@ Before increasing traffic, run a scenario that covers:
 - push burst admission
 - push provider throttling
 - webhook retry behavior
+
+For room-switch workloads, `benches/subscription-churn.js` models connected sockets that periodically unsubscribe and subscribe to a new room. Churn rate is approximately `VUS / (ROOM_SWITCH_INTERVAL_MS / 1000)`. For example, 10,000 users switching every 20 seconds produces about 500 unsubscribe+subscribe cycles per second:
+
+```bash
+k6 run \
+  -e WS_HOSTS=wss://example.com/app/app-key \
+  -e VUS=10000 \
+  -e CHANNEL_COUNT=4000 \
+  -e ROOM_SWITCH_INTERVAL_MS=20000 \
+  -e SOCKET_LIFETIME_MS=600000 \
+  -e DURATION=10m \
+  benches/subscription-churn.js
+```

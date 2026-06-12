@@ -110,7 +110,7 @@ impl ChannelManager {
         }
     }
 
-    pub async fn subscribe(
+    pub async fn subscribe_local(
         connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
         socket_id: &str,
         data: &PusherMessage,
@@ -140,48 +140,29 @@ impl ChannelManager {
         };
         let t_after_parse = t_start.elapsed().as_micros();
 
-        // Single lock acquisition for check and add (reduces lock contention)
+        // Local transition only. Cluster-wide counts are intentionally kept out
+        // of the subscribe hot path; callers that need them can query after the
+        // client acknowledgement has been sent.
         let t_before_lock = t_start.elapsed().as_micros();
-        let (is_already_in_channel, total_connections, activated_locally) = {
-            // Check if already in channel
-            let already_in = connection_manager
-                .is_in_channel(app_id, channel_name, &socket_id_owned)
-                .await?;
-
-            if already_in {
-                // Already subscribed, just get count
-                let count = connection_manager
-                    .get_channel_socket_count(app_id, channel_name)
-                    .await;
-                (true, count, false)
-            } else {
-                // Need to add to channel
-                connection_manager
-                    .add_to_channel(app_id, channel_name, &socket_id_owned)
-                    .await?;
-                let count = connection_manager
-                    .get_channel_socket_count(app_id, channel_name)
-                    .await;
-                // Local count drives the per-pod gauge: activate on the first local subscriber.
-                let local = connection_manager
-                    .get_local_channel_socket_count(app_id, channel_name)
-                    .await;
-                (false, count, local == 1)
-            }
-        };
+        let (newly_subscribed, local_connections) = connection_manager
+            .add_to_channel_and_count_local(app_id, channel_name, &socket_id_owned)
+            .await?;
+        let is_already_in_channel = !newly_subscribed;
+        let activated_locally = newly_subscribed && local_connections == 1;
         let t_after_lock = t_start.elapsed().as_micros();
 
         if is_already_in_channel {
             tracing::debug!(
-                "PERF[CHAN_MGR_ALREADY] channel={} total={}μs single_lock={}μs",
+                "PERF[CHAN_MGR_ALREADY] channel={} local_count={} total={}μs local_update={}μs",
                 channel_name,
+                local_connections,
                 t_start.elapsed().as_micros(),
                 t_after_lock - t_before_lock
             );
 
             return Ok(JoinResponse {
                 success: true,
-                channel_connections: Some(total_connections),
+                channel_connections: Some(local_connections),
                 activated_locally,
                 member: None,
                 auth_error: None,
@@ -202,8 +183,81 @@ impl ChannelManager {
         );
 
         Ok(Self::create_success_join_response(
-            total_connections,
+            local_connections,
             activated_locally,
+            member,
+        ))
+    }
+
+    pub async fn subscribe(
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
+        socket_id: &str,
+        data: &PusherMessage,
+        channel_name: &str,
+        is_authenticated: bool,
+        app_id: &str,
+    ) -> Result<JoinResponse, Error> {
+        let mut response = Self::subscribe_local(
+            connection_manager,
+            socket_id,
+            data,
+            channel_name,
+            is_authenticated,
+            app_id,
+        )
+        .await?;
+
+        if response.success {
+            response.channel_connections = Some(
+                connection_manager
+                    .get_channel_socket_count(app_id, channel_name)
+                    .await,
+            );
+        }
+
+        Ok(response)
+    }
+
+    pub async fn unsubscribe_local(
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
+        socket_id: &str,
+        channel_name: &str,
+        app_id: &str,
+        user_id: Option<&str>,
+    ) -> Result<LeaveResponse, Error> {
+        let socket_id_owned = SocketId::from_string(socket_id).unwrap_or_else(|_| SocketId::new());
+        let channel_type = ChannelType::from_name(channel_name);
+
+        let member = if channel_type == ChannelType::Presence {
+            if let Some(user_id) = user_id {
+                connection_manager
+                    .get_presence_member(app_id, channel_name, &socket_id_owned)
+                    .await
+                    .map(|member| PresenceMember {
+                        user_id: user_id.to_string().into_boxed_str(),
+                        user_info: member.user_info.unwrap_or_default(),
+                        socket_id: None,
+                    })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let (socket_removed, local_remaining) = connection_manager
+            .remove_from_channel_and_count_local(app_id, channel_name, &socket_id_owned)
+            .await?;
+
+        if local_remaining == 0 {
+            connection_manager
+                .remove_channel(app_id, channel_name)
+                .await;
+        }
+
+        Ok(Self::create_leave_response(
+            socket_removed,
+            local_remaining,
             member,
         ))
     }

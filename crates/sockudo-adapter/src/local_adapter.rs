@@ -1838,6 +1838,18 @@ impl ConnectionManager for LocalAdapter {
         Ok(result)
     }
 
+    async fn add_to_channel_and_count_local(
+        &self,
+        app_id: &str,
+        channel: &str,
+        socket_id: &SocketId,
+    ) -> Result<(bool, usize)> {
+        let namespace = self.get_or_create_namespace(app_id).await;
+        let added = namespace.add_channel_to_socket(channel, socket_id);
+        let count = namespace.get_channel_socket_count(channel);
+        Ok((added, count))
+    }
+
     async fn remove_from_channel(
         &self,
         app_id: &str,
@@ -1858,6 +1870,27 @@ impl ConnectionManager for LocalAdapter {
         }
 
         Ok(namespace.remove_channel_from_socket(channel, socket_id))
+    }
+
+    async fn remove_from_channel_and_count_local(
+        &self,
+        app_id: &str,
+        channel: &str,
+        socket_id: &SocketId,
+    ) -> Result<(bool, usize)> {
+        let namespace = self.get_or_create_namespace(app_id).await;
+
+        #[cfg(feature = "tag-filtering")]
+        if let Some(socket_ref) = namespace.sockets.get(socket_id) {
+            let filter_node = socket_ref.get_channel_filter_sync(channel);
+            self.filter_index
+                .remove_socket_filter(channel, *socket_id, filter_node.as_deref());
+            socket_ref.channel_filters.remove(channel);
+        }
+
+        let removed = namespace.remove_channel_from_socket(channel, socket_id);
+        let count = namespace.get_channel_socket_count(channel);
+        Ok((removed, count))
     }
 
     async fn get_presence_member(

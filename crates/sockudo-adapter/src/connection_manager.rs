@@ -147,12 +147,32 @@ pub trait ConnectionManager: Send + Sync {
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool>;
+    async fn add_to_channel_and_count_local(
+        &self,
+        app_id: &str,
+        channel: &str,
+        socket_id: &SocketId,
+    ) -> Result<(bool, usize)> {
+        let added = self.add_to_channel(app_id, channel, socket_id).await?;
+        let count = self.get_local_channel_socket_count(app_id, channel).await;
+        Ok((added, count))
+    }
     async fn remove_from_channel(
         &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
     ) -> Result<bool>;
+    async fn remove_from_channel_and_count_local(
+        &self,
+        app_id: &str,
+        channel: &str,
+        socket_id: &SocketId,
+    ) -> Result<(bool, usize)> {
+        let removed = self.remove_from_channel(app_id, channel, socket_id).await?;
+        let count = self.get_local_channel_socket_count(app_id, channel).await;
+        Ok((removed, count))
+    }
     async fn get_presence_member(
         &self,
         app_id: &str,

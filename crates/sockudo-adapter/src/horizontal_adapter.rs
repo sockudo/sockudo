@@ -51,6 +51,10 @@ pub enum RequestType {
     // State synchronization
     PresenceStateSync,        // Send bulk presence state to a specific node
     BatchChannelSocketsCount, // Get socket counts for a list of channels in one round-trip
+
+    // Tier 1A: aggregate channel counts (gossip, fire-and-forget)
+    ChannelCountUpdate, // Peer's absolute local counts for changed channels
+    ChannelCountSync,   // Full snapshot of a peer's local channel counts (on join)
 }
 
 /// Request body for horizontal communication
@@ -214,6 +218,16 @@ pub struct HorizontalAdapter {
 
     /// Sequence counter for conflict resolution
     pub sequence_counter: Arc<AtomicU64>,
+
+    /// Tier 1A: cluster-wide per-channel socket counts contributed by *peer*
+    /// nodes. Keyed by (app_id, channel) -> {node_id -> local_count}. Global count
+    /// for a channel = local namespace count + sum of these. Lock-free (DashMap)
+    /// by design — this is a hot read path, never put it behind a coarse RwLock.
+    pub cluster_channel_counts: Arc<DashMap<(String, String), AHashMap<String, usize>>>,
+
+    /// Tier 1A: (app_id, channel) keys whose local count changed and must be
+    /// gossiped on the next flush tick. Coalesces churn into bounded broadcasts.
+    pub dirty_channel_counts: Arc<DashMap<(String, String), ()>>,
 }
 
 impl Default for HorizontalAdapter {
@@ -234,6 +248,8 @@ impl HorizontalAdapter {
             cluster_presence_registry: Arc::new(RwLock::new(AHashMap::new())),
             node_heartbeats: Arc::new(RwLock::new(AHashMap::new())),
             sequence_counter: Arc::new(AtomicU64::new(0)),
+            cluster_channel_counts: Arc::new(DashMap::new()),
+            dirty_channel_counts: Arc::new(DashMap::new()),
         }
     }
 
@@ -491,6 +507,8 @@ impl HorizontalAdapter {
 
                     // Clean up local presence registry only
                     self.cleanup_local_presence_registry(dead_node_id).await;
+                    // Tier 1A: drop the dead node's channel-count contributions
+                    self.purge_node_channel_counts(dead_node_id);
                 }
             }
             RequestType::BatchChannelSocketsCount => {
@@ -567,10 +585,126 @@ impl HorizontalAdapter {
                     }
                 }
             }
+            RequestType::ChannelCountUpdate | RequestType::ChannelCountSync => {
+                // Tier 1A: peer reported absolute local counts (Update = changed
+                // channels, Sync = full snapshot on join). Apply to the registry;
+                // fire-and-forget, no response produced.
+                if request.node_id != self.node_id
+                    && let Some(payload) = request.user_info.as_ref()
+                    && let Ok(counts) = sonic_rs::to_vec(payload)
+                        .and_then(|b| sonic_rs::from_slice::<AHashMap<String, usize>>(&b))
+                {
+                    let full_snapshot = request.request_type == RequestType::ChannelCountSync;
+                    self.apply_remote_channel_counts(
+                        &request.app_id,
+                        &request.node_id,
+                        counts,
+                        full_snapshot,
+                    );
+                }
+            }
         }
 
         // Return the response
         Ok(response)
+    }
+
+    // ---- Tier 1A: cluster channel-count registry (gossiped aggregate) ----
+
+    /// Apply a peer's reported absolute local counts. `full_snapshot` first drops
+    /// the node's existing entries for this app (join-time `ChannelCountSync`); a
+    /// per-channel count of 0 removes that node's contribution to the channel.
+    pub fn apply_remote_channel_counts(
+        &self,
+        app_id: &str,
+        node_id: &str,
+        counts: AHashMap<String, usize>,
+        full_snapshot: bool,
+    ) {
+        if node_id == self.node_id {
+            return;
+        }
+        if full_snapshot {
+            self.purge_node_channel_counts_for_app(app_id, node_id);
+        }
+        for (channel, count) in counts {
+            let key = (app_id.to_string(), channel);
+            if count == 0 {
+                if let Some(mut entry) = self.cluster_channel_counts.get_mut(&key) {
+                    entry.remove(node_id);
+                    let empty = entry.is_empty();
+                    drop(entry);
+                    if empty {
+                        self.cluster_channel_counts.remove(&key);
+                    }
+                }
+            } else {
+                self.cluster_channel_counts
+                    .entry(key)
+                    .or_default()
+                    .insert(node_id.to_string(), count);
+            }
+        }
+    }
+
+    /// Sum of *peer* contributions to a channel (excludes this node's local count).
+    pub fn remote_channel_count(&self, app_id: &str, channel: &str) -> usize {
+        self.cluster_channel_counts
+            .get(&(app_id.to_string(), channel.to_string()))
+            .map(|entry| entry.values().sum())
+            .unwrap_or(0)
+    }
+
+    /// All channels with peer contributions for an app, summed across peers.
+    pub fn remote_channels_with_counts(&self, app_id: &str) -> AHashMap<String, usize> {
+        let mut out = AHashMap::new();
+        for entry in self.cluster_channel_counts.iter() {
+            let (entry_app, channel) = entry.key();
+            if entry_app == app_id {
+                let sum: usize = entry.value().values().sum();
+                if sum > 0 {
+                    out.insert(channel.clone(), sum);
+                }
+            }
+        }
+        out
+    }
+
+    /// Remove a node's contributions for one app (snapshot replace).
+    fn purge_node_channel_counts_for_app(&self, app_id: &str, node_id: &str) {
+        self.cluster_channel_counts.retain(|key, entry| {
+            if key.0 == app_id {
+                entry.remove(node_id);
+            }
+            !entry.is_empty()
+        });
+    }
+
+    /// Remove a dead node's contributions across all apps/channels.
+    pub fn purge_node_channel_counts(&self, node_id: &str) {
+        self.cluster_channel_counts.retain(|_key, entry| {
+            entry.remove(node_id);
+            !entry.is_empty()
+        });
+    }
+
+    /// Mark (app, channel) as needing a gossip on the next flush tick.
+    pub fn mark_channel_count_dirty(&self, app_id: &str, channel: &str) {
+        self.dirty_channel_counts
+            .insert((app_id.to_string(), channel.to_string()), ());
+    }
+
+    /// Drain the dirty set, returning the (app, channel) pairs to gossip.
+    pub fn drain_dirty_channel_counts(&self) -> Vec<(String, String)> {
+        let keys: Vec<(String, String)> = self
+            .dirty_channel_counts
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        for k in &keys {
+            self.dirty_channel_counts.remove(k);
+        }
+        keys
     }
 
     /// Process a response received from another node
@@ -940,6 +1074,9 @@ impl HorizontalAdapter {
                 }
                 RequestType::PresenceStateSync => {
                     // These are broadcast-only requests, no response aggregation needed
+                }
+                RequestType::ChannelCountUpdate | RequestType::ChannelCountSync => {
+                    // Tier 1A: gossip-only, no response aggregation needed
                 }
             }
         }
