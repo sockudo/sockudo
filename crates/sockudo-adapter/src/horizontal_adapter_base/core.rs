@@ -31,6 +31,7 @@ where
             node_timeout_ms: cluster_health_defaults.node_timeout_ms,
             cleanup_interval_ms: cluster_health_defaults.cleanup_interval_ms,
             enable_socket_counting: true, // Default to enabled
+            aggregate_counts: false,      // Tier 1A: opt-in via config
             #[cfg(feature = "delta")]
             delta_compression: None,
             #[cfg(feature = "delta")]
@@ -135,6 +136,11 @@ where
     /// Set socket counting configuration
     pub fn set_socket_counting(&mut self, enable: bool) {
         self.enable_socket_counting = enable;
+    }
+
+    /// Tier 1A: enable reading channel counts from the gossiped registry.
+    pub fn set_aggregate_counts(&mut self, enable: bool) {
+        self.aggregate_counts = enable;
     }
 
     /// Publish a pre-built RequestBody and collect responses from other nodes
@@ -694,6 +700,109 @@ where
 
         // Start dead node detection
         self.start_dead_node_detection().await;
+
+        // Tier 1A: gossip local channel counts so peers answer counts locally.
+        if self.aggregate_counts {
+            self.start_count_gossip_loop().await;
+        }
+    }
+
+    /// Tier 1A: periodically gossip this node's local channel counts so every node
+    /// answers count queries locally. Per-tick diffs (ChannelCountUpdate) plus a
+    /// periodic full snapshot (ChannelCountSync) seed new nodes and heal drift.
+    async fn start_count_gossip_loop(&self) {
+        let transport = self.transport.clone();
+        let local_adapter = self.local_adapter.clone();
+        let horizontal = self.horizontal.clone();
+        let node_id = self.node_id.clone();
+        let is_running = self.is_running.clone();
+
+        tokio::spawn(async move {
+            const FLUSH_INTERVAL_MS: u64 = 100;
+            const FULL_SNAPSHOT_EVERY_TICKS: u64 = 50; // ~5s
+            let mut interval = tokio::time::interval(Duration::from_millis(FLUSH_INTERVAL_MS));
+            let mut last: std::collections::HashMap<String, ahash::AHashMap<String, usize>> =
+                std::collections::HashMap::new();
+            let mut tick: u64 = 0;
+
+            loop {
+                interval.tick().await;
+                if !is_running.load(Ordering::Relaxed) {
+                    break;
+                }
+                tick = tick.wrapping_add(1);
+                let full = tick.is_multiple_of(FULL_SNAPSHOT_EVERY_TICKS);
+
+                // Only gossip when there are peers to receive it.
+                if horizontal.get_effective_node_count().await <= 1 {
+                    continue;
+                }
+
+                let namespaces = match local_adapter.get_namespaces().await {
+                    Ok(namespaces) => namespaces,
+                    Err(_) => continue,
+                };
+
+                let mut seen_apps = std::collections::HashSet::new();
+                for (app_id, namespace) in namespaces {
+                    seen_apps.insert(app_id.clone());
+                    let current = namespace
+                        .get_channels_with_socket_count()
+                        .await
+                        .unwrap_or_default();
+                    let prev = last.entry(app_id.clone()).or_default();
+
+                    let payload: ahash::AHashMap<String, usize> = if full {
+                        current.clone()
+                    } else {
+                        let mut changed = ahash::AHashMap::new();
+                        for (channel, count) in &current {
+                            if prev.get(channel) != Some(count) {
+                                changed.insert(channel.clone(), *count);
+                            }
+                        }
+                        for channel in prev.keys() {
+                            if !current.contains_key(channel) {
+                                changed.insert(channel.clone(), 0);
+                            }
+                        }
+                        changed
+                    };
+
+                    *prev = current;
+
+                    // Diff ticks skip when nothing changed; full ticks always send
+                    // (an empty full snapshot clears this node's contribution).
+                    if payload.is_empty() && !full {
+                        continue;
+                    }
+
+                    if let Ok(user_info) = sonic_rs::to_value(&payload) {
+                        let request = RequestBody {
+                            request_id: generate_request_id(),
+                            node_id: node_id.clone(),
+                            app_id,
+                            request_type: if full {
+                                RequestType::ChannelCountSync
+                            } else {
+                                RequestType::ChannelCountUpdate
+                            },
+                            channel: None,
+                            socket_id: None,
+                            user_id: None,
+                            user_info: Some(user_info),
+                            timestamp: Some(current_timestamp()),
+                            dead_node_id: None,
+                            target_node_id: None,
+                            reply_to: None,
+                            channels: None,
+                        };
+                        let _ = transport.publish_request(&request).await;
+                    }
+                }
+                last.retain(|app, _| seen_apps.contains(app));
+            }
+        });
     }
 
     /// Start heartbeat broadcasting loop

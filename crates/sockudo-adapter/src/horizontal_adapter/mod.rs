@@ -49,6 +49,10 @@ pub enum RequestType {
     // State synchronization
     PresenceStateSync,        // Send bulk presence state to a specific node
     BatchChannelSocketsCount, // Get socket counts for a list of channels in one round-trip
+
+    // Tier 1A: aggregate channel counts (gossip, fire-and-forget)
+    ChannelCountUpdate, // Peer's absolute local counts for changed channels
+    ChannelCountSync,   // Full snapshot of a peer's local channel counts (on join)
 }
 
 /// Request body for horizontal communication
@@ -158,7 +162,9 @@ pub struct AggregationStats {
 /// Presence entry for cluster-wide presence tracking
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceEntry {
-    pub user_info: Option<sonic_rs::Value>,
+    // Arc keeps registry-lock hold times short: readers clone the pointer under
+    // the lock and deep-clone the value after releasing it.
+    pub user_info: Option<Arc<sonic_rs::Value>>,
     pub node_id: String,      // Which node owns this connection
     pub app_id: String,       // Which app this member belongs to
     pub user_id: String,      // Which user this socket belongs to
@@ -212,6 +218,15 @@ pub struct HorizontalAdapter {
 
     /// Sequence counter for conflict resolution
     pub sequence_counter: Arc<AtomicU64>,
+
+    /// Tier 1A: cluster-wide per-channel socket counts contributed by peer
+    /// nodes. Keyed by (app_id, channel) -> {node_id -> local_count}. Global
+    /// count for a channel = local namespace count + sum of these.
+    pub cluster_channel_counts: Arc<DashMap<(String, String), AHashMap<String, usize>>>,
+
+    /// Tier 1A: (app_id, channel) keys whose local count changed and must be
+    /// gossiped on the next flush tick. Coalesces churn into bounded broadcasts.
+    pub dirty_channel_counts: Arc<DashMap<(String, String), ()>>,
 }
 
 impl Default for HorizontalAdapter {

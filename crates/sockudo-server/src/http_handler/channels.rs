@@ -177,6 +177,11 @@ pub async fn channel(
     Ok((StatusCode::OK, Json(response_payload)))
 }
 
+/// How long a `/channels` listing is cached to collapse repeated polls into a
+/// single cluster-wide aggregation. The underlying count is best-effort and
+/// eventually consistent across nodes, so brief staleness is acceptable.
+const CHANNELS_LIST_CACHE_TTL_SECS: u64 = 2;
+
 /// GET /apps/{app_id}/channels
 #[instrument(skip(handler), fields(app_id = %app_id))]
 pub async fn channels(
@@ -186,7 +191,7 @@ pub async fn channels(
     State(handler): State<Arc<ConnectionHandler>>,
     _uri: Uri,
     RawQuery(_raw_query_str_option): RawQuery,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<axum::response::Response, AppError> {
     debug!("Request for channels list for app_id: {}", app_id);
 
     let filter_prefix_str = query_params_specific
@@ -198,6 +203,24 @@ pub async fn channels(
         .info
         .as_ref()
         .wants_subscription_count();
+
+    // Collapse repeated /channels polls into a single cross-node aggregation per
+    // TTL window. get_channels_with_socket_count (and, for user_count, the
+    // per-presence-channel member fetch below) are cluster-wide request/reply
+    // fan-outs; polling this endpoint without a cache issues an N-node aggregation
+    // per request, saturating the request/reply path and starving readiness probes.
+    // Cached per (app, prefix, info) since the response shape depends on them.
+    let info_key = query_params_specific.info.as_deref().unwrap_or("");
+    let channels_cache_key = format!("internal:channels:{app_id}:{filter_prefix_str}:{info_key}");
+    if let Ok(Some(cached)) = handler.cache_manager().get(&channels_cache_key).await {
+        record_api_metrics(&handler, &app_id, 0, cached.len()).await;
+        return Ok((
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            cached,
+        )
+            .into_response());
+    }
 
     let channels_map = handler
         .connection_manager()
@@ -241,9 +264,19 @@ pub async fn channels(
 
     let response_payload = PusherMessage::channels_list(channels_info_response_map);
     let response_json_bytes = sonic_rs::to_vec(&response_payload)?;
+    let response_json = String::from_utf8_lossy(&response_json_bytes).into_owned();
+    // Best-effort cache; on failure the next poll simply recomputes.
+    let _ = handler
+        .cache_manager()
+        .set(
+            &channels_cache_key,
+            &response_json,
+            CHANNELS_LIST_CACHE_TTL_SECS,
+        )
+        .await;
     record_api_metrics(&handler, &app_id, 0, response_json_bytes.len()).await;
     debug!("Channels list for app '{}' retrieved successfully", app_id);
-    Ok((StatusCode::OK, Json(response_payload)))
+    Ok((StatusCode::OK, Json(response_payload)).into_response())
 }
 
 /// GET /apps/{app_id}/channels/{channel_name}/users

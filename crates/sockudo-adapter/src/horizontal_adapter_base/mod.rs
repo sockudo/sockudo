@@ -53,6 +53,9 @@ pub struct HorizontalAdapterBase<T: HorizontalTransport> {
     pub node_timeout_ms: u64,
     pub cleanup_interval_ms: u64,
     pub enable_socket_counting: bool,
+    /// Tier 1A: when true, channel counts are read from the gossiped registry
+    /// (local + peers) instead of cross-node request/reply.
+    pub aggregate_counts: bool,
     #[cfg(feature = "delta")]
     // Delta compression manager for bandwidth optimization
     delta_compression: Option<Arc<sockudo_delta::DeltaCompressionManager>>,

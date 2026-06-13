@@ -241,6 +241,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
+                        adapter.set_aggregate_counts(config.aggregate_counts);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Redis(adapter.clone());
                         Ok((adapter, typed))
@@ -301,6 +302,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
+                        adapter.set_aggregate_counts(config.aggregate_counts);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::RedisCluster(adapter.clone());
                         Ok((adapter, typed))
@@ -345,6 +347,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
+                        adapter.set_aggregate_counts(config.aggregate_counts);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Nats(adapter.clone());
                         Ok((adapter, typed))
@@ -379,6 +382,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
+                        adapter.set_aggregate_counts(config.aggregate_counts);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Pulsar(adapter.clone());
                         Ok((adapter, typed))
@@ -413,6 +417,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
+                        adapter.set_aggregate_counts(config.aggregate_counts);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::RabbitMq(adapter.clone());
                         Ok((adapter, typed))
@@ -447,6 +452,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
+                        adapter.set_aggregate_counts(config.aggregate_counts);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::GooglePubSub(adapter.clone());
                         Ok((adapter, typed))
@@ -484,6 +490,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
+                        adapter.set_aggregate_counts(config.aggregate_counts);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Kafka(adapter.clone());
                         Ok((adapter, typed))
@@ -529,6 +536,7 @@ impl AdapterFactory {
                     Ok(mut adapter) => {
                         adapter.set_cluster_health(&config.cluster_health).await?;
                         adapter.set_socket_counting(config.enable_socket_counting);
+                        adapter.set_aggregate_counts(config.aggregate_counts);
                         let adapter = Arc::new(adapter);
                         let typed = TypedAdapter::Iggy(adapter.clone());
                         Ok((adapter, typed))

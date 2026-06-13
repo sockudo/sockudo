@@ -134,7 +134,7 @@ impl ConnectionHandler {
                             request.channel,
                             t_before_fallback
                         );
-                        let result = ChannelManager::subscribe(
+                        let result = ChannelManager::subscribe_local(
                             &self.connection_manager,
                             &socket_id.to_string(),
                             &temp_message,
@@ -156,7 +156,7 @@ impl ConnectionHandler {
             } else {
                 // Can't use fast-path for presence channels, use normal path
                 let t_before_normal = t_start.elapsed().as_micros();
-                let result = ChannelManager::subscribe(
+                let result = ChannelManager::subscribe_local(
                     &self.connection_manager,
                     &socket_id.to_string(),
                     &temp_message,
@@ -177,7 +177,7 @@ impl ConnectionHandler {
         } else {
             // No LocalAdapter, use normal path (Redis, NATS, etc.)
             let t_before_redis = t_start.elapsed().as_micros();
-            let result = ChannelManager::subscribe(
+            let result = ChannelManager::subscribe_local(
                 &self.connection_manager,
                 &socket_id.to_string(),
                 &temp_message,
@@ -366,52 +366,69 @@ impl ConnectionHandler {
             );
         }
 
-        // Send webhooks after subscription success response (non-blocking for client)
-        if subscription_result.channel_connections == Some(1)
-            && let Some(webhook_integration) = self.webhook_integration.clone()
+        if let Err(e) = self
+            .send_subscription_count_notifications(app_config, &request.channel)
+            .await
         {
-            let app_config = app_config.clone();
-            let channel = request.channel.clone();
-            tokio::spawn(async move {
-                if let Err(e) = webhook_integration
-                    .send_channel_occupied(&app_config, &channel)
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to send channel_occupied webhook for {}: {}",
-                        channel,
-                        e
-                    );
-                }
-            });
+            tracing::warn!(
+                "Failed to emit subscription count notifications for {}: {}",
+                request.channel,
+                e
+            );
         }
 
-        if !sockudo_core::utils::is_meta_channel(&request.channel) {
-            let current_count = self
-                .connection_manager
-                .get_channel_socket_count(&app_config.id, &request.channel)
-                .await;
+        // Handle cache channels
+        if is_cache_channel(&request.channel) {
+            self.send_missed_cache_if_exists(&app_config.id, socket_id, &request.channel)
+                .await?;
+        }
 
-            if current_count == 1 {
-                self.broadcast_metachannel_event(
-                    app_config,
-                    &request.channel,
-                    "channel_occupied",
-                    sonic_rs::json!({
-                        "channel": request.channel,
-                        "subscription_count": current_count,
-                    }),
-                )
-                .await
-                .ok();
+        Ok(())
+    }
+
+    async fn send_subscription_count_notifications(
+        &self,
+        app_config: &App,
+        channel: &str,
+    ) -> Result<()> {
+        if sockudo_core::utils::is_meta_channel(channel) {
+            return Ok(());
+        }
+
+        // Skip the cluster-wide count request/reply entirely when nothing consumes
+        // it. This is the room-switch hot path; a fanout here per subscribe is the
+        // dominant churn cost on multi-node clusters.
+        if !self
+            .subscription_count_has_consumer(app_config, channel)
+            .await
+        {
+            return Ok(());
+        }
+
+        let current_count = self
+            .connection_manager
+            .get_channel_socket_count(&app_config.id, channel)
+            .await;
+
+        if current_count == 1 {
+            if let Some(webhook_integration) = &self.webhook_integration
+                && let Err(e) = webhook_integration
+                    .send_channel_occupied(app_config, channel)
+                    .await
+            {
+                tracing::warn!(
+                    "Failed to send channel_occupied webhook for {}: {}",
+                    channel,
+                    e
+                );
             }
 
             self.broadcast_metachannel_event(
                 app_config,
-                &request.channel,
-                "subscription_count",
+                channel,
+                "channel_occupied",
                 sonic_rs::json!({
-                    "channel": request.channel,
+                    "channel": channel,
                     "subscription_count": current_count,
                 }),
             )
@@ -419,26 +436,25 @@ impl ConnectionHandler {
             .ok();
         }
 
-        // Send subscription count webhook for non-presence channels
-        if !request.channel.starts_with("presence-")
-            && !sockudo_core::utils::is_meta_channel(&request.channel)
+        self.broadcast_metachannel_event(
+            app_config,
+            channel,
+            "subscription_count",
+            sonic_rs::json!({
+                "channel": channel,
+                "subscription_count": current_count,
+            }),
+        )
+        .await
+        .ok();
+
+        if !channel.starts_with("presence-")
             && let Some(webhook_integration) = &self.webhook_integration
         {
-            let current_count = self
-                .connection_manager
-                .get_channel_socket_count(&app_config.id, &request.channel)
-                .await;
-
             webhook_integration
-                .send_subscription_count_changed(app_config, &request.channel, current_count)
+                .send_subscription_count_changed(app_config, channel, current_count)
                 .await
                 .ok();
-        }
-
-        // Handle cache channels
-        if is_cache_channel(&request.channel) {
-            self.send_missed_cache_if_exists(&app_config.id, socket_id, &request.channel)
-                .await?;
         }
 
         Ok(())
@@ -628,7 +644,6 @@ impl ConnectionHandler {
 
             let mut conn_locked = conn_arc.inner.lock().await;
 
-            // Handle presence data
             if let Some(ref member) = subscription_result.member {
                 conn_locked.state.user_id = Some(member.user_id.clone());
 
@@ -637,15 +652,20 @@ impl ConnectionHandler {
                     user_info: Some(member.user_info.clone()),
                 };
 
-                conn_locked.add_presence_info(request.channel.clone(), presence_info);
-
-                // Release the connection lock before calling add_user
+                conn_locked.add_presence_info(request.channel.clone(), presence_info.clone());
+                // Release the connection lock before the mirror write and add_user
                 drop(conn_locked);
+
+                self.set_namespace_presence(
+                    &app_config.id,
+                    socket_id,
+                    &request.channel,
+                    presence_info,
+                );
 
                 // Add user to the user-socket mapping so get_user_sockets() can find it
                 self.connection_manager.add_user(conn_arc.clone()).await?;
             } else {
-                // Release locks when not needed
                 drop(conn_locked);
             }
         }
@@ -877,7 +897,7 @@ impl ConnectionHandler {
                 delta_sequence: None,
                 delta_conflation_key: None,
             };
-            connection.send_message(&message).await?;
+            connection.send_message(&message)?;
             if let Some(metrics) = self.metrics() {
                 metrics.mark_annotation_summary_delivery(channel);
             }

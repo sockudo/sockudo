@@ -736,11 +736,11 @@ mod chunk_builder_tests {
         let mut reg = build_registry(100, 5);
         for sockets in reg.values_mut() {
             for entry in sockets.values_mut() {
-                entry.user_info = Some(sonic_rs::json!({
+                entry.user_info = Some(std::sync::Arc::new(sonic_rs::json!({
                     "name": "Test User Realistic",
                     "email": "user@example.com",
                     "tier": "premium",
-                }));
+                })));
             }
         }
         let chunks = build_presence_state_chunks(&reg, 100).unwrap();

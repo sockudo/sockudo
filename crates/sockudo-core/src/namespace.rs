@@ -9,7 +9,7 @@ use dashmap::{DashMap, DashSet};
 use futures_util::future::join_all;
 use sockudo_ws::axum_integration::WebSocketWriter;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 // Represents a namespace, typically tied to a specific application ID.
 pub struct Namespace {
@@ -18,6 +18,7 @@ pub struct Namespace {
     pub channels: DashMap<String, DashSet<SocketId>>,
     wildcard_channels: DashSet<String>,
     pub users: DashMap<String, DashSet<WebSocketRef>>,
+    pub presence_data: DashMap<SocketId, HashMap<String, PresenceMemberInfo>>,
 }
 
 pub struct SocketInitOptions {
@@ -35,6 +36,7 @@ impl Namespace {
             channels: DashMap::new(),
             wildcard_channels: DashSet::new(),
             users: DashMap::new(),
+            presence_data: DashMap::new(),
         }
     }
 
@@ -86,34 +88,25 @@ impl Namespace {
             .map(|conn_ref| conn_ref.value().clone())
     }
 
-    pub async fn get_channel_members(
+    pub fn get_channel_members(
         &self,
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>> {
         let mut presence_members = HashMap::new();
 
         if let Some(socket_ids_ref) = self.channels.get(channel) {
-            let socket_ids_snapshot = socket_ids_ref.clone();
-            drop(socket_ids_ref);
-
-            for socket_id_entry in socket_ids_snapshot.iter() {
+            for socket_id_entry in socket_ids_ref.iter() {
                 let socket_id = socket_id_entry.key();
-                if let Some(connection) = self.get_connection(socket_id) {
-                    let presence_data = {
-                        let conn_guard = connection.inner.lock().await;
-                        conn_guard
-                            .state
-                            .presence
-                            .as_ref()
-                            .and_then(|p_map| p_map.get(channel).cloned())
-                    };
-                    if let Some(presence_info) = presence_data {
-                        presence_members.insert(presence_info.user_id.clone(), presence_info);
-                    }
+                if let Some(per_socket) = self.presence_data.get(socket_id)
+                    && let Some(info) = per_socket.get(channel)
+                {
+                    presence_members
+                        .entry(info.user_id.clone())
+                        .or_insert_with(|| info.clone());
                 }
             }
         } else {
-            info!(
+            debug!(
                 "get_channel_members called on non-existent channel: {}",
                 channel
             );
@@ -438,6 +431,8 @@ impl Namespace {
             }
         }
 
+        self.presence_data.remove(&socket_id);
+
         if self.sockets.remove(&socket_id).is_some() {
             debug!("Removed socket {} from main map.", socket_id);
         } else {
@@ -544,22 +539,14 @@ impl Namespace {
             .is_some_and(|channel_sockets| channel_sockets.contains(socket_id))
     }
 
-    pub async fn get_presence_member(
+    pub fn get_presence_member(
         &self,
         channel: &str,
         socket_id: &SocketId,
     ) -> Option<PresenceMemberInfo> {
-        if let Some(connection) = self.get_connection(socket_id) {
-            let conn_guard = connection.inner.lock().await;
-            conn_guard
-                .state
-                .presence
-                .as_ref()
-                .and_then(|presence_map| presence_map.get(channel))
-                .cloned()
-        } else {
-            None
-        }
+        self.presence_data
+            .get(socket_id)
+            .and_then(|per_socket| per_socket.get(channel).cloned())
     }
 
     pub async fn update_presence_member(
@@ -651,7 +638,7 @@ impl Namespace {
         Ok(())
     }
 
-    pub async fn count_user_connections_in_channel(
+    pub fn count_user_connections_in_channel(
         &self,
         user_id: &str,
         channel: &str,
@@ -661,13 +648,16 @@ impl Namespace {
 
         if let Some(user_sockets_ref) = self.users.get(user_id) {
             for ws_ref in user_sockets_ref.iter() {
-                let socket_state_guard = ws_ref.inner.lock().await;
-                let socket_id = &socket_state_guard.state.socket_id;
-                let is_subscribed = socket_state_guard.state.is_subscribed(channel);
-
-                let should_exclude = excluding_socket == Some(socket_id);
-
-                if is_subscribed && !should_exclude {
+                let socket_id = ws_ref.get_socket_id_sync();
+                if excluding_socket == Some(socket_id) {
+                    continue;
+                }
+                if self
+                    .presence_data
+                    .get(socket_id)
+                    .map(|m| m.contains_key(channel))
+                    .unwrap_or(false)
+                {
                     count += 1;
                 }
             }

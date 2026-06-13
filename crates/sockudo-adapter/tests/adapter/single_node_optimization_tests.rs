@@ -1,6 +1,7 @@
 use sockudo_adapter::connection_manager::{ConnectionManager, HorizontalAdapterInterface};
 use sockudo_adapter::horizontal_adapter::RequestType;
 use sockudo_adapter::horizontal_adapter_base::HorizontalAdapterBase;
+use sockudo_adapter::horizontal_transport::HorizontalTransport;
 use sockudo_core::error::Result;
 use sockudo_protocol::messages::{MessageData, PusherMessage};
 use std::time::Duration;
@@ -190,6 +191,40 @@ async fn test_multi_node_sends_requests() -> Result<()> {
     let request = &published_requests[0];
     assert_eq!(request.app_id, "test-app");
     assert!(matches!(request.request_type, RequestType::Sockets));
+
+    Ok(())
+}
+
+/// Test that cluster health determines request fanout expectations for transports whose
+/// node-count fallback can describe infrastructure rather than Sockudo peers.
+#[tokio::test]
+async fn test_cluster_health_node_count_overrides_transport_hint_for_requests() -> Result<()> {
+    let config = MockConfig {
+        node_states: vec![
+            MockNodeState::new("node-1"),
+            MockNodeState::new("node-2"),
+            MockNodeState::new("node-3"),
+        ],
+        ..Default::default()
+    };
+
+    let adapter = HorizontalAdapterBase::<MockTransport>::new(config.clone()).await?;
+    adapter.start_listeners().await?;
+
+    let transport_node_count = adapter.transport.get_node_count().await?;
+    assert_eq!(transport_node_count, 4);
+
+    let adapter = adapter.with_discovered_nodes(vec!["node-1"]).await?;
+    assert_eq!(adapter.horizontal.get_effective_node_count().await, 2);
+
+    let response = adapter
+        .send_request("test-app", RequestType::Sockets, None, None, None)
+        .await?;
+
+    assert_eq!(
+        response.expected_responses, 1,
+        "request aggregation should follow discovered Sockudo peers, not the transport node-count hint"
+    );
 
     Ok(())
 }

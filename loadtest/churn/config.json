@@ -1,0 +1,68 @@
+{
+  "debug": false,
+  "host": "0.0.0.0",
+  "port": 6001,
+  "shutdown_grace_period": 2,
+  "adapter": {
+    "driver": "nats",
+    "enable_socket_counting": true,
+    "nats": {
+      "servers": ["nats://nats:4222"],
+      "prefix": "sockudo_adapter:",
+      "request_timeout_ms": 5000,
+      "nodes_number": 3,
+      "connection_timeout_ms": 5000,
+      "discovery_max_wait_ms": 1000,
+      "discovery_idle_wait_ms": 150
+    },
+    "cluster_health": {
+      "enabled": true,
+      "heartbeat_interval_ms": 2000,
+      "node_timeout_ms": 10000,
+      "cleanup_interval_ms": 2000
+    },
+    "aggregate_counts": true
+  },
+  "cache": { "driver": "memory", "memory": { "ttl": 300, "cleanup_interval": 60, "max_capacity": 100000 } },
+  "queue": { "driver": "memory" },
+  "rate_limiter": { "enabled": false, "driver": "memory" },
+  "metrics": { "enabled": true, "driver": "prometheus", "host": "0.0.0.0", "port": 9601, "prometheus": { "prefix": "sockudo_" } },
+  "delta_compression": { "enabled": false },
+  "tag_filtering": { "enabled": false },
+  "connection_recovery": { "enabled": false },
+  "idempotency": { "enabled": false },
+  "app_manager": {
+    "driver": "memory",
+    "array": {
+      "apps": [
+        {
+          "id": "heavy",
+          "key": "heavykey",
+          "secret": "heavysecret",
+          "enabled": true,
+          "webhooks": [
+            {
+              "url": "http://webhook-sink:5678",
+              "event_types": ["channel_occupied", "channel_vacated", "subscription_count"]
+            }
+          ],
+          "policy": {
+            "limits": { "max_connections": 1000000, "max_client_events_per_second": 1000000 },
+            "channels": { "allowed_origins": ["*"] }
+          }
+        },
+        {
+          "id": "light",
+          "key": "lightkey",
+          "secret": "lightsecret",
+          "enabled": true,
+          "webhooks": [],
+          "policy": {
+            "limits": { "max_connections": 1000000, "max_client_events_per_second": 1000000 },
+            "channels": { "allowed_origins": ["*"] }
+          }
+        }
+      ]
+    }
+  }
+}

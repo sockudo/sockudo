@@ -17,6 +17,13 @@
 - Docker release builds now use the workspace Rust toolchain version and include the push,
   AI Transport, and benchmark workspace manifests during dependency-cache setup.
 
+## [4.5.2] - 2026-06-13
+
+### Fixed
+
+- Published the `sockudo` binary crate release line after `4.5.x` library crates advanced independently on crates.io.
+- Included the `sockudo-push` crate in the publish sequence so optional push features no longer block publishing `sockudo`.
+
 ## [4.5.1] - 2026-05-26
 
 ### Added

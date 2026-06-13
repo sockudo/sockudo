@@ -21,6 +21,15 @@ pub struct AdapterConfig {
     pub enable_socket_counting: bool,
     #[serde(default = "default_fallback_to_local")]
     pub fallback_to_local: bool,
+    /// Tier 1A: maintain cluster-wide channel counts locally via gossip so count
+    /// reads (subscription_count, /channels, occupancy) become local with zero
+    /// cross-node fan-out. Off by default; falls back to request/reply when off.
+    #[serde(default = "default_aggregate_counts")]
+    pub aggregate_counts: bool,
+}
+
+fn default_aggregate_counts() -> bool {
+    false
 }
 
 fn default_enable_socket_counting() -> bool {
@@ -51,6 +60,7 @@ impl Default for AdapterConfig {
             cluster_health: ClusterHealthConfig::default(),
             enable_socket_counting: default_enable_socket_counting(),
             fallback_to_local: default_fallback_to_local(),
+            aggregate_counts: default_aggregate_counts(),
         }
     }
 }

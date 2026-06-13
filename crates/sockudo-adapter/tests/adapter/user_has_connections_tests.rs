@@ -1,6 +1,7 @@
 use crate::adapter::horizontal_adapter_helpers::MockConfig;
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::horizontal_adapter::RequestType;
+use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::Result;
 use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocket, WebSocketRef};
@@ -61,7 +62,19 @@ async fn seed_local_user_connection(
         .users
         .entry(user_id.to_string())
         .or_default()
-        .insert(ws_ref);
+        .insert(ws_ref.clone());
+
+    namespace
+        .presence_data
+        .entry(socket_id)
+        .or_default()
+        .insert(
+            channel.to_string(),
+            PresenceMemberInfo {
+                user_id: user_id.to_string(),
+                user_info: None,
+            },
+        );
 }
 
 /// Test that local connections short-circuit without a cross-cluster request

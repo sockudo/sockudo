@@ -210,6 +210,10 @@ impl MessageSender {
         self.sender.try_send(message)
     }
 
+    pub(crate) fn sender_handle(&self) -> MessageSenderHandle {
+        self.sender.clone()
+    }
+
     pub fn send(&self, message: Message) -> Result<()> {
         self.sender.try_send(message).map_err(|e| match e {
             TrySendError::Full(_) => Error::BufferFull("Message buffer is full".into()),

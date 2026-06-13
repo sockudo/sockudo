@@ -14,6 +14,8 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "ADAPTER_ENABLE_SOCKET_COUNTING",
         options.adapter.enable_socket_counting,
     );
+    options.adapter.aggregate_counts =
+        parse_env::<bool>("ADAPTER_AGGREGATE_COUNTS", options.adapter.aggregate_counts);
     options.adapter.fallback_to_local = parse_env::<bool>(
         "ADAPTER_FALLBACK_TO_LOCAL",
         options.adapter.fallback_to_local,

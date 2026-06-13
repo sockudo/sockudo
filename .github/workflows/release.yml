@@ -358,10 +358,11 @@ jobs:
             sockudo-app
             sockudo-cache
             sockudo-queue
-            sockudo-rate-limiter
             sockudo-metrics
+            sockudo-rate-limiter
             sockudo-webhook
             sockudo-delta
+            sockudo-push
             sockudo-adapter
             sockudo
           )

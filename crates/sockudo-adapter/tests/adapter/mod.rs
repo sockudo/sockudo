@@ -72,3 +72,15 @@ mod clustered_active_channels_gauge_tests;
 
 #[cfg(test)]
 mod filter_index_disconnect_cleanup_tests;
+
+#[cfg(test)]
+mod replay_buffer_tests;
+
+#[cfg(test)]
+mod cluster_presence_registry_tests;
+
+#[cfg(test)]
+mod presence_concurrency_tests;
+
+#[cfg(test)]
+mod presence_lock_scope_tests;

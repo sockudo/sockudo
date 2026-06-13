@@ -32,7 +32,7 @@ async fn test_sequence_number_conflict_resolution() {
 
     // Create two presence entries with different sequence numbers
     let entry1 = sockudo_adapter::horizontal_adapter::PresenceEntry {
-        user_info: Some(json!({"version": 1})),
+        user_info: Some(std::sync::Arc::new(json!({"version": 1}))),
         node_id: "node-1".to_string(),
         app_id: app_id.to_string(),
         user_id: user_id.to_string(),
@@ -41,7 +41,7 @@ async fn test_sequence_number_conflict_resolution() {
     };
 
     let entry2 = sockudo_adapter::horizontal_adapter::PresenceEntry {
-        user_info: Some(json!({"version": 2})),
+        user_info: Some(std::sync::Arc::new(json!({"version": 2}))),
         node_id: "node-2".to_string(),
         app_id: app_id.to_string(),
         user_id: user_id.to_string(),
@@ -77,7 +77,10 @@ async fn test_sequence_number_conflict_resolution() {
 
     assert!(node2_entry.is_some());
     assert_eq!(node2_entry.unwrap().sequence_number, 200);
-    assert_eq!(node2_entry.unwrap().user_info, Some(json!({"version": 2})));
+    assert_eq!(
+        node2_entry.unwrap().user_info,
+        Some(std::sync::Arc::new(json!({"version": 2})))
+    );
 }
 
 /// Test handling of presence updates with clock skew
@@ -174,7 +177,7 @@ async fn test_bulk_presence_cleanup() {
                 let socket_id = format!("socket-{}-{}", c, u);
 
                 let entry = sockudo_adapter::horizontal_adapter::PresenceEntry {
-                    user_info: Some(json!({"bulk": true})),
+                    user_info: Some(std::sync::Arc::new(json!({"bulk": true}))),
                     node_id: "bulk-node".to_string(),
                     app_id: app_id.to_string(),
                     user_id,

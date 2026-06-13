@@ -1,6 +1,6 @@
 use super::buffer::{
-    BufferedRewindMessage, ByteCounter, RewindGate, SizedMessage, SizedMessageSenderHandle,
-    WebSocketBufferConfig,
+    BufferedRewindMessage, ByteCounter, MessageSenderHandle, RewindGate, SizedMessage,
+    SizedMessageSenderHandle, WebSocketBufferConfig,
 };
 use super::capabilities::ConnectionCapabilities;
 use super::connection::WebSocket;
@@ -17,6 +17,7 @@ use sonic_rs::Value;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -24,6 +25,7 @@ use tracing::warn;
 #[derive(Clone)]
 pub struct WebSocketRef {
     pub broadcast_tx: SizedMessageSenderHandle,
+    pub message_sender: MessageSenderHandle,
     pub channel_filters: Arc<DashMap<String, Option<Arc<FilterNode>>>>,
     /// V2 event name filters per channel. None = receive all events.
     pub event_name_filters: Arc<DashMap<String, Option<Vec<String>>>>,
@@ -36,6 +38,10 @@ pub struct WebSocketRef {
     pub buffer_config: WebSocketBufferConfig,
     pub byte_counter: Option<Arc<ByteCounter>>,
     pub shutdown_token: CancellationToken,
+    // Set at the start of close(), before the close frame is queued, so no data
+    // frame can slip in behind it. The shutdown_token is only cancelled after the
+    // close frame is queued (cancelling earlier would make the writer task drop it).
+    closing: Arc<std::sync::atomic::AtomicBool>,
     pub inner: Arc<Mutex<WebSocket>>,
     pub protocol_version: ProtocolVersion,
     pub wire_format: WireFormat,
@@ -46,6 +52,7 @@ pub struct WebSocketRef {
 impl WebSocketRef {
     pub fn new(websocket: WebSocket) -> Self {
         let broadcast_tx = websocket.broadcast_tx.clone();
+        let message_sender = websocket.message_sender.sender_handle();
         let socket_id = *websocket.get_socket_id();
         let buffer_config = websocket.buffer_config;
         let byte_counter = websocket.byte_counter.clone();
@@ -66,6 +73,7 @@ impl WebSocketRef {
 
         Self {
             broadcast_tx,
+            message_sender,
             channel_filters,
             event_name_filters,
             annotation_subscriptions,
@@ -75,6 +83,7 @@ impl WebSocketRef {
             buffer_config,
             byte_counter,
             shutdown_token,
+            closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             protocol_version,
             wire_format,
             echo_messages,
@@ -146,14 +155,50 @@ impl WebSocketRef {
         }
     }
 
-    pub async fn send_message(&self, message: &PusherMessage) -> Result<()> {
-        let ws = self.inner.lock().await;
-        ws.send_message(message)
+    pub fn send_message(&self, message: &PusherMessage) -> Result<()> {
+        if self.closing.load(Ordering::Acquire) || self.shutdown_token.is_cancelled() {
+            return Err(Error::ConnectionClosed("Connection shutting down".into()));
+        }
+
+        let payload = sockudo_protocol::wire::serialize_message(message, self.wire_format)
+            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+
+        if self.wire_format.is_binary() {
+            self.message_sender
+                .try_send(sockudo_ws::Message::Binary(Bytes::from(payload)))
+                .map_err(|e| match e {
+                    TrySendError::Full(_) => Error::BufferFull("Message buffer full".into()),
+                    TrySendError::Disconnected(_) => {
+                        Error::ConnectionClosed("Channel closed".into())
+                    }
+                })
+        } else {
+            let text = String::from_utf8(payload).map_err(|e| {
+                Error::InvalidMessageFormat(format!("JSON payload is not UTF-8: {e}"))
+            })?;
+
+            self.message_sender
+                .try_send(sockudo_ws::Message::text(text))
+                .map_err(|e| match e {
+                    TrySendError::Full(_) => Error::BufferFull("Message buffer full".into()),
+                    TrySendError::Disconnected(_) => {
+                        Error::ConnectionClosed("Channel closed".into())
+                    }
+                })
+        }
     }
 
     pub async fn close(&self, code: u16, reason: String) -> Result<()> {
-        let mut ws = self.inner.lock().await;
-        ws.close(code, reason).await
+        // Reject new sends before queueing the close frame so no data frame can be
+        // enqueued behind it. Token cancellation must stay AFTER ws.close(): the
+        // writer task breaks on cancellation and would drop the queued close frame.
+        self.closing.store(true, Ordering::Release);
+        let result = {
+            let mut ws = self.inner.lock().await;
+            ws.close(code, reason).await
+        };
+        self.shutdown_token.cancel();
+        result
     }
 
     /// Signal both reader and writer tasks to shut down.
@@ -365,17 +410,17 @@ pub trait WebSocketExt {
 
 impl WebSocketExt for WebSocketRef {
     async fn send_pusher_message(&self, message: PusherMessage) -> Result<()> {
-        self.send_message(&message).await
+        self.send_message(&message)
     }
 
     async fn send_error(&self, code: u16, message: String, channel: Option<String>) -> Result<()> {
         let error_msg = PusherMessage::error(u32::from(code), message, channel);
-        self.send_message(&error_msg).await
+        self.send_message(&error_msg)
     }
 
     async fn send_pong(&self) -> Result<()> {
         let pong_msg = PusherMessage::pong();
-        self.send_message(&pong_msg).await
+        self.send_message(&pong_msg)
     }
 }
 
