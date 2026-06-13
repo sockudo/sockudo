@@ -328,7 +328,10 @@ where
                         members.entry(entry.user_id.clone()).or_insert_with(|| {
                             PresenceMemberInfo {
                                 user_id: entry.user_id.clone(),
-                                user_info: entry.user_info.clone(),
+                                user_info: entry
+                                    .user_info
+                                    .as_ref()
+                                    .map(|info| info.as_ref().clone()),
                             }
                         });
                     }
@@ -444,6 +447,15 @@ where
             .local_adapter
             .get_channel_socket_count(app_id, channel)
             .await;
+
+        // Tier 1A: read peer contributions from the gossiped registry instead of
+        // cross-node request/reply.
+        if self.aggregate_counts {
+            return crate::connection_manager::ChannelSocketCount {
+                count: local_count + self.horizontal.remote_channel_count(app_id, channel),
+                complete: true,
+            };
+        }
 
         // Get distributed count
         match self
@@ -711,6 +723,14 @@ where
             .local_adapter
             .get_channels_with_socket_count(app_id)
             .await?;
+
+        // Tier 1A: merge peer counts from the gossiped registry, no fan-out.
+        if self.aggregate_counts {
+            for (channel, count) in self.horizontal.remote_channels_with_counts(app_id) {
+                *channels.entry(channel).or_insert(0) += count;
+            }
+            return Ok(channels);
+        }
 
         // Get distributed channels
         match self

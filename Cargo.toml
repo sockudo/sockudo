@@ -20,7 +20,7 @@ exclude = ["server-sdks/pusher-http-rust"]
 resolver = "3"
 
 [workspace.package]
-version = "4.5.1"
+version = "4.5.2"
 edition = "2024"
 rust-version = "1.94"
 repository = "https://github.com/sockudo/sockudo"
@@ -29,19 +29,19 @@ readme = "README.md"
 
 [workspace.dependencies]
 # Internal crates
-sockudo-protocol = { version = "4.5.1", path = "crates/sockudo-protocol" }
-sockudo-filter = { version = "4.5.1", path = "crates/sockudo-filter" }
-sockudo-core = { version = "4.5.1", path = "crates/sockudo-core" }
-sockudo-app = { version = "4.5.1", path = "crates/sockudo-app" }
-sockudo-cache = { version = "4.5.1", path = "crates/sockudo-cache" }
-sockudo-queue = { version = "4.5.1", path = "crates/sockudo-queue" }
-sockudo-rate-limiter = { version = "4.5.1", path = "crates/sockudo-rate-limiter" }
-sockudo-metrics = { version = "4.5.1", path = "crates/sockudo-metrics" }
-sockudo-webhook = { version = "4.5.1", path = "crates/sockudo-webhook" }
-sockudo-delta = { version = "4.5.1", path = "crates/sockudo-delta" }
-sockudo-push = { version = "4.5.1", path = "crates/sockudo-push" }
-sockudo-ai-transport = { version = "4.5.1", path = "crates/sockudo-ai-transport" }
-sockudo-adapter = { version = "4.5.1", path = "crates/sockudo-adapter", default-features = false }
+sockudo-protocol = { version = "4.5.2", path = "crates/sockudo-protocol" }
+sockudo-filter = { version = "4.5.2", path = "crates/sockudo-filter" }
+sockudo-core = { version = "4.5.2", path = "crates/sockudo-core" }
+sockudo-app = { version = "4.5.2", path = "crates/sockudo-app" }
+sockudo-cache = { version = "4.5.2", path = "crates/sockudo-cache" }
+sockudo-queue = { version = "4.5.2", path = "crates/sockudo-queue" }
+sockudo-rate-limiter = { version = "4.5.2", path = "crates/sockudo-rate-limiter" }
+sockudo-metrics = { version = "4.5.2", path = "crates/sockudo-metrics" }
+sockudo-webhook = { version = "4.5.2", path = "crates/sockudo-webhook" }
+sockudo-delta = { version = "4.5.2", path = "crates/sockudo-delta" }
+sockudo-push = { version = "4.5.2", path = "crates/sockudo-push" }
+sockudo-ai-transport = { version = "4.5.2", path = "crates/sockudo-ai-transport" }
+sockudo-adapter = { version = "4.5.2", path = "crates/sockudo-adapter", default-features = false }
 
 # External dependencies (shared versions)
 async-trait = "0.1.89"
@@ -140,7 +140,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
 ] }
 rustls = { version = "0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
 scylla = { version = "1.3.1", features = ["rustls-023"] }
-serde = { version = "^1", features = ["derive"] }
+serde = { version = "^1", features = ["derive", "rc"] }
 serde-aux = "4"
 serde_json = "1"
 serde_json_path = "0.7.2"

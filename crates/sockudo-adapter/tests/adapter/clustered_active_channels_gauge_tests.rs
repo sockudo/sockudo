@@ -4,6 +4,7 @@
 use crate::adapter::horizontal_adapter_helpers::MockConfig;
 use sockudo_adapter::ConnectionManager;
 use sockudo_adapter::channel_manager::ChannelManager;
+use sockudo_adapter::horizontal_adapter::RequestType;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
 use std::sync::Arc;
@@ -103,4 +104,63 @@ async fn unsubscribe_empties_local_while_cluster_still_holds_channel() {
     assert_eq!(local, 0);
     assert!(cluster > 0, "cluster={cluster}");
     assert!(leave.remaining_connections.unwrap() > 0);
+}
+
+/// Churn-path subscribe only needs the local transition. Cluster-wide counts are
+/// emitted later by handler notification code, not inside ChannelManager.
+#[tokio::test]
+async fn subscribe_does_not_fan_out_for_cluster_count() {
+    let adapter = Arc::new(MockConfig::create_multi_node_adapter().await.unwrap());
+    adapter.start_listeners().await.unwrap();
+    let cm: Arc<dyn ConnectionManager + Send + Sync> = adapter.clone();
+    let socket = SocketId::new();
+    let msg = PusherMessage::channel_event("pusher:subscribe", SHARED_CHANNEL, sonic_rs::json!({}));
+
+    let resp = ChannelManager::subscribe_local(
+        &cm,
+        &socket.to_string(),
+        &msg,
+        SHARED_CHANNEL,
+        false,
+        APP_ID,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp.channel_connections, Some(1));
+    assert!(resp.activated_locally);
+    assert!(
+        adapter.transport.get_published_requests().await.is_empty(),
+        "subscribe should not publish horizontal count/existence requests"
+    );
+}
+
+/// Manual unsubscribe uses the same local transition path; callers that need a
+/// cluster count perform one post-ack count query.
+#[tokio::test]
+async fn unsubscribe_local_does_not_fan_out_for_cluster_count() {
+    let adapter = Arc::new(MockConfig::create_multi_node_adapter().await.unwrap());
+    adapter.start_listeners().await.unwrap();
+    let cm: Arc<dyn ConnectionManager + Send + Sync> = adapter.clone();
+    let socket = SocketId::new();
+
+    cm.add_to_channel(APP_ID, SHARED_CHANNEL, &socket)
+        .await
+        .unwrap();
+
+    let leave =
+        ChannelManager::unsubscribe_local(&cm, &socket.to_string(), SHARED_CHANNEL, APP_ID, None)
+            .await
+            .unwrap();
+
+    assert_eq!(leave.remaining_connections, Some(0));
+    assert!(
+        adapter
+            .transport
+            .get_published_requests()
+            .await
+            .iter()
+            .all(|request| request.request_type != RequestType::ChannelSocketsCount),
+        "unsubscribe_local should not publish horizontal count requests"
+    );
 }

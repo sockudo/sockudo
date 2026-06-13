@@ -107,10 +107,10 @@ impl ConnectionManager for LocalAdapter {
                     rewritten.message_id = Some(generate_message_id());
                 }
                 rewritten.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
-                connection.send_message(&rewritten).await
+                connection.send_message(&rewritten)
             }
             sockudo_protocol::ProtocolVersion::V1 => match Self::v1_compatible_message(&message) {
-                Some(v1_msg) => connection.send_message(&v1_msg).await,
+                Some(v1_msg) => connection.send_message(&v1_msg),
                 None => Ok(()),
             },
         }
@@ -335,7 +335,7 @@ impl ConnectionManager for LocalAdapter {
         channel: &str,
     ) -> Result<HashMap<String, PresenceMemberInfo>> {
         let mut members = match self.existing_namespace(app_id) {
-            Some(namespace) => namespace.get_channel_members(channel).await,
+            Some(namespace) => namespace.get_channel_members(channel),
             None => Ok(HashMap::new()),
         }?;
 
@@ -478,14 +478,14 @@ impl ConnectionManager for LocalAdapter {
     ) -> Result<bool> {
         let namespace = self.get_or_create_namespace(app_id).await;
 
-        // MEMORY LEAK FIX: Clean up filter index BEFORE removing from channel
-        // Get the socket's filter for this channel so we can remove it from the index
+        // Clean up the filter index even if the socket was already removed
+        // from the namespace during disconnect cleanup.
+        #[cfg(feature = "tag-filtering")]
+        self.filter_index
+            .remove_socket_all_filters(channel, *socket_id);
+
         #[cfg(feature = "tag-filtering")]
         if let Some(socket_ref) = namespace.sockets.get(socket_id) {
-            let filter_node = socket_ref.get_channel_filter_sync(channel);
-            self.filter_index
-                .remove_socket_filter(channel, *socket_id, filter_node.as_deref());
-            // Also remove from the socket's channel_filters map
             socket_ref.channel_filters.remove(channel);
         }
 
@@ -499,7 +499,7 @@ impl ConnectionManager for LocalAdapter {
         socket_id: &SocketId,
     ) -> Option<PresenceMemberInfo> {
         let namespace = self.get_or_create_namespace(app_id).await;
-        namespace.get_presence_member(channel, socket_id).await
+        namespace.get_presence_member(channel, socket_id)
     }
 
     async fn update_presence_member(
@@ -629,9 +629,7 @@ impl ConnectionManager for LocalAdapter {
     ) -> Result<usize> {
         match self.existing_namespace(app_id) {
             Some(namespace) => {
-                namespace
-                    .count_user_connections_in_channel(user_id, channel, excluding_socket)
-                    .await
+                namespace.count_user_connections_in_channel(user_id, channel, excluding_socket)
             }
             None => Ok(0),
         }

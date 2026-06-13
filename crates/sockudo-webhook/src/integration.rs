@@ -333,6 +333,28 @@ impl WebhookIntegration {
         })
     }
 
+    /// Cheap synchronous check: is a webhook configured for `event_type` on this app?
+    /// Unlike [`Self::should_send_webhook`] this does not allocate, so it is safe to
+    /// call on the subscribe/unsubscribe hot path.
+    pub fn webhook_configured(&self, app: &App, event_type: &str) -> bool {
+        self.is_enabled()
+            && app.webhooks_ref().is_some_and(|webhooks| {
+                webhooks
+                    .iter()
+                    .any(|wh| wh.event_types.iter().any(|e| e.as_str() == event_type))
+            })
+    }
+
+    /// Whether any subscription-count-derived webhook (channel_occupied,
+    /// channel_vacated, subscription_count) is configured for this app. When this is
+    /// false — and no client subscribes to the channel's meta-channel — the
+    /// subscribe/unsubscribe hot path can skip the cluster-wide count fanout.
+    pub fn wants_subscription_count(&self, app: &App) -> bool {
+        self.webhook_configured(app, "channel_occupied")
+            || self.webhook_configured(app, "channel_vacated")
+            || self.webhook_configured(app, "subscription_count")
+    }
+
     pub async fn send_channel_occupied(&self, app: &App, channel: &str) -> Result<()> {
         if !self.should_send_webhook(app, "channel_occupied").await {
             return Ok(());

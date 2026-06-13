@@ -200,7 +200,7 @@ pub async fn stats(
                 app_stat.occupancy.presence_subscriptions +=
                     namespace.get_channel_socket_count(&channel_name);
                 app_stat.occupancy.presence_members +=
-                    namespace.get_channel_members(&channel_name).await?.len();
+                    namespace.get_channel_members(&channel_name)?.len();
             }
         }
 
