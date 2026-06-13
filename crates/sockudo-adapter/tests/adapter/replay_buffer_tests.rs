@@ -165,6 +165,60 @@ mod replay_buffer_regression {
         assert_eq!(buf.next_serial("app2", "ch"), 1);
     }
 
+    #[test]
+    fn test_empty_subscription_position_recovers_later_messages() {
+        let buf = ReplayBuffer::new(100, Duration::from_secs(60));
+
+        let initial = buf.current_position("app1", "idle");
+        assert_eq!(initial.serial, 0);
+
+        match buf.get_messages_after_position(
+            "app1",
+            "idle",
+            Some(initial.stream_id.as_str()),
+            initial.serial,
+        ) {
+            ReplayLookup::Recovered(messages) => assert!(messages.is_empty()),
+            other => panic!("expected empty recovery, got {}", variant_name(&other)),
+        }
+
+        let next = buf.next_position("app1", "idle");
+        assert_eq!(next.stream_id, initial.stream_id);
+        assert_eq!(next.serial, 1);
+        buf.store(
+            "app1",
+            "idle",
+            Some(next.stream_id.as_str()),
+            next.serial,
+            Bytes::from("offline-msg"),
+        );
+
+        match buf.get_messages_after_position(
+            "app1",
+            "idle",
+            Some(initial.stream_id.as_str()),
+            initial.serial,
+        ) {
+            ReplayLookup::Recovered(messages) => {
+                assert_eq!(messages, vec![Bytes::from("offline-msg")]);
+            }
+            other => panic!("expected recovered message, got {}", variant_name(&other)),
+        }
+    }
+
+    #[test]
+    fn test_ensure_position_aligns_empty_stream_with_durable_history() {
+        let buf = ReplayBuffer::new(100, Duration::from_secs(60));
+
+        let initial = buf.ensure_position("app1", "durable", "stream-1", 7);
+        assert_eq!(initial.stream_id, "stream-1");
+        assert_eq!(initial.serial, 7);
+
+        let next = buf.next_position("app1", "durable");
+        assert_eq!(next.stream_id, "stream-1");
+        assert_eq!(next.serial, 8);
+    }
+
     fn variant_name(lookup: &ReplayLookup) -> &'static str {
         match lookup {
             ReplayLookup::Recovered(_) => "Recovered",

@@ -5,6 +5,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayPosition {
+    pub stream_id: String,
+    pub serial: u64,
+}
+
 struct BufferedMessage {
     stream_id: Option<String>,
     serial: u64,
@@ -15,6 +21,7 @@ struct BufferedMessage {
 struct ChannelBufferState {
     messages: VecDeque<BufferedMessage>,
     current_stream_id: Option<String>,
+    last_touched: Instant,
 }
 
 struct ChannelBuffer {
@@ -54,6 +61,41 @@ impl ReplayBuffer {
         format!("{}\0{}", app_id, channel)
     }
 
+    fn new_stream_id() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    fn new_channel_buffer(
+        max_buffer_size: usize,
+        stream_id: Option<String>,
+        next_serial: u64,
+        now: Instant,
+    ) -> ChannelBuffer {
+        ChannelBuffer {
+            state: Mutex::new(ChannelBufferState {
+                messages: VecDeque::with_capacity(max_buffer_size),
+                current_stream_id: stream_id,
+                last_touched: now,
+            }),
+            next_serial: AtomicU64::new(next_serial),
+        }
+    }
+
+    fn raise_next_serial(entry: &ChannelBuffer, next_serial: u64) {
+        let mut current = entry.next_serial.load(Ordering::Relaxed);
+        while current < next_serial {
+            match entry.next_serial.compare_exchange(
+                current,
+                next_serial,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
     fn prune_expired_locked(
         messages: &mut VecDeque<BufferedMessage>,
         buffer_ttl: Duration,
@@ -68,17 +110,79 @@ impl ReplayBuffer {
         }
     }
 
+    pub fn current_position(&self, app_id: &str, channel: &str) -> ReplayPosition {
+        let key = Self::buffer_key(app_id, channel);
+        let now = Instant::now();
+        let entry = self.buffers.entry(key).or_insert_with(|| {
+            Self::new_channel_buffer(self.max_buffer_size, Some(Self::new_stream_id()), 1, now)
+        });
+
+        let mut state = entry.state.lock().unwrap();
+        let stream_id = state
+            .current_stream_id
+            .get_or_insert_with(Self::new_stream_id)
+            .clone();
+        state.last_touched = now;
+        let serial = entry.next_serial.load(Ordering::Relaxed).saturating_sub(1);
+
+        ReplayPosition { stream_id, serial }
+    }
+
+    pub fn ensure_position(
+        &self,
+        app_id: &str,
+        channel: &str,
+        stream_id: &str,
+        serial: u64,
+    ) -> ReplayPosition {
+        let key = Self::buffer_key(app_id, channel);
+        let now = Instant::now();
+        let next_serial = serial.saturating_add(1);
+        let entry = self.buffers.entry(key).or_insert_with(|| {
+            Self::new_channel_buffer(
+                self.max_buffer_size,
+                Some(stream_id.to_string()),
+                next_serial,
+                now,
+            )
+        });
+
+        {
+            let mut state = entry.state.lock().unwrap();
+            if state.messages.is_empty() || state.current_stream_id.is_none() {
+                state.current_stream_id = Some(stream_id.to_string());
+            }
+            state.last_touched = now;
+        }
+        Self::raise_next_serial(entry.value(), next_serial);
+
+        ReplayPosition {
+            stream_id: stream_id.to_string(),
+            serial,
+        }
+    }
+
+    pub fn next_position(&self, app_id: &str, channel: &str) -> ReplayPosition {
+        let key = Self::buffer_key(app_id, channel);
+        let now = Instant::now();
+        let entry = self.buffers.entry(key).or_insert_with(|| {
+            Self::new_channel_buffer(self.max_buffer_size, Some(Self::new_stream_id()), 1, now)
+        });
+
+        let mut state = entry.state.lock().unwrap();
+        let stream_id = state
+            .current_stream_id
+            .get_or_insert_with(Self::new_stream_id)
+            .clone();
+        state.last_touched = now;
+        let serial = entry.next_serial.fetch_add(1, Ordering::Relaxed);
+
+        ReplayPosition { stream_id, serial }
+    }
+
     /// Atomically increment and return the next serial for a channel.
     pub fn next_serial(&self, app_id: &str, channel: &str) -> u64 {
-        let key = Self::buffer_key(app_id, channel);
-        let entry = self.buffers.entry(key).or_insert_with(|| ChannelBuffer {
-            state: Mutex::new(ChannelBufferState {
-                messages: VecDeque::with_capacity(self.max_buffer_size),
-                current_stream_id: None,
-            }),
-            next_serial: AtomicU64::new(1),
-        });
-        entry.next_serial.fetch_add(1, Ordering::Relaxed)
+        self.next_position(app_id, channel).serial
     }
 
     /// Store a serialized message in the replay buffer.
@@ -91,16 +195,20 @@ impl ReplayBuffer {
         message_bytes: Bytes,
     ) {
         let key = Self::buffer_key(app_id, channel);
-        let entry = self.buffers.entry(key).or_insert_with(|| ChannelBuffer {
-            state: Mutex::new(ChannelBufferState {
-                messages: VecDeque::with_capacity(self.max_buffer_size),
-                current_stream_id: stream_id.map(ToString::to_string),
-            }),
-            next_serial: AtomicU64::new(serial + 1),
+        let now = Instant::now();
+        let entry = self.buffers.entry(key).or_insert_with(|| {
+            Self::new_channel_buffer(
+                self.max_buffer_size,
+                stream_id.map(ToString::to_string),
+                serial.saturating_add(1),
+                now,
+            )
         });
 
         let mut state = entry.state.lock().unwrap();
         state.current_stream_id = stream_id.map(ToString::to_string);
+        state.last_touched = now;
+        Self::raise_next_serial(entry.value(), serial.saturating_add(1));
         // Evict oldest if at capacity
         while state.messages.len() >= self.max_buffer_size {
             state.messages.pop_front();
@@ -109,7 +217,7 @@ impl ReplayBuffer {
             stream_id: stream_id.map(ToString::to_string),
             serial,
             message_bytes,
-            timestamp: Instant::now(),
+            timestamp: now,
         });
     }
 
@@ -156,7 +264,7 @@ impl ReplayBuffer {
         Self::prune_expired_locked(&mut state.messages, self.buffer_ttl, now);
 
         if state.messages.is_empty() {
-            if stream_id.is_some() {
+            if now.duration_since(state.last_touched) >= self.buffer_ttl {
                 return ReplayLookup::Expired;
             }
             // No buffered messages — client is either up-to-date or buffer was evicted.
@@ -200,15 +308,20 @@ impl ReplayBuffer {
         for entry in self.buffers.iter() {
             let mut state = entry.value().state.lock().unwrap();
             Self::prune_expired_locked(&mut state.messages, self.buffer_ttl, now);
-            if state.messages.is_empty() {
+            if state.messages.is_empty()
+                && now.duration_since(state.last_touched) >= self.buffer_ttl
+            {
                 empty_keys.push(entry.key().clone());
             }
         }
 
         for key in empty_keys {
             // Only remove if still empty (avoid race with concurrent store)
-            self.buffers
-                .remove_if(&key, |_, v| v.state.lock().unwrap().messages.is_empty());
+            self.buffers.remove_if(&key, |_, v| {
+                let state = v.state.lock().unwrap();
+                state.messages.is_empty()
+                    && now.duration_since(state.last_touched) >= self.buffer_ttl
+            });
         }
     }
 }
