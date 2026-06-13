@@ -581,6 +581,132 @@ async fn hot_recovery_replays_real_deliveries_e2e() {
 }
 
 #[tokio::test]
+async fn hot_recovery_resumes_idle_subscription_e2e() {
+    let mut options = ServerOptions::default();
+    options.connection_recovery.enabled = true;
+    let harness = build_harness(options).await;
+
+    let (source_socket_id, mut source_reader) = connect_v2_socket(&harness).await;
+    harness
+        .handler
+        .handle_subscribe_request(
+            &source_socket_id,
+            &harness.app,
+            SubscriptionRequest {
+                channel: "idle".to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind: None,
+                event_name_filter: None,
+                annotation_subscribe: false,
+            },
+        )
+        .await
+        .unwrap();
+
+    let subscription_ack = recv_message(&mut source_reader).await;
+    assert_eq!(
+        subscription_ack.event.as_deref(),
+        Some("sockudo_internal:subscription_succeeded")
+    );
+    let stream_id = subscription_ack
+        .stream_id
+        .clone()
+        .expect("V2 subscription ack should include a recovery stream_id");
+    let serial = subscription_ack
+        .serial
+        .expect("V2 subscription ack should include a recovery serial");
+    assert_eq!(serial, 0);
+
+    harness
+        .handler
+        .broadcast_to_channel(
+            &harness.app,
+            "idle",
+            live_message("idle", "idle-event-1", "idle-msg-1"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let position = sonic_rs::json!({
+        "channel_positions": {
+            "idle": {
+                "stream_id": stream_id,
+                "serial": serial,
+            }
+        }
+    });
+
+    let (resume_socket_id, mut resume_reader) = connect_v2_socket(&harness).await;
+    harness
+        .handler
+        .handle_resume(
+            &resume_socket_id,
+            &harness.app,
+            &PusherMessage {
+                event: Some("sockudo:resume".to_string()),
+                channel: None,
+                data: Some(MessageData::Json(position)),
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let messages = recv_until_event(&mut resume_reader, "sockudo:resume_success").await;
+    assert!(
+        messages
+            .iter()
+            .any(|msg| msg.message_id.as_deref() == Some("idle-msg-1"))
+    );
+
+    let aggregate = messages
+        .last()
+        .expect("expected final resume_success aggregate");
+    let aggregate_data = match aggregate.data.as_ref().unwrap() {
+        MessageData::String(data) => {
+            sonic_rs::from_str::<BTreeMap<String, sonic_rs::Value>>(data).unwrap()
+        }
+        MessageData::Json(value) => {
+            sonic_rs::from_value::<BTreeMap<String, sonic_rs::Value>>(value).unwrap()
+        }
+        other => panic!("unexpected aggregate payload: {other:?}"),
+    };
+    assert_eq!(
+        aggregate_data
+            .get("recovered")
+            .and_then(|v| v.as_array())
+            .and_then(|recovered| recovered.first())
+            .and_then(|entry| entry.get("replayed"))
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        aggregate_data
+            .get("failed")
+            .and_then(|v| v.as_array())
+            .map(|failed| failed.len()),
+        Some(0)
+    );
+}
+
+#[tokio::test]
 async fn cold_recovery_replays_real_deliveries_e2e() {
     let mut options_a = ServerOptions::default();
     options_a.history.enabled = true;
