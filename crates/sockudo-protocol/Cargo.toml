@@ -16,5 +16,15 @@ serde_json = "1"
 sonic-rs = { workspace = true }
 uuid = { workspace = true }
 
+[features]
+default = []
+ai-transport = []
+
 [dev-dependencies]
+criterion = { workspace = true }
 serde_json = "1"
+
+[[bench]]
+name = "ai_headers_bench"
+path = "benches/ai_headers_bench.rs"
+harness = false

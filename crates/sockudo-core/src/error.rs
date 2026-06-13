@@ -106,6 +106,13 @@ pub enum Error {
     #[error("Invalid event name: {0}")]
     InvalidEventName(String),
 
+    #[error("{message}")]
+    AiTransport {
+        code: u32,
+        name: &'static str,
+        message: String,
+    },
+
     // WebSocket errors
     #[error("WebSocket error: {0}")]
     WebSocket(#[from] sockudo_ws::Error),
@@ -214,6 +221,8 @@ impl Error {
 
             Error::ClientEvent(_) => 4301,
 
+            Error::AiTransport { .. } => 4000,
+
             Error::Auth(_) | Error::InvalidSignature | Error::InvalidKey => 4009,
 
             Error::Connection(_) | Error::ConnectionExists | Error::ConnectionNotFound => 4000,
@@ -255,8 +264,14 @@ impl Error {
 // Convert to Pusher protocol error message
 impl From<Error> for sockudo_protocol::messages::ErrorData {
     fn from(error: Error) -> Self {
+        if let Error::AiTransport { code, message, .. } = error {
+            return Self {
+                code: Some(code),
+                message,
+            };
+        }
         Self {
-            code: Some(error.close_code()),
+            code: Some(u32::from(error.close_code())),
             message: error.to_string(),
         }
     }

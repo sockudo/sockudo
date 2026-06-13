@@ -87,6 +87,106 @@ app.post("/sockudo/user-auth", (req, res) => {
 });
 ```
 
+## Protocol V2 capability tokens
+
+Protocol V2 clients may authenticate the WebSocket connection with a short-lived capability token:
+
+```ts
+const client = new Sockudo("app-key", {
+  protocolVersion: 2,
+  auth: {
+    endpoint: "/sockudo/token",
+  },
+});
+```
+
+Your backend issues the JWT after authenticating the user. Never ship the app secret to browsers, mobile apps, or untrusted clients.
+
+Node.js example:
+
+```ts
+import jwt from "jsonwebtoken";
+import crypto from "node:crypto";
+
+app.post("/sockudo/token", (req, res) => {
+  const user = requireUser(req);
+  const now = Math.floor(Date.now() / 1000);
+
+  const capability = {
+    "private-orders:*": ["subscribe", "history"],
+    "presence-orders:*": ["subscribe", "presence"],
+    "private-orders:input": ["publish"],
+  };
+
+  const token = jwt.sign(
+    {
+      "x-sockudo-capability": JSON.stringify(capability),
+      "x-sockudo-client-id": user.id,
+      iat: now,
+      exp: now + 3600,
+      jti: crypto.randomUUID(),
+    },
+    process.env.SOCKUDO_APP_SECRET!,
+    {
+      algorithm: "HS256",
+      header: { kid: process.env.SOCKUDO_APP_KEY! },
+    },
+  );
+
+  res.json({ token });
+});
+```
+
+Rust example:
+
+```rust
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use serde::Serialize;
+use std::collections::BTreeMap;
+
+#[derive(Serialize)]
+struct Claims {
+    #[serde(rename = "x-sockudo-capability")]
+    capability: String,
+    #[serde(rename = "x-sockudo-client-id")]
+    client_id: String,
+    iat: i64,
+    exp: i64,
+    jti: String,
+}
+
+fn issue_token(app_key: &str, app_secret: &str, client_id: &str) -> anyhow::Result<String> {
+    let now = chrono::Utc::now().timestamp();
+    let mut capability = BTreeMap::new();
+    capability.insert("private-orders:*", vec!["subscribe", "history"]);
+
+    let mut header = Header::new(Algorithm::HS256);
+    header.kid = Some(app_key.to_owned());
+
+    Ok(encode(
+        &header,
+        &Claims {
+            capability: serde_json::to_string(&capability)?,
+            client_id: client_id.to_owned(),
+            iat: now,
+            exp: now + 3600,
+            jti: uuid::Uuid::new_v4().to_string(),
+        },
+        &EncodingKey::from_secret(app_secret.as_bytes()),
+    )?)
+}
+```
+
+Token rules:
+
+- Header `kid` must equal the Sockudo app key and `alg` must be `HS256`.
+- `x-sockudo-capability` is a stringified JSON map from channel pattern to operations.
+- Operations are `publish`, `subscribe`, `history`, and `presence`.
+- Patterns are exact names, namespace prefixes such as `orders:*`, or `*`; matching is case-sensitive.
+- `x-sockudo-client-id` is the verified identity used for presence and user-limited channels.
+- `iat`, `exp`, and `jti` are required. Tokens may live at most 24 hours; 1 hour or less is recommended.
+- Clients refresh in place with `sockudo:auth` carrying `{ "token": "..." }`. Expired tokens emit `sockudo:token_expired` with code `40142` and close after a 30 second grace window.
+
 ## Encrypted channels
 
 Encrypted channels start with `private-encrypted-`. The server signs the subscription and returns a per-channel shared secret derived from your encryption master key.
@@ -130,4 +230,5 @@ app.post("/sockudo/push", async (req, res) => {
 - Enforce channel ownership and tenant boundaries before calling the SDK signing helper.
 - Return presence user data that is safe for all channel members to see.
 - Keep app secrets, webhook secrets, push provider credentials, and encryption master keys server-side only.
+- Issue capability tokens from a backend endpoint only; do not mint them in client code.
 - Use short request timeouts and structured audit logs for denied auth attempts.

@@ -1,0 +1,18 @@
+{
+  "event": "ai-output",
+  "channel": "private-ai-forward",
+  "data": "content",
+  "extras": {
+    "ai": {
+      "transport": {
+        "turn-id": "turn-1",
+        "status": "streaming"
+      },
+      "codec": {
+        "provider-future-key": "opaque",
+        "x-custom": "opaque"
+      }
+    },
+    "futureExtrasField": true
+  }
+}

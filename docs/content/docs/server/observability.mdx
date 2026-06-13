@@ -41,6 +41,77 @@ The TCP exporter has bounded buffering by default. When buffers fill, event samp
 | Webhooks | queued, delivered, failed, retried, dead-lettered |
 | Push | accepted, scheduled, dispatched, provider errors, publish status outcomes |
 
+## AI Transport
+
+AI Transport observability is domain-blind. Sockudo reads only the well-known `extras.ai.transport` headers and never labels metrics by channel, turn ID, message ID, or client ID.
+
+Metrics exposed at `/metrics` include:
+
+- `sockudo_ai_turns_started_total`
+- `sockudo_ai_turns_ended_total{reason}`
+- `sockudo_ai_cancel_signals_total`
+- `sockudo_ai_active_streams`
+- `sockudo_ai_stream_duration_seconds`
+- `sockudo_ai_stream_bytes_total`
+- `sockudo_ai_messages_rejected_total{code}`
+- `sockudo_ai_messages_unparseable_total`
+- `sockudo_appends_received_total`
+- `sockudo_appends_delivered_total`
+- `sockudo_rollup_ratio`
+- `sockudo_flush_latency`
+- `sockudo_history_recovery_success_total{source}`
+- `sockudo_history_recovery_failures_total{code}`
+- `sockudo_versioned_message_mutations_total{action,result}`
+- `sockudo_versioned_message_retrieval_total{surface,result}`
+
+The four production signals are turn outcomes, stream rate, rejects by code, and rollup efficiency. Use `docs/public/grafana/ai-transport-observability.json` as the starting Grafana dashboard.
+
+Dashboard starter panels:
+
+| Panel | Metric |
+| --- | --- |
+| Active AI streams | `sockudo_ai_active_streams` |
+| Turn outcomes | `sockudo_ai_turns_started_total`, `sockudo_ai_turns_ended_total` |
+| Rejects by code | `sockudo_ai_messages_rejected_total` |
+| Rollup efficiency | `sockudo_appends_received_total` vs `sockudo_appends_delivered_total`, `sockudo_rollup_ratio` |
+| Rollup latency | `sockudo_flush_latency` |
+| Recovery health | `sockudo_history_recovery_success_total`, `sockudo_history_recovery_failures_total` |
+| Durable state | `sockudo_history_degraded_channels`, `sockudo_history_reset_required_channels` |
+| Push backlog | push queue/status/provider metrics from the push dashboard |
+
+For support escalation, capture the channel, wall-clock time window, verified `clientId`, and first error code before collecting logs. Do not ask customers for provider payloads unless the codec layer explicitly requires them.
+
+## Persist completed AI turns
+
+For Ably-style production persistence, persist completed turns from your backend instead of making Sockudo a domain store:
+
+1. Enable the `ai_turn_ended` webhook for the app.
+2. On `reason: "complete"`, query the history endpoint for the channel around the webhook time.
+3. Select messages with the same `extras.ai.transport.turn-id`.
+4. Store the reduced transcript in your application database.
+
+```ts
+app.post("/sockudo/webhooks", async (req, res) => {
+  for (const event of req.body.events) {
+    if (event.name !== "ai_turn_ended" || event.reason !== "complete") continue;
+
+    const history = await sockudo.channelHistory(event.channel, {
+      limit: 1000,
+      direction: "newest_first",
+    });
+
+    await storeCompletedTurn({
+      turnId: event.turn_id,
+      channel: event.channel,
+      items: history.items.filter((item) => {
+        return item.extras?.ai?.transport?.["turn-id"] === event.turn_id;
+      }),
+    });
+  }
+  res.sendStatus(200);
+});
+```
+
 ## Logs
 
 Use structured logs for events that operators need to investigate:
@@ -72,6 +143,10 @@ Recommended panels:
 - queue depth for webhooks and push
 - push provider failure rate by provider
 - APNs, FCM, Web Push latency by outcome
+- AI turn outcomes by reason
+- AI stream duration and active streams
+- AI reject codes and unparseable headers
+- AI append rollup efficiency
 
 ## Alerts
 

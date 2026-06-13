@@ -46,6 +46,7 @@ pub struct DisconnectTask {
     pub user_id: Option<String>,
     pub timestamp: Instant,
     pub connection_info: Option<ConnectionCleanupInfo>,
+    pub presence_ungraceful_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone)]

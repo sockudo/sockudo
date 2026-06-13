@@ -4,6 +4,7 @@
 use super::ConnectionHandler;
 use super::types::*;
 use sockudo_core::app::App;
+use sockudo_core::capability_token::TokenAuthContext;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::websocket::{ConnectionCapabilities, SocketId, UserInfo};
 use sockudo_protocol::messages::PusherMessage;
@@ -55,15 +56,17 @@ impl ConnectionHandler {
         app_config: &App,
         user_info: &UserInfo,
     ) -> Result<()> {
-        // Clear authentication timeout since user is now signed in
-        self.clear_user_authentication_timeout(&app_config.id, socket_id)
-            .await?;
-
         let connection_arc = self
             .connection_manager
             .get_connection(socket_id, &app_config.id)
             .await
             .ok_or(Error::ConnectionNotFound)?;
+
+        validate_signin_token_boundary(connection_arc.get_token_auth_context().await.as_ref())?;
+
+        // Clear authentication timeout since user is now signed in
+        self.clear_user_authentication_timeout(&app_config.id, socket_id)
+            .await?;
 
         {
             let mut conn_locked = connection_arc.inner.lock().await;
@@ -198,5 +201,42 @@ impl ConnectionHandler {
         }
 
         Ok(watcher_sockets)
+    }
+}
+
+fn validate_signin_token_boundary(token_context: Option<&TokenAuthContext>) -> Result<()> {
+    if token_context.is_some() {
+        return Err(Error::Auth(
+            "signin is not allowed on capability-token authenticated connections".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_authenticated_connections_cannot_sign_in_again() {
+        let token_context = TokenAuthContext {
+            client_id: "client-1".to_string(),
+            capabilities: ConnectionCapabilities::default(),
+            jti: "jti-1".to_string(),
+            exp: 1,
+        };
+
+        let error = validate_signin_token_boundary(Some(&token_context)).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("signin is not allowed on capability-token authenticated connections")
+        );
+    }
+
+    #[test]
+    fn non_token_connections_can_use_legacy_signin() {
+        validate_signin_token_boundary(None).unwrap();
     }
 }

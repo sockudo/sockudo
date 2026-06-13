@@ -7,13 +7,15 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Performs a timing-safe comparison of two strings
 pub fn secure_compare(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let max_len = a_bytes.len().max(b_bytes.len());
+    let mut result = a_bytes.len() ^ b_bytes.len();
 
-    let mut result = 0u8;
-    for (x, y) in a.bytes().zip(b.bytes()) {
-        result |= x ^ y;
+    for index in 0..max_len {
+        let left = a_bytes.get(index).copied().unwrap_or(0);
+        let right = b_bytes.get(index).copied().unwrap_or(0);
+        result |= usize::from(left ^ right);
     }
     result == 0
 }

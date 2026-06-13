@@ -255,9 +255,212 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit
 
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
       - name: Security audit
         # Ignored advisories are configured in .cargo/audit.toml.
         run: cargo audit
+
+      - name: Dependency policy
+        run: cargo deny check
+
+  # =============================================================================
+  # AI Transport Release Feature Matrix
+  # =============================================================================
+  ai-release-feature-matrix:
+    name: AI Transport Release Feature Matrix (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default-no-ai
+            args: ""
+            check_default_no_ai: true
+          - name: ai-transport-alone
+            args: "--no-default-features --features ai-transport"
+            check_default_no_ai: false
+          - name: ai-transport-redis
+            args: "--no-default-features --features v2,ai-transport,redis"
+            check_default_no_ai: false
+          - name: ai-transport-redis-cluster
+            args: "--no-default-features --features v2,ai-transport,redis-cluster"
+            check_default_no_ai: false
+          - name: ai-transport-nats
+            args: "--no-default-features --features v2,ai-transport,nats"
+            check_default_no_ai: false
+          - name: full
+            args: "--no-default-features --features full"
+            check_default_no_ai: false
+          - name: no-default-pusher
+            args: "--no-default-features"
+            check_default_no_ai: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev libpq-dev libmariadb-dev cmake protobuf-compiler libprotobuf-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ai-release-matrix-${{ matrix.name }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check feature graph
+        run: cargo check -p sockudo ${{ matrix.args }}
+
+      - name: Build tests for feature graph
+        run: cargo test -p sockudo --all-targets --no-run ${{ matrix.args }}
+
+      - name: Clippy feature graph
+        run: cargo clippy -p sockudo --all-targets ${{ matrix.args }} -- -D warnings
+
+      - name: Assert default graph excludes AI Transport
+        if: matrix.check_default_no_ai
+        run: |
+          if cargo tree -p sockudo -e features | grep -q 'ai-transport'; then
+            echo "default feature graph contains ai-transport"
+            exit 1
+          fi
+
+  # =============================================================================
+  # AI Transport GA Evidence
+  # =============================================================================
+  ai-ga-evidence:
+    name: AI Transport GA Evidence
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check deterministic GA evidence
+        run: scripts/ai-transport-ga-gate.sh ci-evidence
+
+  # =============================================================================
+  # AI Transport Docker Feature Builds
+  # =============================================================================
+  ai-docker-feature-builds:
+    name: AI Transport Docker Feature Builds (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: without-ai
+            features: "v2,redis,postgres"
+          - name: with-ai
+            features: "v2,ai-transport,redis,postgres"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          push: false
+          tags: sockudo/ai-transport-ci:${{ matrix.name }}
+          build-args: |
+            SOCKUDO_FEATURES=${{ matrix.features }}
+
+  # =============================================================================
+  # AI Transport Benchmark Regression Guard
+  # =============================================================================
+  ai-benchmark-regression:
+    name: AI Transport Benchmark Regression
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ai-bench-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run AI Transport benchmark guard
+        run: scripts/ai-transport-bench-guard.sh
+
+  # =============================================================================
+  # AI Transport Protocol Conformance
+  # =============================================================================
+  ai-conformance:
+    name: AI Transport Conformance
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libcurl4-openssl-dev cmake protobuf-compiler libprotobuf-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ai-conformance-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run Rust AIT-S conformance tests
+        run: cargo test -p sockudo-ai-transport --test ait_s_conformance --test ait_s_coverage
+
+      - name: Validate Node golden transcripts and forward-compat fixtures
+        run: AIT_CONFORMANCE_OFFLINE=1 scripts/ai-conformance-node.sh
 
   # =============================================================================
   # Manual Build Instructions (PR only)
@@ -265,7 +468,7 @@ jobs:
   manual-build-info:
     name: 🔨 Manual Build Instructions
     runs-on: ubuntu-24.04
-    needs: [lint, test, security]
+    needs: [lint, test, security, ai-release-feature-matrix, ai-ga-evidence, ai-docker-feature-builds, ai-benchmark-regression, ai-conformance]
     steps:
       - name: Post build instructions
         uses: actions/github-script@v7

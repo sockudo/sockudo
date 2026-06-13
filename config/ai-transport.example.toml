@@ -1,0 +1,137 @@
+# Example AI Transport profile for Protocol V2 deployments.
+#
+# Build with:
+#   cargo build -p sockudo --release --features "v2,ai-transport,redis,postgres,push"
+#
+# AI Transport is both compile-gated by the `ai-transport` feature and runtime-gated below.
+# Keep it disabled in default/Pusher-compatible deployments.
+
+debug = false
+host = "0.0.0.0"
+port = 6001
+mode = "production"
+path_prefix = "/"
+shutdown_grace_period = 10
+websocket_max_payload_kb = 64
+user_authentication_timeout = 3600
+activity_timeout = 120
+
+[adapter]
+driver = "redis"
+enable_socket_counting = true
+fallback_to_local = false
+
+[cache]
+driver = "redis"
+
+[queue]
+driver = "redis"
+
+[rate_limiter]
+enabled = true
+driver = "redis"
+
+[rate_limiter.api_rate_limit]
+max_requests = 20000
+window_seconds = 1
+
+[rate_limiter.websocket_rate_limit]
+max_requests = 20000
+window_seconds = 1
+
+[app_manager]
+driver = "memory"
+
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "replace-with-app-id"
+key = "replace-with-app-key"
+secret = "replace-with-app-secret"
+enabled = true
+
+[app_manager.array.apps.policy.limits]
+max_connections = 100000
+max_backend_events_per_second = 10000
+max_client_events_per_second = 1000
+max_read_requests_per_second = 1000
+
+[app_manager.array.apps.policy.features]
+enable_client_messages = true
+enable_user_authentication = true
+enable_watchlist_events = false
+
+[app_manager.array.apps.policy.channels]
+allowed_origins = ["https://example.com"]
+
+[app_manager.array.apps.policy.idempotency]
+enabled = true
+ttl_seconds = 300
+
+[history]
+enabled = true
+backend = "postgres"
+retention_window_seconds = 86400
+max_page_size = 100
+writer_shards = 16
+writer_queue_capacity = 4096
+purge_interval_seconds = 300
+purge_batch_size = 1000
+max_purge_per_tick = 100000
+
+[history.postgres]
+table_prefix = "sockudo_history"
+write_timeout_ms = 5000
+
+[versioned_messages]
+enabled = true
+driver = "postgres"
+max_page_size = 100
+retention_window_seconds = 86400
+purge_interval_seconds = 300
+purge_batch_size = 1000
+max_purge_per_tick = 100000
+
+[ai_transport]
+enabled = true
+max_accumulated_message_bytes = 1048576
+max_appends_per_message = 4096
+max_open_streaming_messages_per_channel = 1024
+
+[[ai_transport.channels]]
+prefix = "private-ai-"
+
+[ai_transport.rollup]
+enabled = true
+default_window_ms = 40
+min_window_ms = 0
+max_window_ms = 500
+orphan_ttl_ms = 60000
+wheel_tick_ms = 5
+shards = 64
+
+[connection_recovery]
+enabled = true
+buffer_ttl_seconds = 120
+max_buffer_size = 100
+
+[webhooks]
+request_timeout_ms = 10000
+
+[webhooks.batching]
+enabled = false
+
+[webhooks.retry]
+enabled = true
+max_attempts = 5
+max_elapsed_time_ms = 300000
+initial_backoff_ms = 1000
+max_backoff_ms = 60000
+
+[metrics]
+enabled = true
+driver = "prometheus"
+host = "0.0.0.0"
+port = 9601
+
+[metrics.prometheus]
+prefix = "sockudo_"

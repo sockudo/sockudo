@@ -29,6 +29,8 @@ V2 broadcasts can include:
 | `stream_id` | Opaque stream identity. |
 | `extras` | Headers, tags, echo controls, idempotency metadata, and feature-specific data. |
 
+Successful V2 subscriptions may include `attach_serial` in `sockudo_internal:subscription_succeeded` when durable history is enabled for the channel. That value is the channel history head captured at attach time.
+
 ## Native events
 
 Protocol V2 uses `sockudo:` and `sockudo_internal:` prefixes for system events. Protocol V1 keeps `pusher:` and `pusher_internal:` prefixes.
@@ -46,6 +48,27 @@ client.bind("sockudo:resume_failed", (payload) => {
   console.warn("rebuild state", payload);
 });
 ```
+
+When `payload.code === "position_expired"`, resubscribe and use channel history with `until_attach: true` to backfill up to the new attach serial.
+
+## Client history
+
+V2 clients request channel history over the WebSocket with the existing `channel_history` action:
+
+```json
+{
+  "event": "sockudo:channel_history",
+  "data": {
+    "channel": "chat",
+    "limit": 100,
+    "direction": "backwards",
+    "cursor": null,
+    "until_attach": true
+  }
+}
+```
+
+The response event is `sockudo:channel_history`. It returns `items`, `has_more`, `next_cursor`, `bounds`, `continuity`, and `stream_state`. `limit` defaults to `100` and is capped at `1000`. `until_attach: true` returns only history at or below the subscription `attach_serial`, so combining those items with live messages produces a gap-free view without duplicates.
 
 ## Heartbeats
 

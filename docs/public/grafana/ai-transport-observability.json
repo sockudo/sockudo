@@ -1,0 +1,126 @@
+{
+  "title": "Sockudo AI Transport Observability",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "tags": ["sockudo", "ai-transport"],
+  "templating": {
+    "list": [
+      {
+        "name": "app_id",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+        "query": "label_values(sockudo_ai_turns_started_total, app_id)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Turn Outcomes",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(sockudo_ai_turns_ended_total{app_id=~\"$app_id\"}[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "AI Stream Rate",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(sockudo_ai_turns_started_total{app_id=~\"$app_id\"}[5m]))",
+          "legendFormat": "turns started"
+        },
+        {
+          "expr": "sum(rate(sockudo_ai_cancel_signals_total{app_id=~\"$app_id\"}[5m]))",
+          "legendFormat": "cancel signals"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Active Streams",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 8, "w": 6, "h": 5},
+      "targets": [
+        {
+          "expr": "sum(sockudo_ai_active_streams{app_id=~\"$app_id\"})",
+          "legendFormat": "active"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Stream Duration p95",
+      "type": "timeseries",
+      "gridPos": {"x": 6, "y": 8, "w": 6, "h": 5},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sockudo_ai_stream_duration_seconds_bucket{app_id=~\"$app_id\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Rollup Efficiency",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 8, "w": 6, "h": 5},
+      "targets": [
+        {
+          "expr": "sum(rate(sockudo_appends_received_total{app_id=~\"$app_id\"}[5m])) / clamp_min(sum(rate(sockudo_appends_delivered_total{app_id=~\"$app_id\"}[5m])), 1)",
+          "legendFormat": "received/delivered"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Rejects By Code",
+      "type": "timeseries",
+      "gridPos": {"x": 18, "y": 8, "w": 6, "h": 5},
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(sockudo_ai_messages_rejected_total{app_id=~\"$app_id\"}[5m]))",
+          "legendFormat": "{{code}}"
+        },
+        {
+          "expr": "sum(rate(sockudo_ai_messages_unparseable_total{app_id=~\"$app_id\"}[5m]))",
+          "legendFormat": "unparseable"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Stream Bytes",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 13, "w": 12, "h": 7},
+      "targets": [
+        {
+          "expr": "sum(rate(sockudo_ai_stream_bytes_total{app_id=~\"$app_id\"}[5m]))",
+          "legendFormat": "bytes/s"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Rollup Flush Latency p95",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 13, "w": 12, "h": 7},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sockudo_flush_latency_bucket{app_id=~\"$app_id\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    }
+  ]
+}

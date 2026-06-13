@@ -38,7 +38,7 @@ impl ConnectionHandler {
     ) -> Result<()> {
         let error_data = ErrorData {
             message: error.to_string(),
-            code: Some(error.close_code()),
+            code: Some(u32::from(error.close_code())),
         };
         let error_message =
             PusherMessage::error(error_data.code.unwrap_or(4000), error_data.message, channel);
@@ -122,6 +122,7 @@ impl ConnectionHandler {
                     Some(socket_id),
                     sockudo_core::presence_history::PresenceHistoryEventCause::Disconnect,
                     None,
+                    0,
                     Some(presence_history_policy.retention()),
                 )
                 .await?;
@@ -190,6 +191,8 @@ impl ConnectionHandler {
         .await
         .ok();
 
+        // Send channel_vacated webhook if no subscribers left (with 3-second delay).
+        // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects.
         if current_sub_count == 0
             && let Some(webhook_integration) = &self.webhook_integration
             && webhook_integration.webhook_configured(app_config, "channel_vacated")
@@ -211,15 +214,15 @@ impl ConnectionHandler {
     }
 
     /// Returns true when the cluster-wide subscription count for `channel` is
-    /// actually consumed by something — a configured webhook (channel_occupied /
-    /// channel_vacated / subscription_count) or local subscribers on the channel's
-    /// meta-channel. When false, the subscribe/unsubscribe hot path skips the
+    /// actually consumed by something: a configured webhook (channel_occupied,
+    /// channel_vacated, subscription_count) or local subscribers on the channel's
+    /// meta-channel. When false, subscribe/unsubscribe hot paths skip the
     /// cross-node count request/reply entirely.
     ///
     /// Trade-off: with no local consumer we also skip the subscription_count
-    /// meta-channel update for subscribers living on a *different* node than the
+    /// meta-channel update for subscribers living on a different node than the
     /// membership change. Exact cluster-wide counts for that case need the
-    /// aggregate-count path (gossiped deltas), not per-event request/reply.
+    /// aggregate-count path, not per-event request/reply.
     pub(crate) async fn subscription_count_has_consumer(
         &self,
         app_config: &App,
@@ -308,6 +311,29 @@ impl ConnectionHandler {
     }
 
     pub async fn handle_disconnect(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+        self.handle_disconnect_with_presence_timeout(app_id, socket_id, 0)
+            .await
+    }
+
+    pub async fn handle_ungraceful_disconnect(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+    ) -> Result<()> {
+        self.handle_disconnect_with_presence_timeout(
+            app_id,
+            socket_id,
+            self.server_options().presence.ungraceful_timeout_seconds,
+        )
+        .await
+    }
+
+    async fn handle_disconnect_with_presence_timeout(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+        presence_ungraceful_timeout_seconds: u64,
+    ) -> Result<()> {
         debug!("Handling disconnect for socket: {}", socket_id);
 
         // Try async cleanup first if queue is available and circuit breaker allows
@@ -315,7 +341,12 @@ impl ConnectionHandler {
             // should_use_async_cleanup() already verified cleanup_queue exists
             let cleanup_queue = self.cleanup_queue.as_ref().unwrap();
             match self
-                .handle_disconnect_async(app_id, socket_id, cleanup_queue)
+                .handle_disconnect_async(
+                    app_id,
+                    socket_id,
+                    cleanup_queue,
+                    presence_ungraceful_timeout_seconds,
+                )
                 .await
             {
                 Ok(()) => {
@@ -353,7 +384,8 @@ impl ConnectionHandler {
         }
 
         // Fall back to original synchronous cleanup
-        self.handle_disconnect_sync(app_id, socket_id).await
+        self.handle_disconnect_sync(app_id, socket_id, presence_ungraceful_timeout_seconds)
+            .await
     }
 
     async fn handle_disconnect_async(
@@ -361,6 +393,7 @@ impl ConnectionHandler {
         app_id: &str,
         socket_id: &SocketId,
         cleanup_queue: &crate::cleanup::CleanupSender,
+        presence_ungraceful_timeout_seconds: u64,
     ) -> Result<()> {
         use std::time::Instant;
 
@@ -411,6 +444,7 @@ impl ConnectionHandler {
                     } else {
                         None
                     },
+                    presence_ungraceful_timeout_seconds,
                 })
             } else {
                 // Connection doesn't exist - might have been cleaned up already
@@ -463,7 +497,9 @@ impl ConnectionHandler {
 
                 // Fall back to synchronous cleanup immediately
                 // We already have the disconnect task info, so use sync cleanup
-                return self.handle_disconnect_sync(app_id, socket_id).await;
+                return self
+                    .handle_disconnect_sync(app_id, socket_id, presence_ungraceful_timeout_seconds)
+                    .await;
             }
             debug!("Queued async cleanup for socket: {}", socket_id);
         }
@@ -481,7 +517,12 @@ impl ConnectionHandler {
         Ok(())
     }
 
-    async fn handle_disconnect_sync(&self, app_id: &str, socket_id: &SocketId) -> Result<()> {
+    async fn handle_disconnect_sync(
+        &self,
+        app_id: &str,
+        socket_id: &SocketId,
+        presence_ungraceful_timeout_seconds: u64,
+    ) -> Result<()> {
         debug!("Using synchronous cleanup for socket: {}", socket_id);
 
         // This is the original synchronous implementation
@@ -570,6 +611,7 @@ impl ConnectionHandler {
                 &app_config,
                 &subscribed_channels,
                 &user_id,
+                presence_ungraceful_timeout_seconds,
             )
             .await?;
         }
@@ -635,6 +677,7 @@ impl ConnectionHandler {
         app_config: &App,
         subscribed_channels: &HashSet<String>,
         user_id: &Option<String>,
+        presence_ungraceful_timeout_seconds: u64,
     ) -> Result<()> {
         if subscribed_channels.is_empty() {
             return Ok(());
@@ -678,6 +721,7 @@ impl ConnectionHandler {
                                     user_id,
                                     *remaining_connections,
                                     socket_id,
+                                    presence_ungraceful_timeout_seconds,
                                 )
                                 .await?;
                             }
@@ -709,6 +753,7 @@ impl ConnectionHandler {
         user_id: &Option<String>,
         current_sub_count: usize,
         socket_id: &SocketId,
+        presence_ungraceful_timeout_seconds: u64,
     ) -> Result<()> {
         if channel_str.starts_with("presence-") {
             if let Some(disconnected_user_id) = user_id {
@@ -730,6 +775,7 @@ impl ConnectionHandler {
                         Some(socket_id),
                         sockudo_core::presence_history::PresenceHistoryEventCause::Disconnect,
                         None,
+                        presence_ungraceful_timeout_seconds,
                         Some(presence_history_policy.retention()),
                     )
                     .await
@@ -873,9 +919,9 @@ impl ConnectionHandler {
     }
 
     // Presence data is mirrored in Namespace.presence_data for lock-free reads.
-    // These helpers are the only writers of the mirror — every
-    // add_presence_info/remove_presence_info on connection state must be paired
-    // with the matching call here or reads and connection state drift apart.
+    // These helpers are the only writers of the mirror: every add_presence_info or
+    // remove_presence_info on connection state must be paired with the matching
+    // call here or reads and connection state drift apart.
     pub(crate) fn set_namespace_presence(
         &self,
         app_id: &str,
@@ -951,6 +997,7 @@ impl ConnectionHandler {
             let mut conn_locked = conn_arc.inner.lock().await;
             conn_locked.unsubscribe_from_channel(channel_name);
 
+            // Remove presence info if it's a presence channel
             if channel_name.starts_with("presence-") {
                 conn_locked.remove_presence_info(channel_name);
                 drop(conn_locked);
@@ -1179,6 +1226,7 @@ impl ConnectionHandler {
                         None, // No excluding socket for dead node cleanup
                         sockudo_core::presence_history::PresenceHistoryEventCause::OrphanCleanup,
                         Some(&event.dead_node_id),
+                        0,
                         Some(presence_history_policy.retention()),
                     )
                     .await

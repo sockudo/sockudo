@@ -9,7 +9,7 @@ use sockudo_push::{
     Platform, ProviderDispatchWorker, PublishIntent, PublishTarget, PushAcceptRequest,
     PushDeviceStore, PushMetrics, PushPayload, PushPipeline, PushPlanner, PushProviderKind,
     PushQueue, PushQueuePayload, PushQueueStage, PushRecipient, PushShardWorker,
-    PushSubscriptionStore, SecretString, render_provider_payload,
+    PushSubscriptionStore, SecretString, any_rule_matches, render_provider_payload,
 };
 use tokio::runtime::Runtime;
 
@@ -46,6 +46,27 @@ fn bench_admission(c: &mut Criterion) {
             },
             BatchSize::SmallInput,
         );
+    });
+    group.finish();
+}
+
+fn bench_channel_push_rule_matching(c: &mut Criterion) {
+    let rules = vec![sockudo_push::ChannelPushRule {
+        channel_pattern: "notifications:*".to_owned(),
+        event_filter: vec!["agent-complete".to_owned()],
+        ..sockudo_push::ChannelPushRule::default()
+    }];
+    let mut group = c.benchmark_group("push_channel_rules");
+    group.throughput(Throughput::Elements(1));
+    // Budget: no-match scan for one configured rule should remain below 200 ns.
+    group.bench_function("no_match_one_rule_budget_lt_200ns", |b| {
+        b.iter(|| {
+            black_box(any_rule_matches(
+                black_box(&rules),
+                black_box("chat:user-1"),
+                black_box("message"),
+            ));
+        });
     });
     group.finish();
 }
@@ -438,6 +459,7 @@ fn next_publish_id(label: &'static str) -> String {
 criterion_group!(
     benches,
     bench_admission,
+    bench_channel_push_rule_matching,
     bench_fast_fanout_planning,
     bench_sharded_fanout,
     bench_queue,

@@ -1,6 +1,11 @@
-use sockudo_protocol::messages::{MessageData, PusherMessage};
+use sockudo_protocol::messages::{
+    AI_ERROR_HEADER_TOO_LARGE, AI_ERROR_INVALID_TRANSPORT_HEADER, AI_EVENT_CANCEL, AI_EVENT_INPUT,
+    AI_EVENT_OUTPUT, AI_EVENT_TURN_END, AI_EVENT_TURN_START, AiExtras, ExtrasValue, MessageData,
+    MessageExtras, PusherMessage, is_ai_event,
+};
 use sonic_rs::prelude::*;
 use sonic_rs::{Value, json};
+use std::collections::HashMap;
 
 // Helper function to serialize message and parse as JSON for testing
 fn message_to_json(message: &PusherMessage) -> Value {
@@ -81,6 +86,102 @@ fn test_error_format() {
     );
     assert!(data["message"].is_str(), "Message should be a string");
     assert_eq!(data["message"], "Application does not exist");
+}
+
+#[test]
+fn test_v1_channel_event_json_snapshot_is_stable_without_extras() {
+    let message = PusherMessage::channel_event("client-test", "private-room", json!({"x":1}));
+    let json = sonic_rs::to_string(&message).expect("serialize");
+    assert_eq!(
+        json,
+        r#"{"event":"client-test","channel":"private-room","data":"{\"x\":1}"}"#
+    );
+}
+
+#[test]
+fn test_ai_event_constants_and_predicate() {
+    for event in [
+        AI_EVENT_INPUT,
+        AI_EVENT_OUTPUT,
+        AI_EVENT_TURN_START,
+        AI_EVENT_TURN_END,
+        AI_EVENT_CANCEL,
+    ] {
+        assert!(is_ai_event(event));
+    }
+    assert!(!is_ai_event("client-typing"));
+}
+
+#[test]
+fn test_ai_transport_headers_are_borrowed_views() {
+    let mut transport = HashMap::new();
+    transport.insert("turn-id".to_string(), "turn-1".to_string());
+    transport.insert("status".to_string(), "streaming".to_string());
+    transport.insert("parent".to_string(), "msg-0".to_string());
+    transport.insert("fork-of".to_string(), "msg-old".to_string());
+
+    let extras = sockudo_protocol::messages::MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(transport),
+            codec: Some(HashMap::from([(
+                "encoding".to_string(),
+                "json".to_string(),
+            )])),
+        }),
+        ..Default::default()
+    };
+
+    let headers = extras.ai_transport_headers().expect("transport headers");
+    assert_eq!(headers.turn_id(), Some("turn-1"));
+    assert_eq!(headers.status(), Some("streaming"));
+    assert_eq!(headers.parent(), Some("msg-0"));
+    assert_eq!(headers.fork_of(), Some("msg-old"));
+    assert_eq!(
+        extras
+            .ai_codec_headers()
+            .and_then(|codec| codec.get("encoding"))
+            .map(String::as_str),
+        Some("json")
+    );
+}
+
+#[test]
+fn test_ai_header_validation_rejects_limits_and_domains() {
+    let oversized = sockudo_protocol::messages::MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([("turn-id".to_string(), "x".repeat(257))])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        oversized.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_HEADER_TOO_LARGE
+    );
+
+    let bad_key = sockudo_protocol::messages::MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([("TurnId".to_string(), "x".to_string())])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        bad_key.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_INVALID_TRANSPORT_HEADER
+    );
+
+    let bad_status = sockudo_protocol::messages::MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([("status".to_string(), "done".to_string())])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        bad_status.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_INVALID_TRANSPORT_HEADER
+    );
 }
 
 #[test]
@@ -884,9 +985,6 @@ fn test_watchlist_events_format() {
 
 // ── MessageExtras tests ──────────────────────────────────────────────
 
-use sockudo_protocol::messages::{ExtrasValue, MessageExtras};
-use std::collections::HashMap;
-
 #[test]
 fn test_extras_round_trip_serialize_deserialize() {
     let mut headers = HashMap::new();
@@ -903,6 +1001,7 @@ fn test_extras_round_trip_serialize_deserialize() {
         idempotency_key: Some("abc-123".to_string()),
         push: None,
         echo: Some(false),
+        ai: None,
     };
 
     let json_str = sonic_rs::to_string(&extras).expect("serialize");

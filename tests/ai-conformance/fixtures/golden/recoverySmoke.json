@@ -1,0 +1,12 @@
+[
+  {
+    "event": "sockudo:subscription_succeeded",
+    "channel": "private-ai-recovery-golden",
+    "data": {}
+  },
+  {
+    "event": "ai-output",
+    "channel": "private-ai-recovery-golden",
+    "data": "recoverable"
+  }
+]

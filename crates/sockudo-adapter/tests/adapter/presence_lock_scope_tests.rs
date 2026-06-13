@@ -414,6 +414,7 @@ async fn test_presence_lock_prevents_duplicate_member_removed() {
             Some(&socket_a),
             PresenceHistoryEventCause::Disconnect,
             None,
+            0,
             Some(retention()),
         )
         .await
@@ -441,6 +442,7 @@ async fn test_presence_lock_prevents_duplicate_member_removed() {
             Some(&socket_b),
             PresenceHistoryEventCause::Disconnect,
             None,
+            0,
             Some(retention()),
         )
         .await
@@ -566,6 +568,7 @@ async fn test_presence_broadcast_order_with_member_removed() {
             Some(&socket),
             PresenceHistoryEventCause::Disconnect,
             None,
+            0,
             Some(retention()),
         )
         .await

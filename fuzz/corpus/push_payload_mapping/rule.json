@@ -1,0 +1,1 @@
+{"enabled":true,"channelPattern":"ai-*","eventFilter":["ai-output"],"payloadMapping":{"titleField":"title","bodyField":"body","templateDataField":"data","includeRemainingFields":true}}

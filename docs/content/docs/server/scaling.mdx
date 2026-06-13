@@ -6,6 +6,8 @@ icon: Network
 
 Sockudo scales horizontally when every node shares the dependencies that carry cross-node state: adapter, cache, queue, app manager, and optional history store.
 
+AI Transport has a stricter horizontal matrix because streaming recovery depends on durable history, versioned-message state, and shared orphan ownership. For horizontal adapters (`redis`, `redis-cluster`, `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, or `iggy`), configure shared non-memory history and version-store backends plus Redis or Redis Cluster cache. Startup rejects AI Transport with process-local memory history, version stores, or cache on horizontal adapters.
+
 ## Architecture
 
 ![Horizontal scaling diagram](/diagrams/horizontal-scaling.svg)
@@ -139,6 +141,7 @@ Operational recommendations:
 - fanout latency and adapter errors
 - recovery success and failure counters
 - replay buffer pressure
+- AI stream orphan cancellations and `ai_stream_orphaned` webhook delivery
 - webhook queue depth and failure count
 - push publish accepted, dispatched, failed, and scheduled counters
 - push provider latency and error labels
@@ -152,6 +155,8 @@ Before increasing traffic, run a scenario that covers:
 - private and presence auth throughput
 - durable history writes
 - recovery after node restart
+- AI stream orphan closure after node death
+- pause/unpause partition checks with `scripts/ai-transport-jepsen-lite.sh`
 - push burst admission
 - push provider throttling
 - webhook retry behavior

@@ -1,6 +1,6 @@
 use crate::memory_cache_manager::MemoryCacheManager;
 use async_trait::async_trait;
-use sockudo_core::cache::CacheManager;
+use sockudo_core::cache::{CacheManager, CacheScanPage};
 use sockudo_core::error::Result;
 use sockudo_core::options::MemoryCacheOptions;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -318,6 +318,61 @@ impl CacheManager for FallbackCacheManager {
         primary.check_health().await
     }
 
+    async fn scan_prefix(&self, prefix: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        self.try_recover().await;
+
+        let _guard = self.recovery_lock.read().await;
+
+        if self.is_using_fallback() {
+            return self.fallback.lock().await.scan_prefix(prefix, limit).await;
+        }
+
+        let primary = self.primary.lock().await;
+        match primary.scan_prefix(prefix, limit).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                self.switch_to_fallback(&e.to_string());
+                self.fallback.lock().await.scan_prefix(prefix, limit).await
+            }
+        }
+    }
+
+    async fn scan_prefix_page(
+        &self,
+        prefix: &str,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Result<CacheScanPage> {
+        self.try_recover().await;
+
+        let _guard = self.recovery_lock.read().await;
+
+        if self.is_using_fallback() {
+            return self
+                .fallback
+                .lock()
+                .await
+                .scan_prefix_page(prefix, cursor, limit)
+                .await;
+        }
+
+        let primary = self.primary.lock().await;
+        match primary
+            .scan_prefix_page(prefix, cursor.clone(), limit)
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                self.switch_to_fallback(&e.to_string());
+                self.fallback
+                    .lock()
+                    .await
+                    .scan_prefix_page(prefix, cursor, limit)
+                    .await
+            }
+        }
+    }
+
     async fn ttl(&self, key: &str) -> Result<Option<Duration>> {
         self.try_recover().await;
 
@@ -360,6 +415,34 @@ impl CacheManager for FallbackCacheManager {
                     .lock()
                     .await
                     .set_if_not_exists(key, value, ttl_seconds)
+                    .await
+            }
+        }
+    }
+
+    async fn increment_by(&self, key: &str, delta: i64, ttl_seconds: u64) -> Result<i64> {
+        self.try_recover().await;
+
+        let _guard = self.recovery_lock.read().await;
+
+        if self.is_using_fallback() {
+            return self
+                .fallback
+                .lock()
+                .await
+                .increment_by(key, delta, ttl_seconds)
+                .await;
+        }
+
+        let primary = self.primary.lock().await;
+        match primary.increment_by(key, delta, ttl_seconds).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                self.switch_to_fallback(&e.to_string());
+                self.fallback
+                    .lock()
+                    .await
+                    .increment_by(key, delta, ttl_seconds)
                     .await
             }
         }

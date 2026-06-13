@@ -2,6 +2,8 @@
 
 // src/adapter/handler/connection_management.rs
 use super::ConnectionHandler;
+#[cfg(feature = "delta")]
+use crate::connection_manager::CompressionParams;
 use crate::connection_manager::ConnectionManager;
 use bytes::Bytes;
 use sockudo_core::app::App;
@@ -14,8 +16,10 @@ use sockudo_core::versioned_messages::{
     VersionedMessage,
 };
 use sockudo_core::websocket::SocketId;
-use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::messages::generate_message_id;
+use sockudo_protocol::messages::{
+    AI_ERROR_PAYLOAD_TOO_LARGE, MessageData, PusherMessage, is_ai_event,
+};
 use sockudo_protocol::versioned_messages::{
     MessageAction as ProtocolMessageAction, MessageVersionMetadata, apply_runtime_metadata,
     extract_runtime_action, extract_runtime_message_serial,
@@ -28,6 +32,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
 
 static VERSION_SERIAL_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishAck {
+    pub message_serial: String,
+    pub history_serial: u64,
+    pub delivery_serial: u64,
+    pub version_serial: String,
+}
 
 fn sanitize_v2_feature_flags(
     server_options: &sockudo_core::options::ServerOptions,
@@ -43,13 +55,41 @@ fn sanitize_v2_feature_flags(
         let extras_empty = extras.headers.is_none()
             && extras.ephemeral.is_none()
             && extras.idempotency_key.is_none()
-            && extras.echo.is_none();
+            && extras.echo.is_none()
+            && extras.ai.is_none();
         if extras_empty {
             message.extras = None;
         }
     }
 
     message
+}
+
+fn ai_payload_too_large(message: impl Into<String>) -> Error {
+    Error::AiTransport {
+        code: AI_ERROR_PAYLOAD_TOO_LARGE,
+        name: "payload_too_large",
+        message: message.into(),
+    }
+}
+
+fn message_data_bytes(data: Option<&MessageData>) -> Result<usize> {
+    match data {
+        None => Ok(0),
+        Some(MessageData::String(value)) => Ok(value.len()),
+        Some(other) => sonic_rs::to_vec(other)
+            .map(|bytes| bytes.len())
+            .map_err(Error::from),
+    }
+}
+
+fn has_ai_streaming_status(message: &PusherMessage) -> bool {
+    message
+        .extras
+        .as_ref()
+        .and_then(|extras| extras.ai_transport_headers())
+        .and_then(|headers| headers.status())
+        == Some("streaming")
 }
 
 impl ConnectionHandler {
@@ -179,6 +219,27 @@ impl ConnectionHandler {
             false, // allow delta compression
         )
         .await
+        .map(|_| ())
+    }
+
+    pub async fn publish_to_channel_with_timing(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        exclude_socket: Option<&SocketId>,
+        start_time_ms: Option<f64>,
+        force_full_message: bool,
+    ) -> Result<Option<PublishAck>> {
+        self.broadcast_to_channel_internal(
+            app_config,
+            channel,
+            message,
+            exclude_socket,
+            start_time_ms,
+            force_full_message,
+        )
+        .await
     }
 
     /// Broadcast to channel forcing full messages (skip delta compression)
@@ -203,6 +264,7 @@ impl ConnectionHandler {
             true, // force full messages, skip delta compression
         )
         .await
+        .map(|_| ())
     }
 
     /// Internal broadcast implementation with delta compression control
@@ -215,7 +277,7 @@ impl ConnectionHandler {
         exclude_socket: Option<&SocketId>,
         start_time_ms: Option<f64>,
         force_full_message: bool,
-    ) -> Result<()> {
+    ) -> Result<Option<PublishAck>> {
         message = sanitize_v2_feature_flags(self.server_options(), message);
 
         // Extras-level message idempotency (V2 feature).
@@ -242,7 +304,7 @@ impl ConnectionHandler {
                         key = %extras_key,
                         "Extras idempotency: duplicate message dropped"
                     );
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
@@ -267,6 +329,7 @@ impl ConnectionHandler {
                 | Some(ProtocolMessageAction::Append)
         );
         let mut versioned_delivery_serial: Option<u64> = None;
+        let mut publish_ack: Option<PublishAck> = None;
         let actor_client_id = self
             .resolve_actor_client_id(&app_config.id, exclude_socket)
             .await;
@@ -288,6 +351,40 @@ impl ConnectionHandler {
                     && extract_runtime_message_serial(&message).is_none()
                     && extract_runtime_action(&message).is_none()
                 {
+                    if self.server_options().ai_transport.matches_channel(channel)
+                        && (message.event.as_deref().is_some_and(is_ai_event)
+                            || message
+                                .extras
+                                .as_ref()
+                                .and_then(|extras| extras.ai.as_ref())
+                                .is_some())
+                    {
+                        let max_bytes = self
+                            .server_options()
+                            .ai_transport
+                            .max_accumulated_message_bytes;
+                        let bytes = message_data_bytes(message.data.as_ref())?;
+                        if bytes > max_bytes {
+                            return Err(ai_payload_too_large(format!(
+                                "accumulated message content exceeds {max_bytes} bytes"
+                            )));
+                        }
+
+                        if has_ai_streaming_status(&message) {
+                            let open_count =
+                                self.ai_active_stream_count(&app_config.id, channel).await?;
+                            let max_open = self
+                                .server_options()
+                                .ai_transport
+                                .max_open_streaming_messages_per_channel;
+                            if open_count >= max_open {
+                                return Err(ai_payload_too_large(format!(
+                                    "open streaming message count exceeds {max_open}"
+                                )));
+                            }
+                        }
+                    }
+
                     let delivery = self
                         .version_store()
                         .reserve_delivery_position(&app_config.id, channel)
@@ -370,7 +467,40 @@ impl ConnectionHandler {
                             message.extras.clone(),
                         ),
                     };
-                    self.version_store().append_version(record).await?;
+                    self.version_store().append_version(record.clone()).await?;
+                    if let Some(webhook_integration) = self.webhook_integration().as_ref().cloned()
+                    {
+                        let app_for_webhook = app_config.clone();
+                        let channel_for_webhook = channel.to_string();
+                        let message_serial_for_webhook = message_serial_value.clone();
+                        let version_serial_for_webhook = version_serial_value.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = webhook_integration
+                                .send_message_version_created(
+                                    &app_for_webhook,
+                                    &channel_for_webhook,
+                                    &message_serial_for_webhook,
+                                    &version_serial_for_webhook,
+                                    "message.create",
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %error,
+                                    "failed to emit message_version_created webhook"
+                                );
+                            }
+                        });
+                    }
+                    self.record_ai_stream_activity(&app_config.id, channel, &record)
+                        .await?;
+                    publish_ack = Some(PublishAck {
+                        message_serial: message_serial_value.clone(),
+                        history_serial,
+                        delivery_serial: versioned_delivery_serial
+                            .unwrap_or_else(|| message.serial.unwrap_or(0)),
+                        version_serial: version_serial_value.clone(),
+                    });
                     if let Some(metrics) = self.metrics() {
                         metrics.mark_versioned_message_mutation(
                             &app_config.id,
@@ -434,6 +564,12 @@ impl ConnectionHandler {
             }
         }
 
+        #[cfg(feature = "ai-transport")]
+        if self.server_options().ai_transport.enabled {
+            self.record_ai_observability(app_config, channel, &message)
+                .await;
+        }
+
         // Calculate message size for metrics
         let message_size = sonic_rs::to_string(&message).unwrap_or_default().len();
 
@@ -459,54 +595,14 @@ impl ConnectionHandler {
                 socket_count
             };
 
-            #[cfg(feature = "delta")]
-            let result = {
-                // Extract channel-specific delta compression settings
-                // If force_full_message is true, we pass None to disable delta compression
-                let channel_settings = if force_full_message {
-                    None
-                } else {
-                    Self::get_channel_delta_settings(app_config, channel)
-                };
-
-                if force_full_message {
-                    // Send without compression - bypass delta compression entirely
-                    self.connection_manager
-                        .send(
-                            channel,
-                            message,
-                            exclude_socket,
-                            &app_config.id,
-                            start_time_ms,
-                        )
-                        .await
-                } else {
-                    // Normal path with delta compression
-                    self.connection_manager
-                        .send_with_compression(
-                            channel,
-                            message,
-                            exclude_socket,
-                            &app_config.id,
-                            start_time_ms,
-                            crate::connection_manager::CompressionParams {
-                                delta_compression: Arc::clone(&self.delta_compression),
-                                channel_settings: channel_settings.as_ref(),
-                            },
-                        )
-                        .await
-                }
-            };
-
-            #[cfg(not(feature = "delta"))]
             let result = self
-                .connection_manager
-                .send(
+                .send_rollup_aware(
+                    app_config,
                     channel,
                     message,
                     exclude_socket,
-                    &app_config.id,
                     start_time_ms,
+                    force_full_message,
                 )
                 .await;
 
@@ -539,7 +635,129 @@ impl ConnectionHandler {
             }
         }
 
-        result
+        result.map(|_| publish_ack)
+    }
+
+    async fn send_rollup_aware(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        exclude_socket: Option<&SocketId>,
+        start_time_ms: Option<f64>,
+        force_full_message: bool,
+    ) -> Result<()> {
+        #[cfg(feature = "ai-transport")]
+        if app_config
+            .resolved_history(channel, &self.server_options().history)
+            .enabled
+            && self.server_options().ai_transport.matches_channel(channel)
+            && let Some(engine) = self.ai_rollup_engine.as_ref()
+        {
+            let is_append = extract_runtime_action(&message) == Some(ProtocolMessageAction::Append);
+            if is_append && let Some(metrics) = self.metrics() {
+                metrics.mark_ai_rollup_append_received(&app_config.id);
+            }
+            let now_ms = u64::try_from(now_ms()).unwrap_or_default();
+            let deliveries = engine.ingest(&app_config.id, channel, message, now_ms);
+
+            for delivery in deliveries {
+                if let Some(metrics) = self.metrics() {
+                    if delivery.reason != sockudo_ai_transport::RollupDeliveryReason::Bypass {
+                        metrics.mark_ai_rollup_append_delivered(&delivery.app_id);
+                        metrics
+                            .observe_ai_rollup_ratio(&delivery.app_id, delivery.coalesced as f64);
+                        metrics.observe_ai_rollup_flush_latency(
+                            &delivery.app_id,
+                            delivery.latency_ms as f64,
+                        );
+                    }
+                    metrics.update_ai_rollup_active_streams(
+                        &delivery.app_id,
+                        engine.active_streams() as u64,
+                    );
+                }
+                self.send_one_egress_message(
+                    app_config,
+                    &delivery.channel,
+                    delivery.message,
+                    exclude_socket,
+                    start_time_ms,
+                    force_full_message,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        self.send_one_egress_message(
+            app_config,
+            channel,
+            message,
+            exclude_socket,
+            start_time_ms,
+            force_full_message,
+        )
+        .await
+    }
+
+    async fn send_one_egress_message(
+        &self,
+        app_config: &App,
+        channel: &str,
+        message: PusherMessage,
+        exclude_socket: Option<&SocketId>,
+        start_time_ms: Option<f64>,
+        force_full_message: bool,
+    ) -> Result<()> {
+        #[cfg(feature = "delta")]
+        {
+            let channel_settings = if force_full_message {
+                None
+            } else {
+                Self::get_channel_delta_settings(app_config, channel)
+            };
+
+            if force_full_message {
+                self.connection_manager
+                    .send(
+                        channel,
+                        message,
+                        exclude_socket,
+                        &app_config.id,
+                        start_time_ms,
+                    )
+                    .await
+            } else {
+                self.connection_manager
+                    .send_with_compression(
+                        channel,
+                        message,
+                        exclude_socket,
+                        &app_config.id,
+                        start_time_ms,
+                        CompressionParams {
+                            delta_compression: Arc::clone(&self.delta_compression),
+                            channel_settings: channel_settings.as_ref(),
+                        },
+                    )
+                    .await
+            }
+        }
+
+        #[cfg(not(feature = "delta"))]
+        {
+            let _ = force_full_message;
+            self.connection_manager
+                .send(
+                    channel,
+                    message,
+                    exclude_socket,
+                    &app_config.id,
+                    start_time_ms,
+                )
+                .await
+        }
     }
 
     pub async fn close_connection(
@@ -626,7 +844,8 @@ impl ConnectionHandler {
     }
 
     async fn send_error_frame(ws_tx: &mut WebSocketWriter, error: &Error) {
-        let error_message = PusherMessage::error(error.close_code(), error.to_string(), None);
+        let error_message =
+            PusherMessage::error(u32::from(error.close_code()), error.to_string(), None);
 
         if let Ok(payload) = sonic_rs::to_string(&error_message)
             && let Err(e) = ws_tx.send(Message::text(payload)).await

@@ -392,6 +392,7 @@ async fn test_single_member_removed_on_last_leave() {
             Some(&socket),
             PresenceHistoryEventCause::Disconnect,
             None,
+            0,
             Some(retention()),
         )
         .await
@@ -474,6 +475,7 @@ async fn test_no_member_removed_while_other_connections_exist() {
             Some(&socket_a),
             PresenceHistoryEventCause::Disconnect,
             None,
+            0,
             Some(retention()),
         )
         .await
@@ -628,6 +630,7 @@ async fn test_concurrent_leave_join_race() {
                 Some(&socket_a),
                 PresenceHistoryEventCause::Disconnect,
                 None,
+                0,
                 Some(retention()),
             )
             .await

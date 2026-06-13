@@ -1,11 +1,11 @@
 #![cfg(all(feature = "redis", feature = "surrealdb", feature = "dynamodb"))]
 
 #[allow(dead_code)]
-#[path = "../src/history_dynamodb.rs"]
-mod history_dynamodb;
+#[path = "../src/history/dynamodb/mod.rs"]
+mod dynamodb_history;
 #[allow(dead_code)]
-#[path = "../src/history_surreal.rs"]
-mod history_surreal;
+#[path = "../src/history/surreal/mod.rs"]
+mod surreal_history;
 
 use async_trait::async_trait;
 use sockudo_adapter::ConnectionManager;
@@ -441,7 +441,7 @@ async fn build_surreal_history_store() -> Arc<dyn HistoryStore + Send + Sync> {
         },
         ..sockudo_core::options::HistoryConfig::default()
     };
-    history_surreal::create_surreal_history_store(&settings, config, None, None)
+    surreal_history::create_surreal_history_store(&settings, config, None, None)
         .await
         .unwrap()
 }
@@ -460,7 +460,7 @@ async fn build_dynamodb_history_store() -> Arc<dyn HistoryStore + Send + Sync> {
         backend: sockudo_core::options::HistoryBackend::DynamoDb,
         ..sockudo_core::options::HistoryConfig::default()
     };
-    history_dynamodb::create_dynamodb_history_store(&settings, config, None, None)
+    dynamodb_history::create_dynamodb_history_store(&settings, config, None, None)
         .await
         .unwrap()
 }

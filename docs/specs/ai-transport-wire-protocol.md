@@ -1,10 +1,20 @@
 # Sockudo AI Transport Wire Protocol
 
-Status: Draft locked for S1+ implementation
+Status: Wire-protocol v1 locked for GA release candidates
+Wire protocol version: 1
 Scope: Sockudo server platform primitives for Ably AI Transport parity
 Source of truth: code audit on 2026-06-02, plus `plans/ai-transport/01-server-parity-prompts.md` sections 1 and 2
 
 This document defines the canonical server wire protocol and architecture for Sockudo AI Transport parity. Part A documents the existing Sockudo primitives with source references. Part B specifies the remaining platform gaps. The AI SDK owns turns, trees, view reduction, codecs, and agent orchestration; Sockudo supplies validated realtime, history, recovery, identity, presence, push, and error primitives.
+
+## Compatibility Promise
+
+Wire-protocol v1 is additive-only for the 4.x release line. Sockudo will not remove or reshape the
+AI event names, `extras.ai.transport` key registry, error codes, publish/mutation acknowledgement
+fields, `channel_history` request/response shape, capability-token claims, or V1 Pusher delivery
+stripping rules documented here without a new wire-protocol version and matching SDK major-release
+plan. New fields may be added only when they are optional, ignored safely by existing SDKs, and
+covered by the cross-SDK compatibility matrix.
 
 ## Part A: Audited Existing Behavior
 
@@ -22,11 +32,11 @@ The flattened `PusherMessage` fields are `event`, `channel`, `data`, `name`, `us
 
 The server builds wire `VersionedRealtimeMessage` records from stored versions by using the action event name, the stored channel/data/name/extras, `serial = delivery_serial`, `history_serial`, `delivery_serial`, and version metadata (`crates/sockudo-server/src/http_handler.rs:685`). HTTP routes expose `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}`, `GET /messages/{messageSerial}/versions`, and `POST /messages/{messageSerial}/{update|delete|append}` (`crates/sockudo-server/src/main.rs:3200`, `crates/sockudo-server/src/main.rs:3206`, `crates/sockudo-server/src/main.rs:3230`).
 
-HTTP update accepts optional `name`, `data`, `extras`, `clear_fields`, `client_id`, `socket_id`, `description`, and `metadata`, and requires at least one patch or operation metadata field (`crates/sockudo-protocol/src/versioned_messages.rs:150`). HTTP delete accepts optional `data`, `extras`, `clear_fields`, `client_id`, `socket_id`, `description`, and `metadata` (`crates/sockudo-protocol/src/versioned_messages.rs:199`). HTTP append accepts required non-empty string `data` and optional `client_id`, `socket_id`, `description`, and `metadata` (`crates/sockudo-protocol/src/versioned_messages.rs:231`). Mutation responses are `{ channel, message_serial, action, accepted, version_serial, status }`; current responses do not include `history_serial` or `delivery_serial` (`crates/sockudo-server/src/http_handler.rs:2206`, `crates/sockudo-server/src/http_handler.rs:2318`, `crates/sockudo-server/src/http_handler.rs:2431`).
+HTTP update accepts optional `name`, `data`, `extras`, `clear_fields`, `client_id`, `socket_id`, `description`, `metadata`, and `op_id`, and requires at least one patch or operation metadata field (`crates/sockudo-protocol/src/versioned_messages.rs:150`). HTTP delete accepts optional `data`, `extras`, `clear_fields`, `client_id`, `socket_id`, `description`, `metadata`, and `op_id` (`crates/sockudo-protocol/src/versioned_messages.rs:199`). HTTP append accepts required non-empty string `data` and optional `extras`, `client_id`, `socket_id`, `description`, `metadata`, and `op_id` (`crates/sockudo-protocol/src/versioned_messages.rs:231`). Mutation responses are `{ channel, message_serial, action, accepted, version_serial, history_serial, delivery_serial, status }`; replayed `op_id` mutations return `status: "duplicate"` with the original serial acknowledgement (`crates/sockudo-protocol/src/versioned_messages.rs:280`, `crates/sockudo-server/src/http_handler.rs:2527`, `crates/sockudo-server/src/http_handler.rs:2684`, `crates/sockudo-server/src/http_handler.rs:2838`).
 
 Authorization for mutable messages is capability-based. Connection capabilities expose `message_update_own`, `message_update_any`, `message_delete_own`, `message_delete_any`, `message_append_own`, and `message_append_any`, with `*`, exact, and wildcard channel matching (`crates/sockudo-core/src/websocket.rs:305`, `crates/sockudo-core/src/websocket.rs:376`). Authorization grants `*_any` first; `*_own` requires an identified actor, identified original creator, and matching client IDs; privileged server requests bypass as server-authorized (`crates/sockudo-core/src/versioned_message_auth.rs:38`). HTTP mutations with `socket_id` require a connected V2 socket, optional requested `client_id` matching the signed-in actor, and matching connection capabilities; without `socket_id`, the mutation is privileged server-side (`crates/sockudo-server/src/http_handler.rs:734`, `crates/sockudo-server/src/http_handler.rs:790`, `crates/sockudo-server/src/http_handler.rs:816`).
 
-Normal HTTP publish still uses `PusherApiMessage` with `name`, `data`, `channel`, `channels`, `socket_id`, `info`, `tags`, `delta`, `idempotency_key`, and `extras` (`crates/sockudo-protocol/src/messages.rs:271`). `POST /apps/{appId}/events` returns `{ "ok": true }` or `{ "channels": ... }` when `info` is requested (`crates/sockudo-server/src/http_handler.rs:1525`, `crates/sockudo-server/src/http_handler.rs:1698`). `POST /apps/{appId}/batch_events` uses `{ "batch": [PusherApiMessage] }` and returns `{}` unless any item requested info, in which case it returns `{ "batch": [...] }` (`crates/sockudo-protocol/src/messages.rs:303`, `crates/sockudo-server/src/http_handler.rs:1732`, `crates/sockudo-server/src/http_handler.rs:1925`). Versioned create is generated by the broadcast path when versioned messages and durable history are enabled; WS inbound dispatch currently handles subscribe/unsubscribe/signin/ping/pong/delta/resume/client events and has no inbound handler for message mutations (`crates/sockudo-adapter/src/handler/connection_management.rs:257`, `crates/sockudo-adapter/src/handler/mod.rs:657`).
+Normal HTTP publish still uses `PusherApiMessage` with `name`, `data`, `channel`, `channels`, `socket_id`, `info`, `tags`, `delta`, `idempotency_key`, `message_id`, and `extras` (`crates/sockudo-protocol/src/messages.rs:608`). `POST /apps/{appId}/events` returns `{ "ok": true }`, or `{ "channels": ... }` when `info`, `message_id`, or an AI event requests acknowledgement; AI/versioned publish acknowledgements include `message_serial`, `history_serial`, `delivery_serial`, and `version_serial` (`crates/sockudo-server/src/http_handler.rs:1929`, `crates/sockudo-server/src/http_handler.rs:2057`, `crates/sockudo-server/src/http_handler.rs:2105`). `POST /apps/{appId}/batch_events` uses `{ "batch": [PusherApiMessage] }` and returns `{}` unless any item requested info, supplied `message_id`, or used an AI event name, in which case it returns `{ "batch": [...] }` in request order (`crates/sockudo-protocol/src/messages.rs:643`, `crates/sockudo-server/src/http_handler.rs:2142`, `crates/sockudo-server/src/http_handler.rs:2247`, `crates/sockudo-server/src/http_handler.rs:2349`). Versioned create is generated by the broadcast path when versioned messages and durable history are enabled; WS inbound dispatch currently handles subscribe/unsubscribe/signin/ping/pong/delta/resume/client events and has no inbound handler for message mutations (`crates/sockudo-adapter/src/handler/connection_management.rs:235`, `crates/sockudo-adapter/src/handler/mod.rs:657`).
 
 ### Extras, Message IDs, And Idempotency
 
@@ -226,20 +236,20 @@ V2 publish/create acks and mutation responses MUST expose:
 }
 ```
 
-Existing HTTP mutation responses already include `version_serial` but not `history_serial` or `delivery_serial`; S1 must add optional fields without changing current required fields.
+HTTP mutation responses include the required serial fields while preserving the older required fields. Duplicate `op_id` mutations return the cached/current serial acknowledgement with `status: "duplicate"`.
 
 ### Append Rollup
 
-Append rollup coalesces egress only. Persistence and version storage receive every append. The first append in a stream is delivered immediately. Subsequent appends are coalesced by `(app, channel, message_serial, subscriber fanout partition)` for a configured window: `0`, `20`, `40`, `100`, or `500` ms. Default is `40` ms. A terminal append/update with `status=complete|cancelled` flushes all pending rollups before the terminal event.
+Append rollup coalesces egress only. Persistence and version storage receive every append. The first append in a stream is delivered immediately. Subsequent appends are coalesced by `(app, channel, message_serial, fanout partition)` for a configured window: `0`, `20`, `40`, `100`, or `500` ms. Default is `40` ms. Sockudo v1 implements the fanout partition as node-local server-wide channel fanout because the adapter prepares one egress message for the channel rather than one frame per subscriber. A terminal append/update with `status=complete|cancelled` flushes pending state before the terminal event.
 
-Connection parameter: `append_rollup_window=<ms>`. Per-app config clamps allowed values. `0` disables rollup. Rate limiting counts original appends, not coalesced egress frames. Rollup output must reduce to the same mutable message state as the unrolled append stream.
+Connection parameter: `append_rollup_window=<ms>`. Per-app config clamps allowed values. `0` disables rollup. Current server v1 validates the connection parameter but uses `[ai_transport.rollup].default_window_ms` for node-local channel fanout. Rate limiting counts original mutation requests before rollup; egress metrics count coalesced deliveries. Rollup output must reduce to the same mutable message state as the unrolled append stream.
 
 ### UntilAttach And Client History
 
-Subscriptions capture `attach_serial` after authorization and before live delivery. Client history access is exposed through existing SDK `channel_history` semantics, extended for V2 client access. New WS frames:
+Subscriptions capture `attach_serial` after authorization and before live delivery. Client history access is exposed through existing SDK `channel_history` semantics, extended for V2 client access. The WS contract extends that existing action instead of adding a parallel history action:
 
-- Request event: `sockudo:history`
-- Response event: `sockudo:history_result`
+- Request event: `sockudo:channel_history` (the unprefixed `channel_history` action is also accepted for existing SDK plumbing)
+- Response event: `sockudo:channel_history`
 
 Request data:
 
@@ -257,7 +267,43 @@ Request data:
 }
 ```
 
-`limit` MUST be `1..=1000`. `until_attach=true` bounds `end_serial` to the subscription attach serial and gives gaplessness: history returns messages with `history_serial <= attach_serial`; live delivery continues with `history_serial > attach_serial`. Returned messages are aggregated via version-store latest projection, matching HTTP history substitution. Access requires `history` capability once capability tokens land. Existing rewind remains subscribe-time replay; client history is request/response pagination.
+`limit` MUST be `1..=1000` with default `100`; server policy may lower the effective page size. `direction` defaults to backwards/newest-first and accepts `backwards`, `reverse`, `newest_first`, `forwards`, `forward`, and `oldest_first`. `until_attach=true` bounds `end_serial` to the subscription attach serial and gives gaplessness: history returns messages with `history_serial <= attach_serial`; live delivery continues with `history_serial > attach_serial`. Returned messages are aggregated via version-store latest projection, matching HTTP history substitution. Access requires `history` capability once capability tokens land. Existing rewind remains subscribe-time replay; client history is request/response pagination.
+
+### Push Rules For AI Completion
+
+Top-level `[[push_rules]]` entries bridge ordinary channel publishes to the existing push pipeline. A rule contains:
+
+```toml
+[[push_rules]]
+enabled = true
+channel_pattern = "notifications:*"
+event_filter = ["agent-complete"]
+rate_limit_per_second = 100
+
+[push_rules.payload_mapping]
+title_field = "title"
+body_field = "body"
+template_data_field = "data"
+include_remaining_fields = true
+```
+
+`channel_pattern` accepts exact names, `*`, or a single trailing wildcard such as `notifications:*`. `event_filter` is a non-empty allowlist. Matching is O(number of rules). When a publish succeeds and a rule matches, Sockudo builds a `PublishTarget::Channel` push request and submits it through the existing push acceptance, status, idempotency, fanout, and queue pipeline. Provider delivery remains async through push workers.
+
+The default payload convention expects message data to be a JSON object with string `title` and `body`; all remaining fields are copied into `PushPayload.template_data.data`. For the AI recipe, an agent publishes:
+
+```json
+{
+  "name": "agent-complete",
+  "channel": "notifications:user-123",
+  "data": {
+    "title": "Agent finished",
+    "body": "Your answer is ready",
+    "sessionId": "sess_123"
+  }
+}
+```
+
+Devices subscribed to `notifications:user-123` through the existing channel-subscription API receive provider payloads that include the notification title/body and `data.sessionId`. Apps should open the session and load authoritative history/recovery state after the tap. The alternative server-owned recipe is `ai_turn_ended` webhook delivery to the customer backend, followed by the existing push publish API with an explicit `PublishTarget::Channel`.
 
 ### Capability Tokens
 
@@ -266,7 +312,7 @@ Capability tokens are V2-only JWTs signed with HS256. Header `kid` identifies th
 - `x-sockudo-capability`: JSON map from channel pattern to operations.
 - `x-sockudo-client-id`: verified client identity.
 - Standard `exp`, `iat`, optional `nbf`.
-- Optional `jti` for revocation.
+- Required `jti` for revocation.
 
 Operations: `publish`, `subscribe`, `history`, `presence`. Pattern rules are exact match, namespace wildcard `ns:*`, and global `*`; matching is case-sensitive. HMAC app-key auth remains supported and trusted. Token auth is additive and never weakens existing private/presence HMAC rules.
 
@@ -326,6 +372,7 @@ For SDK compatibility, use code `93002` with exact message `mutations not permit
 | Message payload | 64 KiB | 256 KiB per app | existing event payload limits |
 | Accumulated stream content | 1 MiB | per app clamp | `[ai_transport]` |
 | Appends per message | 4096 | per app clamp | `[ai_transport]` |
+| Open streaming messages per channel | 1024 | per app clamp | `[ai_transport]` |
 | AI transport keys per tier | 32 | 32 | fixed |
 | AI header key bytes | 64 | 64 | fixed |
 | AI header value bytes | 256 | 256 | fixed |
@@ -338,6 +385,16 @@ For SDK compatibility, use code `93002` with exact message `mutations not permit
 
 Do not introduce a second knob for an existing limit. AI-specific knobs only cover AI-only concepts: header registry, accumulated stream cap, append count cap, rollup clamp, and presence grace opt-in.
 
+### Versioned Message Aggregation Appendix
+
+Aggregation happens in the existing versioned-message subsystem. Each mutation writes a `StoredVersionRecord` through `VersionStore::append_version`; the latest aggregate is selected by `get_latest`, and channel projections use `latest_by_history`. The memory, PostgreSQL, and MySQL backends keep per-message version chains and return the highest `version_serial` as the visible aggregate. DynamoDB, ScyllaDB, and SurrealDB resolve latest pointers with backend-specific follow-up fetches; this is functionally equivalent but can be more read-amplified for large channel projections.
+
+Append aggregation currently folds string data at mutation application time (`VersionedMessage::apply_append`). The latest record therefore carries the full accumulated string, while individual append versions remain in the replay log. S2 caps now reject AI Transport appends before delivery serial reservation when the aggregate would exceed `[ai_transport].max_accumulated_message_bytes` or the append count would exceed `[ai_transport].max_appends_per_message`.
+
+Terminal stream status is persisted in the aggregate via `extras.ai.transport.status`. Append requests may carry `extras`; when present, those extras replace the previous aggregate extras so a terminal append with `status=complete|cancelled` remains visible through `get_latest`, HTTP message reads, and history substitution.
+
+Deletion is a tombstone-style latest version. History reads that encounter the original create row substitute the latest visible version, so deleted messages appear as `sockudo:message.delete` with the delete version's retained/cleared fields. Version retention and history retention are independent: if version-store purge removes the version chain while history rows remain, history substitution cannot materialize the latest aggregate and falls back to the retained raw history payload.
+
 ### Scale-Out Notes
 
 Versioned delivery positions are reserved by `VersionStore::reserve_delivery_position`; a channel has a stable stream ID and monotonic delivery serial sequence. Backends must preserve atomic reservation semantics across nodes. Durable history positions are reserved separately by `HistoryStore::reserve_publish_position`; regular publish history serials and versioned delivery serials are distinct continuity domains.
@@ -345,6 +402,17 @@ Versioned delivery positions are reserved by `VersionStore::reserve_delivery_pos
 Rollup happens at egress. It must not affect durable storage, version chains, history serial reservation, webhook payloads, push triggers, or recovery replay. A node-local rollup engine is acceptable because rollup is a delivery cadence optimization; correctness is the reduced mutable state.
 
 An orphaned-stream janitor is required for streams with `status=streaming` and no terminal update after a configured TTL. The janitor must emit operator-visible metrics and optionally a synthetic terminal update with `status=cancelled` only when app policy allows it.
+
+### HTTP SDK Surface Appendix
+
+S7 verified the server API surface required by `@sockudo/ai-transport`:
+
+- `POST /apps/{appId}/events` accepts signed app-key AI events with `extras.ai.transport`, `extras.ai.codec`, and optional client-supplied `message_id`. When the event name is an AI event or `message_id` is present, the response is `{ "channels": { "<channel>": { "message_serial", "history_serial", "delivery_serial", "version_serial" } } }`. Duplicate `message_id` publishes return the original channel acknowledgement and do not append a second version.
+- `X-Idempotency-Key` on `POST /apps/{appId}/events` caches the full acknowledgement response. A retried AI event with the same header returns the same serials and does not rebroadcast.
+- `POST /apps/{appId}/batch_events` preserves request order in its `batch` response whenever at least one item requests info, includes `message_id`, or uses an AI event name. Per-event failures abort the request with the existing HTTP error response; already accepted earlier events keep their existing publish semantics.
+- Existing message endpoints are the SDK mutation surface: `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}`, `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions`, and `POST /apps/{appId}/channels/{channelName}/messages/{messageSerial}/{update|delete|append}`. Mutation requests accept optional `op_id`; duplicate `op_id` requests return `status: "duplicate"` with the same `version_serial`, `history_serial`, and `delivery_serial`.
+- `GET /apps/{appId}/channels/{channelName}/history` is the signed app HTTP history surface. It supports `limit`, `direction`, `cursor`, serial bounds, and time bounds, returns continuity metadata, and substitutes latest visible versioned-message aggregates.
+- `GET /apps/{appId}/channels/{channelName}` includes `ai: { active_streams, last_history_serial, message_count }` when `[ai_transport]` matches the channel. The block is omitted for non-AI channels.
 
 ## Conformance Checklist
 
@@ -358,8 +426,8 @@ AIT-S7 [EXISTS-VERIFY] Version chains reject mixed `history_serial`.
 AIT-S8 [EXISTS-VERIFY] Version chains reject duplicate `version_serial`.
 AIT-S9 [EXISTS-VERIFY] Version chains reject duplicate `delivery_serial`.
 AIT-S10 [EXISTS-VERIFY] Replay requires contiguous `delivery_serial` values.
-AIT-S11 [EXISTS-VERIFY] `get_latest` returns the max version for one message serial.
-AIT-S12 [EXISTS-VERIFY] `latest_by_history` returns one latest version per message in history order.
+AIT-S11 [VERIFIED] `get_latest` returns the max version for one message serial.
+AIT-S12 [VERIFIED] `latest_by_history` returns one latest version per message in history order.
 AIT-S13 [EXISTS-VERIFY] HTTP update response preserves current mutation response fields.
 AIT-S14 [EXISTS-VERIFY] HTTP delete response preserves current mutation response fields.
 AIT-S15 [EXISTS-VERIFY] HTTP append response preserves current mutation response fields.
@@ -379,7 +447,7 @@ AIT-S28 [EXISTS-VERIFY] History rejects inverted serial bounds.
 AIT-S29 [EXISTS-VERIFY] History rejects inverted time bounds.
 AIT-S30 [EXISTS-VERIFY] History cursor app/channel/direction/bounds must match request.
 AIT-S31 [EXISTS-VERIFY] HTTP history response includes continuity metadata.
-AIT-S32 [EXISTS-VERIFY] HTTP history substitutes latest versioned message where available.
+AIT-S32 [VERIFIED] HTTP history substitutes latest versioned message where available.
 AIT-S33 [EXISTS-VERIFY] Rewind is V2-only.
 AIT-S34 [EXISTS-VERIFY] Rewind requires enabled history rewind policy.
 AIT-S35 [EXISTS-VERIFY] Count rewind delivers oldest-to-newest after newest-first read.
@@ -412,15 +480,15 @@ AIT-S61 [NEW] `status` only accepts `streaming|complete|cancelled`.
 AIT-S62 [NEW] `turn-reason` only accepts `complete|cancelled|error|suspended`.
 AIT-S63 [NEW] `*-client-id` headers must match verified identity unless app-key trusted.
 AIT-S64 [NEW] Clients may publish only `ai-input` and `ai-cancel` without agent trust.
-AIT-S65 [NEW] Client-supplied `message_id` dedupes mutable create by app/channel/message ID.
-AIT-S66 [NEW] Duplicate client-supplied `message_id` returns original serials without rebroadcast.
-AIT-S67 [NEW] Mutation `op_id` dedupes append/update/delete by app/channel/message/action/op.
-AIT-S68 [NEW] Mutation acks include optional `history_serial` and `delivery_serial`.
-AIT-S69 [NEW] Append rollup first append is immediate.
-AIT-S70 [NEW] Append rollup flushes before terminal status.
-AIT-S71 [NEW] Append rollup never drops persisted append versions.
-AIT-S72 [NEW] Rollup output reduces to the same state as unrolled appends.
-AIT-S73 [NEW] `append_rollup_window` accepts only 0, 20, 40, 100, or 500 ms.
+AIT-S65 [VERIFIED] Client-supplied `message_id` dedupes mutable create by app/channel/message ID.
+AIT-S66 [VERIFIED] Duplicate client-supplied `message_id` returns original serials without rebroadcast.
+AIT-S67 [VERIFIED] Mutation `op_id` dedupes append/update/delete by app/channel/message/action/op.
+AIT-S68 [VERIFIED] Mutation acks include optional `history_serial` and `delivery_serial`.
+AIT-S69 [VERIFIED] Append rollup first append is immediate.
+AIT-S70 [VERIFIED] Append rollup flushes before terminal status.
+AIT-S71 [VERIFIED] Append rollup never drops persisted append versions.
+AIT-S72 [VERIFIED] Rollup output reduces to the same state as unrolled appends.
+AIT-S73 [VERIFIED] `append_rollup_window` accepts only 0, 20, 40, 100, or 500 ms.
 AIT-S74 [NEW] Subscription captures attach serial before live delivery.
 AIT-S75 [NEW] Client history `until_attach` returns history at or below attach serial.
 AIT-S76 [NEW] Live delivery after untilAttach starts above attach serial.
@@ -431,6 +499,11 @@ AIT-S80 [NEW] Capability token expiry emits 40142 flow.
 AIT-S81 [NEW] Revoked `jti` fails closed.
 AIT-S82 [NEW] `sockudo:auth` can refresh credentials without reconnect.
 AIT-S83 [NEW] `sockudo:presence_update` changes member data without member flap.
+AIT-S84 [VERIFIED] `[[push_rules]]` validates channel patterns, event allowlists, payload mapping fields, and per-rule rate limits at startup.
+AIT-S85 [VERIFIED] Matching channel publishes enqueue `PublishTarget::Channel` push work through the existing push pipeline.
+AIT-S86 [VERIFIED] Non-matching channel publishes do not enqueue push work.
+AIT-S87 [VERIFIED] Push rule payload mapping extracts string `title` and `body` and copies remaining object fields into `template_data.data`.
+AIT-S88 [VERIFIED] Push rule no-match scanning has a criterion benchmark with a <200 ns one-rule budget.
 AIT-S84 [NEW] Presence timeout defaults off for existing clients.
 AIT-S85 [NEW] Enabled presence timeout uses 15 s default grace.
 AIT-S86 [NEW] V2 resume cancels pending presence removal.
@@ -438,3 +511,11 @@ AIT-S87 [NEW] AI error codes 104000-104010 are emitted with documented names.
 AIT-S88 [NEW] Mutable-disabled AI channels emit 93002 and exact message string.
 AIT-S89 [NEW] V1 Pusher wire output remains byte-identical under default config.
 AIT-S90 [NEW] AI-enabled default-off profile preserves existing SDK tests.
+AIT-S91 [VERIFIED] AI append rejects aggregate content over `[ai_transport].max_accumulated_message_bytes` with 40009.
+AIT-S92 [VERIFIED] AI append rejects more than `[ai_transport].max_appends_per_message` appends with 40009.
+AIT-S93 [VERIFIED] AI create rejects more than `[ai_transport].max_open_streaming_messages_per_channel` open streaming messages with 40009.
+AIT-S94 [VERIFIED] Terminal append `extras.ai.transport.status=complete|cancelled` persists in the latest aggregate.
+AIT-S95 [VERIFIED] HTTP AI publishes return `{ message_serial, history_serial, delivery_serial, version_serial }` channel acknowledgements.
+AIT-S96 [VERIFIED] HTTP `X-Idempotency-Key` retries return the cached AI publish serial acknowledgement.
+AIT-S97 [VERIFIED] AI channel state includes `{ active_streams, last_history_serial, message_count }`.
+AIT-S98 [VERIFIED] HTTP batch AI acknowledgements are emitted in request order when serial info is requested.

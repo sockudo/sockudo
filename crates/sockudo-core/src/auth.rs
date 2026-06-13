@@ -190,16 +190,17 @@ impl AuthValidator {
 
         let string_to_sign =
             format!("{uppercased_http_method}\n{request_path}\n{query_string_for_sig}");
-        debug!("String to sign: \n{}", string_to_sign);
+        debug!(
+            method = %uppercased_http_method,
+            path = %request_path,
+            query_param_count = params_for_signing_string.len(),
+            "Prepared API request signature material"
+        );
 
         let token_signer = Token::new(app_config.key.clone(), app_config.secret.clone());
         let generated_signature = token_signer.sign(&string_to_sign);
 
-        debug!("Generated signature: {}", generated_signature);
-        debug!(
-            "Received signature:  {}",
-            auth_params_from_query_struct.auth_signature
-        );
+        debug!("Validated API request signature with redacted signature values");
 
         if secure_compare(
             &generated_signature,

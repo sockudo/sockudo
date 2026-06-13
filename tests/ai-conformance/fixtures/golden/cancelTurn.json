@@ -1,0 +1,28 @@
+[
+  {
+    "event": "sockudo:subscription_succeeded",
+    "channel": "private-ai-cancel-golden",
+    "data": {}
+  },
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-cancel-golden",
+    "data": {
+      "scenario": "private-ai-cancel"
+    }
+  },
+  {
+    "event": "ai-cancel",
+    "channel": "private-ai-cancel-golden",
+    "data": {
+      "scenario": "private-ai-cancel"
+    }
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-cancel-golden",
+    "data": {
+      "scenario": "private-ai-cancel"
+    }
+  }
+]
