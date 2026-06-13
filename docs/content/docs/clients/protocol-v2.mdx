@@ -29,6 +29,8 @@ V2 broadcasts can include:
 | `stream_id` | Opaque stream identity. |
 | `extras` | Headers, tags, echo controls, idempotency metadata, and feature-specific data. |
 
+When recovery is enabled, V2 `sockudo_internal:subscription_succeeded` acknowledgements also include a `stream_id` and `serial`. Store that initial position even if no application events have been received yet; it lets the client resume an attached but idle channel and receive messages published during a short disconnect.
+
 ## Native events
 
 Protocol V2 uses `sockudo:` and `sockudo_internal:` prefixes for system events. Protocol V1 keeps `pusher:` and `pusher_internal:` prefixes.

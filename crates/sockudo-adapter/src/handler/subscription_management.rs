@@ -734,6 +734,19 @@ impl ConnectionHandler {
         data: Option<PresenceData>,
     ) -> Result<()> {
         let response_msg = PusherMessage::subscription_succeeded(channel.to_string(), data);
+        #[cfg(feature = "recovery")]
+        let response_msg = {
+            let mut response_msg = response_msg;
+            if self.connection_uses_v2(socket_id, &app_config.id).await
+                && let Some(position) = self
+                    .subscription_recovery_position(app_config, channel)
+                    .await
+            {
+                response_msg.stream_id = Some(position.stream_id);
+                response_msg.serial = Some(position.serial);
+            }
+            response_msg
+        };
 
         // Fast path: if we have LocalAdapter, use it directly (lock-free)
         if let Some(ref local_adapter) = self.local_adapter {
@@ -749,6 +762,54 @@ impl ConnectionHandler {
         self.connection_manager
             .send_message(&app_config.id, socket_id, response_msg)
             .await
+    }
+
+    #[cfg(feature = "recovery")]
+    async fn connection_uses_v2(&self, socket_id: &SocketId, app_id: &str) -> bool {
+        self.connection_manager
+            .get_connection(socket_id, app_id)
+            .await
+            .is_some_and(|connection| connection.protocol_version == ProtocolVersion::V2)
+    }
+
+    #[cfg(feature = "recovery")]
+    async fn subscription_recovery_position(
+        &self,
+        app_config: &App,
+        channel: &str,
+    ) -> Option<crate::replay_buffer::ReplayPosition> {
+        let recovery_policy =
+            app_config.resolved_connection_recovery(&self.server_options().connection_recovery);
+        if !recovery_policy.enabled {
+            return None;
+        }
+
+        let replay_buffer = self.replay_buffer.as_ref()?;
+        let history_policy = app_config.resolved_history(channel, &self.server_options().history);
+        if history_policy.enabled
+            && let Ok(inspection) = self
+                .history_store()
+                .stream_inspection(&app_config.id, channel)
+                .await
+            && inspection.state.recovery_allowed
+            && let Some(stream_id) = inspection
+                .stream_id
+                .or_else(|| inspection.retained.stream_id.clone())
+        {
+            let serial = inspection
+                .retained
+                .newest_serial
+                .or_else(|| inspection.next_serial.map(|next| next.saturating_sub(1)))
+                .unwrap_or(0);
+            return Some(replay_buffer.ensure_position(
+                &app_config.id,
+                channel,
+                &stream_id,
+                serial,
+            ));
+        }
+
+        Some(replay_buffer.current_position(&app_config.id, channel))
     }
 
     async fn send_annotation_summary_snapshots(

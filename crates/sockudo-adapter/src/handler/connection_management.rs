@@ -311,7 +311,9 @@ impl ConnectionHandler {
                 } else {
                     #[cfg(feature = "recovery")]
                     if let Some(ref replay_buffer) = self.replay_buffer {
-                        message.serial = Some(replay_buffer.next_serial(&app_config.id, channel));
+                        let position = replay_buffer.next_position(&app_config.id, channel);
+                        message.stream_id = Some(position.stream_id);
+                        message.serial = Some(position.serial);
                     }
                 }
 

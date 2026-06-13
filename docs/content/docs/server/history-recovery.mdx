@@ -23,6 +23,8 @@ Protocol V2 broadcasts carry stream metadata:
 
 Clients store recovery positions and provide them during reconnect. Sockudo replays missed messages if continuity can be proven.
 
+For V2 clients, the subscription acknowledgement carries the first recovery position when recovery is enabled. Keep that position even before the channel receives any application event. A reconnect can then resume from the subscribed-but-idle checkpoint and replay messages published while the client was disconnected.
+
 ```ts
 const client = new Sockudo("app-key", {
   wsHost: "127.0.0.1",
