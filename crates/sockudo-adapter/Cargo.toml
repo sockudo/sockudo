@@ -10,6 +10,7 @@ license-file.workspace = true
 [features]
 default = ["local", "v2"]
 local = []
+ai-transport = ["sockudo-core/ai-transport", "sockudo-protocol/ai-transport", "dep:sockudo-ai-transport"]
 v2 = ["delta", "tag-filtering", "recovery"]
 delta = ["dep:sockudo-delta"]
 tag-filtering = ["dep:sockudo-filter"]
@@ -29,6 +30,7 @@ sockudo-core = { workspace = true }
 sockudo-protocol = { workspace = true }
 sockudo-filter = { workspace = true, optional = true }
 sockudo-delta = { workspace = true, optional = true }
+sockudo-ai-transport = { workspace = true, optional = true }
 sockudo-metrics = { workspace = true }
 sockudo-webhook = { workspace = true }
 

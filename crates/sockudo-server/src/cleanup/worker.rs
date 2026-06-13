@@ -285,6 +285,7 @@ impl CleanupWorker {
                         "user_id": user_id,
                         "socket_id": task.socket_id.to_string()
                     }),
+                    presence_ungraceful_timeout_seconds: task.presence_ungraceful_timeout_seconds,
                 });
             }
         }
@@ -305,6 +306,7 @@ impl CleanupWorker {
                     data: sonic_rs::json!({
                         "channel": channel
                     }),
+                    presence_ungraceful_timeout_seconds: 0,
                 });
             }
         }
@@ -403,6 +405,7 @@ impl CleanupWorker {
                             event.socket_id.as_ref(),
                             PresenceHistoryEventCause::Disconnect,
                             None,
+                            event.presence_ungraceful_timeout_seconds,
                             Some(
                                 app_config
                                     .resolved_presence_history(

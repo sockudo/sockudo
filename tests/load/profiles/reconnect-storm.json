@@ -1,0 +1,19 @@
+{
+  "name": "ai-reconnect-storm",
+  "description": "20 percent simultaneous connection drop with recovery audit.",
+  "logicalConnections": 1000000,
+  "sessions": 250000,
+  "activeStreams": 50000,
+  "durationSeconds": 300,
+  "tokensPerSecond": 100,
+  "meanResponseTokens": 800,
+  "subscribersPerSession": { "min": 1, "max": 5 },
+  "dropFraction": 0.2,
+  "resumeWithinSeconds": 60,
+  "historyOnJoinProbability": 0.5,
+  "sampleTranscriptCount": 1000,
+  "maxAppendDeliveryP99Ms": 25,
+  "loadGenerators": 32,
+  "planOnly": true,
+  "requiresFleet": true
+}

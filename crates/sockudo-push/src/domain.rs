@@ -158,12 +158,14 @@ fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
 }
 
 fn fixed_length_secure_compare(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0_u8;
-    for (left, right) in a.bytes().zip(b.bytes()) {
-        diff |= left ^ right;
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let max_len = a_bytes.len().max(b_bytes.len());
+    let mut diff = a_bytes.len() ^ b_bytes.len();
+    for index in 0..max_len {
+        let left = a_bytes.get(index).copied().unwrap_or(0);
+        let right = b_bytes.get(index).copied().unwrap_or(0);
+        diff |= usize::from(left ^ right);
     }
     diff == 0
 }

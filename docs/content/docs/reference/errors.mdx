@@ -30,6 +30,10 @@ Most auth failures are caused by:
 - signing a different `channel_name` than the client requested
 - mutating presence `channel_data` after signing
 - missing raw body for webhook validation
+- expired or revoked Protocol V2 capability tokens
+- capability-token `kid`, `alg`, `jti`, `exp`, or channel-operation map violations
+
+Protocol V2 capability-token expiry emits `sockudo:token_expired` with code `40142`; clients should call their backend for a fresh token and send `sockudo:auth` during the 30 second grace window. Revocation emits the same event with code `40160`; clients should obtain a new authenticated session before reconnecting.
 
 ## Recovery failures
 
@@ -42,6 +46,8 @@ Recovery can fail when:
 - adapter or cache state was unavailable
 
 Clients should rebuild state after recovery failure.
+
+For `resume_failed` with `code: "position_expired"`, V2 clients should resubscribe and request WebSocket `channel_history` with `until_attach: true`. That backfills retained durable history up to the new subscription attach serial while live delivery continues above it.
 
 ## Push errors
 

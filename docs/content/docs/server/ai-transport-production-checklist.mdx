@@ -1,0 +1,56 @@
+---
+title: Production checklist
+description: Preflight checklist for AI Transport deployments.
+icon: ClipboardCheck
+---
+
+Use this checklist before enabling AI Transport for production traffic.
+
+## Build and config
+
+- Build with `v2`, `ai-transport`, the selected shared adapter/cache/store features, and `push`
+  when push recipes are used.
+- Enable `[history]`, `[versioned_messages]`, and `[ai_transport]`.
+- Use shared history, version store, and cache for horizontal deployments.
+- Scope `[[ai_transport.channels]]` to narrow prefixes.
+- Set history and version retention to cover reconnect, rewind, and support windows.
+
+## Auth
+
+- Issue short-lived V2 capability tokens from a backend only.
+- Keep capability patterns exact or tenant/user scoped.
+- Use app-key HTTP only from trusted server workers.
+- Revoke by `jti` or `client_id` for incident response.
+- Do not accept client-asserted identity fields.
+
+## Operations
+
+- Scrape Prometheus metrics from every node.
+- Alert on history degraded/reset-required channels, recovery failures, rollup flush latency, active
+  stream leaks, horizontal transport drops, and push queue/provider failures.
+- Run the AIT-S conformance suite before release.
+- Run `scripts/ai-transport-bench-guard.sh` and review budgets.
+- Run `scripts/ai-transport-ga-gate.sh ci-evidence` on every release-candidate branch.
+- Run `scripts/ai-transport-ga-gate.sh release-evidence` before any GA tag; it fails until the
+  external S14 scale/chaos, rolling-upgrade, and full SDK compatibility manifests are committed.
+- Generate release evidence with `scripts/ai-transport-s14-release-evidence.sh`,
+  `scripts/ai-transport-rolling-upgrade-redis.mjs --execute`, and
+  `scripts/sdk-compat-full-matrix.mjs --execute`.
+- Execute `test/load` and `tools/chaos` profiles on production-like hardware before headline claims.
+- Build Docker images both with and without `ai-transport` enabled.
+
+## Client behavior
+
+- Treat Sockudo history as authoritative after reconnect or notification open.
+- Use `until_attach` for late-join history to avoid gaps.
+- Reduce mutable-message events by `message_serial` and `version.serial`.
+- Send terminal stream status for completed/cancelled/error turns.
+- Refresh tokens before expiry and back off on auth errors.
+
+## GA readiness
+
+The canonical readiness record is
+[`docs/specs/ai-transport-ga-readiness.md`](/specs/ai-transport-ga-readiness). Server releases ship
+AI Transport defaults off before SDK releases that depend on the feature. Full product parity still
+depends on the SDK plans in `plans/ai-transport/02-sdk-prompts.md` and the E4/E5 enablement work in
+`plans/ai-transport/03-existing-sdks-prompts.md`.

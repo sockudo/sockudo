@@ -3,6 +3,7 @@ pub mod annotations;
 pub mod app;
 pub mod auth;
 pub mod cache;
+pub mod capability_token;
 pub mod channel;
 pub mod delta_types;
 pub mod error;

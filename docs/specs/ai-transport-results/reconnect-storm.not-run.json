@@ -1,0 +1,13 @@
+{
+  "schema": "sockudo.ai-transport.scale-result.v1",
+  "status": "not_executed_local",
+  "profile": "ai-reconnect-storm",
+  "profilePath": "test/load/profiles/reconnect-storm.json",
+  "reason": "Requires external load generators and connection orchestration for a 20 percent simultaneous 1M-client drop.",
+  "requiredEvidence": [
+    "all sampled recoveries resumed within 60 seconds",
+    "history recovery success and failure counters by source/code",
+    "rate-limit trigger evidence showing the storm was shaped",
+    "no transcript mismatches after resume"
+  ]
+}

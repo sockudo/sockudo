@@ -127,6 +127,7 @@ pub struct MessageFieldDelta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageAppend {
     pub data_fragment: String,
+    pub extras: Option<MessageExtras>,
 }
 
 /// Domain model for one concrete version of a mutable V2 message.
@@ -215,7 +216,7 @@ impl VersionedMessage {
             version,
             name: self.name.clone(),
             data,
-            extras: self.extras.clone(),
+            extras: append.extras.or_else(|| self.extras.clone()),
         })
     }
 
@@ -375,6 +376,7 @@ mod tests {
                 idempotency_key: None,
                 push: None,
                 echo: Some(true),
+                ai: None,
             }),
         )
     }
@@ -465,6 +467,7 @@ mod tests {
                 21,
                 MessageAppend {
                     data_fragment: " world".to_string(),
+                    extras: None,
                 },
             )
             .unwrap();
@@ -494,6 +497,7 @@ mod tests {
                 21,
                 MessageAppend {
                     data_fragment: "!".to_string(),
+                    extras: None,
                 },
             )
             .unwrap_err();

@@ -166,6 +166,8 @@ pub struct UpdateMessageRequest {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op_id: Option<String>,
 }
 
 impl UpdateMessageRequest {
@@ -176,7 +178,8 @@ impl UpdateMessageRequest {
             || !self.clear_fields.is_empty()
             || self.client_id.is_some()
             || self.description.is_some()
-            || self.metadata.is_some();
+            || self.metadata.is_some()
+            || self.op_id.is_some();
 
         if !has_patch {
             return Err(
@@ -213,6 +216,8 @@ pub struct DeleteMessageRequest {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op_id: Option<String>,
 }
 
 impl DeleteMessageRequest {
@@ -232,6 +237,8 @@ impl DeleteMessageRequest {
 pub struct AppendMessageRequest {
     pub data: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<MessageExtras>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_id: Option<String>,
@@ -239,6 +246,8 @@ pub struct AppendMessageRequest {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op_id: Option<String>,
 }
 
 impl AppendMessageRequest {
@@ -275,6 +284,10 @@ pub struct MutationResponse {
     pub accepted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_serial: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery_serial: Option<u64>,
     pub status: String,
 }
 
@@ -407,10 +420,12 @@ mod tests {
     fn append_request_rejects_empty_data() {
         let error = AppendMessageRequest {
             data: String::new(),
+            extras: None,
             client_id: None,
             socket_id: None,
             description: None,
             metadata: None,
+            op_id: None,
         }
         .validate()
         .unwrap_err();
@@ -532,6 +547,7 @@ mod tests {
             socket_id: None,
             description: None,
             metadata: None,
+            op_id: None,
         }
         .validate()
         .unwrap_err();
@@ -549,6 +565,7 @@ mod tests {
             socket_id: None,
             description: None,
             metadata: None,
+            op_id: None,
         }
         .validate()
         .unwrap_err();

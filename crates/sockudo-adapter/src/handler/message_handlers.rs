@@ -4,7 +4,7 @@ use super::types::*;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::websocket::SocketId;
-use sockudo_protocol::messages::PusherMessage;
+use sockudo_protocol::messages::{AI_EVENT_CANCEL, AI_EVENT_INPUT, PusherMessage};
 #[cfg(feature = "delta")]
 use sonic_rs::prelude::*;
 
@@ -203,17 +203,20 @@ impl ConnectionHandler {
         }
         let t_after_presence_validate = t_start.elapsed().as_micros();
 
-        let rewind_gate_started = if request.rewind.is_some() {
-            let connection = self
-                .connection_manager
-                .get_connection(socket_id, &app_config.id)
-                .await
-                .ok_or(Error::ConnectionNotFound)?;
+        let connection = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+            .ok_or(Error::ConnectionNotFound)?;
+        let captures_attach_serial = connection.protocol_version
+            == sockudo_protocol::ProtocolVersion::V2
+            && app_config
+                .resolved_history(&request.channel, &self.server_options().history)
+                .enabled;
+        let rewind_gate_started = request.rewind.is_some() || captures_attach_serial;
+        if rewind_gate_started {
             connection.start_rewind_gate(request.channel.clone());
-            true
-        } else {
-            false
-        };
+        }
 
         // Perform the subscription
         let t_before_execute = t_start.elapsed().as_micros();
@@ -236,10 +239,38 @@ impl ConnectionHandler {
         };
         let t_after_execute = t_start.elapsed().as_micros();
 
+        let attach_serial = if captures_attach_serial {
+            match self
+                .history_store()
+                .channel_head(&app_config.id, &request.channel)
+                .await
+            {
+                Ok(head) => {
+                    let attach_serial = head.newest_serial.unwrap_or(0);
+                    connection.set_attach_serial(request.channel.clone(), attach_serial);
+                    Some(attach_serial)
+                }
+                Err(err) => {
+                    if rewind_gate_started {
+                        let _ = connection.finish_rewind_gate(&request.channel).await;
+                    }
+                    return Err(err);
+                }
+            }
+        } else {
+            None
+        };
+
         // Handle post-subscription (sends client response first, then does background work)
         let t_before_post = t_start.elapsed().as_micros();
         if let Err(err) = self
-            .handle_post_subscription(socket_id, app_config, &request, &subscription_result)
+            .handle_post_subscription(
+                socket_id,
+                app_config,
+                &request,
+                &subscription_result,
+                attach_serial,
+            )
             .await
         {
             if rewind_gate_started
@@ -390,4 +421,90 @@ impl ConnectionHandler {
 
         Ok(())
     }
+
+    pub async fn handle_ai_event_request(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        mut message: PusherMessage,
+    ) -> Result<()> {
+        self.validate_ai_event_publish(socket_id, app_config, &message)
+            .await?;
+
+        let channel = message
+            .channel
+            .clone()
+            .ok_or_else(|| Error::ClientEvent("Channel required for AI event".into()))?;
+
+        self.verify_channel_subscription(socket_id, app_config, &channel)
+            .await?;
+
+        if let Some(connection) = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+            && let Some(client_id) = connection.get_user_id().await
+            && let Some(event) = message.event.clone()
+        {
+            stamp_verified_ai_identity(&mut message, &event, &client_id);
+        }
+
+        let is_ephemeral = message.is_ephemeral();
+        let exclude_socket = {
+            let conn = self
+                .connection_manager
+                .get_connection(socket_id, &app_config.id)
+                .await;
+            match conn {
+                Some(ref ws_ref)
+                    if ws_ref.protocol_version == sockudo_protocol::ProtocolVersion::V2 =>
+                {
+                    let should_echo = message.should_echo(ws_ref.echo_messages);
+                    if should_echo { None } else { Some(socket_id) }
+                }
+                _ => Some(socket_id),
+            }
+        };
+
+        self.broadcast_to_channel(app_config, &channel, message, exclude_socket)
+            .await?;
+
+        if !is_ephemeral && let Some(webhook_integration) = self.webhook_integration.clone() {
+            let socket_id = *socket_id;
+            let app_config = app_config.clone();
+            let channel = channel.clone();
+            tokio::spawn(async move {
+                if let Err(e) = webhook_integration
+                    .send_client_event(
+                        &app_config,
+                        &channel,
+                        "ai-event",
+                        sonic_rs::Value::new_null(),
+                        Some(&socket_id.to_string()),
+                        None,
+                    )
+                    .await
+                {
+                    tracing::error!("Failed to send AI event webhook: {}", e);
+                }
+            });
+        }
+
+        Ok(())
+    }
+}
+
+fn stamp_verified_ai_identity(message: &mut PusherMessage, event: &str, client_id: &str) {
+    let key = match event {
+        AI_EVENT_INPUT => "input-client-id",
+        AI_EVENT_CANCEL => "turn-client-id",
+        _ => return,
+    };
+
+    let extras = message.extras.get_or_insert_with(Default::default);
+    let ai = extras.ai.get_or_insert_with(Default::default);
+    let transport = ai.transport.get_or_insert_with(Default::default);
+    transport
+        .entry(key.to_string())
+        .or_insert_with(|| client_id.to_string());
 }

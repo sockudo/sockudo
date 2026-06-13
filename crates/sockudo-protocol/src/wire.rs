@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sonic_rs::Value;
 use std::collections::{BTreeMap, HashMap};
 
-use crate::messages::{ExtrasValue, MessageData, MessageExtras, PusherMessage};
+use crate::messages::{AiExtras, ExtrasValue, MessageData, MessageExtras, PusherMessage};
 use crate::versioned_messages::{MessageAction, MessageVersionMetadata, VersionedRealtimeMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -257,6 +257,16 @@ struct ProtoMessageExtras {
     idempotency_key: Option<String>,
     #[prost(bool, optional, tag = "4")]
     echo: Option<bool>,
+    #[prost(message, optional, tag = "5")]
+    ai: Option<ProtoAiExtras>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ProtoAiExtras {
+    #[prost(map = "string, string", tag = "1")]
+    transport: HashMap<String, String>,
+    #[prost(map = "string, string", tag = "2")]
+    codec: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -265,6 +275,13 @@ struct MsgpackMessageExtras {
     ephemeral: Option<bool>,
     idempotency_key: Option<String>,
     echo: Option<bool>,
+    ai: Option<MsgpackAiExtras>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MsgpackAiExtras {
+    transport: Option<HashMap<String, String>>,
+    codec: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -603,6 +620,7 @@ impl From<MessageExtras> for ProtoMessageExtras {
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
             echo: value.echo,
+            ai: value.ai.map(Into::into),
         }
     }
 }
@@ -616,6 +634,25 @@ impl From<MessageExtras> for MsgpackMessageExtras {
             ephemeral: value.ephemeral,
             idempotency_key: value.idempotency_key,
             echo: value.echo,
+            ai: value.ai.map(Into::into),
+        }
+    }
+}
+
+impl From<AiExtras> for ProtoAiExtras {
+    fn from(value: AiExtras) -> Self {
+        Self {
+            transport: value.transport.unwrap_or_default(),
+            codec: value.codec.unwrap_or_default(),
+        }
+    }
+}
+
+impl From<AiExtras> for MsgpackAiExtras {
+    fn from(value: AiExtras) -> Self {
+        Self {
+            transport: value.transport,
+            codec: value.codec,
         }
     }
 }
@@ -634,6 +671,7 @@ impl From<ProtoMessageExtras> for MessageExtras {
             idempotency_key: value.idempotency_key,
             push: None,
             echo: value.echo,
+            ai: value.ai.map(Into::into),
         }
     }
 }
@@ -648,6 +686,25 @@ impl From<MsgpackMessageExtras> for MessageExtras {
             idempotency_key: value.idempotency_key,
             push: None,
             echo: value.echo,
+            ai: value.ai.map(Into::into),
+        }
+    }
+}
+
+impl From<ProtoAiExtras> for AiExtras {
+    fn from(value: ProtoAiExtras) -> Self {
+        Self {
+            transport: (!value.transport.is_empty()).then_some(value.transport),
+            codec: (!value.codec.is_empty()).then_some(value.codec),
+        }
+    }
+}
+
+impl From<MsgpackAiExtras> for AiExtras {
+    fn from(value: MsgpackAiExtras) -> Self {
+        Self {
+            transport: value.transport,
+            codec: value.codec,
         }
     }
 }
@@ -802,6 +859,7 @@ mod tests {
                 idempotency_key: Some("extra-idem".to_string()),
                 push: None,
                 echo: Some(false),
+                ai: None,
             }),
             delta_sequence: Some(11),
             delta_conflation_key: Some("btc".to_string()),

@@ -2,6 +2,12 @@ use crate::error::Result;
 use async_trait::async_trait;
 use std::time::Duration;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheScanPage {
+    pub entries: Vec<(String, String)>,
+    pub next_cursor: Option<String>,
+}
+
 // Cache Manager Interface trait
 #[async_trait]
 pub trait CacheManager: Send + Sync {
@@ -29,6 +35,28 @@ pub trait CacheManager: Send + Sync {
 
     async fn ttl(&self, key: &str) -> Result<Option<Duration>>;
 
+    /// Return up to `limit` unprefixed cache entries whose key starts with `prefix`.
+    ///
+    /// Implementations must bound the returned set by `limit`; callers use this
+    /// for low-frequency janitor work, not publish fan-out.
+    async fn scan_prefix(&self, prefix: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        let _ = (prefix, limit);
+        Ok(Vec::new())
+    }
+
+    async fn scan_prefix_page(
+        &self,
+        prefix: &str,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Result<CacheScanPage> {
+        let _ = cursor;
+        Ok(CacheScanPage {
+            entries: self.scan_prefix(prefix, limit).await?,
+            next_cursor: None,
+        })
+    }
+
     /// Atomically set a key only if it does not already exist. Returns `true`
     /// if the key was set (i.e., it did not exist), `false` otherwise.
     /// Default implementation falls back to non-atomic has+set.
@@ -38,5 +66,16 @@ pub trait CacheManager: Send + Sync {
         }
         self.set(key, value, ttl_seconds).await?;
         Ok(true)
+    }
+
+    async fn increment_by(&self, key: &str, delta: i64, ttl_seconds: u64) -> Result<i64> {
+        let current = self
+            .get(key)
+            .await?
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let next = current.saturating_add(delta);
+        self.set(key, &next.to_string(), ttl_seconds).await?;
+        Ok(next)
     }
 }

@@ -918,6 +918,7 @@ async fn versioned_cold_recovery_replays_mutations_across_nodes_via_redis() {
                 append_reservation.delivery_serial,
                 sockudo_core::versioned_messages::MessageAppend {
                     data_fragment: " world".to_string(),
+                    extras: None,
                 },
             )
             .unwrap(),

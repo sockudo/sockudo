@@ -315,7 +315,7 @@ impl SubscriptionRequest {
         // The filter field can be either:
         //   - An object with "events" and/or "tags" sub-fields (V2 compound filter)
         //   - A FilterNode directly (legacy tag filter format)
-        let (event_name_filter, effective_tags_filter_raw) = if event_name_filtering.enabled {
+        let (event_name_filter, _effective_tags_filter_raw) = if event_name_filtering.enabled {
             Self::extract_event_name_filter(tags_filter_raw)
         } else {
             let (_, tags_only) = Self::extract_event_name_filter(tags_filter_raw);
@@ -342,7 +342,7 @@ impl SubscriptionRequest {
         }
 
         #[cfg(feature = "tag-filtering")]
-        let tags_filter = effective_tags_filter_raw
+        let tags_filter = _effective_tags_filter_raw
             .and_then(|v| sonic_rs::to_vec(&v).ok())
             .and_then(|bytes| sonic_rs::from_slice::<FilterNode>(&bytes).ok())
             .map(|mut filter| {

@@ -27,6 +27,7 @@ Supported query parameters:
 | `version` | WebSocket | Client library version. Accepted for compatibility and observability. |
 | `format` | Protocol V2 | Wire format selector. Unknown V2 formats are rejected with `400 Bad Request`. |
 | `echo_messages` | Protocol V2 | Overrides per-connection echo behavior when echo control is enabled. |
+| `token` | Protocol V2 | Capability-token JWT alternative to unauthenticated app-key connect. The JWT header `kid` must match `{appKey}`. |
 
 ## Publish
 
@@ -34,6 +35,7 @@ Supported query parameters:
 | --- | --- | --- | --- |
 | `POST` | `/apps/{appId}/events` | Signed app API | Publish one event to one or more channels. |
 | `POST` | `/apps/{appId}/batch_events` | Signed app API | Publish multiple events in one request. |
+| `POST` | `/apps/{appId}/revocations` | Signed app API | Revoke Protocol V2 capability tokens by `jti`, `client_id`, or both. Matching local sockets receive `sockudo:token_expired` and close. |
 | `POST` | `/apps/{appId}/users/{userId}/terminate_connections` | Signed app API | Disconnect every active socket for the supplied user ID. |
 
 Useful request controls:
@@ -44,6 +46,21 @@ Useful request controls:
 | `info` | publish endpoints | Optional response info such as `subscription_count`. |
 | `x-idempotency-key` | publish endpoints | Deduplicates accepted publishes when idempotency is enabled. |
 | `idempotency_key` | publish bodies | Body-level idempotency key accepted by Sockudo publish paths. |
+| `message_id` | publish bodies | SDK-facing idempotent create key for AI/versioned-message publishes. Duplicate values return the original serial acknowledgement. |
+
+Revocation request body:
+
+```json
+{
+  "jti": "token-id",
+  "client_id": "user-42",
+  "expires_at": 1710003600,
+  "ttl_seconds": 3600,
+  "reason": "session revoked"
+}
+```
+
+At least one of `jti` or `client_id` is required. `ttl_seconds` overrides `expires_at`; otherwise revocations default to 24 hours. Use the token's remaining lifetime for the TTL when it is known.
 
 ## Channel state
 
@@ -60,6 +77,9 @@ Supported `info` tokens:
 | `subscription_count` | `/channels`, `/channels/{channelName}`, publish responses | Include active subscription counts. |
 | `user_count` | presence channel state | Include presence user count. |
 | `cache` | cache channel state | Include cache-channel occupancy details. |
+
+For channels matched by `[ai_transport]`, `/channels/{channelName}` includes an
+`ai` object with `active_streams`, `last_history_serial`, and `message_count`.
 
 ## Durable history
 
@@ -101,7 +121,7 @@ Presence history uses the same pagination and range controls as durable channel 
 | `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/delete` | Signed app API | Apply a soft delete version. |
 | `POST` | `/apps/{appId}/channels/{channelName}/messages/{messageSerial}/append` | Signed app API | Append string content and store the rolled-up result. |
 
-Versioned-message endpoints require `versioned_messages.enabled = true` and a channel policy that permits mutable messages. They are Sockudo Protocol V2 surfaces.
+Versioned-message endpoints require `versioned_messages.enabled = true` and a channel policy that permits mutable messages. They are Sockudo Protocol V2 surfaces. `update`, `delete`, and `append` accept optional `op_id` for mutation replay dedupe. Mutation responses include `channel`, `message_serial`, `action`, `accepted`, `version_serial`, `history_serial`, `delivery_serial`, and `status`.
 
 ## Annotations
 

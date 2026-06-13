@@ -15,8 +15,14 @@ use sockudo_core::history::{
     MemoryHistoryStore, MemoryHistoryStoreConfig,
 };
 use sockudo_core::options::ServerOptions;
+use sockudo_core::version_store::{MemoryVersionStore, StoredVersionRecord, VersionStore};
+use sockudo_core::versioned_messages::{
+    FieldPatch, MessageAction as CoreMessageAction, MessageAppend, MessageFieldDelta,
+    MessageSerial, VersionMetadata, VersionSerial,
+};
 use sockudo_core::websocket::{SocketId, WebSocketBufferConfig};
-use sockudo_protocol::messages::{MessageData, PusherMessage};
+use sockudo_protocol::messages::{ExtrasValue, MessageData, MessageExtras, PusherMessage};
+use sockudo_protocol::versioned_messages::extract_runtime_message_serial;
 use sockudo_protocol::{ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::{WebSocket, WebSocketWriter};
 use sockudo_ws::client::WebSocketClient;
@@ -152,6 +158,7 @@ struct TestHarness {
     app_manager: Arc<MemoryAppManager>,
     adapter: Arc<LocalAdapter>,
     history_store: Arc<GateHistoryStore>,
+    version_store: Arc<MemoryVersionStore>,
 }
 
 async fn build_harness(options: ServerOptions) -> TestHarness {
@@ -168,6 +175,7 @@ async fn build_harness(options: ServerOptions) -> TestHarness {
     let adapter = Arc::new(LocalAdapter::new());
     let history_inner = Arc::new(MemoryHistoryStore::new(MemoryHistoryStoreConfig::default()));
     let history_store = Arc::new(GateHistoryStore::new(history_inner));
+    let version_store = Arc::new(MemoryVersionStore::new());
 
     let handler = ConnectionHandler::builder(
         app_manager.clone() as Arc<dyn AppManager + Send + Sync>,
@@ -177,6 +185,7 @@ async fn build_harness(options: ServerOptions) -> TestHarness {
     )
     .local_adapter(adapter.clone())
     .history_store(history_store.clone() as Arc<dyn HistoryStore + Send + Sync>)
+    .version_store(version_store.clone() as Arc<dyn VersionStore + Send + Sync>)
     .metrics(Arc::new(MockMetricsInterface::new()))
     .build();
 
@@ -186,6 +195,7 @@ async fn build_harness(options: ServerOptions) -> TestHarness {
         app_manager,
         adapter,
         history_store,
+        version_store,
     }
 }
 
@@ -338,6 +348,231 @@ fn live_message(channel: &str, event: &str, message_id: &str) -> PusherMessage {
     }
 }
 
+fn ai_headers(entries: &[(&str, &str)]) -> MessageExtras {
+    MessageExtras {
+        headers: Some(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        (*key).to_string(),
+                        ExtrasValue::String((*value).to_string()),
+                    )
+                })
+                .collect(),
+        ),
+        ..Default::default()
+    }
+}
+
+fn ai_text_message(
+    channel: &str,
+    event: &str,
+    data: &str,
+    message_id: &str,
+    headers: &[(&str, &str)],
+) -> PusherMessage {
+    let mut message = live_message(channel, event, message_id);
+    message.data = Some(MessageData::String(data.to_string()));
+    message.extras = Some(ai_headers(headers));
+    message
+}
+
+fn message_string_data(message: &PusherMessage) -> &str {
+    match message.data.as_ref() {
+        Some(MessageData::String(data)) => data,
+        other => panic!("expected string message data, got {other:?}"),
+    }
+}
+
+fn header_string<'a>(message: &'a PusherMessage, key: &str) -> Option<&'a str> {
+    match message
+        .extras
+        .as_ref()
+        .and_then(|extras| extras.headers.as_ref())
+        .and_then(|headers| headers.get(key))
+    {
+        Some(ExtrasValue::String(value)) => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+struct AiMutation {
+    action: CoreMessageAction,
+    client_id: String,
+    append: Option<MessageAppend>,
+    delta: MessageFieldDelta,
+    metadata: sonic_rs::Value,
+}
+
+async fn subscribe_v2(
+    harness: &TestHarness,
+    socket_id: &SocketId,
+    reader: &mut ClientReader,
+    channel: &str,
+    rewind: Option<SubscriptionRewind>,
+) {
+    harness
+        .handler
+        .handle_subscribe_request(
+            socket_id,
+            &harness.app,
+            SubscriptionRequest {
+                channel: channel.to_string(),
+                auth: None,
+                channel_data: None,
+                #[cfg(feature = "tag-filtering")]
+                tags_filter: None,
+                #[cfg(feature = "delta")]
+                delta: None,
+                rewind,
+                event_name_filter: None,
+                annotation_subscribe: false,
+            },
+        )
+        .await
+        .unwrap();
+    let subscribed = recv_message(reader).await;
+    assert_eq!(
+        subscribed.event.as_deref(),
+        Some("sockudo_internal:subscription_succeeded")
+    );
+}
+
+async fn append_ai_message(
+    harness: &TestHarness,
+    channel: &str,
+    raw_message_serial: &str,
+    fragment: &str,
+    client_id: &str,
+    metadata: sonic_rs::Value,
+) -> PusherMessage {
+    mutate_ai_message(
+        harness,
+        channel,
+        raw_message_serial,
+        AiMutation {
+            action: CoreMessageAction::Append,
+            client_id: client_id.to_string(),
+            append: Some(MessageAppend {
+                data_fragment: fragment.to_string(),
+                extras: None,
+            }),
+            delta: MessageFieldDelta::default(),
+            metadata,
+        },
+    )
+    .await
+}
+
+async fn update_ai_message_status(
+    harness: &TestHarness,
+    channel: &str,
+    raw_message_serial: &str,
+    status: &str,
+    client_id: &str,
+    metadata: sonic_rs::Value,
+) -> PusherMessage {
+    let message_serial = MessageSerial::new(raw_message_serial.to_string()).unwrap();
+    let current = harness
+        .version_store
+        .get_latest(&harness.app.id, channel, &message_serial)
+        .await
+        .unwrap()
+        .expect("expected versioned AI message");
+    let mut extras = current.message.extras.clone().unwrap_or_default();
+    extras.headers.get_or_insert_with(Default::default).insert(
+        "x-sockudo-status".to_string(),
+        ExtrasValue::String(status.to_string()),
+    );
+
+    mutate_ai_message(
+        harness,
+        channel,
+        raw_message_serial,
+        AiMutation {
+            action: CoreMessageAction::Update,
+            client_id: client_id.to_string(),
+            append: None,
+            delta: MessageFieldDelta {
+                extras: FieldPatch::Replace(extras),
+                ..Default::default()
+            },
+            metadata,
+        },
+    )
+    .await
+}
+
+async fn mutate_ai_message(
+    harness: &TestHarness,
+    channel: &str,
+    raw_message_serial: &str,
+    mutation: AiMutation,
+) -> PusherMessage {
+    let message_serial = MessageSerial::new(raw_message_serial.to_string()).unwrap();
+    let current = harness
+        .version_store
+        .get_latest(&harness.app.id, channel, &message_serial)
+        .await
+        .unwrap()
+        .expect("expected versioned AI message");
+    let reservation = harness
+        .version_store
+        .reserve_delivery_position(&harness.app.id, channel)
+        .await
+        .unwrap();
+    let version = VersionMetadata {
+        serial: VersionSerial::new(harness.handler.next_version_serial()).unwrap(),
+        client_id: Some(mutation.client_id),
+        timestamp_ms: sockudo_core::history::now_ms(),
+        description: Some("ai-transport parity test mutation".to_string()),
+        metadata: Some(mutation.metadata),
+    };
+
+    let message = match mutation.action {
+        CoreMessageAction::Append => current
+            .message
+            .apply_append(
+                version,
+                reservation.delivery_serial,
+                mutation.append.expect("append action requires data"),
+            )
+            .unwrap(),
+        CoreMessageAction::Update => current
+            .message
+            .apply_mutation(
+                mutation.action,
+                version,
+                reservation.delivery_serial,
+                mutation.delta,
+            )
+            .unwrap(),
+        other => panic!("unsupported AI message mutation in test: {other:?}"),
+    };
+
+    let record = StoredVersionRecord {
+        app_id: current.app_id,
+        channel: current.channel,
+        original_client_id: current.original_client_id,
+        message,
+    };
+    harness
+        .version_store
+        .append_version(record.clone())
+        .await
+        .unwrap();
+    let runtime = harness
+        .handler
+        .build_runtime_message_from_record(&record, Some(reservation.stream_id));
+    harness
+        .handler
+        .broadcast_to_channel_force_full(&harness.app, channel, runtime.clone(), None, None)
+        .await
+        .unwrap();
+    runtime
+}
+
 async fn recv_message(reader: &mut ClientReader) -> PusherMessage {
     let next = timeout(Duration::from_secs(2), reader.next())
         .await
@@ -376,6 +611,426 @@ async fn expect_no_message(reader: &mut ClientReader, wait_for: Duration) {
         }
         Ok(Some(Err(err))) => panic!("unexpected websocket read error: {err:?}"),
     }
+}
+
+#[tokio::test]
+async fn ai_transport_streamed_response_fans_out_and_rewinds_as_latest_message_e2e() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.history.max_page_size = 100;
+    options.versioned_messages.enabled = true;
+    let harness = build_harness(options).await;
+    let channel = "ai-session-stream";
+
+    let (laptop_socket, mut laptop_reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(&harness, &laptop_socket, &mut laptop_reader, channel, None).await;
+    let (phone_socket, mut phone_reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(&harness, &phone_socket, &mut phone_reader, channel, None).await;
+
+    harness
+        .handler
+        .broadcast_to_channel(
+            &harness.app,
+            channel,
+            ai_text_message(
+                channel,
+                "ai.response",
+                "Hel",
+                "ai-response-1",
+                &[
+                    ("x-sockudo-turn-id", "turn-stream"),
+                    ("x-sockudo-client-id", "agent-1"),
+                    ("x-sockudo-role", "assistant"),
+                    ("x-sockudo-status", "streaming"),
+                ],
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let laptop_create = recv_message(&mut laptop_reader).await;
+    let phone_create = recv_message(&mut phone_reader).await;
+    assert_eq!(message_string_data(&laptop_create), "Hel");
+    assert_eq!(message_string_data(&phone_create), "Hel");
+    assert_eq!(
+        header_string(&laptop_create, "x-sockudo-status"),
+        Some("streaming")
+    );
+    let message_serial = extract_runtime_message_serial(&laptop_create)
+        .expect("expected versioned create metadata")
+        .to_string();
+    assert_eq!(
+        extract_runtime_message_serial(&phone_create),
+        Some(message_serial.as_str())
+    );
+
+    append_ai_message(
+        &harness,
+        channel,
+        &message_serial,
+        "lo",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-token-index": 2}),
+    )
+    .await;
+    let laptop_append = recv_message(&mut laptop_reader).await;
+    let phone_append = recv_message(&mut phone_reader).await;
+    assert_eq!(
+        laptop_append.event.as_deref(),
+        Some("sockudo:message.append")
+    );
+    assert_eq!(message_string_data(&laptop_append), "Hello");
+    assert_eq!(message_string_data(&phone_append), "Hello");
+
+    update_ai_message_status(
+        &harness,
+        channel,
+        &message_serial,
+        "finished",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-finish-reason": "complete"}),
+    )
+    .await;
+    let laptop_done = recv_message(&mut laptop_reader).await;
+    let phone_done = recv_message(&mut phone_reader).await;
+    assert_eq!(laptop_done.event.as_deref(), Some("sockudo:message.update"));
+    assert_eq!(message_string_data(&laptop_done), "Hello");
+    assert_eq!(
+        header_string(&laptop_done, "x-sockudo-status"),
+        Some("finished")
+    );
+    assert_eq!(message_string_data(&phone_done), "Hello");
+    assert_eq!(
+        header_string(&phone_done, "x-sockudo-status"),
+        Some("finished")
+    );
+
+    let (late_socket, mut late_reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(
+        &harness,
+        &late_socket,
+        &mut late_reader,
+        channel,
+        Some(SubscriptionRewind::Count(10)),
+    )
+    .await;
+    let late_messages = recv_until_event(&mut late_reader, "sockudo:rewind_complete").await;
+    let latest = late_messages
+        .iter()
+        .find(|message| extract_runtime_message_serial(message) == Some(message_serial.as_str()))
+        .expect("late joiner should receive accumulated AI response");
+    assert_eq!(latest.event.as_deref(), Some("sockudo:message.update"));
+    assert_eq!(message_string_data(latest), "Hello");
+    assert_eq!(header_string(latest, "x-sockudo-status"), Some("finished"));
+    assert!(
+        !late_messages
+            .iter()
+            .any(|message| extract_runtime_message_serial(message)
+                == Some(message_serial.as_str())
+                && message_string_data(message) == "Hel")
+    );
+}
+
+#[tokio::test]
+async fn ai_transport_recovery_replays_stream_mutations_after_disconnect_e2e() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.history.max_page_size = 100;
+    options.connection_recovery.enabled = true;
+    options.versioned_messages.enabled = true;
+    let harness = build_harness(options).await;
+    let channel = "ai-session-recovery";
+
+    let (source_socket, mut source_reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(&harness, &source_socket, &mut source_reader, channel, None).await;
+
+    harness
+        .handler
+        .broadcast_to_channel(
+            &harness.app,
+            channel,
+            ai_text_message(
+                channel,
+                "ai.response",
+                "Token",
+                "ai-response-recovery",
+                &[
+                    ("x-sockudo-turn-id", "turn-recovery"),
+                    ("x-sockudo-client-id", "agent-1"),
+                    ("x-sockudo-status", "streaming"),
+                ],
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let first = recv_message(&mut source_reader).await;
+    let message_serial = extract_runtime_message_serial(&first)
+        .expect("expected versioned create metadata")
+        .to_string();
+
+    append_ai_message(
+        &harness,
+        channel,
+        &message_serial,
+        " around",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-token-index": 1}),
+    )
+    .await;
+    update_ai_message_status(
+        &harness,
+        channel,
+        &message_serial,
+        "finished",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-finish-reason": "complete"}),
+    )
+    .await;
+
+    let (resume_socket, mut resume_reader) = connect_v2_socket(&harness).await;
+    harness
+        .handler
+        .handle_resume(
+            &resume_socket,
+            &harness.app,
+            &PusherMessage {
+                event: Some("sockudo:resume".to_string()),
+                channel: None,
+                data: Some(MessageData::Json(sonic_rs::json!({
+                    "channel_positions": {
+                        channel: {
+                            "stream_id": first.stream_id,
+                            "serial": first.serial,
+                            "last_message_id": first.message_id,
+                        }
+                    }
+                }))),
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let replayed = recv_until_event(&mut resume_reader, "sockudo:resume_success").await;
+    let replayed_ai_messages = replayed
+        .iter()
+        .filter(|message| extract_runtime_message_serial(message) == Some(message_serial.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(replayed_ai_messages.len(), 2);
+    assert_eq!(
+        replayed_ai_messages[0].event.as_deref(),
+        Some("sockudo:message.append")
+    );
+    assert_eq!(message_string_data(replayed_ai_messages[0]), "Token around");
+    assert_eq!(
+        replayed_ai_messages[1].event.as_deref(),
+        Some("sockudo:message.update")
+    );
+    assert_eq!(message_string_data(replayed_ai_messages[1]), "Token around");
+    assert_eq!(
+        header_string(replayed_ai_messages[1], "x-sockudo-status"),
+        Some("finished")
+    );
+}
+
+#[tokio::test]
+async fn ai_transport_concurrent_turns_cancel_and_codec_metadata_round_trip_e2e() {
+    let mut options = ServerOptions::default();
+    options.history.enabled = true;
+    options.history.max_page_size = 100;
+    options.versioned_messages.enabled = true;
+    let harness = build_harness(options).await;
+    let channel = "ai-session-concurrent";
+
+    let (observer_socket, mut observer_reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(
+        &harness,
+        &observer_socket,
+        &mut observer_reader,
+        channel,
+        None,
+    )
+    .await;
+
+    for (turn_id, message_id, text, parent, fork_of) in [
+        ("turn-summary", "ai-summary", "Sum", "root", ""),
+        ("turn-risks", "ai-risks", "Ris", "root", "ai-summary"),
+    ] {
+        let mut headers = vec![
+            ("x-sockudo-turn-id", turn_id),
+            ("x-sockudo-client-id", "agent-1"),
+            ("x-sockudo-status", "streaming"),
+            ("x-sockudo-parent", parent),
+            ("x-sockudo-part", "text"),
+            ("x-sockudo-tool-call-id", "lookup-1"),
+            ("x-sockudo-approval-state", "pending"),
+        ];
+        if !fork_of.is_empty() {
+            headers.push(("x-sockudo-fork-of", fork_of));
+        }
+        harness
+            .handler
+            .broadcast_to_channel(
+                &harness.app,
+                channel,
+                ai_text_message(channel, "ai.response", text, message_id, &headers),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    let summary_create = recv_message(&mut observer_reader).await;
+    let risks_create = recv_message(&mut observer_reader).await;
+    let summary_serial = extract_runtime_message_serial(&summary_create)
+        .expect("expected summary message serial")
+        .to_string();
+    let risks_serial = extract_runtime_message_serial(&risks_create)
+        .expect("expected risks message serial")
+        .to_string();
+    assert_ne!(summary_serial, risks_serial);
+    assert_eq!(
+        header_string(&risks_create, "x-sockudo-fork-of"),
+        Some("ai-summary")
+    );
+    assert_eq!(
+        header_string(&summary_create, "x-sockudo-tool-call-id"),
+        Some("lookup-1")
+    );
+
+    append_ai_message(
+        &harness,
+        channel,
+        &summary_serial,
+        "mary",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-part": "text"}),
+    )
+    .await;
+    append_ai_message(
+        &harness,
+        channel,
+        &risks_serial,
+        "ks",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-part": "reasoning"}),
+    )
+    .await;
+    let summary_append = recv_message(&mut observer_reader).await;
+    let risks_append = recv_message(&mut observer_reader).await;
+    assert_eq!(message_string_data(&summary_append), "Summary");
+    assert_eq!(message_string_data(&risks_append), "Risks");
+
+    harness
+        .handler
+        .broadcast_to_channel(
+            &harness.app,
+            channel,
+            ai_text_message(
+                channel,
+                "ai.cancel",
+                r#"{"filter":{"turnId":"turn-summary"}}"#,
+                "ai-cancel-summary",
+                &[
+                    ("x-sockudo-signal", "cancel"),
+                    ("x-sockudo-turn-id", "turn-summary"),
+                    ("x-sockudo-client-id", "user-phone"),
+                ],
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let cancel = recv_message(&mut observer_reader).await;
+    assert_eq!(cancel.event.as_deref(), Some("ai.cancel"));
+    assert_eq!(header_string(&cancel, "x-sockudo-signal"), Some("cancel"));
+    assert_eq!(
+        header_string(&cancel, "x-sockudo-turn-id"),
+        Some("turn-summary")
+    );
+
+    update_ai_message_status(
+        &harness,
+        channel,
+        &summary_serial,
+        "aborted",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-finish-reason": "cancelled"}),
+    )
+    .await;
+    append_ai_message(
+        &harness,
+        channel,
+        &risks_serial,
+        " done",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-part": "text"}),
+    )
+    .await;
+    update_ai_message_status(
+        &harness,
+        channel,
+        &risks_serial,
+        "finished",
+        "agent-1",
+        sonic_rs::json!({"x-sockudo-finish-reason": "complete"}),
+    )
+    .await;
+
+    let summary_aborted = recv_message(&mut observer_reader).await;
+    let risks_done = recv_message(&mut observer_reader).await;
+    let risks_finished = recv_message(&mut observer_reader).await;
+    assert_eq!(
+        header_string(&summary_aborted, "x-sockudo-status"),
+        Some("aborted")
+    );
+    assert_eq!(message_string_data(&summary_aborted), "Summary");
+    assert_eq!(message_string_data(&risks_done), "Risks done");
+    assert_eq!(message_string_data(&risks_finished), "Risks done");
+    assert_eq!(
+        header_string(&risks_finished, "x-sockudo-status"),
+        Some("finished")
+    );
+
+    let (late_socket, mut late_reader) = connect_v2_socket(&harness).await;
+    subscribe_v2(
+        &harness,
+        &late_socket,
+        &mut late_reader,
+        channel,
+        Some(SubscriptionRewind::Count(10)),
+    )
+    .await;
+    let history = recv_until_event(&mut late_reader, "sockudo:rewind_complete").await;
+    let summary = history
+        .iter()
+        .find(|message| extract_runtime_message_serial(message) == Some(summary_serial.as_str()))
+        .expect("expected cancelled summary turn in history");
+    let risks = history
+        .iter()
+        .find(|message| extract_runtime_message_serial(message) == Some(risks_serial.as_str()))
+        .expect("expected completed risks turn in history");
+    assert_eq!(header_string(summary, "x-sockudo-status"), Some("aborted"));
+    assert_eq!(message_string_data(summary), "Summary");
+    assert_eq!(header_string(risks, "x-sockudo-status"), Some("finished"));
+    assert_eq!(message_string_data(risks), "Risks done");
+    assert_eq!(
+        header_string(risks, "x-sockudo-fork-of"),
+        Some("ai-summary")
+    );
 }
 
 #[tokio::test]

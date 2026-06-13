@@ -1,0 +1,59 @@
+[package]
+name = "sockudo-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+sockudo-core = { path = "../crates/sockudo-core" }
+sockudo-protocol = { path = "../crates/sockudo-protocol" }
+sockudo-push = { path = "../crates/sockudo-push", default-features = false }
+
+[[bin]]
+name = "ai_header_validator"
+path = "fuzz_targets/ai_header_validator.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_message"
+path = "fuzz_targets/wire_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capability_map"
+path = "fuzz_targets/capability_map.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "history_cursor"
+path = "fuzz_targets/history_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "push_payload_mapping"
+path = "fuzz_targets/push_payload_mapping.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mutation_request"
+path = "fuzz_targets/mutation_request.rs"
+test = false
+doc = false
+bench = false

@@ -50,6 +50,16 @@ pub trait HorizontalAdapterInterface: Send + Sync {
         user_id: &str,
         socket_id: &str,
     ) -> Result<()>;
+
+    /// Broadcast presence member data update to all nodes.
+    async fn broadcast_presence_update(
+        &self,
+        app_id: &str,
+        channel: &str,
+        user_id: &str,
+        socket_id: &str,
+        user_info: sonic_rs::Value,
+    ) -> Result<()>;
 }
 
 #[async_trait]
@@ -179,6 +189,47 @@ pub trait ConnectionManager: Send + Sync {
         channel: &str,
         socket_id: &SocketId,
     ) -> Option<PresenceMemberInfo>;
+    async fn update_presence_member(
+        &self,
+        app_id: &str,
+        channel: &str,
+        socket_id: &SocketId,
+        user_info: sonic_rs::Value,
+    ) -> Result<Option<PresenceMemberInfo>> {
+        let _ = (app_id, channel, socket_id, user_info);
+        Ok(None)
+    }
+    async fn mark_presence_member_pending(
+        &self,
+        app_id: &str,
+        channel: &str,
+        user_id: &str,
+        socket_id: &str,
+        user_info: Option<sonic_rs::Value>,
+        generation: u64,
+    ) -> Result<()> {
+        let _ = (app_id, channel, user_id, socket_id, user_info, generation);
+        Ok(())
+    }
+    async fn cancel_pending_presence_member(
+        &self,
+        app_id: &str,
+        channel: &str,
+        user_id: &str,
+    ) -> Result<Option<String>> {
+        let _ = (app_id, channel, user_id);
+        Ok(None)
+    }
+    async fn remove_pending_presence_member(
+        &self,
+        app_id: &str,
+        channel: &str,
+        user_id: &str,
+        generation: u64,
+    ) -> Result<Option<PresenceMemberInfo>> {
+        let _ = (app_id, channel, user_id, generation);
+        Ok(None)
+    }
     async fn terminate_user_connections(&self, app_id: &str, user_id: &str) -> Result<()>;
     async fn add_user(&self, ws: WebSocketRef) -> Result<()>;
     async fn remove_user(&self, ws: WebSocketRef) -> Result<()>;
@@ -213,6 +264,10 @@ pub trait ConnectionManager: Send + Sync {
     async fn get_channels_with_socket_count(&self, app_id: &str) -> Result<HashMap<String, usize>>;
 
     async fn get_sockets_count(&self, app_id: &str) -> Result<usize>;
+    async fn get_all_connections(&self, app_id: &str) -> Result<Vec<SocketId>> {
+        let _ = app_id;
+        Ok(Vec::new())
+    }
     async fn get_namespaces(&self) -> Result<Vec<(String, Arc<Namespace>)>>;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 

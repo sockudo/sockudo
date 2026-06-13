@@ -116,6 +116,48 @@ pub trait MetricsInterface: Send + Sync {
     /// Track a duplicate publish caught by idempotency deduplication
     fn mark_idempotency_duplicate(&self, _app_id: &str) {}
 
+    /// Track an AI Transport message accepted by edge validation.
+    fn mark_ai_transport_validated(&self, _app_id: &str, _event: &str) {}
+
+    /// Track an AI Transport message rejected by edge validation.
+    fn mark_ai_transport_rejected(&self, _app_id: &str, _code: u32) {}
+
+    /// Track a malformed AI Transport header observed outside the validation path.
+    fn mark_ai_transport_unparseable(&self, _app_id: &str) {}
+
+    /// Track an AI turn start event.
+    fn mark_ai_turn_started(&self, _app_id: &str) {}
+
+    /// Track an AI turn end event by bounded reason label.
+    fn mark_ai_turn_ended(&self, _app_id: &str, _reason: &str) {}
+
+    /// Track an AI cancel signal.
+    fn mark_ai_cancel_signal(&self, _app_id: &str) {}
+
+    /// Update currently active AI streams.
+    fn update_ai_active_streams(&self, _app_id: &str, _streams: u64) {}
+
+    /// Observe AI stream lifetime in seconds.
+    fn observe_ai_stream_duration(&self, _app_id: &str, _duration_seconds: f64) {}
+
+    /// Track AI stream payload bytes observed at transport boundaries.
+    fn mark_ai_stream_bytes(&self, _app_id: &str, _bytes: usize) {}
+
+    /// Track a versioned AI append received by the rollup egress path.
+    fn mark_ai_rollup_append_received(&self, _app_id: &str) {}
+
+    /// Track an AI append delivery emitted by the rollup egress path.
+    fn mark_ai_rollup_append_delivered(&self, _app_id: &str) {}
+
+    /// Observe the number of input appends represented by one rollup output.
+    fn observe_ai_rollup_ratio(&self, _app_id: &str, _ratio: f64) {}
+
+    /// Update active AI append rollup streams.
+    fn update_ai_rollup_active_streams(&self, _app_id: &str, _streams: u64) {}
+
+    /// Observe latency from first pending append to flush.
+    fn observe_ai_rollup_flush_latency(&self, _app_id: &str, _latency_ms: f64) {}
+
     /// Track an ephemeral message delivery (V2 only)
     fn mark_ephemeral_message(&self, _app_id: &str) {}
 

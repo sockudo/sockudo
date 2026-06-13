@@ -1,0 +1,20 @@
+---
+title: AI Transport troubleshooting
+description: Common AI Transport production issues and operator actions.
+icon: Wrench
+---
+
+| Symptom | Likely cause | Operator action |
+| --- | --- | --- |
+| Mutations rejected as not permitted | Capability lacks `message_*_own` or `message_*_any`, or actor identity does not match owner | Inspect the verified connection identity and token capability map; do not rely on body `client_id`. |
+| History retention too short | Rewind or recovery points before retained durable history | Increase `[history]` retention or lower expected rewind/recovery window; watch retained gauges. |
+| Turn never ends | Missing terminal append/update/summary or orphan TTL too high | Check `sockudo_ai_active_streams`, terminal event rates, and `ai_transport.rollup.orphan_ttl_ms`. |
+| Suspended-state publishes | Producer continued after suspend/continuation boundary | Reject or route through the continuation flow; audit `message_id` and `op_id`. |
+| Reconnect loop on bad tokens | Client retries expired/revoked/bad JWT without refresh | Fix token refresh, rate-limit retry storms, revoke compromised `jti` or `client_id`. |
+| Rollup latency too high | Window too high or slow flush under load | Compare `sockudo_flush_latency` to the configured window and lower `default_window_ms`. |
+| Rollup savings too low | Window too low or terminal flushes dominate | Compare `sockudo_appends_received_total`, `sockudo_appends_delivered_total`, and `sockudo_rollup_ratio`. |
+| Push channel misses user | Device not registered or not subscribed to the notification channel | Inspect push channel subscriptions and provider token state. |
+| Presence flaps during transient loss | Ungraceful timeout is zero or too low | Raise `[presence].ungraceful_timeout_seconds` for agent presence channels. |
+| Recovery fails after node loss | Durable state degraded/reset-required or shared cache/store unavailable | Inspect `sockudo_history_recovery_failures_total`, degraded/reset-required gauges, and store health. |
+
+For scale and chaos-specific playbooks, see [AI Transport production operations](/docs/server/ai-transport-production-ops).

@@ -10,6 +10,7 @@ license-file.workspace = true
 [features]
 default = ["local", "v2"]
 versioned-messages = []
+ai-transport = ["sockudo-core/ai-transport", "sockudo-protocol/ai-transport", "sockudo-adapter/ai-transport", "versioned-messages"]
 local = []
 v2 = ["delta", "tag-filtering", "recovery"]
 delta = ["sockudo-adapter/delta", "sockudo-delta"]
@@ -17,7 +18,7 @@ tag-filtering = ["sockudo-adapter/tag-filtering", "sockudo-filter"]
 recovery = ["sockudo-adapter/recovery"]
 push = ["dep:aes-gcm", "dep:base64", "dep:sha2", "dep:sockudo-push"]
 push-fcm = ["push", "sockudo-push/push-fcm"]
-push-apns = ["push", "sockudo-push/push-apns", "dep:jsonwebtoken", "jsonwebtoken/rust_crypto"]
+push-apns = ["push", "sockudo-push/push-apns", "dep:jsonwebtoken", "jsonwebtoken/aws_lc_rs"]
 push-webpush = ["push", "sockudo-push/push-webpush"]
 push-hms = ["push", "sockudo-push/push-hms"]
 push-wns = ["push", "sockudo-push/push-wns"]
@@ -25,6 +26,7 @@ monolith = ["push", "sockudo-push/monolith"]
 full = [
   "v2",
   "versioned-messages",
+  "ai-transport",
   "push",
   "push-fcm",
   "push-apns",

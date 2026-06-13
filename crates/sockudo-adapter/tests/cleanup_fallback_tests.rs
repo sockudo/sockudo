@@ -21,6 +21,7 @@ mod tests {
                     user_info: None,
                 }),
             }),
+            presence_ungraceful_timeout_seconds: 0,
         }
     }
 

@@ -17,6 +17,7 @@ pub mod pipeline;
 pub mod planner;
 pub mod ratelimit;
 pub mod registry;
+pub mod rules;
 pub mod scheduler;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 pub mod sql;
@@ -92,6 +93,9 @@ pub use pipeline::{
     publish_uid_key,
 };
 pub use planner::{PushPlanner, PushShardWorker};
+pub use rules::{
+    ChannelPushRule, PushRuleError, PushRulePayloadMapping, any_rule_matches, matching_rule_indices,
+};
 pub use scheduler::PushScheduler;
 #[cfg(feature = "mysql")]
 pub use sql::MySqlPushStore;

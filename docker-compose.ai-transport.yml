@@ -1,0 +1,122 @@
+name: sockudo-ai-transport
+
+x-sockudo-ai-env: &sockudo-ai-env
+  RUST_LOG: "info"
+  DEBUG: "false"
+  HOST: "0.0.0.0"
+  PORT: "6001"
+  METRICS_PORT: "9601"
+  ADAPTER_DRIVER: "redis"
+  CACHE_DRIVER: "redis"
+  QUEUE_DRIVER: "redis"
+  APP_MANAGER_DRIVER: "memory"
+  HISTORY_ENABLED: "true"
+  HISTORY_BACKEND: "postgres"
+  VERSIONED_MESSAGES_ENABLED: "true"
+  VERSIONED_MESSAGES_DRIVER: "postgres"
+  AI_TRANSPORT_ENABLED: "true"
+  AI_TRANSPORT_ROLLUP_ORPHAN_TTL_MS: "60000"
+  DATABASE_REDIS_HOST: "redis"
+  DATABASE_REDIS_PORT: "6379"
+  DATABASE_REDIS_DB: "0"
+  DATABASE_REDIS_KEY_PREFIX: "sockudo-ai:"
+  DATABASE_POSTGRES_HOST: "postgres"
+  DATABASE_POSTGRES_PORT: "5432"
+  DATABASE_POSTGRES_USERNAME: "postgres"
+  DATABASE_POSTGRES_PASSWORD: "postgres123"
+  DATABASE_POSTGRES_DATABASE: "sockudo_ai"
+  SOCKUDO_DEFAULT_APP_ID: "app-id"
+  SOCKUDO_DEFAULT_APP_KEY: "app-key"
+  SOCKUDO_DEFAULT_APP_SECRET: "app-secret"
+  SOCKUDO_DEFAULT_APP_ENABLED: "true"
+  SOCKUDO_ENABLE_CLIENT_MESSAGES: "true"
+
+x-sockudo-node: &sockudo-node
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+    args:
+      SOCKUDO_FEATURES: "v2,ai-transport,redis,postgres"
+  command: ["sockudo", "--config", "/app/config/config.ai-transport-compose.toml"]
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+  volumes:
+    - ./config/config.ai-transport-compose.toml:/app/config/config.ai-transport-compose.toml:ro
+  networks:
+    - sockudo-ai-network
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://localhost:6001/up/app-id >/dev/null"]
+    interval: 10s
+    timeout: 5s
+    retries: 10
+    start_period: 20s
+
+services:
+  sockudo-node-1:
+    <<: *sockudo-node
+    environment:
+      <<: *sockudo-ai-env
+      INSTANCE_PROCESS_ID: "sockudo-node-1"
+    ports:
+      - "6001:6001"
+      - "9601:9601"
+
+  sockudo-node-2:
+    <<: *sockudo-node
+    environment:
+      <<: *sockudo-ai-env
+      INSTANCE_PROCESS_ID: "sockudo-node-2"
+    ports:
+      - "6002:6001"
+      - "9602:9601"
+
+  sockudo-node-3:
+    <<: *sockudo-node
+    environment:
+      <<: *sockudo-ai-env
+      INSTANCE_PROCESS_ID: "sockudo-node-3"
+    ports:
+      - "6003:6001"
+      - "9603:9601"
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "16379:6379"
+    networks:
+      - sockudo-ai-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_PASSWORD: "postgres123"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "sockudo_ai"
+    ports:
+      - "15433:5432"
+    volumes:
+      - sockudo-ai-postgres-data:/var/lib/postgresql/data
+    networks:
+      - sockudo-ai-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sockudo_ai"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  sockudo-ai-network:
+    driver: bridge
+
+volumes:
+  sockudo-ai-postgres-data:

@@ -310,6 +310,59 @@ benchmark: ## Run basic performance benchmark
 	done
 	@echo "$(GREEN)Benchmark complete!$(RESET)"
 
+.PHONY: ai-scale-up
+ai-scale-up: ## Start the five-node AI Transport scale rig
+	@docker compose -f docker-compose.ai-transport.yml -f test/load/docker-compose.ai-transport-scale.yml up -d --build
+
+.PHONY: ai-scale-down
+ai-scale-down: ## Stop the AI Transport scale rig
+	@docker compose -f docker-compose.ai-transport.yml -f test/load/docker-compose.ai-transport-scale.yml down
+
+.PHONY: ai-scale-smoke
+ai-scale-smoke: ## Run executable AI Transport scale smoke (override ARGS="--durationSeconds 30")
+	@node test/load/ai-scale-runner.mjs --profile test/load/profiles/smoke.json $(ARGS)
+
+.PHONY: ai-scale-headline-plan
+ai-scale-headline-plan: ## Print the 1M-connection AI Transport fleet plan
+	@node test/load/ai-scale-runner.mjs --profile test/load/profiles/headline-1m.json --plan $(ARGS)
+
+.PHONY: ai-scale-soak-plan
+ai-scale-soak-plan: ## Print the 24h 20 percent AI Transport soak plan
+	@node test/load/ai-scale-runner.mjs --profile test/load/profiles/soak-20pct.json --plan $(ARGS)
+
+.PHONY: ai-chaos
+ai-chaos: ## Run AI Transport local chaos scenarios (override ARGS="node-kill")
+	@tools/chaos/ai-chaos-runner.sh $(ARGS)
+
+.PHONY: ai-ga-evidence
+ai-ga-evidence: ## Check deterministic AI Transport GA readiness evidence
+	@scripts/ai-transport-ga-gate.sh ci-evidence
+
+.PHONY: ai-ga-release-evidence
+ai-ga-release-evidence: ## Check final AI Transport GA evidence manifests
+	@scripts/ai-transport-ga-gate.sh release-evidence
+
+.PHONY: ai-s14-release-evidence
+ai-s14-release-evidence: ## Run external-fleet S14 AI Transport release evidence profiles
+	@scripts/ai-transport-s14-release-evidence.sh
+
+.PHONY: ai-rolling-upgrade-evidence
+ai-rolling-upgrade-evidence: ## Record shared-Redis rolling-upgrade evidence (pass ARGS for hooks)
+	@node scripts/ai-transport-rolling-upgrade-redis.mjs $(ARGS)
+
+.PHONY: sdk-compat-full-matrix
+sdk-compat-full-matrix: ## Record full SDK compatibility matrix (pass ARGS="--execute" to run)
+	@node scripts/sdk-compat-full-matrix.mjs $(ARGS)
+
+.PHONY: ai-ga-matrix
+ai-ga-matrix: ## Run AI Transport release feature matrix locally
+	@scripts/ai-transport-ga-gate.sh matrix
+
+.PHONY: ai-docker-builds
+ai-docker-builds: ## Build Docker images with and without AI Transport
+	@docker build --target runtime --build-arg SOCKUDO_FEATURES="v2,redis,postgres" -t sockudo:without-ai .
+	@docker build --target runtime --build-arg SOCKUDO_FEATURES="v2,ai-transport,redis,postgres" -t sockudo:with-ai .
+
 .PHONY: push-benchmark
 push-benchmark: ## Run push notification admission benchmark (override ARGS="--mode all --devices 10000")
 	@node scripts/push-benchmark.mjs $(ARGS)

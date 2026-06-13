@@ -1,0 +1,57 @@
+{
+  "threshold_percent": 10,
+  "benchmarks": [
+    {
+      "id_substring": "extras_header_validate_budget_mean_10us",
+      "max_mean_ns": 10000
+    },
+    {
+      "id_substring": "ai_event_name_check_budget_mean_500ns",
+      "max_mean_ns": 500
+    },
+    {
+      "id_substring": "memory_reserve_local_budget_mean_25us",
+      "max_mean_ns": 25000
+    },
+    {
+      "id_substring": "leased_clustered_reserve_budget_mean_25us",
+      "max_mean_ns": 25000
+    },
+    {
+      "id_substring": "versioned_append_memory_budget_mean_75us",
+      "max_mean_ns": 75000
+    },
+    {
+      "id_substring": "memory_latest_by_history_1000_budget_mean_2ms",
+      "max_mean_ns": 2000000
+    },
+    {
+      "id_substring": "rollup_decision_append_budget_mean_25us",
+      "max_mean_ns": 25000
+    },
+    {
+      "id_substring": "rollup_flush_2000_budget_mean_10ms",
+      "max_mean_ns": 10000000
+    },
+    {
+      "id_substring": "capability_publish_match_budget_mean_1us",
+      "max_mean_ns": 1000
+    },
+    {
+      "id_substring": "capability_append_any_match_budget_mean_1us",
+      "max_mean_ns": 1000
+    },
+    {
+      "id_substring": "discrete_ai_input_publish_to_fanout_budget_mean_10ms",
+      "max_mean_ns": 10000000
+    },
+    {
+      "id_substring": "streaming_append_rollup_on_1k_budget_mean_10ms",
+      "max_mean_ns": 10000000
+    },
+    {
+      "id_substring": "streaming_append_rollup_off_1k_budget_mean_10ms",
+      "max_mean_ns": 10000000
+    }
+  ]
+}

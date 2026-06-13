@@ -50,9 +50,45 @@ Webhook handlers should:
 - tolerate retries
 - preserve raw payloads for audit when compliance requires it
 
+Presence lifecycle events are:
+
+- `member_added`
+- `member_updated`
+- `member_removed`
+
+`member_updated` is emitted for Protocol V2 `sockudo:presence_update` frames. Its payload includes `channel`, `user_id`, and `user_info` with the latest member data.
+
 ## Push webhooks
 
 Push provider status callbacks and push lifecycle webhooks are core to operating notifications. Use them to reconcile provider outcomes with Sockudo publish status.
+
+## AI Transport and message webhooks
+
+Enable event types per app webhook. AI Transport event types are:
+
+- `ai_turn_started`
+- `ai_turn_ended`
+- `ai_cancel_requested`
+- `ai_stream_orphaned`
+
+Versioned-message and annotation event types are:
+
+- `message_version_created`
+- `annotation_created`
+- `annotation_deleted`
+
+`ai_turn_ended` includes `reason` and optional `error_code`. `ai_stream_orphaned` is emitted when the distributed orphan janitor closes a stale streaming message after `ai_transport.rollup.orphan_ttl_ms`:
+
+```json
+{
+  "name": "ai_stream_orphaned",
+  "channel": "private-ai-chat",
+  "message_serial": "00000000000000000001:node:00000000000000000001",
+  "reason": "orphan_timeout"
+}
+```
+
+`message_version_created` includes `channel`, `message_serial`, `version_serial`, and `action` (`message.create`, `message.update`, `message.delete`, or `message.append`). Annotation webhooks include `channel`, `message_serial`, `annotation_serial`, and `annotation_type`; delete events also include `deleted_annotation_serial`.
 
 Typical push events include:
 

@@ -1,0 +1,70 @@
+---
+title: AI Transport conventions
+description: Default-off AI Transport event and extras conventions for Protocol V2.
+---
+
+AI Transport support is additive and default-off. Enable it with the `ai-transport` Cargo feature and runtime `[ai_transport]` config, then scope validation to channel prefixes:
+
+```toml
+[ai_transport]
+enabled = true
+
+[[ai_transport.channels]]
+prefix = "private-ai-"
+```
+
+AI lifecycle events are plain channel events: `ai-input`, `ai-output`, `ai-turn-start`, `ai-turn-end`, and `ai-cancel`. Server-side validation applies only on enabled AI channels. WebSocket clients may publish `ai-input` and `ai-cancel` when their token allows `publish`; agent events require trusted server-side HTTP publish until an explicit agent token marker is specified.
+
+AI metadata is carried in the existing V2 `extras` envelope:
+
+```json
+{
+  "extras": {
+    "ai": {
+      "transport": {
+        "turn-id": "turn-1",
+        "status": "streaming",
+        "role": "assistant"
+      },
+      "codec": {
+        "content-type": "application/json"
+      }
+    }
+  }
+}
+```
+
+Each `transport` and `codec` tier is limited to 32 string keys. Keys must be at most 64 bytes and match `[a-z0-9-]+`; values must be at most 256 bytes. Transport keys are validated against the wire protocol registry. Codec keys are opaque but still bounded. Any `*-client-id` transport value on WebSocket publishes must match the verified signed-in client identity; trusted HTTP publishes are exempt.
+
+Existing `idempotency_key` behavior is unchanged. AI SDKs may additionally send `message_id` on HTTP publish for idempotent creates, and mutation requests may send `op_id` for no-op replay of append/update/delete operations. V2 publish and mutation acknowledgements expose `message_serial`, `history_serial`, `delivery_serial`, and `version_serial` when those serials are assigned.
+
+## Deployment matrix
+
+AI Transport requires durable history and versioned messages. Startup rejects `ai_transport.enabled = true` unless both `[history].enabled` and `[versioned_messages].enabled` are true.
+
+| Adapter | Cache | History backend | Version store | Support |
+| --- | --- | --- | --- | --- |
+| `local` | `memory` | `memory` | `memory` | Single-node development only |
+| `local` | Redis or memory | PostgreSQL, MySQL, DynamoDB, ScyllaDB, or SurrealDB | PostgreSQL, MySQL, DynamoDB, ScyllaDB, or SurrealDB | Single-node or externally isolated worker |
+| `redis`, `redis-cluster`, `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy` | Redis or Redis Cluster | PostgreSQL, MySQL, DynamoDB, ScyllaDB, or SurrealDB | PostgreSQL, MySQL, DynamoDB, ScyllaDB, or SurrealDB | Supported horizontal deployment |
+| any horizontal adapter | `memory` or `none` | any | any | Rejected at startup |
+| any horizontal adapter | any | `memory` | any | Rejected at startup |
+| any horizontal adapter | any | any | `memory` | Rejected at startup |
+
+Under AI Transport, versioned-message delivery serials are leased in 128-position blocks per node and channel. The backing store still owns monotonic reservation authority; the lease cache reduces append-stream reservation contention without changing stored serials or recovery semantics.
+
+Append rollup is egress-only and defaults to a 40 ms window. Streaming messages are tracked in the shared cache while their `extras.ai.transport.status` is `streaming`. Any node can claim a stale stream after `ai_transport.rollup.orphan_ttl_ms`, which defaults to 60000 ms, then append a normal versioned `message.update` with `status=cancelled` and `error-code=orphan_timeout`. The claim key prevents duplicate cancellation across nodes, and the latest version is re-read before mutation so active streams that advanced meanwhile are refreshed instead of cancelled.
+
+Apps can subscribe to the webhook event type `ai_stream_orphaned` to observe synthetic orphan cancellation. The event payload includes `channel`, `message_serial`, and `reason`.
+
+## Scale-out verification
+
+The repository includes a three-node Redis/PostgreSQL AI Transport stack and verification scripts:
+
+```bash
+docker compose -f docker-compose.ai-transport.yml up --build -d
+node scripts/ai-transport-3node-bench.mjs
+scripts/ai-transport-jepsen-lite.sh
+```
+
+`scripts/ai-transport-3node-bench.mjs` runs a same-stack baseline plus a cross-node workload, verifies every node reads the same final aggregate, and enforces the cross-node added append p99 budget. `scripts/ai-transport-jepsen-lite.sh` runs the same correctness check before, during, and after a docker `pause`/`unpause` partition of one node; steady state uses `MAX_APPEND_ADDED_P99_MS` and partition/heal phases use `PARTITION_MAX_APPEND_ADDED_P99_MS`.

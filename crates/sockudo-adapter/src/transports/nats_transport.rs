@@ -181,8 +181,10 @@ impl HorizontalTransport for NatsTransport {
             config.servers, config.prefix, config.request_timeout_ms, config.connection_timeout_ms
         );
         debug!(
-            "NATS transport credentials: username={:?}, password={:?}, token={:?}",
-            config.username, config.password, config.token
+            username_configured = config.username.is_some(),
+            password_configured = config.password.is_some(),
+            token_configured = config.token.is_some(),
+            "NATS transport credentials configured"
         );
 
         // Build NATS Options

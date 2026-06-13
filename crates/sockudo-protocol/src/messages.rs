@@ -9,6 +9,49 @@ use std::time::Duration;
 
 use crate::protocol_version::ProtocolVersion;
 
+pub const AI_EVENT_INPUT: &str = "ai-input";
+pub const AI_EVENT_OUTPUT: &str = "ai-output";
+pub const AI_EVENT_TURN_START: &str = "ai-turn-start";
+pub const AI_EVENT_TURN_END: &str = "ai-turn-end";
+pub const AI_EVENT_CANCEL: &str = "ai-cancel";
+
+pub const AI_ERROR_INVALID_TRANSPORT_HEADER: u32 = 104000;
+pub const AI_ERROR_HEADER_TOO_LARGE: u32 = 104001;
+pub const AI_ERROR_CLIENT_ID_SPOOF: u32 = 104002;
+pub const AI_ERROR_EVENT_NOT_PERMITTED: u32 = 104003;
+pub const AI_ERROR_PAYLOAD_TOO_LARGE: u32 = 40009;
+pub const AI_ERROR_MUTABLE_NOT_PERMITTED: u32 = 93002;
+
+pub const AI_TRANSPORT_TIER_LIMIT: usize = 32;
+pub const AI_TRANSPORT_KEY_MAX_BYTES: usize = 64;
+pub const AI_TRANSPORT_VALUE_MAX_BYTES: usize = 256;
+pub const AI_MESSAGE_ID_MAX_BYTES: usize = 64;
+
+#[inline]
+pub fn is_ai_event(event: &str) -> bool {
+    matches!(
+        event,
+        AI_EVENT_INPUT
+            | AI_EVENT_OUTPUT
+            | AI_EVENT_TURN_START
+            | AI_EVENT_TURN_END
+            | AI_EVENT_CANCEL
+    )
+}
+
+#[inline]
+pub fn is_ai_client_publish_event(event: &str) -> bool {
+    matches!(event, AI_EVENT_INPUT | AI_EVENT_CANCEL)
+}
+
+#[inline]
+pub fn is_ai_agent_publish_event(event: &str) -> bool {
+    matches!(
+        event,
+        AI_EVENT_OUTPUT | AI_EVENT_TURN_START | AI_EVENT_TURN_END
+    )
+}
+
 /// Allowed value types for extras.headers.
 /// Flat only — no Object or Array variant so nesting is structurally impossible.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,6 +96,179 @@ pub struct MessageExtras {
     /// when explicitly set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub echo: Option<bool>,
+
+    /// AI Transport metadata convention over the existing V2 extras envelope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai: Option<AiExtras>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiExtras {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiPublishTrust {
+    Client,
+    TrustedApp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiHeaderValidationError {
+    pub code: u32,
+    pub name: &'static str,
+    pub message: String,
+}
+
+impl AiHeaderValidationError {
+    fn invalid_transport(message: impl Into<String>) -> Self {
+        Self {
+            code: AI_ERROR_INVALID_TRANSPORT_HEADER,
+            name: "ai_invalid_transport_header",
+            message: message.into(),
+        }
+    }
+
+    fn too_large(message: impl Into<String>) -> Self {
+        Self {
+            code: AI_ERROR_HEADER_TOO_LARGE,
+            name: "ai_header_too_large",
+            message: message.into(),
+        }
+    }
+
+    pub fn client_id_spoof(message: impl Into<String>) -> Self {
+        Self {
+            code: AI_ERROR_CLIENT_ID_SPOOF,
+            name: "ai_client_id_spoof",
+            message: message.into(),
+        }
+    }
+
+    pub fn event_not_permitted(message: impl Into<String>) -> Self {
+        Self {
+            code: AI_ERROR_EVENT_NOT_PERMITTED,
+            name: "ai_event_not_permitted",
+            message: message.into(),
+        }
+    }
+}
+
+pub struct AiTransportHeaders<'a> {
+    inner: &'a HashMap<String, String>,
+}
+
+impl<'a> AiTransportHeaders<'a> {
+    #[inline]
+    pub fn new(inner: &'a HashMap<String, String>) -> Self {
+        Self { inner }
+    }
+
+    #[inline]
+    pub fn get(&self, key: &str) -> Option<&'a str> {
+        self.inner.get(key).map(String::as_str)
+    }
+
+    #[inline]
+    pub fn turn_id(&self) -> Option<&'a str> {
+        self.get("turn-id")
+    }
+
+    #[inline]
+    pub fn turn_client_id(&self) -> Option<&'a str> {
+        self.get("turn-client-id")
+    }
+
+    #[inline]
+    pub fn turn_reason(&self) -> Option<&'a str> {
+        self.get("turn-reason")
+    }
+
+    #[inline]
+    pub fn codec_message_id(&self) -> Option<&'a str> {
+        self.get("codec-message-id")
+    }
+
+    #[inline]
+    pub fn parent(&self) -> Option<&'a str> {
+        self.get("parent")
+    }
+
+    #[inline]
+    pub fn fork_of(&self) -> Option<&'a str> {
+        self.get("fork-of")
+    }
+
+    #[inline]
+    pub fn msg_regenerate(&self) -> Option<&'a str> {
+        self.get("msg-regenerate")
+    }
+
+    #[inline]
+    pub fn stream(&self) -> Option<&'a str> {
+        self.get("stream")
+    }
+
+    #[inline]
+    pub fn stream_id(&self) -> Option<&'a str> {
+        self.get("stream-id")
+    }
+
+    #[inline]
+    pub fn status(&self) -> Option<&'a str> {
+        self.get("status")
+    }
+
+    #[inline]
+    pub fn discrete(&self) -> Option<&'a str> {
+        self.get("discrete")
+    }
+
+    #[inline]
+    pub fn invocation_id(&self) -> Option<&'a str> {
+        self.get("invocation-id")
+    }
+
+    #[inline]
+    pub fn event_id(&self) -> Option<&'a str> {
+        self.get("event-id")
+    }
+
+    #[inline]
+    pub fn input_client_id(&self) -> Option<&'a str> {
+        self.get("input-client-id")
+    }
+
+    #[inline]
+    pub fn role(&self) -> Option<&'a str> {
+        self.get("role")
+    }
+
+    #[inline]
+    pub fn turn_continue(&self) -> Option<&'a str> {
+        self.get("turn-continue")
+    }
+
+    #[inline]
+    pub fn error_code(&self) -> Option<&'a str> {
+        self.get("error-code")
+    }
+
+    #[inline]
+    pub fn error_message(&self) -> Option<&'a str> {
+        self.get("error-message")
+    }
+
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (&'a str, &'a str)> {
+        self.inner
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+    }
 }
 
 impl MessageExtras {
@@ -75,6 +291,126 @@ impl MessageExtras {
         }
         Ok(())
     }
+
+    #[inline]
+    pub fn ai_transport_headers(&self) -> Option<AiTransportHeaders<'_>> {
+        self.ai
+            .as_ref()
+            .and_then(|ai| ai.transport.as_ref())
+            .map(AiTransportHeaders::new)
+    }
+
+    #[inline]
+    pub fn ai_codec_headers(&self) -> Option<&HashMap<String, String>> {
+        self.ai.as_ref().and_then(|ai| ai.codec.as_ref())
+    }
+
+    pub fn validate_ai_headers(&self) -> Result<(), AiHeaderValidationError> {
+        let Some(ai) = self.ai.as_ref() else {
+            return Ok(());
+        };
+
+        if let Some(transport) = ai.transport.as_ref() {
+            validate_ai_tier("transport", transport)?;
+            for (key, value) in transport {
+                validate_transport_key_domain(key, value)?;
+            }
+        }
+
+        if let Some(codec) = ai.codec.as_ref() {
+            validate_ai_tier("codec", codec)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn validate_ai_tier(
+    tier_name: &str,
+    tier: &HashMap<String, String>,
+) -> Result<(), AiHeaderValidationError> {
+    if tier.len() > AI_TRANSPORT_TIER_LIMIT {
+        return Err(AiHeaderValidationError::too_large(format!(
+            "extras.ai.{tier_name} exceeds {AI_TRANSPORT_TIER_LIMIT} keys"
+        )));
+    }
+
+    for (key, value) in tier {
+        if key.len() > AI_TRANSPORT_KEY_MAX_BYTES {
+            return Err(AiHeaderValidationError::too_large(format!(
+                "extras.ai.{tier_name} key exceeds {AI_TRANSPORT_KEY_MAX_BYTES} bytes"
+            )));
+        }
+        if !is_ai_header_key(key) {
+            return Err(AiHeaderValidationError::invalid_transport(format!(
+                "extras.ai.{tier_name} key '{key}' must match [a-z0-9-]+"
+            )));
+        }
+        if value.len() > AI_TRANSPORT_VALUE_MAX_BYTES {
+            return Err(AiHeaderValidationError::too_large(format!(
+                "extras.ai.{tier_name}.{key} exceeds {AI_TRANSPORT_VALUE_MAX_BYTES} bytes"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[inline]
+fn is_ai_header_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderValidationError> {
+    match key {
+        "turn-id" | "codec-message-id" | "parent" | "fork-of" | "stream-id" | "invocation-id"
+        | "event-id" | "input-client-id" | "turn-client-id" | "error-code" => {
+            if value.is_empty() {
+                return Err(AiHeaderValidationError::invalid_transport(format!(
+                    "extras.ai.transport.{key} must not be empty"
+                )));
+            }
+        }
+        "turn-reason" => {
+            if !matches!(value, "complete" | "cancelled" | "error" | "suspended") {
+                return Err(AiHeaderValidationError::invalid_transport(
+                    "extras.ai.transport.turn-reason has invalid value",
+                ));
+            }
+        }
+        "msg-regenerate" | "stream" | "discrete" | "turn-continue" => {
+            if !matches!(value, "true" | "false") {
+                return Err(AiHeaderValidationError::invalid_transport(format!(
+                    "extras.ai.transport.{key} must be true or false"
+                )));
+            }
+        }
+        "status" => {
+            if !matches!(value, "streaming" | "complete" | "cancelled") {
+                return Err(AiHeaderValidationError::invalid_transport(
+                    "extras.ai.transport.status has invalid value",
+                ));
+            }
+        }
+        "role" => {
+            if !matches!(value, "user" | "assistant" | "system" | "tool" | "agent") {
+                return Err(AiHeaderValidationError::invalid_transport(
+                    "extras.ai.transport.role has invalid value",
+                ));
+            }
+        }
+        "error-message" => {}
+        _ => {
+            return Err(AiHeaderValidationError::invalid_transport(format!(
+                "unknown extras.ai.transport key '{key}'"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 /// Generate a unique message ID (UUIDv4) for client-side deduplication.
@@ -212,11 +548,11 @@ fn serde_json_value_to_sonic(value: JsonValue) -> Result<Value, String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorData {
-    pub code: Option<u16>,
+    pub code: Option<u32>,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct PusherMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
@@ -268,6 +604,28 @@ pub struct PusherMessage {
     pub delta_conflation_key: Option<String>,
 }
 
+impl std::fmt::Debug for PusherMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PusherMessage")
+            .field("event", &self.event)
+            .field("channel", &self.channel)
+            .field("has_data", &self.data.is_some())
+            .field("name", &self.name)
+            .field("user_id", &self.user_id)
+            .field("tags_count", &self.tags.as_ref().map(BTreeMap::len))
+            .field("sequence", &self.sequence)
+            .field("conflation_key", &self.conflation_key)
+            .field("message_id", &self.message_id)
+            .field("stream_id", &self.stream_id)
+            .field("serial", &self.serial)
+            .field("has_idempotency_key", &self.idempotency_key.is_some())
+            .field("has_extras", &self.extras.is_some())
+            .field("delta_sequence", &self.delta_sequence)
+            .field("delta_conflation_key", &self.delta_conflation_key)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PusherApiMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -295,6 +653,9 @@ pub struct PusherApiMessage {
     /// cached response without re-broadcasting.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    /// Optional client-supplied idempotent create identity for V2/AI SDKs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     /// V2 extras envelope. Passed through to PusherMessage for V2 delivery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extras: Option<MessageExtras>,
@@ -427,7 +788,7 @@ impl PusherMessage {
         }
     }
 
-    pub fn error(code: u16, message: String, channel: Option<String>) -> Self {
+    pub fn error(code: u32, message: String, channel: Option<String>) -> Self {
         Self {
             event: Some("pusher:error".to_string()),
             data: Some(MessageData::Json(json!({
@@ -524,6 +885,32 @@ impl PusherMessage {
             data: Some(MessageData::String(
                 json!({
                     "user_id": user_id
+                })
+                .to_string(),
+            )),
+            name: None,
+            user_id: None,
+            sequence: None,
+            conflation_key: None,
+            tags: None,
+            message_id: None,
+            stream_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: None,
+            delta_sequence: None,
+            delta_conflation_key: None,
+        }
+    }
+
+    pub fn member_updated(channel: String, user_id: String, user_info: Value) -> Self {
+        Self {
+            event: Some("sockudo_internal:presence_update".to_string()),
+            channel: Some(channel),
+            data: Some(MessageData::String(
+                json!({
+                    "user_id": user_id,
+                    "user_info": user_info
                 })
                 .to_string(),
             )),
@@ -780,6 +1167,28 @@ impl PusherMessage {
         self.extras.as_ref().and_then(|e| e.headers.as_ref())
     }
 
+    /// Returns the AI Transport header view, if present.
+    pub fn ai_transport_headers(&self) -> Option<AiTransportHeaders<'_>> {
+        self.extras
+            .as_ref()
+            .and_then(MessageExtras::ai_transport_headers)
+    }
+
+    /// Returns the AI codec header tier, if present.
+    pub fn ai_codec_headers(&self) -> Option<&HashMap<String, String>> {
+        self.extras
+            .as_ref()
+            .and_then(MessageExtras::ai_codec_headers)
+    }
+
+    pub fn validate_ai_headers(&self) -> Result<(), AiHeaderValidationError> {
+        if let Some(extras) = self.extras.as_ref() {
+            extras.validate_ai_headers()
+        } else {
+            Ok(())
+        }
+    }
+
     /// Returns true if the given protocol version should receive extras in delivered messages.
     pub fn should_include_extras(protocol: &ProtocolVersion) -> bool {
         matches!(protocol, ProtocolVersion::V2)
@@ -852,11 +1261,11 @@ impl InfoQueryParser for Option<&String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnnotationEventAction, AnnotationEventData, AnnotationSummaryEnvelope, MessageSummaryData,
-        PusherMessage,
+        AiExtras, AnnotationEventAction, AnnotationEventData, AnnotationSummaryEnvelope,
+        MessageData, MessageExtras, MessageSummaryData, PusherMessage,
     };
     use sonic_rs::JsonValueTrait;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
 
     #[test]
     fn protocol_heartbeat_detection_matches_both_prefix_families() {
@@ -882,6 +1291,44 @@ mod tests {
         );
 
         assert!(!message.is_protocol_ping_or_pong());
+    }
+
+    #[test]
+    fn pusher_message_debug_redacts_payload_extras_and_idempotency() {
+        let mut transport = HashMap::new();
+        transport.insert("turn-id".to_string(), "secret-turn".to_string());
+        let message = PusherMessage {
+            event: Some("ai-output".to_string()),
+            channel: Some("ai:room".to_string()),
+            data: Some(MessageData::String("streaming prompt secret".to_string())),
+            name: None,
+            user_id: Some("client-1".to_string()),
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: Some("msg-1".to_string()),
+            stream_id: None,
+            serial: None,
+            idempotency_key: Some("idempotency-secret".to_string()),
+            extras: Some(MessageExtras {
+                ai: Some(AiExtras {
+                    transport: Some(transport),
+                    codec: None,
+                }),
+                ..MessageExtras::default()
+            }),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        let rendered = format!("{message:?}");
+
+        assert!(!rendered.contains("streaming prompt secret"));
+        assert!(!rendered.contains("idempotency-secret"));
+        assert!(!rendered.contains("secret-turn"));
+        assert!(rendered.contains("has_data: true"));
+        assert!(rendered.contains("has_extras: true"));
+        assert!(rendered.contains("has_idempotency_key: true"));
     }
 
     #[test]

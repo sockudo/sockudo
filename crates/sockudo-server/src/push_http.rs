@@ -18,16 +18,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sockudo_core::app::App;
+use sockudo_core::options::{PushRuleConfig, PushRulePayloadMappingConfig};
 use sockudo_core::rate_limiter::RateLimiter;
+use sockudo_protocol::messages::ApiMessageData;
 use sockudo_push::{
-    ChannelSubscription, DeliveryEvent, DeviceDetails, DeviceRegistrationChange, DynPushQueue,
-    DynPushStore, EncryptedSecret, FanoutRegime, IdempotencyRecord, NotificationTemplate,
-    OperatorInvalidationEvent, ProviderCredential, ProviderCredentialMaterial,
-    ProviderOverridePayload, PublishCounters, PublishIntent, PublishLifecycleState,
-    PublishLogEvent, PublishStatus, PublishTarget, PushCursor, PushMetaEvent, PushMetrics,
-    PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage, PushRecipient,
-    RenderedProviderPayload, SecretString, emit_push_meta_event, generate_device_identity_token,
-    hash_device_identity_token, render_provider_payload, verify_device_identity_token,
+    ChannelPushRule, ChannelSubscription, DeliveryEvent, DeviceDetails, DeviceRegistrationChange,
+    DynPushQueue, DynPushStore, EncryptedSecret, FanoutRegime, IdempotencyRecord,
+    NotificationTemplate, OperatorInvalidationEvent, ProviderCredential,
+    ProviderCredentialMaterial, ProviderOverridePayload, PublishCounters, PublishIntent,
+    PublishLifecycleState, PublishLogEvent, PublishStatus, PublishTarget, PushCursor,
+    PushMetaEvent, PushMetrics, PushPayload, PushProviderKind, PushQueuePayload, PushQueueStage,
+    PushRecipient, PushRulePayloadMapping, RenderedProviderPayload, SecretString,
+    emit_push_meta_event, generate_device_identity_token, hash_device_identity_token,
+    render_provider_payload, verify_device_identity_token,
 };
 use tracing::{info, warn};
 
@@ -47,6 +50,8 @@ const CREDENTIAL_SECRET_AES_PREFIX: &str = "envelope:v1:aes256gcm:";
 const CREDENTIAL_SECRET_LEGACY_HASH_PREFIX: &str = "envelope:v1:sha256:";
 
 static PUSH_DEVICE_RATE_WINDOWS: LazyLock<Mutex<BTreeMap<String, RateWindow>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static PUSH_RULE_RATE_WINDOWS: LazyLock<Mutex<BTreeMap<String, RateWindow>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static PUSH_HTTP_METRICS: LazyLock<PushMetrics> = LazyLock::new(PushMetrics::default);
 
@@ -1660,28 +1665,27 @@ fn encrypt_optional(raw: Option<String>) -> Result<Option<EncryptedSecret>, AppE
 
 fn encrypted_secret(raw: &str) -> Result<EncryptedSecret, AppError> {
     SecretString::new(raw).map_err(|error| AppError::InvalidInput(error.to_string()))?;
-    let ciphertext = if let Some(key) = credential_encryption_key() {
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|error| AppError::InternalError(format!("invalid credential key: {error}")))?;
-        let nonce_bytes = credential_nonce_bytes();
-        let encrypted = cipher
-            .encrypt(Nonce::from_slice(&nonce_bytes), raw.as_bytes())
-            .map_err(|error| {
-                AppError::InternalError(format!("failed to encrypt credential material: {error}"))
-            })?;
-        let mut envelope = Vec::with_capacity(nonce_bytes.len() + encrypted.len());
-        envelope.extend_from_slice(&nonce_bytes);
-        envelope.extend_from_slice(&encrypted);
-        format!(
-            "{CREDENTIAL_SECRET_AES_PREFIX}{}",
-            URL_SAFE_NO_PAD.encode(envelope)
+    let key = credential_encryption_key().ok_or_else(|| {
+        AppError::InvalidInput(
+            "PUSH_CREDENTIAL_ENCRYPTION_KEY must be configured before storing push credentials"
+                .to_string(),
         )
-    } else {
-        format!(
-            "{CREDENTIAL_SECRET_LOCAL_PREFIX}{}",
-            URL_SAFE_NO_PAD.encode(raw.as_bytes())
-        )
-    };
+    })?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|error| AppError::InternalError(format!("invalid credential key: {error}")))?;
+    let nonce_bytes = credential_nonce_bytes();
+    let encrypted = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), raw.as_bytes())
+        .map_err(|error| {
+            AppError::InternalError(format!("failed to encrypt credential material: {error}"))
+        })?;
+    let mut envelope = Vec::with_capacity(nonce_bytes.len() + encrypted.len());
+    envelope.extend_from_slice(&nonce_bytes);
+    envelope.extend_from_slice(&encrypted);
+    let ciphertext = format!(
+        "{CREDENTIAL_SECRET_AES_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(envelope)
+    );
     EncryptedSecret::new(ciphertext).map_err(|error| AppError::InvalidInput(error.to_string()))
 }
 
@@ -1797,6 +1801,169 @@ pub async fn enqueue_v2_channel_push_from_extras(
     Ok(Some(publish_id))
 }
 
+pub fn build_channel_push_rule_requests(
+    app_id: &str,
+    event_name: Option<&str>,
+    message_data: Option<&ApiMessageData>,
+    channels: &[String],
+    rules: &[PushRuleConfig],
+) -> Result<Vec<PublishRequest>, AppError> {
+    if rules.is_empty() || channels.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(event_name) = event_name else {
+        return Ok(Vec::new());
+    };
+
+    let mut requests = Vec::new();
+    for (rule_index, rule_config) in rules.iter().enumerate() {
+        if !rule_config.enabled {
+            continue;
+        }
+        for channel in channels {
+            if !rule_config_matches(rule_config, channel, event_name) {
+                continue;
+            }
+            enforce_push_rule_rate(app_id, rule_index, rule_config.rate_limit_per_second)?;
+            let data = message_data_to_json(message_data)?;
+            let rule = channel_push_rule_from_config(rule_config);
+            let payload = rule
+                .map_payload(&data)
+                .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+            requests.push(PublishRequest {
+                publish_id: Some(uuid::Uuid::new_v4().to_string()),
+                recipients: vec![PublishTarget::Channel {
+                    channel: channel.clone(),
+                }],
+                payload,
+                provider_overrides: vec![],
+                sync: false,
+                not_before_ms: None,
+                expires_at_ms: None,
+            });
+        }
+    }
+    Ok(requests)
+}
+
+pub fn spawn_channel_push_rule_requests(
+    app_id: String,
+    requests: Vec<PublishRequest>,
+    store: DynPushStore,
+    queue: DynPushQueue,
+) {
+    for request in requests {
+        let app_id = app_id.clone();
+        let store = store.clone();
+        let queue = queue.clone();
+        tokio::spawn(async move {
+            let headers = HeaderMap::new();
+            let publish_id = request.publish_id.clone().unwrap_or_default();
+            let channel = request
+                .recipients
+                .iter()
+                .find_map(|target| match target {
+                    PublishTarget::Channel { channel } => Some(channel.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("<unknown>")
+                .to_owned();
+            match accept_publish_inner(&app_id, request, false, &headers, &store, &queue, None)
+                .await
+            {
+                Ok(_) => {
+                    PUSH_HTTP_METRICS.channel_publish(&channel);
+                }
+                Err(error) => {
+                    warn!(
+                        app_id = %app_id,
+                        publish_id = %publish_id,
+                        channel = %channel,
+                        error = %error,
+                        "channel push rule enqueue failed"
+                    );
+                }
+            }
+        });
+    }
+}
+
+fn rule_config_matches(rule: &PushRuleConfig, channel: &str, event: &str) -> bool {
+    channel_pattern_matches(&rule.channel_pattern, channel)
+        && rule
+            .event_filter
+            .iter()
+            .any(|candidate| candidate.as_str() == event)
+}
+
+fn channel_pattern_matches(pattern: &str, channel: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return channel.starts_with(prefix);
+    }
+    pattern == channel
+}
+
+fn channel_push_rule_from_config(config: &PushRuleConfig) -> ChannelPushRule {
+    ChannelPushRule {
+        enabled: config.enabled,
+        channel_pattern: config.channel_pattern.clone(),
+        event_filter: config.event_filter.clone(),
+        payload_mapping: payload_mapping_from_config(&config.payload_mapping),
+        rate_limit_per_second: config.rate_limit_per_second,
+    }
+}
+
+fn payload_mapping_from_config(config: &PushRulePayloadMappingConfig) -> PushRulePayloadMapping {
+    PushRulePayloadMapping {
+        title_field: config.title_field.clone(),
+        body_field: config.body_field.clone(),
+        template_data_field: config.template_data_field.clone(),
+        include_remaining_fields: config.include_remaining_fields,
+    }
+}
+
+fn message_data_to_json(
+    message_data: Option<&ApiMessageData>,
+) -> Result<serde_json::Value, AppError> {
+    match message_data {
+        Some(ApiMessageData::Json(value)) => serde_json::from_str(&value.to_string())
+            .map_err(|error| AppError::InvalidInput(format!("invalid push rule data: {error}"))),
+        Some(ApiMessageData::String(raw)) => serde_json::from_str(raw)
+            .map_err(|error| AppError::InvalidInput(format!("invalid push rule data: {error}"))),
+        None => Err(AppError::InvalidInput(
+            "push rule message data is required".to_owned(),
+        )),
+    }
+}
+
+fn enforce_push_rule_rate(
+    app_id: &str,
+    rule_index: usize,
+    limit_per_second: u64,
+) -> Result<(), AppError> {
+    let second = now_ms() / 1_000;
+    let key = format!("{app_id}:{rule_index}");
+    let mut windows = PUSH_RULE_RATE_WINDOWS.lock().map_err(|_| {
+        AppError::InternalError("push rule rate limiter lock is poisoned".to_owned())
+    })?;
+    let window = windows.entry(key).or_default();
+    if window.second != second {
+        window.second = second;
+        window.count = 0;
+    }
+    if window.count >= limit_per_second {
+        return Err(AppError::TooManyRequests {
+            message: "push rule rate limit exceeded".to_owned(),
+            retry_after_seconds: 1,
+        });
+    }
+    window.count = window.count.saturating_add(1);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1807,6 +1974,9 @@ mod tests {
         PushRecipient,
     };
     use std::sync::Arc;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn hashed_token(raw: &str) -> SecretString {
         hash_device_identity_token(&SecretString::new(raw).unwrap())
@@ -1882,6 +2052,48 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_secret_requires_encryption_key_for_new_writes() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var("PUSH_CREDENTIAL_ENCRYPTION_KEY").ok();
+        unsafe { std::env::remove_var("PUSH_CREDENTIAL_ENCRYPTION_KEY") };
+
+        let error = encrypted_secret("provider-secret").unwrap_err();
+
+        if let Some(previous) = previous {
+            unsafe { std::env::set_var("PUSH_CREDENTIAL_ENCRYPTION_KEY", previous) };
+        } else {
+            unsafe { std::env::remove_var("PUSH_CREDENTIAL_ENCRYPTION_KEY") };
+        }
+        assert!(
+            error
+                .to_string()
+                .contains("PUSH_CREDENTIAL_ENCRYPTION_KEY must be configured")
+        );
+    }
+
+    #[test]
+    fn encrypted_secret_writes_aes_envelope_when_key_is_configured() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var("PUSH_CREDENTIAL_ENCRYPTION_KEY").ok();
+        unsafe { std::env::set_var("PUSH_CREDENTIAL_ENCRYPTION_KEY", "test-key") };
+
+        let secret = encrypted_secret("provider-secret").unwrap();
+        let decrypted = decrypt_credential_secret(&secret).unwrap();
+
+        if let Some(previous) = previous {
+            unsafe { std::env::set_var("PUSH_CREDENTIAL_ENCRYPTION_KEY", previous) };
+        } else {
+            unsafe { std::env::remove_var("PUSH_CREDENTIAL_ENCRYPTION_KEY") };
+        }
+        assert!(
+            secret
+                .ciphertext()
+                .starts_with(CREDENTIAL_SECRET_AES_PREFIX)
+        );
+        assert_eq!(decrypted, "provider-secret");
+    }
+
+    #[test]
     fn retry_after_errors_set_retry_after_header() {
         let response = AppError::TooManyRequests {
             message: "push.acceptance_rate_limit exceeded".to_owned(),
@@ -1942,5 +2154,79 @@ mod tests {
     #[tokio::test]
     async fn publish_admission_skips_internal_without_limiter() {
         enforce_publish_admission_rate("app-1", None).await.unwrap();
+    }
+
+    #[test]
+    fn channel_push_rule_builder_maps_matching_event_payload() {
+        let requests = build_channel_push_rule_requests(
+            "app-rule-builder",
+            Some("agent-complete"),
+            Some(&ApiMessageData::Json(sonic_rs::json!({
+                "title": "Done",
+                "body": "Ready",
+                "sessionId": "sess-1"
+            }))),
+            &["notifications:user-1".to_string()],
+            &[PushRuleConfig {
+                channel_pattern: "notifications:*".to_string(),
+                event_filter: vec!["agent-complete".to_string()],
+                ..PushRuleConfig::default()
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].recipients,
+            vec![PublishTarget::Channel {
+                channel: "notifications:user-1".to_string()
+            }]
+        );
+        assert_eq!(requests[0].payload.title.as_deref(), Some("Done"));
+        assert_eq!(
+            requests[0].payload.template_data["data"]["sessionId"],
+            "sess-1"
+        );
+    }
+
+    #[test]
+    fn channel_push_rule_builder_skips_non_matching_event() {
+        let requests = build_channel_push_rule_requests(
+            "app-rule-builder-skip",
+            Some("agent-start"),
+            Some(&ApiMessageData::Json(sonic_rs::json!({
+                "title": "Started",
+                "body": "Working"
+            }))),
+            &["notifications:user-1".to_string()],
+            &[PushRuleConfig {
+                channel_pattern: "notifications:*".to_string(),
+                event_filter: vec!["agent-complete".to_string()],
+                ..PushRuleConfig::default()
+            }],
+        )
+        .unwrap();
+
+        assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn channel_push_rule_builder_rejects_malformed_matching_payload() {
+        let error = build_channel_push_rule_requests(
+            "app-rule-builder-invalid",
+            Some("agent-complete"),
+            Some(&ApiMessageData::Json(sonic_rs::json!({
+                "title": "Done"
+            }))),
+            &["notifications:user-1".to_string()],
+            &[PushRuleConfig {
+                channel_pattern: "notifications:*".to_string(),
+                event_filter: vec!["agent-complete".to_string()],
+                ..PushRuleConfig::default()
+            }],
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AppError::InvalidInput(_)));
     }
 }

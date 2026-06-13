@@ -1,0 +1,14 @@
+{
+  "schema": "sockudo.ai-transport.scale-result.v1",
+  "status": "not_executed_local",
+  "profile": "ai-soak-20pct",
+  "profilePath": "test/load/profiles/soak-20pct.json",
+  "reason": "Requires a 24-hour fleet run at 20 percent headline load.",
+  "requiredEvidence": [
+    "RSS slope at or below zero after warm-up",
+    "Tokio task count stable",
+    "history retained bytes match retention math",
+    "no file descriptor growth",
+    "sampled transcript audit clean at start, middle, and end"
+  ]
+}

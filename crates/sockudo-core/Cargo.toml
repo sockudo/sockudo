@@ -10,6 +10,7 @@ license-file.workspace = true
 [features]
 default = ["local"]
 local = []
+ai-transport = []
 full = [
   "redis",
   "redis-cluster",
@@ -59,6 +60,7 @@ dashmap = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
+jsonwebtoken = { workspace = true }
 md5 = { workspace = true }
 memchr = { workspace = true }
 rand = { workspace = true }
@@ -89,4 +91,9 @@ harness = false
 [[bench]]
 name = "namespace_bench"
 path = "benches/namespace_bench.rs"
+harness = false
+
+[[bench]]
+name = "versioned_message_streaming"
+path = "benches/versioned_message_streaming.rs"
 harness = false
