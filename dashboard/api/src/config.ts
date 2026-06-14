@@ -1,3 +1,5 @@
+import "./load-env.ts";
+
 export type AppManagerDriver = "mysql" | "pgsql" | "dynamodb";
 export type DashboardDbDriver = "pgsql" | "mysql" | "sqlite";
 
