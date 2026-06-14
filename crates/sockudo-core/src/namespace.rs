@@ -19,6 +19,8 @@ pub struct Namespace {
     wildcard_channels: DashSet<String>,
     pub users: DashMap<String, DashSet<WebSocketRef>>,
     pub presence_data: DashMap<SocketId, HashMap<String, PresenceMemberInfo>>,
+    // Reverse index of channels joined per socket, for O(channels-per-socket) disconnect cleanup.
+    socket_channels: DashMap<SocketId, DashSet<String>>,
 }
 
 pub struct SocketInitOptions {
@@ -37,6 +39,7 @@ impl Namespace {
             wildcard_channels: DashSet::new(),
             users: DashMap::new(),
             presence_data: DashMap::new(),
+            socket_channels: DashMap::new(),
         }
     }
 
@@ -401,11 +404,10 @@ impl Namespace {
         ws_ref.shutdown();
 
         let channels_to_check: Vec<String> = self
-            .channels
-            .iter()
-            .filter(|entry| entry.value().contains(&socket_id))
-            .map(|entry| entry.key().clone())
-            .collect();
+            .socket_channels
+            .remove(&socket_id)
+            .map(|(_, set)| set.iter().map(|c| c.key().clone()).collect())
+            .unwrap_or_default();
 
         for channel_name in channels_to_check {
             self.channels.remove_if(&channel_name, |_, set| {
@@ -476,6 +478,11 @@ impl Namespace {
             .insert(*socket_id);
         let t_after_entry = t_start.elapsed().as_nanos();
 
+        self.socket_channels
+            .entry(*socket_id)
+            .or_default()
+            .insert(channel.to_string());
+
         if channel.contains('*') {
             self.wildcard_channels.insert(channel.to_string());
         }
@@ -492,6 +499,10 @@ impl Namespace {
     }
 
     pub fn remove_channel_from_socket(&self, channel: &str, socket_id: &SocketId) -> bool {
+        if let Some(socket_channels_ref) = self.socket_channels.get(socket_id) {
+            socket_channels_ref.remove(channel);
+        }
+
         if let Some(channel_sockets_ref) = self.channels.get(channel) {
             let removed = channel_sockets_ref.remove(socket_id);
             drop(channel_sockets_ref);
@@ -512,6 +523,18 @@ impl Namespace {
     }
 
     pub fn remove_connection(&self, socket_id: &SocketId) {
+        if let Some((_, channels)) = self.socket_channels.remove(socket_id) {
+            for ch in channels.iter() {
+                let channel = ch.key();
+                self.channels.remove_if(channel, |_, set| {
+                    set.remove(socket_id);
+                    set.is_empty()
+                });
+                if channel.contains('*') && !self.channels.contains_key(channel) {
+                    self.wildcard_channels.remove(channel);
+                }
+            }
+        }
         if self.sockets.remove(socket_id).is_some() {
             debug!("Explicitly removed socket: {}", socket_id);
         }
@@ -835,5 +858,21 @@ mod tests {
         assert!(v1.is_empty());
         assert_eq!(v2.len(), 1);
         assert_eq!(*v2[0].get_socket_id_sync(), wildcard_socket);
+    }
+
+    #[test]
+    fn remove_connection_clears_all_channel_membership() {
+        let namespace = Namespace::new("app".to_string());
+        let socket_id = SocketId::new();
+
+        namespace.add_channel_to_socket("room-1", &socket_id);
+        namespace.add_channel_to_socket("room-2", &socket_id);
+        namespace.add_channel_to_socket("presence-x", &socket_id);
+
+        namespace.remove_connection(&socket_id);
+
+        assert!(!namespace.is_in_channel("room-1", &socket_id));
+        assert!(!namespace.is_in_channel("room-2", &socket_id));
+        assert!(!namespace.is_in_channel("presence-x", &socket_id));
     }
 }
