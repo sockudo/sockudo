@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts",
-    "migrate": "bun run src/cli/migrate.ts",
-    "seed:admin": "bun run src/cli/seed-admin.ts",
+    "dev": "bun --env-file=../.env --env-file=../../.env run --watch src/index.ts",
+    "start": "bun --env-file=../.env --env-file=../../.env run src/index.ts",
+    "migrate": "bun --env-file=../.env --env-file=../../.env run src/cli/migrate.ts",
+    "seed:admin": "bun --env-file=../.env --env-file=../../.env run src/cli/seed-admin.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
