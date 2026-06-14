@@ -41,6 +41,7 @@
 - **🏷️ Tag Filtering** - High-performance server-side filtering with optional tag emission controls
 - **🌐 Native WebSocket Engine** - `sockudo_ws` with advanced runtime tuning
 - **📦 Official SDKs** - Client and server SDKs for all major platforms
+- **📋 Operator Dashboard** - Separate Dashboard API and Dashboard UI for apps, webhooks, metrics, and user management ([`dashboard/README.md`](dashboard/README.md))
 
 ## What's New in v4
 
@@ -103,6 +104,8 @@ make up
 
 # Server runs on http://localhost:6001
 # Metrics on http://localhost:9601/metrics
+# Dashboard UI on http://localhost:5174
+# Dashboard API on http://localhost:3460
 ```
 
 ### Kubernetes (Helm)
@@ -176,6 +179,11 @@ cargo build --release --features full          # All backends
 - `mysql` / `postgres` / `dynamodb` / `surrealdb` / `scylladb` - App manager backends
 - `sqs` / `lambda` - AWS integrations
 - `full` - All features enabled
+
+**Operator Dashboard** (separate from Cargo features; see [`dashboard/README.md`](dashboard/README.md)):
+
+- **Dashboard API** (`dashboard/api`) — Bun + Hono admin API: auth, users, app/webhook CRUD, metrics proxy
+- **Dashboard UI** (`dashboard/web`) — Vue 3 operator UI: login, apps, webhooks, metrics, user management
 
 ```bash
 # Pure Pusher-only server (no V2 features, smallest binary)

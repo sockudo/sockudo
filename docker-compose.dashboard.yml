@@ -1,0 +1,90 @@
+# =============================================================================
+# Sockudo Dashboard - Docker Compose Overlay
+#
+# Usage (with Sockudo + MySQL dev stack):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.dashboard.yml up -d
+#
+# Dashboard only (API uses SQLite; Sockudo app store still needs mysql/pgsql):
+#   docker compose -f docker-compose.dashboard.yml up -d dashboard-api dashboard-web
+# =============================================================================
+
+services:
+  sockudo:
+    environment:
+      APP_MANAGER_DRIVER: mysql
+      DATABASE_MYSQL_HOST: mysql
+      DATABASE_MYSQL_PORT: "3306"
+      DATABASE_MYSQL_USERNAME: sockudo
+      DATABASE_MYSQL_PASSWORD: ${MYSQL_PASSWORD:-sockudo123}
+      DATABASE_MYSQL_DATABASE: ${MYSQL_DATABASE:-sockudo_dev}
+      DATABASE_MYSQL_TABLE_NAME: applications
+      HTTP_API_USAGE_ENABLED: "true"
+      SOCKUDO_SKIP_INLINE_APPS: "true"
+
+  dashboard-api:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      target: api
+    container_name: sockudo-dashboard-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DASHBOARD_API_PORT: "3460"
+      DASHBOARD_CORS_ORIGIN: ${DASHBOARD_CORS_ORIGIN:-http://localhost:5174}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-change-me-in-production}
+      DASHBOARD_SEED_EMAIL: ${DASHBOARD_SEED_EMAIL:-}
+      DASHBOARD_SEED_PASSWORD: ${DASHBOARD_SEED_PASSWORD:-}
+      DASHBOARD_SEED_NAME: ${DASHBOARD_SEED_NAME:-Administrator}
+      APP_MANAGER_DRIVER: mysql
+      DASHBOARD_DATABASE_DRIVER: mysql
+      DATABASE_MYSQL_HOST: mysql
+      DATABASE_MYSQL_PORT: "3306"
+      DATABASE_MYSQL_USERNAME: sockudo
+      DATABASE_MYSQL_PASSWORD: ${MYSQL_PASSWORD:-sockudo123}
+      DATABASE_MYSQL_DATABASE: ${MYSQL_DATABASE:-sockudo_dev}
+      DATABASE_MYSQL_TABLE_NAME: applications
+      SOCKUDO_HTTP_URL: http://sockudo:6001
+      SOCKUDO_METRICS_URL: http://sockudo:9601
+    ports:
+      - "3460:3460"
+    volumes:
+      - dashboard-api-data:/app/data
+    depends_on:
+      mysql:
+        condition: service_healthy
+      sockudo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3460/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    networks:
+      - sockudo-network
+
+  dashboard-web:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      target: web
+    container_name: sockudo-dashboard-web
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - sockudo-network
+
+volumes:
+  dashboard-api-data:
+    driver: local

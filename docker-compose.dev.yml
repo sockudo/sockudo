@@ -126,6 +126,13 @@ services:
     networks:
       - sockudo-network
 
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-proot123"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
   # Development tools container
   dev-tools:
     image: alpine:latest
