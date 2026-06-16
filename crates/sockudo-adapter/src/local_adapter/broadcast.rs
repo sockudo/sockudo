@@ -7,12 +7,21 @@ use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::extract_runtime_action;
+#[cfg(feature = "delta")]
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 #[cfg(feature = "tag-filtering")]
 use std::sync::atomic::Ordering;
 #[cfg(feature = "delta")]
 use tracing::info;
 use tracing::{debug, warn};
+
+#[cfg(feature = "delta")]
+fn hash_cached_base_message(base: &[u8]) -> u64 {
+    let mut hasher = ahash::AHasher::default();
+    base.hash(&mut hasher);
+    hasher.finish()
+}
 
 #[cfg(feature = "delta")]
 /// Parameters for sending a message to a socket with compression
@@ -241,11 +250,8 @@ impl LocalAdapter {
                 );
 
                 // Hash the base message to group sockets with same base
-                let base_hash = if let Some(base) = base_msg_opt {
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    base.as_ref().hash(&mut hasher);
-                    hasher.finish()
+                let base_hash = if let Some(base) = base_msg_opt.as_ref() {
+                    hash_cached_base_message(base.as_slice())
                 } else {
                     0 // No base message = send full message
                 };
@@ -799,10 +805,7 @@ impl LocalAdapter {
                 .await
         {
             // Verify this socket's base matches the group's base by hashing
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            socket_base.as_ref().hash(&mut hasher);
-            let socket_base_hash = hasher.finish();
+            let socket_base_hash = hash_cached_base_message(socket_base.as_slice());
 
             // The base_hash from the grouping should match this socket's actual base hash
             // If they don't match, this socket has a different base message and we can't use the precomputed delta

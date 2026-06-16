@@ -3,12 +3,12 @@
 pub mod observability;
 
 use ahash::AHashMap;
+use parking_lot::Mutex;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_protocol::versioned_messages::{
     MessageAction, extract_runtime_action, extract_runtime_message_serial,
 };
 use std::hash::Hash;
-use std::sync::Mutex;
 
 const DEFAULT_SHARDS: usize = 64;
 const TERMINAL_COMPLETE: &str = "complete";
@@ -199,7 +199,7 @@ impl RollupEngine {
         };
         let shard = self.shard(&key);
         let mut deliveries = Vec::with_capacity(2);
-        let mut streams = shard.streams.lock().unwrap_or_else(|err| err.into_inner());
+        let mut streams = shard.streams.lock();
 
         if matches!(action, MessageAction::Update | MessageAction::Delete) {
             if let Some(mut pending) = streams.remove(&key) {
@@ -312,7 +312,7 @@ impl RollupEngine {
     pub fn sweep_orphans(&self, now_ms: u64) -> Vec<RollupDelivery> {
         let mut deliveries = Vec::new();
         for shard in &self.shards {
-            let mut streams = shard.streams.lock().unwrap_or_else(|err| err.into_inner());
+            let mut streams = shard.streams.lock();
             let keys = streams
                 .iter()
                 .filter_map(|(key, pending)| {
@@ -344,13 +344,7 @@ impl RollupEngine {
     pub fn active_streams(&self) -> usize {
         self.shards
             .iter()
-            .map(|shard| {
-                shard
-                    .streams
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .len()
-            })
+            .map(|shard| shard.streams.lock().len())
             .sum()
     }
 
@@ -378,7 +372,7 @@ impl RollupEngine {
     {
         let mut deliveries = Vec::new();
         for shard in &self.shards {
-            let mut streams = shard.streams.lock().unwrap_or_else(|err| err.into_inner());
+            let mut streams = shard.streams.lock();
             let keys = streams
                 .iter()
                 .filter_map(|(key, pending)| should_flush(pending, now_ms).then_some(key.clone()))
@@ -416,10 +410,7 @@ impl RollupEngine {
     }
 
     fn try_increment_channel(&self, key: &ChannelKey) -> bool {
-        let mut active = self
-            .active_by_channel
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut active = self.active_by_channel.lock();
         let count = active.entry(key.clone()).or_insert(0);
         if *count >= self.config.max_active_streams_per_channel {
             return false;
@@ -429,10 +420,7 @@ impl RollupEngine {
     }
 
     fn decrement_channel(&self, key: &ChannelKey) {
-        let mut active = self
-            .active_by_channel
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut active = self.active_by_channel.lock();
         if let Some(count) = active.get_mut(key) {
             *count = count.saturating_sub(1);
             if *count == 0 {

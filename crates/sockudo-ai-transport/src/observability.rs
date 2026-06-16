@@ -1,9 +1,9 @@
 use ahash::AHashMap;
+use parking_lot::Mutex;
 use sockudo_protocol::messages::{
     AI_EVENT_CANCEL, AI_EVENT_TURN_END, AI_EVENT_TURN_START, MessageData, PusherMessage,
 };
 use sockudo_protocol::versioned_messages::extract_runtime_message_serial;
-use std::sync::Mutex;
 
 const DEFAULT_TRACKER_SHARDS: usize = 64;
 
@@ -140,13 +140,7 @@ impl AiObservabilityTracker {
     pub fn active_streams(&self) -> usize {
         self.shards
             .iter()
-            .map(|shard| {
-                shard
-                    .streams
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .len()
-            })
+            .map(|shard| shard.streams.lock().len())
             .sum()
     }
 
@@ -168,7 +162,7 @@ impl AiObservabilityTracker {
             message_serial: message_serial.to_string(),
         };
         let shard = self.shard(&key);
-        let mut streams = shard.streams.lock().unwrap_or_else(|err| err.into_inner());
+        let mut streams = shard.streams.lock();
         let bytes = message_payload_bytes(message);
 
         match status {
@@ -206,14 +200,14 @@ impl AiObservabilityTracker {
             .shards
             .iter()
             .map(|shard| match shard.streams.try_lock() {
-                Ok(guard) => {
+                Some(guard) => {
                     if std::ptr::eq(&*guard, locked_shard) {
                         0
                     } else {
                         guard.len()
                     }
                 }
-                Err(_) => 0,
+                None => 0,
             })
             .sum();
         locked_len + other_len

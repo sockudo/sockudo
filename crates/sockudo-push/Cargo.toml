@@ -46,11 +46,11 @@ base64 = { workspace = true }
 dashmap = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
-hmac = { workspace = true }
 httpdate = { workspace = true }
 jsonwebtoken = { workspace = true, optional = true }
 rand = { workspace = true }
 reqwest = { workspace = true, optional = true }
+aws-lc-rs = { workspace = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
 scylla = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -68,6 +68,8 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+hmac = { workspace = true }
+ring = { workspace = true }
 
 [[bench]]
 name = "push_pipeline_bench"

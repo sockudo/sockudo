@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use aws_lc_rs::pbkdf2;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -30,8 +31,6 @@ pub const DEFAULT_PUSH_FANOUT_SHARD_SIZE: u64 = 100_000;
 pub const DEFAULT_PUSH_FANOUT_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_PUSH_PROVIDER_BATCH_SIZE: usize = 500;
 pub const DEFAULT_PUSH_STATUS_RETENTION_DAYS: u64 = 30;
-
-type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PushDomainError {
@@ -138,23 +137,16 @@ fn hash_device_identity_token_with_salt(token: &str, salt: &[u8]) -> SecretStrin
 }
 
 fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
-    let iterations = iterations.max(1);
-    let mut mac = HmacSha256::new_from_slice(password).expect("HMAC can take keys of any size");
-    mac.update(salt);
-    mac.update(&1_u32.to_be_bytes());
-    let mut u = mac.finalize().into_bytes();
-    let mut output = u;
-
-    for _ in 1..iterations {
-        let mut mac = HmacSha256::new_from_slice(password).expect("HMAC can take keys of any size");
-        mac.update(&u);
-        u = mac.finalize().into_bytes();
-        for (left, right) in output.iter_mut().zip(u.iter()) {
-            *left ^= right;
-        }
-    }
-
-    output.into()
+    let iterations = NonZeroU32::new(iterations.max(1)).expect("iterations are clamped to >= 1");
+    let mut output = [0_u8; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        iterations,
+        salt,
+        password,
+        &mut output,
+    );
+    output
 }
 
 fn fixed_length_secure_compare(a: &str, b: &str) -> bool {
@@ -1757,6 +1749,18 @@ mod tests {
         assert!(verify_device_identity_token(token.expose_secret(), &hash));
         assert!(!verify_device_identity_token("wrong-token", &hash));
         assert!(!hash.expose_secret().contains(token.expose_secret()));
+    }
+
+    #[test]
+    fn pbkdf2_sha256_matches_known_test_vectors() {
+        assert_eq!(
+            hex::encode(pbkdf2_sha256(b"password", b"salt", 1)),
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+        );
+        assert_eq!(
+            hex::encode(pbkdf2_sha256(b"password", b"salt", 2)),
+            "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43"
+        );
     }
 
     #[test]

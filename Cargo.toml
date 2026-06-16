@@ -78,6 +78,7 @@ aws-sdk-sqs = { version = "1.89.0", default-features = false, features = [
   "rt-tokio",
 ] }
 async-nats = "^0.47"
+aws-lc-rs = "1.17.0"
 google-cloud-auth = "1.8.0"
 google-cloud-pubsub = "0.33.1"
 base64 = "0.22"
@@ -106,6 +107,7 @@ moka = { version = "0.12.11", features = ["future", "sync"] }
 lapin = { version = "4.3.0", default-features = false, features = ["rustls", "tokio"] }
 num_cpus = "1.17.0"
 oxidelta = "0.1.4"
+parking_lot = "0.12.5"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 metrics-exporter-tcp = "0.11.2"
@@ -129,6 +131,7 @@ rdkafka = { version = "0.39.0", default-features = false, features = [
   "cmake-build",
   "libz",
 ] }
+ring = "0.17.14"
 iggy = "0.10.0"
 jsonwebtoken = { version = "=10.3.0", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 reqwest = { version = "^0.12", default-features = false, features = [

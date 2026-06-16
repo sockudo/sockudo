@@ -49,6 +49,7 @@ lapin = { workspace = true, optional = true }
 mockall = { workspace = true }
 moka = { workspace = true }
 num_cpus = { workspace = true }
+parking_lot = { workspace = true }
 pulsar = { workspace = true, optional = true }
 rand = { workspace = true }
 redis = { workspace = true, optional = true }
@@ -68,3 +69,9 @@ chrono = { workspace = true }
 md5 = { workspace = true }
 sockudo-app = { workspace = true }
 num_cpus = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "hot_path_replacements"
+path = "benches/hot_path_replacements.rs"
+harness = false

@@ -1,10 +1,11 @@
 // src/watchlist/manager.rs
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use sockudo_core::error::Result;
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct WatchlistEntry {
@@ -85,7 +86,7 @@ impl WatchlistManager {
     ) -> Result<Vec<PusherMessage>> {
         let mut events_to_send = Vec::new();
         let app_state = self.app_state(app_id);
-        let mut state = app_state.lock().unwrap();
+        let mut state = app_state.lock();
 
         let was_offline = {
             let user_sockets = state.online_users.entry(user_id.to_string()).or_default();
@@ -178,7 +179,7 @@ impl WatchlistManager {
         let Some(app_state) = self.apps.get(app_id).map(|entry| entry.value().clone()) else {
             return Ok(events_to_send);
         };
-        let mut state = app_state.lock().unwrap();
+        let mut state = app_state.lock();
 
         let mut should_cleanup_user = false;
         if let Some(user_sockets) = state.online_users.get_mut(user_id) {
@@ -228,7 +229,7 @@ impl WatchlistManager {
         let mut offline_users = Vec::new();
 
         if let Some(app_state) = self.apps.get(app_id).map(|entry| entry.value().clone()) {
-            let state = app_state.lock().unwrap();
+            let state = app_state.lock();
             if let Some(user_entry) = state.watchlists.get(user_id) {
                 for watched_user_id in &user_entry.watching {
                     let is_online = state
@@ -256,7 +257,7 @@ impl WatchlistManager {
         let mut watchers = Vec::new();
 
         if let Some(app_state) = self.apps.get(app_id).map(|entry| entry.value().clone()) {
-            let state = app_state.lock().unwrap();
+            let state = app_state.lock();
             if let Some(user_entry) = state.watchlists.get(user_id) {
                 watchers.extend(user_entry.watchers.iter().cloned());
             }
@@ -291,7 +292,7 @@ mod tests {
             .unwrap();
 
         let app_state = manager.apps.get("app").unwrap().value().clone();
-        let state = app_state.lock().unwrap();
+        let state = app_state.lock();
         assert!(state.watchlists.contains_key("bob"));
         assert!(!state.watchlists.contains_key("carol"));
     }
@@ -328,7 +329,7 @@ mod tests {
         assert_eq!(watchers, vec!["watcher".to_string()]);
 
         let app_state = manager.apps.get("app").unwrap().value().clone();
-        let state = app_state.lock().unwrap();
+        let state = app_state.lock();
         let watched_entry = state.watchlists.get("watched").unwrap();
         assert!(watched_entry.watching.is_empty());
         assert_eq!(watched_entry.watchers.len(), 1);

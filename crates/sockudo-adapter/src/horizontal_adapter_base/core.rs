@@ -644,7 +644,7 @@ where
                         let node_id = horizontal_clone.node_id.clone();
 
                         tokio::spawn(async move {
-                            let mut hasher = std::hash::DefaultHasher::new();
+                            let mut hasher = ahash::AHasher::default();
                             node_id.hash(&mut hasher);
                             let stagger_ms = hasher.finish() % PRESENCE_SYNC_STAGGER_MAX_MS;
                             tokio::time::sleep(Duration::from_millis(100 + stagger_ms)).await;

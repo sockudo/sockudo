@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -99,7 +99,7 @@ impl ReplayBuffer {
             next_serial: AtomicU64::new(serial + 1),
         });
 
-        let mut state = entry.state.lock().unwrap();
+        let mut state = entry.state.lock();
         state.current_stream_id = stream_id.map(ToString::to_string);
         // Evict oldest if at capacity
         while state.messages.len() >= self.max_buffer_size {
@@ -143,7 +143,7 @@ impl ReplayBuffer {
         };
 
         let now = Instant::now();
-        let mut state = entry.state.lock().unwrap();
+        let mut state = entry.state.lock();
 
         if let Some(expected_stream_id) = stream_id
             && state.current_stream_id.as_deref() != Some(expected_stream_id)
@@ -198,7 +198,7 @@ impl ReplayBuffer {
         let mut empty_keys = Vec::new();
 
         for entry in self.buffers.iter() {
-            let mut state = entry.value().state.lock().unwrap();
+            let mut state = entry.value().state.lock();
             Self::prune_expired_locked(&mut state.messages, self.buffer_ttl, now);
             if state.messages.is_empty() {
                 empty_keys.push(entry.key().clone());
@@ -208,7 +208,7 @@ impl ReplayBuffer {
         for key in empty_keys {
             // Only remove if still empty (avoid race with concurrent store)
             self.buffers
-                .remove_if(&key, |_, v| v.state.lock().unwrap().messages.is_empty());
+                .remove_if(&key, |_, v| v.state.lock().messages.is_empty());
         }
     }
 }
