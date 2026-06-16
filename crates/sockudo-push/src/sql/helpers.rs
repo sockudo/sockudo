@@ -220,11 +220,13 @@ pub(super) fn to_json_vec<T: Serialize>(value: &T) -> PushStorageResult<Vec<u8>>
 }
 
 pub(super) fn from_json_str<T: DeserializeOwned>(value: &str) -> PushStorageResult<T> {
-    from_versioned_json_value(sonic_rs::from_str(value).map_err(json_error)?)
+    let value: sonic_rs::Value = sonic_rs::from_str(value).map_err(json_error)?;
+    from_versioned_json_value(value)
 }
 
 pub(super) fn from_json_slice<T: DeserializeOwned>(value: &[u8]) -> PushStorageResult<T> {
-    from_versioned_json_value(sonic_rs::from_slice(value).map_err(json_error)?)
+    let value: sonic_rs::Value = sonic_rs::from_slice(value).map_err(json_error)?;
+    from_versioned_json_value(value)
 }
 
 pub(super) fn from_versioned_json_value<T: DeserializeOwned>(

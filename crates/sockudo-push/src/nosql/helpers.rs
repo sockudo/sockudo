@@ -110,7 +110,7 @@ pub(super) fn to_json_string<T: Serialize>(value: &T) -> PushStorageResult<Strin
 }
 
 pub(super) fn from_json_str<T: DeserializeOwned>(value: &str) -> PushStorageResult<T> {
-    let mut value = sonic_rs::from_str(value).map_err(json_error)?;
+    let mut value: sonic_rs::Value = sonic_rs::from_str(value).map_err(json_error)?;
     if let Some(object) = value.as_object_mut()
         && object.get(&"_v").and_then(sonic_rs::Value::as_u64) == Some(1)
         && let Some(data) = object.remove(&"data")
