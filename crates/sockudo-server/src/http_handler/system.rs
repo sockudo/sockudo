@@ -449,12 +449,6 @@ pub async fn metrics(
             "# Metrics collection is not enabled.\n".to_string()
         }
     };
-    #[cfg(feature = "push")]
-    let plaintext_metrics_str = {
-        let mut plaintext_metrics_str = plaintext_metrics_str;
-        plaintext_metrics_str.push_str(&crate::push_http::push_metrics_plaintext());
-        plaintext_metrics_str
-    };
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         header::CONTENT_TYPE,

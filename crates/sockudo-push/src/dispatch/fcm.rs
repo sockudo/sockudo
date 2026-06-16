@@ -7,7 +7,7 @@ use futures_util::future::join_all;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 #[cfg(feature = "push-fcm")]
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use sonic_rs::Value;
 
 use super::auth::{CachedTokenProvider, auth_error};
 #[cfg(feature = "push-fcm")]
@@ -72,8 +72,8 @@ impl FcmServiceAccountTokenSource {
         service_account_json: &str,
         http: Arc<dyn ProviderHttpClient + Send + Sync>,
     ) -> Result<Self, ProviderAuthError> {
-        let credential: FcmServiceAccountJson = serde_json::from_str(service_account_json)
-            .map_err(|error| ProviderAuthError {
+        let credential: FcmServiceAccountJson =
+            sonic_rs::from_str(service_account_json).map_err(|error| ProviderAuthError {
                 class: "auth_failure",
                 reason: format!("invalid FCM service account JSON: {error}"),
             })?;
@@ -204,7 +204,7 @@ impl ProviderTokenSource for FcmServiceAccountTokenSource {
         }
 
         let token: GoogleAccessTokenResponse =
-            serde_json::from_slice(&response.body).map_err(|error| ProviderAuthError {
+            sonic_rs::from_slice(&response.body).map_err(|error| ProviderAuthError {
                 class: "auth_failure",
                 reason: format!("invalid FCM OAuth token response: {error}"),
             })?;
@@ -262,7 +262,7 @@ impl FcmDispatcher {
             .map_err(auth_error)?;
         let mut payload = render_payload_json(PushProviderKind::Fcm, job)?;
         if let Some(token) = recipient_token(&job.recipient) {
-            payload["message"]["token"] = Value::String(token.to_owned());
+            payload["message"]["token"] = Value::from(token);
         }
         json_request(
             self.endpoint
@@ -347,7 +347,7 @@ fn is_fcm_auth_failure_response(response: &ProviderHttpResponse) -> bool {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use serde_json::json;
+    use sonic_rs::json;
 
     use super::super::test_support::{CountingTokenSource, MockHttpClient, batch, response};
     use super::*;

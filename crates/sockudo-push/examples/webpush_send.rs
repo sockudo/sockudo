@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
-use serde_json::json;
 use sockudo_push::{
     CachedTokenProvider, DeliveryBatch, DeliveryJob, NativeWebPushCrypto, PushDispatcher,
     PushPayload, PushProviderKind, PushRecipient, ReqwestProviderHttpClient, SecretString,
     StaticTokenSource,
 };
+use sonic_rs::json;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,7 +26,7 @@ struct BrowserPushKeys {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscription_json = std::env::var("WEBPUSH_SUBSCRIPTION_JSON")
         .map_err(|_| "WEBPUSH_SUBSCRIPTION_JSON is required")?;
-    let subscription: BrowserPushSubscription = serde_json::from_str(&subscription_json)?;
+    let subscription: BrowserPushSubscription = sonic_rs::from_str(&subscription_json)?;
     let vapid_private_key =
         std::env::var("VAPID_PRIVATE_KEY").map_err(|_| "VAPID_PRIVATE_KEY is required")?;
     let vapid_contact = std::env::var("VAPID_CONTACT")
@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let results = dispatcher.dispatch(batch).await;
-    println!("{}", serde_json::to_string_pretty(&results)?);
+    println!("{}", sonic_rs::to_string_pretty(&results)?);
     if results
         .iter()
         .all(|result| matches!(result.outcome, sockudo_push::DeliveryOutcome::Accepted))

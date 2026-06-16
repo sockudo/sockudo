@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sonic_rs::Value;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -109,7 +110,7 @@ pub struct ScheduledPushJob {
     pub publish_id: String,
     pub due_at_ms: u64,
     pub due_minute_ms: u64,
-    pub payload_json: serde_json::Value,
+    pub payload_json: Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

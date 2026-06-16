@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::future::join_all;
-use serde_json::{Value, json};
+use sonic_rs::prelude::*;
+use sonic_rs::{Object, Value, json};
 
 use super::auth::{CachedTokenProvider, auth_error};
 use super::http::{
@@ -112,7 +113,7 @@ impl ApnsDispatcher {
             authorization,
             rendered
                 .get("aps")
-                .map(|aps| json!({ "aps": aps, "data": rendered.get("data").cloned().unwrap_or(Value::Null) }))
+                .map(|aps| json!({ "aps": aps, "data": rendered.get("data").cloned().unwrap_or_else(Value::new_null) }))
                 .unwrap_or(rendered),
         )
     }
@@ -181,11 +182,12 @@ pub(super) fn classify_apns_response(response: &ProviderHttpResponse) -> Provide
     }
 }
 
-fn header_string(map: &serde_json::Map<String, Value>, name: &str) -> Option<String> {
-    map.get(name).and_then(|value| match value {
-        Value::String(value) => Some(value.clone()),
-        Value::Number(value) => Some(value.to_string()),
-        _ => None,
+fn header_string(map: &Object, name: &str) -> Option<String> {
+    map.get(&name).and_then(|value| {
+        value
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| value.is_number().then(|| value.to_string()))
     })
 }
 

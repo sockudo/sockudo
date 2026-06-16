@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use serde_json::json;
+use sonic_rs::json;
 
 use crate::domain::{
     ChannelSubscription, DeleteDeviceOutcome, DeliveryEvent, DeliveryOutcome, DeliveryResult,

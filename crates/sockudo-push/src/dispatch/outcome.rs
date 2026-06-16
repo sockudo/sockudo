@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 
 use super::http::{ProviderHttpMethod, ProviderHttpRequest, ProviderHttpResponse};
 use crate::domain::{
@@ -45,7 +46,7 @@ pub(super) fn json_request_with_content_type(
     headers
         .entry("content-type".to_owned())
         .or_insert_with(|| content_type.unwrap_or("application/json").to_owned());
-    let body = serde_json::to_vec(&payload).map_err(|_| ProviderError {
+    let body = sonic_rs::to_vec(&payload).map_err(|_| ProviderError {
         class: "invalid_payload".to_owned(),
         reason: Some("provider payload serialization failed".to_owned()),
         retry_after_ms: None,
@@ -197,7 +198,7 @@ pub(super) fn result_from_error(
 }
 
 pub(super) fn json_field(body: &[u8], path: &[&str]) -> Option<String> {
-    let value: Value = serde_json::from_slice(body).ok()?;
+    let value: Value = sonic_rs::from_slice(body).ok()?;
     let mut current = &value;
     for segment in path {
         current = current.get(segment)?;

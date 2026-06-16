@@ -1,12 +1,13 @@
 #![allow(unused_imports)]
 use crate::domain::{
     ChannelSubscription, DeleteDeviceOutcome, DeliveryEvent, DeviceDetails, NotificationTemplate,
-    PushCursor, PushCursorKind, PushProviderKind,
+    PushCursor, PushCursorKind, PushProviderKind, from_json_value, to_json_value,
 };
 use crate::storage::{
     EXPECTED_PUSH_SCHEMA_VERSION, Page, PushStorageError, PushStorageResult, ScheduledPushJob,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use sonic_rs::prelude::*;
 use sqlx::Row;
 
 pub(super) fn cursor_position(
@@ -180,7 +181,7 @@ where
 }
 
 pub(super) fn enum_label<T: Serialize>(value: &T) -> PushStorageResult<String> {
-    serde_json::to_value(value)
+    sonic_rs::to_value(value)
         .map_err(json_error)?
         .as_str()
         .map(str::to_owned)
@@ -190,7 +191,8 @@ pub(super) fn enum_label<T: Serialize>(value: &T) -> PushStorageResult<String> {
 }
 
 pub(super) fn enum_from_label<T: DeserializeOwned>(label: &str) -> PushStorageResult<T> {
-    serde_json::from_value(serde_json::Value::String(label.to_owned())).map_err(json_error)
+    let value = sonic_rs::Value::from(label);
+    sonic_rs::from_value(&value).map_err(json_error)
 }
 
 pub(super) fn provider_label(provider: PushProviderKind) -> &'static str {
@@ -208,38 +210,36 @@ pub(super) fn provider_from_label(label: &str) -> PushStorageResult<PushProvider
 }
 
 pub(super) fn to_json_string<T: Serialize>(value: &T) -> PushStorageResult<String> {
-    let data = serde_json::to_value(value).map_err(json_error)?;
-    serde_json::to_string(&serde_json::json!({ "_v": 1, "data": data })).map_err(json_error)
+    let data = to_json_value(value).map_err(json_error)?;
+    sonic_rs::to_string(&sonic_rs::json!({ "_v": 1, "data": data })).map_err(json_error)
 }
 
 pub(super) fn to_json_vec<T: Serialize>(value: &T) -> PushStorageResult<Vec<u8>> {
-    let data = serde_json::to_value(value).map_err(json_error)?;
-    serde_json::to_vec(&serde_json::json!({ "_v": 1, "data": data })).map_err(json_error)
+    let data = to_json_value(value).map_err(json_error)?;
+    sonic_rs::to_vec(&sonic_rs::json!({ "_v": 1, "data": data })).map_err(json_error)
 }
 
 pub(super) fn from_json_str<T: DeserializeOwned>(value: &str) -> PushStorageResult<T> {
-    from_versioned_json_value(serde_json::from_str(value).map_err(json_error)?)
+    from_versioned_json_value(sonic_rs::from_str(value).map_err(json_error)?)
 }
 
 pub(super) fn from_json_slice<T: DeserializeOwned>(value: &[u8]) -> PushStorageResult<T> {
-    from_versioned_json_value(serde_json::from_slice(value).map_err(json_error)?)
+    from_versioned_json_value(sonic_rs::from_slice(value).map_err(json_error)?)
 }
 
 pub(super) fn from_versioned_json_value<T: DeserializeOwned>(
-    value: serde_json::Value,
+    mut value: sonic_rs::Value,
 ) -> PushStorageResult<T> {
-    if let serde_json::Value::Object(mut object) = value {
-        if object.get("_v").and_then(serde_json::Value::as_u64) == Some(1)
-            && let Some(data) = object.remove("data")
-        {
-            return serde_json::from_value(data).map_err(json_error);
-        }
-        return serde_json::from_value(serde_json::Value::Object(object)).map_err(json_error);
+    if let Some(object) = value.as_object_mut()
+        && object.get(&"_v").and_then(sonic_rs::Value::as_u64) == Some(1)
+        && let Some(data) = object.remove(&"data")
+    {
+        return from_json_value(&data).map_err(json_error);
     }
-    serde_json::from_value(value).map_err(json_error)
+    from_json_value(&value).map_err(json_error)
 }
 
-pub(super) fn json_error(error: serde_json::Error) -> PushStorageError {
+pub(super) fn json_error(error: sonic_rs::Error) -> PushStorageError {
     PushStorageError::Backend(format!("push SQL JSON mapping failed: {error}"))
 }
 

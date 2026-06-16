@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use serde_json::json;
 use sockudo_push::{
     DeviceDetails, DevicePushDetails, DevicePushState, FanoutConfig, FormFactor, MemoryPushQueue,
     MemoryPushStore, Platform, PublishIntent, PublishTarget, PushAcceptRequest, PushDeviceStore,
     PushPayload, PushPipeline, PushPlanner, PushProviderKind, PushQueue, PushQueueStage,
     PushRecipient, PushSubscriptionStore, SecretString, hash_device_identity_token,
 };
+use sonic_rs::json;
 
 #[tokio::test]
 async fn memory_pipeline_accepts_and_plans_channel_publish() {

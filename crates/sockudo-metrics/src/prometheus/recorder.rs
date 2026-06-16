@@ -21,6 +21,13 @@ pub(super) const ANNOTATION_REBUILD_HISTOGRAM_BUCKETS: &[f64] = &[
     0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
 ];
 
+pub(super) const PUSH_SECONDS_HISTOGRAM_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+pub(super) const PUSH_FANOUT_HISTOGRAM_BUCKETS: &[f64] =
+    &[1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0, 1_000_000.0];
+
 static PROMETHEUS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -49,6 +56,22 @@ pub(super) fn install_prometheus_recorder(
                 (
                     format!("{prefix}annotation_projection_rebuild_duration_seconds"),
                     ANNOTATION_REBUILD_HISTOGRAM_BUCKETS,
+                ),
+                (
+                    "sockudo_push_dispatch_duration_seconds".to_owned(),
+                    PUSH_SECONDS_HISTOGRAM_BUCKETS,
+                ),
+                (
+                    "sockudo_push_publish_acceptance_duration_seconds".to_owned(),
+                    PUSH_SECONDS_HISTOGRAM_BUCKETS,
+                ),
+                (
+                    "sockudo_push_planner_duration_seconds".to_owned(),
+                    PUSH_SECONDS_HISTOGRAM_BUCKETS,
+                ),
+                (
+                    "sockudo_push_fanout_size".to_owned(),
+                    PUSH_FANOUT_HISTOGRAM_BUCKETS,
                 ),
             ] {
                 builder = builder

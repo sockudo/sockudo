@@ -365,16 +365,20 @@ fn push_queue_job_data(
         payload: sockudo_core::webhook_types::JobPayload {
             time_ms: push_queue_now_ms().min(i64::MAX as u64) as i64,
             events: vec![
-                sonic_rs::from_str(
-                    &serde_json::to_string(envelope).map_err(|error| {
-                        sockudo_push::PushQueueError::Backend(error.to_string())
-                    })?,
-                )
-                .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?,
+                push_queue_envelope_value(envelope)
+                    .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?,
             ],
         },
         original_signature: "push-queue".to_owned(),
     })
+}
+
+#[cfg(feature = "push")]
+fn push_queue_envelope_value(
+    envelope: &PushQueueEnvelope,
+) -> Result<sonic_rs::Value, sonic_rs::Error> {
+    let bytes = sonic_rs::to_vec(envelope)?;
+    sonic_rs::from_slice(&bytes)
 }
 
 #[cfg(feature = "push")]
@@ -384,10 +388,16 @@ fn parse_push_queue_job(
     let event = job.payload.events.into_iter().next().ok_or_else(|| {
         sockudo_push::PushQueueError::Backend("push queue job missing envelope".to_owned())
     })?;
-    let json = sonic_rs::to_string(&event)
-        .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))?;
-    serde_json::from_str(&json)
+    push_queue_envelope_from_value(&event)
         .map_err(|error| sockudo_push::PushQueueError::Backend(error.to_string()))
+}
+
+#[cfg(feature = "push")]
+fn push_queue_envelope_from_value(
+    value: &sonic_rs::Value,
+) -> Result<PushQueueEnvelope, sonic_rs::Error> {
+    let bytes = sonic_rs::to_vec(value)?;
+    sonic_rs::from_slice(&bytes)
 }
 
 #[cfg(feature = "push")]

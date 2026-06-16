@@ -1,10 +1,12 @@
 use crate::domain::{
-    DeleteDeviceOutcome, DeliveryEvent, DeviceDetails, PushCursor, PushCursorKind,
+    DeleteDeviceOutcome, DeliveryEvent, DeviceDetails, PushCursor, PushCursorKind, from_json_value,
+    to_json_value,
 };
 use crate::storage::{
     DeviceRegistrationChange, Page, PushStorageError, PushStorageResult, ScheduledPushJob,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use sonic_rs::prelude::*;
 
 pub(super) fn cursor_position(
     cursor: Option<PushCursor>,
@@ -103,24 +105,22 @@ pub(super) fn delivery_event_position(event: &DeliveryEvent) -> String {
 }
 
 pub(super) fn to_json_string<T: Serialize>(value: &T) -> PushStorageResult<String> {
-    let data = serde_json::to_value(value).map_err(json_error)?;
-    serde_json::to_string(&serde_json::json!({ "_v": 1, "data": data })).map_err(json_error)
+    let data = to_json_value(value).map_err(json_error)?;
+    sonic_rs::to_string(&sonic_rs::json!({ "_v": 1, "data": data })).map_err(json_error)
 }
 
 pub(super) fn from_json_str<T: DeserializeOwned>(value: &str) -> PushStorageResult<T> {
-    let value = serde_json::from_str(value).map_err(json_error)?;
-    if let serde_json::Value::Object(mut object) = value {
-        if object.get("_v").and_then(serde_json::Value::as_u64) == Some(1)
-            && let Some(data) = object.remove("data")
-        {
-            return serde_json::from_value(data).map_err(json_error);
-        }
-        return serde_json::from_value(serde_json::Value::Object(object)).map_err(json_error);
+    let mut value = sonic_rs::from_str(value).map_err(json_error)?;
+    if let Some(object) = value.as_object_mut()
+        && object.get(&"_v").and_then(sonic_rs::Value::as_u64) == Some(1)
+        && let Some(data) = object.remove(&"data")
+    {
+        return from_json_value(&data).map_err(json_error);
     }
-    serde_json::from_value(value).map_err(json_error)
+    from_json_value(&value).map_err(json_error)
 }
 
-pub(super) fn json_error(error: serde_json::Error) -> PushStorageError {
+pub(super) fn json_error(error: sonic_rs::Error) -> PushStorageError {
     PushStorageError::Backend(format!("push document JSON mapping failed: {error}"))
 }
 

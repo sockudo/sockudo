@@ -322,7 +322,7 @@ pub(crate) fn test_push_device(device_id: &str) -> DeviceDetails {
         client_id: Some("user-1".to_string()),
         form_factor: FormFactor::Phone,
         platform: Platform::Android,
-        metadata: serde_json::json!({}),
+        metadata: sonic_rs::json!({}),
         device_secret: hash_device_identity_token(&SecretString::new("device-token").unwrap()),
         timezone: "UTC".to_string(),
         locale: "en".to_string(),

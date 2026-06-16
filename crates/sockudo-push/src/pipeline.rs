@@ -884,7 +884,7 @@ impl PushPipeline {
                     targets: vec![],
                     payload: crate::domain::PushPayload {
                         template_id: None,
-                        template_data: serde_json::Value::Null,
+                        template_data: sonic_rs::Value::new_null(),
                         title: None,
                         body: None,
                         icon: None,
@@ -954,7 +954,7 @@ pub(crate) fn dedupe_key(seed: impl AsRef<str>, existing: &mut BTreeSet<String>)
 mod tests {
     use std::sync::Arc;
 
-    use serde_json::json;
+    use sonic_rs::json;
 
     use crate::dispatch::{AcceptAllDispatcher, ProviderDispatchWorker};
     use crate::domain::{

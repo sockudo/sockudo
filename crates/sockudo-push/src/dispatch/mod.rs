@@ -57,7 +57,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use sonic_rs::prelude::*;
+use sonic_rs::{Value, json};
 
 use crate::domain::{
     DeliveryBatch, DeliveryJob, DeliveryOutcome, DeliveryResult, ProviderError, PushProviderKind,

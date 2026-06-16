@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+#[cfg(test)]
+use sonic_rs::json;
+use sonic_rs::prelude::*;
+use sonic_rs::{Object, Value};
 use thiserror::Error;
 
 use crate::domain::PushPayload;
@@ -143,15 +146,17 @@ impl PushRulePayloadMapping {
         let title = required_string(object, &self.title_field, true)?;
         let body = required_string(object, &self.body_field, false)?;
         let template_data = if self.include_remaining_fields {
-            let mut data = Map::with_capacity(object.len().saturating_sub(2));
+            let mut data = Object::with_capacity(object.len().saturating_sub(2));
             for (key, value) in object {
-                if key != &self.title_field && key != &self.body_field {
-                    data.insert(key.clone(), value.clone());
+                if key != self.title_field && key != self.body_field {
+                    data.insert(key, value.clone());
                 }
             }
-            json!({ self.template_data_field.clone(): Value::Object(data) })
+            let mut wrapper = Object::with_capacity(1);
+            wrapper.insert(&self.template_data_field, data.into_value());
+            wrapper.into_value()
         } else {
-            Value::Object(Map::new())
+            Object::new().into_value()
         };
         let payload = PushPayload {
             template_id: None,
@@ -183,12 +188,8 @@ pub fn any_rule_matches(rules: &[ChannelPushRule], channel: &str, event: &str) -
     rules.iter().any(|rule| rule.matches(channel, event))
 }
 
-fn required_string(
-    object: &Map<String, Value>,
-    field: &str,
-    is_title: bool,
-) -> Result<String, PushRuleError> {
-    let value = object.get(field).ok_or(if is_title {
+fn required_string(object: &Object, field: &str, is_title: bool) -> Result<String, PushRuleError> {
+    let value = object.get(&field).ok_or(if is_title {
         PushRuleError::MissingTitle
     } else {
         PushRuleError::MissingBody

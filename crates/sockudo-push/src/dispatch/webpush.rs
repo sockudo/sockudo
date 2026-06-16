@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::future::join_all;
 #[cfg(feature = "push-webpush")]
-use serde_json::json;
+use sonic_rs::json;
 #[cfg(feature = "push-webpush")]
 use url::Url;
 
@@ -177,7 +177,7 @@ impl NativeWebPushCrypto {
             .saturating_add(self.valid_for.as_secs());
         let header = URL_SAFE_NO_PAD.encode(br#"{"typ":"JWT","alg":"ES256"}"#);
         let claims = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&json!({
+            sonic_rs::to_vec(&json!({
                 "aud": format!("{scheme}://{host}"),
                 "exp": exp,
                 "sub": self.contact,
@@ -317,7 +317,7 @@ impl WebPushDispatcher {
             .await
             .map_err(auth_error)?;
         let rendered = render_payload_json(PushProviderKind::WebPush, job)?;
-        let body = serde_json::to_vec(&rendered).map_err(|_| ProviderError {
+        let body = sonic_rs::to_vec(&rendered).map_err(|_| ProviderError {
             class: "invalid_payload".to_owned(),
             reason: Some("web push payload serialization failed".to_owned()),
             retry_after_ms: None,

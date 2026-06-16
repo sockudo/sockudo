@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use sonic_rs::prelude::*;
+use sonic_rs::{Value, json};
 use thiserror::Error;
 
 use crate::domain::{
@@ -213,14 +214,18 @@ fn lookup_template_value(data: &Value, key: &str) -> Result<String, PayloadTrans
             })?;
     }
 
-    match current {
-        Value::String(value) => Ok(value.clone()),
-        Value::Number(value) => Ok(value.to_string()),
-        Value::Bool(value) => Ok(value.to_string()),
-        Value::Null => Ok(String::new()),
-        Value::Array(_) | Value::Object(_) => Err(PayloadTransformError::InvalidTemplate {
+    if let Some(value) = current.as_str() {
+        Ok(value.to_owned())
+    } else if current.is_number() {
+        Ok(current.to_string())
+    } else if let Some(value) = current.as_bool() {
+        Ok(value.to_string())
+    } else if current.is_null() {
+        Ok(String::new())
+    } else {
+        Err(PayloadTransformError::InvalidTemplate {
             reason: "placeholder value must be scalar",
-        }),
+        })
     }
 }
 
@@ -240,7 +245,7 @@ fn validate_apns_fields(payload: &Value) -> Result<(), PayloadTransformError> {
     let Some(headers) = payload.get("headers").and_then(Value::as_object) else {
         return Ok(());
     };
-    if let Some(push_type) = headers.get("apns-push-type").and_then(Value::as_str)
+    if let Some(push_type) = headers.get(&"apns-push-type").and_then(Value::as_str)
         && !matches!(
             push_type,
             "alert"
@@ -257,7 +262,7 @@ fn validate_apns_fields(payload: &Value) -> Result<(), PayloadTransformError> {
             reason: "invalid apns-push-type",
         });
     }
-    if let Some(priority) = headers.get("apns-priority").and_then(Value::as_str)
+    if let Some(priority) = headers.get(&"apns-priority").and_then(Value::as_str)
         && !matches!(priority, "5" | "10")
     {
         return Err(PayloadTransformError::InvalidOverride {
@@ -265,24 +270,24 @@ fn validate_apns_fields(payload: &Value) -> Result<(), PayloadTransformError> {
             reason: "invalid apns-priority",
         });
     }
-    if let Some(expiration) = headers.get("apns-expiration")
-        && !(expiration.is_string() || expiration.is_number())
+    if let Some(expiration) = headers.get(&"apns-expiration")
+        && !(expiration.is_str() || expiration.is_number())
     {
         return Err(PayloadTransformError::InvalidOverride {
             provider: "apns",
             reason: "invalid apns-expiration",
         });
     }
-    if let Some(topic) = headers.get("apns-topic")
-        && !topic.is_string()
+    if let Some(topic) = headers.get(&"apns-topic")
+        && !topic.is_str()
     {
         return Err(PayloadTransformError::InvalidOverride {
             provider: "apns",
             reason: "invalid apns-topic",
         });
     }
-    if let Some(collapse_id) = headers.get("apns-collapse-id")
-        && !collapse_id.is_string()
+    if let Some(collapse_id) = headers.get(&"apns-collapse-id")
+        && !collapse_id.is_str()
     {
         return Err(PayloadTransformError::InvalidOverride {
             provider: "apns",
@@ -296,7 +301,7 @@ fn validate_web_push_fields(payload: &Value) -> Result<(), PayloadTransformError
     let Some(headers) = payload.get("headers").and_then(Value::as_object) else {
         return Ok(());
     };
-    if let Some(ttl) = headers.get("ttl")
+    if let Some(ttl) = headers.get(&"ttl")
         && !(ttl.as_u64().is_some()
             || ttl
                 .as_str()
@@ -308,7 +313,7 @@ fn validate_web_push_fields(payload: &Value) -> Result<(), PayloadTransformError
             reason: "invalid ttl",
         });
     }
-    if let Some(urgency) = headers.get("urgency").and_then(Value::as_str)
+    if let Some(urgency) = headers.get(&"urgency").and_then(Value::as_str)
         && !matches!(urgency, "very-low" | "low" | "normal" | "high")
     {
         return Err(PayloadTransformError::InvalidOverride {
@@ -316,15 +321,15 @@ fn validate_web_push_fields(payload: &Value) -> Result<(), PayloadTransformError
             reason: "invalid urgency",
         });
     }
-    if let Some(topic) = headers.get("topic")
-        && !topic.is_string()
+    if let Some(topic) = headers.get(&"topic")
+        && !topic.is_str()
     {
         return Err(PayloadTransformError::InvalidOverride {
             provider: "webPush",
             reason: "invalid topic",
         });
     }
-    if let Some(audience) = headers.get("vapidAudience").and_then(Value::as_str) {
+    if let Some(audience) = headers.get(&"vapidAudience").and_then(Value::as_str) {
         validate_web_push_endpoint(audience).map_err(|_| {
             PayloadTransformError::InvalidOverride {
                 provider: "webPush",

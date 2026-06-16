@@ -7,9 +7,11 @@ use std::sync::Arc;
 use aws_lc_rs::pbkdf2;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use thiserror::Error;
 use url::{Host, Url};
 use zeroize::Zeroize;
@@ -886,14 +888,12 @@ impl PublishIntent {
     }
 
     pub fn idempotency_key(&self) -> String {
-        let mut canonical =
-            serde_json::to_value(self).expect("PublishIntent serialization is infallible");
+        let mut canonical = to_json_value(self).expect("PublishIntent serialization is infallible");
         canonicalize_intent_json(&mut canonical);
-        stable_hash(
-            serde_json::to_vec(&canonical)
-                .expect("canonical intent serialization is infallible")
-                .as_slice(),
-        )
+        let mut bytes = Vec::new();
+        write_canonical_json(&canonical, &mut bytes)
+            .expect("canonical intent serialization is infallible");
+        stable_hash(bytes.as_slice())
     }
 }
 
@@ -1247,7 +1247,7 @@ pub struct RetryScheduleEntry {
     pub stage: String,
     pub key: String,
     pub not_before_ms: u64,
-    pub payload: serde_json::Value,
+    pub payload: sonic_rs::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1277,7 +1277,7 @@ impl PushCursor {
     pub fn encode(&self) -> Result<String, PushDomainError> {
         require_non_empty("appId", &self.app_id)?;
         require_non_empty("position", &self.position)?;
-        let bytes = serde_json::to_vec(self).map_err(|_| PushDomainError::CursorDecode)?;
+        let bytes = sonic_rs::to_vec(self).map_err(|_| PushDomainError::CursorDecode)?;
         if bytes.len() > MAX_CURSOR_BYTES {
             return Err(PushDomainError::TooLarge {
                 field: "cursor",
@@ -1298,7 +1298,7 @@ impl PushCursor {
             });
         }
         let cursor: Self =
-            serde_json::from_slice(&bytes).map_err(|_| PushDomainError::CursorDecode)?;
+            sonic_rs::from_slice(&bytes).map_err(|_| PushDomainError::CursorDecode)?;
         if cursor.app_id != expected_app_id {
             return Err(PushDomainError::CursorAppMismatch {
                 expected: expected_app_id.to_owned(),
@@ -1389,7 +1389,7 @@ fn require_json_bound(
     value: &Value,
     max_bytes: usize,
 ) -> Result<(), PushDomainError> {
-    let len = serde_json::to_vec(value)
+    let len = sonic_rs::to_vec(value)
         .map_err(|_| PushDomainError::InvalidField {
             field,
             reason: "must be serializable JSON",
@@ -1399,6 +1399,16 @@ fn require_json_bound(
         return Err(PushDomainError::TooLarge { field, max_bytes });
     }
     Ok(())
+}
+
+pub(crate) fn to_json_value<T: Serialize>(value: &T) -> Result<Value, sonic_rs::Error> {
+    let bytes = sonic_rs::to_vec(value)?;
+    sonic_rs::from_slice(&bytes)
+}
+
+pub(crate) fn from_json_value<T: DeserializeOwned>(value: &Value) -> Result<T, sonic_rs::Error> {
+    let bytes = sonic_rs::to_vec(value)?;
+    sonic_rs::from_slice(&bytes)
 }
 
 pub(crate) fn validate_web_push_endpoint(endpoint: &str) -> Result<(), PushDomainError> {
@@ -1516,29 +1526,11 @@ fn is_private_or_local_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn canonicalize_json(value: &mut Value) {
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                canonicalize_json(item);
-            }
-        }
-        Value::Object(map) => {
-            let mut sorted = BTreeMap::new();
-            for (key, mut value) in std::mem::take(map) {
-                canonicalize_json(&mut value);
-                sorted.insert(key, value);
-            }
-            map.extend(sorted);
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
-}
-
 fn canonicalize_intent_json(value: &mut Value) {
-    canonicalize_json(value);
-    if let Value::Object(map) = value
-        && let Some(Value::Array(overrides)) = map.get_mut("providerOverrides")
+    if let Some(map) = value.as_object_mut()
+        && let Some(overrides) = map
+            .get_mut(&"providerOverrides")
+            .and_then(Value::as_array_mut)
     {
         overrides.sort_by(|left, right| {
             left.get("provider")
@@ -1552,6 +1544,39 @@ fn canonicalize_intent_json(value: &mut Value) {
                 )
         });
     }
+}
+
+fn write_canonical_json(value: &Value, out: &mut Vec<u8>) -> Result<(), sonic_rs::Error> {
+    if let Some(items) = value.as_array() {
+        out.push(b'[');
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            write_canonical_json(item, out)?;
+        }
+        out.push(b']');
+        return Ok(());
+    }
+
+    if let Some(map) = value.as_object() {
+        out.push(b'{');
+        let mut entries = map.iter().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        for (index, (key, value)) in entries.into_iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.extend_from_slice(sonic_rs::to_string(key)?.as_bytes());
+            out.push(b':');
+            write_canonical_json(value, out)?;
+        }
+        out.push(b'}');
+        return Ok(());
+    }
+
+    out.extend_from_slice(sonic_rs::to_string(value)?.as_bytes());
+    Ok(())
 }
 
 fn redact_error_reason(value: String) -> String {
@@ -1594,7 +1619,7 @@ pub fn stable_hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use sonic_rs::json;
 
     fn secret(value: &str) -> SecretString {
         SecretString::new(value).unwrap()
@@ -1635,7 +1660,7 @@ mod tests {
     #[test]
     fn device_details_use_camel_case_serde_and_provider_recipient_shape() {
         let device = sample_device();
-        let encoded = serde_json::to_value(&device).unwrap();
+        let encoded = to_json_value(&device).unwrap();
 
         assert_eq!(encoded["appId"], "app-1");
         assert_eq!(encoded["clientId"], "client-1");
@@ -1653,7 +1678,7 @@ mod tests {
             "fcm-token-secret"
         );
 
-        let decoded: DeviceDetails = serde_json::from_value(encoded).unwrap();
+        let decoded: DeviceDetails = from_json_value(&encoded).unwrap();
         assert_eq!(decoded, device);
     }
 

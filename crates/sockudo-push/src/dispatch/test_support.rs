@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use sonic_rs::{Value, json};
 use tokio::sync::Mutex;
 
 use super::{
@@ -117,6 +117,6 @@ pub(crate) fn response(status: u16, body: Value) -> ProviderHttpResponse {
     ProviderHttpResponse {
         status,
         headers: BTreeMap::new(),
-        body: serde_json::to_vec(&body).unwrap(),
+        body: sonic_rs::to_vec(&body).unwrap(),
     }
 }

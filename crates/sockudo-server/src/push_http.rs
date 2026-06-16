@@ -8,14 +8,13 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use axum::{
-    Json,
-    extract::{Extension, Path, Query},
+    body::Bytes,
+    extract::{Extension, FromRequest, Path, Query, Request},
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use sockudo_core::app::App;
 use sockudo_core::options::{PushRuleConfig, PushRulePayloadMappingConfig};
@@ -32,6 +31,7 @@ use sockudo_push::{
     emit_push_meta_event, generate_device_identity_token, hash_device_identity_token,
     render_provider_payload, verify_device_identity_token,
 };
+use sonic_rs::{Value, json};
 use tracing::{info, warn};
 
 use crate::http_handler::AppError;
@@ -55,8 +55,62 @@ static PUSH_RULE_RATE_WINDOWS: LazyLock<Mutex<BTreeMap<String, RateWindow>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static PUSH_HTTP_METRICS: LazyLock<PushMetrics> = LazyLock::new(PushMetrics::default);
 
-pub fn push_metrics_plaintext() -> String {
-    PUSH_HTTP_METRICS.to_prometheus_text()
+#[derive(Debug)]
+pub struct Json<T>(pub T);
+
+impl<S, T> FromRequest<S> for Json<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned,
+{
+    type Rejection = AppError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        if !is_json_content_type(req.headers()) {
+            return Err(AppError::InvalidInput(
+                "expected application/json content type".to_owned(),
+            ));
+        }
+        let bytes = Bytes::from_request(req, state)
+            .await
+            .map_err(|error| AppError::InvalidInput(format!("invalid JSON body: {error}")))?;
+        let value = sonic_rs::from_slice(&bytes)
+            .map_err(|error| AppError::InvalidInput(format!("invalid JSON body: {error}")))?;
+        Ok(Self(value))
+    }
+}
+
+impl<T> IntoResponse for Json<T>
+where
+    T: Serialize,
+{
+    fn into_response(self) -> Response {
+        match sonic_rs::to_vec(&self.0) {
+            Ok(body) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                format!("failed to serialize JSON response: {error}"),
+            )
+                .into_response(),
+        }
+    }
+}
+
+fn is_json_content_type(headers: &HeaderMap) -> bool {
+    let Some(content_type) = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let media_type = content_type.split(';').next().unwrap_or("").trim();
+    media_type.eq_ignore_ascii_case("application/json")
+        || media_type.rsplit_once('/').is_some_and(|(_, subtype)| {
+            subtype
+                .get(subtype.len().saturating_sub(5)..)
+                .is_some_and(|suffix| suffix.eq_ignore_ascii_case("+json"))
+        })
 }
 
 fn publish_state_label(state: PublishLifecycleState) -> &'static str {
@@ -1654,7 +1708,7 @@ fn list_response<T: Serialize>(
 }
 
 fn encrypted_json(value: &Value) -> Result<EncryptedSecret, AppError> {
-    encrypted_secret(&serde_json::to_string(value).map_err(|error| {
+    encrypted_secret(&sonic_rs::to_string(value).map_err(|error| {
         AppError::InvalidInput(format!("credential material must be valid JSON: {error}"))
     })?)
 }
@@ -1781,8 +1835,11 @@ pub async fn enqueue_v2_channel_push_from_extras(
     store: &DynPushStore,
     queue: &DynPushQueue,
 ) -> Result<Option<String>, AppError> {
-    let payload: PushPayload = serde_json::from_str(&extras_push.to_string())
-        .map_err(|error| AppError::InvalidInput(format!("invalid extras.push: {error}")))?;
+    let payload: PushPayload = sonic_rs::from_slice(
+        &sonic_rs::to_vec(extras_push)
+            .map_err(|error| AppError::InvalidInput(format!("invalid extras.push: {error}")))?,
+    )
+    .map_err(|error| AppError::InvalidInput(format!("invalid extras.push: {error}")))?;
     let publish_id = uuid::Uuid::new_v4().to_string();
     let request = PublishRequest {
         publish_id: Some(publish_id.clone()),
@@ -1925,13 +1982,10 @@ fn payload_mapping_from_config(config: &PushRulePayloadMappingConfig) -> PushRul
     }
 }
 
-fn message_data_to_json(
-    message_data: Option<&ApiMessageData>,
-) -> Result<serde_json::Value, AppError> {
+fn message_data_to_json(message_data: Option<&ApiMessageData>) -> Result<Value, AppError> {
     match message_data {
-        Some(ApiMessageData::Json(value)) => serde_json::from_str(&value.to_string())
-            .map_err(|error| AppError::InvalidInput(format!("invalid push rule data: {error}"))),
-        Some(ApiMessageData::String(raw)) => serde_json::from_str(raw)
+        Some(ApiMessageData::Json(value)) => Ok(value.clone()),
+        Some(ApiMessageData::String(raw)) => sonic_rs::from_str(raw)
             .map_err(|error| AppError::InvalidInput(format!("invalid push rule data: {error}"))),
         None => Err(AppError::InvalidInput(
             "push rule message data is required".to_owned(),
@@ -1968,11 +2022,11 @@ fn enforce_push_rule_rate(
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-    use serde_json::json;
     use sockudo_push::{
         DevicePushDetails, DevicePushState, FormFactor, MemoryPushStore, Platform, PushDeviceStore,
         PushRecipient,
     };
+    use sonic_rs::{JsonValueTrait, json};
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -2023,6 +2077,27 @@ mod tests {
     }
 
     #[test]
+    fn sonic_json_extractor_accepts_json_media_types_only() {
+        let mut headers = HeaderMap::new();
+        assert!(!is_json_content_type(&headers));
+
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        assert!(!is_json_content_type(&headers));
+
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        assert!(is_json_content_type(&headers));
+
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/vnd.sockudo+json"),
+        );
+        assert!(is_json_content_type(&headers));
+    }
+
+    #[test]
     fn device_identity_header_verifies_hashed_device_secret() {
         let device = sample_device();
         let mut headers = HeaderMap::new();
@@ -2039,7 +2114,9 @@ mod tests {
 
     #[test]
     fn device_response_redacts_secrets_and_endpoints() {
-        let response = serde_json::to_value(device_response(sample_device())).unwrap();
+        let response: Value =
+            sonic_rs::from_slice(&sonic_rs::to_vec(&device_response(sample_device())).unwrap())
+                .unwrap();
 
         assert_eq!(
             response["recipient"]["tokenHash"].as_str().unwrap().len(),

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::future::join_all;
-use serde_json::json;
+use sonic_rs::json;
 
 use super::auth::{CachedTokenProvider, auth_error};
 use super::http::{

@@ -6,7 +6,6 @@ use aws_lc_rs::pbkdf2 as aws_lc_pbkdf2;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use hmac::{Hmac, KeyInit, Mac};
 use ring::pbkdf2;
-use serde_json::json;
 use sha2::Sha256;
 use sockudo_push::{
     AcceptAllDispatcher, ChannelSubscription, DeliveryBatch, DeliveryJob, DeviceDetails,
@@ -16,6 +15,7 @@ use sockudo_push::{
     PushQueue, PushQueuePayload, PushQueueStage, PushRecipient, PushShardWorker,
     PushSubscriptionStore, SecretString, any_rule_matches, render_provider_payload,
 };
+use sonic_rs::json;
 use tokio::runtime::Runtime;
 
 const APP_ID: &str = "app-1";

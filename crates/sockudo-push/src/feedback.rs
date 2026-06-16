@@ -2,7 +2,7 @@ use futures_util::StreamExt;
 
 use crate::domain::{
     DeliveryEvent, DeliveryOutcome, DeliveryResult, DevicePushState, PublishLifecycleState,
-    RetryScheduleEntry,
+    RetryScheduleEntry, to_json_value,
 };
 use crate::meta::{PushMetaEvent, emit_push_meta_event};
 use crate::metrics::{PushMetrics, provider_label};
@@ -280,7 +280,7 @@ impl PushFeedbackProcessor {
                     result.attempt
                 ),
                 not_before_ms,
-                payload: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
+                payload: to_json_value(result).unwrap_or_else(|_| sonic_rs::Value::new_null()),
             };
             self.queue
                 .retry_at(
