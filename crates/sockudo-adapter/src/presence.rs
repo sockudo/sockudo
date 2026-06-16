@@ -1,4 +1,5 @@
 use crate::connection_manager::ConnectionManager;
+use compact_str::{CompactString, format_compact};
 use dashmap::DashMap;
 use sockudo_core::app::App;
 use sockudo_core::error::Result;
@@ -21,9 +22,11 @@ const MAX_PENDING_PRESENCE_REMOVALS: usize = 100_000;
 
 /// Lock key for presence operations to prevent TOCTOU races
 /// Format: "app_id:channel:user_id"
-fn presence_lock_key(app_id: &str, channel: &str, user_id: &str) -> String {
-    format!("{}:{}:{}", app_id, channel, user_id)
+fn presence_lock_key(app_id: &str, channel: &str, user_id: &str) -> CompactString {
+    format_compact!("{app_id}:{channel}:{user_id}")
 }
+
+type PresenceLockMap = DashMap<CompactString, Arc<Mutex<()>>, ahash::RandomState>;
 
 struct PendingRemovalTask {
     connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
@@ -45,7 +48,7 @@ struct PendingRemovalTask {
 pub struct PresenceManager {
     /// Per-user locks to prevent TOCTOU races during presence operations
     /// Maps "app_id:channel:user_id" -> async mutex for true per-key exclusivity
-    presence_locks: DashMap<String, Arc<Mutex<()>>>,
+    presence_locks: PresenceLockMap,
     removal_generation: AtomicU64,
     pending_removal_deadlines: Arc<Mutex<BTreeMap<Instant, VecDeque<PendingRemovalTask>>>>,
     pending_removal_count: Arc<AtomicUsize>,
@@ -62,7 +65,7 @@ impl Default for PresenceManager {
 impl PresenceManager {
     pub fn new() -> Self {
         Self {
-            presence_locks: DashMap::new(),
+            presence_locks: DashMap::with_hasher(ahash::RandomState::new()),
             removal_generation: AtomicU64::new(1),
             pending_removal_deadlines: Arc::new(Mutex::new(BTreeMap::new())),
             pending_removal_count: Arc::new(AtomicUsize::new(0)),
@@ -71,9 +74,9 @@ impl PresenceManager {
         }
     }
 
-    fn get_presence_lock(&self, lock_key: &str) -> Arc<Mutex<()>> {
+    fn get_presence_lock(&self, lock_key: &CompactString) -> Arc<Mutex<()>> {
         self.presence_locks
-            .entry(lock_key.to_string())
+            .entry(lock_key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
@@ -822,7 +825,7 @@ impl PresenceManager {
     /// Call this from a background task to prevent unbounded growth of the locks map
     pub fn cleanup_stale_locks(&self) {
         if self.presence_locks.len() > 100_000 {
-            let stale_keys: Vec<String> = self
+            let stale_keys: Vec<CompactString> = self
                 .presence_locks
                 .iter()
                 .filter_map(|entry| {
@@ -1093,7 +1096,7 @@ mod tests {
         for i in 0..100 {
             manager
                 .presence_locks
-                .insert(format!("key_{}", i), Arc::new(Mutex::new(())));
+                .insert(format_compact!("key_{i}"), Arc::new(Mutex::new(())));
         }
 
         manager.cleanup_stale_locks();

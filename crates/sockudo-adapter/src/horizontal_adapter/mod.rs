@@ -17,6 +17,12 @@ use std::time::Instant;
 use tokio::sync::{Notify, RwLock};
 use uuid::Uuid;
 
+type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
+
+fn fast_dashmap<K: Eq + std::hash::Hash, V>() -> FastDashMap<K, V> {
+    DashMap::with_hasher(ahash::RandomState::new())
+}
+
 pub use utils::{current_timestamp, generate_request_id};
 
 /// Request types for horizontal communication
@@ -202,7 +208,7 @@ pub struct HorizontalAdapter {
     pub local_adapter: Arc<LocalAdapter>,
 
     /// Pending requests map - Use DashMap for thread-safe access
-    pub pending_requests: Arc<DashMap<String, PendingRequest>>,
+    pub pending_requests: Arc<FastDashMap<String, PendingRequest>>,
 
     /// Timeout for requests in milliseconds
     pub requests_timeout: AtomicU64,
@@ -222,11 +228,11 @@ pub struct HorizontalAdapter {
     /// Tier 1A: cluster-wide per-channel socket counts contributed by peer
     /// nodes. Keyed by (app_id, channel) -> {node_id -> local_count}. Global
     /// count for a channel = local namespace count + sum of these.
-    pub cluster_channel_counts: Arc<DashMap<(String, String), AHashMap<String, usize>>>,
+    pub cluster_channel_counts: Arc<FastDashMap<(String, String), AHashMap<String, usize>>>,
 
     /// Tier 1A: (app_id, channel) keys whose local count changed and must be
     /// gossiped on the next flush tick. Coalesces churn into bounded broadcasts.
-    pub dirty_channel_counts: Arc<DashMap<(String, String), ()>>,
+    pub dirty_channel_counts: Arc<FastDashMap<(String, String), ()>>,
 }
 
 impl Default for HorizontalAdapter {

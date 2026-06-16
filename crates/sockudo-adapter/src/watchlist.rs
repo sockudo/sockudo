@@ -7,6 +7,8 @@ use sockudo_protocol::messages::PusherMessage;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+type AppStateMap = DashMap<String, Arc<Mutex<AppWatchlistState>>, ahash::RandomState>;
+
 #[derive(Debug, Clone)]
 pub struct WatchlistEntry {
     pub user_id: String,
@@ -23,7 +25,7 @@ struct AppWatchlistState {
 pub struct WatchlistManager {
     // Keep app-level sharding concurrent while serializing the multi-map updates
     // required to maintain watchlist relationships within a single app.
-    apps: Arc<DashMap<String, Arc<Mutex<AppWatchlistState>>>>,
+    apps: Arc<AppStateMap>,
 }
 
 impl Default for WatchlistManager {
@@ -35,7 +37,7 @@ impl Default for WatchlistManager {
 impl WatchlistManager {
     pub fn new() -> Self {
         Self {
-            apps: Arc::new(DashMap::new()),
+            apps: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
         }
     }
 

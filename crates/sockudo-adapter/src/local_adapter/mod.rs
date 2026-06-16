@@ -5,6 +5,7 @@ mod helpers;
 use self::helpers::{PendingPresenceMember, pending_presence_channel_key};
 #[cfg(feature = "tag-filtering")]
 use crate::filter_index::FilterIndex;
+use compact_str::CompactString;
 use dashmap::DashMap;
 #[cfg(feature = "delta")]
 use sockudo_core::app::AppManager;
@@ -19,10 +20,17 @@ use std::sync::atomic::Ordering;
 use tokio::sync::Semaphore;
 use tracing::info;
 
+pub(super) type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
+
+pub(super) fn fast_dashmap<K: Eq + std::hash::Hash, V>() -> FastDashMap<K, V> {
+    DashMap::with_hasher(ahash::RandomState::new())
+}
+
 pub struct LocalAdapter {
-    pub namespaces: Arc<DashMap<String, Arc<Namespace>>>,
-    pending_presence_members: Arc<DashMap<String, PendingPresenceMember>>,
-    pending_presence_by_channel: Arc<DashMap<String, Arc<DashMap<String, ()>>>>,
+    pub namespaces: Arc<FastDashMap<String, Arc<Namespace>>>,
+    pending_presence_members: Arc<FastDashMap<CompactString, PendingPresenceMember>>,
+    pending_presence_by_channel:
+        Arc<FastDashMap<CompactString, Arc<FastDashMap<CompactString, ()>>>>,
     pub buffer_multiplier_per_cpu: usize,
     pub max_concurrent: usize,
     // Global semaphore to limit total concurrent broadcast operations across all channels
@@ -113,9 +121,9 @@ impl LocalAdapter {
         );
 
         Self {
-            namespaces: Arc::new(DashMap::new()),
-            pending_presence_members: Arc::new(DashMap::new()),
-            pending_presence_by_channel: Arc::new(DashMap::new()),
+            namespaces: Arc::new(fast_dashmap()),
+            pending_presence_members: Arc::new(fast_dashmap()),
+            pending_presence_by_channel: Arc::new(fast_dashmap()),
             buffer_multiplier_per_cpu: multiplier,
             max_concurrent,
             broadcast_semaphore: Arc::new(Semaphore::new(max_concurrent * 8)),

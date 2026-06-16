@@ -14,14 +14,14 @@ impl HorizontalAdapter {
         Self {
             node_id: Uuid::new_v4().to_string(),
             local_adapter: Arc::new(LocalAdapter::new()),
-            pending_requests: Arc::new(DashMap::new()),
+            pending_requests: Arc::new(fast_dashmap()),
             requests_timeout: AtomicU64::new(5000),
             metrics: OnceLock::new(),
             cluster_presence_registry: Arc::new(RwLock::new(AHashMap::new())),
             node_heartbeats: Arc::new(RwLock::new(AHashMap::new())),
             sequence_counter: Arc::new(AtomicU64::new(0)),
-            cluster_channel_counts: Arc::new(DashMap::new()),
-            dirty_channel_counts: Arc::new(DashMap::new()),
+            cluster_channel_counts: Arc::new(fast_dashmap()),
+            dirty_channel_counts: Arc::new(fast_dashmap()),
         }
     }
 

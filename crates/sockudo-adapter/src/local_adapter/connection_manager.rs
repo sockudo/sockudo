@@ -1,9 +1,8 @@
-use super::LocalAdapter;
 use super::helpers::*;
+use super::{LocalAdapter, fast_dashmap};
 use crate::ConnectionManager;
 use ahash::AHashMap as HashMap;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use sockudo_core::app::AppManager;
 use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::error::{Error, Result};
@@ -538,7 +537,7 @@ impl ConnectionManager for LocalAdapter {
         );
         self.pending_presence_by_channel
             .entry(pending_presence_channel_key(app_id, channel))
-            .or_insert_with(|| Arc::new(DashMap::new()))
+            .or_insert_with(|| Arc::new(fast_dashmap()))
             .insert(pending_key, ());
         Ok(())
     }

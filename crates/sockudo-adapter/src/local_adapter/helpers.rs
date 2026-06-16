@@ -1,3 +1,4 @@
+use compact_str::{CompactString, format_compact};
 use sockudo_core::channel::PresenceMemberInfo;
 use sockudo_core::websocket::WebSocketRef;
 use sockudo_protocol::messages::{
@@ -5,12 +6,12 @@ use sockudo_protocol::messages::{
 };
 use sockudo_protocol::protocol_version::{CANONICAL_PRESENCE_UPDATE, ProtocolVersion};
 
-pub(super) fn pending_presence_key(app_id: &str, channel: &str, user_id: &str) -> String {
-    format!("{app_id}:{channel}:{user_id}")
+pub(super) fn pending_presence_key(app_id: &str, channel: &str, user_id: &str) -> CompactString {
+    format_compact!("{app_id}:{channel}:{user_id}")
 }
 
-pub(super) fn pending_presence_channel_key(app_id: &str, channel: &str) -> String {
-    format!("{app_id}:{channel}")
+pub(super) fn pending_presence_channel_key(app_id: &str, channel: &str) -> CompactString {
+    format_compact!("{app_id}:{channel}")
 }
 
 #[derive(Debug, Clone)]

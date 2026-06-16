@@ -6,6 +6,7 @@ use super::ConnectionHandler;
 use crate::connection_manager::CompressionParams;
 use crate::connection_manager::ConnectionManager;
 use bytes::Bytes;
+use compact_str::format_compact;
 use sockudo_core::app::App;
 use sockudo_core::error::{Error, Result};
 use sockudo_core::history::{HistoryAppendRecord, now_ms};
@@ -286,13 +287,14 @@ impl ConnectionHandler {
         if let Some(extras_key) = message.extras_idempotency_key() {
             let config = app_config.resolved_idempotency(&self.server_options().idempotency);
             if config.enabled {
-                let cache_key = format!("idempotency:{}:{}:{}", app_config.id, channel, extras_key);
+                let cache_key =
+                    format_compact!("idempotency:{}:{}:{}", app_config.id, channel, extras_key);
                 if let Some(ref metrics) = self.metrics {
                     metrics.mark_idempotency_publish(&app_config.id);
                 }
                 let is_new = self
                     .cache_manager
-                    .set_if_not_exists(&cache_key, "1", config.ttl_seconds)
+                    .set_if_not_exists(cache_key.as_str(), "1", config.ttl_seconds)
                     .await?;
                 if !is_new {
                     if let Some(ref metrics) = self.metrics {

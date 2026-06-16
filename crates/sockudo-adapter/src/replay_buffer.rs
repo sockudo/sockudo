@@ -1,9 +1,12 @@
 use bytes::Bytes;
+use compact_str::{CompactString, format_compact};
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+type BufferMap = DashMap<CompactString, ChannelBuffer, ahash::RandomState>;
 
 struct BufferedMessage {
     stream_id: Option<String>,
@@ -36,7 +39,7 @@ pub enum ReplayLookup {
 /// replays all messages with a higher serial from the buffer.
 pub struct ReplayBuffer {
     /// Key: "app_id\0channel" → ChannelBuffer
-    buffers: DashMap<String, ChannelBuffer>,
+    buffers: BufferMap,
     max_buffer_size: usize,
     buffer_ttl: Duration,
 }
@@ -44,14 +47,14 @@ pub struct ReplayBuffer {
 impl ReplayBuffer {
     pub fn new(max_buffer_size: usize, buffer_ttl: Duration) -> Self {
         Self {
-            buffers: DashMap::new(),
+            buffers: DashMap::with_hasher(ahash::RandomState::new()),
             max_buffer_size,
             buffer_ttl,
         }
     }
 
-    fn buffer_key(app_id: &str, channel: &str) -> String {
-        format!("{}\0{}", app_id, channel)
+    fn buffer_key(app_id: &str, channel: &str) -> CompactString {
+        format_compact!("{app_id}\0{channel}")
     }
 
     fn prune_expired_locked(

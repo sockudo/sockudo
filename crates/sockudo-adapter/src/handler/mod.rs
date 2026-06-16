@@ -53,6 +53,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tokio::sync::Semaphore;
 use tracing::{debug, error, warn};
 
+type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
+type SharedRateLimiter = Arc<dyn RateLimiter + Send + Sync>;
+
+fn fast_dashmap<K: Eq + std::hash::Hash, V>() -> FastDashMap<K, V> {
+    DashMap::with_hasher(ahash::RandomState::new())
+}
+
 #[derive(Clone)]
 pub struct ConnectionHandler {
     pub(crate) app_manager: Arc<dyn AppManager + Send + Sync>,
@@ -69,10 +76,10 @@ pub struct ConnectionHandler {
     pub(crate) ai_observability_tracker: Option<Arc<AiObservabilityTracker>>,
     pub(crate) presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
     webhook_integration: Option<Arc<WebhookIntegration>>,
-    client_event_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
-    message_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
-    presence_update_limiters: Arc<DashMap<SocketId, Arc<dyn RateLimiter + Send + Sync>>>,
-    history_request_limits: Arc<DashMap<SocketId, Arc<Semaphore>>>,
+    client_event_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
+    message_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
+    presence_update_limiters: Arc<FastDashMap<SocketId, SharedRateLimiter>>,
+    history_request_limits: Arc<FastDashMap<SocketId, Arc<Semaphore>>>,
     watchlist_manager: Arc<WatchlistManager>,
     server_options: Arc<ServerOptions>,
     cleanup_queue: Option<crate::cleanup::CleanupSender>,
@@ -258,10 +265,10 @@ impl ConnectionHandlerBuilder {
                 .presence_history_store
                 .unwrap_or_else(|| Arc::new(NoopPresenceHistoryStore)),
             webhook_integration: self.webhook_integration,
-            client_event_limiters: Arc::new(DashMap::new()),
-            message_limiters: Arc::new(DashMap::new()),
-            presence_update_limiters: Arc::new(DashMap::new()),
-            history_request_limits: Arc::new(DashMap::new()),
+            client_event_limiters: Arc::new(fast_dashmap()),
+            message_limiters: Arc::new(fast_dashmap()),
+            presence_update_limiters: Arc::new(fast_dashmap()),
+            history_request_limits: Arc::new(fast_dashmap()),
             watchlist_manager: Arc::new(WatchlistManager::new()),
             server_options: Arc::new(self.server_options),
             cleanup_queue: self.cleanup_queue,

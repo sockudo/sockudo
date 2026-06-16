@@ -39,6 +39,7 @@ base64 = { workspace = true }
 async-nats = { workspace = true, optional = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+compact_str = { workspace = true }
 crossfire = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
@@ -66,7 +67,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
-compact_str = { workspace = true }
 md5 = { workspace = true }
 sockudo-app = { workspace = true }
 num_cpus = { workspace = true }
