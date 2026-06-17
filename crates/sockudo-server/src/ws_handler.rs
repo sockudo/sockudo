@@ -21,6 +21,10 @@ pub struct ConnectionQuery {
     /// V2 only. Set to false to disable echo (publisher won't receive own messages).
     /// Default: true.
     echo_messages: Option<bool>,
+    /// V2 AI Transport append rollup window preference.
+    append_rollup_window: Option<u64>,
+    /// V2 capability-token authentication.
+    token: Option<String>,
 }
 
 // WebSocket upgrade handler
@@ -57,6 +61,12 @@ pub async fn handle_ws_upgrade(
     } else {
         true
     };
+    if protocol_version == ProtocolVersion::V2
+        && let Some(window_ms) = params.append_rollup_window
+        && !server_options.ai_transport.rollup.allows_window(window_ms)
+    {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
     let ws_cfg = server_options.websocket.to_sockudo_ws_config(
         server_options.websocket_max_payload_kb,
         server_options.activity_timeout,
@@ -72,6 +82,7 @@ pub async fn handle_ws_upgrade(
                     protocol_version,
                     wire_format,
                     echo_messages,
+                    params.token,
                 )
                 .await
             {
@@ -114,5 +125,16 @@ mod tests {
         };
 
         assert_eq!(wire_format, WireFormat::Json);
+    }
+
+    #[test]
+    fn append_rollup_window_accepts_locked_values() {
+        let rollup = sockudo_core::options::AiTransportRollupConfig::default();
+        for value in [0, 20, 40, 100, 500] {
+            assert!(rollup.allows_window(value));
+        }
+        for value in [1, 19, 60, 501] {
+            assert!(!rollup.allows_window(value));
+        }
     }
 }

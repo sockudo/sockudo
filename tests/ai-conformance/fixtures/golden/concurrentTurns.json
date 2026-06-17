@@ -1,0 +1,35 @@
+[
+  {
+    "event": "sockudo:subscription_succeeded",
+    "channel": "private-ai-concurrent-golden",
+    "data": {}
+  },
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-concurrent-golden",
+    "data": {
+      "scenario": "private-ai-concurrent"
+    }
+  },
+  {
+    "event": "ai-turn-start",
+    "channel": "private-ai-concurrent-golden",
+    "data": {
+      "scenario": "private-ai-concurrent"
+    }
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-concurrent-golden",
+    "data": {
+      "scenario": "private-ai-concurrent"
+    }
+  },
+  {
+    "event": "ai-turn-end",
+    "channel": "private-ai-concurrent-golden",
+    "data": {
+      "scenario": "private-ai-concurrent"
+    }
+  }
+]

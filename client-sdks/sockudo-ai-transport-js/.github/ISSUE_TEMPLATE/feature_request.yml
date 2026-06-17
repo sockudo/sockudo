@@ -1,0 +1,33 @@
+name: Feature request
+description: Request a post-GA capability.
+title: "[feature]: "
+labels: ["enhancement", "ai-transport"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or compatibility gap should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the API, wire, or demo/docs behavior you expect.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Core SDK
+        - React
+        - Vercel
+        - Codec
+        - Realtime adapter
+        - Other Sockudo SDK
+        - Documentation
+    validations:
+      required: true

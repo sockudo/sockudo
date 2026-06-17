@@ -1,8 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use dashmap::DashMap;
+use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{DeliveryOutcome, DevicePushState, PushProviderKind};
@@ -136,9 +138,18 @@ struct MetricKey {
     labels: Vec<(&'static str, String)>,
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct PushMetrics {
     samples: Arc<DashMap<MetricKey, PushMetricSnapshot>>,
+}
+
+impl Default for PushMetrics {
+    fn default() -> Self {
+        describe_push_metrics();
+        Self {
+            samples: Arc::new(DashMap::new()),
+        }
+    }
 }
 
 impl PushMetrics {
@@ -150,18 +161,29 @@ impl PushMetrics {
         self.with_sample(name, labels, |sample| {
             sample.value += value as f64;
         });
+        let labels = metrics_labels(labels);
+        counter!(name, &labels).increment(value);
     }
 
     pub fn gauge(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
         self.with_sample(name, labels, |sample| {
             sample.value = value;
         });
+        let labels = metrics_labels(labels);
+        gauge!(name, &labels).set(value);
     }
 
     pub fn add_gauge(&self, name: &'static str, labels: &[(&'static str, &str)], delta: f64) {
         self.with_sample(name, labels, |sample| {
             sample.value = (sample.value + delta).max(0.0);
         });
+        let labels = metrics_labels(labels);
+        let handle = gauge!(name, &labels);
+        if delta.is_sign_negative() {
+            handle.decrement(delta.abs());
+        } else {
+            handle.increment(delta);
+        }
     }
 
     pub fn observe(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
@@ -177,6 +199,8 @@ impl PushMetrics {
             }
             *sample.buckets.entry("+Inf".to_owned()).or_default() += 1;
         });
+        let labels = metrics_labels(labels);
+        histogram!(name, &labels).record(value);
     }
 
     pub fn publish_accepted(&self, app_id: &str, result: &str, duration: Duration) {
@@ -473,48 +497,6 @@ impl PushMetrics {
             .collect()
     }
 
-    pub fn to_prometheus_text(&self) -> String {
-        let specs = PUSH_METRIC_SPECS
-            .iter()
-            .map(|spec| (spec.name, spec))
-            .collect::<BTreeMap<_, _>>();
-        let mut out = String::new();
-        let mut emitted_metadata = BTreeSet::new();
-        for ((name, labels), sample) in self.snapshot() {
-            let kind = specs
-                .get(name)
-                .map(|spec| spec.kind)
-                .unwrap_or(PushMetricKind::Gauge);
-            match kind {
-                PushMetricKind::Counter | PushMetricKind::Gauge => {
-                    push_metric_help_and_type(&mut out, name, kind, &mut emitted_metadata);
-                    push_metric_line(&mut out, name, &labels, sample.value);
-                }
-                PushMetricKind::Histogram => {
-                    push_metric_help_and_type(&mut out, name, kind, &mut emitted_metadata);
-                    for (bucket, count) in sample.buckets {
-                        let mut bucket_labels = labels.clone();
-                        bucket_labels.push(("le", bucket));
-                        push_metric_line(
-                            &mut out,
-                            &format!("{name}_bucket"),
-                            &bucket_labels,
-                            count as f64,
-                        );
-                    }
-                    push_metric_line(&mut out, &format!("{name}_sum"), &labels, sample.sum);
-                    push_metric_line(
-                        &mut out,
-                        &format!("{name}_count"),
-                        &labels,
-                        sample.count as f64,
-                    );
-                }
-            }
-        }
-        out
-    }
-
     fn with_sample(
         &self,
         name: &'static str,
@@ -537,54 +519,30 @@ const HISTOGRAM_BUCKETS: &[f64] = &[
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
-fn push_metric_help_and_type(
-    out: &mut String,
-    name: &'static str,
-    kind: PushMetricKind,
-    emitted: &mut BTreeSet<&'static str>,
-) {
-    if !emitted.insert(name) {
-        return;
-    }
-    let metric_type = match kind {
-        PushMetricKind::Counter => "counter",
-        PushMetricKind::Gauge => "gauge",
-        PushMetricKind::Histogram => "histogram",
-    };
-    out.push_str("# HELP ");
-    out.push_str(name);
-    out.push_str(" Sockudo push metric.\n# TYPE ");
-    out.push_str(name);
-    out.push(' ');
-    out.push_str(metric_type);
-    out.push('\n');
-}
-
-fn push_metric_line(out: &mut String, name: &str, labels: &[(&'static str, String)], value: f64) {
-    out.push_str(name);
-    if !labels.is_empty() {
-        out.push('{');
-        for (index, (label, label_value)) in labels.iter().enumerate() {
-            if index > 0 {
-                out.push(',');
-            }
-            out.push_str(label);
-            out.push_str("=\"");
-            for ch in label_value.chars() {
-                match ch {
-                    '\\' => out.push_str("\\\\"),
-                    '"' => out.push_str("\\\""),
-                    '\n' => out.push_str("\\n"),
-                    _ => out.push(ch),
+fn describe_push_metrics() {
+    static DESCRIBED: OnceLock<()> = OnceLock::new();
+    DESCRIBED.get_or_init(|| {
+        for spec in PUSH_METRIC_SPECS {
+            match spec.kind {
+                PushMetricKind::Counter => {
+                    describe_counter!(spec.name, "Sockudo push metric.");
+                }
+                PushMetricKind::Gauge => {
+                    describe_gauge!(spec.name, "Sockudo push metric.");
+                }
+                PushMetricKind::Histogram => {
+                    describe_histogram!(spec.name, "Sockudo push metric.");
                 }
             }
-            out.push('"');
         }
-        out.push('}');
-    }
-    out.push(' ');
-    out.push_str(&value.to_string());
-    out.push('\n');
+    });
+}
+
+fn metrics_labels(labels: &[(&'static str, &str)]) -> Vec<(String, String)> {
+    labels
+        .iter()
+        .map(|(label, value)| ((*label).to_owned(), (*value).to_owned()))
+        .collect()
 }
 
 pub fn provider_label(provider: PushProviderKind) -> &'static str {
@@ -696,8 +654,8 @@ mod tests {
                 .sum::<u64>(),
             1
         );
-        let plaintext = metrics.to_prometheus_text();
-        assert!(plaintext.contains("sockudo_push_publish_accepted_total"));
-        assert!(plaintext.contains("sockudo_push_dispatch_duration_seconds_count"));
+        assert!(metrics.snapshot().iter().any(|((name, _), sample)| *name
+            == "sockudo_push_dispatch_duration_seconds"
+            && sample.count == 1));
     }
 }

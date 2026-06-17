@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "package-name": "@sockudo/client",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        "package.json"
+      ]
+    }
+  }
+}

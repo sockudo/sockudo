@@ -1,0 +1,13 @@
+{
+  "event": "sockudo:future_event",
+  "channel": "private-ai-forward",
+  "data": {
+    "known": true,
+    "futureObject": {
+      "nested": "ignored"
+    }
+  },
+  "future_top_level_field": "must-not-break-sdk",
+  "serial": 9007199254740993,
+  "stream_id": "future-stream"
+}

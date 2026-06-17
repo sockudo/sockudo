@@ -1,0 +1,24 @@
+{
+  "name": "@sockudo/ai-transport-demo-nuxt",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev --host 0.0.0.0 --port 5174",
+    "preview": "nuxt preview --host 0.0.0.0 --port 5174",
+    "typecheck": "nuxt typecheck"
+  },
+  "dependencies": {
+    "@ai-sdk/vue": "^3.0.198",
+    "@sockudo/ai-transport": "workspace:*",
+    "@sockudo/client": "workspace:*",
+    "ai": "^6.0.196",
+    "nuxt": "^4.0.0",
+    "vue": "^3.5.35",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vue-tsc": "^3.1.8"
+  }
+}

@@ -1,11 +1,13 @@
 # =============================================================================
 # Sockudo WebSocket Server - Multi-stage Docker Build
+#
+# Operator dashboard images are built separately from dashboard/Dockerfile.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # Build Stage: Compile the Rust application
 # -----------------------------------------------------------------------------
-FROM rust:1.93-bookworm AS builder
+FROM rust:1.94-bookworm AS builder
 
 # Install system dependencies required for building
 RUN apt-get update && apt-get install -y \
@@ -43,15 +45,22 @@ COPY crates/sockudo-rate-limiter/Cargo.toml crates/sockudo-rate-limiter/Cargo.to
 COPY crates/sockudo-metrics/Cargo.toml crates/sockudo-metrics/Cargo.toml
 COPY crates/sockudo-webhook/Cargo.toml crates/sockudo-webhook/Cargo.toml
 COPY crates/sockudo-delta/Cargo.toml crates/sockudo-delta/Cargo.toml
+COPY crates/sockudo-push/Cargo.toml crates/sockudo-push/Cargo.toml
+COPY crates/sockudo-ai-transport/Cargo.toml crates/sockudo-ai-transport/Cargo.toml
 COPY crates/sockudo-adapter/Cargo.toml crates/sockudo-adapter/Cargo.toml
 COPY crates/sockudo-server/Cargo.toml crates/sockudo-server/Cargo.toml
+COPY benches/ai/Cargo.toml benches/ai/Cargo.toml
 
 # Create dummy lib.rs / main.rs for each crate so cargo can resolve the workspace
 # and build dependencies without the real source code
-RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta adapter; do \
+RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport adapter; do \
         mkdir -p crates/sockudo-$dir/src && \
         echo "// dummy" > crates/sockudo-$dir/src/lib.rs; \
     done && \
+    mkdir -p benches/ai/src && \
+    echo "// dummy" > benches/ai/src/lib.rs && \
+    mkdir -p benches/ai/benches && \
+    echo "fn main() {}" > benches/ai/benches/ai_hot_paths.rs && \
     mkdir -p crates/sockudo-server/src && \
     echo "fn main() {}" > crates/sockudo-server/src/main.rs
 
@@ -67,9 +76,10 @@ ENV JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE}
 # Build dependencies only (this layer is cached unless Cargo.toml files change)
 RUN cargo build -p sockudo --release --features "${SOCKUDO_FEATURES}" || true
 # Clean up dummy sources but keep compiled deps
-RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta adapter server; do \
+RUN for dir in protocol filter core app cache queue rate-limiter metrics webhook delta push ai-transport adapter server; do \
         rm -rf crates/sockudo-$dir/src; \
     done && \
+    rm -rf benches/ai/src benches/ai/benches && \
     rm -f target/release/deps/sockudo* target/release/deps/libsockudo* target/release/sockudo
 
 # Copy actual source code

@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "ignorePatterns": ["dist/**", "node_modules/**", "coverage/**", ".vite/**"],
+  "rules": {
+    "eqeqeq": "error",
+    "no-debugger": "error",
+    "no-var": "error",
+    "prefer-const": "warn",
+    "typescript/no-explicit-any": "error"
+  }
+}

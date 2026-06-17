@@ -8,10 +8,12 @@ icon: FileCode
 
 ```toml
 [dependencies]
-sockudo-http = "1"
+sockudo-http = { path = "../sockudo/server-sdks/sockudo-http-rust" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
+
+From this monorepo, use `sockudo-http = { path = "server-sdks/sockudo-http-rust" }`.
 
 ## Configure
 

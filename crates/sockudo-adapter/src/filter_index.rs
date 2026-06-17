@@ -26,6 +26,17 @@ use sockudo_filter::{CompareOp, LogicalOp};
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
+type FastDashMap<K, V> = DashMap<K, V, ahash::RandomState>;
+type FastDashSet<K> = DashSet<K, ahash::RandomState>;
+
+fn fast_dashmap<K: Eq + Hash, V>() -> FastDashMap<K, V> {
+    DashMap::with_hasher(ahash::RandomState::new())
+}
+
+fn fast_dashset<K: Eq + Hash>() -> FastDashSet<K> {
+    DashSet::with_hasher(ahash::RandomState::new())
+}
+
 /// Composite key for the flattened eq_index.
 /// Uses pre-computed hashes for O(1) lookups without string comparisons.
 /// Compute composite hash for O(1) eq_index lookups
@@ -42,24 +53,23 @@ fn compute_eq_hash(channel: &str, key: &str, value: &str) -> u64 {
 ///
 /// OPTIMIZED v2: Uses flattened single-level DashMap with composite keys
 /// and stores Copy-able SocketId instead of Arc-cloned WebSocketRef.
-#[derive(Default)]
 pub struct FilterIndex {
     /// Flattened index for equality filters: hash(channel, key, value) -> SocketIds
     /// Single level of locking for dramatically reduced contention
-    eq_index: DashMap<u64, DashSet<SocketId>>,
+    eq_index: FastDashMap<u64, FastDashSet<SocketId>>,
 
     /// Reverse index: channel -> set of (key, value) hashes present in that channel
     /// Used for efficient channel cleanup and stats
-    channel_keys: DashMap<String, DashSet<u64>>,
+    channel_keys: FastDashMap<String, FastDashSet<u64>>,
 
     /// Sockets with complex filters that can't be indexed (AND/OR/NOT, inequality, etc.)
     /// These still need per-message evaluation
     /// channel -> socket_ids
-    complex_filters: DashMap<String, DashSet<SocketId>>,
+    complex_filters: FastDashMap<String, FastDashSet<SocketId>>,
 
     /// Sockets with no filter (receive all messages)
     /// channel -> socket_ids
-    no_filter: DashMap<String, DashSet<SocketId>>,
+    no_filter: FastDashMap<String, FastDashSet<SocketId>>,
 }
 
 /// Result of looking up matching sockets for a message
@@ -74,7 +84,12 @@ pub struct IndexLookupResult {
 
 impl FilterIndex {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            eq_index: fast_dashmap(),
+            channel_keys: fast_dashmap(),
+            complex_filters: fast_dashmap(),
+            no_filter: fast_dashmap(),
+        }
     }
 
     /// Index a socket's filter for a channel.
@@ -105,7 +120,7 @@ impl FilterIndex {
                 );
                 self.no_filter
                     .entry(channel.to_string())
-                    .or_default()
+                    .or_insert_with(fast_dashset)
                     .insert(socket_id);
             }
             Some(filter_node) => {
@@ -128,7 +143,7 @@ impl FilterIndex {
                     );
                     self.complex_filters
                         .entry(channel.to_string())
-                        .or_default()
+                        .or_insert_with(fast_dashset)
                         .insert(socket_id);
                 }
             }
@@ -391,7 +406,10 @@ impl FilterIndex {
 
     fn add_to_eq_index(&self, channel: &str, socket_id: SocketId, indexable: &IndexableFilter) {
         // Track which keys belong to this channel for cleanup
-        let channel_key_set = self.channel_keys.entry(channel.to_string()).or_default();
+        let channel_key_set = self
+            .channel_keys
+            .entry(channel.to_string())
+            .or_insert_with(fast_dashset);
 
         for value in &indexable.values {
             let hash = compute_eq_hash(channel, &indexable.key, value);
@@ -403,7 +421,10 @@ impl FilterIndex {
             if let Some(socket_set) = self.eq_index.get(&hash) {
                 socket_set.insert(socket_id);
             } else {
-                self.eq_index.entry(hash).or_default().insert(socket_id);
+                self.eq_index
+                    .entry(hash)
+                    .or_insert_with(fast_dashset)
+                    .insert(socket_id);
             }
         }
     }
@@ -467,6 +488,12 @@ impl FilterIndex {
 
         self.complex_filters.remove(channel);
         self.no_filter.remove(channel);
+    }
+}
+
+impl Default for FilterIndex {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

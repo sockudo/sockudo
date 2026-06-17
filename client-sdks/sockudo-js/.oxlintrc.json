@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript"],
+  "ignorePatterns": [
+    "dist/**",
+    "node_modules/**",
+    "sockudo-js/**",
+    "src/**/*.js",
+    "src/**/*.js.map"
+  ],
+  "rules": {
+    "no-debugger": "error",
+    "no-var": "error",
+    "prefer-const": "warn"
+  }
+}

@@ -1,0 +1,159 @@
+{
+  "name": "@sockudo/client",
+  "version": "1.3.0",
+  "description": "Sockudo JavaScript client full port on Bun + Oxc + Vite 8",
+  "type": "module",
+  "packageManager": "bun@1.3.9",
+  "types": "index.d.ts",
+  "main": "dist/node/sockudo.js",
+  "browser": "dist/web/sockudo.mjs",
+  "react-native": "dist/react-native/sockudo.js",
+  "nativescript": "dist/nativescript/sockudo.js",
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "node": "./dist/node/sockudo.js",
+      "browser": "./dist/web/sockudo.mjs",
+      "import": "./dist/web/sockudo.mjs",
+      "react-native": "./dist/react-native/sockudo.js",
+      "nativescript": "./dist/nativescript/sockudo.js",
+      "default": "./dist/web/sockudo.mjs"
+    },
+    "./filter": {
+      "types": "./types/core/channels/filter.d.ts",
+      "import": "./dist/web/filter.mjs",
+      "default": "./dist/web/filter.mjs"
+    },
+    "./with-encryption": {
+      "types": "./with-encryption/index.d.ts",
+      "default": "./with-encryption/index.js"
+    },
+    "./worker": {
+      "types": "./worker/index.d.ts",
+      "default": "./worker/index.js"
+    },
+    "./worker/with-encryption": {
+      "types": "./worker/with-encryption/index.d.ts",
+      "default": "./worker/with-encryption/index.js"
+    },
+    "./react-native": {
+      "types": "./react-native/index.d.ts",
+      "default": "./react-native/index.js"
+    },
+    "./react": {
+      "types": "./react/index.d.ts",
+      "default": "./react/index.js"
+    },
+    "./vue": {
+      "types": "./vue/index.d.ts",
+      "default": "./vue/index.js"
+    },
+    "./nativescript": {
+      "types": "./nativescript/index.d.ts",
+      "default": "./nativescript/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "types",
+    "index.d.ts",
+    "node.js",
+    "worker",
+    "with-encryption",
+    "react",
+    "vue",
+    "react-native",
+    "nativescript"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "bun run clean && bun run build:web",
+    "build:all": "bun run clean && bun run build:web && bun run build:node",
+    "build:web": "vite build && vite build --config vite.config.react.ts && vite build --config vite.config.vue.ts && vite build --config vite.config.filter.ts && vite build --config vite.config.with-encryption.ts",
+    "build:node": "vite build --config vite.config.node.ts && vite build --config vite.config.filter.node.ts && vite build --config vite.config.worker.ts && vite build --config vite.config.worker.with-encryption.ts && vite build --config vite.config.react-native.ts && vite build --config vite.config.nativescript.ts",
+    "build:watch": "vite build --watch",
+    "check": "bun run typecheck && bun run lint && bun run test",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --config .oxlintrc.json src test vite.config.ts vite.config.react.ts vite.config.vue.ts vite.config.filter.ts vite.config.node.ts vite.config.filter.node.ts vite.config.with-encryption.ts vite.config.worker.ts vite.config.worker.with-encryption.ts vite.config.react-native.ts vite.config.nativescript.ts vitest.config.ts",
+    "lint:fix": "oxlint --config .oxlintrc.json --fix src test vite.config.ts vite.config.react.ts vite.config.vue.ts vite.config.filter.ts vite.config.node.ts vite.config.filter.node.ts vite.config.with-encryption.ts vite.config.worker.ts vite.config.worker.with-encryption.ts vite.config.react-native.ts vite.config.nativescript.ts vitest.config.ts",
+    "format": "oxfmt src test vite.config.ts vite.config.react.ts vite.config.vue.ts vite.config.filter.ts vite.config.node.ts vite.config.filter.node.ts vite.config.with-encryption.ts vite.config.worker.ts vite.config.worker.with-encryption.ts vite.config.react-native.ts vite.config.nativescript.ts vitest.config.ts",
+    "format:check": "oxfmt --check src test vite.config.ts vite.config.react.ts vite.config.vue.ts vite.config.filter.ts vite.config.node.ts vite.config.filter.node.ts vite.config.with-encryption.ts vite.config.worker.ts vite.config.worker.with-encryption.ts vite.config.react-native.ts vite.config.nativescript.ts vitest.config.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "sockudo",
+    "pusher-protocol-compatible",
+    "websocket",
+    "events",
+    "pubsub",
+    "bun",
+    "node"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sockudo/sockudo-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sockudo/sockudo-js/issues"
+  },
+  "homepage": "https://github.com/sockudo/sockudo-js#readme",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^3.1.2",
+    "protobufjs": "^7.5.4",
+    "@ably/vcdiff-decoder": "^1.0.6",
+    "@stablelib/base64": "^1.0.0",
+    "@stablelib/utf8": "^1.0.0",
+    "fossil-delta": "^2.0.0",
+    "tweetnacl": "^1.0.3"
+  },
+  "peerDependencies": {
+    "@react-native-community/netinfo": "*",
+    "@valor/nativescript-websockets": "*",
+    "react": ">=18",
+    "react-dom": ">=18",
+    "vue": ">=3.4"
+  },
+  "peerDependenciesMeta": {
+    "@react-native-community/netinfo": {
+      "optional": true
+    },
+    "@valor/nativescript-websockets": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@react-native-community/netinfo": "^5.9.7",
+    "@valor/nativescript-websockets": "^2.0.3",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/bun": "latest",
+    "@types/node": "^20.19.0",
+    "jsdom": "^26.1.0",
+    "oxfmt": "^0.4.0",
+    "oxlint": "^0.15.14",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "vite": "^8.0.3",
+    "vitest": "^4.1.2",
+    "typescript": "^5.9.2",
+    "vue": "^3.5.22"
+  }
+}

@@ -1,7 +1,8 @@
 use bytes::Bytes;
+use compact_str::{CompactString, format_compact};
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -10,6 +11,8 @@ pub struct ReplayPosition {
     pub stream_id: String,
     pub serial: u64,
 }
+
+type BufferMap = DashMap<CompactString, ChannelBuffer, ahash::RandomState>;
 
 struct BufferedMessage {
     stream_id: Option<String>,
@@ -43,7 +46,7 @@ pub enum ReplayLookup {
 /// replays all messages with a higher serial from the buffer.
 pub struct ReplayBuffer {
     /// Key: "app_id\0channel" → ChannelBuffer
-    buffers: DashMap<String, ChannelBuffer>,
+    buffers: BufferMap,
     max_buffer_size: usize,
     buffer_ttl: Duration,
 }
@@ -51,14 +54,14 @@ pub struct ReplayBuffer {
 impl ReplayBuffer {
     pub fn new(max_buffer_size: usize, buffer_ttl: Duration) -> Self {
         Self {
-            buffers: DashMap::new(),
+            buffers: DashMap::with_hasher(ahash::RandomState::new()),
             max_buffer_size,
             buffer_ttl,
         }
     }
 
-    fn buffer_key(app_id: &str, channel: &str) -> String {
-        format!("{}\0{}", app_id, channel)
+    fn buffer_key(app_id: &str, channel: &str) -> CompactString {
+        format_compact!("{app_id}\0{channel}")
     }
 
     fn new_stream_id() -> String {
@@ -117,7 +120,7 @@ impl ReplayBuffer {
             Self::new_channel_buffer(self.max_buffer_size, Some(Self::new_stream_id()), 1, now)
         });
 
-        let mut state = entry.state.lock().unwrap();
+        let mut state = entry.state.lock();
         let stream_id = state
             .current_stream_id
             .get_or_insert_with(Self::new_stream_id)
@@ -148,7 +151,7 @@ impl ReplayBuffer {
         });
 
         {
-            let mut state = entry.state.lock().unwrap();
+            let mut state = entry.state.lock();
             if state.messages.is_empty() || state.current_stream_id.is_none() {
                 state.current_stream_id = Some(stream_id.to_string());
             }
@@ -169,7 +172,7 @@ impl ReplayBuffer {
             Self::new_channel_buffer(self.max_buffer_size, Some(Self::new_stream_id()), 1, now)
         });
 
-        let mut state = entry.state.lock().unwrap();
+        let mut state = entry.state.lock();
         let stream_id = state
             .current_stream_id
             .get_or_insert_with(Self::new_stream_id)
@@ -205,7 +208,7 @@ impl ReplayBuffer {
             )
         });
 
-        let mut state = entry.state.lock().unwrap();
+        let mut state = entry.state.lock();
         state.current_stream_id = stream_id.map(ToString::to_string);
         state.last_touched = now;
         Self::raise_next_serial(entry.value(), serial.saturating_add(1));
@@ -251,7 +254,7 @@ impl ReplayBuffer {
         };
 
         let now = Instant::now();
-        let mut state = entry.state.lock().unwrap();
+        let mut state = entry.state.lock();
 
         if let Some(expected_stream_id) = stream_id
             && state.current_stream_id.as_deref() != Some(expected_stream_id)
@@ -306,7 +309,7 @@ impl ReplayBuffer {
         let mut empty_keys = Vec::new();
 
         for entry in self.buffers.iter() {
-            let mut state = entry.value().state.lock().unwrap();
+            let mut state = entry.value().state.lock();
             Self::prune_expired_locked(&mut state.messages, self.buffer_ttl, now);
             if state.messages.is_empty()
                 && now.duration_since(state.last_touched) >= self.buffer_ttl
@@ -318,7 +321,7 @@ impl ReplayBuffer {
         for key in empty_keys {
             // Only remove if still empty (avoid race with concurrent store)
             self.buffers.remove_if(&key, |_, v| {
-                let state = v.state.lock().unwrap();
+                let state = v.state.lock();
                 state.messages.is_empty()
                     && now.duration_since(state.last_touched) >= self.buffer_ttl
             });

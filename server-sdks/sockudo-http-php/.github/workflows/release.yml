@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  pull_request:
+    types: [labeled]
+    branches:
+      - main
+
+jobs:
+  prepare-release:
+    name: Prepare release
+    if: ${{ github.event.label.name == 'release-major' || github.event.label.name == 'release-minor' || github.event.label.name == 'release-patch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Set bump type
+        run: |
+          if [[ "${{ github.event.label.name }}" == "release-major" ]]; then
+            echo "RELEASE=major" >> $GITHUB_ENV
+          elif [[ "${{ github.event.label.name }}" == "release-minor" ]]; then
+            echo "RELEASE=minor" >> $GITHUB_ENV
+          else
+            echo "RELEASE=patch" >> $GITHUB_ENV
+          fi
+      - name: Install semver-tool
+        run: |
+          DIR=$(mktemp -d)
+          cd $DIR
+          curl -L https://github.com/fsaintjacques/semver-tool/archive/3.4.0.tar.gz -o semver.tar.gz
+          tar -xzf semver.tar.gz
+          sudo cp semver-tool-3.4.0/src/semver /usr/local/bin
+      - name: Get current version
+        run: |
+          CURRENT=$(grep -oP "(?<=\\\$VERSION = ')[^']+" src/Sockudo.php)
+          echo "CURRENT=$CURRENT" >> $GITHUB_ENV
+      - name: Bump version
+        run: echo "VERSION=$(semver bump ${{ env.RELEASE }} ${{ env.CURRENT }})" >> $GITHUB_ENV
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup git
+        run: |
+          git config user.email "ci@sockudo.io"
+          git config user.name "Sockudo CI"
+          git fetch
+          git checkout ${{ github.event.pull_request.head.ref }}
+      - name: Prepare CHANGELOG
+        run: |
+          echo "${{ github.event.pull_request.body }}" | csplit -s - "/##/"
+          printf "# Changelog\n\n## ${{ env.VERSION }}\n\n" > CHANGELOG.tmp
+          grep "^\*" xx01 >> CHANGELOG.tmp || true
+          grep -v "^# " CHANGELOG.md >> CHANGELOG.tmp
+          cp CHANGELOG.tmp CHANGELOG.md
+      - name: Update version in Sockudo.php
+        run: sed -i "s|public static \\\$VERSION = '[^']*'|public static \\\$VERSION = '${{ env.VERSION }}'|" src/Sockudo.php
+      - name: Commit and push
+        run: |
+          git add CHANGELOG.md src/Sockudo.php
+          git commit -m "Bump to version ${{ env.VERSION }}"
+          git push

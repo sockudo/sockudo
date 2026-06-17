@@ -1,23 +1,45 @@
 use crate::connection_manager::ConnectionManager;
+use compact_str::{CompactString, format_compact};
 use dashmap::DashMap;
 use sockudo_core::app::App;
 use sockudo_core::error::Result;
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::presence_history::{
-    PresenceHistoryEventCause, PresenceHistoryEventKind, PresenceHistoryStore,
-    PresenceHistoryTransitionRecord,
+    PresenceHistoryEventCause, PresenceHistoryEventKind, PresenceHistoryRetentionPolicy,
+    PresenceHistoryStore, PresenceHistoryTransitionRecord,
 };
 use sockudo_core::websocket::SocketId;
 use sockudo_protocol::messages::PusherMessage;
 use sockudo_webhook::WebhookIntegration;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use tokio::sync::{Mutex, Notify};
+use tokio::time::{Duration, Instant};
 use tracing::{debug, error, warn};
+
+const MAX_PENDING_PRESENCE_REMOVALS: usize = 100_000;
 
 /// Lock key for presence operations to prevent TOCTOU races
 /// Format: "app_id:channel:user_id"
-fn presence_lock_key(app_id: &str, channel: &str, user_id: &str) -> String {
-    format!("{}:{}:{}", app_id, channel, user_id)
+fn presence_lock_key(app_id: &str, channel: &str, user_id: &str) -> CompactString {
+    format_compact!("{app_id}:{channel}:{user_id}")
+}
+
+type PresenceLockMap = DashMap<CompactString, Arc<Mutex<()>>, ahash::RandomState>;
+
+struct PendingRemovalTask {
+    connection_manager: Arc<dyn ConnectionManager + Send + Sync>,
+    presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+    presence_history_enabled: bool,
+    webhook_integration: Option<Arc<WebhookIntegration>>,
+    metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
+    app_config: App,
+    channel: String,
+    user_id: String,
+    socket_for_leave: Option<String>,
+    generation: u64,
+    retention: Option<PresenceHistoryRetentionPolicy>,
 }
 
 /// Centralized presence channel management functionality
@@ -26,7 +48,12 @@ fn presence_lock_key(app_id: &str, channel: &str, user_id: &str) -> String {
 pub struct PresenceManager {
     /// Per-user locks to prevent TOCTOU races during presence operations
     /// Maps "app_id:channel:user_id" -> async mutex for true per-key exclusivity
-    presence_locks: DashMap<String, Arc<Mutex<()>>>,
+    presence_locks: PresenceLockMap,
+    removal_generation: AtomicU64,
+    pending_removal_deadlines: Arc<Mutex<BTreeMap<Instant, VecDeque<PendingRemovalTask>>>>,
+    pending_removal_count: Arc<AtomicUsize>,
+    pending_removal_worker_started: AtomicBool,
+    pending_removal_notify: Arc<Notify>,
 }
 
 impl Default for PresenceManager {
@@ -38,15 +65,169 @@ impl Default for PresenceManager {
 impl PresenceManager {
     pub fn new() -> Self {
         Self {
-            presence_locks: DashMap::new(),
+            presence_locks: DashMap::with_hasher(ahash::RandomState::new()),
+            removal_generation: AtomicU64::new(1),
+            pending_removal_deadlines: Arc::new(Mutex::new(BTreeMap::new())),
+            pending_removal_count: Arc::new(AtomicUsize::new(0)),
+            pending_removal_worker_started: AtomicBool::new(false),
+            pending_removal_notify: Arc::new(Notify::new()),
         }
     }
 
-    fn get_presence_lock(&self, lock_key: &str) -> Arc<Mutex<()>> {
+    fn get_presence_lock(&self, lock_key: &CompactString) -> Arc<Mutex<()>> {
         self.presence_locks
-            .entry(lock_key.to_string())
+            .entry(lock_key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    fn ensure_pending_removal_worker(&self) {
+        if self
+            .pending_removal_worker_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let deadlines = Arc::clone(&self.pending_removal_deadlines);
+            let count = Arc::clone(&self.pending_removal_count);
+            let notify = Arc::clone(&self.pending_removal_notify);
+            tokio::spawn(async move {
+                Self::run_pending_removal_worker(deadlines, count, notify).await;
+            });
+        }
+    }
+
+    async fn schedule_pending_removal(
+        &self,
+        delay_seconds: u64,
+        task: PendingRemovalTask,
+    ) -> Result<()> {
+        if self.pending_removal_count.fetch_add(1, Ordering::AcqRel)
+            >= MAX_PENDING_PRESENCE_REMOVALS
+        {
+            self.pending_removal_count.fetch_sub(1, Ordering::AcqRel);
+            return Err(sockudo_core::error::Error::OverCapacity);
+        }
+
+        self.ensure_pending_removal_worker();
+        let deadline = Instant::now() + Duration::from_secs(delay_seconds);
+        {
+            let mut deadlines = self.pending_removal_deadlines.lock().await;
+            deadlines.entry(deadline).or_default().push_back(task);
+        }
+        self.pending_removal_notify.notify_one();
+        Ok(())
+    }
+
+    async fn run_pending_removal_worker(
+        deadlines: Arc<Mutex<BTreeMap<Instant, VecDeque<PendingRemovalTask>>>>,
+        count: Arc<AtomicUsize>,
+        notify: Arc<Notify>,
+    ) {
+        loop {
+            let next_deadline = {
+                let deadlines = deadlines.lock().await;
+                deadlines.keys().next().copied()
+            };
+
+            let Some(deadline) = next_deadline else {
+                notify.notified().await;
+                continue;
+            };
+
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {}
+                _ = notify.notified() => continue,
+            }
+
+            let due_tasks = Self::take_due_pending_removals(&deadlines, Instant::now()).await;
+            for task in due_tasks {
+                count.fetch_sub(1, Ordering::AcqRel);
+                Self::process_pending_removal(task).await;
+            }
+        }
+    }
+
+    async fn take_due_pending_removals(
+        deadlines: &Mutex<BTreeMap<Instant, VecDeque<PendingRemovalTask>>>,
+        now: Instant,
+    ) -> Vec<PendingRemovalTask> {
+        let mut deadlines = deadlines.lock().await;
+        let due_deadlines = deadlines
+            .keys()
+            .copied()
+            .take_while(|deadline| *deadline <= now)
+            .collect::<Vec<_>>();
+        let mut tasks = Vec::new();
+        for deadline in due_deadlines {
+            if let Some(mut bucket) = deadlines.remove(&deadline) {
+                tasks.extend(bucket.drain(..));
+            }
+        }
+        tasks
+    }
+
+    async fn process_pending_removal(task: PendingRemovalTask) {
+        let still_connected = Self::user_has_other_connections_in_presence_channel(
+            Arc::clone(&task.connection_manager),
+            &task.app_config.id,
+            &task.channel,
+            &task.user_id,
+            None,
+        )
+        .await
+        .unwrap_or(false);
+        if still_connected {
+            let _ = task
+                .connection_manager
+                .cancel_pending_presence_member(&task.app_config.id, &task.channel, &task.user_id)
+                .await;
+            return;
+        }
+
+        let pending = task
+            .connection_manager
+            .remove_pending_presence_member(
+                &task.app_config.id,
+                &task.channel,
+                &task.user_id,
+                task.generation,
+            )
+            .await
+            .ok()
+            .flatten();
+        if pending.is_none() {
+            return;
+        }
+
+        if let Some(socket_id) = task.socket_for_leave.as_deref()
+            && let Some(horizontal_adapter) = task.connection_manager.as_horizontal_adapter()
+        {
+            horizontal_adapter
+                .broadcast_presence_leave(
+                    &task.app_config.id,
+                    &task.channel,
+                    &task.user_id,
+                    socket_id,
+                )
+                .await
+                .ok();
+        }
+
+        let _ = Self::emit_member_removed_inner(
+            &task.connection_manager,
+            task.presence_history_store,
+            task.presence_history_enabled,
+            task.webhook_integration.as_ref(),
+            task.metrics.as_ref(),
+            &task.app_config,
+            &task.channel,
+            &task.user_id,
+            None,
+            PresenceHistoryEventCause::Timeout,
+            None,
+            task.retention,
+        )
+        .await;
     }
 
     /// Handles presence member addition including both webhook and broadcast
@@ -77,17 +258,28 @@ impl PresenceManager {
         let presence_lock = self.get_presence_lock(&lock_key);
 
         // TOCTOU check AND member_added broadcasts under the per-user lock.
-        // The lock serializes the count check so two concurrent first-joins can't
+        // The lock serializes the count check so two concurrent first-joins cannot
         // both see count=0 and emit duplicate member_added events.
         // The broadcast must stay inside the lock: a concurrent last-leave/first-join
         // race on the same user emits both member_removed and member_added, and the
-        // wire order must match the decision order or clients end up with an inverted
-        // member list. The lock is keyed per (app, channel, user), so this only
-        // serializes the same user's join/leave on the same channel.
-        // Webhook enqueue and history recording happen AFTER the lock is released.
-        let should_send_event = {
+        // wire order must match the decision order or clients end up inverted.
+        // Webhook enqueue and history recording happen after the lock is released.
+        let (should_send_event, had_other_connections, had_pending_removal) = {
             let _lock_guard = presence_lock.lock().await;
-            let first_join = !Self::user_has_other_connections_in_presence_channel(
+
+            let cancelled_pending_socket = connection_manager
+                .cancel_pending_presence_member(&app_config.id, channel, user_id)
+                .await?;
+            if let Some(old_socket_id) = cancelled_pending_socket.as_deref()
+                && let Some(horizontal_adapter) = connection_manager.as_horizontal_adapter()
+            {
+                horizontal_adapter
+                    .broadcast_presence_leave(&app_config.id, channel, user_id, old_socket_id)
+                    .await
+                    .ok();
+            }
+
+            let had_other_connections = Self::user_has_other_connections_in_presence_channel(
                 Arc::clone(&connection_manager),
                 &app_config.id,
                 channel,
@@ -96,13 +288,14 @@ impl PresenceManager {
             )
             .await?;
 
-            if first_join {
+            let should_send_event = !had_other_connections && cancelled_pending_socket.is_none();
+
+            if should_send_event {
                 debug!(
                     "User {} is joining channel {} for the first time, sending member_added events",
                     user_id, channel
                 );
 
-                // Broadcast member_added event to existing clients in the channel
                 let member_added_msg = sockudo_protocol::messages::PusherMessage::member_added(
                     channel.to_string(),
                     user_id.to_string(),
@@ -148,12 +341,14 @@ impl PresenceManager {
                 .await;
             }
 
-            first_join
-        }; // _lock_guard dropped here
+            (
+                should_send_event,
+                had_other_connections,
+                cancelled_pending_socket.is_some(),
+            )
+        };
 
         if should_send_event {
-            // Send member_added webhook (queue enqueue, outside the lock —
-            // webhook delivery order is timestamp-based, not enqueue-order-based)
             if let Some(webhook_integration) = webhook_integration
                 && let Err(e) = webhook_integration
                     .send_member_added(app_config, channel, user_id)
@@ -206,8 +401,14 @@ impl PresenceManager {
             }
         } else {
             debug!(
-                "User {} already has other connections in channel {}, skipping member_added events",
-                user_id, channel
+                "User {} already has {} connections or pending removal in channel {}, skipping member_added events",
+                user_id,
+                if had_other_connections || had_pending_removal {
+                    "other"
+                } else {
+                    "no"
+                },
+                channel
             );
         }
 
@@ -257,6 +458,7 @@ impl PresenceManager {
         excluding_socket: Option<&SocketId>,
         cause: PresenceHistoryEventCause,
         dead_node_id: Option<&str>,
+        ungraceful_timeout_seconds: u64,
         retention: Option<sockudo_core::presence_history::PresenceHistoryRetentionPolicy>,
     ) -> Result<()> {
         debug!(
@@ -265,20 +467,19 @@ impl PresenceManager {
         );
 
         let lock_key = presence_lock_key(&app_config.id, channel, user_id);
+
         let presence_lock = self.get_presence_lock(&lock_key);
 
         // TOCTOU check AND member_removed broadcasts under the per-user lock.
         // The lock serializes the count check so a disconnect racing a same-user
-        // connect can't emit member_removed for a user that is still present.
-        // The broadcast must stay inside the lock: a concurrent last-leave/first-join
-        // race on the same user emits both member_removed and member_added, and the
-        // wire order must match the decision order or clients end up with an inverted
-        // member list. The lock is keyed per (app, channel, user), so this only
-        // serializes the same user's join/leave on the same channel.
-        // Webhook enqueue and history recording happen AFTER the lock is released.
+        // connect cannot emit member_removed for a user that is still present.
+        // The broadcast must stay inside the lock so same-user leave/join wire
+        // order matches the decision order.
+        // Webhook enqueue and history recording happen after the lock is released.
         let should_send_event = {
             let _lock_guard = presence_lock.lock().await;
-            let last_leave = !Self::user_has_other_connections_in_presence_channel(
+
+            let has_other_connections = Self::user_has_other_connections_in_presence_channel(
                 Arc::clone(connection_manager),
                 &app_config.id,
                 channel,
@@ -287,13 +488,58 @@ impl PresenceManager {
             )
             .await?;
 
-            if last_leave {
+            if !has_other_connections {
+                if cause == PresenceHistoryEventCause::Disconnect && ungraceful_timeout_seconds > 0
+                {
+                    let generation = self.removal_generation.fetch_add(1, Ordering::Relaxed);
+                    let user_info = if let Some(socket_id) = excluding_socket {
+                        connection_manager
+                            .get_presence_member(&app_config.id, channel, socket_id)
+                            .await
+                            .and_then(|member| member.user_info)
+                    } else {
+                        None
+                    };
+                    connection_manager
+                        .mark_presence_member_pending(
+                            &app_config.id,
+                            channel,
+                            user_id,
+                            &excluding_socket
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| "_".to_string()),
+                            user_info,
+                            generation,
+                        )
+                        .await?;
+
+                    self.schedule_pending_removal(
+                        ungraceful_timeout_seconds,
+                        PendingRemovalTask {
+                            connection_manager: Arc::clone(connection_manager),
+                            presence_history_store: Arc::clone(&presence_history_store),
+                            presence_history_enabled,
+                            webhook_integration: webhook_integration.cloned(),
+                            metrics: metrics.cloned(),
+                            app_config: app_config.clone(),
+                            channel: channel.to_string(),
+                            user_id: user_id.to_string(),
+                            socket_for_leave: excluding_socket.map(ToString::to_string),
+                            generation,
+                            retention: retention.clone(),
+                        },
+                    )
+                    .await?;
+
+                    self.cleanup_stale_locks();
+                    return Ok(());
+                }
+
                 debug!(
                     "User {} has no other connections in channel {}, sending member_removed events",
                     user_id, channel
                 );
 
-                // Broadcast member_removed event to remaining clients in the channel
                 let member_removed_msg =
                     PusherMessage::member_removed(channel.to_string(), user_id.to_string());
                 Self::broadcast_to_channel(
@@ -334,15 +580,18 @@ impl PresenceManager {
                     None,
                 )
                 .await;
-            }
 
-            last_leave
-        }; // _lock_guard dropped here
+                true
+            } else {
+                debug!(
+                    "User {} has other connections in channel {}, skipping member_removed events",
+                    user_id, channel
+                );
+                false
+            }
+        };
 
         if should_send_event {
-            // Send member_removed webhook with 3-second delay
-            // Per Pusher spec: delay prevents spurious webhooks from momentary disconnects.
-            // If the user reconnects within the delay, no webhook is sent.
             if let Some(webhook_integration) = webhook_integration {
                 let wi = Arc::clone(webhook_integration);
                 let cm = Arc::clone(connection_manager);
@@ -410,11 +659,6 @@ impl PresenceManager {
                 )
                 .await;
             }
-        } else {
-            debug!(
-                "User {} has other connections in channel {}, skipping member_removed events",
-                user_id, channel
-            );
         }
 
         // Always broadcast presence leave to all nodes for cluster replication (for every disconnection)
@@ -443,11 +687,145 @@ impl PresenceManager {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn handle_member_updated(
+        &self,
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
+        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+        presence_history_enabled: bool,
+        webhook_integration: Option<&Arc<WebhookIntegration>>,
+        metrics: Option<&Arc<dyn MetricsInterface + Send + Sync>>,
+        app_config: &App,
+        channel: &str,
+        socket_id: &SocketId,
+        user_id: &str,
+        user_info: sonic_rs::Value,
+        retention: Option<sockudo_core::presence_history::PresenceHistoryRetentionPolicy>,
+    ) -> Result<()> {
+        let lock_key = presence_lock_key(&app_config.id, channel, user_id);
+        let presence_lock = self.get_presence_lock(&lock_key);
+        let _lock_guard = presence_lock.lock().await;
+
+        let Some(updated_member) = connection_manager
+            .update_presence_member(&app_config.id, channel, socket_id, user_info.clone())
+            .await?
+        else {
+            return Err(sockudo_core::error::Error::InvalidMessageFormat(
+                "presence_update requires an active channel membership".to_string(),
+            ));
+        };
+
+        connection_manager
+            .cancel_pending_presence_member(&app_config.id, channel, user_id)
+            .await?;
+
+        if let Some(horizontal_adapter) = connection_manager.as_horizontal_adapter() {
+            horizontal_adapter
+                .broadcast_presence_update(
+                    &app_config.id,
+                    channel,
+                    user_id,
+                    &socket_id.to_string(),
+                    user_info.clone(),
+                )
+                .await
+                .ok();
+        }
+
+        if let Some(webhook_integration) = webhook_integration
+            && let Err(e) = webhook_integration
+                .send_member_updated(app_config, channel, user_id, user_info.clone())
+                .await
+        {
+            warn!(
+                "Failed to send member_updated webhook for user {} in channel {}: {}",
+                user_id, channel, e
+            );
+        }
+
+        let update_msg = PusherMessage::member_updated(
+            channel.to_string(),
+            user_id.to_string(),
+            user_info.clone(),
+        );
+        Self::broadcast_to_channel(
+            Arc::clone(connection_manager),
+            &app_config.id,
+            channel,
+            update_msg,
+            None,
+        )
+        .await?;
+
+        let _ = Self::broadcast_to_channel(
+            Arc::clone(connection_manager),
+            &app_config.id,
+            &format!("[meta]{channel}"),
+            PusherMessage {
+                event: Some("sockudo_internal:presence_update".to_string()),
+                channel: Some(format!("[meta]{channel}")),
+                data: Some(sockudo_protocol::messages::MessageData::Json(
+                    sonic_rs::json!({
+                        "channel": channel,
+                        "user_id": user_id,
+                    }),
+                )),
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            },
+            None,
+        )
+        .await;
+
+        if presence_history_enabled {
+            self.record_presence_transition(
+                presence_history_store,
+                metrics,
+                PresenceHistoryTransitionRecord {
+                    app_id: app_config.id.clone(),
+                    channel: channel.to_string(),
+                    event_kind: PresenceHistoryEventKind::MemberUpdated,
+                    cause: PresenceHistoryEventCause::Join,
+                    user_id: user_id.to_string(),
+                    connection_id: Some(socket_id.to_string()),
+                    user_info: updated_member.user_info,
+                    dead_node_id: None,
+                    dedupe_key: format!(
+                        "member_updated:{}:{}:{}:{}",
+                        app_config.id, channel, user_id, socket_id
+                    ),
+                    published_at_ms: sockudo_core::history::now_ms(),
+                    retention: retention.unwrap_or(
+                        sockudo_core::presence_history::PresenceHistoryRetentionPolicy {
+                            retention_window_seconds: 3600,
+                            max_events_per_channel: None,
+                            max_bytes_per_channel: None,
+                        },
+                    ),
+                },
+            )
+            .await;
+        }
+
+        self.cleanup_stale_locks();
+        Ok(())
+    }
+
     /// Cleanup stale lock entries periodically
     /// Call this from a background task to prevent unbounded growth of the locks map
     pub fn cleanup_stale_locks(&self) {
         if self.presence_locks.len() > 100_000 {
-            let stale_keys: Vec<String> = self
+            let stale_keys: Vec<CompactString> = self
                 .presence_locks
                 .iter()
                 .filter_map(|entry| {
@@ -501,8 +879,143 @@ impl PresenceManager {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn emit_member_removed_inner(
+        connection_manager: &Arc<dyn ConnectionManager + Send + Sync>,
+        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+        presence_history_enabled: bool,
+        webhook_integration: Option<&Arc<WebhookIntegration>>,
+        metrics: Option<&Arc<dyn MetricsInterface + Send + Sync>>,
+        app_config: &App,
+        channel: &str,
+        user_id: &str,
+        excluding_socket: Option<&SocketId>,
+        cause: PresenceHistoryEventCause,
+        dead_node_id: Option<&str>,
+        retention: Option<sockudo_core::presence_history::PresenceHistoryRetentionPolicy>,
+    ) -> Result<()> {
+        if let Some(webhook_integration) = webhook_integration {
+            let wi = Arc::clone(webhook_integration);
+            let cm = Arc::clone(connection_manager);
+            let app = app_config.clone();
+            let ch = channel.to_string();
+            let uid = user_id.to_string();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let still_gone = match Self::user_has_other_connections_in_presence_channel(
+                    cm, &app.id, &ch, &uid, None,
+                )
+                .await
+                {
+                    Ok(has_connections) => !has_connections,
+                    Err(_) => true,
+                };
+                if still_gone && let Err(e) = wi.send_member_removed(&app, &ch, &uid).await {
+                    tracing::warn!(
+                        "Failed to send member_removed webhook for user {} in channel {}: {}",
+                        uid,
+                        ch,
+                        e
+                    );
+                }
+            });
+        }
+
+        let member_removed_msg =
+            PusherMessage::member_removed(channel.to_string(), user_id.to_string());
+        Self::broadcast_to_channel(
+            Arc::clone(connection_manager),
+            &app_config.id,
+            channel,
+            member_removed_msg,
+            excluding_socket,
+        )
+        .await?;
+
+        let _ = Self::broadcast_to_channel(
+            Arc::clone(connection_manager),
+            &app_config.id,
+            &format!("[meta]{channel}"),
+            PusherMessage {
+                event: Some("sockudo_internal:member_removed".to_string()),
+                channel: Some(format!("[meta]{channel}")),
+                data: Some(sockudo_protocol::messages::MessageData::Json(
+                    sonic_rs::json!({
+                        "channel": channel,
+                        "user_id": user_id,
+                    }),
+                )),
+                name: None,
+                user_id: None,
+                tags: None,
+                sequence: None,
+                conflation_key: None,
+                message_id: None,
+                stream_id: None,
+                serial: None,
+                idempotency_key: None,
+                extras: None,
+                delta_sequence: None,
+                delta_conflation_key: None,
+            },
+            None,
+        )
+        .await;
+
+        debug!(
+            "Successfully processed member_removed for user {} in channel {}",
+            user_id, channel
+        );
+
+        if presence_history_enabled {
+            Self::record_presence_transition_inner(
+                presence_history_store,
+                metrics,
+                PresenceHistoryTransitionRecord {
+                    app_id: app_config.id.clone(),
+                    channel: channel.to_string(),
+                    event_kind: PresenceHistoryEventKind::MemberRemoved,
+                    cause,
+                    user_id: user_id.to_string(),
+                    connection_id: excluding_socket.map(ToString::to_string),
+                    user_info: None,
+                    dead_node_id: dead_node_id.map(ToString::to_string),
+                    dedupe_key: format!(
+                        "member_removed:{}:{}:{}:{}:{}",
+                        app_config.id,
+                        channel,
+                        user_id,
+                        excluding_socket
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "_".to_string()),
+                        dead_node_id.unwrap_or("_")
+                    ),
+                    published_at_ms: sockudo_core::history::now_ms(),
+                    retention: retention.unwrap_or(
+                        sockudo_core::presence_history::PresenceHistoryRetentionPolicy {
+                            retention_window_seconds: 3600,
+                            max_events_per_channel: None,
+                            max_bytes_per_channel: None,
+                        },
+                    ),
+                },
+            )
+            .await;
+        }
+
+        Ok(())
+    }
+
     async fn record_presence_transition(
         &self,
+        presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
+        metrics: Option<&Arc<dyn MetricsInterface + Send + Sync>>,
+        record: PresenceHistoryTransitionRecord,
+    ) {
+        Self::record_presence_transition_inner(presence_history_store, metrics, record).await;
+    }
+
+    async fn record_presence_transition_inner(
         presence_history_store: Arc<dyn PresenceHistoryStore + Send + Sync>,
         metrics: Option<&Arc<dyn MetricsInterface + Send + Sync>>,
         record: PresenceHistoryTransitionRecord,
@@ -583,7 +1096,7 @@ mod tests {
         for i in 0..100 {
             manager
                 .presence_locks
-                .insert(format!("key_{}", i), Arc::new(Mutex::new(())));
+                .insert(format_compact!("key_{i}"), Arc::new(Mutex::new(())));
         }
 
         manager.cleanup_stale_locks();
@@ -844,6 +1357,7 @@ mod tests {
                 Some(&socket),
                 PresenceHistoryEventCause::Disconnect,
                 None,
+                0,
                 Some(default_retention()),
             )
             .await
@@ -924,6 +1438,7 @@ mod tests {
                 Some(&socket_a),
                 PresenceHistoryEventCause::Disconnect,
                 None,
+                0,
                 Some(default_retention()),
             )
             .await
@@ -942,6 +1457,7 @@ mod tests {
                 Some(&socket_b),
                 PresenceHistoryEventCause::Disconnect,
                 None,
+                0,
                 Some(default_retention()),
             )
             .await
@@ -1063,6 +1579,7 @@ mod tests {
                 Some(&socket),
                 PresenceHistoryEventCause::Disconnect,
                 None,
+                0,
                 Some(default_retention()),
             )
             .await
@@ -1081,6 +1598,7 @@ mod tests {
                 None,
                 PresenceHistoryEventCause::OrphanCleanup,
                 Some("dead-node"),
+                0,
                 Some(default_retention()),
             )
             .await

@@ -1,0 +1,1 @@
+{"subscribe":["public-*"],"publish":["ai-*"],"history":["ai-room"],"presence":["presence-*"],"message_append_own":["ai-*"]}

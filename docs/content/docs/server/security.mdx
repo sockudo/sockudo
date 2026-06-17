@@ -58,6 +58,20 @@ Auth endpoints must:
 5. sign with the server SDK
 6. avoid logging full signatures or secrets
 
+## Three-layer auth model
+
+Sockudo separates client authority into three layers:
+
+| Layer | Who uses it | What it controls |
+| --- | --- | --- |
+| Capability token | Protocol V2 WebSocket clients | Connection identity plus `publish`, `subscribe`, `history`, and `presence` permissions by channel pattern. |
+| Customer auth endpoint | Your backend and client SDK | Private, presence, encrypted channel auth, and short-lived capability-token issuance. |
+| SDK callbacks | Your app code | Product-specific actions such as cancel buttons, input validation, and UI-level workflow checks before sending a permitted operation. |
+
+Capability tokens are additive. They do not replace Pusher-compatible HMAC channel auth, signed app HTTP APIs, or per-app mutation policies. A token-authenticated mutation must have `publish` for the channel and must also satisfy the existing own/any mutable-message policy.
+
+Revocation is stored through the configured Sockudo cache by `jti` or `client_id`. Use a shared cache such as Redis when multiple Sockudo nodes must observe revocations consistently. A node that receives `POST /apps/{appId}/revocations` closes matching local token-authenticated sockets immediately; other nodes reject the revoked token on the next validation or refresh once the cache entry is visible.
+
 ## Encrypted channels
 
 Encrypted channels protect payload contents from the transport. They do not replace channel authorization.

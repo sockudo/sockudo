@@ -556,10 +556,11 @@ async fn send_pusher_webhook_once(
 }
 
 fn log_webhook_processing_pusher_format(app_id: &str, payload: &PusherWebhookPayload) {
-    debug!("Pusher Webhook for app ID: {}", app_id);
-    for event in &payload.events {
-        debug!("  Event: {:?}", event);
-    }
+    debug!(
+        app_id = %app_id,
+        event_count = payload.events.len(),
+        "Processing Pusher webhook payload"
+    );
 }
 
 #[cfg(test)]

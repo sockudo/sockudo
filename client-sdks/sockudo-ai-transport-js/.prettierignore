@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vite/
+.next/
+coverage/
+bench/.generated/
+test-results/
+playwright-report/
+*.tsbuildinfo

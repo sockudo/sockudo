@@ -6,14 +6,17 @@ icon: FileCode
 
 ## Install
 
+Clone the monorepo and reference the project directly until the NuGet package is published:
+
 ```bash
-dotnet add package SockudoServer
+git clone https://github.com/sockudo/sockudo.git
 ```
 
-```powershell
-Install-Package SockudoServer
+```xml
+<ProjectReference Include="../sockudo/server-sdks/sockudo-http-dotnet/SockudoServer/SockudoServer.csproj" />
 ```
 
+From this monorepo, use `server-sdks/sockudo-http-dotnet/SockudoServer/SockudoServer.csproj`.
 ## Configure
 
 ```csharp

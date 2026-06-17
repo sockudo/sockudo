@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a reproducible @sockudo/ai-transport defect.
+title: "[bug]: "
+labels: ["bug", "ai-transport"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: SDK version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Sockudo server version or SHA
+      placeholder: 4.x / commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: entrypoint
+    attributes:
+      label: Entry point
+      options:
+        - "@sockudo/ai-transport"
+        - "@sockudo/ai-transport/react"
+        - "@sockudo/ai-transport/vercel"
+        - "@sockudo/ai-transport/vercel/react"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Include minimal code and the expected/actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      description: Do not include payloads, tokens, app secrets, or raw model output.

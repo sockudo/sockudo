@@ -1,116 +1,135 @@
 <p align="center">
-  <img src="images/logo.svg" alt="Sockudo Logo" width="200">
-  <h1 align="center">Sockudo</h1>
-  <p align="center">A high-performance, scalable WebSocket server for real-time applications, built in Rust.</p>
-  <p align="center">
-    <a href="https://github.com/Sockudo/sockudo"><img src="https://img.shields.io/github/stars/sockudo/sockudo?style=social" alt="Stars"></a>
-    <a href="https://github.com/sockudo/sockudo/actions"><img src="https://img.shields.io/github/actions/workflow/status/sockudo/sockudo/ci.yml?branch=main" alt="Build Status"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/github/license/sockudo/sockudo" alt="License"></a>
-  </p>
+  <img src="images/logo.svg" alt="Sockudo Logo" width="180">
 </p>
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=sockudo/sockudo&type=Date&theme=dark)](https://star-history.com/#sockudo/sockudo&Date)
-
-## Sponsors
+<h1 align="center">Sockudo</h1>
 
 <p align="center">
-  <a href="https://swag.live/">
-    <img src="https://swag.live/static/img/favicon.2991446b.png" alt="SWAG" width="96">
-  </a>
-  <a href="https://livecaller.io/">
-    <img src="https://cdn.prod.website-files.com/69159207dbb70153a0260551/69159207dbb70153a02605cc_logo.svg" alt="LiveCaller" width="180">
-  </a>
+  A self-hosted realtime platform: Pusher-compatible at the edge, Sockudo-native where you need
+  recovery, history, mutable messages, push, AI Transport, and first-party SDKs.
 </p>
 
-## Features
+<p align="center">
+  <a href="https://github.com/sockudo/sockudo/actions"><img src="https://img.shields.io/github/actions/workflow/status/sockudo/sockudo/ci.yml?branch=main" alt="Build status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/sockudo/sockudo" alt="License"></a>
+  <a href="https://github.com/sockudo/sockudo"><img src="https://img.shields.io/github/stars/sockudo/sockudo?style=social" alt="GitHub stars"></a>
+</p>
 
-- **🚀 High Performance** - Handle 100K+ concurrent connections
-- **🔄 Dual Protocol** - V1 for Pusher compatibility, V2 for Sockudo-native with serial numbers, message IDs, and connection recovery
-- **🔗 Connection Recovery** - Ably-style serial-based message replay for exactly-once delivery (V2)
-- **🆔 Message Idempotency** - Automatic `message_id` on every broadcast, HTTP-level `idempotency_key` deduplication
-- **🏗️ Scalable Architecture** - Redis, Redis Cluster, NATS, Kafka, and Apache Iggy adapters
-- **🛡️ Production Ready** - Rate limiting, SSL/TLS, metrics
-- **⚡ Async Cleanup** - Non-blocking disconnect handling
-- **📊 Real-time Metrics** - Prometheus integration
-- **🧠 Delta Compression + Conflation** - Fossil and Xdelta3 (VCDIFF) with per-channel controls
-- **✏️ Mutable Messages (V2)** - Update, delete, append, latest-visible history, and version-history retrieval
-- **💬 Message Annotations (V2)** - Reactions, read receipts, moderation votes, summary projections, and raw annotation streams
-- **📲 Push Notifications** - Optional HTTP/admin platform for FCM, APNs, Web Push, HMS, and WNS
-- **🏷️ Tag Filtering** - High-performance server-side filtering with optional tag emission controls
-- **🌐 Native WebSocket Engine** - `sockudo_ws` with advanced runtime tuning
-- **📦 Official SDKs** - Client and server SDKs for all major platforms
+## What Sockudo Is
 
-## What's New in v4
+Sockudo is a high-performance Rust realtime server for WebSocket and HTTP publish workloads. It
+keeps strict Protocol V1 compatibility with the Pusher protocol, then adds Protocol V2 features for
+teams that need stronger delivery semantics and product-level control.
 
-Sockudo v4 introduces **dual protocol versioning**, making Sockudo its own platform while retaining full Pusher compatibility:
+This repository is now the Sockudo monorepo. It contains the server, Rust workspace crates,
+dashboard, deployment assets, docs, official realtime client SDKs, HTTP server SDKs, and the
+TypeScript AI Transport SDK.
 
-| | Protocol V1 (default) | Protocol V2 |
-|---|---|---|
-| Event prefix | `pusher:` / `pusher_internal:` | `sockudo:` / `sockudo_internal:` |
-| `serial` | Never sent | Always on every message |
-| `message_id` | Never sent | Always on every broadcast |
-| Connection recovery | Not available | Always available |
-| Delta compression | Not available | Native |
-| Tag filtering | Not available | Native |
-| Compatible SDKs | Official Pusher SDKs | Sockudo client SDKs |
+## Highlights
 
-Additional v4 changes:
-- **TOML configuration** (preferred over JSON) - `config/config.toml`
-- **Rebranded SDKs** - All server and client SDKs renamed from `pusher-*` to `sockudo-*`
-- **HTTP idempotency** - Atomic `idempotency_key` deduplication via `SET NX` (no race conditions)
-- **Replay buffer** - Per-channel message buffer with configurable TTL and max size
-- **Mutable durable messages** - Protocol V2 latest-visible history substitution, version-history retrieval, and `sockudo:message.update|delete|append`
-- **Message annotations** - Release 4.4 adds V2 annotation summaries, raw annotation subscriptions, HTTP annotation APIs, and Prometheus coverage for reactions, receipts, and moderation workflows
-- **Push notifications** - Release 4.5 adds feature-gated push activation, registry, async publish admission, durable fanout, provider dispatch, quotas, and push observability
+- Pusher-compatible WebSocket and HTTP APIs for Protocol V1 clients.
+- Protocol V2 with `sockudo:` events, serials, message IDs, recovery, rewind, tags, deltas, and
+  mutable message events.
+- Horizontal fanout through Redis, Redis Cluster, NATS, RabbitMQ, Google Pub/Sub, Kafka, Pulsar, and
+  Apache Iggy.
+- Durable history, hot replay buffers, two-tier recovery, `until_attach` history reads, and
+  degraded/reset-required continuity state.
+- Versioned mutable messages with create, update, delete, append, summary, latest-visible reads, and
+  version history.
+- Presence membership plus retained presence-history transitions and snapshots.
+- Message annotations for reactions, receipts, moderation, summary projection, and raw annotation
+  streams.
+- Push notification pipeline for FCM, APNs, Web Push, HMS, and WNS.
+- Prometheus metrics, webhook delivery, rate limiting, app managers, TLS, Docker Compose, and Helm.
+- Optional AI Transport built on the same versioned-message, history, recovery, push, and presence
+  primitives instead of a parallel streaming path.
 
-## Official Client SDKs
+## Monorepo Layout
 
-| Client | Package | Default Protocol |
-|---|---|---|
-| JavaScript / TypeScript | `@sockudo/client` | V2 |
-| Swift | `SockudoSwift` (SPM) | V2 |
-| Kotlin | `io.sockudo:sockudo-kotlin` | V2 |
-| Flutter / Dart | `sockudo_flutter` | V2 |
+```text
+crates/              Rust server crates and libraries
+benches/ai/          Permanent Criterion benchmarks for AI hot paths
+client-sdks/         Realtime client SDKs and AI Transport SDK
+server-sdks/         HTTP/server SDKs for backend publishers
+dashboard/           Operator API and Vue UI
+docs/                Documentation site content
+config/              Local configuration examples
+ops/                 Migrations and operational assets
+charts/              Helm chart
+tests/               Conformance, dashboard, load, and binary fixtures
+tools/               Probes, chaos tooling, and helper utilities
+```
 
-All Sockudo client SDKs default to protocol V2 (`sockudo:` prefix, serial tracking, connection recovery). Set `protocolVersion: 1` to use Pusher-compatible mode. For V1 you can also use the official Pusher SDKs directly.
+The SDK directories preserve their original repository names so package metadata, release scripts,
+and issue references remain recognizable.
 
-## Official Server SDKs
+## Protocols
 
-| Language | Package |
-|---|---|
-| Node.js | `sockudo` |
-| Python | `sockudo-http-python` |
-| PHP | `sockudo/sockudo-php-server` |
-| Ruby | `sockudo` gem |
-| Go | `github.com/sockudo/sockudo-http-go` |
-| Rust | `sockudo-http` |
-| Java | `io.sockudo:sockudo-http-java` |
-| .NET | `SockudoServer` |
-| Swift | `Sockudo` (SPM) |
+| Capability | Protocol V1 | Protocol V2 |
+| --- | --- | --- |
+| Event prefixes | `pusher:` / `pusher_internal:` | `sockudo:` / `sockudo_internal:` |
+| Pusher compatibility | Strict compatibility target | Sockudo-native |
+| `serial` and `message_id` | Stripped from delivery | Native on relevant frames |
+| Recovery and rewind | Not available | Hot replay plus durable history |
+| Mutable messages | Not available | `sockudo:message.*` |
+| Annotations | Not available | Native |
+| Tag filtering and deltas | Not available | Native |
+| AI Transport | Not available | Optional feature and runtime config |
 
-All server SDKs support `idempotency_key` for safe publish retries. Sockudo-native server SDKs are also the intended home for durable history and versioned-message convenience methods such as `get_message`, `get_message_versions`, `update_message`, `delete_message`, and `append_message`.
+Use Protocol V1 when you need drop-in Pusher behavior. Use Protocol V2 when clients and server SDKs
+can rely on Sockudo-native recovery, history, mutation, annotation, filtering, and AI Transport
+semantics. Protocol defaults vary by SDK; check each package README before assuming V2 is enabled.
 
 ## Quick Start
 
-### Docker (Recommended)
+### Docker Compose
 
 ```bash
 git clone https://github.com/sockudo/sockudo.git
 cd sockudo
 make up
-
-# Server runs on http://localhost:6001
-# Metrics on http://localhost:9601/metrics
 ```
 
-### Kubernetes (Helm)
+Default local services:
+
+| Service | URL |
+| --- | --- |
+| Sockudo server | `http://localhost:6001` |
+| Prometheus metrics | `http://localhost:9601/metrics` |
+| Dashboard UI | `http://localhost:5174` |
+| Dashboard API | `http://localhost:3460` |
+
+### From Source
+
+```bash
+rustup toolchain install stable
+git clone https://github.com/sockudo/sockudo.git
+cd sockudo
+
+cargo run -p sockudo
+```
+
+Build with a production-oriented feature set:
+
+```bash
+cargo build -p sockudo --release --features "v2,redis,postgres,push"
+```
+
+Build everything the server can expose:
+
+```bash
+cargo build -p sockudo --release --features full
+```
+
+### Kubernetes
 
 ```bash
 helm install sockudo ./charts/sockudo
+```
 
-# Production with Redis adapter and autoscaling
+Example production shape with Redis, ingress, autoscaling, and monitoring:
+
+```bash
 helm install sockudo ./charts/sockudo \
   --set config.adapterDriver=redis \
   --set redis.host=redis-master \
@@ -122,137 +141,174 @@ helm install sockudo ./charts/sockudo \
   --set serviceMonitor.enabled=true
 ```
 
-When `defaultApp.existingSecret` is set, the Secret must contain `default-app-secret` and can optionally include `default-app-id` and `default-app-key`.
+When `defaultApp.existingSecret` is set, the Secret must contain `default-app-secret` and can also
+include `default-app-id` and `default-app-key`.
 
-See [`charts/sockudo/values.yaml`](charts/sockudo/values.yaml) for all configurable options.
+## Client SDKs
 
-### From Source
+Realtime clients live under [client-sdks/](client-sdks/).
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+Until the package-manager publishing workflows are fully enabled, install SDKs from their GitHub
+monorepo paths. The old per-SDK repositories should be treated as archived/legacy mirrors; this
+repository is the source of truth. The package names below are the intended published names, but the
+install examples in the SDK docs use local monorepo paths for now.
 
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo
+| Runtime | Directory | Package |
+| --- | --- | --- |
+| JavaScript / TypeScript | [`client-sdks/sockudo-js`](client-sdks/sockudo-js) | `@sockudo/client` |
+| AI Transport TypeScript | [`client-sdks/sockudo-ai-transport-js`](client-sdks/sockudo-ai-transport-js) | `@sockudo/ai-transport` |
+| Swift / Apple platforms | [`client-sdks/sockudo-swift`](client-sdks/sockudo-swift) | `SockudoSwift` |
+| Kotlin / JVM / Android | [`client-sdks/sockudo-kotlin`](client-sdks/sockudo-kotlin) | `io.sockudo:sockudo-kotlin` |
+| Flutter / Dart | [`client-sdks/sockudo-flutter`](client-sdks/sockudo-flutter) | `sockudo_flutter` |
+| .NET | [`client-sdks/sockudo-dotnet`](client-sdks/sockudo-dotnet) | `Sockudo.Client` |
+| Python | [`client-sdks/sockudo-python`](client-sdks/sockudo-python) | `sockudo-python` |
 
-# Fast local development build (default - no external dependencies)
-cargo run --release
+JavaScript example:
 
-# Production build with all features
-cargo run --release --features full
-```
+```ts
+import Sockudo from "@sockudo/client";
 
-### Feature Flags
-
-```bash
-# Local development (fastest - default)
-cargo build                                    # ~30-50% faster compile
-
-# With specific backends
-cargo build --features "redis,postgres"        # Redis + PostgreSQL
-cargo build --features "redis-cluster,mysql"   # Redis Cluster + MySQL
-cargo build --features "redis,surrealdb"       # Redis + SurrealDB 3
-cargo build --features "rabbitmq,postgres"     # RabbitMQ + PostgreSQL
-cargo build --features "google-pubsub,mysql"   # Google Pub/Sub + MySQL
-cargo build --features "kafka,postgres"        # Kafka + PostgreSQL
-cargo build --features "iggy,postgres"         # Apache Iggy + PostgreSQL
-
-# Full production build
-cargo build --release --features full          # All backends
-```
-
-**Available Features:**
-- `local` (default) - In-memory implementations only
-- `v2` (default) - All Sockudo V2 features (delta, tag-filtering, recovery)
-- `delta` - Delta compression (V2)
-- `tag-filtering` - Server-side tag filtering (V2)
-- `recovery` - Connection recovery with serial numbers and message IDs (V2)
-- `redis` - Redis adapter, cache, queue, rate limiter
-- `redis-cluster` - Redis Cluster support
-- `nats` - NATS adapter
-- `rabbitmq` - RabbitMQ adapter
-- `google-pubsub` - Google Cloud Pub/Sub adapter
-- `kafka` - Kafka adapter
-- `iggy` - Apache Iggy adapter and queue driver
-- `mysql` / `postgres` / `dynamodb` / `surrealdb` / `scylladb` - App manager backends
-- `sqs` / `lambda` - AWS integrations
-- `full` - All features enabled
-
-```bash
-# Pure Pusher-only server (no V2 features, smallest binary)
-cargo build --no-default-features
-
-# V2 with only delta compression
-cargo build --no-default-features --features delta
-
-# V2 with recovery only (serial + message_id + replay buffer)
-cargo build --no-default-features --features recovery
-```
-
-## Basic Usage
-
-### Protocol V2 (Sockudo-native, default for Sockudo SDKs)
-
-```javascript
-import { SockudoClient } from '@sockudo/client';
-
-const client = new SockudoClient('app-key', {
-    wsHost: 'localhost',
-    wsPort: 6001,
-    forceTLS: false,
-    // protocolVersion: 2 is the default
+const sockudo = new Sockudo("app-key", {
+  wsHost: "127.0.0.1",
+  wsPort: 6001,
+  wssPort: 6001,
+  forceTLS: false,
+  enabledTransports: ["ws"],
+  protocolVersion: 2,
 });
 
-const channel = client.subscribe('my-channel');
-channel.bind('my-event', (data) => {
-    console.log('Received:', data);
+const channel = sockudo.subscribe("public-updates");
+channel.bind("price-updated", (payload) => {
+  console.log(payload);
 });
 ```
 
-```swift
-import SockudoSwift
+AI Transport example:
 
-let client = try SockudoClient(
-    "app-key",
-    options: .init(
-        cluster: "local",
-        forceTLS: false,
-        enabledTransports: [.ws],
-        wsHost: "127.0.0.1",
-        wsPort: 6001,
-        wssPort: 6001
+```ts
+import { TransportProvider, useView } from "@sockudo/ai-transport/react";
+```
+
+See [`client-sdks/sockudo-ai-transport-js/README.md`](client-sdks/sockudo-ai-transport-js/README.md)
+for React, Vue, Svelte, Vercel AI SDK, and direct provider helpers.
+
+## Server SDKs
+
+HTTP/server SDKs live under [server-sdks/](server-sdks/). They publish events, sign private and
+presence channel auth, authenticate users, validate webhooks, query state, and expose
+Sockudo-native APIs such as idempotent publishing, history, mutable messages, annotations, and push
+where implemented.
+
+Until registry publishing is fixed, install these SDKs from local paths in this monorepo. The old
+per-SDK repositories should be treated as archived/legacy mirrors. Do not assume npm, PyPI, NuGet,
+Maven Central, Packagist, RubyGems, crates.io, or pub.dev packages are available yet.
+
+| Language | Directory | Package |
+| --- | --- | --- |
+| Node.js | [`server-sdks/sockudo-http-node`](server-sdks/sockudo-http-node) | `sockudo` |
+| Python | [`server-sdks/sockudo-http-python`](server-sdks/sockudo-http-python) | `sockudo-http-python` |
+| PHP | [`server-sdks/sockudo-http-php`](server-sdks/sockudo-http-php) | `sockudo/sockudo-php-server` |
+| Ruby | [`server-sdks/sockudo-http-ruby`](server-sdks/sockudo-http-ruby) | `sockudo` |
+| Go | [`server-sdks/sockudo-http-go`](server-sdks/sockudo-http-go) | `github.com/sockudo/sockudo-http-go/v5` |
+| Rust | [`server-sdks/sockudo-http-rust`](server-sdks/sockudo-http-rust) | `sockudo-http` |
+| Java | [`server-sdks/sockudo-http-java`](server-sdks/sockudo-http-java) | `io.sockudo:sockudo-http-java` |
+| .NET | [`server-sdks/sockudo-http-dotnet`](server-sdks/sockudo-http-dotnet) | `SockudoServer` |
+| Swift | [`server-sdks/sockudo-http-swift`](server-sdks/sockudo-http-swift) | `Sockudo` |
+
+Node.js example:
+
+```ts
+import { Sockudo } from "sockudo";
+
+const sockudo = new Sockudo({
+  appId: "app-id",
+  key: "app-key",
+  secret: "app-secret",
+  host: "127.0.0.1",
+  port: 6001,
+  useTLS: false,
+});
+
+await sockudo.trigger("orders", "order.created", { id: "ord_123" });
+```
+
+Python example:
+
+```python
+from sockudo_http import Config, Sockudo
+
+sockudo = Sockudo(
+    Config(
+        app_id="app-id",
+        key="app-key",
+        secret="app-secret",
+        host="127.0.0.1",
+        port=6001,
     )
 )
 
-let channel = client.subscribe("my-channel")
-channel.bind("my-event") { data, _ in
-    print(data ?? "")
-}
-client.connect()
+sockudo.trigger("orders", "order.created", {"id": "ord_123"})
 ```
 
-### Protocol V1 (Pusher-compatible)
+## Server Workspace
 
-```javascript
-import Pusher from 'pusher-js';
+The Rust workspace is split by responsibility:
 
-const pusher = new Pusher('app-key', {
-    wsHost: 'localhost',
-    wsPort: 6001,
-    cluster: '',
-    forceTLS: false
-});
+| Crate | Responsibility |
+| --- | --- |
+| `sockudo-protocol` | Protocol message types, V1/V2 prefixes, extras, wire payloads |
+| `sockudo-filter` | Tag filtering expressions and matching |
+| `sockudo-core` | Shared traits, config, auth, errors, history, version store, annotations |
+| `sockudo-app` | App-manager backends |
+| `sockudo-cache` | Cache backends |
+| `sockudo-queue` | Queue backends |
+| `sockudo-rate-limiter` | Rate limiting and middleware |
+| `sockudo-metrics` | Prometheus metrics |
+| `sockudo-webhook` | Webhook delivery |
+| `sockudo-delta` | Delta compression |
+| `sockudo-push` | Push domain, storage, queues, providers, feedback, scheduler |
+| `sockudo-ai-transport` | AI Transport validation, rollup, and conformance helpers |
+| `sockudo-adapter` | Connections, presence, fanout, replay, recovery |
+| `sockudo-server` | Binary, HTTP/WS routes, bootstrap, durable stores, push API |
 
-const channel = pusher.subscribe('my-channel');
-channel.bind('my-event', (data) => {
-    console.log('Received:', data);
-});
+The Rust SDK at `server-sdks/sockudo-http-rust` is intentionally excluded from the root Cargo
+workspace so it can keep its own package and release lifecycle.
+
+## Feature Flags
+
+Common server features:
+
+| Feature | Purpose |
+| --- | --- |
+| `local` | In-memory development defaults |
+| `v2` | Protocol V2 bundle: deltas, tag filtering, recovery |
+| `delta` | Delta compression |
+| `tag-filtering` | Server-side tag filtering |
+| `recovery` | Serial and message-id recovery |
+| `ai-transport` | AI Transport validation and rollup surfaces |
+| `push` | Push notification runtime and HTTP APIs |
+| `redis`, `redis-cluster` | Redis-backed adapter/cache/queue/rate limit paths |
+| `nats`, `pulsar`, `rabbitmq`, `google-pubsub`, `kafka`, `iggy` | Horizontal adapter and queue integrations |
+| `mysql`, `postgres`, `dynamodb`, `surrealdb`, `scylladb` | App, history, version-store, and push storage backends |
+| `sqs`, `sns`, `lambda` | AWS queue, notification, and webhook integrations |
+| `full` | All production integrations wired by the server |
+
+Examples:
+
+```bash
+cargo build
+cargo build --no-default-features
+cargo build --features "redis,postgres"
+cargo build --features "v2,ai-transport,redis,postgres,push"
+cargo build --release --features full
 ```
 
 ## Configuration
 
-Sockudo uses TOML configuration (preferred) with JSON as a fallback. The server tries `config/config.toml` first, then `config/config.json`.
+Sockudo prefers TOML and falls back to JSON. The default local config is
+[`config/config.toml`](config/config.toml).
 
-### Core Configuration (`config/config.toml`)
+Minimal local shape:
 
 ```toml
 port = 6001
@@ -268,26 +324,6 @@ id = "app-id"
 key = "app-key"
 secret = "app-secret"
 enabled = true
-[app_manager.array.apps.policy.limits]
-max_connections = 100000
-max_client_events_per_second = 1000
-
-[app_manager.array.apps.policy.features]
-enable_client_messages = true
-
-[app_manager.array.apps.policy.channels]
-allowed_origins = ["*"]
-
-[[app_manager.array.apps.policy.channels.channel_namespaces]]
-name = "ticker"
-channel_name_pattern = "^ticker:[A-Za-z0-9._-]+$"
-max_channel_name_length = 200
-
-[[app_manager.array.apps.policy.channels.channel_namespaces]]
-name = "chat"
-channel_name_pattern = "^chat:[A-Za-z0-9._-]+$"
-max_channel_name_length = 200
-allow_user_limited_channels = true
 
 [adapter]
 driver = "local"
@@ -299,208 +335,152 @@ driver = "memory"
 driver = "memory"
 ```
 
-Per-app app-manager entries are where V2 channel semantics live, now grouped under `app.policy`: `policy.channels.allowed_origins`, `policy.channels.channel_namespaces`, app-level `policy.idempotency`, `policy.connection_recovery`, and `policy.channels.channel_delta_compression`.
+Major runtime sections:
 
-Fresh SQL bootstraps now live under [`ops/migrations/mysql`](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/mysql) and [`ops/migrations/postgresql`](/Users/radudiaconu/Desktop/Code/Rust/sockudo/ops/migrations/postgresql). DynamoDB, SurrealDB, and ScyllaDB are runtime-provisioned and document that in their migration subfolders.
+| Section | Purpose |
+| --- | --- |
+| `[app_manager]` | App credentials, policies, origin rules, namespaces |
+| `[adapter]` | Realtime fanout driver |
+| `[cache]` | Shared cache for auth, recovery, and cross-node state |
+| `[queue]` | Background queue driver |
+| `[history]` | Durable channel history |
+| `[versioned_messages]` | Mutable message storage and versioning |
+| `[presence_history]` | Retained join/leave transitions |
+| `[annotations]` | Annotation publish, delete, summaries, raw streams |
+| `[push]` | Push providers, quotas, retries, feedback, scheduler |
+| `[ai_transport]` | AI Transport validation and channel scoping |
 
-### Environment Variables
+Reference docs:
+
+- [Configuration](docs/content/docs/reference/configuration.mdx)
+- [Environment variables](docs/content/docs/reference/environment-variables.mdx)
+- [HTTP endpoints](docs/content/docs/reference/http-endpoints.mdx)
+
+## AI Transport
+
+AI Transport is default-off and Protocol V2-only. Enable it with both Cargo and runtime config:
 
 ```bash
-# Basic settings
-PORT=6001
-HOST=0.0.0.0
-DEBUG=false
-
-# Default app credentials
-SOCKUDO_DEFAULT_APP_ID=app-id
-SOCKUDO_DEFAULT_APP_KEY=app-key
-SOCKUDO_DEFAULT_APP_SECRET=app-secret
-
-# Scaling drivers
-ADAPTER_DRIVER=redis          # local, redis, redis-cluster, nats, rabbitmq, google-pubsub, kafka, iggy
-CACHE_DRIVER=redis           # memory, redis, redis-cluster, none
-QUEUE_DRIVER=redis           # memory, redis, redis-cluster, nats, rabbitmq, kafka, pulsar, google-pubsub, sqs, sns, iggy, none
-APP_MANAGER_DRIVER=surrealdb # memory, mysql, postgres, dynamodb, surrealdb, scylladb
-
-RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672/%2f
-GOOGLE_PUBSUB_PROJECT_ID=my-gcp-project
-KAFKA_BROKERS=127.0.0.1:9092
-IGGY_CONNECTION_STRING=iggy://iggy:iggy@127.0.0.1:8090
-IGGY_CONSUMER_NAME=$INSTANCE_PROCESS_ID
-ADAPTER_IGGY_PARTITIONS_COUNT=1
-QUEUE_IGGY_PARTITIONS_COUNT=4
-
-DATABASE_SURREALDB_URL=ws://127.0.0.1:8000
-DATABASE_SURREALDB_NAMESPACE=sockudo
-DATABASE_SURREALDB_DATABASE=sockudo
-DATABASE_SURREALDB_USERNAME=root
-DATABASE_SURREALDB_PASSWORD=root
-DATABASE_SURREALDB_TABLE_NAME=applications
-
-# V2 feature gates
-EPHEMERAL_ENABLED=true
-ECHO_CONTROL_ENABLED=true
-ECHO_CONTROL_DEFAULT_ECHO_MESSAGES=true
-EVENT_NAME_FILTERING_ENABLED=true
+cargo build -p sockudo --features "v2,ai-transport,redis,postgres,push"
 ```
 
-### Delta Compression (`config/config.toml`)
-
 ```toml
-[delta_compression]
-enabled = true
-algorithm = "Fossil"
-full_message_interval = 10
-min_message_size = 100
-max_state_age_secs = 300
-max_channel_states_per_socket = 100
-max_conflation_states_per_channel = 100
-cluster_coordination = true
-omit_delta_algorithm = true
-```
-
-### Tag Filtering (`config/config.toml`)
-
-```toml
-[tag_filtering]
-enabled = true
-enable_tags = false
-
 [versioned_messages]
 enabled = true
 
-[annotations]
+[history]
 enabled = true
+
+[ai_transport]
+enabled = true
+
+[[ai_transport.channels]]
+prefix = "ai:"
 ```
 
-### V2 Message Features (`config/config.toml`)
+Operational rule: append rollup only changes WebSocket egress. Persistence, version storage,
+history, recovery, push, and webhooks still see every original mutation.
 
-```toml
-[ephemeral]
-enabled = true
+Useful docs:
 
-[echo_control]
-enabled = true
-default_echo_messages = true
+- [AI Transport overview](docs/content/docs/server/ai-transport-overview.mdx)
+- [AI Transport conventions](docs/content/docs/server/ai-transport-conventions.mdx)
+- [Token streaming rollup](docs/content/docs/server/token-streaming-rollup.mdx)
+- [Production checklist](docs/content/docs/server/ai-transport-production-checklist.mdx)
 
-[event_name_filtering]
-enabled = true
-max_events_per_filter = 50
-max_event_name_length = 200
-```
+## Development
 
-### WebSocket Runtime (`config/config.toml`)
-
-```toml
-[websocket]
-max_messages = 1000
-max_bytes = 1048576
-disconnect_on_buffer_full = false
-max_message_size = 67108864
-max_frame_size = 16777216
-write_buffer_size = 16384
-max_backpressure = 1048576
-auto_ping = true
-ping_interval = 30
-idle_timeout = 120
-compression = "disabled"
-```
-
-### Performance Tuning
+Server checks:
 
 ```bash
-SOCKUDO_DEFAULT_APP_MAX_CONNECTIONS=100000
-SOCKUDO_DEFAULT_APP_MAX_CLIENT_EVENTS_PER_SECOND=10000
-
-CLEANUP_QUEUE_BUFFER_SIZE=50000
-CLEANUP_BATCH_SIZE=25
-CLEANUP_WORKER_THREADS=auto
-
-ADAPTER_BUFFER_MULTIPLIER_PER_CPU=128
+cargo fmt --all
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-### Database Pooling
+Focused server checks:
 
-```toml
-[database_pooling]
-enabled = true
-min = 2
-max = 10
-
-[database.mysql]
-pool_min = 4
-pool_max = 32
-
-[database.postgres]
-pool_min = 2
-pool_max = 16
+```bash
+cargo test -p sockudo-core
+cargo test -p sockudo-adapter
+cargo test -p sockudo-ai-transport
+cargo test -p sockudo-push
 ```
 
-## Deployment Scenarios
+AI Transport checks:
 
-| Scenario | CPU/RAM | Adapter | Cache | Queue | Max Connections |
-|----------|---------|---------|-------|-------|-----------------|
-| **Development** | 1vCPU/1GB | local | memory | memory | 1K |
-| **Small Production** | 2vCPU/2GB | redis | redis | redis | 10K |
-| **High Traffic** | 4vCPU/4GB+ | redis | redis | redis | 50K+ |
-| **Multi-Region** | 8vCPU/8GB+ | redis-cluster | redis-cluster | redis-cluster | 100K+ |
-
-All scenarios can be deployed via Docker Compose or the included [Helm chart](charts/sockudo/) on Kubernetes with built-in HPA autoscaling.
-
-## Architecture
-
+```bash
+scripts/ai-transport-bench-guard.sh
+AIT_CONFORMANCE_OFFLINE=1 scripts/ai-conformance-node.sh
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Load Balancer │────│   Sockudo Node  │────│   Redis Cluster │
-│    (Nginx)      │    │    (Rust/Tokio) │    │  (State Store)  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         │              ┌─────────────────┐             │
-         └──────────────│   Sockudo Node  │─────────────┘
-                        │    (Rust/Tokio) │
-                        └─────────────────┘
+
+Docs checks:
+
+```bash
+cd docs
+npm run types:check
+npm run build
 ```
+
+SDK checks are package-local. Start from each SDK README and use the native package manager:
+`bun`, `pnpm`, `npm`, `pytest`, `cargo`, `go test`, `gradle`, `swift test`, `dotnet test`,
+`composer`, or `bundle`.
+
+## Deployment Profiles
+
+| Profile | Adapter | Cache | Queue | App store | Typical use |
+| --- | --- | --- | --- | --- | --- |
+| Local development | `local` | `memory` | `memory` | `memory` | Fast single-node iteration |
+| Small production | `redis` | `redis` | `redis` | `postgres` or `mysql` | Simple shared state |
+| High traffic | `redis-cluster` | `redis-cluster` | external queue | SQL or DynamoDB | Larger fanout and retention |
+| AI Transport | horizontal adapter | shared cache | shared queue | shared history and version store | Streaming recovery and rollup |
+
+For horizontal adapters, do not assume memory history, memory version stores, or process-local cache
+are safe. AI Transport startup intentionally rejects invalid horizontal/shared-state combinations.
 
 ## Documentation
 
-- **[Full Documentation](docs/)** - Complete setup and configuration guide
-- **[Client Overview](docs/content/3.client/1.overview.md)** - Official SDKs and runtime targets
-- **[Docker Deployment](docker-compose.yml)** - Production-ready containers
-- **[Helm Charts](charts/sockudo/)** - Kubernetes deployment with HPA, PDB, ServiceMonitor
+- [Docs site source](docs/)
+- [Getting started](docs/content/docs/getting-started/overview.mdx)
+- [Realtime clients](docs/content/docs/clients/index.mdx)
+- [Server SDKs](docs/content/docs/server-sdks/index.mdx)
+- [Server configuration](docs/content/docs/server/configuration.mdx)
+- [Scaling](docs/content/docs/server/scaling.mdx)
+- [Security](docs/content/docs/server/security.mdx)
+- [Observability](docs/content/docs/server/observability.mdx)
 
-## Testing
+## Sponsors
 
-```bash
-# Run all server tests
-make test
-
-# Interactive WebSocket testing
-cd test/interactive && npm install && npm start
-# Open http://localhost:3000
-
-# Load testing
-make benchmark
-```
-
-Client and server SDK tests are run from their respective repositories. See each SDK's README for instructions.
+<p align="center">
+  <a href="https://swag.live/">
+    <img src="https://swag.live/static/img/favicon.2991446b.png" alt="SWAG" width="84">
+  </a>
+  <a href="https://livecaller.io/">
+    <img src="https://cdn.prod.website-files.com/69159207dbb70153a0260551/69159207dbb70153a02605cc_logo.svg" alt="LiveCaller" width="170">
+  </a>
+</p>
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+1. Fork the repository.
+2. Create a focused branch.
+3. Make the smallest coherent change.
+4. Run the relevant checks.
+5. Open a pull request with the behavior change, verification, and any follow-up risk.
+
+For coding-agent work, read [AGENTS.md](AGENTS.md). For a compact technical map of the repo, read
+[CLAUDE.md](CLAUDE.md).
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+Sockudo is licensed under the [MIT License](LICENSE). Individual SDK packages may also carry their
+own package metadata and notices; check the SDK directory before publishing.
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/sockudo/sockudo/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/sockudo/sockudo/discussions)
-- **Documentation**: [sockudo.io](https://sockudo.io)
-- **Discord**: [Join our Discord](https://discord.gg/ySfNxfh2gZ)
-- **X**: [@sockudorealtime](https://x.com/sockudorealtime)
-- **Email**: [sockudorealtime](mailto:office@sockudo.io)
+- [GitHub Issues](https://github.com/sockudo/sockudo/issues)
+- [GitHub Discussions](https://github.com/sockudo/sockudo/discussions)
+- [Documentation](https://sockudo.io)
+- [Discord](https://discord.gg/ySfNxfh2gZ)
+- [X / Twitter](https://x.com/sockudorealtime)
+- [Email](mailto:office@sockudo.io)

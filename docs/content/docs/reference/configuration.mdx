@@ -39,9 +39,15 @@ For deployment overrides and secrets, use the complete [environment variable ref
 | --- | --- |
 | `[recovery]` | V2 replay buffers and resume behavior. |
 | `[history]` | Durable channel history. |
+| `[versioned_messages]` | V2 mutable-message storage, version paging, and retention. |
+| `[presence_history]` | Historical presence transitions and snapshots. |
+| `[annotations]` | V2 annotation publish/delete/summary surfaces. |
 | `[delta]` | Delta algorithms, cache size, and conflation behavior. |
 | `[tag_filtering]` | V2 filter parsing and match controls. |
 | `[webhooks]` | Webhook delivery, batching, and retry. |
+| `[ai_transport]` | AI Transport validation and session-channel matching. |
+| `[ai_transport.rollup]` | Append rollup egress coalescing and orphan tracking. |
+| `[[ai_transport.channels]]` | Channel prefixes where AI Transport validation applies. |
 
 ## Push
 
@@ -53,6 +59,139 @@ For deployment overrides and secrets, use the complete [environment variable ref
 | `[push.providers.webpush]` | Web Push VAPID configuration. |
 | `[push.providers.hms]` | Huawei Mobile Services credentials. |
 | `[push.providers.wns]` | Windows Notification Service credentials. |
+| `[[push_rules]]` | Optional channel-publish to push-notification rules. |
+
+## Capability tokens
+
+Protocol V2 capability tokens do not currently have a TOML `[auth.capability_tokens]` switch. They
+are accepted through the WebSocket `token` query parameter and refreshed with `sockudo:auth`.
+Limits are compiled constants in `sockudo-core/src/capability_token.rs`: HS256 only, max token size
+8 KiB, max `client_id` 128 bytes, max `jti` 128 bytes, max lifetime 24 hours, and 30 seconds clock
+skew. Revocation uses signed HTTP `POST /apps/{appId}/revocations` and shared cache keys.
+
+## AI Transport and Mutable Defaults
+
+Runtime config uses `[versioned_messages]`; `VersionStore` is the Rust trait/storage abstraction.
+There is no separate `[version_store]` TOML section in the current code.
+
+The following block is machine checked by `sockudo-core` tests. Update it whenever code defaults
+change.
+
+```toml doc-defaults
+[versioned_messages]
+enabled = false
+driver = "memory"
+max_page_size = 100
+retention_window_seconds = 0
+purge_interval_seconds = 300
+purge_batch_size = 1000
+max_purge_per_tick = 100000
+
+[history]
+enabled = false
+rewind_enabled = true
+backend = "postgres"
+retention_window_seconds = 86400
+max_page_size = 100
+writer_shards = 16
+writer_queue_capacity = 4096
+purge_interval_seconds = 300
+purge_batch_size = 1000
+max_purge_per_tick = 100000
+
+[history.postgres]
+table_prefix = "sockudo_history"
+write_timeout_ms = 5000
+
+[presence_history]
+enabled = false
+retention_window_seconds = 86400
+max_page_size = 100
+
+[annotations]
+enabled = false
+
+[ai_transport]
+enabled = false
+max_accumulated_message_bytes = 1048576
+max_appends_per_message = 4096
+max_open_streaming_messages_per_channel = 1024
+
+[ai_transport.rollup]
+enabled = true
+default_window_ms = 40
+min_window_ms = 0
+max_window_ms = 500
+orphan_ttl_ms = 60000
+wheel_tick_ms = 5
+shards = 64
+
+[push]
+storage_driver = "memory"
+queue_driver = "memory"
+fcm_enabled = false
+apns_enabled = false
+webpush_enabled = false
+hms_enabled = false
+wns_enabled = false
+accept_worker_count = 1
+planner_worker_count = 1
+shard_worker_count = 1
+dispatch_worker_count = 1
+feedback_worker_count = 1
+queue_partition_count = 1
+channel_shard_count = 1
+fanout_fast_threshold = 10000
+fanout_shard_size = 100000
+fanout_sync_threshold = 0
+backpressure_lag_threshold_secs = 60
+publish_status_ttl_days = 30
+stale_device_max_age_days = 90
+dry_run = false
+analytics_enabled = false
+analytics_retention_days = 30
+scheduler_interval_secs = 5
+
+[push.retry]
+max_attempts = 5
+initial_backoff_ms = 1000
+max_backoff_ms = 60000
+max_elapsed_secs = 86400
+jitter = true
+respect_retry_after = true
+
+[push.circuit_breaker]
+failure_threshold = 5
+cooldown_secs = 60
+half_open_max_inflight = 10
+
+[push.default_quotas]
+acceptance_rps = 100
+delivery_quota_daily = 0
+fanout_max = 0
+inflight_max = 1000
+
+[push.payload_redaction]
+redact_payload = true
+redact_template_data = true
+redact_provider_overrides = true
+allow_debug_payload_logging = false
+
+[[push_rules]]
+enabled = true
+channel_pattern = ""
+event_filter = []
+rate_limit_per_second = 100
+
+[push_rules.payload_mapping]
+title_field = "title"
+body_field = "body"
+template_data_field = "data"
+include_remaining_fields = true
+```
+
+`max_messages_per_channel`, `max_bytes_per_channel`, `max_events_per_channel`, credential refs, and
+external key refs default to unset and are omitted from the checked block.
 
 ## Observability
 

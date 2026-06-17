@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>ChannelType Enumeration Reference</title>
+    <link rel="stylesheet" type="text/css" href="../css/jazzy.css" />
+    <link rel="stylesheet" type="text/css" href="../css/highlight.css" />
+    <meta charset='utf-8'>
+    <script src="../js/jquery.min.js" defer></script>
+    <script src="../js/jazzy.js" defer></script>
+    
+    <script src="../js/lunr.min.js" defer></script>
+    <script src="../js/typeahead.jquery.js" defer></script>
+    <script src="../js/jazzy.search.js" defer></script>
+  </head>
+  <body>
+    <a name="//apple_ref/swift/Enum/ChannelType" class="dashAnchor"></a>
+    <a title="ChannelType Enumeration Reference"></a>
+    <header>
+      <div class="content-wrapper">
+        <p><a href="../index.html"> Docs</a> (100% documented)</p>
+        <p class="header-right">
+          <form role="search" action="../search.json">
+            <input type="text" placeholder="Search documentation" data-typeahead>
+          </form>
+        </p>
+      </div>
+    </header>
+    <div class="content-wrapper">
+      <p id="breadcrumbs">
+        <a href="../index.html"> Reference</a>
+        <img id="carat" src="../img/carat.png" />
+        ChannelType Enumeration Reference
+      </p>
+    </div>
+    <div class="content-wrapper">
+      <nav class="sidebar">
+        <ul class="nav-groups">
+          <li class="nav-group-name">
+            <a href="../Classes.html">Classes</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="../Classes/Pusher.html">Pusher</a>
+              </li>
+            </ul>
+          </li>
+          <li class="nav-group-name">
+            <a href="../Enums.html">Enumerations</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="../Enums/ChannelFilter.html">ChannelFilter</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Enums/ChannelType.html">ChannelType</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Enums/PusherError.html">PusherError</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Enums/WebhookEventType.html">WebhookEventType</a>
+              </li>
+            </ul>
+          </li>
+          <li class="nav-group-name">
+            <a href="../Structs.html">Structures</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="../Structs/AuthenticationToken.html">AuthenticationToken</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/Channel.html">Channel</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/ChannelAttributeFetchOptions.html">ChannelAttributeFetchOptions</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/ChannelAttributes.html">ChannelAttributes</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/ChannelInfo.html">ChannelInfo</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/ChannelSummary.html">ChannelSummary</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/Event.html">Event</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/PresenceUserData.html">PresenceUserData</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/PusherClientOptions.html">PusherClientOptions</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/User.html">User</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/Webhook.html">Webhook</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/WebhookEvent.html">WebhookEvent</a>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </nav>
+      <article class="main-content">
+        <section>
+          <section class="section">
+            <h1>ChannelType</h1>
+              <div class="declaration">
+                <div class="language">
+                  
+                  <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">enum</span> <span class="kt">ChannelType</span> <span class="p">:</span> <span class="kt">String</span><span class="p">,</span> <span class="kt">Decodable</span></code></pre>
+
+                </div>
+              </div>
+            <p>The available channel types for a Pusher Channels application.</p>
+
+          </section>
+          <section class="section task-group-section">
+            <div class="task-group">
+              <ul>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher11ChannelTypeO9encryptedyA2CmF"></a>
+                    <a name="//apple_ref/swift/Element/encrypted" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher11ChannelTypeO9encryptedyA2CmF">encrypted</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>An end-to-end encrypted channel.</p>
+
+<p>The messages published to encrypted channels are encrypted using
+<a href="https://nacl.cr.yp.to/secretbox.html">Secretbox standard</a> from NaCl.
+These channels have the same restrictions as a <code><a href="../Enums/ChannelType.html#/s:6Pusher11ChannelTypeO7privateyA2CmF">private</a></code> channel for the purposes of subscription attempts.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="k">case</span> <span class="n">encrypted</span> <span class="o">=</span> <span class="s">"private-encrypted"</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher11ChannelTypeO8presenceyA2CmF"></a>
+                    <a name="//apple_ref/swift/Element/presence" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher11ChannelTypeO8presenceyA2CmF">presence</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>A user presence channel.</p>
+
+<p>Presence channels provide an awareness of which users are subscribed to them.
+These channels have the same restrictions as a <code><a href="../Enums/ChannelType.html#/s:6Pusher11ChannelTypeO7privateyA2CmF">private</a></code> channel for the purposes of subscription attempts.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="k">case</span> <span class="n">presence</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher11ChannelTypeO7privateyA2CmF"></a>
+                    <a name="//apple_ref/swift/Element/private" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher11ChannelTypeO7privateyA2CmF">private</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>A private channel.</p>
+
+<p>The messages published to private channels are considered sensitive.
+In order for a user to subscribe to these channels, they must first be authorised
+via a call to a authentication endpoint configured by the developer.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="k">case</span> <span class="p">`</span><span class="nv">private</span><span class="p">`</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher11ChannelTypeO6publicyA2CmF"></a>
+                    <a name="//apple_ref/swift/Element/public" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher11ChannelTypeO6publicyA2CmF">public</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>A public channel.</p>
+
+<p>The messages published to public channels are considered publicly-accessible.
+These channels do not require any form of authorisation in order to be subscribed to.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="k">case</span> <span class="p">`</span><span class="nv">public</span><span class="p">`</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher11ChannelTypeO8fullNameACSS_tcfc"></a>
+                    <a name="//apple_ref/swift/Method/init(fullName:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher11ChannelTypeO8fullNameACSS_tcfc">init(fullName:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Creates a <code>ChannelType</code> whose value is inferred based on a full channel name.</p>
+
+<p>A channel named <code>&quot;presence-my-channel&quot;</code> would initialize to a value of <code><a href="../Enums/ChannelType.html#/s:6Pusher11ChannelTypeO8presenceyA2CmF">presence</a></code>.
+Any channel named without a reserved prefix will be initialized to <code><a href="../Enums/ChannelType.html#/s:6Pusher11ChannelTypeO6publicyA2CmF">public</a></code>.
+(e.g. <code>&quot;my-important-channel&quot;</code>).</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd"><a href="../Enums/ChannelType.html#/s:6Pusher11ChannelTypeO6publicyA2CmF">public</a></span> <span class="nf">init</span><span class="p">(</span><span class="nv">fullName</span><span class="p">:</span> <span class="kt">String</span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>fullName</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>The full channel name.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </section>
+        </section>
+        <section id="footer">
+          <p>&copy; 2021 <a class="link" href="" target="_blank" rel="external"></a>. All rights reserved. (Last updated: 2021-05-11)</p>
+          <p>Generated by <a class="link" href="https://github.com/realm/jazzy" target="_blank" rel="external">jazzy ♪♫ v0.13.6</a>, a <a class="link" href="https://realm.io" target="_blank" rel="external">Realm</a> project.</p>
+        </section>
+      </article>
+    </div>
+  </body>
+</div>
+</html>

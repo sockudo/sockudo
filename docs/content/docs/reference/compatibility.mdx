@@ -4,7 +4,8 @@ description: Understand which Sockudo features are Pusher-compatible and which r
 icon: BadgeCheck
 ---
 
-Sockudo's compatibility rule is simple: Protocol V1 preserves Pusher behavior; Protocol V2 adds Sockudo-native behavior.
+Sockudo's compatibility rule is simple: Protocol V1 preserves Pusher behavior; Protocol V2 adds
+Sockudo-native behavior.
 
 ## Pusher-compatible
 
@@ -34,6 +35,7 @@ Sockudo's compatibility rule is simple: Protocol V1 preserves Pusher behavior; P
 | Mutable messages | Protocol V2 |
 | Annotations | Protocol V2 APIs and SDK helpers |
 | Push management | Sockudo HTTP API and server SDK push helpers |
+| AI Transport | Protocol V2, `ai-transport` Cargo feature, and runtime `[ai_transport]` enabled |
 
 ## Migration strategy
 
@@ -44,4 +46,39 @@ Sockudo's compatibility rule is simple: Protocol V1 preserves Pusher behavior; P
 
 ## Push compatibility
 
-Push notifications are not part of the Pusher WebSocket protocol. They are Sockudo-native HTTP APIs. Existing Pusher-compatible realtime clients can still coexist with Sockudo push because push is managed by backend services and device registration flows.
+Push notifications are not part of the Pusher WebSocket protocol. They are Sockudo-native HTTP APIs.
+Existing Pusher-compatible realtime clients can still coexist with Sockudo push because push is
+managed by backend services and device registration flows.
+
+## AI Transport compatibility
+
+AI Transport is additive and default-off. The server release order is:
+
+1. Ship Sockudo with the `ai-transport` feature available but runtime-disabled by default.
+2. Release Sockudo client SDK support after server, SDK, and conformance evidence is green.
+3. Enable AI Transport only for V2 clients and scoped channel prefixes.
+
+| Surface | Compatibility |
+| --- | --- |
+| Protocol V1 / pusher-js canary | Must remain byte-identical with AI Transport disabled |
+| Protocol V2 non-AI clients | Existing recovery, rewind, history, mutable messages, annotations, and push remain additive |
+| `@sockudo/ai-transport` | Requires server AI Transport feature, runtime profile, and `@sockudo/client` |
+| Existing client SDKs | Full product parity depends on Protocol V2 feature enablement in each SDK |
+| Server HTTP SDKs | Existing Pusher-compatible publish APIs continue to work; AI helpers are additive |
+
+## Release gates
+
+Protocol-visible server PRs must pass the Protocol Change checklist and relevant fixtures for the
+changed surface. When protocol-owned paths change, CI also requires the `sockudo-js` compatibility
+lane because that SDK is the reference client for cross-SDK compatibility.
+
+SDK release workflows must run their conformance lanes against both the latest released Sockudo
+server and server `main` before publishing. API-diff jobs block non-additive public API changes
+unless the release is intentionally major.
+
+Rollback starts by disabling the new server feature flag. Client packages can then be pinned back
+independently because valid V1 and existing V2 traffic remain compatible.
+
+GA evidence is tracked in
+[`docs/specs/ai-transport-ga-readiness.md`](/specs/ai-transport-ga-readiness).
+

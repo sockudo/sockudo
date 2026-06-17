@@ -1,21 +1,29 @@
 use std::hint::black_box;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use aws_lc_rs::pbkdf2 as aws_lc_pbkdf2;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use serde_json::json;
+use hmac::{Hmac, KeyInit, Mac};
+use ring::pbkdf2;
+use sha2::Sha256;
 use sockudo_push::{
     AcceptAllDispatcher, ChannelSubscription, DeliveryBatch, DeliveryJob, DeviceDetails,
     DevicePushDetails, DevicePushState, FanoutConfig, FormFactor, MemoryPushQueue, MemoryPushStore,
     Platform, ProviderDispatchWorker, PublishIntent, PublishTarget, PushAcceptRequest,
     PushDeviceStore, PushMetrics, PushPayload, PushPipeline, PushPlanner, PushProviderKind,
     PushQueue, PushQueuePayload, PushQueueStage, PushRecipient, PushShardWorker,
-    PushSubscriptionStore, SecretString, render_provider_payload,
+    PushSubscriptionStore, SecretString, any_rule_matches, render_provider_payload,
 };
+use sonic_rs::json;
 use tokio::runtime::Runtime;
 
 const APP_ID: &str = "app-1";
 const CHANNEL: &str = "bench";
 const BENCH_NOW_MS: u64 = 1_778_070_000_000;
+const PBKDF2_BENCH_ITERATIONS: u32 = 120_000;
+
+type HmacSha256 = Hmac<Sha256>;
 
 fn bench_admission(c: &mut Criterion) {
     let mut group = c.benchmark_group("push_admission");
@@ -46,6 +54,27 @@ fn bench_admission(c: &mut Criterion) {
             },
             BatchSize::SmallInput,
         );
+    });
+    group.finish();
+}
+
+fn bench_channel_push_rule_matching(c: &mut Criterion) {
+    let rules = vec![sockudo_push::ChannelPushRule {
+        channel_pattern: "notifications:*".to_owned(),
+        event_filter: vec!["agent-complete".to_owned()],
+        ..sockudo_push::ChannelPushRule::default()
+    }];
+    let mut group = c.benchmark_group("push_channel_rules");
+    group.throughput(Throughput::Elements(1));
+    // Budget: no-match scan for one configured rule should remain below 200 ns.
+    group.bench_function("no_match_one_rule_budget_lt_200ns", |b| {
+        b.iter(|| {
+            black_box(any_rule_matches(
+                black_box(&rules),
+                black_box("chat:user-1"),
+                black_box("message"),
+            ));
+        });
     });
     group.finish();
 }
@@ -289,6 +318,101 @@ fn bench_metrics(c: &mut Criterion) {
     });
 }
 
+fn pbkdf2_sha256_manual(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    let iterations = iterations.max(1);
+    let mut mac = HmacSha256::new_from_slice(password).expect("HMAC can take keys of any size");
+    mac.update(salt);
+    mac.update(&1_u32.to_be_bytes());
+    let mut u = mac.finalize().into_bytes();
+    let mut output = u;
+
+    for _ in 1..iterations {
+        let mut mac = HmacSha256::new_from_slice(password).expect("HMAC can take keys of any size");
+        mac.update(&u);
+        u = mac.finalize().into_bytes();
+        for (left, right) in output.iter_mut().zip(u.iter()) {
+            *left ^= right;
+        }
+    }
+
+    output.into()
+}
+
+fn pbkdf2_sha256_ring(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    let iterations = NonZeroU32::new(iterations.max(1)).expect("iterations are clamped to >= 1");
+    let mut output = [0_u8; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        iterations,
+        salt,
+        password,
+        &mut output,
+    );
+    output
+}
+
+fn pbkdf2_sha256_aws_lc(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    let iterations = NonZeroU32::new(iterations.max(1)).expect("iterations are clamped to >= 1");
+    let mut output = [0_u8; 32];
+    aws_lc_pbkdf2::derive(
+        aws_lc_pbkdf2::PBKDF2_HMAC_SHA256,
+        iterations,
+        salt,
+        password,
+        &mut output,
+    );
+    output
+}
+
+fn bench_device_secret_pbkdf2(c: &mut Criterion) {
+    let password = b"sockudo-device-secret-token";
+    let salt = b"0123456789abcdef";
+    let manual = pbkdf2_sha256_manual(password, salt, PBKDF2_BENCH_ITERATIONS);
+    assert_eq!(
+        manual,
+        pbkdf2_sha256_ring(password, salt, PBKDF2_BENCH_ITERATIONS)
+    );
+    assert_eq!(
+        manual,
+        pbkdf2_sha256_aws_lc(password, salt, PBKDF2_BENCH_ITERATIONS)
+    );
+
+    let mut group = c.benchmark_group("push_device_secret_pbkdf2");
+    group.throughput(Throughput::Elements(1));
+
+    group.bench_function("current_manual_hmac_sha256_120k", |b| {
+        b.iter(|| {
+            black_box(pbkdf2_sha256_manual(
+                black_box(password),
+                black_box(salt),
+                PBKDF2_BENCH_ITERATIONS,
+            ));
+        });
+    });
+
+    group.bench_function("replacement_ring_pbkdf2_sha256_120k", |b| {
+        b.iter(|| {
+            black_box(pbkdf2_sha256_ring(
+                black_box(password),
+                black_box(salt),
+                PBKDF2_BENCH_ITERATIONS,
+            ));
+        });
+    });
+
+    group.bench_function("replacement_aws_lc_pbkdf2_sha256_120k", |b| {
+        b.iter(|| {
+            black_box(pbkdf2_sha256_aws_lc(
+                black_box(password),
+                black_box(salt),
+                PBKDF2_BENCH_ITERATIONS,
+            ));
+        });
+    });
+
+    group.finish();
+}
+
 struct PipelineFixture {
     runtime: Runtime,
     store: Arc<MemoryPushStore>,
@@ -438,11 +562,13 @@ fn next_publish_id(label: &'static str) -> String {
 criterion_group!(
     benches,
     bench_admission,
+    bench_channel_push_rule_matching,
     bench_fast_fanout_planning,
     bench_sharded_fanout,
     bench_queue,
     bench_provider_dispatch,
     bench_provider_rendering,
-    bench_metrics
+    bench_metrics,
+    bench_device_secret_pbkdf2
 );
 criterion_main!(benches);

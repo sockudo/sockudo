@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Pusher Class Reference</title>
+    <link rel="stylesheet" type="text/css" href="../css/jazzy.css" />
+    <link rel="stylesheet" type="text/css" href="../css/highlight.css" />
+    <meta charset='utf-8'>
+    <script src="../js/jquery.min.js" defer></script>
+    <script src="../js/jazzy.js" defer></script>
+    
+    <script src="../js/lunr.min.js" defer></script>
+    <script src="../js/typeahead.jquery.js" defer></script>
+    <script src="../js/jazzy.search.js" defer></script>
+  </head>
+  <body>
+    <a name="//apple_ref/swift/Class/Pusher" class="dashAnchor"></a>
+    <a title="Pusher Class Reference"></a>
+    <header>
+      <div class="content-wrapper">
+        <p><a href="../index.html"> Docs</a> (100% documented)</p>
+        <p class="header-right">
+          <form role="search" action="../search.json">
+            <input type="text" placeholder="Search documentation" data-typeahead>
+          </form>
+        </p>
+      </div>
+    </header>
+    <div class="content-wrapper">
+      <p id="breadcrumbs">
+        <a href="../index.html"> Reference</a>
+        <img id="carat" src="../img/carat.png" />
+        Pusher Class Reference
+      </p>
+    </div>
+    <div class="content-wrapper">
+      <nav class="sidebar">
+        <ul class="nav-groups">
+          <li class="nav-group-name">
+            <a href="../Classes.html">Classes</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="../Classes/Pusher.html">Pusher</a>
+              </li>
+            </ul>
+          </li>
+          <li class="nav-group-name">
+            <a href="../Enums.html">Enumerations</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="../Enums/ChannelFilter.html">ChannelFilter</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Enums/ChannelType.html">ChannelType</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Enums/PusherError.html">PusherError</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Enums/WebhookEventType.html">WebhookEventType</a>
+              </li>
+            </ul>
+          </li>
+          <li class="nav-group-name">
+            <a href="../Structs.html">Structures</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="../Structs/AuthenticationToken.html">AuthenticationToken</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/Channel.html">Channel</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/ChannelAttributeFetchOptions.html">ChannelAttributeFetchOptions</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/ChannelAttributes.html">ChannelAttributes</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/ChannelInfo.html">ChannelInfo</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/ChannelSummary.html">ChannelSummary</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/Event.html">Event</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/PresenceUserData.html">PresenceUserData</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/PusherClientOptions.html">PusherClientOptions</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/User.html">User</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/Webhook.html">Webhook</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="../Structs/WebhookEvent.html">WebhookEvent</a>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </nav>
+      <article class="main-content">
+        <section>
+          <section class="section">
+            <h1>Pusher</h1>
+              <div class="declaration">
+                <div class="language">
+                  
+                  <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">class</span> <span class="kt">Pusher</span></code></pre>
+
+                </div>
+              </div>
+            <p>Manages operations when interacting with the Pusher Channels HTTP API.</p>
+
+          </section>
+          <section class="section task-group-section">
+            <div class="task-group">
+              <div class="task-name-container">
+                <a name="/Lifecycle"></a>
+                <a name="//apple_ref/swift/Section/Lifecycle" class="dashAnchor"></a>
+                <div class="section-name-container">
+                  <a class="section-name-link" href="#/Lifecycle"></a>
+                  <h3 class="section-name"><p>Lifecycle</p>
+</h3>
+                </div>
+              </div>
+              <ul>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6PusherAAC7optionsAbA0A13ClientOptionsV_tcfc"></a>
+                    <a name="//apple_ref/swift/Method/init(options:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6PusherAAC7optionsAbA0A13ClientOptionsV_tcfc">init(options:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Creates a Pusher Channels HTTP API client configured using some <code><a href="../Structs/PusherClientOptions.html">PusherClientOptions</a></code>.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="nf">init</span><span class="p">(</span><span class="nv">options</span><span class="p">:</span> <span class="kt"><a href="../Structs/PusherClientOptions.html">PusherClientOptions</a></span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>options</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>Configuration options used to managing the connection.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            <div class="task-group">
+              <div class="task-name-container">
+                <a name="/Application%20state%20queries"></a>
+                <a name="//apple_ref/swift/Section/Application state queries" class="dashAnchor"></a>
+                <div class="section-name-container">
+                  <a class="section-name-link" href="#/Application%20state%20queries"></a>
+                  <h3 class="section-name"><p>Application state queries</p>
+</h3>
+                </div>
+              </div>
+              <ul>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6PusherAAC8channels10withFilter16attributeOptions8callbackyAA07ChannelD0O_AA0h14AttributeFetchF0Vys6ResultOySayAA0H7SummaryVGAA0A5ErrorOGctF"></a>
+                    <a name="//apple_ref/swift/Method/channels(withFilter:attributeOptions:callback:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6PusherAAC8channels10withFilter16attributeOptions8callbackyAA07ChannelD0O_AA0h14AttributeFetchF0Vys6ResultOySayAA0H7SummaryVGAA0A5ErrorOGctF">channels(withFilter:<wbr>attributeOptions:<wbr>callback:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Fetches an array of <code><a href="../Structs/ChannelSummary.html">ChannelSummary</a></code> records for any occupied channels.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">func</span> <span class="nf">channels</span><span class="p">(</span><span class="n">withFilter</span> <span class="nv">filter</span><span class="p">:</span> <span class="kt"><a href="../Enums/ChannelFilter.html">ChannelFilter</a></span> <span class="o">=</span> <span class="o">.</span><span class="n">any</span><span class="p">,</span>
+                     <span class="nv">attributeOptions</span><span class="p">:</span> <span class="kt"><a href="../Structs/ChannelAttributeFetchOptions.html">ChannelAttributeFetchOptions</a></span> <span class="o">=</span> <span class="p">[],</span>
+                     <span class="nv">callback</span><span class="p">:</span> <span class="kd">@escaping</span> <span class="p">(</span><span class="kt">Result</span><span class="o">&lt;</span><span class="p">[</span><span class="kt"><a href="../Structs/ChannelSummary.html">ChannelSummary</a></span><span class="p">],</span> <span class="kt"><a href="../Enums/PusherError.html">PusherError</a></span><span class="o">&gt;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kt">Void</span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>filter</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A filter to apply to the returned results.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>attributeOptions</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A set of attributes that should be returned in each <code><a href="../Structs/ChannelSummary.html">ChannelSummary</a></code>.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>callback</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A closure that returns a <code>Result</code> containing an array of <code><a href="../Structs/ChannelSummary.html">ChannelSummary</a></code>
+      instances, or a <code><a href="../Enums/PusherError.html">PusherError</a></code> if the operation fails for some reason.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6PusherAAC11channelInfo3for16attributeOptions8callbackyAA7ChannelV_AA0h14AttributeFetchF0Vys6ResultOyAA0hC0VAA0A5ErrorOGctF"></a>
+                    <a name="//apple_ref/swift/Method/channelInfo(for:attributeOptions:callback:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6PusherAAC11channelInfo3for16attributeOptions8callbackyAA7ChannelV_AA0h14AttributeFetchF0Vys6ResultOyAA0hC0VAA0A5ErrorOGctF">channelInfo(for:<wbr>attributeOptions:<wbr>callback:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Fetches the <code><a href="../Structs/ChannelInfo.html">ChannelInfo</a></code> for a given occupied channel.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">func</span> <span class="nf">channelInfo</span><span class="p">(</span><span class="k">for</span> <span class="nv">channel</span><span class="p">:</span> <span class="kt"><a href="../Structs/Channel.html">Channel</a></span><span class="p">,</span>
+                        <span class="nv">attributeOptions</span><span class="p">:</span> <span class="kt"><a href="../Structs/ChannelAttributeFetchOptions.html">ChannelAttributeFetchOptions</a></span> <span class="o">=</span> <span class="p">[],</span>
+                        <span class="nv">callback</span><span class="p">:</span> <span class="kd">@escaping</span> <span class="p">(</span><span class="kt">Result</span><span class="o">&lt;</span><span class="kt"><a href="../Structs/ChannelInfo.html">ChannelInfo</a></span><span class="p">,</span> <span class="kt"><a href="../Enums/PusherError.html">PusherError</a></span><span class="o">&gt;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kt">Void</span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>channel</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>The channel to inspect.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>attributeOptions</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A set of attributes that should be returned for the <code>channel</code>.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>callback</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A closure that returns a <code>Result</code> containing a <code><a href="../Structs/ChannelInfo.html">ChannelInfo</a></code> instance,
+      or a <code><a href="../Enums/PusherError.html">PusherError</a></code> if the operation fails for some reason.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6PusherAAC5users3for8callbackyAA7ChannelV_ys6ResultOySayAA4UserVGAA0A5ErrorOGctF"></a>
+                    <a name="//apple_ref/swift/Method/users(for:callback:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6PusherAAC5users3for8callbackyAA7ChannelV_ys6ResultOySayAA4UserVGAA0A5ErrorOGctF">users(for:<wbr>callback:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Fetches an array of <code><a href="../Structs/User.html">User</a></code> records currently subscribed to a given occupied presence <code><a href="../Structs/Channel.html">Channel</a></code>.</p>
+
+<p>Users can only be fetched from presence channels. Using a channel with a <code><a href="../Enums/ChannelType.html">ChannelType</a></code>
+other than <code>presence</code> is invalid and will result in an error.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">func</span> <span class="nf">users</span><span class="p">(</span><span class="k">for</span> <span class="nv">channel</span><span class="p">:</span> <span class="kt"><a href="../Structs/Channel.html">Channel</a></span><span class="p">,</span>
+                  <span class="nv">callback</span><span class="p">:</span> <span class="kd">@escaping</span> <span class="p">(</span><span class="kt">Result</span><span class="o">&lt;</span><span class="p">[</span><span class="kt"><a href="../Structs/User.html">User</a></span><span class="p">],</span> <span class="kt"><a href="../Enums/PusherError.html">PusherError</a></span><span class="o">&gt;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kt">Void</span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>channel</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>The presence channel to inspect.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>callback</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A closure that returns a <code>Result</code> containing an array of <code><a href="../Structs/User.html">User</a></code> instances
+      subscribed to the <code>channel</code>, or a <code><a href="../Enums/PusherError.html">PusherError</a></code> if the operation fails
+      for some reason.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            <div class="task-group">
+              <div class="task-name-container">
+                <a name="/Triggering%20events"></a>
+                <a name="//apple_ref/swift/Section/Triggering events" class="dashAnchor"></a>
+                <div class="section-name-container">
+                  <a class="section-name-link" href="#/Triggering%20events"></a>
+                  <h3 class="section-name"><p>Triggering events</p>
+</h3>
+                </div>
+              </div>
+              <ul>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6PusherAAC7trigger5event8callbackyAA5EventV_ys6ResultOySayAA14ChannelSummaryVGAA0A5ErrorOGctF"></a>
+                    <a name="//apple_ref/swift/Method/trigger(event:callback:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6PusherAAC7trigger5event8callbackyAA5EventV_ys6ResultOySayAA14ChannelSummaryVGAA0A5ErrorOGctF">trigger(event:<wbr>callback:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Triggers an <code><a href="../Structs/Event.html">Event</a></code> on one or more <code><a href="../Structs/Channel.html">Channel</a></code> instances.</p>
+
+<p>The channel (or channels) that the event should be triggered on, (as well as the
+attributes to fetch for each channel) are specified when initializing <code>event</code>.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">func</span> <span class="nf">trigger</span><span class="p">(</span><span class="nv">event</span><span class="p">:</span> <span class="kt"><a href="../Structs/Event.html">Event</a></span><span class="p">,</span>
+                    <span class="nv">callback</span><span class="p">:</span> <span class="kd">@escaping</span> <span class="p">(</span><span class="kt">Result</span><span class="o">&lt;</span><span class="p">[</span><span class="kt"><a href="../Structs/ChannelSummary.html">ChannelSummary</a></span><span class="p">],</span> <span class="kt"><a href="../Enums/PusherError.html">PusherError</a></span><span class="o">&gt;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kt">Void</span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>event</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>The event to trigger.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>callback</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A closure that returns a <code>Result</code> containing an array of <code><a href="../Structs/ChannelSummary.html">ChannelSummary</a></code>
+      instances, or a <code><a href="../Enums/PusherError.html">PusherError</a></code> if the operation fails for some reason.
+      If the <code>attributeOptions</code> on the <code>event</code> are not set, an empty channel
+      array will be returned.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6PusherAAC7trigger6events8callbackySayAA5EventVG_ys6ResultOySayAA11ChannelInfoVGAA0A5ErrorOGctF"></a>
+                    <a name="//apple_ref/swift/Method/trigger(events:callback:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6PusherAAC7trigger6events8callbackySayAA5EventVG_ys6ResultOySayAA11ChannelInfoVGAA0A5ErrorOGctF">trigger(events:<wbr>callback:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Triggers multiple events, each on a specific <code><a href="../Structs/Channel.html">Channel</a></code>.</p>
+
+<p>The channel that the event should be triggered on, (as well as the
+attributes to fetch for the each channel) are specified when initializing <code>event</code>.</p>
+
+<p>Any event in <code>events</code> that specifies more than one channel to trigger on will result in
+an error. Providing an array of more than 10 events to trigger will also result in an error.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">func</span> <span class="nf">trigger</span><span class="p">(</span><span class="nv">events</span><span class="p">:</span> <span class="p">[</span><span class="kt"><a href="../Structs/Event.html">Event</a></span><span class="p">],</span>
+                    <span class="nv">callback</span><span class="p">:</span> <span class="kd">@escaping</span> <span class="p">(</span><span class="kt">Result</span><span class="o">&lt;</span><span class="p">[</span><span class="kt"><a href="../Structs/ChannelInfo.html">ChannelInfo</a></span><span class="p">],</span> <span class="kt"><a href="../Enums/PusherError.html">PusherError</a></span><span class="o">&gt;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kt">Void</span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>events</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>An array of events to trigger.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>callback</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A closure that returns a <code>Result</code> containing an array of <code><a href="../Structs/ChannelInfo.html">ChannelInfo</a></code> instances
+      (where the instance at index <code>i</code> corresponds to the channel for <code>events[i]</code>,
+      or a <code><a href="../Enums/PusherError.html">PusherError</a></code> if the operation fails for some reason.
+      If the <code>attributeOptions</code> on the <code>event</code> are not set, an empty information
+      array will be returned.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            <div class="task-group">
+              <div class="task-name-container">
+                <a name="/Webhook%20verification"></a>
+                <a name="//apple_ref/swift/Section/Webhook verification" class="dashAnchor"></a>
+                <div class="section-name-container">
+                  <a class="section-name-link" href="#/Webhook%20verification"></a>
+                  <h3 class="section-name"><p>Webhook verification</p>
+</h3>
+                </div>
+              </div>
+              <ul>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6PusherAAC13verifyWebhook7request8callbacky10Foundation10URLRequestV_ys6ResultOyAA0C0VAA0A5ErrorOGctF"></a>
+                    <a name="//apple_ref/swift/Method/verifyWebhook(request:callback:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6PusherAAC13verifyWebhook7request8callbacky10Foundation10URLRequestV_ys6ResultOyAA0C0VAA0A5ErrorOGctF">verifyWebhook(request:<wbr>callback:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Verifies that a received Webhook request is genuine and was received from Pusher.</p>
+
+<p>Webhook endpoints are accessible to the global internet. Therefore, verifying that
+a Webhook request originated from Pusher is important. Valid Webhooks contain special headers
+that contain a copy of your application key and a HMAC signature of the Webhook payload (i.e. its body).</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">func</span> <span class="nf">verifyWebhook</span><span class="p">(</span><span class="nv">request</span><span class="p">:</span> <span class="kt">URLRequest</span><span class="p">,</span>
+                          <span class="nv">callback</span><span class="p">:</span> <span class="kd">@escaping</span> <span class="p">(</span><span class="kt">Result</span><span class="o">&lt;</span><span class="kt"><a href="../Structs/Webhook.html">Webhook</a></span><span class="p">,</span> <span class="kt"><a href="../Enums/PusherError.html">PusherError</a></span><span class="o">&gt;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kt">Void</span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>request</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>The received Webhook request.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>callback</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A closure that returns a <code>Result</code> containing a verified <code><a href="../Structs/Webhook.html">Webhook</a></code> and the
+      events that were sent with it (which are decrypted if needed), or a <code><a href="../Enums/PusherError.html">PusherError</a></code>
+      if the operation fails for some reason.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            <div class="task-group">
+              <div class="task-name-container">
+                <a name="/Private%20and%20presence%20channel%20subscription%20authentication"></a>
+                <a name="//apple_ref/swift/Section/Private and presence channel subscription authentication" class="dashAnchor"></a>
+                <div class="section-name-container">
+                  <a class="section-name-link" href="#/Private%20and%20presence%20channel%20subscription%20authentication"></a>
+                  <h3 class="section-name"><p>Private and presence channel subscription authentication</p>
+</h3>
+                </div>
+              </div>
+              <ul>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6PusherAAC12authenticate7channel8socketId8userData8callbackyAA7ChannelV_SSAA012PresenceUserG0VSgys6ResultOyAA19AuthenticationTokenVAA0A5ErrorOGctF"></a>
+                    <a name="//apple_ref/swift/Method/authenticate(channel:socketId:userData:callback:)" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6PusherAAC12authenticate7channel8socketId8userData8callbackyAA7ChannelV_SSAA012PresenceUserG0VSgys6ResultOyAA19AuthenticationTokenVAA0A5ErrorOGctF">authenticate(channel:<wbr>socketId:<wbr>userData:<wbr>callback:<wbr>)</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Generates an authentication token that can be returned to a user client that is attempting
+to subscribe to a private or presence <code><a href="../Structs/Channel.html">Channel</a></code>, which requires authentication with the server.</p>
+
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">func</span> <span class="nf">authenticate</span><span class="p">(</span><span class="nv">channel</span><span class="p">:</span> <span class="kt"><a href="../Structs/Channel.html">Channel</a></span><span class="p">,</span>
+                         <span class="nv">socketId</span><span class="p">:</span> <span class="kt">String</span><span class="p">,</span>
+                         <span class="nv">userData</span><span class="p">:</span> <span class="kt"><a href="../Structs/PresenceUserData.html">PresenceUserData</a></span><span class="p">?</span> <span class="o">=</span> <span class="kc">nil</span><span class="p">,</span>
+                         <span class="nv">callback</span><span class="p">:</span> <span class="kd">@escaping</span> <span class="p">(</span><span class="kt">Result</span><span class="o">&lt;</span><span class="kt"><a href="../Structs/AuthenticationToken.html">AuthenticationToken</a></span><span class="p">,</span> <span class="kt"><a href="../Enums/PusherError.html">PusherError</a></span><span class="o">&gt;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kt">Void</span><span class="p">)</span></code></pre>
+
+                        </div>
+                      </div>
+                      <div>
+                        <h4>Parameters</h4>
+                        <table class="graybox">
+                          <tbody>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>channel</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>The channel for which to generate the authentication token.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>socketId</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>The socket identifier for the connected user.</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>userData</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>The data to generate an authentication token for a subscription attempt
+      to a presence channel.
+      (This is required when autenticating a presence channel, and should otherwise
+      be <code>nil</code>).</p>
+                                </div>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <code>
+                                <em>callback</em>
+                                </code>
+                              </td>
+                              <td>
+                                <div>
+                                  <p>A closure that returns a <code>Result</code> containing a <code><a href="../Structs/AuthenticationToken.html">AuthenticationToken</a></code> for subscribing
+      to a private or presence channel, or a <code><a href="../Enums/PusherError.html">PusherError</a></code> if the operation fails
+      for some reason.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </section>
+        </section>
+        <section id="footer">
+          <p>&copy; 2021 <a class="link" href="" target="_blank" rel="external"></a>. All rights reserved. (Last updated: 2021-05-11)</p>
+          <p>Generated by <a class="link" href="https://github.com/realm/jazzy" target="_blank" rel="external">jazzy ♪♫ v0.13.6</a>, a <a class="link" href="https://realm.io" target="_blank" rel="external">Realm</a> project.</p>
+        </section>
+      </article>
+    </div>
+  </body>
+</div>
+</html>

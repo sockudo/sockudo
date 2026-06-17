@@ -1,0 +1,33 @@
+name: Github Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup git
+        run: |
+          git config user.email "ci@sockudo.io"
+          git config user.name "Sockudo CI"
+      - name: Prepare description
+        run: |
+          csplit -s CHANGELOG.md "/##/" {1}
+          cat xx01 > CHANGELOG.tmp
+      - name: Prepare tag
+        run: |
+          export TAG=$(head -1 CHANGELOG.tmp | cut -d' ' -f2)
+          echo "TAG=$TAG" >> $GITHUB_ENV
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          body_path: CHANGELOG.tmp
+          draft: false
+          prerelease: false

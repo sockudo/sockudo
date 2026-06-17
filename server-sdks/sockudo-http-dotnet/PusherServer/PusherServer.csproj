@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\Root.Build.props" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>PusherServer</AssemblyName>
+    <PackageId>PusherServer</PackageId>
+    <SignAssembly>false</SignAssembly>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(SignAssembly) == 'true'">
+    <AssemblyOriginatorKeyFile>..\PusherServer.snk</AssemblyOriginatorKeyFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="Properties\icon-128.png" Pack="true" PackagePath="\" />
+    <None Include="..\README.md" Link="Properties\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\CHANGELOG.md" Link="Properties\CHANGELOG.md" Pack="true" PackagePath="\" />
+    <None Include="..\PusherServer.public.snk" Link="Properties\PusherServer.public.snk" Pack="true" PackagePath="\" />
+    <Compile Remove="Properties\AssemblyInfo.Signed.cs" Condition="$(SignAssembly) != 'true'" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$(SignAssembly) == 'true'">
+    <Compile Remove="Properties\AssemblyInfo.cs" />
+    <None Include="..\PusherServer.snk" Link="PusherServer.snk" Pack="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NaCl.Net" Version="0.1.13" />
+  </ItemGroup>
+
+</Project>

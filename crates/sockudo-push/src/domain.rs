@@ -1,14 +1,17 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use aws_lc_rs::pbkdf2;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hmac::{Hmac, KeyInit, Mac};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
+use sonic_rs::Value;
+use sonic_rs::prelude::*;
 use thiserror::Error;
 use url::{Host, Url};
 use zeroize::Zeroize;
@@ -30,8 +33,6 @@ pub const DEFAULT_PUSH_FANOUT_SHARD_SIZE: u64 = 100_000;
 pub const DEFAULT_PUSH_FANOUT_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_PUSH_PROVIDER_BATCH_SIZE: usize = 500;
 pub const DEFAULT_PUSH_STATUS_RETENTION_DAYS: u64 = 30;
-
-type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PushDomainError {
@@ -138,32 +139,27 @@ fn hash_device_identity_token_with_salt(token: &str, salt: &[u8]) -> SecretStrin
 }
 
 fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
-    let iterations = iterations.max(1);
-    let mut mac = HmacSha256::new_from_slice(password).expect("HMAC can take keys of any size");
-    mac.update(salt);
-    mac.update(&1_u32.to_be_bytes());
-    let mut u = mac.finalize().into_bytes();
-    let mut output = u;
-
-    for _ in 1..iterations {
-        let mut mac = HmacSha256::new_from_slice(password).expect("HMAC can take keys of any size");
-        mac.update(&u);
-        u = mac.finalize().into_bytes();
-        for (left, right) in output.iter_mut().zip(u.iter()) {
-            *left ^= right;
-        }
-    }
-
-    output.into()
+    let iterations = NonZeroU32::new(iterations.max(1)).expect("iterations are clamped to >= 1");
+    let mut output = [0_u8; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        iterations,
+        salt,
+        password,
+        &mut output,
+    );
+    output
 }
 
 fn fixed_length_secure_compare(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0_u8;
-    for (left, right) in a.bytes().zip(b.bytes()) {
-        diff |= left ^ right;
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let max_len = a_bytes.len().max(b_bytes.len());
+    let mut diff = a_bytes.len() ^ b_bytes.len();
+    for index in 0..max_len {
+        let left = a_bytes.get(index).copied().unwrap_or(0);
+        let right = b_bytes.get(index).copied().unwrap_or(0);
+        diff |= usize::from(left ^ right);
     }
     diff == 0
 }
@@ -892,14 +888,12 @@ impl PublishIntent {
     }
 
     pub fn idempotency_key(&self) -> String {
-        let mut canonical =
-            serde_json::to_value(self).expect("PublishIntent serialization is infallible");
+        let mut canonical = to_json_value(self).expect("PublishIntent serialization is infallible");
         canonicalize_intent_json(&mut canonical);
-        stable_hash(
-            serde_json::to_vec(&canonical)
-                .expect("canonical intent serialization is infallible")
-                .as_slice(),
-        )
+        let mut bytes = Vec::new();
+        write_canonical_json(&canonical, &mut bytes)
+            .expect("canonical intent serialization is infallible");
+        stable_hash(bytes.as_slice())
     }
 }
 
@@ -1253,7 +1247,7 @@ pub struct RetryScheduleEntry {
     pub stage: String,
     pub key: String,
     pub not_before_ms: u64,
-    pub payload: serde_json::Value,
+    pub payload: sonic_rs::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1283,7 +1277,7 @@ impl PushCursor {
     pub fn encode(&self) -> Result<String, PushDomainError> {
         require_non_empty("appId", &self.app_id)?;
         require_non_empty("position", &self.position)?;
-        let bytes = serde_json::to_vec(self).map_err(|_| PushDomainError::CursorDecode)?;
+        let bytes = sonic_rs::to_vec(self).map_err(|_| PushDomainError::CursorDecode)?;
         if bytes.len() > MAX_CURSOR_BYTES {
             return Err(PushDomainError::TooLarge {
                 field: "cursor",
@@ -1304,7 +1298,7 @@ impl PushCursor {
             });
         }
         let cursor: Self =
-            serde_json::from_slice(&bytes).map_err(|_| PushDomainError::CursorDecode)?;
+            sonic_rs::from_slice(&bytes).map_err(|_| PushDomainError::CursorDecode)?;
         if cursor.app_id != expected_app_id {
             return Err(PushDomainError::CursorAppMismatch {
                 expected: expected_app_id.to_owned(),
@@ -1395,7 +1389,7 @@ fn require_json_bound(
     value: &Value,
     max_bytes: usize,
 ) -> Result<(), PushDomainError> {
-    let len = serde_json::to_vec(value)
+    let len = sonic_rs::to_vec(value)
         .map_err(|_| PushDomainError::InvalidField {
             field,
             reason: "must be serializable JSON",
@@ -1405,6 +1399,16 @@ fn require_json_bound(
         return Err(PushDomainError::TooLarge { field, max_bytes });
     }
     Ok(())
+}
+
+pub(crate) fn to_json_value<T: Serialize>(value: &T) -> Result<Value, sonic_rs::Error> {
+    let bytes = sonic_rs::to_vec(value)?;
+    sonic_rs::from_slice(&bytes)
+}
+
+pub(crate) fn from_json_value<T: DeserializeOwned>(value: &Value) -> Result<T, sonic_rs::Error> {
+    let bytes = sonic_rs::to_vec(value)?;
+    sonic_rs::from_slice(&bytes)
 }
 
 pub(crate) fn validate_web_push_endpoint(endpoint: &str) -> Result<(), PushDomainError> {
@@ -1522,29 +1526,11 @@ fn is_private_or_local_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn canonicalize_json(value: &mut Value) {
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                canonicalize_json(item);
-            }
-        }
-        Value::Object(map) => {
-            let mut sorted = BTreeMap::new();
-            for (key, mut value) in std::mem::take(map) {
-                canonicalize_json(&mut value);
-                sorted.insert(key, value);
-            }
-            map.extend(sorted);
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
-}
-
 fn canonicalize_intent_json(value: &mut Value) {
-    canonicalize_json(value);
-    if let Value::Object(map) = value
-        && let Some(Value::Array(overrides)) = map.get_mut("providerOverrides")
+    if let Some(map) = value.as_object_mut()
+        && let Some(overrides) = map
+            .get_mut(&"providerOverrides")
+            .and_then(Value::as_array_mut)
     {
         overrides.sort_by(|left, right| {
             left.get("provider")
@@ -1558,6 +1544,39 @@ fn canonicalize_intent_json(value: &mut Value) {
                 )
         });
     }
+}
+
+fn write_canonical_json(value: &Value, out: &mut Vec<u8>) -> Result<(), sonic_rs::Error> {
+    if let Some(items) = value.as_array() {
+        out.push(b'[');
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            write_canonical_json(item, out)?;
+        }
+        out.push(b']');
+        return Ok(());
+    }
+
+    if let Some(map) = value.as_object() {
+        out.push(b'{');
+        let mut entries = map.iter().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        for (index, (key, value)) in entries.into_iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.extend_from_slice(sonic_rs::to_string(key)?.as_bytes());
+            out.push(b':');
+            write_canonical_json(value, out)?;
+        }
+        out.push(b'}');
+        return Ok(());
+    }
+
+    out.extend_from_slice(sonic_rs::to_string(value)?.as_bytes());
+    Ok(())
 }
 
 fn redact_error_reason(value: String) -> String {
@@ -1600,7 +1619,7 @@ pub fn stable_hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use sonic_rs::json;
 
     fn secret(value: &str) -> SecretString {
         SecretString::new(value).unwrap()
@@ -1641,7 +1660,7 @@ mod tests {
     #[test]
     fn device_details_use_camel_case_serde_and_provider_recipient_shape() {
         let device = sample_device();
-        let encoded = serde_json::to_value(&device).unwrap();
+        let encoded = to_json_value(&device).unwrap();
 
         assert_eq!(encoded["appId"], "app-1");
         assert_eq!(encoded["clientId"], "client-1");
@@ -1659,7 +1678,7 @@ mod tests {
             "fcm-token-secret"
         );
 
-        let decoded: DeviceDetails = serde_json::from_value(encoded).unwrap();
+        let decoded: DeviceDetails = from_json_value(&encoded).unwrap();
         assert_eq!(decoded, device);
     }
 
@@ -1755,6 +1774,18 @@ mod tests {
         assert!(verify_device_identity_token(token.expose_secret(), &hash));
         assert!(!verify_device_identity_token("wrong-token", &hash));
         assert!(!hash.expose_secret().contains(token.expose_secret()));
+    }
+
+    #[test]
+    fn pbkdf2_sha256_matches_known_test_vectors() {
+        assert_eq!(
+            hex::encode(pbkdf2_sha256(b"password", b"salt", 1)),
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+        );
+        assert_eq!(
+            hex::encode(pbkdf2_sha256(b"password", b"salt", 2)),
+            "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43"
+        );
     }
 
     #[test]

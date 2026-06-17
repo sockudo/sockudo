@@ -1,0 +1,189 @@
+---
+title: AI Transport overview
+description: How Sockudo maps AI Transport sessions onto existing V2 realtime, history, recovery, push, and presence primitives.
+icon: Bot
+---
+
+AI Transport is a Protocol V2 convention layer. It does not replace Sockudo's realtime protocol or
+create AI-only storage. A session is a channel, every turn is normal channel traffic, and the
+server supplies durable, ordered, recoverable primitives that SDKs reduce into UI state.
+
+Sockudo AI Transport is heavily inspired by [Ably AI Transport](https://ably.com/docs/ai-transport).
+Ably's public AI Transport docs and SDK were the main product inspiration; Sockudo adapts that
+model to Protocol V2, versioned messages, durable history, presence, push, and the local
+`@sockudo/client` SDK.
+
+Enable it with the `ai-transport` Cargo feature and runtime config:
+
+```toml
+[ai_transport]
+enabled = true
+
+[[ai_transport.channels]]
+prefix = "private-ai-"
+```
+
+## End-to-end model
+
+```mermaid
+flowchart LR
+  U[User device] -->|ai-input| C[AI session channel]
+  C -->|durable create| H[(History store)]
+  C -->|versioned create/append/update| V[(Version store)]
+  A[Agent worker] -->|ai-output stream| C
+  P[Provider] -->|tokens/tools/reasoning| A
+  C -->|fanout + rollup| U
+  C -->|presence| M[Other devices]
+  C -->|complete event| N[Push notifications]
+```
+
+The durable channel is the source of truth. HTTP streaming can start a turn, but the answer is no
+longer tied to that HTTP response. A browser refresh, mobile handoff, tab close, or temporary
+network loss can recover from the same channel history.
+
+## The nine primitives
+
+| Primitive | Sockudo subsystem |
+| --- | --- |
+| Session | One channel, usually private or presence, for a user/agent conversation. |
+| Input | `ai-input` channel event from a verified user-capable connection or trusted server. |
+| Output | `ai-output` mutable message created and appended by the agent/server side. |
+| Turn lifecycle | `ai-turn-start`, `ai-turn-end`, and `ai-cancel` events with bounded `extras.ai.transport` headers. |
+| Mutable state | Existing versioned messages: create, update, delete, append, summary. |
+| Replay | Durable history, rewind, `until_attach`, and hot-to-durable recovery. |
+| Identity | V2 capability tokens, signed channel auth, and server app-key HTTP auth. |
+| Agent state | Presence channels plus V2 `sockudo:presence_update`. |
+| Notifications | Existing push device/channel-subscription pipeline and optional `[[push_rules]]`. |
+
+## Turn lifecycle
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Sockudo
+  participant Agent
+  participant Store as History/version store
+
+  Client->>Sockudo: ai-input create
+  Sockudo->>Store: persist input
+  Agent->>Sockudo: ai-turn-start
+  Agent->>Sockudo: ai-output create
+  loop provider stream
+    Agent->>Sockudo: message.append
+    Sockudo-->>Client: rolled-up append fanout
+  end
+  Agent->>Sockudo: ai-turn-end complete
+  Sockudo->>Store: final aggregate visible to history
+```
+
+`ai-output` is a normal mutable message. Streaming text, reasoning, tool input, tool output, and
+source metadata are encoded as append/update operations by the SDK codec. Late joiners read the
+aggregated visible state, while conformance, history, webhooks, and push can still observe the
+original operation log.
+
+## What already exists
+
+These features are not new AI-only subsystems:
+
+- `MessageAction` and `VersionStore` for mutable messages.
+- `HistoryStore`, rewind, and two-tier recovery.
+- Presence and presence-history.
+- Annotation publish/delete/summary projection.
+- Push providers, device registrations, channel subscriptions, publish status, queues, retries,
+  feedback, and scheduler.
+- Protocol V2 capability tokens and revocation.
+- V1 isolation: V1 clients keep Pusher-compatible output.
+
+## What `ai-transport` adds
+
+The feature adds validation and operational conventions:
+
+- well-known AI event names
+- bounded `extras.ai.transport` and `extras.ai.codec`
+- anti-spoof checks for `*-client-id` headers
+- stream lifecycle tracking and active-stream limits
+- append rollup as WebSocket egress optimization
+- orphan stream cancellation
+- conformance, benchmark, load, and chaos suites
+
+The formal wire reference is [AI Transport wire protocol](/specs/ai-transport-wire-protocol).
+The provider integration guide is [AI Transport providers](/docs/server/ai-transport-providers).
+
+## Minimal server route
+
+```ts
+import { streamText } from "ai";
+import { createServerTransport } from "@sockudo/ai-transport/vercel";
+
+export async function runTurn({ body, sockudo }) {
+  const transport = createServerTransport({
+    client: sockudo,
+    channelName: body.channelName,
+  });
+
+  const turn = transport.newTurn({
+    turnId: body.turnId,
+    invocationId: body.invocationId,
+    inputEventId: body.inputEventId,
+    clientId: body.clientId,
+  });
+
+  await turn.start();
+  const result = streamText({
+    model: "openai/gpt-5-mini",
+    prompt: body.prompt,
+    abortSignal: turn.abortSignal,
+  });
+  await turn.streamResponse(result.toUIMessageStream());
+  await turn.end("complete");
+  transport.close();
+}
+```
+
+## Minimal client
+
+```ts
+import Sockudo from "@sockudo/client";
+import { Chat } from "@ai-sdk/vue";
+import { provideChatTransport } from "@sockudo/ai-transport/vercel/vue";
+
+const client = new Sockudo("app-key", {
+  wsHost: "realtime.example.com",
+  forceTLS: true,
+  protocolVersion: 2,
+  channelAuthorization: { endpoint: "/api/sockudo/channel-auth" },
+});
+
+const channelName = "private-ai:user-42:sess-01J";
+const provider = provideChatTransport({
+  api: "/api/chat",
+  channelName,
+  client,
+  clientId: "user-42",
+});
+
+const chat = new Chat({
+  id: channelName,
+  transport: provider.chatTransport.value,
+});
+
+await chat.sendMessage({ text: "Investigate the last failed deploy." });
+```
+
+## Session channel model
+
+Use channel names that encode tenant/user/session ownership in your backend, for example:
+
+```text
+private-ai:tenant-7:user-42:sess-01J...
+presence-ai:tenant-7:sess-01J...
+```
+
+Clients should never assert `client_id` or tenant identity in message bodies. Derive channel access
+from signed auth or capability-token claims, then scope `subscribe`, `publish`, `history`,
+`message_append_own`, and related capabilities to the exact channel or a narrow wildcard.
+
+## Compatibility
+
+AI Transport is V2-only. V1 connections can still coexist on the same server, but they do not see
+V2 extras, mutable-message fields, recovery frames, annotations, or AI validation semantics.

@@ -4,11 +4,24 @@
   "pages": [
     "configuration",
     "http-api",
+    "realtime-application-patterns",
     "scaling",
     "security",
     "observability",
     "history-recovery",
+    "mutable-messages",
     "webhooks",
-    "push-notifications"
+    "push-notifications",
+    "ai-transport-overview",
+    "ai-transport-conventions",
+    "ai-transport-providers",
+    "ai-transport-authentication",
+    "token-streaming-rollup",
+    "agent-presence",
+    "ai-transport-push-notifications",
+    "ai-transport-limits-quotas",
+    "ai-transport-production-checklist",
+    "ai-transport-production-ops",
+    "ai-transport-troubleshooting"
   ]
 }

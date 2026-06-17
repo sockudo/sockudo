@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>  Reference</title>
+    <link rel="stylesheet" type="text/css" href="css/jazzy.css" />
+    <link rel="stylesheet" type="text/css" href="css/highlight.css" />
+    <meta charset='utf-8'>
+    <script src="js/jquery.min.js" defer></script>
+    <script src="js/jazzy.js" defer></script>
+    
+    <script src="js/lunr.min.js" defer></script>
+    <script src="js/typeahead.jquery.js" defer></script>
+    <script src="js/jazzy.search.js" defer></script>
+  </head>
+  <body>
+    <a title="  Reference"></a>
+    <header>
+      <div class="content-wrapper">
+        <p><a href="index.html"> Docs</a> (100% documented)</p>
+        <p class="header-right">
+          <form role="search" action="search.json">
+            <input type="text" placeholder="Search documentation" data-typeahead>
+          </form>
+        </p>
+      </div>
+    </header>
+    <div class="content-wrapper">
+      <p id="breadcrumbs">
+        <a href="index.html"> Reference</a>
+        <img id="carat" src="img/carat.png" />
+          Reference
+      </p>
+    </div>
+    <div class="content-wrapper">
+      <nav class="sidebar">
+        <ul class="nav-groups">
+          <li class="nav-group-name">
+            <a href="Classes.html">Classes</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="Classes/Pusher.html">Pusher</a>
+              </li>
+            </ul>
+          </li>
+          <li class="nav-group-name">
+            <a href="Enums.html">Enumerations</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="Enums/ChannelFilter.html">ChannelFilter</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Enums/ChannelType.html">ChannelType</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Enums/PusherError.html">PusherError</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Enums/WebhookEventType.html">WebhookEventType</a>
+              </li>
+            </ul>
+          </li>
+          <li class="nav-group-name">
+            <a href="Structs.html">Structures</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="Structs/AuthenticationToken.html">AuthenticationToken</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/Channel.html">Channel</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/ChannelAttributeFetchOptions.html">ChannelAttributeFetchOptions</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/ChannelAttributes.html">ChannelAttributes</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/ChannelInfo.html">ChannelInfo</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/ChannelSummary.html">ChannelSummary</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/Event.html">Event</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/PresenceUserData.html">PresenceUserData</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/PusherClientOptions.html">PusherClientOptions</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/User.html">User</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/Webhook.html">Webhook</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/WebhookEvent.html">WebhookEvent</a>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </nav>
+      <article class="main-content">
+        <section>
+          <section class="section">
+            
+            <h1 id='pusher-channels-swift-rest-api-library' class='heading'>Pusher Channels Swift REST API Library</h1>
+
+<p><img src="https://github.com/pusher/pusher-http-swift/workflows/CI/badge.svg" alt="Build Status">
+<a href="https://github.com/pusher/pusher-http-swift/releases"><img src="https://img.shields.io/github/v/release/pusher/pusher-http-swift" alt="Latest Release"></a>
+<a href="https://pusher.github.io/pusher-http-swift/"><img src="https://img.shields.io/badge/Docs-here!-lightgrey" alt="API Docs"></a>
+<a href="https://swiftpackageindex.com/pusher/pusher-http-swift"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fpusher%2Fpusher-http-swift%2Fbadge%3Ftype%3Dplatforms" alt="Supported Platforms"></a>
+<a href="https://swiftpackageindex.com/pusher/pusher-http-swift"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fpusher%2Fpusher-http-swift%2Fbadge%3Ftype%3Dswift-versions" alt="Swift Versions"></a>
+<a href="http://twitter.com/Pusher"><img src="https://img.shields.io/badge/twitter-@Pusher-blue.svg?style=flat" alt="Twitter"></a>
+<a href="https://github.com/pusher/pusher-http-swift/blob/main/LICENSE"><img src="https://img.shields.io/github/license/pusher/pusher-http-swift" alt="LICENSE"></a></p>
+
+<p>A Swift library for interacting with the <a href="https://pusher.com/docs/channels/library_auth_reference/rest-api">Pusher Channels HTTP API</a>.</p>
+
+<p>Register for a <a href="https://pusher.com">Pusher</a> account, set up a Channels app and use the app credentials app as shown below.</p>
+
+<ul>
+<li><a href="#supported-platforms">Supported platforms</a></li>
+<li><a href="#installation">Installation</a></li>
+<li><a href="#usage">Usage</a></li>
+<li><a href="#documentation">Documentation</a></li>
+<li><a href="#reporting-bugs-and-requesting-features">Reporting bugs and requesting features</a></li>
+<li><a href="#credits">Credits</a></li>
+<li><a href="#license">License</a></li>
+</ul>
+<h2 id='supported-platforms' class='heading'>Supported platforms</h2>
+
+<ul>
+<li>Swift 5.3 and above</li>
+<li>Xcode 12.0 and above</li>
+</ul>
+<h3 id='deployment-targets' class='heading'>Deployment targets</h3>
+
+<ul>
+<li>iOS 13.0 and above</li>
+<li>macOS 10.15 and above</li>
+<li>tvOS 13.0 and above</li>
+</ul>
+<h2 id='installation' class='heading'>Installation</h2>
+
+<p>To integrate the library into your project using <a href="https://swift.org/package-manager/">Swift Package Manager</a>, you can add the library as a dependency in Xcode – see the <a href="https://developer.apple.com/documentation/xcode/adding_package_dependencies_to_your_app">docs</a>. The package repository URL is:</p>
+<pre class="highlight shell"><code>https://github.com/pusher/pusher-http-swift.git
+</code></pre>
+
+<p>Alternatively, you can add the library as a dependency in your <code>Package.swift</code> file. For example:</p>
+<pre class="highlight swift"><code><span class="c1">// swift-tools-version:5.3</span>
+<span class="kd">import</span> <span class="kt">PackageDescription</span>
+
+<span class="k">let</span> <span class="nv">package</span> <span class="o">=</span> <span class="kt">Package</span><span class="p">(</span>
+    <span class="nv">name</span><span class="p">:</span> <span class="s">"YourPackage"</span><span class="p">,</span>
+    <span class="nv">products</span><span class="p">:</span> <span class="p">[</span>
+        <span class="o">.</span><span class="nf">library</span><span class="p">(</span>
+            <span class="nv">name</span><span class="p">:</span> <span class="s">"YourPackage"</span><span class="p">,</span>
+            <span class="nv">targets</span><span class="p">:</span> <span class="p">[</span><span class="s">"YourPackage"</span><span class="p">]),</span>
+    <span class="p">],</span>
+    <span class="nv">dependencies</span><span class="p">:</span> <span class="p">[</span>
+        <span class="o">.</span><span class="nf">package</span><span class="p">(</span><span class="nv">url</span><span class="p">:</span> <span class="s">"https://github.com/pusher/pusher-http-swift.git"</span><span class="p">,</span>
+                 <span class="o">.</span><span class="nf">upToNextMajor</span><span class="p">(</span><span class="nv">from</span><span class="p">:</span> <span class="s">"0.1.0"</span><span class="p">)),</span>
+    <span class="p">],</span>
+    <span class="nv">targets</span><span class="p">:</span> <span class="p">[</span>
+        <span class="o">.</span><span class="nf">target</span><span class="p">(</span>
+            <span class="nv">name</span><span class="p">:</span> <span class="s">"YourPackage"</span><span class="p">,</span>
+            <span class="nv">dependencies</span><span class="p">:</span> <span class="p">[</span><span class="s">"Pusher"</span><span class="p">]),</span>
+    <span class="p">]</span>
+<span class="p">)</span>
+</code></pre>
+
+<p>You will then need to include an <code>import Pusher</code> statement in any source files where you wish to use the library.</p>
+<h2 id='usage' class='heading'>Usage</h2>
+
+<p>This section describes how to configure and use this library to act as an interface to your Pusher Channels app via the Channels HTTP API.</p>
+
+<p><strong>NOTES:</strong></p>
+
+<ul>
+<li>Certain initializers or methods can throw an error if invalid parameters are provided, or an operation fails for some reason. <strong>The use of <code>try!</code> in the code examples shown below is for brevity and is not recommended for a production application.</strong></li>
+</ul>
+<h3 id='configuration' class='heading'>Configuration</h3>
+
+<p>Use the credentials from your Pusher Channels application to create a new <code><a href="Classes/Pusher.html">Pusher</a></code> instance, which will act as your API client:</p>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">pusher</span> <span class="o">=</span> <span class="kt">Pusher</span><span class="p">(</span><span class="nv">options</span><span class="p">:</span> <span class="k">try!</span> <span class="kt">PusherClientOptions</span><span class="p">(</span><span class="nv">appId</span><span class="p">:</span> <span class="mi">123456</span><span class="p">,</span>
+                                                      <span class="nv">key</span><span class="p">:</span> <span class="s">"YOUR_APP_KEY"</span><span class="p">,</span>
+                                                      <span class="nv">secret</span><span class="p">:</span> <span class="s">"YOUR_APP_SECRET"</span><span class="p">,</span>
+                                                      <span class="nv">encryptionMasterKey</span><span class="p">:</span> <span class="s">"YOUR_BASE64_ENCODED_MASTER_KEY"</span><span class="p">,</span>
+                                                      <span class="nv">cluster</span><span class="p">:</span> <span class="s">"YOUR_APP_CLUSTER"</span><span class="p">))</span>
+</code></pre>
+
+<p><strong>NOTES:</strong></p>
+<div class="aside aside-see">
+    <p class="aside-title">See</p>
+    See the discussion in <a href="#end-to-end-encryption">End to end encryption</a> for details on how to generate a secure <code>encryptionMasterKey</code>.
+
+</div>
+<h3 id='triggering-events' class='heading'>Triggering events</h3>
+
+<p>To trigger an event on one or more channels, use the <code>trigger(event:callback:)</code> method.</p>
+<h4 id='a-single-channel' class='heading'>A single channel</h4>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">publicChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">publicEvent</span> <span class="o">=</span> <span class="k">try!</span> <span class="kt">Event</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-event"</span><span class="p">,</span>
+                             <span class="nv">data</span><span class="p">:</span> <span class="s">"hello world!"</span><span class="p">,</span>
+                             <span class="nv">channel</span><span class="p">:</span> <span class="n">publicChannel</span><span class="p">)</span>
+
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">trigger</span><span class="p">(</span><span class="nv">event</span><span class="p">:</span> <span class="n">publicEvent</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelSummaries</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelSummaries`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h4 id='multiple-channels' class='heading'>Multiple channels</h4>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">publicChannelOne</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">publicChannelTwo</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-other-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">multichannelEvent</span> <span class="o">=</span> <span class="k">try!</span> <span class="kt">Event</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-multichannel-event"</span><span class="p">,</span>
+                                   <span class="nv">data</span><span class="p">:</span> <span class="s">"hello world!"</span><span class="p">,</span>
+                                   <span class="nv">channels</span><span class="p">:</span> <span class="p">[</span><span class="n">publicChannelOne</span><span class="p">,</span>
+                                              <span class="n">publicChannelTwo</span><span class="p">])</span>
+
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">trigger</span><span class="p">(</span><span class="nv">event</span><span class="p">:</span> <span class="n">publicEvent</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelSummaries</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelSummaries`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h4 id='event-batches' class='heading'>Event batches</h4>
+
+<p>It&rsquo;s also possible to send multiple events with a single API call (max 10 events per call on multi-tenant clusters) using the <code>trigger(events:callback:)</code> method:</p>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">publicChannelOne</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">publicChannelTwo</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-other-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">eventOne</span> <span class="o">=</span> <span class="k">try!</span> <span class="kt">Event</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-event"</span><span class="p">,</span>
+                          <span class="nv">data</span><span class="p">:</span> <span class="s">"hello world!"</span><span class="p">,</span>
+                          <span class="nv">channel</span><span class="p">:</span> <span class="n">publicChannelOne</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">eventTwo</span> <span class="o">=</span> <span class="k">try!</span> <span class="kt">Event</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-other-event"</span><span class="p">,</span>
+                          <span class="nv">data</span><span class="p">:</span> <span class="s">"hello world, again!"</span><span class="p">,</span>
+                          <span class="nv">channel</span><span class="p">:</span> <span class="n">publicChannelTwo</span><span class="p">)</span>
+
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">trigger</span><span class="p">(</span><span class="nv">events</span><span class="p">:</span> <span class="p">[</span><span class="n">eventOne</span><span class="p">,</span> <span class="n">eventTwo</span><span class="p">]])</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelInfoList</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelInfoList`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h4 id='excluding-receipients' class='heading'>Excluding receipients</h4>
+
+<p>In some situations, you want to stop the client that broadcasts an event from receiving it. You can do this (by specifying its <code>socketId</code>)[<a href="https://pusher.com/docs/channels/server_api/excluding-event-recipients">https://pusher.com/docs/channels/server_api/excluding-event-recipients</a>] when triggering an event:</p>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">socketIdToExclude</span> <span class="o">=</span> <span class="s">"123.456"</span>
+<span class="k">let</span> <span class="nv">publicChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">excludedClientEvent</span> <span class="o">=</span> <span class="k">try!</span> <span class="kt">Event</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-event"</span><span class="p">,</span>
+                                     <span class="nv">data</span><span class="p">:</span> <span class="s">"hello world!"</span><span class="p">,</span>
+                                     <span class="nv">channel</span><span class="p">:</span> <span class="n">publicChannel</span><span class="p">,</span>
+                                     <span class="nv">socketId</span><span class="p">:</span> <span class="n">socketIdToExclude</span><span class="p">)</span>
+
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">trigger</span><span class="p">(</span><span class="nv">event</span><span class="p">:</span> <span class="n">excludedClientEvent</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelSummaries</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelSummaries`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h4 id='fetching-channel-attributes-on-triggering-events-a-href-https-pusher-com-docs-lab-experimental-program-experimental-a' class='heading'>Fetching channel attributes on triggering events [<a href="https://pusher.com/docs/lab#experimental-program">EXPERIMENTAL</a>]</h4>
+
+<p>It is possible to fetch attributes about the channel(s) that were triggered to with the <code>attributeOptions</code> parameter on <code><a href="Structs/Event.html">Event</a></code>. This works with both <code>trigger(…)</code> methods:</p>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">publicChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">publicEvent</span> <span class="o">=</span> <span class="k">try!</span> <span class="kt">Event</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-event"</span><span class="p">,</span>
+                             <span class="nv">data</span><span class="p">:</span> <span class="s">"hello world!"</span><span class="p">,</span>
+                             <span class="nv">channel</span><span class="p">:</span> <span class="n">publicChannel</span><span class="p">,</span>
+                             <span class="nv">attributeOptions</span><span class="p">:</span> <span class="p">[</span><span class="o">.</span><span class="n">subscriptionCount</span><span class="p">])</span>
+
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">trigger</span><span class="p">(</span><span class="nv">event</span><span class="p">:</span> <span class="n">publicEvent</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelSummaries</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelSummaries`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h3 id='authenticating-channel-subscriptions' class='heading'>Authenticating channel subscriptions</h3>
+
+<p>Users that attempt to subscribe to a private or presence channel must be first authenticated. An authentication token that can be returned to a user client that is attempting a subscription, which requires authentication with the server.</p>
+<h4 id='private-channels' class='heading'>Private channels</h4>
+
+<p>To authenticate a user that is attempting to subscribe to a private channel, you can use the <code>authenticate(channel:socketId:callback:)</code> method:</p>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">userSocketId</span> <span class="o">=</span> <span class="s">"123.456"</span>
+<span class="k">let</span> <span class="nv">privateChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">private</span><span class="p">)</span>
+
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">authenticate</span><span class="p">(</span><span class="nv">channel</span><span class="p">:</span> <span class="n">privateChannel</span><span class="p">,</span>
+                         <span class="nv">socketId</span><span class="p">:</span> <span class="n">userSocketId</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">authToken</span><span class="p">):</span>
+            <span class="c1">// Inspect `authToken`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h4 id='presence-channels' class='heading'>Presence channels</h4>
+
+<p>To authenticate a user that is attempting to subscribe to a presence channel, you must provide a <code>userData</code> parameter to the same method:</p>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">userData</span> <span class="o">=</span> <span class="kt">PresenceUserAuthData</span><span class="p">(</span><span class="nv">userId</span><span class="p">:</span> <span class="s">"USER_ID"</span><span class="p">,</span> <span class="nv">userInfo</span><span class="p">:</span> <span class="p">[</span><span class="s">"name"</span><span class="p">:</span> <span class="s">"Joe Bloggs"</span><span class="p">])</span>
+<span class="k">let</span> <span class="nv">presenceChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="n">presence</span><span class="p">)</span>
+
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">authenticate</span><span class="p">(</span><span class="nv">channel</span><span class="p">:</span> <span class="n">presenceChannel</span><span class="p">,</span>
+                         <span class="nv">socketId</span><span class="p">:</span> <span class="s">"USER_SOCKET_ID"</span><span class="p">,</span>
+                         <span class="nv">userData</span><span class="p">:</span> <span class="n">userData</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">authToken</span><span class="p">):</span>
+            <span class="c1">// Inspect `authToken`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h3 id='verifying-webhooks' class='heading'>Verifying webhooks</h3>
+
+<p>This library provides a way to verify that a received webhook request is genuine and was received from Pusher. Since a webhook endpoint is accessible to the global internet, verifying that webhook request originated from Pusher is important. Valid webhooks contain special headers which contain a copy of your application key and a HMAC signature of the webhook payload (i.e. its body):</p>
+<pre class="highlight swift"><code><span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">verifyWebhook</span><span class="p">(</span><span class="nv">request</span><span class="p">:</span> <span class="n">receivedWebhookRequest</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">webhook</span><span class="p">):</span>
+            <span class="c1">// Inspect `webhook`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h3 id='end-to-end-encryption' class='heading'>End to end encryption</h3>
+
+<p>This library supports end-to-end encryption of your private channels. This means that only you and your connected clients will be able to read your messages. Pusher cannot decrypt them. You can enable this feature by following these steps:</p>
+
+<ol>
+<li><p>You should first set up private channels. This involves <a href="https://pusher.com/docs/authenticating_users">creating an authentication endpoint on your server</a>.</p></li>
+<li><p>Next, generate your 32 byte master encryption key, encode it as Base-64 and pass it to the <code><a href="Structs/PusherClientOptions.html">PusherClientOptions</a></code> initializer. <strong>This is secret and you should never share this with anyone, not even Pusher.</strong></p></li>
+</ol>
+<pre class="highlight shell"><code>openssl rand <span class="nt">-base64</span> 32
+</code></pre>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">options</span> <span class="o">=</span> <span class="k">try!</span> <span class="kt">PusherClientOptions</span><span class="p">(</span><span class="nv">appId</span><span class="p">:</span> <span class="mi">123456</span><span class="p">,</span>
+                                       <span class="nv">key</span><span class="p">:</span> <span class="s">"YOUR_APP_KEY"</span><span class="p">,</span>
+                                       <span class="nv">secret</span><span class="p">:</span> <span class="s">"YOUR_APP_SECRET"</span><span class="p">,</span>
+                                       <span class="nv">encryptionMasterKey</span><span class="p">:</span> <span class="s">"&lt;MASTER KEY GENERATED BY PREVIOUS COMMAND&gt;"</span><span class="p">,</span>
+                                       <span class="nv">cluster</span><span class="p">:</span> <span class="s">"YOUR_APP_CLUSTER"</span><span class="p">)</span>
+</code></pre>
+
+<ol>
+<li><p>Channels where you wish to use end-to-end encryption should be of type <code>encrypted</code>.</p></li>
+<li><p>Subscribe to these channels in your client, and you&rsquo;re done! You can verify it is working by checking out the debug console on the <a href="dashboard">https://dashboard.pusher.com/</a> and seeing the scrambled ciphertext.</p></li>
+</ol>
+
+<p><strong>Important note: This will **not</strong> encrypt messages on channels that are not of type <code>encrypted</code>.**</p>
+
+<p><strong>Limitation:</strong> you cannot trigger a single event on multiple channels in a call to the <code>trigger(event:callback:)</code> method, e.g:</p>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">publicChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">encryptedChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-other-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="n">encrypted</span><span class="p">)</span>
+<span class="k">let</span> <span class="nv">event</span> <span class="o">=</span> <span class="k">try!</span> <span class="kt">Event</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-event"</span><span class="p">,</span>
+                       <span class="nv">data</span><span class="p">:</span> <span class="s">"hello world!"</span><span class="p">,</span>
+                       <span class="nv">channels</span><span class="p">:</span> <span class="p">[</span><span class="n">publicChannel</span><span class="p">,</span> <span class="n">encryptedChannel</span><span class="p">])</span>
+
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">trigger</span><span class="p">(</span><span class="nv">event</span><span class="p">:</span> <span class="n">event</span><span class="p">])</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelSummaries</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelSummaries`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+
+<p><strong>Rationale:</strong> the methods in this library map directly to individual Channels HTTP API requests. If we allowed triggering a single event on multiple channels (some encrypted, some unencrypted), then it would require two API requests: one where the event is encrypted to the encrypted channels, and one where the event is unencrypted for unencrypted channels.</p>
+<h3 id='application-state-queries' class='heading'>Application state queries</h3>
+
+<p>Information about the current state of your Channels application can be fetched using the library. This includes the state of occupied channels, and users subscribed to presence channels.</p>
+<h4 id='fetch-a-list-of-occupied-channels' class='heading'>Fetch a list of occupied channels</h4>
+
+<p>A list of any occupied channels for your Channels application can be fetched using the <code>channels(withFilter:attributeOptions:callback:)</code> method:</p>
+<pre class="highlight swift"><code><span class="c1">// Fetching all occupied channels</span>
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="n">channels</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelSummaries</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelSummaries`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// Fetching only occupied private channels</span>
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">channels</span><span class="p">(</span><span class="nv">withFilter</span><span class="p">:</span> <span class="o">.</span><span class="kd">private</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelSummaries</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelSummaries`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// Fetching all occupied presence channels (with user counts)</span>
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">channels</span><span class="p">(</span><span class="nv">withFilter</span><span class="p">:</span> <span class="o">.</span><span class="n">presence</span><span class="p">,</span>
+                     <span class="nv">attributeOptions</span><span class="p">:</span> <span class="o">.</span><span class="n">userCount</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelSummaries</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelSummaries`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h4 id='fetch-information-about-a-channel' class='heading'>Fetch information about a channel</h4>
+
+<p>Information about a channel for your Channels application can be fetched using the <code>channelInfo(for:attributeOptions:callback:)</code> method:</p>
+<pre class="highlight swift"><code><span class="c1">// Fetch information for a public channel</span>
+<span class="k">let</span> <span class="nv">publicChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">public</span><span class="p">)</span>
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">channelInfo</span><span class="p">(</span><span class="nv">for</span><span class="p">:</span> <span class="n">publicChannel</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelInfo</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelInfo`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// Fetch information for a private channel (with subscription count)</span>
+<span class="k">let</span> <span class="nv">privateChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="kd">private</span><span class="p">)</span>
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">channelInfo</span><span class="p">(</span><span class="nv">for</span><span class="p">:</span> <span class="n">privateChannel</span><span class="p">,</span>
+                        <span class="nv">attributeOptions</span><span class="p">:</span> <span class="p">[</span><span class="o">.</span><span class="n">subscriptionCount</span><span class="p">])</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelInfo</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelInfo`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// Fetch information for a presence channel (with user count)</span>
+<span class="k">let</span> <span class="nv">presenceChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="n">presence</span><span class="p">)</span>
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">channelInfo</span><span class="p">(</span><span class="nv">for</span><span class="p">:</span> <span class="n">presenceChannel</span><span class="p">,</span>
+                        <span class="nv">attributeOptions</span><span class="p">:</span> <span class="p">[</span><span class="o">.</span><span class="n">userCount</span><span class="p">])</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">channelInfo</span><span class="p">):</span>
+            <span class="c1">// Inspect `channelInfo`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+
+<p><strong>NOTES:</strong></p>
+
+<ul>
+<li>If the specified channel is not occupied (i.e. it has no subscribers), then the returned <code><a href="Structs/ChannelInfo.html">ChannelInfo</a></code> object will not contain any attributes (regardless of if they were requested) and its <code>isOccupied</code> property will be set to <code>false</code>.</li>
+</ul>
+<h4 id='fetch-a-list-of-users-subscribed-to-a-presence-channel' class='heading'>Fetch a list of users subscribed to a presence channel</h4>
+
+<p>A list of users subscribed to a presence channel for your Channels application can be fetched using the <code>users(for:callback:)</code> method:</p>
+<pre class="highlight swift"><code><span class="k">let</span> <span class="nv">presenceChannel</span> <span class="o">=</span> <span class="kt">Channel</span><span class="p">(</span><span class="nv">name</span><span class="p">:</span> <span class="s">"my-channel"</span><span class="p">,</span> <span class="nv">type</span><span class="p">:</span> <span class="o">.</span><span class="n">presence</span><span class="p">)</span>
+<span class="k">self</span><span class="o">.</span><span class="n">pusher</span><span class="o">.</span><span class="nf">users</span><span class="p">(</span><span class="nv">for</span><span class="p">:</span> <span class="n">presenceChannel</span><span class="p">)</span> <span class="p">{</span> <span class="n">result</span> <span class="k">in</span>
+    <span class="k">switch</span> <span class="n">result</span> <span class="p">{</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">success</span><span class="p">(</span><span class="k">let</span> <span class="nv">users</span><span class="p">):</span>
+            <span class="c1">// Inspect `users`</span>
+        <span class="k">case</span> <span class="o">.</span><span class="nf">failure</span><span class="p">(</span><span class="k">let</span> <span class="nv">error</span><span class="p">):</span>
+            <span class="c1">// Handle error</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<h2 id='documentation' class='heading'>Documentation</h2>
+
+<p>Full documentation of the library can be found in the <a href="https://pusher.github.io/pusher-http-swift/">API docs</a>.</p>
+<h2 id='reporting-bugs-and-requesting-features' class='heading'>Reporting bugs and requesting features</h2>
+
+<p>Please ensure you use the relevant issue template when reporting a bug or requesting a new feature. Also please check first to see if there is an open issue that already covers your bug report or new feature request.</p>
+<h2 id='credits' class='heading'>Credits</h2>
+
+<p>This library is owned and maintained by <a href="https://pusher.com/">Pusher</a>. It was originally created by <a href="https://github.com/danielrbrowne">Daniel Browne</a>.</p>
+
+<p>It uses code from the following third-party repositories:</p>
+
+<ul>
+<li><a href="https://github.com/danielrbrowne/APIota">APIota</a></li>
+<li><a href="https://github.com/Flight-School/AnyCodable">AnyCodable</a></li>
+<li><a href="https://github.com/apple/swift-crypto">swift-crypto</a></li>
+<li><a href="https://github.com/bitmark-inc/tweetnacl-swiftwrap">tweetnacl-swiftwrap</a></li>
+</ul>
+
+<p>The individual licenses for these libraries are included in the corresponding Swift files.</p>
+<h2 id='license' class='heading'>License</h2>
+
+<p>The library is completely open source and released under the MIT license. See <a href="https://github.com/pusher/pusher-http-swift/blob/main/LICENSE">LICENSE</a> for details if you want to use it in your own project(s).</p>
+
+          </section>
+        </section>
+        <section id="footer">
+          <p>&copy; 2021 <a class="link" href="" target="_blank" rel="external"></a>. All rights reserved. (Last updated: 2021-05-11)</p>
+          <p>Generated by <a class="link" href="https://github.com/realm/jazzy" target="_blank" rel="external">jazzy ♪♫ v0.13.6</a>, a <a class="link" href="https://realm.io" target="_blank" rel="external">Realm</a> project.</p>
+        </section>
+      </article>
+    </div>
+  </body>
+</div>
+</html>

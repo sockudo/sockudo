@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<head>
+  <title>Pusher Test</title>
+  <script src="https://js.pusher.com/5.0/pusher.min.js"></script>
+  <script>
+
+    // Enable pusher logging - don't include this in production
+    Pusher.logToConsole = true;
+
+    var pusher = new Pusher('your-app-key', {
+      cluster: 'your-app-cluster',
+      forceTLS: true,
+      authEndpoint: '/pusher/auth'
+    });
+
+    var channel = pusher.subscribe('presence-channel-test');
+    channel.bind('test-event', function(data) {
+      alert(JSON.stringify(data));
+    });
+  </script>
+</head>
+<body>
+  <h1>Pusher Test</h1>
+  <p>
+    Try publishing an event to channel <code>presence-channel-test</code>
+    with event name <code>test-event</code>.
+  </p>
+</body>

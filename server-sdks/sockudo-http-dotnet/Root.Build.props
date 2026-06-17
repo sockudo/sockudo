@@ -1,0 +1,26 @@
+<Project>
+  <Import Project=".\NetFxOnLinux.props" />
+
+  <PropertyGroup>
+    <Authors>Sockudo</Authors>
+    <Company>Sockudo</Company>
+    <Description>Sockudo .NET library for interacting with the HTTP API</Description>
+    <Copyright>Copyright © Sockudo</Copyright>
+    <RequireLicenseAcceptance>false</RequireLicenseAcceptance>
+    <PackageProjectUrl>https://github.com/sockudo/sockudo-http-dotnet</PackageProjectUrl>
+    <PackageReleaseNotes>See https://github.com/sockudo/sockudo-http-dotnet/blob/main/CHANGELOG.md for full details</PackageReleaseNotes>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>sockudo pusher-compatible realtime websocket</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageIcon>icon-128.png</PackageIcon>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.2" />
+  </ItemGroup>
+
+
+</Project>

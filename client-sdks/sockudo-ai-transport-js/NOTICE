@@ -1,0 +1,7 @@
+Sockudo AI Transport JavaScript SDK
+Copyright 2026 Sockudo contributors
+
+This product includes software developed for the Sockudo project.
+
+`@sockudo/ai-transport` is an API-parity implementation for Sockudo's AI
+Transport wire protocol and does not include Ably source code.

@@ -8,14 +8,17 @@ icon: MonitorSmartphone
 
 ## Install
 
+Clone the monorepo and reference the project directly until the NuGet package is published:
+
 ```bash
-dotnet add package Sockudo.Client
+git clone https://github.com/sockudo/sockudo.git
 ```
 
-```powershell
-Install-Package Sockudo.Client
+```xml
+<ProjectReference Include="../sockudo/client-sdks/sockudo-dotnet/src/Sockudo.Client/Sockudo.Client.csproj" />
 ```
 
+From this monorepo, use `client-sdks/sockudo-dotnet/src/Sockudo.Client/Sockudo.Client.csproj`.
 ## Connect
 
 ```csharp

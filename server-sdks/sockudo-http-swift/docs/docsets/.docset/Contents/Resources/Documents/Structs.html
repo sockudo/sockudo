@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Structures  Reference</title>
+    <link rel="stylesheet" type="text/css" href="css/jazzy.css" />
+    <link rel="stylesheet" type="text/css" href="css/highlight.css" />
+    <meta charset='utf-8'>
+    <script src="js/jquery.min.js" defer></script>
+    <script src="js/jazzy.js" defer></script>
+    
+    <script src="js/lunr.min.js" defer></script>
+    <script src="js/typeahead.jquery.js" defer></script>
+    <script src="js/jazzy.search.js" defer></script>
+  </head>
+  <body>
+    <a name="//apple_ref/swift/Section/Structures" class="dashAnchor"></a>
+    <a title="Structures  Reference"></a>
+    <header>
+      <div class="content-wrapper">
+        <p><a href="index.html"> Docs</a> (100% documented)</p>
+        <p class="header-right">
+          <form role="search" action="search.json">
+            <input type="text" placeholder="Search documentation" data-typeahead>
+          </form>
+        </p>
+      </div>
+    </header>
+    <div class="content-wrapper">
+      <p id="breadcrumbs">
+        <a href="index.html"> Reference</a>
+        <img id="carat" src="img/carat.png" />
+        Structures  Reference
+      </p>
+    </div>
+    <div class="content-wrapper">
+      <nav class="sidebar">
+        <ul class="nav-groups">
+          <li class="nav-group-name">
+            <a href="Classes.html">Classes</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="Classes/Pusher.html">Pusher</a>
+              </li>
+            </ul>
+          </li>
+          <li class="nav-group-name">
+            <a href="Enums.html">Enumerations</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="Enums/ChannelFilter.html">ChannelFilter</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Enums/ChannelType.html">ChannelType</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Enums/PusherError.html">PusherError</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Enums/WebhookEventType.html">WebhookEventType</a>
+              </li>
+            </ul>
+          </li>
+          <li class="nav-group-name">
+            <a href="Structs.html">Structures</a>
+            <ul class="nav-group-tasks">
+              <li class="nav-group-task">
+                <a href="Structs/AuthenticationToken.html">AuthenticationToken</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/Channel.html">Channel</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/ChannelAttributeFetchOptions.html">ChannelAttributeFetchOptions</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/ChannelAttributes.html">ChannelAttributes</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/ChannelInfo.html">ChannelInfo</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/ChannelSummary.html">ChannelSummary</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/Event.html">Event</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/PresenceUserData.html">PresenceUserData</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/PusherClientOptions.html">PusherClientOptions</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/User.html">User</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/Webhook.html">Webhook</a>
+              </li>
+              <li class="nav-group-task">
+                <a href="Structs/WebhookEvent.html">WebhookEvent</a>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </nav>
+      <article class="main-content">
+        <section>
+          <section class="section">
+            <h1>Structures</h1>
+            <p>The following structures are available globally.</p>
+
+          </section>
+          <section class="section task-group-section">
+            <div class="task-group">
+              <ul>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher19AuthenticationTokenV"></a>
+                    <a name="//apple_ref/swift/Struct/AuthenticationToken" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher19AuthenticationTokenV">AuthenticationToken</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>A token that contains an authentication signature that can be used when users
+subscribe to a private or presence <code><a href="Structs/Channel.html">Channel</a></code>.</p>
+
+<p>The token will contain any <code>userData</code> that was provided during
+the signing request. In the case of encrypted channels, it will also
+contain a base-64 encoded <code>sharedSecret</code>.</p>
+
+                        <a href="Structs/AuthenticationToken.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">AuthenticationToken</span> <span class="p">:</span> <span class="kt">Codable</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher7ChannelV"></a>
+                    <a name="//apple_ref/swift/Struct/Channel" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher7ChannelV">Channel</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>A channel that can be queried for information, or be published to using an <code><a href="Structs/Event.html">Event</a></code>.</p>
+
+                        <a href="Structs/Channel.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">Channel</span> <span class="p">:</span> <span class="kt">ChannelDescription</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher28ChannelAttributeFetchOptionsV"></a>
+                    <a name="//apple_ref/swift/Struct/ChannelAttributeFetchOptions" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher28ChannelAttributeFetchOptionsV">ChannelAttributeFetchOptions</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Attributes of an occupied <code><a href="Structs/Channel.html">Channel</a></code> that can be fetched from the Pusher HTTP API.</p>
+
+<p>The attributes that can be fetched for a channel are dependent on its <code><a href="Enums/ChannelType.html">ChannelType</a></code>.
+Attempting to fetch an attribute for a channel that does not support that attribute
+query will result in an error.</p>
+
+                        <a href="Structs/ChannelAttributeFetchOptions.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">ChannelAttributeFetchOptions</span> <span class="p">:</span> <span class="kt">OptionSet</span></code></pre>
+<pre class="highlight swift"><code><span class="kd">extension</span> <span class="kt">ChannelAttributeFetchOptions</span><span class="p">:</span> <span class="kt">CustomStringConvertible</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher17ChannelAttributesV"></a>
+                    <a name="//apple_ref/swift/Struct/ChannelAttributes" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher17ChannelAttributesV">ChannelAttributes</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>Channel attributes that can be fetched depending on the <code><a href="Structs/ChannelAttributeFetchOptions.html">ChannelAttributeFetchOptions</a></code>
+provided to a top-level API method (see: <code><a href="Classes/Pusher.html">Pusher</a></code>).</p>
+
+                        <a href="Structs/ChannelAttributes.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">ChannelAttributes</span> <span class="p">:</span> <span class="kt">SubscriptionCountable</span><span class="p">,</span> <span class="kt">UserCountable</span><span class="p">,</span> <span class="kt">Decodable</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher11ChannelInfoV"></a>
+                    <a name="//apple_ref/swift/Struct/ChannelInfo" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher11ChannelInfoV">ChannelInfo</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>An information record for an occupied <code><a href="Structs/Channel.html">Channel</a></code>.</p>
+
+<p>The channel <code>attributes</code> are populated depending on the <code><a href="Structs/ChannelAttributeFetchOptions.html">ChannelAttributeFetchOptions</a></code>
+provided to a top-level API method (see: <code><a href="Classes/Pusher.html">Pusher</a></code>).</p>
+
+                        <a href="Structs/ChannelInfo.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">ChannelInfo</span> <span class="p">:</span> <span class="kt">ChannelInfoRecord</span><span class="p">,</span> <span class="kt">Decodable</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher14ChannelSummaryV"></a>
+                    <a name="//apple_ref/swift/Struct/ChannelSummary" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher14ChannelSummaryV">ChannelSummary</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>A summarised information record for an occupied <code><a href="Structs/Channel.html">Channel</a></code>.</p>
+
+                        <a href="Structs/ChannelSummary.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">ChannelSummary</span> <span class="p">:</span> <span class="kt">ChannelSummaryRecord</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher5EventV"></a>
+                    <a name="//apple_ref/swift/Struct/Event" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher5EventV">Event</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>An event to trigger on a specific <code><a href="Structs/Channel.html">Channel</a></code> (or multiple channels).</p>
+
+                        <a href="Structs/Event.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">Event</span> <span class="p">:</span> <span class="kt">EventInfoRecord</span><span class="p">,</span> <span class="kt">Encodable</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher16PresenceUserDataV"></a>
+                    <a name="//apple_ref/swift/Struct/PresenceUserData" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher16PresenceUserDataV">PresenceUserData</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>User data required when generating an <code><a href="Structs/AuthenticationToken.html">AuthenticationToken</a></code> for a subscription attempt to a presence channel.</p>
+
+                        <a href="Structs/PresenceUserData.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">PresenceUserData</span> <span class="p">:</span> <span class="kt">Encodable</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher4UserV"></a>
+                    <a name="//apple_ref/swift/Struct/User" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher4UserV">User</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>An information record for a specific user currently subscribed to a presence <code><a href="Structs/Channel.html">Channel</a></code>.</p>
+
+                        <a href="Structs/User.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">User</span> <span class="p">:</span> <span class="kt">UserInfoRecord</span><span class="p">,</span> <span class="kt">Decodable</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher7WebhookV"></a>
+                    <a name="//apple_ref/swift/Struct/Webhook" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher7WebhookV">Webhook</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>A representation of a Webhook that contains an array of <code>events</code> related to changes
+in the internal state of a Pusher Channels application, which were received as a POST request
+to a user-specified Webhook URL.</p>
+
+<p>The contained events have been verified as geniune Webhooks that were received directly from Pusher.</p>
+
+                        <a href="Structs/Webhook.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">Webhook</span> <span class="p">:</span> <span class="kt">Codable</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher12WebhookEventV"></a>
+                    <a name="//apple_ref/swift/Struct/WebhookEvent" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher12WebhookEventV">WebhookEvent</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>An event that is contained within a received <code><a href="Structs/Webhook.html">Webhook</a></code>.</p>
+
+                        <a href="Structs/WebhookEvent.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">WebhookEvent</span> <span class="p">:</span> <span class="kt">WebhookEventRecord</span><span class="p">,</span> <span class="kt">Codable</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+                <li class="item">
+                  <div>
+                    <code>
+                    <a name="/s:6Pusher0A13ClientOptionsV"></a>
+                    <a name="//apple_ref/swift/Struct/PusherClientOptions" class="dashAnchor"></a>
+                    <a class="token" href="#/s:6Pusher0A13ClientOptionsV">PusherClientOptions</a>
+                    </code>
+                  </div>
+                  <div class="height-container">
+                    <div class="pointer-container"></div>
+                    <section class="section">
+                      <div class="pointer"></div>
+                      <div class="abstract">
+                        <p>A collection of configuration options for a <code><a href="Classes/Pusher.html">Pusher</a></code> Channels HTTP API client.</p>
+
+                        <a href="Structs/PusherClientOptions.html" class="slightly-smaller">See more</a>
+                      </div>
+                      <div class="declaration">
+                        <h4>Declaration</h4>
+                        <div class="language">
+                          <p class="aside-title">Swift</p>
+                          <pre class="highlight swift"><code><span class="kd">public</span> <span class="kd">struct</span> <span class="kt">PusherClientOptions</span></code></pre>
+
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </section>
+        </section>
+        <section id="footer">
+          <p>&copy; 2021 <a class="link" href="" target="_blank" rel="external"></a>. All rights reserved. (Last updated: 2021-05-11)</p>
+          <p>Generated by <a class="link" href="https://github.com/realm/jazzy" target="_blank" rel="external">jazzy ♪♫ v0.13.6</a>, a <a class="link" href="https://realm.io" target="_blank" rel="external">Realm</a> project.</p>
+        </section>
+      </article>
+    </div>
+  </body>
+</div>
+</html>

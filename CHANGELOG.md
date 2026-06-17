@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- AI Transport GA readiness gates, including `scripts/ai-transport-ga-gate.sh`, the release
+  readiness record in `docs/specs/ai-transport-ga-readiness.md`, and
+  `config/ai-transport.example.toml` for release artifacts.
+- Release-candidate evidence recorders for S14 fleet profiles, shared-Redis rolling upgrades, and
+  the full in-repo SDK compatibility matrix.
+- AI Transport wire-protocol v1 compatibility promise in
+  `docs/specs/ai-transport-wire-protocol.md`.
+
+### Changed
+
+- Docker release builds now use the workspace Rust toolchain version and include the push,
+  AI Transport, and benchmark workspace manifests during dependency-cache setup.
+
 ## [4.5.2] - 2026-06-13
 
 ### Fixed

@@ -1,0 +1,99 @@
+{
+  "name": "sockudo",
+  "description": "Node.js client to interact with the Sockudo REST API",
+  "version": "1.0.0",
+  "author": "Sockudo",
+  "homepage": "https://github.com/sockudo/sockudo-http-node#readme",
+  "bugs": {
+    "url": "https://github.com/sockudo/sockudo-http-node/issues"
+  },
+  "contributors": [
+    {
+      "name": "fabrik42",
+      "email": "fabrik42@gmail.com"
+    },
+    {
+      "name": "Jaewoong Kim",
+      "email": "jwoongkim@gmail.com"
+    },
+    {
+      "name": "Phil Leggetter",
+      "email": "phil@leggetter.co.uk"
+    },
+    {
+      "name": "Paweł Ledwoń",
+      "email": "me@ludvik.pl"
+    }
+  ],
+  "dependencies": {
+    "abort-controller": "^3.0.0",
+    "is-base64": "^1.1.0",
+    "node-fetch": "^2.7.0",
+    "tweetnacl": "^1.0.0",
+    "tweetnacl-util": "^0.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^14.14.6",
+    "@types/node-fetch": "^2.5.7",
+    "expect.js": "=0.3.1",
+    "express": "^4.22.1",
+    "https-proxy-agent": "^5.0.0",
+    "mocha": "^11.3.0",
+    "nock": "^12.0.3",
+    "oxfmt": "^0.4.0",
+    "oxlint": "^0.15.14",
+    "sinon": "=1.10.2",
+    "typescript": "^5.9.2",
+    "webpack": "^5.107.2",
+    "webpack-cli": "^7.0.3"
+  },
+  "overrides": {
+    "cipher-base": "^1.0.6",
+    "cookie": "^0.7.1",
+    "elliptic": "^6.6.1",
+    "form-data": "^3.0.4",
+    "lodash": "^4.17.23",
+    "pbkdf2": "^3.1.5",
+    "qs": "^6.14.0",
+    "serialize-javascript": "^7.0.5",
+    "sha.js": "^2.4.12",
+    "tar": "^6.2.1"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "local-test": "npx mocha 'tests/integration/**/*.js'",
+    "test": "npx mocha 'tests/{integration,remote}/**/*.js'",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prelocal-test": "npm run build",
+    "pretest": "npm run build",
+    "lint": "npx oxlint --config .oxlintrc.json src tests examples index.d.ts && npx oxfmt --check src tests examples index.d.ts package.json tsconfig.json .oxlintrc.json",
+    "format": "npx oxfmt src tests examples index.d.ts package.json tsconfig.json .oxlintrc.json"
+  },
+  "keywords": [
+    "sockudo",
+    "websockets",
+    "realtime"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sockudo/sockudo-http-node.git"
+  },
+  "files": [
+    "dist",
+    "index.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE.txt"
+  ],
+  "main": "dist/sockudo.js",
+  "types": "index.d.ts",
+  "engines": {
+    "node": ">=16"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

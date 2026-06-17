@@ -38,6 +38,24 @@ Content-Type: application/json
 
 Use `socket_id` to suppress echo back to the originating connection.
 
+When `ai_transport` and versioned messages are enabled for the target channel,
+AI events and publishes with `message_id` return serial acknowledgements under
+the channel entry. Retries with the same `message_id` or `X-Idempotency-Key`
+return the original serials without publishing a duplicate event.
+
+```json
+{
+  "channels": {
+    "ai:session-1": {
+      "message_serial": "00000000000000000001:test:00000000000000000001",
+      "history_serial": 1,
+      "delivery_serial": 1,
+      "version_serial": "00000000000000000001:test:00000000000000000001"
+    }
+  }
+}
+```
+
 ## Batch publish
 
 ```http
@@ -74,6 +92,19 @@ GET /apps/{app_id}/channels/{channel_name}/users
 
 Use state APIs for dashboards and admin tooling. Do not poll them as a substitute for realtime subscription events.
 
+For channels matched by `[ai_transport]`, `GET /apps/{app_id}/channels/{channel_name}`
+also includes:
+
+```json
+{
+  "ai": {
+    "active_streams": 1,
+    "last_history_serial": 42,
+    "message_count": 7
+  }
+}
+```
+
 ## History
 
 ```http
@@ -100,7 +131,23 @@ POST /apps/{app_id}/channels/{channel_name}/messages/{message_serial}/append
     "body": "edited message"
   },
   "description": "user edit",
-  "idempotency_key": "edit-msg-1-v2"
+  "op_id": "edit-msg-1-v2"
+}
+```
+
+Mutation responses preserve the existing fields and include serials for SDK
+ordering and retries:
+
+```json
+{
+  "channel": "ai:session-1",
+  "message_serial": "msg_123",
+  "action": "append",
+  "accepted": true,
+  "version_serial": "ver_456",
+  "history_serial": 12,
+  "delivery_serial": 34,
+  "status": "applied"
 }
 ```
 

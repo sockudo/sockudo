@@ -1,0 +1,48 @@
+[package]
+name = "sockudo-http"
+version = "1.0.0"
+edition = "2024"
+repository = "https://github.com/sockudo/sockudo-http-rust"
+description = "A Rust client for interacting with the Sockudo HTTP API"
+license-file = "LICENSE"
+
+[features]
+default = ["rustls-tls", "encryption"]
+# TLS backends (mutually exclusive)
+native-tls = ["reqwest/native-tls"]
+rustls-tls = ["reqwest/rustls-tls"]
+# Optional encryption support
+encryption = ["sodiumoxide", "aes-gcm", "chacha20poly1305"]
+
+[dependencies]
+# Core dependencies
+reqwest = { version = "^0.12", default-features = false, features = ["json", "gzip"] }
+serde = { version = "^1.0", features = ["derive"] }
+# Fast JSON (SIMD-accelerated)
+sonic-rs = "^0.5"
+tokio = { version = "1.0", features = ["full"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+thiserror = "2.0"
+url = "2.4"
+rand = "0.9.1"
+md5 = "0.7"
+regex = "1.9"
+hex = "0.4.3"
+subtle = "^2.6.1"
+zeroize = { version = "^1", features = ["zeroize_derive"] }
+
+# Optional encryption dependencies
+sodiumoxide = { version = "^0.2.7", optional = true }
+aes-gcm = { version = "0.10", optional = true }
+chacha20poly1305 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[workspace]
+
+[package.metadata.docs.rs]
+features = ["encryption"]
+rustdoc-args = ["--cfg", "docsrs"]

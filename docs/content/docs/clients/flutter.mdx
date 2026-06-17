@@ -8,9 +8,12 @@ icon: Smartphone
 
 ## Install
 
+Clone the monorepo and use a local path dependency until the package is published on `pub.dev`:
+
 ```yaml
 dependencies:
-  sockudo_flutter: ^0.1.0
+  sockudo_flutter:
+    path: ../sockudo/client-sdks/sockudo-flutter
 ```
 
 ```dart

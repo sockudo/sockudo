@@ -1,0 +1,42 @@
+---
+title: Agent Presence
+description: Track AI agent status with Protocol V2 presence updates and optional disconnect grace.
+icon: Users
+---
+
+Agent presence uses normal presence channels plus the V2-only `sockudo:presence_update` frame. It lets an authenticated member update its presence data without leaving and re-entering the channel.
+
+Recommended status convention:
+
+```json
+{ "status": "idle" }
+{ "status": "thinking" }
+{ "status": "streaming" }
+```
+
+Send updates from a subscribed presence member:
+
+```json
+{
+  "event": "sockudo:presence_update",
+  "data": {
+    "channel": "presence-agent:session-123",
+    "data": { "status": "thinking" }
+  }
+}
+```
+
+Limits and access:
+
+- Protocol V2 only.
+- The connection must already be a member of the presence channel.
+- Capability-token connections need `presence` permission for the channel.
+- `data` is capped at 1 KiB.
+- Updates are rate limited per app/channel/member by `[presence].update_rate_limit_per_member_per_second`, default `10`.
+- V1/Pusher clients do not receive update events.
+
+Late joiners see the latest member data in the presence snapshot returned with `subscription_succeeded`.
+
+`[presence].ungraceful_timeout_seconds` controls abnormal disconnect grace. The default is `0`, preserving legacy immediate `member_removed` timing. For agent channels, use `15` seconds so transient transport loss does not produce a leave/enter flap. Clean unsubscribe and clean WebSocket close still remove immediately.
+
+Presence update ordering is independent from channel message ordering. Treat presence status as latest-known member state, not as a causal marker for `ai-output` or mutable-message delivery.

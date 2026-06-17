@@ -1,0 +1,29 @@
+excluded:
+  - .build
+  - Tests/XCTestManifests.swift
+  - Tests/*/XCTestManifests.swift
+  - Tests/LinuxMain.swift
+
+opt_in_rules:
+  - closure_end_indentation
+  - closure_spacing
+  - explicit_init
+  - modifier_order
+  - prefer_self_type_over_type_of_self
+  - sorted_imports
+  - test_case_accessibility
+  - unneeded_parentheses_in_closure_argument
+  - vertical_whitespace_between_cases
+  - vertical_whitespace_closing_braces
+
+identifier_name:
+  excluded:
+  - id
+  - to
+  - ws
+
+inclusive_language:
+  override_allowed_terms:
+    - masterkey
+
+warning_threshold: 1

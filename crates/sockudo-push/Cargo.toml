@@ -12,7 +12,7 @@ default = ["memory"]
 memory = []
 testing = []
 monolith = []
-push-fcm = ["dep:jsonwebtoken", "dep:reqwest", "jsonwebtoken/rust_crypto"]
+push-fcm = ["dep:jsonwebtoken", "dep:reqwest", "jsonwebtoken/aws_lc_rs"]
 push-apns = ["dep:reqwest"]
 push-webpush = ["dep:reqwest", "dep:web-push-native"]
 push-hms = ["dep:reqwest"]
@@ -46,16 +46,17 @@ base64 = { workspace = true }
 dashmap = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
-hmac = { workspace = true }
 httpdate = { workspace = true }
 jsonwebtoken = { workspace = true, optional = true }
 rand = { workspace = true }
 reqwest = { workspace = true, optional = true }
+aws-lc-rs = { workspace = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
+metrics = { workspace = true }
 scylla = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 sha2 = { workspace = true }
+sonic-rs = { workspace = true }
 sqlx = { workspace = true, optional = true }
 surrealdb = { workspace = true, optional = true }
 surrealdb-types = { workspace = true, optional = true }
@@ -68,6 +69,8 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+hmac = { workspace = true }
+ring = { workspace = true }
 
 [[bench]]
 name = "push_pipeline_bench"

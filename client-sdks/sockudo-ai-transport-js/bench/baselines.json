@@ -1,0 +1,28 @@
+{
+  "bundle": {
+    "coreGzipBytes": 35840,
+    "reactIncrementalGzipBytes": 8192,
+    "vercelIncrementalGzipBytes": 15360,
+    "vercelReactIncrementalGzipBytes": 6144
+  },
+  "throughput": {
+    "singleStreamTokensPerSecond": 50000,
+    "concurrentFrameBudgetPercent": 30
+  },
+  "memory": {
+    "tenThousandMessageTreeRetainedBytes": 52428800,
+    "flatStreamRetainedGrowthBytes": 1048576
+  },
+  "latency": {
+    "sendLocalP50Ms": 5,
+    "sendLocalP99Ms": 20,
+    "tokenWireToViewP50Ms": 0.5
+  },
+  "react": {
+    "streamingCommitBudget": 64,
+    "stableGetMessagesBudget": 1
+  },
+  "regression": {
+    "allowedGrowthRatio": 1.1
+  }
+}

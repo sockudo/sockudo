@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check-release-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare tag
+        id: prepare_tag
+        continue-on-error: true
+        run: |
+          export TAG="$(cat .version)"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          export CHECK_TAG=$(git tag | grep $TAG)
+          if [[ $CHECK_TAG ]]; then
+            echo "Skipping because release tag already exists"
+            exit 1
+          fi
+      - name: Output
+        id: release_output
+        if: ${{ steps.prepare_tag.outcome == 'success' }}
+        run: echo "tag=${{ env.TAG }}" >> $GITHUB_OUTPUT
+    outputs:
+      tag: ${{ steps.release_output.outputs.tag }}
+
+  create-github-release:
+    runs-on: ubuntu-latest
+    needs: check-release-tag
+    if: ${{ needs.check-release-tag.outputs.tag }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare tag
+        run: |
+          export TAG=${{ needs.check-release-tag.outputs.tag }}
+          echo "TAG=$TAG" >> $GITHUB_ENV
+      - name: Setup git
+        run: |
+          git config user.email "ci@sockudo.io"
+          git config user.name "Sockudo CI"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false

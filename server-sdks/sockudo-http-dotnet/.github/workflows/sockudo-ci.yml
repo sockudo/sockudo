@@ -1,0 +1,82 @@
+name: Sockudo CI
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+
+concurrency:
+  group: sockudo-http-dotnet-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-format:
+    # net45/net472 require Windows; run format check there to cover all targets
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore sockudo-dotnet-server.sln
+
+      - name: Format check
+        run: dotnet format sockudo-dotnet-server.sln --verify-no-changes --no-restore
+
+  test:
+    needs: lint-and-format
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows builds all targets: net45, net472, netstandard1.3, netstandard2.0
+          - os: windows-latest
+          # Linux and macOS build only cross-platform netstandard targets
+          - os: ubuntu-latest
+            framework: netstandard1.3
+          - os: ubuntu-latest
+            framework: netstandard2.0
+          - os: macos-latest
+            framework: netstandard1.3
+          - os: macos-latest
+            framework: netstandard2.0
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.framework }}" ]; then
+            dotnet restore sockudo-dotnet-server.sln "/p:TargetFrameworks=${{ matrix.framework }}"
+          else
+            dotnet restore sockudo-dotnet-server.sln
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.framework }}" ]; then
+            dotnet build sockudo-dotnet-server.sln --no-restore --configuration Release "/p:TargetFrameworks=${{ matrix.framework }}"
+          else
+            dotnet build sockudo-dotnet-server.sln --no-restore --configuration Release
+          fi
+
+      - name: Run tests
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.framework }}" ]; then
+            dotnet test SockudoServer.Tests --no-build --configuration Release --verbosity normal \
+              --filter "FullyQualifiedName!~AcceptanceTests" \
+              "/p:TargetFrameworks=${{ matrix.framework }}"
+          else
+            dotnet test SockudoServer.Tests --no-build --configuration Release --verbosity normal \
+              --filter "FullyQualifiedName!~AcceptanceTests"
+          fi

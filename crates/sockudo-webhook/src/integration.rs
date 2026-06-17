@@ -410,6 +410,27 @@ impl WebhookIntegration {
         self.add_webhook("webhooks", job_data).await
     }
 
+    pub async fn send_member_updated(
+        &self,
+        app: &App,
+        channel: &str,
+        user_id: &str,
+        user_info: Value,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "member_updated").await {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "member_updated",
+            "channel": channel,
+            "user_id": user_id,
+            "user_info": user_info
+        });
+        let signature = format!("{}:{}:{}:member_updated", app.id, channel, user_id);
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
     pub async fn send_client_event(
         &self,
         app: &App,
@@ -461,6 +482,218 @@ impl WebhookIntegration {
         self.add_webhook("webhooks", job_data).await
     }
 
+    pub async fn send_ai_stream_cancelled(
+        &self,
+        app: &App,
+        channel: &str,
+        message_serial: &str,
+        reason: &str,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "ai_stream_cancelled").await {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "ai_stream_cancelled",
+            "channel": channel,
+            "message_serial": message_serial,
+            "reason": reason,
+        });
+        let signature = format!(
+            "{}:{}:{}:ai_stream_cancelled",
+            app.id, channel, message_serial
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
+    pub async fn send_ai_turn_started(
+        &self,
+        app: &App,
+        channel: &str,
+        turn_id: Option<&str>,
+        client_id: Option<&str>,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "ai_turn_started").await {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "ai_turn_started",
+            "channel": channel,
+            "turn_id": turn_id,
+            "client_id": client_id,
+        });
+        let signature = format!(
+            "{}:{}:{}:ai_turn_started",
+            app.id,
+            channel,
+            turn_id.unwrap_or("unknown")
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
+    pub async fn send_ai_turn_ended(
+        &self,
+        app: &App,
+        channel: &str,
+        turn_id: Option<&str>,
+        reason: &str,
+        error_code: Option<&str>,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "ai_turn_ended").await {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "ai_turn_ended",
+            "channel": channel,
+            "turn_id": turn_id,
+            "reason": reason,
+            "error_code": error_code,
+        });
+        let signature = format!(
+            "{}:{}:{}:{}:ai_turn_ended",
+            app.id,
+            channel,
+            turn_id.unwrap_or("unknown"),
+            reason
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
+    pub async fn send_ai_cancel_requested(
+        &self,
+        app: &App,
+        channel: &str,
+        turn_id: Option<&str>,
+        client_id: Option<&str>,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "ai_cancel_requested").await {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "ai_cancel_requested",
+            "channel": channel,
+            "turn_id": turn_id,
+            "client_id": client_id,
+        });
+        let signature = format!(
+            "{}:{}:{}:ai_cancel_requested",
+            app.id,
+            channel,
+            turn_id.unwrap_or("unknown")
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
+    pub async fn send_ai_stream_orphaned(
+        &self,
+        app: &App,
+        channel: &str,
+        message_serial: &str,
+        reason: &str,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "ai_stream_orphaned").await {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "ai_stream_orphaned",
+            "channel": channel,
+            "message_serial": message_serial,
+            "reason": reason,
+        });
+        let signature = format!(
+            "{}:{}:{}:ai_stream_orphaned",
+            app.id, channel, message_serial
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
+    pub async fn send_message_version_created(
+        &self,
+        app: &App,
+        channel: &str,
+        message_serial: &str,
+        version_serial: &str,
+        action: &str,
+    ) -> Result<()> {
+        if !self
+            .should_send_webhook(app, "message_version_created")
+            .await
+        {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "message_version_created",
+            "channel": channel,
+            "message_serial": message_serial,
+            "version_serial": version_serial,
+            "action": action,
+        });
+        let signature = format!(
+            "{}:{}:{}:{}:message_version_created",
+            app.id, channel, message_serial, version_serial
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
+    pub async fn send_annotation_created(
+        &self,
+        app: &App,
+        channel: &str,
+        message_serial: &str,
+        annotation_serial: &str,
+        annotation_type: &str,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "annotation_created").await {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "annotation_created",
+            "channel": channel,
+            "message_serial": message_serial,
+            "annotation_serial": annotation_serial,
+            "annotation_type": annotation_type,
+        });
+        let signature = format!(
+            "{}:{}:{}:{}:annotation_created",
+            app.id, channel, message_serial, annotation_serial
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
+    pub async fn send_annotation_deleted(
+        &self,
+        app: &App,
+        channel: &str,
+        message_serial: &str,
+        annotation_serial: &str,
+        deleted_annotation_serial: &str,
+        annotation_type: &str,
+    ) -> Result<()> {
+        if !self.should_send_webhook(app, "annotation_deleted").await {
+            return Ok(());
+        }
+        let event_obj = json!({
+            "name": "annotation_deleted",
+            "channel": channel,
+            "message_serial": message_serial,
+            "annotation_serial": annotation_serial,
+            "deleted_annotation_serial": deleted_annotation_serial,
+            "annotation_type": annotation_type,
+        });
+        let signature = format!(
+            "{}:{}:{}:{}:annotation_deleted",
+            app.id, channel, message_serial, annotation_serial
+        );
+        let job_data = self.create_job_data(app, vec![event_obj], &signature);
+        self.add_webhook("webhooks", job_data).await
+    }
+
     /// Sends a webhook when the subscription count for a channel changes.
     pub async fn send_subscription_count_changed(
         &self,
@@ -502,7 +735,7 @@ mod tests {
     use super::*;
     use sockudo_app::memory_app_manager::MemoryAppManager;
     use sockudo_core::app::{AppFeaturesPolicy, AppLimitsPolicy, AppPolicy};
-    use sockudo_core::webhook_types::{JobData, JobPayload};
+    use sockudo_core::webhook_types::{JobData, JobPayload, Webhook};
     use sockudo_queue::manager::QueueManagerFactory;
 
     async fn create_test_queue_manager() -> Arc<QueueManager> {
@@ -547,6 +780,101 @@ mod tests {
 
         let result = integration.send_cache_missed(&app, "test_channel").await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_ai_stream_cancelled() {
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec!["ai_stream_cancelled".to_string()],
+            ..Webhook::default()
+        }]);
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let config = WebhookConfig {
+            ..Default::default()
+        };
+        let queue_manager = create_test_queue_manager().await;
+        let integration = WebhookIntegration::new(config, app_manager, Some(queue_manager))
+            .await
+            .unwrap();
+
+        let result = integration
+            .send_ai_stream_cancelled(&app, "ai-chat", "msg-1", "orphan_timeout")
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_ai_observability_and_version_webhooks() {
+        let mut app = test_app();
+        app.policy.webhooks = Some(vec![Webhook {
+            event_types: vec![
+                "ai_turn_started".to_string(),
+                "ai_turn_ended".to_string(),
+                "ai_cancel_requested".to_string(),
+                "ai_stream_orphaned".to_string(),
+                "message_version_created".to_string(),
+                "annotation_created".to_string(),
+                "annotation_deleted".to_string(),
+            ],
+            ..Webhook::default()
+        }]);
+        let app_manager = Arc::new(MemoryAppManager::new());
+        let queue_manager = create_test_queue_manager().await;
+        let integration =
+            WebhookIntegration::new(WebhookConfig::default(), app_manager, Some(queue_manager))
+                .await
+                .unwrap();
+
+        assert!(
+            integration
+                .send_ai_turn_started(&app, "ai-chat", Some("turn-1"), Some("client-1"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            integration
+                .send_ai_turn_ended(&app, "ai-chat", Some("turn-1"), "complete", None)
+                .await
+                .is_ok()
+        );
+        assert!(
+            integration
+                .send_ai_cancel_requested(&app, "ai-chat", Some("turn-1"), Some("client-1"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            integration
+                .send_ai_stream_orphaned(&app, "ai-chat", "msg-1", "orphan_timeout")
+                .await
+                .is_ok()
+        );
+        assert!(
+            integration
+                .send_message_version_created(&app, "ai-chat", "msg-1", "ver-1", "message.append",)
+                .await
+                .is_ok()
+        );
+        assert!(
+            integration
+                .send_annotation_created(&app, "ai-chat", "msg-1", "ann-1", "reaction")
+                .await
+                .is_ok()
+        );
+        assert!(
+            integration
+                .send_annotation_deleted(
+                    &app,
+                    "ai-chat",
+                    "msg-1",
+                    "ann-del-1",
+                    "ann-1",
+                    "reaction",
+                )
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

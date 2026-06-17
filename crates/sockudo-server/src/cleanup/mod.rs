@@ -106,4 +106,5 @@ pub struct WebhookEvent {
     pub user_id: Option<String>,
     pub socket_id: Option<SocketId>,
     pub data: sonic_rs::Value,
+    pub presence_ungraceful_timeout_seconds: u64,
 }

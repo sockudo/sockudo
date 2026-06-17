@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use sonic_rs::prelude::*;
+use sonic_rs::{Value, json};
 
 use crate::domain::{DeliveryOutcome, DevicePushState, PushProviderKind};
 use crate::metrics::{delivery_outcome_label, device_state_label, provider_label};
@@ -100,7 +101,7 @@ impl PushMetaEvent {
             app_id: app_id.to_owned(),
             publish_id: Some(publish_id.to_owned()),
             provider: Some(Cow::Borrowed(provider_label(provider))),
-            detail: Value::Null,
+            detail: Value::new_null(),
         }
     }
 
@@ -175,7 +176,7 @@ mod tests {
             DeliveryOutcome::Rejected,
             Some("invalid_token"),
         );
-        let serialized = serde_json::to_string(&event).unwrap();
+        let serialized = sonic_rs::to_string(&event).unwrap();
 
         assert!(serialized.contains("provider-rejected"));
         assert!(serialized.contains("invalid_token"));

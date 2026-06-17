@@ -20,7 +20,7 @@ use sockudo_protocol::messages::{
     AnnotationSummaryEnvelope, MESSAGE_SUMMARY_EVENT_NAME, MessageData, MessageExtras,
     MessageSummaryData, PresenceData, PusherMessage,
 };
-use sonic_rs::Value;
+use sonic_rs::{JsonValueMutTrait, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -264,6 +264,7 @@ impl ConnectionHandler {
         app_config: &App,
         request: &SubscriptionRequest,
         subscription_result: &SubscriptionResult,
+        attach_serial: Option<u64>,
     ) -> Result<()> {
         let channel_type = ChannelType::from_name(&request.channel);
         if request.rewind.is_some() {
@@ -282,12 +283,19 @@ impl ConnectionHandler {
                         app_config,
                         request,
                         subscription_result,
+                        attach_serial,
                     )
                     .await?;
                 }
                 _ => {
-                    self.send_subscription_succeeded(socket_id, app_config, &request.channel, None)
-                        .await?;
+                    self.send_subscription_succeeded(
+                        socket_id,
+                        app_config,
+                        &request.channel,
+                        None,
+                        attach_serial,
+                    )
+                    .await?;
                 }
             }
 
@@ -304,13 +312,20 @@ impl ConnectionHandler {
                         app_config,
                         request,
                         subscription_result,
+                        attach_serial,
                     )
                     .await?;
                 }
                 _ => {
                     // For non-presence channels, send success immediately
-                    self.send_subscription_succeeded(socket_id, app_config, &request.channel, None)
-                        .await?;
+                    self.send_subscription_succeeded(
+                        socket_id,
+                        app_config,
+                        &request.channel,
+                        None,
+                        attach_serial,
+                    )
+                    .await?;
                 }
             }
 
@@ -322,6 +337,11 @@ impl ConnectionHandler {
                 subscription_result,
             )
             .await?;
+
+            if let Some(attach_serial) = attach_serial {
+                self.drain_attach_gate(socket_id, app_config, &request.channel, attach_serial)
+                    .await?;
+            }
         }
 
         // Apply per-subscription delta settings if provided
@@ -487,7 +507,7 @@ impl ConnectionHandler {
             .filter_map(|item| item.message_id.clone())
             .collect::<HashSet<_>>();
 
-        self.send_rewind_history_items(socket_id, app_config, &items)
+        self.send_rewind_history_items(socket_id, app_config, &request.channel, &items)
             .await?;
 
         let buffered = connection.finish_rewind_gate(&request.channel).await;
@@ -524,15 +544,13 @@ impl ConnectionHandler {
         &self,
         socket_id: &SocketId,
         app_config: &App,
+        channel: &str,
         items: &[HistoryItem],
     ) -> Result<()> {
         for item in items {
-            let message: PusherMessage = sonic_rs::from_slice(item.payload_bytes.as_ref())
-                .map_err(|e| {
-                    sockudo_core::error::Error::InvalidMessageFormat(format!(
-                        "Invalid stored history payload: {e}"
-                    ))
-                })?;
+            let message = self
+                .history_item_to_realtime_message(app_config, channel, item)
+                .await?;
             self.send_message_to_socket(&app_config.id, socket_id, message)
                 .await?;
         }
@@ -664,6 +682,7 @@ impl ConnectionHandler {
         app_config: &App,
         request: &SubscriptionRequest,
         subscription_result: &SubscriptionResult,
+        attach_serial: Option<u64>,
     ) -> Result<()> {
         if let Some(ref presence_member) = subscription_result.member {
             let presence_history_policy = app_config.resolved_presence_history(
@@ -719,6 +738,7 @@ impl ConnectionHandler {
                 app_config,
                 &request.channel,
                 Some(presence_data),
+                attach_serial,
             )
             .await?;
         }
@@ -732,8 +752,10 @@ impl ConnectionHandler {
         app_config: &App,
         channel: &str,
         data: Option<PresenceData>,
+        attach_serial: Option<u64>,
     ) -> Result<()> {
-        let response_msg = PusherMessage::subscription_succeeded(channel.to_string(), data);
+        let response_msg =
+            subscription_succeeded_with_attach_serial(channel.to_string(), data, attach_serial);
         #[cfg(feature = "recovery")]
         let response_msg = {
             let mut response_msg = response_msg;
@@ -810,6 +832,32 @@ impl ConnectionHandler {
         }
 
         Some(replay_buffer.current_position(&app_config.id, channel))
+    }
+
+    async fn drain_attach_gate(
+        &self,
+        socket_id: &SocketId,
+        app_config: &App,
+        channel: &str,
+        attach_serial: u64,
+    ) -> Result<()> {
+        let Some(connection) = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        else {
+            return Ok(());
+        };
+
+        let buffered = connection.finish_rewind_gate(channel).await;
+        let delivered_message_ids = HashSet::new();
+        for message in
+            filter_buffered_rewind_messages(buffered, Some(attach_serial), &delivered_message_ids)
+        {
+            self.send_message_to_socket(&app_config.id, socket_id, message)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn send_annotation_summary_snapshots(
@@ -1105,6 +1153,52 @@ impl ConnectionHandler {
     }
 }
 
+fn subscription_succeeded_with_attach_serial(
+    channel: String,
+    presence_data: Option<PresenceData>,
+    attach_serial: Option<u64>,
+) -> PusherMessage {
+    if attach_serial.is_none() {
+        return PusherMessage::subscription_succeeded(channel, presence_data);
+    }
+
+    let mut data_obj = if let Some(data) = presence_data {
+        sonic_rs::json!({
+            "presence": {
+                "ids": data.ids,
+                "hash": data.hash,
+                "count": data.count
+            }
+        })
+    } else {
+        sonic_rs::json!({})
+    };
+
+    if let Some(serial) = attach_serial
+        && let Some(object) = data_obj.as_object_mut()
+    {
+        object.insert("attach_serial", sonic_rs::json!(serial));
+    }
+
+    PusherMessage {
+        event: Some("pusher_internal:subscription_succeeded".to_string()),
+        channel: Some(channel),
+        data: Some(MessageData::String(data_obj.to_string())),
+        name: None,
+        user_id: None,
+        tags: None,
+        sequence: None,
+        conflation_key: None,
+        message_id: None,
+        stream_id: None,
+        serial: None,
+        idempotency_key: None,
+        extras: None,
+        delta_sequence: None,
+        delta_conflation_key: None,
+    }
+}
+
 fn filter_buffered_rewind_messages(
     mut buffered: Vec<sockudo_core::websocket::BufferedRewindMessage>,
     history_head_serial: Option<u64>,
@@ -1159,6 +1253,7 @@ fn normalize_rewind_items_for_delivery(
 mod rewind_tests {
     use super::*;
     use bytes::Bytes;
+    use sonic_rs::JsonValueTrait;
 
     fn test_message(event: &str) -> PusherMessage {
         PusherMessage {
@@ -1178,6 +1273,17 @@ mod rewind_tests {
             delta_sequence: None,
             delta_conflation_key: None,
         }
+    }
+
+    #[test]
+    fn subscription_success_includes_attach_serial_when_captured() {
+        let message = subscription_succeeded_with_attach_serial("chat".to_string(), None, Some(42));
+        let Some(MessageData::String(data)) = message.data else {
+            panic!("subscription success data should be a JSON string");
+        };
+        let value: Value = sonic_rs::from_str(&data).unwrap();
+
+        assert_eq!(value.get("attach_serial").and_then(Value::as_u64), Some(42));
     }
 
     #[test]

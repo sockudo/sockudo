@@ -5,7 +5,17 @@
 # Default environment
 ENV ?= dev
 COMPOSE_FILE ?= docker-compose.yml
+COMPOSE_DASHBOARD ?= docker-compose.dashboard.yml
 PROJECT_NAME ?= sockudo
+
+# Compose file set per environment (dashboard included for dev/prod)
+ifeq ($(ENV),dev)
+COMPOSE_ARGS := -f $(COMPOSE_FILE) -f docker-compose.dev.yml -f $(COMPOSE_DASHBOARD)
+else ifeq ($(ENV),prod)
+COMPOSE_ARGS := -f $(COMPOSE_FILE) -f docker-compose.prod.yml -f $(COMPOSE_DASHBOARD)
+else
+COMPOSE_ARGS := -f $(COMPOSE_FILE)
+endif
 
 # Color codes for output
 RED    := \033[31m
@@ -62,15 +72,9 @@ check-env: ## Check if required environment files exist
 # =============================================================================
 
 .PHONY: build
-build: check-env ## Build all Docker images
+build: check-env ## Build all Docker images (includes dashboard for dev/prod)
 	@echo "$(BLUE)Building Sockudo Docker images...$(RESET)"
-	@if [ "$(ENV)" = "dev" ]; then \
-		docker-compose -f $(COMPOSE_FILE) -f docker-compose.dev.yml build; \
-	elif [ "$(ENV)" = "prod" ]; then \
-		docker-compose -f $(COMPOSE_FILE) -f docker-compose.prod.yml build; \
-	else \
-		docker-compose -f $(COMPOSE_FILE) build; \
-	fi
+	@docker-compose $(COMPOSE_ARGS) build
 	@echo "$(GREEN)Build complete!$(RESET)"
 
 .PHONY: dev
@@ -80,6 +84,8 @@ dev: ## Start development environment
 	@echo "$(GREEN)Development environment started!$(RESET)"
 	@echo "$(YELLOW)WebSocket Server: http://localhost:6001$(RESET)"
 	@echo "$(YELLOW)Metrics: http://localhost:9601/metrics$(RESET)"
+	@echo "$(YELLOW)Dashboard UI: http://localhost:5174$(RESET)"
+	@echo "$(YELLOW)Dashboard API: http://localhost:3460$(RESET)"
 	@echo "$(YELLOW)Redis Commander: http://localhost:8081$(RESET)"
 	@echo "$(YELLOW)PHPMyAdmin: http://localhost:8080$(RESET)"
 
@@ -92,32 +98,22 @@ prod: ## Start production environment
 	@echo "$(YELLOW)Metrics: http://localhost:9601/metrics$(RESET)"
 	@echo "$(YELLOW)Prometheus: http://localhost:9090$(RESET)"
 	@echo "$(YELLOW)Grafana: http://localhost:3000$(RESET)"
+	@echo "$(YELLOW)Dashboard UI: http://localhost:5174$(RESET)"
+	@echo "$(YELLOW)Dashboard API: http://localhost:3460$(RESET)"
 
 # =============================================================================
 # Container Management
 # =============================================================================
 
 .PHONY: up
-up: check-env ## Start services
+up: check-env ## Start services (includes dashboard for dev/prod)
 	@echo "$(BLUE)Starting services ($(ENV) environment)...$(RESET)"
-	@if [ "$(ENV)" = "dev" ]; then \
-		docker-compose -f $(COMPOSE_FILE) -f docker-compose.dev.yml up -d; \
-	elif [ "$(ENV)" = "prod" ]; then \
-		docker-compose -f $(COMPOSE_FILE) -f docker-compose.prod.yml up -d; \
-	else \
-		docker-compose -f $(COMPOSE_FILE) up -d; \
-	fi
+	@docker-compose $(COMPOSE_ARGS) up -d
 
 .PHONY: down
 down: ## Stop and remove services
 	@echo "$(BLUE)Stopping services...$(RESET)"
-	@if [ "$(ENV)" = "dev" ]; then \
-		docker-compose -f $(COMPOSE_FILE) -f docker-compose.dev.yml down; \
-	elif [ "$(ENV)" = "prod" ]; then \
-		docker-compose -f $(COMPOSE_FILE) -f docker-compose.prod.yml down; \
-	else \
-		docker-compose -f $(COMPOSE_FILE) down; \
-	fi
+	@docker-compose $(COMPOSE_ARGS) down
 
 .PHONY: restart
 restart: down up ## Restart all services
@@ -125,12 +121,12 @@ restart: down up ## Restart all services
 .PHONY: stop
 stop: ## Stop services without removing
 	@echo "$(BLUE)Stopping services...$(RESET)"
-	@docker-compose -f $(COMPOSE_FILE) stop
+	@docker-compose $(COMPOSE_ARGS) stop
 
 .PHONY: start
 start: ## Start stopped services
 	@echo "$(BLUE)Starting services...$(RESET)"
-	@docker-compose -f $(COMPOSE_FILE) start
+	@docker-compose $(COMPOSE_ARGS) start
 
 # =============================================================================
 # Monitoring and Logs
@@ -139,24 +135,28 @@ start: ## Start stopped services
 .PHONY: status
 status: ## Show service status
 	@echo "$(BLUE)Service Status:$(RESET)"
-	@docker-compose -f $(COMPOSE_FILE) ps
+	@docker-compose $(COMPOSE_ARGS) ps
 
 .PHONY: logs
 logs: ## Show logs for all services
-	@docker-compose -f $(COMPOSE_FILE) logs -f
+	@docker-compose $(COMPOSE_ARGS) logs -f
 
 .PHONY: logs-sockudo
 logs-sockudo: ## Show Sockudo service logs
-	@docker-compose -f $(COMPOSE_FILE) logs -f sockudo
+	@docker-compose $(COMPOSE_ARGS) logs -f sockudo
 
 .PHONY: logs-redis
 logs-redis: ## Show Redis logs
-	@docker-compose -f $(COMPOSE_FILE) logs -f redis
+	@docker-compose $(COMPOSE_ARGS) logs -f redis
+
+.PHONY: logs-dashboard
+logs-dashboard: ## Show dashboard API and web logs
+	@docker-compose $(COMPOSE_ARGS) logs -f dashboard-api dashboard-web
 
 .PHONY: health
 health: ## Check health of all services
 	@echo "$(BLUE)Health Check Results:$(RESET)"
-	@docker-compose -f $(COMPOSE_FILE) ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+	@docker-compose $(COMPOSE_ARGS) ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
 
 # =============================================================================
 # Testing and Debugging
@@ -170,7 +170,11 @@ test: ## Run basic connectivity tests
 	@echo "$(YELLOW)Testing metrics endpoint...$(RESET)"
 	@curl -f http://localhost:9601/metrics || echo "$(RED)Metrics test failed$(RESET)"
 	@echo "$(YELLOW)Testing Redis connection...$(RESET)"
-	@docker-compose exec -T redis redis-cli ping || echo "$(RED)Redis test failed$(RESET)"
+	@docker-compose $(COMPOSE_ARGS) exec -T redis redis-cli ping || echo "$(RED)Redis test failed$(RESET)"
+	@echo "$(YELLOW)Testing dashboard API...$(RESET)"
+	@curl -f http://localhost:3460/health || echo "$(RED)Dashboard API test failed$(RESET)"
+	@echo "$(YELLOW)Testing dashboard UI...$(RESET)"
+	@curl -f http://localhost:5174/ || echo "$(RED)Dashboard UI test failed$(RESET)"
 
 .PHONY: unix-socket-up
 unix-socket-up: ## Start Unix socket test environment with Nginx proxy
@@ -213,11 +217,11 @@ unix-socket-supervisorctl: ## Access supervisor control in Unix socket container
 
 .PHONY: shell-sockudo
 shell-sockudo: ## Access Sockudo container shell
-	@docker-compose exec sockudo sh
+	@docker-compose $(COMPOSE_ARGS) exec sockudo sh
 
 .PHONY: shell-redis
 shell-redis: ## Access Redis CLI
-	@docker-compose exec redis redis-cli
+	@docker-compose $(COMPOSE_ARGS) exec redis redis-cli
 
 .PHONY: debug
 debug: ## Show debug information
@@ -237,7 +241,7 @@ debug: ## Show debug information
 .PHONY: clean
 clean: ## Clean up containers, networks, and volumes
 	@echo "$(BLUE)Cleaning up Docker resources...$(RESET)"
-	@docker-compose -f $(COMPOSE_FILE) down -v
+	@docker-compose $(COMPOSE_ARGS) down -v
 	@docker system prune -f
 	@echo "$(GREEN)Cleanup complete!$(RESET)"
 
@@ -246,7 +250,7 @@ clean-all: ## Clean everything including images
 	@echo "$(RED)Warning: This will remove all containers, networks, volumes, and images!$(RESET)"
 	@read -p "Are you sure? (y/N): " confirm; \
 	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
-		docker-compose -f $(COMPOSE_FILE) down -v --rmi all; \
+		docker-compose $(COMPOSE_ARGS) down -v --rmi all; \
 		docker system prune -af; \
 		echo "$(GREEN)Complete cleanup finished!$(RESET)"; \
 	else \
@@ -256,7 +260,7 @@ clean-all: ## Clean everything including images
 .PHONY: update
 update: ## Update all Docker images
 	@echo "$(BLUE)Updating Docker images...$(RESET)"
-	@docker-compose -f $(COMPOSE_FILE) pull
+	@docker-compose $(COMPOSE_ARGS) pull
 	@make build
 	@echo "$(GREEN)Update complete!$(RESET)"
 
@@ -265,8 +269,8 @@ backup: ## Backup data volumes
 	@echo "$(BLUE)Creating backup...$(RESET)"
 	@mkdir -p backups
 	@docker run --rm -v sockudo_redis-data:/data -v $(PWD)/backups:/backup alpine tar czf /backup/redis-backup-$(shell date +%Y%m%d-%H%M%S).tar.gz -C /data .
-	@if docker-compose ps | grep -q mysql; then \
-		docker-compose exec -T mysql mysqldump -u sockudo -psockudo123 sockudo > backups/mysql-backup-$(shell date +%Y%m%d-%H%M%S).sql; \
+	@if docker-compose $(COMPOSE_ARGS) ps | grep -q mysql; then \
+		docker-compose $(COMPOSE_ARGS) exec -T mysql mysqldump -u sockudo -psockudo123 sockudo > backups/mysql-backup-$(shell date +%Y%m%d-%H%M%S).sql; \
 	fi
 	@echo "$(GREEN)Backup complete! Files saved to backups/$(RESET)"
 
@@ -293,7 +297,7 @@ scale: ## Scale Sockudo instances (requires REPLICAS variable)
 		exit 1; \
 	fi
 	@echo "$(BLUE)Scaling Sockudo to $(REPLICAS) instances...$(RESET)"
-	@docker-compose -f $(COMPOSE_FILE) up -d --scale sockudo=$(REPLICAS)
+	@docker-compose $(COMPOSE_ARGS) up -d --scale sockudo=$(REPLICAS)
 	@echo "$(GREEN)Scaling complete!$(RESET)"
 
 .PHONY: stats
@@ -309,6 +313,59 @@ benchmark: ## Run basic performance benchmark
 		curl -w "Time: %{time_total}s\n" -s -o /dev/null http://localhost:6001/up/demo-app; \
 	done
 	@echo "$(GREEN)Benchmark complete!$(RESET)"
+
+.PHONY: ai-scale-up
+ai-scale-up: ## Start the five-node AI Transport scale rig
+	@docker compose -f docker-compose.ai-transport.yml -f test/load/docker-compose.ai-transport-scale.yml up -d --build
+
+.PHONY: ai-scale-down
+ai-scale-down: ## Stop the AI Transport scale rig
+	@docker compose -f docker-compose.ai-transport.yml -f test/load/docker-compose.ai-transport-scale.yml down
+
+.PHONY: ai-scale-smoke
+ai-scale-smoke: ## Run executable AI Transport scale smoke (override ARGS="--durationSeconds 30")
+	@node test/load/ai-scale-runner.mjs --profile test/load/profiles/smoke.json $(ARGS)
+
+.PHONY: ai-scale-headline-plan
+ai-scale-headline-plan: ## Print the 1M-connection AI Transport fleet plan
+	@node test/load/ai-scale-runner.mjs --profile test/load/profiles/headline-1m.json --plan $(ARGS)
+
+.PHONY: ai-scale-soak-plan
+ai-scale-soak-plan: ## Print the 24h 20 percent AI Transport soak plan
+	@node test/load/ai-scale-runner.mjs --profile test/load/profiles/soak-20pct.json --plan $(ARGS)
+
+.PHONY: ai-chaos
+ai-chaos: ## Run AI Transport local chaos scenarios (override ARGS="node-kill")
+	@tools/chaos/ai-chaos-runner.sh $(ARGS)
+
+.PHONY: ai-ga-evidence
+ai-ga-evidence: ## Check deterministic AI Transport GA readiness evidence
+	@scripts/ai-transport-ga-gate.sh ci-evidence
+
+.PHONY: ai-ga-release-evidence
+ai-ga-release-evidence: ## Check final AI Transport GA evidence manifests
+	@scripts/ai-transport-ga-gate.sh release-evidence
+
+.PHONY: ai-s14-release-evidence
+ai-s14-release-evidence: ## Run external-fleet S14 AI Transport release evidence profiles
+	@scripts/ai-transport-s14-release-evidence.sh
+
+.PHONY: ai-rolling-upgrade-evidence
+ai-rolling-upgrade-evidence: ## Record shared-Redis rolling-upgrade evidence (pass ARGS for hooks)
+	@node scripts/ai-transport-rolling-upgrade-redis.mjs $(ARGS)
+
+.PHONY: sdk-compat-full-matrix
+sdk-compat-full-matrix: ## Record full SDK compatibility matrix (pass ARGS="--execute" to run)
+	@node scripts/sdk-compat-full-matrix.mjs $(ARGS)
+
+.PHONY: ai-ga-matrix
+ai-ga-matrix: ## Run AI Transport release feature matrix locally
+	@scripts/ai-transport-ga-gate.sh matrix
+
+.PHONY: ai-docker-builds
+ai-docker-builds: ## Build Docker images with and without AI Transport
+	@docker build --target runtime --build-arg SOCKUDO_FEATURES="v2,redis,postgres" -t sockudo:without-ai .
+	@docker build --target runtime --build-arg SOCKUDO_FEATURES="v2,ai-transport,redis,postgres" -t sockudo:with-ai .
 
 .PHONY: push-benchmark
 push-benchmark: ## Run push notification admission benchmark (override ARGS="--mode all --devices 10000")
@@ -370,7 +427,7 @@ alerts: ## Check for common issues
 	@echo "$(YELLOW)Checking memory usage...$(RESET)"
 	@free -h
 	@echo "$(YELLOW)Checking container health...$(RESET)"
-	@docker-compose ps --format "table {{.Name}}\t{{.Status}}"
+	@docker-compose $(COMPOSE_ARGS) ps --format "table {{.Name}}\t{{.Status}}"
 
 # =============================================================================
 # Development Tools
@@ -389,7 +446,7 @@ format: ## Format configuration files
 .PHONY: validate
 validate: ## Validate configuration files
 	@echo "$(BLUE)Validating configuration...$(RESET)"
-	@docker-compose -f $(COMPOSE_FILE) config >/dev/null && echo "$(GREEN)docker-compose.yml is valid$(RESET)" || echo "$(RED)docker-compose.yml has errors$(RESET)"
+	@docker-compose $(COMPOSE_ARGS) config >/dev/null && echo "$(GREEN)Compose stack is valid$(RESET)" || echo "$(RED)Compose stack has errors$(RESET)"
 	@if [ -f config/config.json ]; then \
 		if command -v jq >/dev/null 2>&1; then \
 			jq empty config/config.json && echo "$(GREEN)config.json is valid$(RESET)" || echo "$(RED)config.json has errors$(RESET)"; \

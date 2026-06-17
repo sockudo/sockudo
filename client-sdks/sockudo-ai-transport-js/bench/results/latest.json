@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-06-08T09:00:56.092Z",
+  "bundle": {
+    "coreGzipBytes": 23458,
+    "reactIncrementalGzipBytes": -6449,
+    "vercelIncrementalGzipBytes": 1505,
+    "vercelReactIncrementalGzipBytes": 2038,
+    "treeShakeExcludesVercelReact": true,
+    "treeShakeExcludesReactRuntime": true,
+    "runtimeBareImportCount": 0
+  },
+  "throughput": {
+    "singleStreamTokensPerSecond": 722811.0120257691,
+    "tokenWireToViewP50Ms": 0.0008750000000077307,
+    "concurrentP95FrameMs": 0.201958999999988,
+    "concurrentFrameBudgetPercent": 1.2115116976603957
+  },
+  "latency": {
+    "sendLocalP50Ms": 0.6684579999999869,
+    "sendLocalP99Ms": 2.3274169999999685
+  },
+  "memory": {
+    "tenThousandMessageTreeRetainedBytes": 15318224,
+    "gcMode": "enforced",
+    "flatStreamRetainedGrowthBytes": 750376,
+    "flatStreamTokenCount": 100000
+  },
+  "react": {
+    "streamingCommits": 64,
+    "getMessagesStableAfterRead": true,
+    "stableReferenceHits": 63
+  }
+}

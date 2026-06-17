@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
-use sockudo_core::cache::CacheManager;
+use sockudo_core::cache::{CacheManager, CacheScanPage};
 use sockudo_core::error::{Error, Result};
 use std::time::Duration;
 
@@ -181,6 +181,95 @@ impl CacheManager for RedisCacheManager {
         }
     }
 
+    async fn scan_prefix(&self, prefix: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let pattern = format!("{}:{}*", self.prefix, prefix);
+        let cache_prefix = format!("{}:", self.prefix);
+        let mut connection = self.connection.clone();
+        let mut keys = Vec::with_capacity(limit.min(64));
+
+        {
+            let mut iter: redis::AsyncIter<String> = connection
+                .scan_match(&pattern)
+                .await
+                .map_err(|e| Error::Cache(format!("Redis scan error: {e}")))?;
+
+            while let Some(key) = iter.next_item().await {
+                let key =
+                    key.map_err(|e| Error::Cache(format!("Redis scan iteration error: {e}")))?;
+                keys.push(key);
+                if keys.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        let mut entries = Vec::with_capacity(keys.len());
+        for key in keys {
+            let value: Option<String> = connection
+                .get(&key)
+                .await
+                .map_err(|e| Error::Cache(format!("Redis get error: {e}")))?;
+            if let Some(value) = value
+                && let Some(unprefixed_key) = key.strip_prefix(&cache_prefix)
+            {
+                entries.push((unprefixed_key.to_string(), value));
+            }
+        }
+
+        Ok(entries)
+    }
+
+    async fn scan_prefix_page(
+        &self,
+        prefix: &str,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Result<CacheScanPage> {
+        if limit == 0 {
+            return Ok(CacheScanPage::default());
+        }
+
+        let cursor = cursor
+            .as_deref()
+            .unwrap_or("0")
+            .parse::<u64>()
+            .map_err(|e| Error::Cache(format!("Redis scan cursor is invalid: {e}")))?;
+        let pattern = format!("{}:{}*", self.prefix, prefix);
+        let cache_prefix = format!("{}:", self.prefix);
+        let mut connection = self.connection.clone();
+        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(limit)
+            .query_async(&mut connection)
+            .await
+            .map_err(|e| Error::Cache(format!("Redis scan page error: {e}")))?;
+
+        let mut entries = Vec::with_capacity(keys.len());
+        for key in keys {
+            let value: Option<String> = connection
+                .get(&key)
+                .await
+                .map_err(|e| Error::Cache(format!("Redis get error: {e}")))?;
+            if let Some(value) = value
+                && let Some(unprefixed_key) = key.strip_prefix(&cache_prefix)
+            {
+                entries.push((unprefixed_key.to_string(), value));
+            }
+        }
+
+        Ok(CacheScanPage {
+            entries,
+            next_cursor: (next_cursor != 0).then(|| next_cursor.to_string()),
+        })
+    }
+
     async fn set_if_not_exists(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<bool> {
         let prefixed_key = self.prefixed_key(key);
         let mut connection = self.connection.clone();
@@ -194,6 +283,22 @@ impl CacheManager for RedisCacheManager {
             .await
             .map_err(|e| Error::Cache(format!("Redis SET NX error: {e}")))?;
         Ok(result.is_some())
+    }
+
+    async fn increment_by(&self, key: &str, delta: i64, ttl_seconds: u64) -> Result<i64> {
+        let prefixed_key = self.prefixed_key(key);
+        let mut connection = self.connection.clone();
+        let value: i64 = connection
+            .incr(&prefixed_key, delta)
+            .await
+            .map_err(|e| Error::Cache(format!("Redis increment error: {e}")))?;
+        if ttl_seconds > 0 {
+            let _: bool = connection
+                .expire(&prefixed_key, ttl_seconds as i64)
+                .await
+                .map_err(|e| Error::Cache(format!("Redis expire error: {e}")))?;
+        }
+        Ok(value)
     }
 }
 

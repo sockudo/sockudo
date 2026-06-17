@@ -1,0 +1,122 @@
+debug = false
+host = "0.0.0.0"
+port = 6001
+mode = "development"
+path_prefix = "/"
+shutdown_grace_period = 2
+websocket_max_payload_kb = 64
+user_authentication_timeout = 3600
+activity_timeout = 120
+
+[adapter]
+driver = "local"
+enable_socket_counting = true
+fallback_to_local = true
+
+[cache]
+driver = "memory"
+
+[cache.memory]
+ttl = 300
+cleanup_interval = 60
+max_capacity = 10000
+
+[queue]
+driver = "memory"
+
+[rate_limiter]
+enabled = false
+driver = "memory"
+
+[app_manager]
+driver = "memory"
+
+[app_manager.array]
+[[app_manager.array.apps]]
+id = "demo-app"
+key = "demo-key"
+secret = "demo-secret"
+enabled = true
+
+[app_manager.array.apps.policy.limits]
+max_connections = 100000
+max_backend_events_per_second = 10000
+max_client_events_per_second = 1000
+max_read_requests_per_second = 1000
+
+[app_manager.array.apps.policy.features]
+enable_client_messages = true
+enable_user_authentication = false
+enable_watchlist_events = false
+
+[app_manager.array.apps.policy.channels]
+allowed_origins = ["*"]
+
+[app_manager.array.apps.policy.idempotency]
+enabled = true
+ttl_seconds = 300
+
+[history]
+enabled = true
+backend = "memory"
+retention_window_seconds = 86400
+max_page_size = 100
+writer_shards = 4
+writer_queue_capacity = 1024
+purge_interval_seconds = 300
+purge_batch_size = 1000
+max_purge_per_tick = 100000
+
+[versioned_messages]
+enabled = true
+driver = "memory"
+max_page_size = 100
+retention_window_seconds = 86400
+purge_interval_seconds = 300
+purge_batch_size = 1000
+max_purge_per_tick = 100000
+
+[ai_transport]
+enabled = true
+max_accumulated_message_bytes = 1048576
+max_appends_per_message = 4096
+max_open_streaming_messages_per_channel = 1024
+
+[[ai_transport.channels]]
+prefix = "private-ai-"
+
+[ai_transport.rollup]
+enabled = true
+default_window_ms = 40
+min_window_ms = 0
+max_window_ms = 500
+orphan_ttl_ms = 60000
+wheel_tick_ms = 5
+shards = 16
+
+[connection_recovery]
+enabled = true
+buffer_ttl_seconds = 120
+max_buffer_size = 100
+
+[metrics]
+enabled = true
+driver = "prometheus"
+host = "0.0.0.0"
+port = 9601
+
+[metrics.prometheus]
+prefix = "sockudo_"
+
+[cors]
+credentials = true
+origin = ["*"]
+methods = ["GET", "POST", "OPTIONS"]
+allowed_headers = ["Authorization", "Content-Type", "X-Requested-With", "Accept"]
+
+[http_api]
+request_limit_in_mb = 10
+
+[logging]
+colors_enabled = false
+include_target = true

@@ -6,8 +6,12 @@ icon: FileCode
 
 ## Install
 
+Clone the monorepo and configure Composer to read the local package path until the package is published on Packagist:
+
 ```bash
-composer require sockudo/sockudo-php-server
+git clone https://github.com/sockudo/sockudo.git
+composer config repositories.sockudo-php-server path ../sockudo/server-sdks/sockudo-http-php
+composer require sockudo/sockudo-php-server:dev-main
 ```
 
 ## Configure

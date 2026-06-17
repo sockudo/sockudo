@@ -13,6 +13,7 @@ mod tests {
             user_id: Some("user123".to_string()),
             timestamp: Instant::now(),
             connection_info: None,
+            presence_ungraceful_timeout_seconds: 0,
         }
     }
 

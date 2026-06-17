@@ -1,0 +1,56 @@
+name: release
+
+on:
+  pull_request:
+    types: [labeled]
+    branches:
+      - main
+
+jobs:
+  prepare-release:
+    name: Prepare release
+    if: ${{ github.event.label.name == 'release-major' || github.event.label.name == 'release-minor' || github.event.label.name == 'release-patch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - name: Set bump type
+        run: |
+          if [[ "${{ github.event.label.name }}" == "release-major" ]]; then
+            echo "BUMP=major" >> $GITHUB_ENV
+          elif [[ "${{ github.event.label.name }}" == "release-minor" ]]; then
+            echo "BUMP=minor" >> $GITHUB_ENV
+          else
+            echo "BUMP=patch" >> $GITHUB_ENV
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Get current version
+        run: echo "CURRENT_VERSION=$(jq -r '.version' package.json)" >> $GITHUB_ENV
+      - name: Install semver-tool
+        run: |
+          DIR=$(mktemp -d)
+          cd $DIR
+          curl -L https://github.com/fsaintjacques/semver-tool/archive/3.4.0.tar.gz -o semver.tar.gz
+          tar -xzf semver.tar.gz
+          sudo cp semver-tool-3.4.0/src/semver /usr/local/bin
+      - name: Bump version
+        run: echo "NEW_VERSION=$(semver bump ${{ env.BUMP }} ${{ env.CURRENT_VERSION }})" >> $GITHUB_ENV
+      - name: Update package.json
+        run: echo "$(jq --arg v "${{ env.NEW_VERSION }}" '.version = $v' package.json)" > package.json
+      - name: Setup git
+        run: |
+          git config user.email "ci@sockudo.io"
+          git config user.name "Sockudo CI"
+          git fetch
+          git checkout ${{ github.event.pull_request.head.ref }}
+      - name: Commit and push
+        run: |
+          git add package.json
+          git commit -m "Bump to version ${{ env.NEW_VERSION }}"
+          git push

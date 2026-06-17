@@ -1,4 +1,4 @@
-use crate::domain::{FanoutRegime, PublishIntent, PublishLogEvent};
+use crate::domain::{FanoutRegime, PublishIntent, PublishLogEvent, from_json_value};
 use crate::pipeline::{DynPushQueue, PushPipelineResult, PushQueuePayload, PushQueueStage};
 use crate::storage::{DynPushStore, SchedulerLock};
 
@@ -119,13 +119,13 @@ fn scheduled_publish_event(
     fast_threshold: u64,
     shard_size: u64,
 ) -> PushPipelineResult<PublishLogEvent> {
-    if let Ok(event) = serde_json::from_value::<PublishLogEvent>(job.payload_json.clone()) {
+    if let Ok(event) = from_json_value::<PublishLogEvent>(&job.payload_json) {
         return Ok(PublishLogEvent {
             occurred_at_ms,
             ..event
         });
     }
-    let intent = serde_json::from_value::<PublishIntent>(job.payload_json.clone())
+    let intent = from_json_value::<PublishIntent>(&job.payload_json)
         .map_err(|error| crate::pipeline::PushPipelineError::InvalidPayload(error.to_string()))?;
     let fanout_regime = FanoutRegime::ShardPath;
     Ok(PublishLogEvent {
@@ -145,10 +145,11 @@ fn scheduled_publish_event(
 mod tests {
     use std::sync::Arc;
 
-    use serde_json::json;
+    use sonic_rs::json;
 
     use crate::domain::{
         DEFAULT_PUSH_FANOUT_SHARD_SIZE, FanoutConfig, PublishIntent, PublishTarget, PushPayload,
+        to_json_value,
     };
     use crate::memory::MemoryPushStore;
     use crate::pipeline::{MemoryPushQueue, PushQueue, PushQueueStage};
@@ -185,7 +186,7 @@ mod tests {
                 publish_id: "publish-1".to_owned(),
                 due_at_ms: 1_000,
                 due_minute_ms: 0,
-                payload_json: serde_json::to_value(intent).unwrap(),
+                payload_json: to_json_value(&intent).unwrap(),
             })
             .await
             .unwrap();

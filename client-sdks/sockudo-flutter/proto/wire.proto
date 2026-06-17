@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package sockudo;
+
+message ProtoPusherMessage {
+  string event = 1;
+  string channel = 2;
+  ProtoMessageData data = 3;
+  string name = 4;
+  string user_id = 5;
+  map<string, string> tags = 6;
+  uint64 sequence = 7;
+  string conflation_key = 8;
+  string message_id = 9;
+  uint64 serial = 10;
+  string idempotency_key = 11;
+  ProtoMessageExtras extras = 12;
+  uint64 delta_sequence = 13;
+  string delta_conflation_key = 14;
+  string stream_id = 15;
+}
+
+message ProtoMessageData {
+  oneof kind {
+    string string_value = 1;
+    ProtoStructuredData structured = 2;
+    string json_value = 3;
+  }
+}
+
+message ProtoStructuredData {
+  string channel_data = 1;
+  string channel = 2;
+  string user_data = 3;
+  map<string, string> extra = 4;
+}
+
+message ProtoMessageExtras {
+  map<string, ProtoExtrasValue> headers = 1;
+  optional bool ephemeral = 2;
+  optional string idempotency_key = 3;
+  optional bool echo = 4;
+}
+
+message ProtoExtrasValue {
+  oneof kind {
+    string string_value = 1;
+    double number_value = 2;
+    bool bool_value = 3;
+  }
+}

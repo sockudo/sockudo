@@ -9,8 +9,6 @@ benchmark/vendor
 .claude/settings.local.json
 .codanna/
 .fastembed_cache/
-client-sdks/
-/server-sdks/
 test/interactive/sockudo-js/
 /coolify/
 /sockudo-website/

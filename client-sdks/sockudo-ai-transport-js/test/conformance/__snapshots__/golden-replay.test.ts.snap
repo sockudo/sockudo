@@ -1,0 +1,218 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden transcript replay > replays server golden transcripts through decoder, tree, and view 1`] = `
+[
+  {
+    "activeTurns": [],
+    "decodedEvents": 3,
+    "lifecycleEvents": 0,
+    "messages": [
+      {
+        "id": "msg-abort",
+        "parts": [
+          {
+            "id": "text",
+            "text": "partial",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+    ],
+    "name": "abortPartial",
+    "nodes": [
+      {
+        "messageCount": 1,
+        "status": "active",
+        "turnId": "turn-abort",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 0,
+    "lifecycleEvents": 2,
+    "messages": [],
+    "name": "cancelTurn",
+    "nodes": [
+      {
+        "messageCount": 0,
+        "status": "cancelled",
+        "turnId": "turn-cancel",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 0,
+    "lifecycleEvents": 4,
+    "messages": [],
+    "name": "concurrentTurns",
+    "nodes": [
+      {
+        "messageCount": 0,
+        "status": "complete",
+        "turnId": "turn-concurrent",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 1,
+    "lifecycleEvents": 0,
+    "messages": [
+      {
+        "id": "msg-edit",
+        "parts": [
+          {
+            "id": "text",
+            "text": "",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+    ],
+    "name": "edit",
+    "nodes": [
+      {
+        "messageCount": 1,
+        "status": "active",
+        "turnId": "turn-edit",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 0,
+    "lifecycleEvents": 2,
+    "messages": [],
+    "name": "errorTurn",
+    "nodes": [
+      {
+        "messageCount": 0,
+        "status": "error",
+        "turnId": "turn-error",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 3,
+    "lifecycleEvents": 0,
+    "messages": [
+      {
+        "id": "msg-late",
+        "parts": [
+          {
+            "id": "text",
+            "text": "late-state",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+    ],
+    "name": "lateJoinHistory",
+    "nodes": [
+      {
+        "messageCount": 1,
+        "status": "active",
+        "turnId": "turn-late",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 4,
+    "lifecycleEvents": 2,
+    "messages": [
+      {
+        "id": "msg-normal",
+        "parts": [
+          {
+            "id": "text",
+            "text": "hello world",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+    ],
+    "name": "normalTurn",
+    "nodes": [
+      {
+        "messageCount": 1,
+        "status": "complete",
+        "turnId": "turn-normal",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 3,
+    "lifecycleEvents": 0,
+    "messages": [
+      {
+        "id": "msg-recovery",
+        "parts": [
+          {
+            "id": "text",
+            "text": "recoverable",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+    ],
+    "name": "recoverySmoke",
+    "nodes": [
+      {
+        "messageCount": 1,
+        "status": "active",
+        "turnId": "turn-recovery",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 3,
+    "lifecycleEvents": 0,
+    "messages": [
+      {
+        "id": "msg-regenerate",
+        "parts": [
+          {
+            "id": "text",
+            "text": "new answer",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+    ],
+    "name": "regenerate",
+    "nodes": [
+      {
+        "messageCount": 1,
+        "status": "active",
+        "turnId": "turn-regenerate",
+      },
+    ],
+  },
+  {
+    "activeTurns": [],
+    "decodedEvents": 0,
+    "lifecycleEvents": 3,
+    "messages": [],
+    "name": "suspendedContinuation",
+    "nodes": [
+      {
+        "messageCount": 0,
+        "status": "suspended",
+        "turnId": "turn-suspended",
+      },
+    ],
+  },
+]
+`;

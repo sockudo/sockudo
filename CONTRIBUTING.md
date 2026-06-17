@@ -84,6 +84,55 @@ make test
 
 ---
 
+## Protocol and SDK Compatibility Policy
+
+Sockudo treats protocol compatibility as a release gate, not a best-effort guideline.
+
+### Wire protocol rules
+
+- Wire-protocol v1 is additive-only. New event names, optional fields, enum/action values, webhook event types, and HTTP response fields must not break existing V1 clients or SDKs.
+- Protocol V1/Pusher-compatible output must remain byte-identical unless a major-version protocol is explicitly introduced.
+- Protocol-visible PRs must update or explicitly confirm unchanged:
+  - `docs/specs/ai-transport-wire-protocol.md`
+  - forward-compat fixtures and golden transcripts
+  - `docs/specs/compat-matrix.json`
+  - the generated compatibility table in `docs/content/docs/reference/compatibility.mdx`
+- `node scripts/generate-compat-matrix.mjs --check` is the doc-drift gate for the living compatibility matrix.
+
+### SDK versioning rules
+
+- SDKs use SemVer for public API changes.
+- Patch and minor SDK releases must be additive and must preserve existing valid traffic behavior.
+- Release workflows for SDK repositories must run their E1 compatibility lane against both the latest released Sockudo server and current server main before publish.
+- Per-language API-diff jobs block non-additive public API changes unless the SDK release is intentionally major.
+
+### Release order
+
+Protocol and AI Transport releases must ship in this order:
+
+1. Sockudo server with new behavior default-off.
+2. `@sockudo/client`.
+3. `@sockudo/ai-transport`.
+4. Other client SDKs.
+5. Server HTTP SDKs.
+
+Do not skip ahead in the order. A later layer can release only after the earlier layer's compatibility gate is green.
+
+### Support window and deprecations
+
+- Sockudo supports the current and previous minor server release.
+- Each SDK supports its current and previous minor release against supported server minors.
+- AI Transport ships with zero deprecations in this plan. Any future deprecation requires a separate policy update, matrix update, migration note, and release announcement.
+
+### Rollback guidance
+
+- Server rollback: disable the new feature flag first, then roll back the binary if needed. V1 behavior must remain compatible throughout.
+- Client SDK rollback: pin the SDK package to the previous minor while keeping the server feature default-off for affected clients.
+- `@sockudo/ai-transport` rollback: disable AI channel prefixes and revert the package independently of the realtime SDK when possible.
+- Server HTTP SDK rollback: remove usage of additive helper methods; existing trigger, batch, channel-info, and webhook validation APIs must remain compatible.
+
+---
+
 ## 🚀 Submitting a Pull Request
 
 1. Fork this repo and create your branch:

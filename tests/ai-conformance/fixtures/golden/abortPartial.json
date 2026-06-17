@@ -1,0 +1,40 @@
+[
+  {
+    "event": "sockudo:subscription_succeeded",
+    "channel": "private-ai-abort-golden",
+    "data": {}
+  },
+  {
+    "event": "ai-output",
+    "channel": "private-ai-abort-golden",
+    "data": ""
+  },
+  {
+    "event": "sockudo:message.append",
+    "channel": "private-ai-abort-golden",
+    "data": "partial",
+    "action": "append",
+    "message_serial": "<message_serial>",
+    "history_serial": "<serial>",
+    "delivery_serial": "<serial>",
+    "serial": "<serial>",
+    "version": {
+      "serial": "<version_serial>",
+      "timestamp_ms": "<timestamp>"
+    }
+  },
+  {
+    "event": "sockudo:message.update",
+    "channel": "private-ai-abort-golden",
+    "data": "partial",
+    "action": "update",
+    "message_serial": "<message_serial>",
+    "history_serial": "<serial>",
+    "delivery_serial": "<serial>",
+    "serial": "<serial>",
+    "version": {
+      "serial": "<version_serial>",
+      "timestamp_ms": "<timestamp>"
+    }
+  }
+]

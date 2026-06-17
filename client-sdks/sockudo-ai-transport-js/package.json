@@ -1,0 +1,193 @@
+{
+  "name": "@sockudo/ai-transport",
+  "version": "0.1.0",
+  "description": "Sockudo AI Transport TypeScript SDK.",
+  "type": "module",
+  "sideEffects": false,
+  "packageManager": "pnpm@10.17.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sockudo/sockudo-ai-transport-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sockudo/sockudo-ai-transport-js/issues"
+  },
+  "homepage": "https://github.com/sockudo/sockudo-ai-transport-js#readme",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.umd.cjs"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js",
+      "require": "./dist/react/index.umd.cjs"
+    },
+    "./vue": {
+      "types": "./dist/vue/index.d.ts",
+      "import": "./dist/vue/index.js",
+      "require": "./dist/vue/index.umd.cjs"
+    },
+    "./svelte": {
+      "types": "./dist/svelte/index.d.ts",
+      "import": "./dist/svelte/index.js",
+      "require": "./dist/svelte/index.umd.cjs"
+    },
+    "./vercel": {
+      "types": "./dist/vercel/index.d.ts",
+      "import": "./dist/vercel/index.js",
+      "require": "./dist/vercel/index.umd.cjs"
+    },
+    "./vercel/react": {
+      "types": "./dist/vercel/react/index.d.ts",
+      "import": "./dist/vercel/react/index.js",
+      "require": "./dist/vercel/react/index.umd.cjs"
+    },
+    "./vercel/vue": {
+      "types": "./dist/vercel/vue/index.d.ts",
+      "import": "./dist/vercel/vue/index.js",
+      "require": "./dist/vercel/vue/index.umd.cjs"
+    },
+    "./vercel/svelte": {
+      "types": "./dist/vercel/svelte/index.d.ts",
+      "import": "./dist/vercel/svelte/index.js",
+      "require": "./dist/vercel/svelte/index.umd.cjs"
+    },
+    "./providers": {
+      "types": "./dist/providers/index.d.ts",
+      "import": "./dist/providers/index.js",
+      "require": "./dist/providers/index.umd.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.umd.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "rimraf dist .vite",
+    "bench": "pnpm build && node --expose-gc ./node_modules/vitest/vitest.mjs run --config bench/vitest.config.ts",
+    "bench:regression": "pnpm bench",
+    "build": "pnpm clean && pnpm build:types && pnpm build:js",
+    "build:js": "vite build --config vite.config.ts && vite build --config vite.config.react.ts && vite build --config vite.config.vue.ts && vite build --config vite.config.svelte.ts && vite build --config vite.config.vercel.ts && vite build --config vite.config.vercel-react.ts && vite build --config vite.config.vercel-vue.ts && vite build --config vite.config.vercel-svelte.ts && vite build --config vite.config.providers.ts",
+    "build:types": "tsc -p tsconfig.build.json",
+    "demo": "pnpm --filter @sockudo/ai-transport-demo-nuxt dev",
+    "demo:build": "pnpm --filter @sockudo/ai-transport-demo-nuxt build",
+    "docs:build": "typedoc --options typedoc.json && pnpm test:snippets",
+    "docs:snippets:update": "node scripts/check-doc-snippets.mjs --write",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "pnpm lint:oxc && pnpm lint:eslint",
+    "lint:eslint": "eslint .",
+    "lint:oxc": "oxlint --config .oxlintrc.json src test scripts demo/lib demo/server demo/*.ts *.ts",
+    "format": "pnpm format:oxc && pnpm format:prettier",
+    "format:check": "pnpm format:oxc:check && pnpm format:prettier:check",
+    "format:oxc": "oxfmt src test scripts demo/lib demo/server demo/*.ts *.ts",
+    "format:oxc:check": "oxfmt --check src test scripts demo/lib demo/server demo/*.ts *.ts",
+    "format:prettier": "prettier --write \"**/*.{json,jsonc,md,yml,yaml,cjs}\"",
+    "format:prettier:check": "prettier --check \"**/*.{json,jsonc,md,yml,yaml,cjs}\"",
+    "test": "pnpm test:unit && pnpm test:conformance && pnpm test:snippets",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:conformance": "vitest run --config vitest.conformance.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:snippets": "node scripts/check-doc-snippets.mjs",
+    "test:browser": "playwright test",
+    "test:release-gate": "pnpm release:check",
+    "smoke:exports": "node scripts/smoke-exports.mjs",
+    "api:snapshot": "node scripts/check-api-snapshot.mjs",
+    "api:tsdoc": "node scripts/check-tsdoc-exports.mjs",
+    "license:check": "node scripts/check-license-notice.mjs",
+    "release:check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm build && pnpm smoke:exports && pnpm api:snapshot && pnpm api:tsdoc && pnpm license:check && pnpm size && pnpm bench:regression",
+    "release:dry-run": "node scripts/release-dry-run.mjs",
+    "size": "pnpm build && size-limit",
+    "changeset": "changeset"
+  },
+  "peerDependencies": {
+    "@ai-sdk/svelte": "^4",
+    "@ai-sdk/vue": "^3",
+    "@anthropic-ai/sdk": "^0.103",
+    "@sockudo/client": "^1",
+    "ai": "^6",
+    "openai": "^6",
+    "react": "^18 || ^19",
+    "svelte": "^5",
+    "vue": "^3"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/svelte": {
+      "optional": true
+    },
+    "@ai-sdk/vue": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "svelte": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@ai-sdk/react": "^3.0.198",
+    "@ai-sdk/svelte": "^4.0.198",
+    "@ai-sdk/vue": "^3.0.198",
+    "@changesets/cli": "^2.29.7",
+    "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.60.0",
+    "@size-limit/preset-small-lib": "^11.2.0",
+    "@sockudo/client": "workspace:*",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^20.19.17",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.48.1",
+    "@typescript-eslint/parser": "^8.48.1",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "4.1.8",
+    "ai": "^6.0.196",
+    "eslint": "^9.39.1",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import": "^2.32.0",
+    "fast-check": "^4.8.0",
+    "happy-dom": "^20.10.1",
+    "oxfmt": "^0.4.0",
+    "oxlint": "^1.28.0",
+    "prettier": "^3.6.2",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "rimraf": "^6.0.1",
+    "size-limit": "^11.2.0",
+    "svelte": "^5.56.3",
+    "typedoc": "^0.28.14",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1",
+    "verdaccio": "^6.7.2",
+    "vite": "^8.0.16",
+    "vitest": "^4.0.14",
+    "vue": "^3.5.35",
+    "zod": "^4.4.3"
+  }
+}

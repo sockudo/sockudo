@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: sockudo-csharp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore src/Sockudo.Client/Sockudo.Client.csproj
+
+      - name: Format check
+        run: dotnet format src/Sockudo.Client/Sockudo.Client.csproj --verify-no-changes --no-restore
+
+  test:
+    runs-on: ${{ matrix.os }}
+    needs: lint-and-format
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore tests/Sockudo.Client.Tests/Sockudo.Client.Tests.csproj
+
+      - name: Build
+        run: dotnet build tests/Sockudo.Client.Tests/Sockudo.Client.Tests.csproj --no-restore --configuration Release
+
+      - name: Run tests
+        run: dotnet test tests/Sockudo.Client.Tests/Sockudo.Client.Tests.csproj --no-build --configuration Release --verbosity normal

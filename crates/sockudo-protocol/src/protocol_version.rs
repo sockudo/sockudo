@@ -121,6 +121,9 @@ pub const CANONICAL_SUBSCRIBE: &str = "subscribe";
 pub const CANONICAL_UNSUBSCRIBE: &str = "unsubscribe";
 pub const CANONICAL_SIGNIN: &str = "signin";
 pub const CANONICAL_SIGNIN_SUCCESS: &str = "signin_success";
+pub const CANONICAL_AUTH: &str = "auth";
+pub const CANONICAL_AUTH_SUCCESS: &str = "auth_success";
+pub const CANONICAL_TOKEN_EXPIRED: &str = "token_expired";
 pub const CANONICAL_CACHE_MISS: &str = "cache_miss";
 
 // Canonical internal event names (without prefix)
@@ -128,6 +131,7 @@ pub const CANONICAL_SUBSCRIPTION_SUCCEEDED: &str = "subscription_succeeded";
 pub const CANONICAL_SUBSCRIPTION_ERROR: &str = "subscription_error";
 pub const CANONICAL_MEMBER_ADDED: &str = "member_added";
 pub const CANONICAL_MEMBER_REMOVED: &str = "member_removed";
+pub const CANONICAL_PRESENCE_UPDATE: &str = "presence_update";
 
 // Delta compression canonical names
 pub const CANONICAL_ENABLE_DELTA_COMPRESSION: &str = "enable_delta_compression";
@@ -140,6 +144,7 @@ pub const CANONICAL_DELTA_SYNC_ERROR: &str = "delta_sync_error";
 pub const CANONICAL_RESUME: &str = "resume";
 pub const CANONICAL_RESUME_SUCCESS: &str = "resume_success";
 pub const CANONICAL_RESUME_FAILED: &str = "resume_failed";
+pub const CANONICAL_CHANNEL_HISTORY: &str = "channel_history";
 
 #[cfg(test)]
 mod tests {

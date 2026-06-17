@@ -1,0 +1,264 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate SDK (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    env:
+      SOCKUDO_SERVER_REF: f66434eab44e688d3df42e56d8ebaf9aba6b1575
+    strategy:
+      fail-fast: true
+      matrix:
+        node: [20, 22]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.17.0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: Checkout pinned Sockudo server
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: sockudo/sockudo
+          ref: ${{ env.SOCKUDO_SERVER_REF }}
+          path: sockudo
+
+      - name: Conformance tests
+        env:
+          SOCKUDO_SERVER_ROOT: ${{ github.workspace }}/sockudo
+        run: pnpm test:conformance
+
+      - name: Build
+        run: pnpm build
+
+      - name: Docs build
+        run: pnpm docs:build
+
+      - name: Demo build checks
+        run: pnpm demo:build
+
+      - name: Exports smoke
+        run: pnpm smoke:exports
+
+      - name: Bundle size
+        run: pnpm size
+
+      - name: Bench regression
+        run: pnpm bench:regression
+
+      - name: API snapshot
+        run: pnpm api:snapshot
+
+  integration:
+    name: Integration (Node ${{ matrix.node }}, ${{ matrix.adapter }} adapter)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        node: [20, 22]
+        adapter: [local, redis]
+        include:
+          - adapter: local
+            server_config: config/config.toml
+          - adapter: redis
+            server_config: config/ai-transport.example.toml
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: sockudo
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: root
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U root -d sockudo" --health-interval 5s --health-timeout 5s
+          --health-retries 20
+    env:
+      SOCKUDO_SERVER_REF: f66434eab44e688d3df42e56d8ebaf9aba6b1575
+      SOCKUDO_URL: http://127.0.0.1:6001
+      SOCKUDO_APP_ID: app-id
+      SOCKUDO_APP_KEY: app-key
+      SOCKUDO_APP_SECRET: app-secret
+      DATABASE_POSTGRES_HOST: 127.0.0.1
+      DATABASE_POSTGRES_PORT: 5432
+      DATABASE_POSTGRES_USERNAME: root
+      DATABASE_POSTGRES_PASSWORD: root
+      DATABASE_POSTGRES_DATABASE: sockudo
+    steps:
+      - name: Checkout SDK
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          path: sdk
+
+      - name: Checkout pinned Sockudo server
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: sockudo/sockudo
+          ref: ${{ env.SOCKUDO_SERVER_REF }}
+          path: sockudo
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.17.0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: sdk/pnpm-lock.yaml
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Install SDK
+        working-directory: sdk
+        run: pnpm install --frozen-lockfile
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Start Sockudo AI Transport server
+        working-directory: sockudo
+        run: |
+          cargo run -p sockudo --features "v2,ai-transport,redis,postgres" -- --config "${{ matrix.server_config }}" &
+          server_pid=$!
+          echo "$server_pid" > ../sockudo.pid
+          deadline=$((SECONDS + 240))
+          until curl -fsS http://127.0.0.1:6001/ >/dev/null 2>&1; do
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              wait "$server_pid"
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Sockudo server did not become ready within 240 seconds"
+              exit 124
+            fi
+            sleep 2
+          done
+
+      - name: Run integration tests
+        working-directory: sdk
+        run: pnpm test:integration
+
+      - name: Run conformance tests
+        working-directory: sdk
+        env:
+          SOCKUDO_SERVER_ROOT: ${{ github.workspace }}/sockudo
+        run: pnpm test:conformance
+
+      - name: Stop Sockudo
+        if: always()
+        run: |
+          if [ -f sockudo.pid ]; then
+            kill "$(cat sockudo.pid)" || true
+          fi
+
+  browser-smoke:
+    name: Browser smoke (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.17.0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install browser
+        run: pnpm exec playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Smoke Next.js useChat demo
+        run: pnpm test:browser --project=${{ matrix.browser }}
+
+  react-compat:
+    name: React ${{ matrix.react }} compatibility
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        react: [18, 19]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.17.0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Switch React 18
+        if: matrix.react == 18
+        run: >-
+          pnpm add -Dw react@18 react-dom@18 @types/react@18 @types/react-dom@18
+          --no-frozen-lockfile
+
+      - name: Typecheck React surfaces
+        run: pnpm typecheck
+
+      - name: Test React surfaces
+        run: pnpm test:unit -- src/react/index.test.ts src/vercel/react/index.test.ts

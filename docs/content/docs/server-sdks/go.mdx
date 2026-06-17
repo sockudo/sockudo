@@ -6,8 +6,13 @@ icon: FileCode
 
 ## Install
 
+Clone the Sockudo monorepo and use a local `replace` until this module is published from the
+monorepo:
+
 ```bash
+git clone https://github.com/sockudo/sockudo.git
 go get github.com/sockudo/sockudo-http-go/v5
+go mod edit -replace github.com/sockudo/sockudo-http-go/v5=../sockudo/server-sdks/sockudo-http-go
 ```
 
 ## Configure

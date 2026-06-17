@@ -1,0 +1,40 @@
+services:
+  sockudo:
+    build:
+      context: ../../..
+    environment:
+      SOCKUDO_DEFAULT_APP_ID: demo-app
+      SOCKUDO_DEFAULT_APP_KEY: demo-key
+      SOCKUDO_DEFAULT_APP_SECRET: demo-secret
+      SOCKUDO_HOST: 0.0.0.0
+      SOCKUDO_PORT: 6001
+      SOCKUDO_PROTOCOL_VERSION: "2"
+    ports:
+      - "6001:6001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:6001/up/demo-app"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  nuxt:
+    image: node:22-bookworm
+    working_dir: /workspace/client-sdks/sockudo-ai-transport-js
+    depends_on:
+      sockudo:
+        condition: service_healthy
+    environment:
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+      VERCEL_API_KEY: ${VERCEL_API_KEY:-}
+      SOCKUDO_APP_ID: demo-app
+      SOCKUDO_APP_KEY: demo-key
+      SOCKUDO_APP_SECRET: demo-secret
+      SOCKUDO_HOST: sockudo
+      SOCKUDO_PORT: 6001
+      SOCKUDO_CHANNEL_NAME: private-ai-nuxt
+    volumes:
+      - ../../..:/workspace
+    command: >
+      sh -lc "corepack enable && pnpm install && pnpm build && pnpm demo"
+    ports:
+      - "5174:5174"

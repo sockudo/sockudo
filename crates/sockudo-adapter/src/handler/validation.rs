@@ -9,8 +9,18 @@ use sockudo_core::utils;
 use sockudo_core::websocket::ConnectionCapabilities;
 use sockudo_protocol::ProtocolVersion;
 use sockudo_protocol::constants::*;
+use sockudo_protocol::messages::{
+    AI_ERROR_EVENT_NOT_PERMITTED, AI_ERROR_INVALID_TRANSPORT_HEADER, AiHeaderValidationError,
+    AiPublishTrust, PusherMessage, is_ai_client_publish_event,
+};
 use sonic_rs::Value;
 use sonic_rs::prelude::*;
+
+fn record_ai_rejection(handler: &ConnectionHandler, app_id: &str, code: u32) {
+    if let Some(metrics) = handler.metrics() {
+        metrics.mark_ai_transport_rejected(app_id, code);
+    }
+}
 
 fn validate_namespace_permission(
     namespace: &ChannelNamespace,
@@ -54,8 +64,16 @@ fn validate_capability_permission(
             capabilities.allows_subscribe(channel)
                 && capabilities.allows_annotation_subscribe(channel)
         }
+        "history" => capabilities.allows_history(channel),
+        "presence" => capabilities
+            .presence
+            .as_deref()
+            .is_none_or(|patterns| ConnectionCapabilities::matches_any(patterns, channel)),
         "publish" => capabilities.allows_publish(channel),
-        _ => capabilities.allows_subscribe(channel),
+        _ => capabilities
+            .subscribe
+            .as_deref()
+            .is_none_or(|patterns| ConnectionCapabilities::matches_any(patterns, channel)),
     };
 
     if allowed {
@@ -94,6 +112,97 @@ fn validate_rewind_request(
 }
 
 impl ConnectionHandler {
+    pub async fn validate_ai_event_publish(
+        &self,
+        socket_id: &sockudo_core::websocket::SocketId,
+        app_config: &App,
+        message: &PusherMessage,
+    ) -> Result<()> {
+        let channel = message.channel.as_deref().ok_or_else(|| {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_INVALID_TRANSPORT_HEADER);
+            Error::AiTransport {
+                code: AI_ERROR_INVALID_TRANSPORT_HEADER,
+                name: "ai_invalid_transport_header",
+                message: "channel required for AI event".to_string(),
+            }
+        })?;
+        let event = message.event.as_deref().ok_or_else(|| {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_INVALID_TRANSPORT_HEADER);
+            Error::AiTransport {
+                code: AI_ERROR_INVALID_TRANSPORT_HEADER,
+                name: "ai_invalid_transport_header",
+                message: "event required for AI event".to_string(),
+            }
+        })?;
+
+        if !self.server_options.ai_transport.matches_channel(channel) {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_EVENT_NOT_PERMITTED);
+            return Err(Error::AiTransport {
+                code: AI_ERROR_EVENT_NOT_PERMITTED,
+                name: "ai_event_not_permitted",
+                message: "AI Transport is not enabled for this channel".to_string(),
+            });
+        }
+
+        let Some(connection) = self
+            .connection_manager
+            .get_connection(socket_id, &app_config.id)
+            .await
+        else {
+            return Err(Error::ConnectionNotFound);
+        };
+
+        if connection.protocol_version != ProtocolVersion::V2 {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_EVENT_NOT_PERMITTED);
+            return Err(Error::AiTransport {
+                code: AI_ERROR_EVENT_NOT_PERMITTED,
+                name: "ai_event_not_permitted",
+                message: "AI events require protocol v2".to_string(),
+            });
+        }
+
+        if !is_ai_client_publish_event(event) {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_EVENT_NOT_PERMITTED);
+            return Err(Error::AiTransport {
+                code: AI_ERROR_EVENT_NOT_PERMITTED,
+                name: "ai_event_not_permitted",
+                message: "agent AI events require trusted app-key publish".to_string(),
+            });
+        }
+
+        let verified_client_id = connection.get_user_id().await.ok_or_else(|| {
+            record_ai_rejection(self, &app_config.id, AI_ERROR_INVALID_TRANSPORT_HEADER);
+            Error::Auth("AI client events require an authenticated client_id".to_string())
+        })?;
+
+        message.validate_ai_headers().map_err(|error| {
+            record_ai_rejection(self, &app_config.id, error.code);
+            ai_header_error(error)
+        })?;
+        validate_ai_client_id_headers(
+            message,
+            Some(verified_client_id.as_str()),
+            AiPublishTrust::Client,
+        )
+        .map_err(|error| {
+            record_ai_rejection(self, &app_config.id, error.code);
+            ai_header_error(error)
+        })?;
+
+        self.validate_v2_namespace_publish_permissions(app_config, channel)
+            .await?;
+        self.validate_v2_capability(socket_id, app_config, channel, "publish")
+            .await?;
+        self.validate_v2_channel_access(socket_id, app_config, channel)
+            .await?;
+
+        if let Some(metrics) = self.metrics() {
+            metrics.mark_ai_transport_validated(&app_config.id, event);
+        }
+
+        Ok(())
+    }
+
     pub async fn validate_subscription_request(
         &self,
         socket_id: &sockudo_core::websocket::SocketId,
@@ -186,6 +295,14 @@ impl ConnectionHandler {
                 .await?;
             self.validate_v2_capability(socket_id, app_config, &request.channel, "subscribe")
                 .await?;
+            if request.channel.starts_with("presence-") {
+                self.validate_v2_capability(socket_id, app_config, &request.channel, "presence")
+                    .await?;
+            }
+            if request.rewind.is_some() {
+                self.validate_v2_capability(socket_id, app_config, &request.channel, "history")
+                    .await?;
+            }
             if request.annotation_subscribe {
                 self.validate_v2_capability(
                     socket_id,
@@ -346,7 +463,7 @@ impl ConnectionHandler {
         Ok(())
     }
 
-    async fn validate_v2_channel_access(
+    pub(crate) async fn validate_v2_channel_access(
         &self,
         socket_id: &sockudo_core::websocket::SocketId,
         app_config: &App,
@@ -427,7 +544,7 @@ impl ConnectionHandler {
         validate_namespace_permission(namespace, channel, "publish")
     }
 
-    async fn validate_v2_capability(
+    pub(crate) async fn validate_v2_capability(
         &self,
         socket_id: &sockudo_core::websocket::SocketId,
         app_config: &App,
@@ -459,12 +576,46 @@ impl ConnectionHandler {
     }
 }
 
+pub fn ai_header_error(error: AiHeaderValidationError) -> Error {
+    Error::AiTransport {
+        code: error.code,
+        name: error.name,
+        message: error.message,
+    }
+}
+
+pub fn validate_ai_client_id_headers(
+    message: &PusherMessage,
+    verified_client_id: Option<&str>,
+    trust: AiPublishTrust,
+) -> std::result::Result<(), AiHeaderValidationError> {
+    if matches!(trust, AiPublishTrust::TrustedApp) {
+        return Ok(());
+    }
+
+    let Some(headers) = message.ai_transport_headers() else {
+        return Ok(());
+    };
+
+    for (key, value) in headers.iter() {
+        if key.ends_with("-client-id") && Some(value) != verified_client_id {
+            return Err(AiHeaderValidationError::client_id_spoof(format!(
+                "extras.ai.transport.{key} does not match verified identity"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sockudo_core::app::{
         AppChannelsPolicy, AppHistoryConfig, AppPolicy, NamespaceHistoryConfig,
     };
+    use sockudo_protocol::messages::{AiExtras, MessageExtras};
+    use std::collections::HashMap;
 
     #[test]
     fn namespace_permission_denies_subscribe_when_flag_disabled() {
@@ -635,5 +786,118 @@ mod tests {
         };
 
         assert!(validate_rewind_request(&app, "chat:room-1", true, &global).is_ok());
+    }
+
+    #[test]
+    fn presence_capability_does_not_satisfy_subscribe_gate() {
+        let capabilities = ConnectionCapabilities {
+            presence: Some(vec!["presence-room".to_string()]),
+            ..Default::default()
+        };
+
+        assert!(
+            validate_capability_permission(&capabilities, "presence-room", "subscribe").is_ok(),
+            "legacy signin capabilities without an explicit subscribe list remain implicit"
+        );
+
+        let token_capabilities = ConnectionCapabilities {
+            subscribe: Some(Vec::new()),
+            presence: Some(vec!["presence-room".to_string()]),
+            ..Default::default()
+        };
+
+        assert!(
+            validate_capability_permission(&token_capabilities, "presence-room", "subscribe")
+                .is_err()
+        );
+        assert!(
+            validate_capability_permission(&token_capabilities, "presence-room", "presence")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn subscribe_capability_does_not_satisfy_presence_gate() {
+        let capabilities = ConnectionCapabilities {
+            subscribe: Some(vec!["presence-room".to_string()]),
+            presence: Some(Vec::new()),
+            ..Default::default()
+        };
+
+        assert!(
+            validate_capability_permission(&capabilities, "presence-room", "subscribe").is_ok()
+        );
+        assert!(
+            validate_capability_permission(&capabilities, "presence-room", "presence").is_err()
+        );
+    }
+
+    #[test]
+    fn ai_client_id_headers_reject_spoofed_client_identity() {
+        let message = PusherMessage {
+            event: Some("ai-input".to_string()),
+            channel: Some("private-ai".to_string()),
+            data: None,
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: Some(MessageExtras {
+                ai: Some(AiExtras {
+                    transport: Some(HashMap::from([(
+                        "input-client-id".to_string(),
+                        "attacker".to_string(),
+                    )])),
+                    codec: None,
+                }),
+                ..Default::default()
+            }),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        let err = validate_ai_client_id_headers(&message, Some("user-1"), AiPublishTrust::Client)
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            sockudo_protocol::messages::AI_ERROR_CLIENT_ID_SPOOF
+        );
+    }
+
+    #[test]
+    fn ai_client_id_headers_allow_trusted_app_publish() {
+        let message = PusherMessage {
+            event: Some("ai-output".to_string()),
+            channel: Some("private-ai".to_string()),
+            data: None,
+            name: None,
+            user_id: None,
+            tags: None,
+            sequence: None,
+            conflation_key: None,
+            message_id: None,
+            stream_id: None,
+            serial: None,
+            idempotency_key: None,
+            extras: Some(MessageExtras {
+                ai: Some(AiExtras {
+                    transport: Some(HashMap::from([(
+                        "turn-client-id".to_string(),
+                        "server-agent".to_string(),
+                    )])),
+                    codec: None,
+                }),
+                ..Default::default()
+            }),
+            delta_sequence: None,
+            delta_conflation_key: None,
+        };
+
+        validate_ai_client_id_headers(&message, None, AiPublishTrust::TrustedApp).unwrap();
     }
 }

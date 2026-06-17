@@ -1,0 +1,322 @@
+---
+title: AI Transport providers
+description: Stream model output from Vercel AI SDK, OpenAI, Anthropic, OpenAI-compatible APIs, and custom providers through Sockudo AI Transport.
+icon: BotMessageSquare
+---
+
+Sockudo AI Transport is provider-neutral. Sockudo carries ordered, durable turn state; your agent
+chooses how to call the model and converts provider output into AI SDK UI message chunks.
+
+The JavaScript SDK has two integration families:
+
+| Integration | Import | Best for |
+| --- | --- | --- |
+| Vercel AI SDK transport | `@sockudo/ai-transport/vercel` | Apps already using `ai`, `streamText`, `Chat`, `useChat`, Vue, React, or Svelte AI SDK UI primitives. |
+| Direct provider adapters | `@sockudo/ai-transport/providers` | Workers that call OpenAI, Anthropic, OpenAI-compatible HTTP/SSE endpoints, or local model servers directly. |
+| Core codec transport | `@sockudo/ai-transport` | Custom model protocols, custom UI projections, or non-Vercel message shapes. |
+
+## Credits
+
+Sockudo AI Transport is heavily inspired by [Ably AI Transport](https://ably.com/docs/ai-transport),
+and Ably's public AI Transport docs and SDK were the main product inspiration for this layer. The
+Sockudo implementation maps those ideas onto Sockudo Protocol V2, durable history, versioned
+messages, presence, push, and the `@sockudo/client` SDK in this monorepo.
+
+## Provider flow
+
+```mermaid
+sequenceDiagram
+  participant U as User client
+  participant S as Sockudo channel
+  participant A as Agent route or worker
+  participant P as Model provider
+  participant H as History and version store
+
+  U->>S: ai-input create
+  S->>H: persist user message and turn start
+  A->>S: subscribe or receive webhook
+  A->>P: stream prompt/messages/tools
+  P-->>A: deltas, tool calls, finish
+  A->>S: ai-output create + append/update
+  S->>H: persist every mutation
+  S-->>U: live append rollup fanout
+  U->>S: rewind/history after refresh
+  S-->>U: reconstructed transcript
+```
+
+The provider never needs to know about connection recovery, rewind, history cursors, branch trees,
+presence, or multi-device fanout. It streams chunks. Sockudo makes those chunks durable and
+observable.
+
+## Vercel AI SDK
+
+Use Vercel AI SDK when you want provider packages, tool calling, and UI message streams to stay in
+the `ai` ecosystem.
+
+```ts
+// server/api/chat.post.ts
+import { streamText } from "ai";
+import { createServerTransport } from "@sockudo/ai-transport/vercel";
+import { realtimeClient } from "../utils/sockudo";
+
+export default defineEventHandler(async (event) => {
+  const body = await readBody(event);
+
+  const transport = createServerTransport({
+    client: realtimeClient(),
+    channelName: body.channelName,
+  });
+
+  const turn = transport.newTurn({
+    turnId: body.turnId,
+    invocationId: body.invocationId,
+    inputEventId: body.inputEventId,
+    clientId: body.clientId,
+    onCancel(request) {
+      return request.filter.all === true || request.turnOwners.get(body.turnId) === body.clientId;
+    },
+  });
+
+  event.waitUntil?.((async () => {
+    await turn.start();
+    const result = streamText({
+      model: "openai/gpt-5-mini",
+      system: "You are a concise incident-room assistant.",
+      prompt: body.messages.at(-1)?.parts?.map((part) => part.text ?? "").join("") ?? "",
+      abortSignal: turn.abortSignal,
+    });
+    await turn.streamResponse(result.toUIMessageStream());
+    await turn.end("complete");
+    transport.close();
+  })());
+
+  setResponseStatus(event, 202);
+});
+```
+
+The frontend can use the Vercel-compatible transport in React, Vue, or Svelte.
+
+```ts
+import { Chat } from "@ai-sdk/vue";
+import { provideChatTransport } from "@sockudo/ai-transport/vercel/vue";
+
+const provider = provideChatTransport({
+  api: "/api/chat",
+  channelName: "private-ai:user-42:sess-01J",
+  client: sockudoClient,
+  clientId: "user-42",
+});
+
+const chat = new Chat({
+  id: "private-ai:user-42:sess-01J",
+  transport: provider.chatTransport.value,
+});
+
+await chat.sendMessage({ text: "Summarize the last deploy failure." });
+```
+
+## Direct provider support
+
+The `@sockudo/ai-transport/providers` entry point supports these built-in adapters:
+
+| Provider path | Function | Notes |
+| --- | --- | --- |
+| OpenAI-compatible HTTP/SSE | `streamOpenAICompatibleText` | Uses Chat Completions-compatible `/chat/completions` streaming. |
+| OpenAI-compatible reusable provider | `createOpenAICompatibleProvider` | Good for named provider registries. |
+| OpenAI SDK Chat Completions | `streamOpenAIChatCompletion` / `createOpenAISdkProvider` | Uses a structural subset of the official OpenAI SDK. |
+| OpenAI SDK Responses | `streamOpenAIResponse` / `createOpenAISdkProvider({ mode: "responses" })` | Maps output text and tool argument deltas to UI chunks. |
+| Anthropic SDK Messages | `streamAnthropicMessage` / `createAnthropicSdkProvider` | Maps text, thinking, tool use, and finish reasons. |
+
+OpenAI-compatible presets are:
+
+| Name | Default base URL |
+| --- | --- |
+| `openai` | `https://api.openai.com/v1` |
+| `openrouter` | `https://openrouter.ai/api/v1` |
+| `groq` | `https://api.groq.com/openai/v1` |
+| `togetherai` | `https://api.together.xyz/v1` |
+| `fireworks` | `https://api.fireworks.ai/inference/v1` |
+| `deepseek` | `https://api.deepseek.com` |
+| `perplexity` | `https://api.perplexity.ai` |
+| `mistral` | `https://api.mistral.ai/v1` |
+| `xai` | `https://api.x.ai/v1` |
+| `ollama` | `http://127.0.0.1:11434/v1` |
+| `lmstudio` | `http://127.0.0.1:1234/v1` |
+
+Local providers such as Ollama and LM Studio may omit `apiKey` when the local server does not
+require one.
+
+## OpenAI-compatible HTTP example
+
+```ts
+import {
+  createOpenAICompatibleProvider,
+  runDirectLlmTurn,
+} from "@sockudo/ai-transport/providers";
+
+const provider = createOpenAICompatibleProvider({
+  provider: "groq",
+  apiKey: process.env.GROQ_API_KEY,
+  model: "llama-3.3-70b-versatile",
+});
+
+await runDirectLlmTurn(turn, provider, {
+  prompt: "Write a remediation plan for a Redis fanout incident.",
+  maxOutputTokens: 800,
+});
+```
+
+## OpenAI SDK examples
+
+```ts
+import OpenAI from "openai";
+import {
+  createOpenAISdkProvider,
+  runDirectLlmTurn,
+} from "@sockudo/ai-transport/providers";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+const chatProvider = createOpenAISdkProvider({
+  client: openai,
+  mode: "chat",
+  model: "gpt-4.1-mini",
+});
+
+await runDirectLlmTurn(turn, chatProvider, {
+  messages: [
+    { role: "system", content: "Answer as a production engineer." },
+    { role: "user", content: "Why did reconnect recovery fail?" },
+  ],
+});
+```
+
+```ts
+const responsesProvider = createOpenAISdkProvider({
+  client: openai,
+  mode: "responses",
+  model: "gpt-5-mini",
+});
+
+await runDirectLlmTurn(turn, responsesProvider, {
+  prompt: "Explain the latest channel history page in plain English.",
+  body: {
+    reasoning: { effort: "low" },
+  },
+});
+```
+
+## Anthropic SDK example
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  createAnthropicSdkProvider,
+  runDirectLlmTurn,
+} from "@sockudo/ai-transport/providers";
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+const provider = createAnthropicSdkProvider({
+  client: anthropic,
+  model: "claude-sonnet-4-5",
+  system: "Be concise and include risk levels.",
+});
+
+await runDirectLlmTurn(turn, provider, {
+  prompt: "Audit this failed push notification delivery chain.",
+});
+```
+
+## Provider registry
+
+Use a registry when the UI lets a user or tenant select a model provider.
+
+```ts
+import {
+  createAnthropicSdkProvider,
+  createDirectLlmProviderRegistry,
+  createOpenAICompatibleProvider,
+} from "@sockudo/ai-transport/providers";
+
+const providers = createDirectLlmProviderRegistry({
+  groq: createOpenAICompatibleProvider({
+    provider: "groq",
+    apiKey: process.env.GROQ_API_KEY,
+    model: "llama-3.3-70b-versatile",
+  }),
+  local: createOpenAICompatibleProvider({
+    provider: "ollama",
+    model: "llama3.2",
+  }),
+  anthropic: createAnthropicSdkProvider({
+    client: anthropic,
+    model: "claude-sonnet-4-5",
+  }),
+});
+
+const stream = await providers.streamText("local", {
+  prompt: "Return a JSON incident summary.",
+});
+```
+
+## Custom provider
+
+Any provider that returns `ReadableStream<VercelOutput>` can participate.
+
+```ts
+import type { DirectLlmProvider } from "@sockudo/ai-transport/providers";
+
+const provider: DirectLlmProvider = {
+  async streamText(request) {
+    const words = (request.prompt ?? "").split(/\s+/);
+
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: "start" });
+        controller.enqueue({ type: "text-start", id: "answer" });
+        for (const word of words) {
+          controller.enqueue({ type: "text-delta", id: "answer", delta: `${word} ` });
+        }
+        controller.enqueue({ type: "text-end", id: "answer" });
+        controller.enqueue({ type: "finish", finishReason: "stop" });
+        controller.close();
+      },
+    });
+  },
+};
+```
+
+## Tool calling and human approval
+
+Tool calls are just streamed UI message chunks. The transport persists every tool-input delta and
+the final tool state, so a user can approve from another tab or after a reconnect.
+
+```mermaid
+sequenceDiagram
+  participant A as Agent
+  participant S as Sockudo
+  participant W as Web client
+  participant T as Tool executor
+
+  A->>S: tool-input-start + deltas
+  S-->>W: pending approval appears
+  W->>S: approval response
+  T->>S: tool output
+  A->>S: continue ai-output append
+```
+
+## Choosing an integration
+
+| You have | Use |
+| --- | --- |
+| Vercel AI SDK `streamText` already wired | `@sockudo/ai-transport/vercel` |
+| A provider with OpenAI-compatible SSE | `createOpenAICompatibleProvider` |
+| Official OpenAI SDK | `createOpenAISdkProvider` |
+| Official Anthropic SDK | `createAnthropicSdkProvider` |
+| A custom internal model gateway | `DirectLlmProvider` |
+| A non-Vercel UI model | Core codec API from `@sockudo/ai-transport` |
+
+Keep provider API keys server-side. Browser clients should only receive Sockudo public app keys,
+private/presence auth responses, and short-lived Protocol V2 capability tokens.
+

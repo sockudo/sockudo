@@ -6,6 +6,25 @@ icon: BellRing
 
 Push notifications are a core part of Sockudo. WebSockets deliver realtime messages to connected clients; push notifications reach devices that are offline, backgrounded, rate-limited by the OS, or outside the active channel session.
 
+```mermaid
+flowchart LR
+  D[Mobile/browser device] -->|provider token| B[Your backend]
+  B -->|device registration| S[Sockudo push API]
+  B -->|channel subscription| S
+  A[Application event] -->|push publish or push rule| S
+  S --> Q[(Push queue)]
+  Q --> F[FCM]
+  Q --> AP[APNs]
+  Q --> W[Web Push]
+  Q --> H[HMS]
+  Q --> N[WNS]
+  F --> D
+  AP --> D
+  W --> D
+  H --> D
+  N --> D
+```
+
 ## Concepts
 
 | Concept | Meaning |
@@ -16,6 +35,18 @@ Push notifications are a core part of Sockudo. WebSockets deliver realtime messa
 | Credential | Provider configuration for FCM, APNs, Web Push, HMS, or WNS. |
 | Publish | A push request accepted by Sockudo and fanned out asynchronously. |
 | Publish status | The operational record for accepted, scheduled, dispatched, failed, or cancelled push work. |
+
+## Provider support
+
+| Provider | Platforms | Credentials | Notes |
+| --- | --- | --- | --- |
+| FCM | Android, web, cross-platform app backends | Service account JSON and optional project ID | Best default for Android and Firebase-backed apps. |
+| APNs | iOS, iPadOS, macOS, watchOS, tvOS, visionOS | Team ID, key ID, bundle ID, `.p8` private key, environment | Use sandbox for development tokens and production for App Store/TestFlight tokens. |
+| Web Push | Browsers and installed PWAs | VAPID subject, public key, private key | Payload size and browser support vary; store endpoint metadata with the device. |
+| HMS | Huawei devices | App credentials | Use when shipping to Huawei Mobile Services environments. |
+| WNS | Windows apps | WNS credentials | Use for Microsoft Store/Windows notification channels. |
+
+Sockudo normalizes admission, idempotency, queueing, retries, status retention, and feedback. Provider-specific limits still apply after the request leaves Sockudo.
 
 ## Configure providers
 
@@ -45,6 +76,16 @@ enabled = true
 vapid_subject = "mailto:ops@example.com"
 vapid_public_key = "${WEB_PUSH_PUBLIC_KEY}"
 vapid_private_key = "${WEB_PUSH_PRIVATE_KEY}"
+
+[push.providers.hms]
+enabled = true
+app_id = "${HMS_APP_ID}"
+app_secret = "${HMS_APP_SECRET}"
+
+[push.providers.wns]
+enabled = true
+package_sid = "${WNS_PACKAGE_SID}"
+client_secret = "${WNS_CLIENT_SECRET}"
 ```
 
 ## Register devices
@@ -66,6 +107,9 @@ app.post("/api/push/devices", async (req, res) => {
 });
 ```
 
+Device IDs should be stable per installation. Provider tokens can rotate; update the registration
+when the platform SDK gives you a new token.
+
 ## Subscribe devices to channels
 
 ```ts
@@ -77,6 +121,23 @@ await sockudo.upsertChannelPushSubscription({
 ```
 
 Use the same authorization model as realtime channel subscription. If the user cannot subscribe to `private-orders` over WebSocket, they should not subscribe a device to `private-orders` for push.
+
+```mermaid
+sequenceDiagram
+  participant App as Client app
+  participant API as Your backend
+  participant S as Sockudo
+  participant P as Push provider
+
+  App->>API: current provider token
+  API->>API: verify user and device
+  API->>S: register device
+  API->>S: subscribe device to channel
+  API->>S: publish push
+  S->>P: provider request
+  P-->>S: accepted or failed
+  S-->>API: publish status
+```
 
 ## Publish
 
@@ -101,6 +162,9 @@ const response = await sockudo.publishPush({
 console.log(response.publish_id);
 ```
 
+Use `sync: false` for most production traffic. Async admission returns quickly, then workers fan out
+to providers and update publish status records.
+
 ## Schedule and cancel
 
 ```ts
@@ -111,6 +175,39 @@ const scheduled = await sockudo.schedulePush({
 });
 
 await sockudo.cancelScheduledPush(scheduled.publish_id);
+```
+
+## Channel-triggered push rule
+
+Push rules convert normal channel events into push work. This is useful for product events and AI
+agent completion notifications.
+
+```toml
+[[push_rules]]
+enabled = true
+channel_pattern = "notifications:*"
+event_filter = ["agent-complete", "order-ready"]
+rate_limit_per_second = 100
+
+[push_rules.payload_mapping]
+title_field = "title"
+body_field = "body"
+template_data_field = "data"
+include_remaining_fields = true
+```
+
+```json
+{
+  "name": "agent-complete",
+  "channel": "notifications:user-42",
+  "data": {
+    "title": "Agent finished",
+    "body": "Your answer is ready",
+    "data": {
+      "session_id": "sess_01J"
+    }
+  }
+}
 ```
 
 ## Capacity planning

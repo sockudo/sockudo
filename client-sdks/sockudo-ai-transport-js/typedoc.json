@@ -1,0 +1,21 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "src/index.ts",
+    "src/react/index.ts",
+    "src/vue/index.ts",
+    "src/svelte/index.ts",
+    "src/vercel/index.ts",
+    "src/vercel/react/index.ts",
+    "src/vercel/vue/index.ts",
+    "src/vercel/svelte/index.ts",
+    "src/providers/index.ts"
+  ],
+  "entryPointStrategy": "expand",
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "githubPages": false,
+  "hideGenerator": true,
+  "name": "@sockudo/ai-transport",
+  "out": "docs/api/reference"
+}

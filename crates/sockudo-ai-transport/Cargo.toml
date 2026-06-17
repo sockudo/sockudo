@@ -1,0 +1,30 @@
+[package]
+name = "sockudo-ai-transport"
+description = "AI Transport rollup and streaming helpers for Sockudo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file.workspace = true
+
+[dependencies]
+ahash = { workspace = true }
+bytes = { workspace = true }
+parking_lot = { workspace = true }
+sockudo-protocol = { workspace = true }
+sonic-rs = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+sockudo-core = { workspace = true, features = ["ai-transport"] }
+tokio = { workspace = true }
+
+[[bench]]
+name = "rollup_engine"
+path = "benches/rollup_engine.rs"
+harness = false
+
+[[bench]]
+name = "observability"
+path = "benches/observability.rs"
+harness = false
