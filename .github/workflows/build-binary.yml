@@ -68,12 +68,13 @@ jobs:
       - name: Build musl binary (Linux x86_64)
         if: runner.os == 'Linux' && runner.arch == 'X64' && contains(inputs.target_triple, 'musl')
         run: |
+          RUST_VERSION=$(grep "^rust-version" Cargo.toml | head -1 | cut -d'"' -f2)
           docker run --rm \
             -v "$PWD":/src \
             -v "$HOME/.cargo/registry":/root/.cargo/registry \
             -v "$HOME/.cargo/git":/root/.cargo/git \
             -w /src \
-            rust:1.93-alpine \
+            "rust:${RUST_VERSION}-alpine" \
             sh -c '
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc protobuf-dev
@@ -108,12 +109,13 @@ jobs:
       - name: Build musl binary (Linux ARM64)
         if: runner.os == 'Linux' && runner.arch == 'ARM64' && contains(inputs.target_triple, 'musl')
         run: |
+          RUST_VERSION=$(grep "^rust-version" Cargo.toml | head -1 | cut -d'"' -f2)
           docker run --rm --platform linux/arm64 \
             -v "$PWD":/src \
             -v "$HOME/.cargo/registry":/root/.cargo/registry \
             -v "$HOME/.cargo/git":/root/.cargo/git \
             -w /src \
-            rust:1.93-alpine \
+            "rust:${RUST_VERSION}-alpine" \
             sh -c '
               apk add --no-cache musl-dev pkgconf \
                 postgresql-dev mariadb-dev cmake make gcc g++ openssl-dev openssl-libs-static curl-dev zlib-dev zlib-static perl linux-headers protoc protobuf-dev
