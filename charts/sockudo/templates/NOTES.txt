@@ -37,3 +37,20 @@ Sockudo has been deployed successfully!
   Note: `defaultApp` is an env-bootstrap subset only. For full per-app policy,
   provide `configJson` or use an external app manager backend.
 {{- end }}
+
+{{- if .Values.dashboard.enabled }}
+
+{{- if .Values.defaultApp.enabled }}5{{ else }}4{{ end }}. Dashboard admin:
+{{- if .Values.dashboard.ingress.enabled }}
+{{- range $host := .Values.dashboard.ingress.hosts }}
+  http{{ if $.Values.dashboard.ingress.tls }}s{{ end }}://{{ $host.host }}
+{{- end }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "sockudo.dashboardWebName" . }} {{ .Values.dashboard.web.service.port }}:{{ .Values.dashboard.web.service.port }}
+  echo "Visit http://127.0.0.1:{{ .Values.dashboard.web.service.port }}"
+{{- end }}
+
+  API health:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "sockudo.dashboardApiName" . }} {{ .Values.dashboard.api.service.port }}:{{ .Values.dashboard.api.service.port }}
+  curl http://127.0.0.1:{{ .Values.dashboard.api.service.port }}/health
+{{- end }}

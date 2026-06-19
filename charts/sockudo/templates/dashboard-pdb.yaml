@@ -1,0 +1,37 @@
+{{- if and .Values.dashboard.enabled .Values.dashboard.pdb.api.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "sockudo.dashboardApiName" . }}
+  labels:
+    {{- include "sockudo.dashboardLabels" (dict "root" . "component" "dashboard-api") | nindent 4 }}
+spec:
+  {{- if .Values.dashboard.pdb.api.minAvailable }}
+  minAvailable: {{ .Values.dashboard.pdb.api.minAvailable }}
+  {{- end }}
+  {{- if .Values.dashboard.pdb.api.maxUnavailable }}
+  maxUnavailable: {{ .Values.dashboard.pdb.api.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sockudo.dashboardSelectorLabels" (dict "root" . "component" "dashboard-api") | nindent 6 }}
+{{- end }}
+{{- if and .Values.dashboard.enabled .Values.dashboard.pdb.web.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "sockudo.dashboardWebName" . }}
+  labels:
+    {{- include "sockudo.dashboardLabels" (dict "root" . "component" "dashboard-web") | nindent 4 }}
+spec:
+  {{- if .Values.dashboard.pdb.web.minAvailable }}
+  minAvailable: {{ .Values.dashboard.pdb.web.minAvailable }}
+  {{- end }}
+  {{- if .Values.dashboard.pdb.web.maxUnavailable }}
+  maxUnavailable: {{ .Values.dashboard.pdb.web.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sockudo.dashboardSelectorLabels" (dict "root" . "component" "dashboard-web") | nindent 6 }}
+{{- end }}

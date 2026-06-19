@@ -1,0 +1,97 @@
+{{- if .Values.dashboard.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sockudo.dashboardWebName" . }}
+  labels:
+    {{- include "sockudo.dashboardLabels" (dict "root" . "component" "dashboard-web") | nindent 4 }}
+spec:
+  {{- if not .Values.dashboard.autoscaling.web.enabled }}
+  replicas: {{ .Values.dashboard.web.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sockudo.dashboardSelectorLabels" (dict "root" . "component" "dashboard-web") | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.dashboard.web.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "sockudo.dashboardLabels" (dict "root" . "component" "dashboard-web") | nindent 8 }}
+        {{- with .Values.dashboard.web.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "sockudo.serviceAccountName" . }}
+      {{- with .Values.dashboard.web.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.dashboard.web.priorityClassName }}
+      priorityClassName: {{ .Values.dashboard.web.priorityClassName }}
+      {{- end }}
+      containers:
+        - name: dashboard-web
+          {{- with .Values.dashboard.web.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.dashboard.web.image.repository }}:{{ .Values.dashboard.web.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.dashboard.web.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: DASHBOARD_API_UPSTREAM
+              value: {{ printf "http://%s:%v" (include "sockudo.dashboardApiName" .) .Values.dashboard.api.service.port | quote }}
+            {{- with .Values.dashboard.web.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.dashboard.web.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.web.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.web.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.web.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.web.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.dashboard.web.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.web.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.web.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.web.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.web.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

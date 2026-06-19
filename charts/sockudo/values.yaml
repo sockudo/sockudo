@@ -194,6 +194,7 @@ database:
     username: ""
     password: ""
     database: "sockudo"
+    tableName: "applications"
   # -- Use an existing secret for database credentials
   # Must contain keys matching: database-username, database-password
   existingSecret: ""
@@ -229,6 +230,207 @@ metricsService:
   enabled: true
   port: 9601
   annotations: {}
+
+# -- Sockudo operator dashboard/admin UI.
+# Requires config.appManagerDriver to be mysql, pgsql/postgres, or dynamodb.
+dashboard:
+  enabled: false
+
+  # -- App manager driver used by the dashboard API. Empty defaults to config.appManagerDriver.
+  appManagerDriver: ""
+  # -- Dashboard user database driver. Empty lets the API choose mysql/pgsql from APP_MANAGER_DRIVER,
+  # or sqlite for dynamodb.
+  databaseDriver: ""
+
+  # -- Secret used to sign dashboard session cookies.
+  sessionSecret:
+    # -- Existing secret name. Must contain the key configured below.
+    existingSecret: ""
+    key: dashboard-session-secret
+    # -- Plain value for chart-managed secret. Required when dashboard.enabled=true and no existingSecret is set.
+    value: ""
+
+  # -- Optional first admin seed. The API only creates this user when no dashboard users exist.
+  seedAdmin:
+    enabled: false
+    existingSecret: ""
+    emailKey: dashboard-seed-email
+    passwordKey: dashboard-seed-password
+    nameKey: dashboard-seed-name
+    email: ""
+    password: ""
+    name: Administrator
+
+  api:
+    replicaCount: 1
+    image:
+      repository: sockudo/dashboard-api
+      pullPolicy: IfNotPresent
+      tag: ""
+    service:
+      type: ClusterIP
+      port: 3460
+      annotations: {}
+    # -- CORS origin for direct API access. Empty defaults to the dashboard web service URL.
+    corsOrigin: ""
+    # -- Optional override for Sockudo HTTP URL. Empty uses the in-chart Sockudo service.
+    sockudoHttpUrl: ""
+    # -- Optional override for Sockudo metrics URL. Empty uses the in-chart metrics service.
+    sockudoMetricsUrl: ""
+    podAnnotations: {}
+    podLabels: {}
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+    resources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: http
+      initialDelaySeconds: 20
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: http
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    startupProbe:
+      httpGet:
+        path: /health
+        port: http
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 5
+      failureThreshold: 24
+    extraEnv: []
+    extraEnvFrom: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+    priorityClassName: ""
+
+  web:
+    replicaCount: 1
+    image:
+      repository: sockudo/dashboard-web
+      pullPolicy: IfNotPresent
+      tag: ""
+    service:
+      type: ClusterIP
+      port: 80
+      annotations: {}
+    podAnnotations: {}
+    podLabels: {}
+    podSecurityContext: {}
+    securityContext: {}
+    resources:
+      limits:
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    livenessProbe:
+      httpGet:
+        path: /
+        port: http
+      initialDelaySeconds: 10
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /
+        port: http
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    extraEnv: []
+    extraEnvFrom: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+    priorityClassName: ""
+
+  # -- Persistent storage for /app/data. Needed when dashboard.databaseDriver=sqlite.
+  persistence:
+    enabled: false
+    existingClaim: ""
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+    annotations: {}
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: sockudo-admin.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  autoscaling:
+    api:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+      behavior: {}
+    web:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+      behavior: {}
+
+  pdb:
+    api:
+      enabled: false
+      minAvailable: 1
+    web:
+      enabled: false
+      minAvailable: 1
+
+  networkPolicy:
+    enabled: false
+    api:
+      ingress: []
+      egress: []
+    web:
+      ingress: []
+      egress: []
 
 ingress:
   enabled: false

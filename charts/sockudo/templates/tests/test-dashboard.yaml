@@ -1,0 +1,20 @@
+{{- if .Values.dashboard.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "sockudo.fullname" . }}-test-dashboard"
+  labels:
+    {{- include "sockudo.dashboardLabels" (dict "root" . "component" "dashboard-test") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['sh', '-c']
+      args:
+        - >
+          wget -q -O - {{ include "sockudo.dashboardApiName" . }}:{{ .Values.dashboard.api.service.port }}/health &&
+          wget -q -O /dev/null {{ include "sockudo.dashboardWebName" . }}:{{ .Values.dashboard.web.service.port }}/
+  restartPolicy: Never
+{{- end }}

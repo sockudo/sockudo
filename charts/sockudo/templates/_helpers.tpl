@@ -72,3 +72,45 @@ Secret name
 {{- define "sockudo.secretName" -}}
 {{- printf "%s-secret" (include "sockudo.fullname" .) }}
 {{- end }}
+
+{{/*
+Dashboard API deployment/service name
+*/}}
+{{- define "sockudo.dashboardApiName" -}}
+{{- printf "%s-dashboard-api" (include "sockudo.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Dashboard web deployment/service name
+*/}}
+{{- define "sockudo.dashboardWebName" -}}
+{{- printf "%s-dashboard-web" (include "sockudo.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Dashboard secret name
+*/}}
+{{- define "sockudo.dashboardSecretName" -}}
+{{- printf "%s-dashboard-secret" (include "sockudo.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Dashboard component selector labels
+*/}}
+{{- define "sockudo.dashboardSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "sockudo.name" .root }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{/*
+Dashboard component labels
+*/}}
+{{- define "sockudo.dashboardLabels" -}}
+helm.sh/chart: {{ include "sockudo.chart" .root }}
+{{ include "sockudo.dashboardSelectorLabels" . }}
+{{- if .root.Chart.AppVersion }}
+app.kubernetes.io/version: {{ .root.Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+{{- end }}

@@ -1,0 +1,203 @@
+{{- if .Values.dashboard.enabled -}}
+{{- $apiName := include "sockudo.dashboardApiName" . -}}
+{{- $appManagerDriver := default .Values.config.appManagerDriver .Values.dashboard.appManagerDriver -}}
+{{- $dashboardDbDriver := .Values.dashboard.databaseDriver -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $apiName }}
+  labels:
+    {{- include "sockudo.dashboardLabels" (dict "root" . "component" "dashboard-api") | nindent 4 }}
+spec:
+  {{- if not .Values.dashboard.autoscaling.api.enabled }}
+  replicas: {{ .Values.dashboard.api.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sockudo.dashboardSelectorLabels" (dict "root" . "component" "dashboard-api") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/dashboard-secret: {{ include (print $.Template.BasePath "/dashboard-secret.yaml") . | sha256sum }}
+        {{- with .Values.dashboard.api.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "sockudo.dashboardLabels" (dict "root" . "component" "dashboard-api") | nindent 8 }}
+        {{- with .Values.dashboard.api.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "sockudo.serviceAccountName" . }}
+      {{- with .Values.dashboard.api.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.dashboard.api.priorityClassName }}
+      priorityClassName: {{ .Values.dashboard.api.priorityClassName }}
+      {{- end }}
+      containers:
+        - name: dashboard-api
+          {{- with .Values.dashboard.api.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.dashboard.api.image.repository }}:{{ .Values.dashboard.api.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.dashboard.api.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3460
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: DASHBOARD_API_PORT
+              value: "3460"
+            - name: DASHBOARD_CORS_ORIGIN
+              value: {{ .Values.dashboard.api.corsOrigin | default (printf "http://%s.%s.svc:%v" (include "sockudo.dashboardWebName" .) .Release.Namespace .Values.dashboard.web.service.port) | quote }}
+            - name: DASHBOARD_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dashboard.sessionSecret.existingSecret | default (include "sockudo.dashboardSecretName" .) }}
+                  key: {{ .Values.dashboard.sessionSecret.key }}
+            - name: APP_MANAGER_DRIVER
+              value: {{ $appManagerDriver | quote }}
+            {{- if $dashboardDbDriver }}
+            - name: DASHBOARD_DATABASE_DRIVER
+              value: {{ $dashboardDbDriver | quote }}
+            {{- end }}
+            - name: SOCKUDO_HTTP_URL
+              value: {{ .Values.dashboard.api.sockudoHttpUrl | default (printf "http://%s:%v" (include "sockudo.fullname" .) .Values.service.port) | quote }}
+            - name: SOCKUDO_METRICS_URL
+              value: {{ .Values.dashboard.api.sockudoMetricsUrl | default (printf "http://%s-metrics:%v" (include "sockudo.fullname" .) .Values.metricsService.port) | quote }}
+            {{- if .Values.database.mysql.host }}
+            - name: DATABASE_MYSQL_HOST
+              value: {{ .Values.database.mysql.host | quote }}
+            - name: DATABASE_MYSQL_PORT
+              value: {{ .Values.database.mysql.port | quote }}
+            - name: DATABASE_MYSQL_DATABASE
+              value: {{ .Values.database.mysql.database | quote }}
+            - name: DATABASE_MYSQL_TABLE_NAME
+              value: {{ .Values.database.mysql.tableName | quote }}
+            {{- if or .Values.database.existingSecret .Values.database.mysql.username }}
+            - name: DATABASE_MYSQL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: database-username
+            {{- end }}
+            {{- if or .Values.database.existingSecret .Values.database.mysql.password }}
+            - name: DATABASE_MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: database-password
+            {{- end }}
+            {{- end }}
+            {{- if .Values.database.postgres.host }}
+            - name: DATABASE_POSTGRES_HOST
+              value: {{ .Values.database.postgres.host | quote }}
+            - name: DATABASE_POSTGRES_PORT
+              value: {{ .Values.database.postgres.port | quote }}
+            - name: DATABASE_POSTGRES_DATABASE
+              value: {{ .Values.database.postgres.database | quote }}
+            - name: DATABASE_POSTGRES_TABLE_NAME
+              value: {{ .Values.database.postgres.tableName | default "applications" | quote }}
+            {{- if or .Values.database.existingSecret .Values.database.postgres.username }}
+            - name: DATABASE_POSTGRES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: database-username
+            {{- end }}
+            {{- if or .Values.database.existingSecret .Values.database.postgres.password }}
+            - name: DATABASE_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "sockudo.secretName" .) }}
+                  key: database-password
+            {{- end }}
+            {{- end }}
+            {{- if .Values.dashboard.seedAdmin.enabled }}
+            - name: DASHBOARD_SEED_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dashboard.seedAdmin.existingSecret | default (include "sockudo.dashboardSecretName" .) }}
+                  key: {{ .Values.dashboard.seedAdmin.emailKey }}
+            - name: DASHBOARD_SEED_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dashboard.seedAdmin.existingSecret | default (include "sockudo.dashboardSecretName" .) }}
+                  key: {{ .Values.dashboard.seedAdmin.passwordKey }}
+            - name: DASHBOARD_SEED_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dashboard.seedAdmin.existingSecret | default (include "sockudo.dashboardSecretName" .) }}
+                  key: {{ .Values.dashboard.seedAdmin.nameKey }}
+                  optional: true
+            {{- end }}
+            {{- with .Values.dashboard.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.dashboard.api.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.api.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.api.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.api.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dashboard.api.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.dashboard.api.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.dashboard.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.dashboard.persistence.existingClaim | default (printf "%s-data" $apiName) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.dashboard.api.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.dashboard.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.api.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

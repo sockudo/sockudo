@@ -119,6 +119,66 @@ optional admin seed run automatically on API startup.
 **Cargo / Rust:** the dashboard is not part of the Rust workspace; no `Cargo.toml` changes
 are required.
 
+## Helm
+
+The `charts/sockudo` chart can deploy the operator dashboard alongside Sockudo.
+The dashboard is disabled by default and must be backed by a durable app manager
+(`mysql`, `pgsql`/`postgres`, or `dynamodb`).
+
+Create the dashboard session secret outside the chart for production:
+
+```bash
+kubectl create secret generic sockudo-dashboard-session \
+  --from-literal=dashboard-session-secret="$(openssl rand -base64 32)"
+```
+
+Example values:
+
+```yaml
+config:
+  appManagerDriver: pgsql
+  httpApi:
+    usageEnabled: true
+  metrics:
+    enabled: true
+
+database:
+  postgres:
+    host: postgres.default.svc
+    port: 5432
+    username: sockudo
+    password: ""
+    database: sockudo
+    tableName: applications
+  existingSecret: sockudo-postgres
+
+dashboard:
+  enabled: true
+  sessionSecret:
+    existingSecret: sockudo-dashboard-session
+  seedAdmin:
+    enabled: true
+    existingSecret: sockudo-dashboard-seed
+  ingress:
+    enabled: true
+    hosts:
+      - host: sockudo-admin.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: sockudo-admin-tls
+        hosts:
+          - sockudo-admin.example.com
+```
+
+`dashboard-api` and `dashboard-web` images default to the chart app version and
+can be overridden with `dashboard.api.image.*` and `dashboard.web.image.*`.
+The web image proxies `/api/*` to the release-scoped dashboard API service at
+runtime. If you use `dashboard.databaseDriver=sqlite`, also set
+`dashboard.persistence.enabled=true` or provide `dashboard.persistence.existingClaim`;
+SQLite mode supports only one dashboard API replica.
+
 ## Dashboard database
 
 Dashboard users live in separate tables (`dashboard_users`, `dashboard_migrations`):

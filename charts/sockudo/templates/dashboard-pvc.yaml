@@ -1,0 +1,21 @@
+{{- if and .Values.dashboard.enabled .Values.dashboard.persistence.enabled (not .Values.dashboard.persistence.existingClaim) -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "sockudo.dashboardApiName" . }}-data
+  labels:
+    {{- include "sockudo.dashboardLabels" (dict "root" . "component" "dashboard-api") | nindent 4 }}
+  {{- with .Values.dashboard.persistence.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.dashboard.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.dashboard.persistence.size | quote }}
+  {{- if .Values.dashboard.persistence.storageClass }}
+  storageClassName: {{ .Values.dashboard.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}
