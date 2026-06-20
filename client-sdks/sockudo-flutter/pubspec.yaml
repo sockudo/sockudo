@@ -1,9 +1,9 @@
 name: sockudo_flutter
 description: "Sockudo client port for Flutter and Dart."
 version: 1.0.0
-homepage: https://github.com/sockudo/sockudo-flutter
-repository: https://github.com/sockudo/sockudo-flutter
-issue_tracker: https://github.com/sockudo/sockudo-flutter/issues
+homepage: https://github.com/sockudo/sockudo/tree/master/client-sdks/sockudo-flutter
+repository: https://github.com/sockudo/sockudo
+issue_tracker: https://github.com/sockudo/sockudo/issues
 topics:
   - websocket
   - realtime

@@ -9,8 +9,14 @@ there. Only `src/realtime/` imports `@sockudo/client`.
 
 ## Install
 
-Clone the Sockudo monorepo, build this SDK and `@sockudo/client`, then install them from local
-paths until npm publishing is enabled:
+For apps, install the published packages:
+
+```bash
+pnpm add @sockudo/client @sockudo/ai-transport
+```
+
+For local monorepo development, build this SDK and `@sockudo/client`, then install them from local
+paths:
 
 ```bash
 git clone https://github.com/sockudo/sockudo.git
@@ -50,7 +56,7 @@ pnpm add @anthropic-ai/sdk
 
 The Vercel path mirrors Ably's AI Transport flow with Sockudo channel auth, versioned-message
 proxying, and `streamText` in a route handler. The Nuxt demo uses the workspace `@sockudo/client`
-package instead of the old archived GitHub mirror.
+package from this monorepo.
 
 ```tsx
 import { ChatTransportProvider } from "@sockudo/ai-transport/vercel/react";

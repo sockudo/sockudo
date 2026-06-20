@@ -1,0 +1,55 @@
+{
+  "name": "sockudo/sockudo-php-server",
+  "description": "Library for interacting with the Sockudo REST API",
+  "keywords": [
+    "php-sockudo-server",
+    "sockudo",
+    "rest",
+    "realtime",
+    "real-time",
+    "real time",
+    "messaging",
+    "push",
+    "trigger",
+    "publish",
+    "events"
+  ],
+  "license": "MIT",
+  "support": {
+    "issues": "https://github.com/sockudo/sockudo/issues",
+    "source": "https://github.com/sockudo/sockudo/tree/master/server-sdks/sockudo-http-php"
+  },
+  "require": {
+    "php": "^7.3|^8.0",
+    "ext-curl": "*",
+    "ext-json": "*",
+    "guzzlehttp/guzzle": "^7.2",
+    "psr/log": "^1.0|^2.0|^3.0",
+    "paragonie/sodium_compat": "^1.6|^2.0"
+  },
+  "require-dev": {
+    "friendsofphp/php-cs-fixer": "^3.80",
+    "phpunit/phpunit": "^9.3",
+    "overtrue/phplint": "^2.3"
+  },
+  "autoload": {
+    "psr-4": {
+      "Sockudo\\": "server-sdks/sockudo-http-php/src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "": "server-sdks/sockudo-http-php/tests/"
+    }
+  },
+  "config": {
+    "preferred-install": "dist"
+  },
+  "extra": {
+    "branch-alias": {
+      "dev-master": "5.0-dev"
+    }
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true
+}

@@ -112,19 +112,18 @@ class SockudoPushRegistration {
       );
 
   Future<Map<Object?, Object?>> publish(Map<String, Object?> request) =>
-      _requestObject('POST', '/publish', body: <String, Object?>{
-        ...request,
-        'sync': false,
-      });
+      _requestObject(
+        'POST',
+        '/publish',
+        body: <String, Object?>{...request, 'sync': false},
+      );
 
   Future<Object?> publishBatch(List<Map<String, Object?>> requests) =>
       _requestValue(
         'POST',
         '/batch/publish',
         body: requests
-            .map(
-              (request) => <String, Object?>{...request, 'sync': false},
-            )
+            .map((request) => <String, Object?>{...request, 'sync': false})
             .toList(growable: false),
       );
 
@@ -137,13 +136,12 @@ class SockudoPushRegistration {
         '/publish/${Uri.encodeComponent(publishId)}/status',
       );
 
-  Future<void> cancelScheduledPublish(String publishId) => _requestVoid(
-    'DELETE',
-    '/scheduled/${Uri.encodeComponent(publishId)}',
-  );
+  Future<void> cancelScheduledPublish(String publishId) =>
+      _requestVoid('DELETE', '/scheduled/${Uri.encodeComponent(publishId)}');
 
-  Future<Map<Object?, Object?>> postDeliveryStatus(Map<String, Object?> event) =>
-      _requestObject('POST', '/deliveryStatus', body: event);
+  Future<Map<Object?, Object?>> postDeliveryStatus(
+    Map<String, Object?> event,
+  ) => _requestObject('POST', '/deliveryStatus', body: event);
 
   Future<Map<Object?, Object?>> _requestObject(
     String method,
@@ -185,9 +183,9 @@ class SockudoPushRegistration {
     Map<String, String> queryParameters = const <String, String>{},
     Map<String, String> requestHeaders = const <String, String>{},
   }) async {
-    final uri = Uri.parse(
-      '$_endpoint$path',
-    ).replace(queryParameters: queryParameters.isEmpty ? null : queryParameters);
+    final uri = Uri.parse('$_endpoint$path').replace(
+      queryParameters: queryParameters.isEmpty ? null : queryParameters,
+    );
     final request = http.Request(method, uri)
       ..headers.addAll(<String, String>{
         'Content-Type': 'application/json',

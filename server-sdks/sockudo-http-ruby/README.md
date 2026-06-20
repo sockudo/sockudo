@@ -12,12 +12,16 @@ Official Ruby server SDK for [Sockudo](https://github.com/sockudo/sockudo) — a
 Add to your Gemfile:
 
 ```ruby
-gem 'sockudo', path: '../sockudo/server-sdks/sockudo-http-ruby'
+gem 'sockudo'
 ```
 
 Then run `bundle install`.
 
-RubyGems publishing will be enabled later; use the monorepo path dependency for now.
+For local monorepo development, use:
+
+```ruby
+gem 'sockudo', path: '../sockudo/server-sdks/sockudo-http-ruby'
+```
 
 ## Getting Started
 

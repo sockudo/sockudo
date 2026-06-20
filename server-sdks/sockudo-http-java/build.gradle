@@ -131,25 +131,26 @@ publishing {
     }
     repositories {
         maven {
-            def releaseRepositoryUrl = "https://oss.sonatype.org/service/local/staging/deploy/maven2/"
-            def snapshotRepositoryUrl = "https://oss.sonatype.org/content/repositories/snapshots/"
+            def releaseRepositoryUrl = "https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/"
+            def snapshotRepositoryUrl = "https://central.sonatype.com/repository/maven-snapshots/"
             url = version.endsWith("SNAPSHOT") ? snapshotRepositoryUrl : releaseRepositoryUrl
             credentials {
-                username = findProperty("maven.username") ?: ""
-                password = findProperty("maven.password") ?: ""
+                username = findProperty("mavenCentralUsername") ?: System.getenv("MAVEN_CENTRAL_USERNAME") ?: ""
+                password = findProperty("mavenCentralPassword") ?: System.getenv("MAVEN_CENTRAL_PASSWORD") ?: ""
             }
         }
     }
 }
 
 signing {
-    def signingKey = findProperty("signingInMemoryKey")
-    def signingKeyId = findProperty("signingInMemoryKeyId")
-    def signingPassword = findProperty("signingInMemoryKeyPassword")
+    def signingKey = findProperty("signingInMemoryKey") ?: System.getenv("MAVEN_GPG_PRIVATE_KEY")
+    def signingKeyId = findProperty("signingInMemoryKeyId") ?: System.getenv("MAVEN_GPG_KEY_ID")
+    def signingPassword = findProperty("signingInMemoryKeyPassword") ?: System.getenv("MAVEN_GPG_PASSPHRASE")
+    required { signingKey }
     if (signingKey) {
         useInMemoryPgpKeys(signingKeyId, signingKey, signingPassword)
+        sign publishing.publications.mavenJava
     }
-    sign publishing.publications.mavenJava
 }
 
 test {

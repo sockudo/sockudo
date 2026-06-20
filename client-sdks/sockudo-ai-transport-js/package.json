@@ -11,12 +11,16 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sockudo/sockudo-ai-transport-js.git"
+    "url": "git+https://github.com/sockudo/sockudo.git",
+    "directory": "client-sdks/sockudo-ai-transport-js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "bugs": {
-    "url": "https://github.com/sockudo/sockudo-ai-transport-js/issues"
+    "url": "https://github.com/sockudo/sockudo/issues"
   },
-  "homepage": "https://github.com/sockudo/sockudo-ai-transport-js#readme",
+  "homepage": "https://github.com/sockudo/sockudo/tree/master/client-sdks/sockudo-ai-transport-js#readme",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

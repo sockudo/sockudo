@@ -1,0 +1,754 @@
+name: SDK Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "SDK package to release"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - client-js
+          - client-ai-transport-js
+          - client-dotnet
+          - client-flutter
+          - client-kotlin
+          - client-python
+          - client-swift
+          - server-node
+          - server-python
+          - server-php
+          - server-ruby
+          - server-go
+          - server-rust
+          - server-java
+          - server-dotnet
+          - server-swift
+      dry_run:
+        description: "Build and validate without publishing"
+        required: true
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "client-js-v*"
+      - "client-ai-transport-js-v*"
+      - "client-dotnet-v*"
+      - "client-flutter-v*"
+      - "client-kotlin-v*"
+      - "client-python-v*"
+      - "client-swift-v*"
+      - "server-node-v*"
+      - "server-python-v*"
+      - "server-php-v*"
+      - "v*"
+      - "server-ruby-v*"
+      - "server-go-v*"
+      - "server-rust-v*"
+      - "server-java-v*"
+      - "server-dotnet-v*"
+      - "server-swift-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  NODE_VERSION: "24"
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  client-js:
+    name: Release @sockudo/client
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'client-js')) ||
+        startsWith(github.ref_name, 'client-js-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: client-sdks/sockudo-js
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.9
+
+      - name: Install latest npm CLI
+        run: npm install --global npm@latest
+
+      - name: Verify package
+        run: |
+          bun install --frozen-lockfile
+          bun run format:check
+          bun run typecheck
+          bun run lint
+          bun run test
+          bun run build:all
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: npm publish --provenance --access public
+
+  client-ai-transport-js:
+    name: Release @sockudo/ai-transport
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'client-ai-transport-js')) ||
+        startsWith(github.ref_name, 'client-ai-transport-js-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: client-sdks/sockudo-ai-transport-js
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.17.0
+          run_install: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install latest npm CLI
+        run: npm install --global npm@latest
+
+      - name: Verify package
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm release:check
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: npm publish --provenance --access public
+
+  client-python:
+    name: Release sockudo-python
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'client-python')) ||
+        startsWith(github.ref_name, 'client-python-v')
+      }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: client-sdks/sockudo-python/pyproject.toml
+
+      - name: Verify and build package
+        working-directory: client-sdks/sockudo-python
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade ".[dev]"
+          ruff format --check .
+          ruff check .
+          pytest
+          python -m build
+          twine check dist/*
+
+      - name: Publish to PyPI
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: client-sdks/sockudo-python/dist
+
+  server-python:
+    name: Release sockudo-http-python
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-python')) ||
+        startsWith(github.ref_name, 'server-python-v')
+      }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: server-sdks/sockudo-http-python/pyproject.toml
+
+      - name: Verify and build package
+        working-directory: server-sdks/sockudo-http-python
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade ".[dev]"
+          ruff format --check .
+          ruff check .
+          pytest
+          python -m build
+          twine check dist/*
+
+      - name: Publish to PyPI
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: server-sdks/sockudo-http-python/dist
+
+  server-node:
+    name: Release sockudo Node server SDK
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-node')) ||
+        startsWith(github.ref_name, 'server-node-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: server-sdks/sockudo-http-node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install latest npm CLI
+        run: npm install --global npm@latest
+
+      - name: Verify package
+        run: |
+          npm ci
+          npm run lint
+          npm run typecheck
+          npm run local-test
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: npm publish --provenance --access public
+
+  client-dotnet:
+    name: Release Sockudo.Client
+    runs-on: ubuntu-24.04
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'client-dotnet')) ||
+        startsWith(github.ref_name, 'client-dotnet-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: client-sdks/sockudo-dotnet
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Verify and pack package
+        run: |
+          dotnet restore tests/Sockudo.Client.Tests/Sockudo.Client.Tests.csproj
+          dotnet format src/Sockudo.Client/Sockudo.Client.csproj --verify-no-changes --no-restore
+          dotnet build tests/Sockudo.Client.Tests/Sockudo.Client.Tests.csproj --configuration Release --no-restore
+          dotnet test tests/Sockudo.Client.Tests/Sockudo.Client.Tests.csproj --configuration Release --no-build --verbosity normal
+          dotnet pack src/Sockudo.Client/Sockudo.Client.csproj --configuration Release --no-build --output artifacts
+
+      - name: Get temporary NuGet API key
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_SOCKUDO_USER }}
+
+      - name: Publish to NuGet
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: |
+          for package in artifacts/*.nupkg; do
+            dotnet nuget push "$package" \
+              --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
+
+  server-dotnet:
+    name: Release SockudoServer and PusherServer
+    runs-on: ubuntu-24.04
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NUGET_PUSHER_USER: ${{ secrets.NUGET_PUSHER_USER }}
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-dotnet')) ||
+        startsWith(github.ref_name, 'server-dotnet-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: server-sdks/sockudo-http-dotnet
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Verify and pack packages
+        run: |
+          dotnet restore sockudo-dotnet-server.sln
+          dotnet restore pusher-dotnet-server.sln
+          dotnet format sockudo-dotnet-server.sln --verify-no-changes --no-restore
+          dotnet format pusher-dotnet-server.sln --verify-no-changes --no-restore
+          dotnet build sockudo-dotnet-server.sln --configuration Release --no-restore
+          dotnet test sockudo-dotnet-server.sln --configuration Release --no-build --verbosity normal
+          dotnet build pusher-dotnet-server.sln --configuration Release --no-restore
+          dotnet test pusher-dotnet-server.sln --configuration Release --no-build --verbosity normal
+          dotnet pack SockudoServer/SockudoServer.csproj --configuration Release --no-build --output artifacts
+          dotnet pack PusherServer/PusherServer.csproj --configuration Release --no-build --output artifacts
+
+      - name: Get temporary Sockudo NuGet API key
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        id: sockudo-nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_SOCKUDO_USER }}
+
+      - name: Publish SockudoServer to NuGet
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: |
+          dotnet nuget push artifacts/SockudoServer.*.nupkg \
+            --api-key "${{ steps.sockudo-nuget-login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Get temporary Pusher NuGet API key
+        if: ${{ (github.event_name == 'push' || inputs.dry_run == false) && env.NUGET_PUSHER_USER != '' }}
+        id: pusher-nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ env.NUGET_PUSHER_USER }}
+
+      - name: Publish PusherServer to NuGet
+        if: ${{ (github.event_name == 'push' || inputs.dry_run == false) && env.NUGET_PUSHER_USER != '' }}
+        run: |
+          dotnet nuget push artifacts/PusherServer.*.nupkg \
+            --api-key "${{ steps.pusher-nuget-login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+  client-kotlin:
+    name: Release sockudo-kotlin
+    runs-on: ubuntu-24.04
+    environment: maven-central
+    permissions:
+      contents: read
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'client-kotlin')) ||
+        startsWith(github.ref_name, 'client-kotlin-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: client-sdks/sockudo-kotlin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "23"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Verify package
+        run: ./gradlew --no-daemon :lib:check :lib:publishToMavenLocal
+
+      - name: Publish to Maven Central
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_KEY_ID: ${{ secrets.MAVEN_GPG_KEY_ID }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: ./gradlew --no-daemon :lib:publish
+
+  server-java:
+    name: Release sockudo-http-java
+    runs-on: ubuntu-24.04
+    environment: maven-central
+    permissions:
+      contents: read
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-java')) ||
+        startsWith(github.ref_name, 'server-java-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: server-sdks/sockudo-http-java
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Verify package
+        run: ./gradlew --no-daemon check publishToMavenLocal
+
+      - name: Publish to Maven Central
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_KEY_ID: ${{ secrets.MAVEN_GPG_KEY_ID }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: ./gradlew --no-daemon publish
+
+  client-flutter:
+    name: Gate sockudo_flutter
+    runs-on: ubuntu-24.04
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'client-flutter')) ||
+        startsWith(github.ref_name, 'client-flutter-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: client-sdks/sockudo-flutter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Verify package
+        run: |
+          flutter pub get
+          dart format --output=none --set-exit-if-changed .
+          flutter analyze
+          flutter test
+          flutter pub publish --dry-run
+
+  client-flutter-publish:
+    name: Publish sockudo_flutter to pub.dev
+    needs: client-flutter
+    if: >-
+      ${{
+        needs.client-flutter.result == 'success' &&
+        (github.event_name == 'push' || inputs.dry_run == false)
+      }}
+    permissions:
+      id-token: write
+      contents: read
+    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
+    with:
+      environment: pub.dev
+      working-directory: client-sdks/sockudo-flutter
+
+  server-ruby:
+    name: Release sockudo Ruby gem
+    runs-on: ubuntu-24.04
+    environment: rubygems
+    permissions:
+      contents: write
+      id-token: write
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-ruby')) ||
+        startsWith(github.ref_name, 'server-ruby-v')
+      }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+          working-directory: server-sdks/sockudo-http-ruby
+
+      - name: Verify package
+        working-directory: server-sdks/sockudo-http-ruby
+        run: |
+          bundle exec rubocop --format progress
+          bundle exec rake spec
+          gem build sockudo.gemspec
+
+      - name: Publish to RubyGems
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        uses: rubygems/release-gem@v1
+        with:
+          working-directory: server-sdks/sockudo-http-ruby
+
+  server-rust:
+    name: Release sockudo-http Rust crate
+    runs-on: ubuntu-24.04
+    environment: crates.io
+    permissions:
+      contents: read
+      id-token: write
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-rust')) ||
+        startsWith(github.ref_name, 'server-rust-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: server-sdks/sockudo-http-rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Verify package
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
+          cargo package --allow-dirty --no-verify
+
+      - name: Authenticate with crates.io trusted publishing
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        id: crates-auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish to crates.io
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+        run: cargo publish --allow-dirty
+
+  server-php:
+    name: Gate sockudo/sockudo-php-server
+    runs-on: ubuntu-24.04
+    environment: packagist
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-php')) ||
+        startsWith(github.ref_name, 'server-php-v') ||
+        startsWith(github.ref_name, 'v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: server-sdks/sockudo-http-php
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: none
+          tools: composer:v2
+          extensions: curl, json, sodium
+
+      - name: Verify package
+        run: |
+          composer validate --strict "$GITHUB_WORKSPACE/composer.json"
+          composer validate --strict
+          composer install --no-interaction --prefer-dist
+          vendor/bin/php-cs-fixer fix --dry-run --diff --using-cache=no
+          vendor/bin/phplint
+          vendor/bin/phpunit
+
+      - name: Packagist publish notice
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: |
+          echo "Packagist publishes from root VCS tags. Ensure Packagist is hooked to https://github.com/sockudo/sockudo."
+
+  server-go:
+    name: Gate sockudo-http-go
+    runs-on: ubuntu-24.04
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-go')) ||
+        startsWith(github.ref_name, 'server-go-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: server-sdks/sockudo-http-go
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: server-sdks/sockudo-http-go/go.mod
+          cache-dependency-path: server-sdks/sockudo-http-go/go.sum
+
+      - name: Verify package
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+          go list -m all
+
+      - name: Go module publish notice
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: |
+          echo "Go modules publish from VCS tags. Ensure the module path repository has the matching semantic version tag."
+
+  client-swift:
+    name: Gate SockudoSwift
+    runs-on: macos-15
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'client-swift')) ||
+        startsWith(github.ref_name, 'client-swift-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: client-sdks/sockudo-swift
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Verify package
+        run: |
+          swift package resolve
+          swift build
+          swift test
+          swiftlint lint --strict --path Sources
+          swiftlint lint --strict --path Tests
+
+      - name: Swift package publish notice
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: |
+          echo "SwiftPM packages publish from Git tags. Ensure the package repository has the matching semantic version tag."
+
+  server-swift:
+    name: Gate Sockudo HTTP Swift
+    runs-on: macos-15
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && (inputs.package == 'all' || inputs.package == 'server-swift')) ||
+        startsWith(github.ref_name, 'server-swift-v')
+      }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: server-sdks/sockudo-http-swift
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Verify package
+        run: |
+          swift package resolve
+          swift build
+          swift test
+          swiftlint lint --strict --path Sources
+          swiftlint lint --strict --path Tests
+
+      - name: Swift package publish notice
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: |
+          echo "SwiftPM packages publish from Git tags. Ensure the package repository has the matching semantic version tag."

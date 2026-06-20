@@ -8,8 +8,15 @@ This SDK supports **Node.js 16+**.
 
 ## Installation
 
-Clone the Sockudo monorepo, build the SDK, then install it from the local checkout until npm
-publishing is enabled:
+For apps, install the published package:
+
+```bash
+npm install sockudo
+# or: yarn add sockudo
+# or: bun add sockudo
+```
+
+For local monorepo development, build the SDK, then install it from the local checkout:
 
 ```bash
 git clone https://github.com/sockudo/sockudo.git
@@ -22,8 +29,6 @@ npm install ../sockudo/server-sdks/sockudo-http-node
 # or: yarn add ../sockudo/server-sdks/sockudo-http-node
 # or: bun add ../sockudo/server-sdks/sockudo-http-node
 ```
-
-The package name remains `sockudo` in imports.
 
 ## Importing
 

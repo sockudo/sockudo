@@ -79,4 +79,40 @@ publishing {
             }
         }
     }
+
+    repositories {
+        maven {
+            name = "mavenCentral"
+            val releasesRepoUrl =
+                uri("https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/")
+            val snapshotsRepoUrl = uri("https://central.sonatype.com/repository/maven-snapshots/")
+            url = if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl else releasesRepoUrl
+            credentials {
+                username =
+                    (findProperty("mavenCentralUsername") as String?)
+                        ?: System.getenv("MAVEN_CENTRAL_USERNAME")
+                        ?: ""
+                password =
+                    (findProperty("mavenCentralPassword") as String?)
+                        ?: System.getenv("MAVEN_CENTRAL_PASSWORD")
+                        ?: ""
+            }
+        }
+    }
+}
+
+signing {
+    val signingKey =
+        (findProperty("signingInMemoryKey") as String?) ?: System.getenv("MAVEN_GPG_PRIVATE_KEY")
+    val signingKeyId =
+        (findProperty("signingInMemoryKeyId") as String?) ?: System.getenv("MAVEN_GPG_KEY_ID")
+    val signingPassword =
+        (findProperty("signingInMemoryKeyPassword") as String?) ?: System.getenv("MAVEN_GPG_PASSPHRASE")
+
+    isRequired = !signingKey.isNullOrBlank()
+
+    if (!signingKey.isNullOrBlank()) {
+        useInMemoryPgpKeys(signingKeyId, signingKey, signingPassword)
+        sign(publishing.publications["mavenJava"])
+    }
 }

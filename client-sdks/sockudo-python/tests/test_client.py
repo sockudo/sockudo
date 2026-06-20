@@ -69,7 +69,10 @@ def test_signin_forwards_to_user_facade() -> None:
 
 
 def test_connection_recovery_uses_channel_positions_payload() -> None:
-    client = SockudoClient("app-key", SockudoOptions(cluster="local", force_tls=False, connection_recovery=True))
+    client = SockudoClient(
+        "app-key",
+        SockudoOptions(cluster="local", force_tls=False, connection_recovery=True),
+    )
     sent: list[tuple[str, object, str | None]] = []
 
     async def fake_send_event(name: str, data: object, channel: Optional[str]) -> bool:
@@ -88,10 +91,12 @@ def test_connection_recovery_uses_channel_positions_payload() -> None:
         last_message_id="msg-42",
     )
 
-    payload = json.dumps({
-        "event": ProtocolPrefix(2).event("connection_established"),
-        "data": {"socket_id": "123.456"},
-    })
+    payload = json.dumps(
+        {
+            "event": ProtocolPrefix(2).event("connection_established"),
+            "data": {"socket_id": "123.456"},
+        }
+    )
 
     asyncio.run(client._handle_raw_message(payload))
 
@@ -116,11 +121,15 @@ def test_resume_failed_clears_channel_position() -> None:
     )
 
     async def run() -> None:
-        await client._handle_raw_message(json.dumps({
-            "event": ProtocolPrefix(2).event("resume_failed"),
-            "channel": "chat",
-            "data": {"channel": "chat", "code": "stream_reset"},
-        }))
+        await client._handle_raw_message(
+            json.dumps(
+                {
+                    "event": ProtocolPrefix(2).event("resume_failed"),
+                    "channel": "chat",
+                    "data": {"channel": "chat", "code": "stream_reset"},
+                }
+            )
+        )
 
     asyncio.run(run())
 
@@ -135,7 +144,9 @@ def test_subscribe_serializes_rewind_option() -> None:
     )
     sent: list[tuple[str, object, Optional[str]]] = []
 
-    async def fake_send_event(name: str, data: object, channel_name: Optional[str]) -> bool:
+    async def fake_send_event(
+        name: str, data: object, channel_name: Optional[str]
+    ) -> bool:
         sent.append((name, data, channel_name))
         return True
 

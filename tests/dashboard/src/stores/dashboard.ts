@@ -8,13 +8,20 @@ export type ConnectionState =
   | "reconnecting"
   | "failed";
 export type Tab =
+  | "showcase"
   | "connection"
   | "channels"
   | "events"
   | "presence"
+  | "recovery"
   | "api"
+  | "mutable"
   | "filters"
-  | "delta";
+  | "delta"
+  | "ops"
+  | "push"
+  | "ai-chat"
+  | "ai";
 
 export interface EventLogEntry {
   id: string;
@@ -55,6 +62,7 @@ export interface ConnectionConfig {
   useTLS: boolean;
   cluster: string;
   wireFormat: "json" | "messagepack" | "protobuf";
+  appendRollupWindow: 0 | 20 | 40 | 100 | 500;
   authEndpoint: string;
   userAuthEndpoint: string;
 }
@@ -62,7 +70,7 @@ export interface ConnectionConfig {
 let eventIdCounter = 0;
 
 export const useDashboardStore = defineStore("dashboard", () => {
-  const activeTab = ref<Tab>("connection");
+  const activeTab = ref<Tab>("showcase");
 
   const config = ref<ConnectionConfig>({
     appKey: "app-key",
@@ -73,6 +81,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     useTLS: false,
     cluster: "mt1",
     wireFormat: "json",
+    appendRollupWindow: 40,
     authEndpoint: "/pusher/auth",
     userAuthEndpoint: "/pusher/user-auth",
   });

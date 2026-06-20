@@ -3,9 +3,9 @@
   "description": "Node.js client to interact with the Sockudo REST API",
   "version": "1.0.0",
   "author": "Sockudo",
-  "homepage": "https://github.com/sockudo/sockudo-http-node#readme",
+  "homepage": "https://github.com/sockudo/sockudo/tree/master/server-sdks/sockudo-http-node#readme",
   "bugs": {
-    "url": "https://github.com/sockudo/sockudo-http-node/issues"
+    "url": "https://github.com/sockudo/sockudo/issues"
   },
   "contributors": [
     {
@@ -79,7 +79,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sockudo/sockudo-http-node.git"
+    "url": "git+https://github.com/sockudo/sockudo.git",
+    "directory": "server-sdks/sockudo-http-node"
   },
   "files": [
     "dist",

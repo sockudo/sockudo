@@ -18,20 +18,26 @@ Async Sockudo client SDK for Python.
 
 ## Install
 
-Clone the Sockudo monorepo and install from the local path until the PyPI package is published:
+For apps, install the published package:
+
+```bash
+pip install sockudo-python
+```
+
+For local monorepo development, install from the local path:
 
 ```bash
 git clone https://github.com/sockudo/sockudo.git
 pip install -e sockudo/client-sdks/sockudo-python
 ```
 
-Using `requirements.txt`:
+Using `requirements.txt` for local development:
 
 ```
 -e ../sockudo/client-sdks/sockudo-python
 ```
 
-Using `pyproject.toml`:
+Using `pyproject.toml` for local development:
 
 ```toml
 [project]
@@ -40,7 +46,7 @@ dependencies = [
 ]
 ```
 
-For local development from this workspace:
+From this workspace:
 
 ```bash
 pip install -e client-sdks/sockudo-python
@@ -322,10 +328,11 @@ The live suite covers:
 
 ## CI/CD
 
-GitHub Actions:
+GitHub Actions are managed from the monorepo root:
 
-- CI: `.github/workflows/ci.yml`
-- Publish: `.github/workflows/publish.yml`
+- CI: `.github/workflows/sdk-ci.yml`
+- Publish: `.github/workflows/sdk-release.yml` with tag `client-python-vX.Y.Z`
+- Setup: see `docs/sdk-publishing-2026.md` for PyPI trusted publishing.
 
 ## Status
 

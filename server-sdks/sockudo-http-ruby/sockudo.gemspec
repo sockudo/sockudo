@@ -28,6 +28,7 @@ Gem::Specification.new do |s|
   s.add_development_dependency 'rake', '~> 13.0'
   s.add_development_dependency 'rbnacl', '~> 7.1'
   s.add_development_dependency 'rspec', '~> 3.9'
+  s.add_development_dependency 'rubocop', '~> 1.80'
   s.add_development_dependency 'webmock', '~> 3.9'
 
   s.files         = Dir['lib/**/*'] + %w[CHANGELOG.md LICENSE README.md]

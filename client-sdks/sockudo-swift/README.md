@@ -24,16 +24,19 @@ Official Swift client for Sockudo.
 - Encrypted channel payload decryption with `swift-sodium`
 - Continuity-aware connection recovery and subscribe-time rewind on Protocol V2
 - Live integration tests against Sockudo on `127.0.0.1:6001`
-- Swift Package Manager distribution with GitHub Actions CI
+- Swift Package Manager distribution with root GitHub Actions CI
 
 ## Installation
 
-Clone the Sockudo monorepo and use a local Swift Package Manager path until package publishing is
-enabled:
+For local monorepo development, use a Swift Package Manager path:
 
 ```swift
 .package(path: "../sockudo/client-sdks/sockudo-swift")
 ```
+
+Public SwiftPM distribution requires the package repository or subtree split described in
+`docs/sdk-publishing-2026.md`, because SwiftPM expects `Package.swift` at the package repository
+root.
 
 Then depend on `SockudoSwift`:
 
@@ -310,8 +313,10 @@ The live suite covers:
 
 Swift packages are distributed by git tag rather than a central package registry by default.
 
-- CI: `.github/workflows/ci.yml`
-- Release: tag `v*` and use the repository URL from Swift Package Manager
+- CI: root workflow `.github/workflows/sdk-ci.yml`
+- Release gate: root workflow `.github/workflows/sdk-release.yml` with tag `client-swift-vX.Y.Z`
+- Distribution: SwiftPM still requires a package repository or subtree split whose root contains
+  `Package.swift`
 
 ## Status
 

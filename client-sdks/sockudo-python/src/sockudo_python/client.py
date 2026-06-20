@@ -1720,9 +1720,7 @@ class _ResolvedConfiguration:
             )
         payload = response.json()
         if not isinstance(payload, dict):
-            raise SockudoException(
-                f"Presence {action} endpoint returned invalid JSON"
-            )
+            raise SockudoException(f"Presence {action} endpoint returned invalid JSON")
         return payload
 
     def _decode_presence_history_page(
@@ -1800,9 +1798,7 @@ class _ResolvedConfiguration:
             ),
         )
 
-    def _decode_presence_history_bounds(
-        self, payload: Any
-    ) -> PresenceHistoryBounds:
+    def _decode_presence_history_bounds(self, payload: Any) -> PresenceHistoryBounds:
         if not isinstance(payload, dict):
             payload = {}
         return PresenceHistoryBounds(
@@ -1863,9 +1859,7 @@ class _ResolvedConfiguration:
             retained_bytes=int(payload.get("retained_bytes", 0)),
             degraded=bool(payload.get("degraded", False)),
             complete=bool(payload.get("complete", False)),
-            truncated_by_retention=bool(
-                payload.get("truncated_by_retention", False)
-            ),
+            truncated_by_retention=bool(payload.get("truncated_by_retention", False)),
         )
 
 

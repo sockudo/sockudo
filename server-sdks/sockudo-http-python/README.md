@@ -18,7 +18,13 @@ High-performance Python server SDK for the Sockudo HTTP API. It publishes events
 
 ## Install
 
-Clone the Sockudo monorepo and install from the local path until the PyPI package is published:
+For apps, install the published package:
+
+```bash
+pip install sockudo-http-python
+```
+
+For local monorepo development, install from the local path:
 
 ```bash
 git clone https://github.com/sockudo/sockudo.git

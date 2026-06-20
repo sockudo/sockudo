@@ -38,7 +38,7 @@ export interface GoldenTranscript {
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const sdkRoot = resolve(thisDir, "../..");
-const defaultServerRoot = resolve(sdkRoot, "../sockudo");
+const defaultServerRoot = resolve(sdkRoot, "../..");
 
 export function serverRoot(): string {
   return process.env.SOCKUDO_SERVER_ROOT ?? defaultServerRoot;

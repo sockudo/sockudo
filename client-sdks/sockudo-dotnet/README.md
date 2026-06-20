@@ -381,10 +381,11 @@ The live suite covers:
 
 ## CI/CD
 
-GitHub Actions:
+GitHub Actions are managed from the monorepo root:
 
-- CI: `.github/workflows/ci.yml`
-- Publish: `.github/workflows/publish.yml`
+- CI: `.github/workflows/sdk-ci.yml`
+- Publish: `.github/workflows/sdk-release.yml` with tag `client-dotnet-vX.Y.Z`
+- Setup: see `docs/sdk-publishing-2026.md` for NuGet trusted publishing.
 
 ## Status
 

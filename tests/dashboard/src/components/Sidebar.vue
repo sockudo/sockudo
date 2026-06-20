@@ -1,17 +1,39 @@
 <script setup lang="ts">
-import { Wifi, Radio, Zap, Users, Globe, Filter, BarChart3, type LucideIcon } from 'lucide-vue-next'
+import {
+  Wifi,
+  Radio,
+  Zap,
+  Users,
+  Globe,
+  Filter,
+  BarChart3,
+  Sparkles,
+  RotateCcw,
+  MessagesSquare,
+  Bell,
+  Bot,
+  Gauge,
+  type LucideIcon,
+} from 'lucide-vue-next'
 import { useDashboardStore, type Tab, type ConnectionState } from '../stores/dashboard'
 
 const store = useDashboardStore()
 
 const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
+  { id: 'showcase', label: 'Demo', icon: Sparkles },
   { id: 'connection', label: 'Connection', icon: Wifi },
   { id: 'channels', label: 'Channels', icon: Radio },
   { id: 'events', label: 'Events', icon: Zap },
   { id: 'presence', label: 'Presence', icon: Users },
+  { id: 'recovery', label: 'Recovery', icon: RotateCcw },
   { id: 'api', label: 'HTTP API', icon: Globe },
+  { id: 'mutable', label: 'Messages', icon: MessagesSquare },
   { id: 'filters', label: 'Filters', icon: Filter },
   { id: 'delta', label: 'Delta', icon: BarChart3 },
+  { id: 'ops', label: 'Ops', icon: Gauge },
+  { id: 'push', label: 'Push', icon: Bell },
+  { id: 'ai-chat', label: 'AI Chat', icon: Bot },
+  { id: 'ai', label: 'AI Transport', icon: Bot },
 ]
 
 const stateColors: Record<ConnectionState, string> = {

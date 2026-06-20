@@ -15,13 +15,20 @@ Official Flutter and Dart client for Sockudo.
 - Encrypted channel payload decryption with libsodium
 - User sign-in and watchlist event handling
 - Continuity-aware connection recovery and subscribe-time rewind on Protocol V2
-- CI validation and planned `pub.dev` publishing workflow
+- Root GitHub Actions CI and automated `pub.dev` publishing
 - Live integration tests against Sockudo on `127.0.0.1:6001`
 
 ## Installation
 
-Clone the Sockudo monorepo and use a local path dependency until the package is published on
-`pub.dev`:
+For apps, install the published package:
+
+```bash
+dart pub add sockudo_flutter
+# or, in Flutter apps:
+flutter pub add sockudo_flutter
+```
+
+For local monorepo development, use a local path dependency:
 
 ```yaml
 dependencies:
@@ -311,10 +318,11 @@ Publish:
 flutter pub publish
 ```
 
-GitHub Actions:
+GitHub Actions are managed from the monorepo root:
 
-- CI: `.github/workflows/ci.yml`
-- Publish: `.github/workflows/publish.yml`
+- CI: `.github/workflows/sdk-ci.yml`
+- Publish: `.github/workflows/sdk-release.yml` with tag `client-flutter-vX.Y.Z`
+- Setup: see `docs/sdk-publishing-2026.md` for pub.dev automated publishing.
 
 ## Status
 

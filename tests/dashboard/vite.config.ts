@@ -49,6 +49,16 @@ export default defineConfig({
         target: "http://localhost:3457",
         changeOrigin: true,
       },
+      "/sockudo": {
+        target: "http://127.0.0.1:6011",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/sockudo/, ""),
+      },
+      "/sockudo-metrics": {
+        target: "http://127.0.0.1:9611",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/sockudo-metrics/, ""),
+      },
     },
   },
 });

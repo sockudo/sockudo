@@ -148,10 +148,11 @@ include `default-app-id` and `default-app-key`.
 
 Realtime clients live under [client-sdks/](client-sdks/).
 
-Until the package-manager publishing workflows are fully enabled, install SDKs from their GitHub
-monorepo paths. The old per-SDK repositories should be treated as archived/legacy mirrors; this
-repository is the source of truth. The package names below are the intended published names, but the
-install examples in the SDK docs use local monorepo paths for now.
+SDK CI and publishing are managed from root workflows. See the
+[2026 SDK publishing runbook](docs/sdk-publishing-2026.md) before releasing packages or changing
+registry setup. Registry-native packages publish through protected workflows where supported;
+VCS-tagged ecosystems such as SwiftPM still require package repository/subtree-split handling unless
+their public package URL changes intentionally.
 
 | Runtime | Directory | Package |
 | --- | --- | --- |
@@ -199,9 +200,11 @@ presence channel auth, authenticate users, validate webhooks, query state, and e
 Sockudo-native APIs such as idempotent publishing, history, mutable messages, annotations, and push
 where implemented.
 
-Until registry publishing is fixed, install these SDKs from local paths in this monorepo. The old
-per-SDK repositories should be treated as archived/legacy mirrors. Do not assume npm, PyPI, NuGet,
-Maven Central, Packagist, RubyGems, crates.io, or pub.dev packages are available yet.
+SDK CI and publishing are managed from root workflows. See the
+[2026 SDK publishing runbook](docs/sdk-publishing-2026.md) before releasing packages or changing
+registry setup. Registry-native packages publish through protected workflows where supported;
+VCS-tagged ecosystems such as Go modules, SwiftPM, and Packagist still require package
+repository/subtree-split handling unless their public package URL changes intentionally.
 
 | Language | Directory | Package |
 | --- | --- | --- |
@@ -422,7 +425,8 @@ npm run types:check
 npm run build
 ```
 
-SDK checks are package-local. Start from each SDK README and use the native package manager:
+SDK checks are covered by `SDK CI` and are also package-local when iterating. Start from the
+[2026 SDK publishing runbook](docs/sdk-publishing-2026.md), then use the native package manager:
 `bun`, `pnpm`, `npm`, `pytest`, `cargo`, `go test`, `gradle`, `swift test`, `dotnet test`,
 `composer`, or `bundle`.
 

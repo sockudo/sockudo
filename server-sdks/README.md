@@ -4,10 +4,12 @@ HTTP/server SDKs live here as imported monorepo packages. Directory names
 preserve the original repository names to keep package metadata, docs, release
 scripts, and issue references recognizable.
 
-Until package publishing workflows are fully enabled, install these SDKs from
-local paths in this monorepo. The old per-SDK repositories should be treated as
-archived/legacy mirrors. Registry package names are still listed for
-import/package identity, but docs should avoid registry install commands for now.
+SDK CI and package publishing are managed from the monorepo root through
+`.github/workflows/sdk-ci.yml` and `.github/workflows/sdk-release.yml`. See the
+[2026 SDK publishing runbook](../docs/sdk-publishing-2026.md) before publishing
+or changing registry setup. VCS-tagged ecosystems such as Go modules, SwiftPM,
+and Packagist still require package repository/subtree-split handling unless
+their public package URLs are changed intentionally.
 
 ## Imports
 

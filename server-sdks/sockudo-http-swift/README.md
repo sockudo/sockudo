@@ -20,10 +20,7 @@ A Swift server SDK for interacting with the [Sockudo](https://github.com/sockudo
 
 ## Installation
 
-Clone the Sockudo monorepo and use a local Swift Package Manager path until package publishing is
-enabled.
-
-Alternatively, add it as a dependency in your `Package.swift` file:
+For local monorepo development, add it as a path dependency in your `Package.swift` file:
 
 ```swift
 // swift-tools-version:5.9
@@ -48,6 +45,10 @@ let package = Package(
     ]
 )
 ```
+
+Public SwiftPM distribution requires the package repository or subtree split described in
+`docs/sdk-publishing-2026.md`, because SwiftPM expects `Package.swift` at the package repository
+root.
 
 Then include `import Sockudo` in any source file where you want to use the native Sockudo module.
 

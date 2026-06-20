@@ -312,7 +312,9 @@ class SockudoClient {
     final uri = _socketUri(transport);
     final channel = IOWebSocketChannel.connect(
       uri,
-      pingInterval: options.protocolVersion >= 2 ? _config.activityTimeout : null,
+      pingInterval: options.protocolVersion >= 2
+          ? _config.activityTimeout
+          : null,
     );
     _webSocket = channel;
     _socketSubscription = channel.stream.listen(

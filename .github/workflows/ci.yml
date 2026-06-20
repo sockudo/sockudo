@@ -54,50 +54,6 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # =============================================================================
-  # Protocol SDK Compatibility Gate
-  # =============================================================================
-  protocol-sdk-compat:
-    name: Protocol SDK Compatibility Gate
-    runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Detect protocol-relevant changes
-        id: protocol_changes
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          git diff --name-only "$BASE_SHA"...HEAD > /tmp/sockudo-changed-files.txt
-          if grep -Eq '^(crates/sockudo-protocol/|crates/sockudo-adapter/src/handler/|crates/sockudo-adapter/src/v2_broadcast\.rs|crates/sockudo-server/src/(ws_handler\.rs|http_handler(\.rs|/)|history)|crates/sockudo-webhook/|docs/specs/ai-transport-wire-protocol\.md|tests/ai-conformance/)' /tmp/sockudo-changed-files.txt; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install Bun
-        if: steps.protocol_changes.outputs.changed == 'true'
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Run sockudo-js E1 compatibility lane
-        if: steps.protocol_changes.outputs.changed == 'true'
-        run: |
-          if [ ! -f client-sdks/sockudo-js/package.json ]; then
-            echo "::error::client-sdks/sockudo-js is required for protocol PR compatibility gates"
-            exit 1
-          fi
-
-          cd client-sdks/sockudo-js
-          bun install --frozen-lockfile
-          bun run check
-
-  # =============================================================================
   # Test Suite
   # =============================================================================
   test:

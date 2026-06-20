@@ -128,70 +128,83 @@ void main() {
     expect(capturedCursor, 'cursor-2');
   });
 
-  test('push proxy helpers use backend endpoint and async publish defaults', () async {
-    final requests = <http.Request>[];
-    final client = RecordingHttpClient((request) async {
-      requests.add(request);
-      if (request.url.path.endsWith('/publish')) {
+  test(
+    'push proxy helpers use backend endpoint and async publish defaults',
+    () async {
+      final requests = <http.Request>[];
+      final client = RecordingHttpClient((request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/publish')) {
+          return http.Response(
+            jsonEncode(<String, Object?>{'publish_id': 'pub_123'}),
+            202,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
         return http.Response(
-          jsonEncode(<String, Object?>{'publish_id': 'pub_123'}),
-          202,
+          jsonEncode(<String, Object?>{
+            'items': <Object?>[],
+            'has_more': false,
+          }),
+          200,
           headers: <String, String>{'content-type': 'application/json'},
         );
-      }
-      return http.Response(
-        jsonEncode(<String, Object?>{'items': <Object?>[], 'has_more': false}),
-        200,
-        headers: <String, String>{'content-type': 'application/json'},
+      });
+
+      final push = SockudoPushRegistration(
+        const PushRegistrationOptions(
+          endpoint: 'https://api.example.test/push/',
+          headers: <String, String>{'Authorization': 'Bearer session'},
+        ),
+        httpClient: client,
       );
-    });
 
-    final push = SockudoPushRegistration(
-      const PushRegistrationOptions(
-        endpoint: 'https://api.example.test/push/',
-        headers: <String, String>{'Authorization': 'Bearer session'},
-      ),
-      httpClient: client,
-    );
-
-    final publish = await push.publish(<String, Object?>{
-      'recipients': <Map<String, Object?>>[
-        <String, Object?>{'type': 'channel', 'channel': 'orders'},
-      ],
-      'payload': <String, Object?>{'title': 'Order', 'body': 'Updated'},
-    });
-    await push.updateDeviceRegistration(<String, Object?>{
-      'id': 'device-1',
-      'formFactor': 'phone',
-      'platform': 'android',
-      'timezone': 'UTC',
-      'locale': 'en',
-      'push': <String, Object?>{
-        'recipient': <String, Object?>{
-          'transportType': 'gcm',
-          'registrationToken': 'rotated',
+      final publish = await push.publish(<String, Object?>{
+        'recipients': <Map<String, Object?>>[
+          <String, Object?>{'type': 'channel', 'channel': 'orders'},
+        ],
+        'payload': <String, Object?>{'title': 'Order', 'body': 'Updated'},
+      });
+      await push.updateDeviceRegistration(<String, Object?>{
+        'id': 'device-1',
+        'formFactor': 'phone',
+        'platform': 'android',
+        'timezone': 'UTC',
+        'locale': 'en',
+        'push': <String, Object?>{
+          'recipient': <String, Object?>{
+            'transportType': 'gcm',
+            'registrationToken': 'rotated',
+          },
         },
-      },
-    }, 'identity');
-    await push.listChannelSubscriptions(
-      const PushSubscriptionParams(deviceId: 'device-1', limit: 10, cursor: 'c1'),
-    );
+      }, 'identity');
+      await push.listChannelSubscriptions(
+        const PushSubscriptionParams(
+          deviceId: 'device-1',
+          limit: 10,
+          cursor: 'c1',
+        ),
+      );
 
-    expect(publish, <Object?, Object?>{'publish_id': 'pub_123'});
-    expect(requests[0].url.toString(), 'https://api.example.test/push/publish');
-    expect(requests[0].method, 'POST');
-    expect(jsonDecode(requests[0].body)['sync'], isFalse);
-    expect(requests[0].headers['Authorization'], 'Bearer session');
+      expect(publish, <Object?, Object?>{'publish_id': 'pub_123'});
+      expect(
+        requests[0].url.toString(),
+        'https://api.example.test/push/publish',
+      );
+      expect(requests[0].method, 'POST');
+      expect(jsonDecode(requests[0].body)['sync'], isFalse);
+      expect(requests[0].headers['Authorization'], 'Bearer session');
 
-    expect(
-      requests[1].headers['X-Sockudo-Device-Identity-Token'],
-      'identity',
-    );
-    expect(
-      requests[2].url.toString(),
-      'https://api.example.test/push/channelSubscriptions?deviceId=device-1&limit=10&cursor=c1',
-    );
-  });
+      expect(
+        requests[1].headers['X-Sockudo-Device-Identity-Token'],
+        'identity',
+      );
+      expect(
+        requests[2].url.toString(),
+        'https://api.example.test/push/channelSubscriptions?deviceId=device-1&limit=10&cursor=c1',
+      );
+    },
+  );
 
   test('applies insert-only fossil delta', () {
     final result = FossilDelta.apply(
@@ -441,9 +454,14 @@ void main() {
       await socket.close();
     });
 
-    final handshake = jsonDecode(
-      await _waitForValue(() => messages.isNotEmpty ? messages.removeAt(0) as String : null),
-    ) as Map<String, Object?>;
+    final handshake =
+        jsonDecode(
+              await _waitForValue(
+                () =>
+                    messages.isNotEmpty ? messages.removeAt(0) as String : null,
+              ),
+            )
+            as Map<String, Object?>;
     expect(handshake['event'], 'sockudo:connection_established');
 
     await Future<void>.delayed(const Duration(seconds: 8));
@@ -463,15 +481,30 @@ void main() {
       await socket.close();
     });
 
-    final handshake = jsonDecode(
-      await _waitForValue(() => messages.isNotEmpty ? messages.removeAt(0) as String : null),
-    ) as Map<String, Object?>;
+    final handshake =
+        jsonDecode(
+              await _waitForValue(
+                () =>
+                    messages.isNotEmpty ? messages.removeAt(0) as String : null,
+              ),
+            )
+            as Map<String, Object?>;
     expect(handshake['event'], 'sockudo:connection_established');
 
-    socket.add(jsonEncode(<String, Object>{'event': 'sockudo:ping', 'data': <String, Object>{}}));
-    final pong = jsonDecode(
-      await _waitForValue(() => messages.isNotEmpty ? messages.removeAt(0) as String : null),
-    ) as Map<String, Object?>;
+    socket.add(
+      jsonEncode(<String, Object>{
+        'event': 'sockudo:ping',
+        'data': <String, Object>{},
+      }),
+    );
+    final pong =
+        jsonDecode(
+              await _waitForValue(
+                () =>
+                    messages.isNotEmpty ? messages.removeAt(0) as String : null,
+              ),
+            )
+            as Map<String, Object?>;
     expect(pong['event'], 'sockudo:pong');
     expect(pong.containsKey('message_id'), isFalse);
     expect(pong.containsKey('serial'), isFalse);
@@ -486,10 +519,7 @@ void main() {
     final socket = await WebSocket.connect(_rawSocketUrl(7));
     var done = false;
     final messages = <Object?>[];
-    final subscription = socket.listen(
-      messages.add,
-      onDone: () => done = true,
-    );
+    final subscription = socket.listen(messages.add, onDone: () => done = true);
     addTearDown(() async {
       await subscription.cancel();
       if (socket.closeCode == null) {
@@ -497,20 +527,33 @@ void main() {
       }
     });
 
-    final handshake = jsonDecode(
-      await _waitForValue(() => messages.isNotEmpty ? messages.removeAt(0) as String : null),
-    ) as Map<String, Object?>;
+    final handshake =
+        jsonDecode(
+              await _waitForValue(
+                () =>
+                    messages.isNotEmpty ? messages.removeAt(0) as String : null,
+              ),
+            )
+            as Map<String, Object?>;
     expect(handshake['event'], 'pusher:connection_established');
 
-    final ping = jsonDecode(
-      await _waitForValue(
-        () => messages.isNotEmpty ? messages.removeAt(0) as String : null,
-        timeout: const Duration(seconds: 6),
-      ),
-    ) as Map<String, Object?>;
+    final ping =
+        jsonDecode(
+              await _waitForValue(
+                () =>
+                    messages.isNotEmpty ? messages.removeAt(0) as String : null,
+                timeout: const Duration(seconds: 6),
+              ),
+            )
+            as Map<String, Object?>;
     expect(ping['event'], 'pusher:ping');
 
-    socket.add(jsonEncode(<String, Object>{'event': 'pusher:pong', 'data': <String, Object>{}}));
+    socket.add(
+      jsonEncode(<String, Object>{
+        'event': 'pusher:pong',
+        'data': <String, Object>{},
+      }),
+    );
     await Future<void>.delayed(const Duration(milliseconds: 1500));
     expect(done, isFalse);
   });

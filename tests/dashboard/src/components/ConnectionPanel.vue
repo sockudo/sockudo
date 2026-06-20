@@ -169,6 +169,21 @@ onMounted(checkAuth);
                     </div>
                     <div>
                         <label class="text-xs text-surface-400 mb-1 block"
+                            >Append Rollup Window</label
+                        >
+                        <select
+                            v-model.number="store.config.appendRollupWindow"
+                            class="input-field font-mono"
+                        >
+                            <option :value="0">0 ms</option>
+                            <option :value="20">20 ms</option>
+                            <option :value="40">40 ms</option>
+                            <option :value="100">100 ms</option>
+                            <option :value="500">500 ms</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-xs text-surface-400 mb-1 block"
                             >Auth Endpoint</label
                         >
                         <input
@@ -279,6 +294,14 @@ onMounted(checkAuth);
                             <span class="text-xs text-surface-300 font-mono">{{
                                 store.config.wireFormat
                             }}</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs text-surface-500"
+                                >AI Rollup Window</span
+                            >
+                            <span class="text-xs text-surface-300 font-mono"
+                                >{{ store.config.appendRollupWindow }} ms</span
+                            >
                         </div>
                         <div class="flex items-center justify-between">
                             <span class="text-xs text-surface-500"

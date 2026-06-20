@@ -51,6 +51,9 @@ export function usePusher() {
       forceTLS: cfg.useTLS,
       enabledTransports: ["ws", "wss"],
       wireFormat: cfg.wireFormat,
+      transportParams: {
+        append_rollup_window: cfg.appendRollupWindow,
+      },
       channelAuthorization: {
         endpoint: cfg.authEndpoint,
         transport: "ajax",
@@ -277,6 +280,13 @@ export function usePusher() {
     store.addEvent({ direction: "out", event: eventName("ping") });
   }
 
+  function sendResume(channelPositions: Record<string, unknown>) {
+    if (!pusherInstance) return;
+    const data = { channel_positions: channelPositions };
+    (pusherInstance as any).send_event(eventName("resume"), data);
+    store.addEvent({ direction: "out", event: eventName("resume"), data });
+  }
+
   return {
     connect,
     disconnect,
@@ -286,6 +296,7 @@ export function usePusher() {
     triggerClientEvent,
     signin,
     sendPing,
+    sendResume,
   };
 }
 

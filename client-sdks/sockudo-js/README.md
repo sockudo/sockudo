@@ -11,8 +11,15 @@ Sockudo JavaScript client SDK with modern runtime targets:
 
 ## Install
 
-Clone the Sockudo monorepo, build the SDK, then install it from the local checkout until npm
-publishing is enabled:
+For apps, install the published package:
+
+```bash
+npm install @sockudo/client
+# or: bun add @sockudo/client
+# or: pnpm add @sockudo/client
+```
+
+For local monorepo development, build the SDK, then install it from the local checkout:
 
 ```bash
 git clone https://github.com/sockudo/sockudo.git
@@ -25,8 +32,6 @@ npm install ../sockudo/client-sdks/sockudo-js
 # or: bun add ../sockudo/client-sdks/sockudo-js
 # or: pnpm add ../sockudo/client-sdks/sockudo-js
 ```
-
-The package name remains `@sockudo/client` in imports.
 
 ## Runtime Imports
 
@@ -364,35 +369,14 @@ bun run build:all
 
 ## Release Process
 
-This repo uses GitHub Actions for CI/CD and changelogs.
+GitHub Actions are managed from the monorepo root:
 
-### CI
+- CI: `.github/workflows/sdk-ci.yml`
+- Publish: `.github/workflows/sdk-release.yml` with tag `client-js-vX.Y.Z`
+- Setup: see `docs/sdk-publishing-2026.md` for npm trusted publishing and provenance.
 
-- Workflow: `.github/workflows/ci.yml`
-- Runs on push to `main` and pull requests
-- Executes:
-  - `bun run check`
-  - `bun run build:all`
-
-### Changelog + Versioning
-
-- Workflow: `.github/workflows/release-please.yml`
-- Uses Release Please to open/update a Release PR
-- Generates and updates:
-  - `CHANGELOG.md`
-  - `package.json` version
-  - git tag on release merge
-
-### npm Publish
-
-- Workflow: `.github/workflows/publish-npm.yml`
-- Triggers on:
-  - `release.published`
-  - manual dispatch
-- Publishes `@sockudo/client` with npm provenance
-
-Required repo secret:
-- `NPM_TOKEN`
+The release gate runs format checks, type checks, linting, tests, `build:all`, and `npm pack
+--dry-run` before publishing.
 
 ## Repository
 

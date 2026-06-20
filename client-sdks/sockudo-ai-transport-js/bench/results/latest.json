@@ -1,28 +1,28 @@
 {
-  "generatedAt": "2026-06-08T09:00:56.092Z",
+  "generatedAt": "2026-06-20T08:10:30.954Z",
   "bundle": {
-    "coreGzipBytes": 23458,
-    "reactIncrementalGzipBytes": -6449,
-    "vercelIncrementalGzipBytes": 1505,
-    "vercelReactIncrementalGzipBytes": 2038,
+    "coreGzipBytes": 23645,
+    "reactIncrementalGzipBytes": -6566,
+    "vercelIncrementalGzipBytes": 1522,
+    "vercelReactIncrementalGzipBytes": 2058,
     "treeShakeExcludesVercelReact": true,
     "treeShakeExcludesReactRuntime": true,
     "runtimeBareImportCount": 0
   },
   "throughput": {
-    "singleStreamTokensPerSecond": 722811.0120257691,
-    "tokenWireToViewP50Ms": 0.0008750000000077307,
-    "concurrentP95FrameMs": 0.201958999999988,
-    "concurrentFrameBudgetPercent": 1.2115116976603957
+    "singleStreamTokensPerSecond": 757198.1050208787,
+    "tokenWireToViewP50Ms": 0.0008339999999975589,
+    "concurrentP95FrameMs": 0.3774160000000393,
+    "concurrentFrameBudgetPercent": 2.264043191361963
   },
   "latency": {
-    "sendLocalP50Ms": 0.6684579999999869,
-    "sendLocalP99Ms": 2.3274169999999685
+    "sendLocalP50Ms": 0.8794169999999895,
+    "sendLocalP99Ms": 2.5658339999999953
   },
   "memory": {
-    "tenThousandMessageTreeRetainedBytes": 15318224,
+    "tenThousandMessageTreeRetainedBytes": 17026896,
     "gcMode": "enforced",
-    "flatStreamRetainedGrowthBytes": 750376,
+    "flatStreamRetainedGrowthBytes": 725688,
     "flatStreamTokenCount": 100000
   },
   "react": {

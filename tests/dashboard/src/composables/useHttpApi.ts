@@ -72,12 +72,48 @@ function md5(input: string): string {
   return Array.from(result).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+export interface ApiResponse<T = unknown> {
+  status: number
+  data: T
+}
+
+type RequestHeaders = Record<string, string>
+
 export function useHttpApi() {
   const store = useDashboardStore()
 
   function baseUrl() {
+    if (
+      typeof window !== 'undefined'
+      && window.location.port === '3456'
+      && ['127.0.0.1', 'localhost'].includes(store.config.host)
+      && store.config.port === 6011
+    ) {
+      return `${window.location.origin}/sockudo`
+    }
     const proto = store.config.useTLS ? 'https' : 'http'
     return `${proto}://${store.config.host}:${store.config.port}`
+  }
+
+  function serverBaseUrl(port = store.config.port) {
+    if (
+      typeof window !== 'undefined'
+      && window.location.port === '3456'
+      && ['127.0.0.1', 'localhost'].includes(store.config.host)
+      && port === 6011
+    ) {
+      return `${window.location.origin}/sockudo`
+    }
+    if (
+      typeof window !== 'undefined'
+      && window.location.port === '3456'
+      && ['127.0.0.1', 'localhost'].includes(store.config.host)
+      && port === 9611
+    ) {
+      return `${window.location.origin}/sockudo-metrics`
+    }
+    const proto = store.config.useTLS ? 'https' : 'http'
+    return `${proto}://${store.config.host}:${port}`
   }
 
   async function signRequest(method: string, path: string, queryParams: Record<string, string> = {}, body?: string) {
@@ -97,7 +133,13 @@ export function useHttpApi() {
     return params
   }
 
-  async function apiRequest(method: string, path: string, body?: unknown, queryParams: Record<string, string> = {}) {
+  async function apiRequest(
+    method: string,
+    path: string,
+    body?: unknown,
+    queryParams: Record<string, string> = {},
+    extraHeaders: RequestHeaders = {},
+  ): Promise<ApiResponse> {
     const bodyStr = body ? JSON.stringify(body) : undefined
     const fullPath = `/apps/${store.config.appId}${path}`
     const params = await signRequest(method, fullPath, queryParams, bodyStr)
@@ -110,10 +152,38 @@ export function useHttpApi() {
     try {
       const res = await fetch(url.toString(), {
         method,
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        headers: {
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+          ...extraHeaders,
+        },
         body: bodyStr,
       })
-      const data = await res.json().catch(() => res.text())
+      const raw = await res.text()
+      let data: unknown = raw
+      if (raw) {
+        try {
+          data = JSON.parse(raw)
+        } catch {
+          data = raw
+        }
+      }
+      store.addEvent({ direction: 'in', event: `HTTP ${res.status} ${path}`, data })
+      return { status: res.status, data }
+    } catch (err: any) {
+      store.addEvent({ direction: 'system', event: `HTTP Error ${path}`, data: { error: err.message } })
+      return { status: 0, data: { error: err.message } }
+    }
+  }
+
+  async function serverRequest(path: string, port = store.config.port): Promise<ApiResponse> {
+    const url = `${serverBaseUrl(port)}${path}`
+    store.addEvent({ direction: 'out', event: `GET ${path}`, data: { port } })
+    try {
+      const res = await fetch(url)
+      const contentType = res.headers.get('content-type') ?? ''
+      const data = contentType.includes('application/json')
+        ? await res.json()
+        : await res.text()
       store.addEvent({ direction: 'in', event: `HTTP ${res.status} ${path}`, data })
       return { status: res.status, data }
     } catch (err: any) {
@@ -128,6 +198,9 @@ export function useHttpApi() {
     return apiRequest('POST', '/events', body)
   }
 
+  const publishAdvancedEvent = (body: Record<string, unknown>) =>
+    apiRequest('POST', '/events', body)
+
   const publishBatch = (events: Array<{ name: string; channel: string; data: string }>) =>
     apiRequest('POST', '/batch_events', { batch: events })
 
@@ -137,8 +210,10 @@ export function useHttpApi() {
     return apiRequest('GET', '/channels', undefined, params)
   }
 
-  const getChannel = (name: string) =>
-    apiRequest('GET', `/channels/${encodeURIComponent(name)}`, undefined, { info: 'subscription_count,user_count' })
+  const getChannel = (name: string, info = 'subscription_count,user_count') => {
+    const params: Record<string, string> = info ? { info } : {}
+    return apiRequest('GET', `/channels/${encodeURIComponent(name)}`, undefined, params)
+  }
 
   const getChannelUsers = (name: string) =>
     apiRequest('GET', `/channels/${encodeURIComponent(name)}/users`)
@@ -169,6 +244,81 @@ export function useHttpApi() {
       ...opts,
     })
 
+  const getMessage = (channel: string, messageSerial: string) =>
+    apiRequest(
+      'GET',
+      `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}`,
+    )
+
+  const getMessageVersions = (
+    channel: string,
+    messageSerial: string,
+    params: Record<string, string> = {},
+  ) =>
+    apiRequest(
+      'GET',
+      `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/versions`,
+      undefined,
+      params,
+    )
+
+  const updateMessage = (channel: string, messageSerial: string, body: Record<string, unknown>) =>
+    apiRequest(
+      'POST',
+      `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/update`,
+      body,
+    )
+
+  const deleteMessage = (channel: string, messageSerial: string, body: Record<string, unknown>) =>
+    apiRequest(
+      'POST',
+      `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/delete`,
+      body,
+    )
+
+  const appendMessage = (channel: string, messageSerial: string, body: Record<string, unknown>) =>
+    apiRequest(
+      'POST',
+      `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/append`,
+      body,
+    )
+
+  const getAnnotations = (
+    channel: string,
+    messageSerial: string,
+    params: Record<string, string> = {},
+  ) =>
+    apiRequest(
+      'GET',
+      `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/annotations`,
+      undefined,
+      params,
+    )
+
+  const publishAnnotation = (
+    channel: string,
+    messageSerial: string,
+    body: Record<string, unknown>,
+  ) =>
+    apiRequest(
+      'POST',
+      `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/annotations`,
+      body,
+    )
+
+  const deleteAnnotation = (
+    channel: string,
+    messageSerial: string,
+    annotationSerial: string,
+    params: Record<string, string> = {},
+  ) =>
+    apiRequest(
+      'DELETE',
+      `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageSerial)}/annotations/${encodeURIComponent(annotationSerial)}`,
+      undefined,
+      params,
+    )
+
   const getPresenceHistory = (name: string, params: Record<string, string> = {}) =>
     apiRequest('GET', `/channels/${encodeURIComponent(name)}/presence/history`, undefined, params)
 
@@ -189,6 +339,129 @@ export function useHttpApi() {
   const terminateUser = (userId: string) =>
     apiRequest('POST', `/users/${encodeURIComponent(userId)}/terminate_connections`)
 
+  const pushAdminHeaders = (extra: RequestHeaders = {}) => ({
+    'x-sockudo-push-capability': 'push-admin',
+    ...extra,
+  })
+
+  const pushSubscribeHeaders = (deviceToken?: string, extra: RequestHeaders = {}) => ({
+    'x-sockudo-push-capability': 'push-subscribe',
+    ...(deviceToken ? { 'x-sockudo-device-identity-token': deviceToken } : {}),
+    ...extra,
+  })
+
+  const putPushCredential = (
+    provider: 'fcm' | 'apns' | 'webpush' | 'hms' | 'wns',
+    body: Record<string, unknown>,
+  ) => apiRequest('POST', `/push/credentials/${provider}`, body, {}, pushAdminHeaders())
+
+  const listPushCredentials = (params: Record<string, string> = {}) =>
+    apiRequest('GET', '/push/credentials', undefined, params, pushAdminHeaders())
+
+  const putPushTemplate = (body: Record<string, unknown>) =>
+    apiRequest('POST', '/push/templates', body, {}, pushAdminHeaders())
+
+  const listPushTemplates = (params: Record<string, string> = {}) =>
+    apiRequest('GET', '/push/templates', undefined, params, pushAdminHeaders())
+
+  const getPushTemplate = (id: string) =>
+    apiRequest('GET', `/push/templates/${encodeURIComponent(id)}`, undefined, {}, pushAdminHeaders())
+
+  const deletePushTemplate = (id: string) =>
+    apiRequest('DELETE', `/push/templates/${encodeURIComponent(id)}`, undefined, {}, pushAdminHeaders())
+
+  const registerPushDevice = (
+    body: Record<string, unknown>,
+    opts: { rotateToken?: boolean; subscribeToken?: string } = {},
+  ) =>
+    apiRequest(
+      'POST',
+      '/push/deviceRegistrations',
+      body,
+      {},
+      opts.subscribeToken
+        ? pushSubscribeHeaders(opts.subscribeToken)
+        : pushAdminHeaders(opts.rotateToken ? { 'x-sockudo-rotate-device-identity-token': 'true' } : {}),
+    )
+
+  const listPushDevices = (params: Record<string, string> = {}) =>
+    apiRequest('GET', '/push/deviceRegistrations', undefined, params, pushAdminHeaders())
+
+  const getPushDevice = (id: string, deviceToken?: string) =>
+    apiRequest(
+      'GET',
+      `/push/deviceRegistrations/${encodeURIComponent(id)}`,
+      undefined,
+      {},
+      deviceToken ? pushSubscribeHeaders(deviceToken) : pushAdminHeaders(),
+    )
+
+  const deletePushDevice = (id: string, deviceToken?: string) =>
+    apiRequest(
+      'DELETE',
+      `/push/deviceRegistrations/${encodeURIComponent(id)}`,
+      undefined,
+      {},
+      deviceToken ? pushSubscribeHeaders(deviceToken) : pushAdminHeaders(),
+    )
+
+  const deletePushDevicesByClient = (clientId: string) =>
+    apiRequest(
+      'DELETE',
+      '/push/deviceRegistrations',
+      undefined,
+      { clientId },
+      pushAdminHeaders(),
+    )
+
+  const upsertPushSubscription = (
+    body: Record<string, unknown>,
+    opts: { deviceToken?: string } = {},
+  ) =>
+    apiRequest(
+      'POST',
+      '/push/channelSubscriptions',
+      body,
+      {},
+      opts.deviceToken ? pushSubscribeHeaders(opts.deviceToken) : pushAdminHeaders(),
+    )
+
+  const listPushSubscriptions = (params: Record<string, string> = {}, deviceToken?: string) =>
+    apiRequest(
+      'GET',
+      '/push/channelSubscriptions',
+      undefined,
+      params,
+      deviceToken ? pushSubscribeHeaders(deviceToken) : pushAdminHeaders(),
+    )
+
+  const deletePushSubscriptions = (params: Record<string, string>, deviceToken?: string) =>
+    apiRequest(
+      'DELETE',
+      '/push/channelSubscriptions',
+      undefined,
+      params,
+      deviceToken ? pushSubscribeHeaders(deviceToken) : pushAdminHeaders(),
+    )
+
+  const listPushSubscriptionChannels = (params: Record<string, string> = {}) =>
+    apiRequest('GET', '/push/channelSubscriptions/channels', undefined, params, pushAdminHeaders())
+
+  const publishPush = (body: Record<string, unknown>, mode?: 'sync') =>
+    apiRequest('POST', '/push/publish', body, mode ? { mode } : {}, pushAdminHeaders())
+
+  const batchPublishPush = (items: Array<Record<string, unknown>>) =>
+    apiRequest('POST', '/push/batch/publish', items, {}, pushAdminHeaders())
+
+  const getPushPublishStatus = (publishId: string) =>
+    apiRequest('GET', `/push/publish/${encodeURIComponent(publishId)}/status`, undefined, {}, pushAdminHeaders())
+
+  const cancelScheduledPush = (jobId: string) =>
+    apiRequest('DELETE', `/push/scheduled/${encodeURIComponent(jobId)}`, undefined, {}, pushAdminHeaders())
+
+  const postPushDeliveryStatus = (body: Record<string, unknown>) =>
+    apiRequest('POST', '/push/deliveryStatus', body, {}, pushAdminHeaders())
+
   async function healthCheck() {
     try {
       const res = await fetch(`${baseUrl()}/up`)
@@ -198,8 +471,18 @@ export function useHttpApi() {
     }
   }
 
+  const liveCheck = () => serverRequest('/live')
+  const upCheck = () => serverRequest('/up')
+  const appUpCheck = () => serverRequest(`/up/${encodeURIComponent(store.config.appId)}`)
+  const usageCheck = () => serverRequest('/usage')
+  const statsCheck = () => serverRequest('/stats')
+  const metricsCheck = (port = 9601) => serverRequest('/metrics', port)
+
   return {
+    apiRequest,
+    serverRequest,
     publishEvent,
+    publishAdvancedEvent,
     publishBatch,
     getChannels,
     getChannel,
@@ -208,11 +491,45 @@ export function useHttpApi() {
     getChannelHistoryState,
     resetChannelHistory,
     purgeChannelHistory,
+    getMessage,
+    getMessageVersions,
+    updateMessage,
+    deleteMessage,
+    appendMessage,
+    getAnnotations,
+    publishAnnotation,
+    deleteAnnotation,
     getPresenceHistory,
     getPresenceHistoryState,
     getPresenceHistorySnapshot,
     resetPresenceHistory,
     terminateUser,
+    putPushCredential,
+    listPushCredentials,
+    putPushTemplate,
+    listPushTemplates,
+    getPushTemplate,
+    deletePushTemplate,
+    registerPushDevice,
+    listPushDevices,
+    getPushDevice,
+    deletePushDevice,
+    deletePushDevicesByClient,
+    upsertPushSubscription,
+    listPushSubscriptions,
+    deletePushSubscriptions,
+    listPushSubscriptionChannels,
+    publishPush,
+    batchPublishPush,
+    getPushPublishStatus,
+    cancelScheduledPush,
+    postPushDeliveryStatus,
     healthCheck,
+    liveCheck,
+    upCheck,
+    appUpCheck,
+    usageCheck,
+    statsCheck,
+    metricsCheck,
   }
 }

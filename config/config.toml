@@ -1,7 +1,7 @@
 debug = false
 host = "0.0.0.0"
 port = 6001
-mode = "production"
+mode = "development"
 path_prefix = "/"
 shutdown_grace_period = 2
 websocket_max_payload_kb = 64
@@ -76,8 +76,8 @@ storage_driver = "memory"
 # memory is for local development/tests. Durable queue driver values mirror [queue].driver.
 queue_driver = "memory"
 fcm_enabled = false
-apns_enabled = false
-webpush_enabled = false
+apns_enabled = true
+webpush_enabled = true
 hms_enabled = false
 wns_enabled = false
 # fcm_credential_ref = "secret://sockudo/push/fcm"
@@ -121,7 +121,7 @@ stale_device_max_age_days = 90
 # kms_key_ref = "aws-kms://alias/sockudo-push"
 # vault_secret_ref = "kv/sockudo/push"
 dry_run = false
-analytics_enabled = false
+analytics_enabled = true
 analytics_retention_days = 30
 scheduler_interval_secs = 5
 
@@ -210,12 +210,36 @@ max_channel_name_length = 200
 allow_user_limited_channels = true
 annotations_enabled = true
 
+[[app_manager.array.apps.policy.channels.channel_namespaces]]
+name = "history-demo"
+channel_name_pattern = "^history-[A-Za-z0-9._-]+$"
+max_channel_name_length = 200
+annotations_enabled = true
+
+[[app_manager.array.apps.policy.channels.channel_namespaces]]
+name = "versioned-demo"
+channel_name_pattern = "^versioned-[A-Za-z0-9._-]+$"
+max_channel_name_length = 200
+annotations_enabled = true
+
+[[app_manager.array.apps.policy.channels.channel_namespaces]]
+name = "orders"
+channel_name_pattern = "^orders(:[A-Za-z0-9._-]+)?$"
+max_channel_name_length = 200
+
+[[app_manager.array.apps.policy.channels.channel_namespaces]]
+name = "private-ai"
+channel_name_pattern = "^private-ai-[A-Za-z0-9._:-]+$"
+max_channel_name_length = 200
+allow_user_limited_channels = true
+annotations_enabled = true
+
 [app_manager.array.apps.policy.idempotency]
 enabled = true
 ttl_seconds = 300
 
 [app_manager.array.apps.policy.connection_recovery]
-enabled = false
+enabled = true
 
 [app_manager.array.apps.policy.channels.channel_delta_compression."ticker:*"]
 enabled = true
@@ -286,7 +310,16 @@ enabled = false
 credentials = true
 origin = ["*"]
 methods = ["GET", "POST", "OPTIONS"]
-allowed_headers = ["Authorization", "Content-Type", "X-Requested-With", "Accept"]
+allowed_headers = [
+  "Authorization",
+  "Content-Type",
+  "X-Requested-With",
+  "Accept",
+  "X-Idempotency-Key",
+  "X-Sockudo-Push-Capability",
+  "X-Sockudo-Device-Identity-Token",
+  "X-Sockudo-Rotate-Device-Identity-Token",
+]
 
 [channel_limits]
 max_name_length = 200
@@ -349,22 +382,25 @@ enabled = true
 enable_tags = false
 
 [versioned_messages]
-enabled = false
+enabled = true
 driver = "memory"
 max_page_size = 100
-retention_window_seconds = 0
+retention_window_seconds = 86400
 purge_interval_seconds = 300
 purge_batch_size = 1000
 max_purge_per_tick = 100000
 
 [annotations]
-enabled = false
+enabled = true
 
 [ai_transport]
-enabled = false
+enabled = true
 max_accumulated_message_bytes = 1048576
 max_appends_per_message = 4096
 max_open_streaming_messages_per_channel = 1024
+
+[[ai_transport.channels]]
+prefix = "private-ai-"
 
 [ai_transport.rollup]
 enabled = true
@@ -393,15 +429,17 @@ max_events_per_filter = 50
 max_event_name_length = 200
 
 [connection_recovery]
-enabled = false
+enabled = true
 buffer_ttl_seconds = 120
 max_buffer_size = 100
 
 [history]
-enabled = false
-backend = "postgres"
+enabled = true
+rewind_enabled = true
+backend = "memory"
 retention_window_seconds = 86400
 max_page_size = 100
+max_messages_per_channel = 1000
 writer_shards = 16
 writer_queue_capacity = 4096
 purge_interval_seconds = 300
@@ -411,6 +449,12 @@ max_purge_per_tick = 100000
 [history.postgres]
 table_prefix = "sockudo_history"
 write_timeout_ms = 5000
+
+[presence_history]
+enabled = true
+retention_window_seconds = 86400
+max_page_size = 100
+max_events_per_channel = 1000
 
 [websocket]
 max_messages = 1000

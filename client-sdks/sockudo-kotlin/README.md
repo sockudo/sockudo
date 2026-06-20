@@ -298,10 +298,11 @@ This package is configured for Maven-style publishing.
 ./gradlew :lib:publish
 ```
 
-GitHub Actions:
+GitHub Actions are managed from the monorepo root:
 
-- CI: `.github/workflows/ci.yml`
-- Publish: `.github/workflows/publish.yml`
+- CI: `.github/workflows/sdk-ci.yml`
+- Publish: `.github/workflows/sdk-release.yml` with tag `client-kotlin-vX.Y.Z`
+- Setup: see `docs/sdk-publishing-2026.md` for Maven Central credentials and signing.
 
 ## Status
 

@@ -96,12 +96,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sockudo/sockudo-js.git"
+    "url": "git+https://github.com/sockudo/sockudo.git",
+    "directory": "client-sdks/sockudo-js"
   },
   "bugs": {
-    "url": "https://github.com/sockudo/sockudo-js/issues"
+    "url": "https://github.com/sockudo/sockudo/issues"
   },
-  "homepage": "https://github.com/sockudo/sockudo-js#readme",
+  "homepage": "https://github.com/sockudo/sockudo/tree/master/client-sdks/sockudo-js#readme",
   "license": "MIT",
   "publishConfig": {
     "access": "public"

@@ -9,7 +9,17 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 from urllib.parse import quote, urlencode, urlparse
 
 import httpx
@@ -72,7 +82,9 @@ class Result:
             status = Status.CLIENT_ERROR
         else:
             status = Status.SERVER_ERROR
-        return Result(status=status, message=response.text, status_code=response.status_code)
+        return Result(
+            status=status, message=response.text, status_code=response.status_code
+        )
 
     @staticmethod
     def from_exception(exc: Exception) -> "Result":
@@ -170,14 +182,24 @@ class Event:
     tags: Optional[Dict[str, str]] = None
 
     def to_payload(self, marshaller: JsonMarshaller) -> JsonDict:
-        payload: JsonDict = {"name": self.name, "data": _encode_data(self.data, marshaller)}
+        payload: JsonDict = {
+            "name": self.name,
+            "data": _encode_data(self.data, marshaller),
+        }
         if self.channels is not None:
             payload["channels"] = list(self.channels)
         elif self.channel is not None:
             payload["channel"] = self.channel
         else:
             raise SockudoError("Event requires channel or channels")
-        _apply_common_event_fields(payload, self.socket_id, self.info, self.idempotency_key, self.extras, self.tags)
+        _apply_common_event_fields(
+            payload,
+            self.socket_id,
+            self.info,
+            self.idempotency_key,
+            self.extras,
+            self.tags,
+        )
         return payload
 
 
@@ -187,7 +209,9 @@ class PresenceUser:
     user_info: Optional[Mapping[str, Any]] = None
 
     def channel_data(self, marshaller: JsonMarshaller) -> str:
-        return marshaller({"user_id": self.user_id, "user_info": dict(self.user_info or {})})
+        return marshaller(
+            {"user_id": self.user_id, "user_info": dict(self.user_info or {})}
+        )
 
 
 @dataclass(frozen=True)
@@ -211,7 +235,9 @@ class ChannelsParams:
     info: Optional[Union[str, Sequence[str]]] = None
 
     def to_query(self) -> Dict[str, str]:
-        return _clean_query({"filter_by_prefix": self.filter_by_prefix, "info": _join_info(self.info)})
+        return _clean_query(
+            {"filter_by_prefix": self.filter_by_prefix, "info": _join_info(self.info)}
+        )
 
 
 @dataclass
@@ -275,12 +301,14 @@ class PushSubscriptionParams(PushCursorParams):
     device_id: Optional[str] = None
 
     def to_query(self) -> Dict[str, str]:
-        return _clean_query({
-            "limit": self.limit,
-            "cursor": self.cursor,
-            "channel": self.channel,
-            "deviceId": self.device_id,
-        })
+        return _clean_query(
+            {
+                "limit": self.limit,
+                "cursor": self.cursor,
+                "channel": self.channel,
+                "deviceId": self.device_id,
+            }
+        )
 
 
 @dataclass
@@ -295,16 +323,22 @@ class MessageMutation:
     metadata: Optional[Mapping[str, Any]] = None
 
     def to_payload(self, marshaller: JsonMarshaller) -> JsonDict:
-        payload = _clean_raw({
-            "name": self.name,
-            "data": _encode_data(self.data, marshaller) if self.data is not None else None,
-            "extras": dict(self.extras) if self.extras is not None else None,
-            "clear_fields": list(self.clear_fields) if self.clear_fields is not None else None,
-            "client_id": self.client_id,
-            "socket_id": self.socket_id,
-            "description": self.description,
-            "metadata": dict(self.metadata) if self.metadata is not None else None,
-        })
+        payload = _clean_raw(
+            {
+                "name": self.name,
+                "data": _encode_data(self.data, marshaller)
+                if self.data is not None
+                else None,
+                "extras": dict(self.extras) if self.extras is not None else None,
+                "clear_fields": list(self.clear_fields)
+                if self.clear_fields is not None
+                else None,
+                "client_id": self.client_id,
+                "socket_id": self.socket_id,
+                "description": self.description,
+                "metadata": dict(self.metadata) if self.metadata is not None else None,
+            }
+        )
         if not payload:
             raise SockudoError("Message mutation requires at least one field")
         return payload
@@ -321,15 +355,17 @@ class PublishAnnotationRequest:
     encoding: Optional[str] = None
 
     def to_payload(self) -> JsonDict:
-        return _clean_raw({
-            "type": self.type,
-            "name": self.name,
-            "clientId": self.client_id,
-            "socketId": self.socket_id,
-            "count": self.count,
-            "data": self.data,
-            "encoding": self.encoding,
-        })
+        return _clean_raw(
+            {
+                "type": self.type,
+                "name": self.name,
+                "clientId": self.client_id,
+                "socketId": self.socket_id,
+                "count": self.count,
+                "data": self.data,
+                "encoding": self.encoding,
+            }
+        )
 
 
 @dataclass
@@ -371,7 +407,9 @@ def body_md5(body: str) -> str:
 
 
 def sign(input_value: str, secret: str) -> str:
-    return hmac.new(secret.encode("utf-8"), input_value.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(
+        secret.encode("utf-8"), input_value.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
 
 
 class _BaseSockudo:
@@ -388,7 +426,9 @@ class _BaseSockudo:
             app_id = config.app_id
             key = config.key
             secret = config.secret
-            encryption_master_key_base64 = encryption_master_key_base64 or config.encryption_master_key_base64
+            encryption_master_key_base64 = (
+                encryption_master_key_base64 or config.encryption_master_key_base64
+            )
             options = options or config.options()
         if not app_id or not key or not secret:
             raise SockudoError("app_id, key, and secret are required")
@@ -405,9 +445,13 @@ class _BaseSockudo:
             try:
                 decoded = base64.b64decode(encryption_master_key_base64, validate=True)
             except (binascii.Error, ValueError) as exc:
-                raise SockudoError("encryption_master_key_base64 must be valid base64") from exc
+                raise SockudoError(
+                    "encryption_master_key_base64 must be valid base64"
+                ) from exc
             if len(decoded) != 32:
-                raise SockudoError("encryption_master_key_base64 must decode to 32 bytes")
+                raise SockudoError(
+                    "encryption_master_key_base64 must decode to 32 bytes"
+                )
             self._encryption_master_key = decoded
 
     @classmethod
@@ -455,20 +499,40 @@ class _BaseSockudo:
         params = _clean_query(parameters or {})
         reserved = RESERVED_QUERY_KEYS.intersection(params)
         if reserved:
-            raise SockudoError(f"Reserved signing parameters are not allowed: {sorted(reserved)}")
-        params.update({"auth_key": self.key, "auth_timestamp": str(int(time.time())), "auth_version": "1.0"})
+            raise SockudoError(
+                f"Reserved signing parameters are not allowed: {sorted(reserved)}"
+            )
+        params.update(
+            {
+                "auth_key": self.key,
+                "auth_timestamp": str(int(time.time())),
+                "auth_version": "1.0",
+            }
+        )
         if body is not None:
             params["body_md5"] = body_md5(body)
         signature_string = _signature_string(method.upper(), path, params)
         params["auth_signature"] = sign(signature_string, self.secret)
         return f"{self.base_url}{path}?{urlencode(params)}"
 
-    def authenticate(self, socket_id: str, channel: str, presence_user: Optional[PresenceUser] = None) -> str:
-        channel_data = presence_user.channel_data(self._marshaller) if presence_user is not None else None
-        string_to_sign = f"{socket_id}:{channel}" if channel_data is None else f"{socket_id}:{channel}:{channel_data}"
+    def authenticate(
+        self, socket_id: str, channel: str, presence_user: Optional[PresenceUser] = None
+    ) -> str:
+        channel_data = (
+            presence_user.channel_data(self._marshaller)
+            if presence_user is not None
+            else None
+        )
+        string_to_sign = (
+            f"{socket_id}:{channel}"
+            if channel_data is None
+            else f"{socket_id}:{channel}:{channel_data}"
+        )
         shared_secret = None
         if _is_encrypted_channel(channel):
-            shared_secret = base64.b64encode(self.channel_shared_secret(channel)).decode("ascii")
+            shared_secret = base64.b64encode(
+                self.channel_shared_secret(channel)
+            ).decode("ascii")
         return AuthData(
             auth=f"{self.key}:{sign(string_to_sign, self.secret)}",
             channel_data=channel_data,
@@ -478,27 +542,50 @@ class _BaseSockudo:
     def authenticate_user(self, socket_id: str, user_data: Mapping[str, Any]) -> str:
         user_data_json = self._marshaller(dict(user_data))
         string_to_sign = f"{socket_id}::user::{user_data_json}"
-        return json.dumps({"auth": f"{self.key}:{sign(string_to_sign, self.secret)}", "user_data": user_data_json}, separators=(",", ":"))
+        return json.dumps(
+            {
+                "auth": f"{self.key}:{sign(string_to_sign, self.secret)}",
+                "user_data": user_data_json,
+            },
+            separators=(",", ":"),
+        )
 
-    def validate_webhook_signature(self, key_header: str, signature_header: str, body: Union[str, bytes]) -> Validity:
+    def validate_webhook_signature(
+        self, key_header: str, signature_header: str, body: Union[str, bytes]
+    ) -> Validity:
         if key_header != self.key:
             return Validity.SIGNED_WITH_WRONG_KEY
         raw = body.decode("utf-8") if isinstance(body, bytes) else body
         expected = sign(raw, self.secret)
-        return Validity.VALID if hmac.compare_digest(expected, signature_header) else Validity.INVALID
+        return (
+            Validity.VALID
+            if hmac.compare_digest(expected, signature_header)
+            else Validity.INVALID
+        )
 
-    def parse_webhook(self, key_header: str, signature_header: str, body: Union[str, bytes]) -> Webhook:
-        if self.validate_webhook_signature(key_header, signature_header, body) is not Validity.VALID:
+    def parse_webhook(
+        self, key_header: str, signature_header: str, body: Union[str, bytes]
+    ) -> Webhook:
+        if (
+            self.validate_webhook_signature(key_header, signature_header, body)
+            is not Validity.VALID
+        ):
             raise SockudoError("Invalid webhook signature")
         webhook = Webhook.parse(body)
         return self._decrypt_webhook(webhook)
 
     def channel_shared_secret(self, channel: str) -> bytes:
         if not _is_encrypted_channel(channel):
-            raise SockudoError(f"Encrypted channel name must start with {ENCRYPTED_CHANNEL_PREFIX!r}")
+            raise SockudoError(
+                f"Encrypted channel name must start with {ENCRYPTED_CHANNEL_PREFIX!r}"
+            )
         if self._encryption_master_key is None:
-            raise SockudoError("Cannot generate shared_secret because encryption_master_key_base64 is not set")
-        return hashlib.sha256(channel.encode("utf-8") + self._encryption_master_key).digest()
+            raise SockudoError(
+                "Cannot generate shared_secret because encryption_master_key_base64 is not set"
+            )
+        return hashlib.sha256(
+            channel.encode("utf-8") + self._encryption_master_key
+        ).digest()
 
     def _next_idempotency_key(self) -> str:
         self._idempotency_serial += 1
@@ -516,22 +603,32 @@ class _BaseSockudo:
             raise SockudoError("At least one channel is required")
         if len(channel_list) > 100:
             raise SockudoError("Sockudo supports at most 100 channels per trigger")
-        encrypted_channels = [channel for channel in channel_list if _is_encrypted_channel(channel)]
+        encrypted_channels = [
+            channel for channel in channel_list if _is_encrypted_channel(channel)
+        ]
         if encrypted_channels and len(channel_list) > 1:
-            raise SockudoError("You cannot trigger to multiple channels when using encrypted channels")
+            raise SockudoError(
+                "You cannot trigger to multiple channels when using encrypted channels"
+            )
         opts = options or TriggerOptions()
         idempotency_key = _resolve_idempotency_key(opts.idempotency_key)
         if idempotency_key is None and self.options.auto_idempotency:
             idempotency_key = self._next_idempotency_key()
         if encrypted_channels:
-            payload: JsonDict = {"name": event, "data": self._encrypt_payload(channel_list[0], data), "channels": channel_list}
+            payload: JsonDict = {
+                "name": event,
+                "data": self._encrypt_payload(channel_list[0], data),
+                "channels": channel_list,
+            }
         else:
             payload = {"name": event, "data": _encode_data(data, self._marshaller)}
             payload["channel"] = channel_list[0]
             if len(channel_list) > 1:
                 payload.pop("channel")
                 payload["channels"] = channel_list
-        _apply_common_event_fields(payload, opts.socket_id, opts.info, idempotency_key, opts.extras, opts.tags)
+        _apply_common_event_fields(
+            payload, opts.socket_id, opts.info, idempotency_key, opts.extras, opts.tags
+        )
         headers = {"X-Idempotency-Key": idempotency_key} if idempotency_key else {}
         return payload, headers
 
@@ -555,9 +652,13 @@ class _BaseSockudo:
         payload = event.to_payload(self._marshaller)
         channel = event.channel
         if event.channels is not None:
-            encrypted_channels = [item for item in event.channels if _is_encrypted_channel(item)]
+            encrypted_channels = [
+                item for item in event.channels if _is_encrypted_channel(item)
+            ]
             if encrypted_channels and len(event.channels) > 1:
-                raise SockudoError("You cannot trigger to multiple channels when using encrypted channels")
+                raise SockudoError(
+                    "You cannot trigger to multiple channels when using encrypted channels"
+                )
             if len(event.channels) == 1:
                 channel = event.channels[0]
         if channel is not None and _is_encrypted_channel(channel):
@@ -590,8 +691,16 @@ class _BaseSockudo:
             encrypted = json.loads(event.data)
             nonce = base64.b64decode(encrypted["nonce"], validate=True)
             ciphertext = base64.b64decode(encrypted["ciphertext"], validate=True)
-            plaintext = nacl_secret.SecretBox(self.channel_shared_secret(event.channel)).decrypt(ciphertext, nonce)
-        except (KeyError, TypeError, ValueError, binascii.Error, nacl_exceptions.CryptoError) as exc:
+            plaintext = nacl_secret.SecretBox(
+                self.channel_shared_secret(event.channel)
+            ).decrypt(ciphertext, nonce)
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            binascii.Error,
+            nacl_exceptions.CryptoError,
+        ) as exc:
             raise SockudoError("Failed to decrypt encrypted webhook event") from exc
         return WebhookEvent(
             name=event.name,
@@ -611,7 +720,11 @@ class _BaseSockudo:
     def _channel_path(self, channel: str, suffix: str = "") -> str:
         return self._path(f"/channels/{quote(channel, safe='')}{suffix}")
 
-    def _push_headers(self, capability: str = "push-admin", device_identity_token: Optional[str] = None) -> Dict[str, str]:
+    def _push_headers(
+        self,
+        capability: str = "push-admin",
+        device_identity_token: Optional[str] = None,
+    ) -> Dict[str, str]:
         headers = {"X-Sockudo-Push-Capability": capability}
         if device_identity_token is not None:
             headers["X-Sockudo-Device-Identity-Token"] = device_identity_token
@@ -645,104 +758,240 @@ class Sockudo(_BaseSockudo):
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def trigger(self, channels: Union[str, Sequence[str]], event: str, data: Any, options: Optional[TriggerOptions] = None) -> Result:
+    def trigger(
+        self,
+        channels: Union[str, Sequence[str]],
+        event: str,
+        data: Any,
+        options: Optional[TriggerOptions] = None,
+    ) -> Result:
         payload, headers = self._event_payload(channels, event, data, options)
         return self._post(self._path("/events"), payload, headers=headers)
 
     def trigger_batch(self, batch: Sequence[Event]) -> Result:
         return self._post(self._path("/batch_events"), self._batch_payload(batch))
 
-    def send_to_user(self, user_id: str, event: str, data: Any, options: Optional[TriggerOptions] = None) -> Result:
+    def send_to_user(
+        self,
+        user_id: str,
+        event: str,
+        data: Any,
+        options: Optional[TriggerOptions] = None,
+    ) -> Result:
         if not user_id:
             raise SockudoError("user_id is required")
         return self.trigger(f"#server-to-user-{user_id}", event, data, options)
 
     def get(self, path: str, params: Optional[Mapping[str, Any]] = None) -> Result:
-        full_path = path if path.startswith("/apps/") else self._path(path if path.startswith("/") else f"/{path}")
+        full_path = (
+            path
+            if path.startswith("/apps/")
+            else self._path(path if path.startswith("/") else f"/{path}")
+        )
         return self._request("GET", full_path, None, params=params)
 
     def list_channels(self, params: Optional[ChannelsParams] = None) -> Result:
         return self.get("/channels", params.to_query() if params else None)
 
-    def get_channel(self, channel: str, params: Optional[ChannelParams] = None) -> Result:
-        return self.get(self._channel_path(channel), params.to_query() if params else None)
+    def get_channel(
+        self, channel: str, params: Optional[ChannelParams] = None
+    ) -> Result:
+        return self.get(
+            self._channel_path(channel), params.to_query() if params else None
+        )
 
     def get_channel_users(self, channel: str) -> Result:
         return self.get(self._channel_path(channel, "/users"))
 
-    def get_channel_history(self, channel: str, params: Optional[HistoryParams] = None) -> Result:
-        return self.get(self._channel_path(channel, "/history"), params.to_query() if params else None)
+    def get_channel_history(
+        self, channel: str, params: Optional[HistoryParams] = None
+    ) -> Result:
+        return self.get(
+            self._channel_path(channel, "/history"),
+            params.to_query() if params else None,
+        )
 
     def get_channel_history_state(self, channel: str) -> Result:
         return self.get(self._channel_path(channel, "/history/state"))
 
-    def reset_channel_history(self, channel: str, reason: str, requested_by: Optional[str] = None) -> Result:
-        return self._post(self._channel_path(channel, "/history/reset"), _operator_payload(channel, "reset", reason, requested_by))
+    def reset_channel_history(
+        self, channel: str, reason: str, requested_by: Optional[str] = None
+    ) -> Result:
+        return self._post(
+            self._channel_path(channel, "/history/reset"),
+            _operator_payload(channel, "reset", reason, requested_by),
+        )
 
-    def purge_channel_history(self, channel: str, mode: str, reason: str, requested_by: Optional[str] = None, before_serial: Optional[int] = None, before_time_ms: Optional[int] = None) -> Result:
+    def purge_channel_history(
+        self,
+        channel: str,
+        mode: str,
+        reason: str,
+        requested_by: Optional[str] = None,
+        before_serial: Optional[int] = None,
+        before_time_ms: Optional[int] = None,
+    ) -> Result:
         payload = _operator_payload(channel, "purge", reason, requested_by)
-        payload.update(_clean_raw({"mode": mode, "before_serial": before_serial, "before_time_ms": before_time_ms}))
+        payload.update(
+            _clean_raw(
+                {
+                    "mode": mode,
+                    "before_serial": before_serial,
+                    "before_time_ms": before_time_ms,
+                }
+            )
+        )
         return self._post(self._channel_path(channel, "/history/purge"), payload)
 
-    def get_channel_presence_history(self, channel: str, params: Optional[PresenceHistoryParams] = None) -> Result:
-        return self.get(self._channel_path(channel, "/presence/history"), params.to_query() if params else None)
+    def get_channel_presence_history(
+        self, channel: str, params: Optional[PresenceHistoryParams] = None
+    ) -> Result:
+        return self.get(
+            self._channel_path(channel, "/presence/history"),
+            params.to_query() if params else None,
+        )
 
     def get_channel_presence_history_state(self, channel: str) -> Result:
         return self.get(self._channel_path(channel, "/presence/history/state"))
 
-    def reset_channel_presence_history(self, channel: str, reason: str, requested_by: Optional[str] = None) -> Result:
-        return self._post(self._channel_path(channel, "/presence/history/reset"), _operator_payload(channel, "reset", reason, requested_by))
+    def reset_channel_presence_history(
+        self, channel: str, reason: str, requested_by: Optional[str] = None
+    ) -> Result:
+        return self._post(
+            self._channel_path(channel, "/presence/history/reset"),
+            _operator_payload(channel, "reset", reason, requested_by),
+        )
 
-    def get_channel_presence_snapshot(self, channel: str, params: Optional[PresenceSnapshotParams] = None) -> Result:
-        return self.get(self._channel_path(channel, "/presence/history/snapshot"), params.to_query() if params else None)
+    def get_channel_presence_snapshot(
+        self, channel: str, params: Optional[PresenceSnapshotParams] = None
+    ) -> Result:
+        return self.get(
+            self._channel_path(channel, "/presence/history/snapshot"),
+            params.to_query() if params else None,
+        )
 
     def get_message(self, channel: str, message_serial: str) -> Result:
         return self.get(self._message_path(channel, message_serial))
 
-    def get_message_versions(self, channel: str, message_serial: str, params: Optional[MessageVersionsParams] = None) -> Result:
-        return self.get(f"{self._message_path(channel, message_serial)}/versions", params.to_query() if params else None)
+    def get_message_versions(
+        self,
+        channel: str,
+        message_serial: str,
+        params: Optional[MessageVersionsParams] = None,
+    ) -> Result:
+        return self.get(
+            f"{self._message_path(channel, message_serial)}/versions",
+            params.to_query() if params else None,
+        )
 
-    def update_message(self, channel: str, message_serial: str, mutation: Union[MessageMutation, Mapping[str, Any]]) -> Result:
-        return self._post(f"{self._message_path(channel, message_serial)}/update", _mutation_payload(mutation, self._marshaller))
+    def update_message(
+        self,
+        channel: str,
+        message_serial: str,
+        mutation: Union[MessageMutation, Mapping[str, Any]],
+    ) -> Result:
+        return self._post(
+            f"{self._message_path(channel, message_serial)}/update",
+            _mutation_payload(mutation, self._marshaller),
+        )
 
-    def delete_message(self, channel: str, message_serial: str, mutation: Optional[Union[MessageMutation, Mapping[str, Any]]] = None) -> Result:
-        return self._post(f"{self._message_path(channel, message_serial)}/delete", _mutation_payload(mutation, self._marshaller) if mutation is not None else {})
+    def delete_message(
+        self,
+        channel: str,
+        message_serial: str,
+        mutation: Optional[Union[MessageMutation, Mapping[str, Any]]] = None,
+    ) -> Result:
+        return self._post(
+            f"{self._message_path(channel, message_serial)}/delete",
+            _mutation_payload(mutation, self._marshaller)
+            if mutation is not None
+            else {},
+        )
 
-    def append_message(self, channel: str, message_serial: str, data: str, socket_id: Optional[str] = None) -> Result:
+    def append_message(
+        self,
+        channel: str,
+        message_serial: str,
+        data: str,
+        socket_id: Optional[str] = None,
+    ) -> Result:
         if not data:
             raise SockudoError("append_message data must be non-empty")
-        return self._post(f"{self._message_path(channel, message_serial)}/append", _clean_raw({"data": data, "socket_id": socket_id}))
+        return self._post(
+            f"{self._message_path(channel, message_serial)}/append",
+            _clean_raw({"data": data, "socket_id": socket_id}),
+        )
 
-    def publish_annotation(self, channel: str, message_serial: str, request: Union[PublishAnnotationRequest, Mapping[str, Any]]) -> Result:
-        payload = request.to_payload() if isinstance(request, PublishAnnotationRequest) else dict(request)
-        return self._post(f"{self._message_path(channel, message_serial)}/annotations", payload)
+    def publish_annotation(
+        self,
+        channel: str,
+        message_serial: str,
+        request: Union[PublishAnnotationRequest, Mapping[str, Any]],
+    ) -> Result:
+        payload = (
+            request.to_payload()
+            if isinstance(request, PublishAnnotationRequest)
+            else dict(request)
+        )
+        return self._post(
+            f"{self._message_path(channel, message_serial)}/annotations", payload
+        )
 
-    def list_annotations(self, channel: str, message_serial: str, params: Optional[AnnotationEventsParams] = None) -> Result:
-        return self.get(f"{self._message_path(channel, message_serial)}/annotations", params.to_query() if params else None)
+    def list_annotations(
+        self,
+        channel: str,
+        message_serial: str,
+        params: Optional[AnnotationEventsParams] = None,
+    ) -> Result:
+        return self.get(
+            f"{self._message_path(channel, message_serial)}/annotations",
+            params.to_query() if params else None,
+        )
 
-    def delete_annotation(self, channel: str, message_serial: str, annotation_serial: str, socket_id: Optional[str] = None) -> Result:
-        return self._request("DELETE", f"{self._message_path(channel, message_serial)}/annotations/{quote(annotation_serial, safe='')}", None, params=_clean_query({"socket_id": socket_id}))
+    def delete_annotation(
+        self,
+        channel: str,
+        message_serial: str,
+        annotation_serial: str,
+        socket_id: Optional[str] = None,
+    ) -> Result:
+        return self._request(
+            "DELETE",
+            f"{self._message_path(channel, message_serial)}/annotations/{quote(annotation_serial, safe='')}",
+            None,
+            params=_clean_query({"socket_id": socket_id}),
+        )
 
     def terminate_user_connections(self, user_id: str) -> Result:
-        return self._post(self._path(f"/users/{quote(user_id, safe='')}/terminate_connections"), {})
+        return self._post(
+            self._path(f"/users/{quote(user_id, safe='')}/terminate_connections"), {}
+        )
 
-    def activate_device(self, device: Mapping[str, Any], rotate_device_identity_token: bool = False) -> Result:
+    def activate_device(
+        self, device: Mapping[str, Any], rotate_device_identity_token: bool = False
+    ) -> Result:
         headers = self._push_headers("push-admin")
         if rotate_device_identity_token:
             headers["X-Sockudo-Rotate-Device-Identity-Token"] = "true"
-        return self._post(self._push_path("/deviceRegistrations"), dict(device), headers=headers)
+        return self._post(
+            self._push_path("/deviceRegistrations"), dict(device), headers=headers
+        )
 
     def create_device_activation(self, device: Mapping[str, Any]) -> Result:
         return self.activate_device(device)
 
-    def update_device_registration(self, device: Mapping[str, Any], device_identity_token: str) -> Result:
+    def update_device_registration(
+        self, device: Mapping[str, Any], device_identity_token: str
+    ) -> Result:
         return self._post(
             self._push_path("/deviceRegistrations"),
             dict(device),
             headers=self._push_headers("push-subscribe", device_identity_token),
         )
 
-    def list_device_registrations(self, params: Optional[PushCursorParams] = None) -> Result:
+    def list_device_registrations(
+        self, params: Optional[PushCursorParams] = None
+    ) -> Result:
         return self._request(
             "GET",
             self._push_path("/deviceRegistrations"),
@@ -751,13 +1000,35 @@ class Sockudo(_BaseSockudo):
             headers=self._push_headers("push-admin"),
         )
 
-    def get_device_registration(self, device_id: str, device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
-        return self._request("GET", self._push_path(f"/deviceRegistrations/{quote(device_id, safe='')}"), None, headers=headers)
+    def get_device_registration(
+        self, device_id: str, device_identity_token: Optional[str] = None
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
+        return self._request(
+            "GET",
+            self._push_path(f"/deviceRegistrations/{quote(device_id, safe='')}"),
+            None,
+            headers=headers,
+        )
 
-    def delete_device_registration(self, device_id: str, device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
-        return self._request("DELETE", self._push_path(f"/deviceRegistrations/{quote(device_id, safe='')}"), None, headers=headers)
+    def delete_device_registration(
+        self, device_id: str, device_identity_token: Optional[str] = None
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
+        return self._request(
+            "DELETE",
+            self._push_path(f"/deviceRegistrations/{quote(device_id, safe='')}"),
+            None,
+            headers=headers,
+        )
 
     def remove_device_registrations_by_client(self, client_id: str) -> Result:
         return self._request(
@@ -768,12 +1039,32 @@ class Sockudo(_BaseSockudo):
             headers=self._push_headers("push-admin"),
         )
 
-    def upsert_channel_push_subscription(self, subscription: Mapping[str, Any], device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
-        return self._post(self._push_path("/channelSubscriptions"), dict(subscription), headers=headers)
+    def upsert_channel_push_subscription(
+        self,
+        subscription: Mapping[str, Any],
+        device_identity_token: Optional[str] = None,
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
+        return self._post(
+            self._push_path("/channelSubscriptions"),
+            dict(subscription),
+            headers=headers,
+        )
 
-    def list_channel_push_subscriptions(self, params: Optional[PushSubscriptionParams] = None, device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
+    def list_channel_push_subscriptions(
+        self,
+        params: Optional[PushSubscriptionParams] = None,
+        device_identity_token: Optional[str] = None,
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
         return self._request(
             "GET",
             self._push_path("/channelSubscriptions"),
@@ -782,8 +1073,16 @@ class Sockudo(_BaseSockudo):
             headers=headers,
         )
 
-    def delete_channel_push_subscriptions(self, params: PushSubscriptionParams, device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
+    def delete_channel_push_subscriptions(
+        self,
+        params: PushSubscriptionParams,
+        device_identity_token: Optional[str] = None,
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
         return self._request(
             "DELETE",
             self._push_path("/channelSubscriptions"),
@@ -792,7 +1091,9 @@ class Sockudo(_BaseSockudo):
             headers=headers,
         )
 
-    def list_channel_push_subscription_channels(self, params: Optional[PushCursorParams] = None) -> Result:
+    def list_channel_push_subscription_channels(
+        self, params: Optional[PushCursorParams] = None
+    ) -> Result:
         return self._request(
             "GET",
             self._push_path("/channelSubscriptions/channels"),
@@ -801,16 +1102,34 @@ class Sockudo(_BaseSockudo):
             headers=self._push_headers("push-admin"),
         )
 
-    def list_push_credentials(self, params: Optional[PushCursorParams] = None) -> Result:
-        return self._request("GET", self._push_path("/credentials"), None, params=params.to_query() if params else None, headers=self._push_headers("push-admin"))
+    def list_push_credentials(
+        self, params: Optional[PushCursorParams] = None
+    ) -> Result:
+        return self._request(
+            "GET",
+            self._push_path("/credentials"),
+            None,
+            params=params.to_query() if params else None,
+            headers=self._push_headers("push-admin"),
+        )
 
-    def put_push_credential(self, provider: str, credential: Mapping[str, Any]) -> Result:
-        return self._post(self._push_path(f"/credentials/{quote(provider, safe='')}"), dict(credential), headers=self._push_headers("push-admin"))
+    def put_push_credential(
+        self, provider: str, credential: Mapping[str, Any]
+    ) -> Result:
+        return self._post(
+            self._push_path(f"/credentials/{quote(provider, safe='')}"),
+            dict(credential),
+            headers=self._push_headers("push-admin"),
+        )
 
     def publish_push(self, request: Mapping[str, Any]) -> Result:
         payload = dict(request)
         payload["sync"] = False
-        return self._post(self._push_path("/publish"), payload, headers=self._push_headers("push-admin"))
+        return self._post(
+            self._push_path("/publish"),
+            payload,
+            headers=self._push_headers("push-admin"),
+        )
 
     def publish_push_direct(self, request: Mapping[str, Any]) -> Result:
         return self.publish_push(request)
@@ -821,7 +1140,11 @@ class Sockudo(_BaseSockudo):
             item = dict(request)
             item["sync"] = False
             payload.append(item)
-        return self._post(self._push_path("/batch/publish"), payload, headers=self._push_headers("push-admin"))
+        return self._post(
+            self._push_path("/batch/publish"),
+            payload,
+            headers=self._push_headers("push-admin"),
+        )
 
     def schedule_push(self, request: Mapping[str, Any]) -> Result:
         if "notBeforeMs" not in request:
@@ -829,26 +1152,59 @@ class Sockudo(_BaseSockudo):
         return self.publish_push(request)
 
     def get_publish_status(self, publish_id: str) -> Result:
-        return self._request("GET", self._push_path(f"/publish/{quote(publish_id, safe='')}/status"), None, headers=self._push_headers("push-admin"))
+        return self._request(
+            "GET",
+            self._push_path(f"/publish/{quote(publish_id, safe='')}/status"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
 
     def cancel_scheduled_push(self, publish_id: str) -> Result:
-        return self._request("DELETE", self._push_path(f"/scheduled/{quote(publish_id, safe='')}"), None, headers=self._push_headers("push-admin"))
+        return self._request(
+            "DELETE",
+            self._push_path(f"/scheduled/{quote(publish_id, safe='')}"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
 
     def post_push_delivery_status(self, event: Mapping[str, Any]) -> Result:
-        return self._post(self._push_path("/deliveryStatus"), dict(event), headers=self._push_headers("push-admin"))
+        return self._post(
+            self._push_path("/deliveryStatus"),
+            dict(event),
+            headers=self._push_headers("push-admin"),
+        )
 
     def _message_path(self, channel: str, message_serial: str) -> str:
-        return self._channel_path(channel, f"/messages/{quote(message_serial, safe='')}")
+        return self._channel_path(
+            channel, f"/messages/{quote(message_serial, safe='')}"
+        )
 
-    def _post(self, path: str, payload: Mapping[str, Any], headers: Optional[Mapping[str, str]] = None) -> Result:
+    def _post(
+        self,
+        path: str,
+        payload: Mapping[str, Any],
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Result:
         return self._request("POST", path, self._serialize(payload), headers=headers)
 
-    def _request(self, method: str, path: str, body: Optional[str], params: Optional[Mapping[str, Any]] = None, headers: Optional[Mapping[str, str]] = None) -> Result:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: Optional[str],
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Result:
         url = self.signed_uri(method, path, body, params)
         last = Result(Status.NETWORK_ERROR, "request was not attempted")
         for attempt in range(1, self.options.max_retries + 1):
             try:
-                response = self._client.request(method, url, content=body, headers={"Content-Type": "application/json", **dict(headers or {})})
+                response = self._client.request(
+                    method,
+                    url,
+                    content=body,
+                    headers={"Content-Type": "application/json", **dict(headers or {})},
+                )
                 last = Result.from_response(response)
             except httpx.HTTPError as exc:
                 last = Result.from_exception(exc)
@@ -882,104 +1238,242 @@ class AsyncSockudo(_BaseSockudo):
     async def __aexit__(self, *_args: object) -> None:
         await self.close()
 
-    async def trigger(self, channels: Union[str, Sequence[str]], event: str, data: Any, options: Optional[TriggerOptions] = None) -> Result:
+    async def trigger(
+        self,
+        channels: Union[str, Sequence[str]],
+        event: str,
+        data: Any,
+        options: Optional[TriggerOptions] = None,
+    ) -> Result:
         payload, headers = self._event_payload(channels, event, data, options)
         return await self._post(self._path("/events"), payload, headers=headers)
 
     async def trigger_batch(self, batch: Sequence[Event]) -> Result:
         return await self._post(self._path("/batch_events"), self._batch_payload(batch))
 
-    async def send_to_user(self, user_id: str, event: str, data: Any, options: Optional[TriggerOptions] = None) -> Result:
+    async def send_to_user(
+        self,
+        user_id: str,
+        event: str,
+        data: Any,
+        options: Optional[TriggerOptions] = None,
+    ) -> Result:
         if not user_id:
             raise SockudoError("user_id is required")
         return await self.trigger(f"#server-to-user-{user_id}", event, data, options)
 
-    async def get(self, path: str, params: Optional[Mapping[str, Any]] = None) -> Result:
-        full_path = path if path.startswith("/apps/") else self._path(path if path.startswith("/") else f"/{path}")
+    async def get(
+        self, path: str, params: Optional[Mapping[str, Any]] = None
+    ) -> Result:
+        full_path = (
+            path
+            if path.startswith("/apps/")
+            else self._path(path if path.startswith("/") else f"/{path}")
+        )
         return await self._request("GET", full_path, None, params=params)
 
     async def list_channels(self, params: Optional[ChannelsParams] = None) -> Result:
         return await self.get("/channels", params.to_query() if params else None)
 
-    async def get_channel(self, channel: str, params: Optional[ChannelParams] = None) -> Result:
-        return await self.get(self._channel_path(channel), params.to_query() if params else None)
+    async def get_channel(
+        self, channel: str, params: Optional[ChannelParams] = None
+    ) -> Result:
+        return await self.get(
+            self._channel_path(channel), params.to_query() if params else None
+        )
 
     async def get_channel_users(self, channel: str) -> Result:
         return await self.get(self._channel_path(channel, "/users"))
 
-    async def get_channel_history(self, channel: str, params: Optional[HistoryParams] = None) -> Result:
-        return await self.get(self._channel_path(channel, "/history"), params.to_query() if params else None)
+    async def get_channel_history(
+        self, channel: str, params: Optional[HistoryParams] = None
+    ) -> Result:
+        return await self.get(
+            self._channel_path(channel, "/history"),
+            params.to_query() if params else None,
+        )
 
     async def get_channel_history_state(self, channel: str) -> Result:
         return await self.get(self._channel_path(channel, "/history/state"))
 
-    async def reset_channel_history(self, channel: str, reason: str, requested_by: Optional[str] = None) -> Result:
-        return await self._post(self._channel_path(channel, "/history/reset"), _operator_payload(channel, "reset", reason, requested_by))
+    async def reset_channel_history(
+        self, channel: str, reason: str, requested_by: Optional[str] = None
+    ) -> Result:
+        return await self._post(
+            self._channel_path(channel, "/history/reset"),
+            _operator_payload(channel, "reset", reason, requested_by),
+        )
 
-    async def purge_channel_history(self, channel: str, mode: str, reason: str, requested_by: Optional[str] = None, before_serial: Optional[int] = None, before_time_ms: Optional[int] = None) -> Result:
+    async def purge_channel_history(
+        self,
+        channel: str,
+        mode: str,
+        reason: str,
+        requested_by: Optional[str] = None,
+        before_serial: Optional[int] = None,
+        before_time_ms: Optional[int] = None,
+    ) -> Result:
         payload = _operator_payload(channel, "purge", reason, requested_by)
-        payload.update(_clean_raw({"mode": mode, "before_serial": before_serial, "before_time_ms": before_time_ms}))
+        payload.update(
+            _clean_raw(
+                {
+                    "mode": mode,
+                    "before_serial": before_serial,
+                    "before_time_ms": before_time_ms,
+                }
+            )
+        )
         return await self._post(self._channel_path(channel, "/history/purge"), payload)
 
-    async def get_channel_presence_history(self, channel: str, params: Optional[PresenceHistoryParams] = None) -> Result:
-        return await self.get(self._channel_path(channel, "/presence/history"), params.to_query() if params else None)
+    async def get_channel_presence_history(
+        self, channel: str, params: Optional[PresenceHistoryParams] = None
+    ) -> Result:
+        return await self.get(
+            self._channel_path(channel, "/presence/history"),
+            params.to_query() if params else None,
+        )
 
     async def get_channel_presence_history_state(self, channel: str) -> Result:
         return await self.get(self._channel_path(channel, "/presence/history/state"))
 
-    async def reset_channel_presence_history(self, channel: str, reason: str, requested_by: Optional[str] = None) -> Result:
-        return await self._post(self._channel_path(channel, "/presence/history/reset"), _operator_payload(channel, "reset", reason, requested_by))
+    async def reset_channel_presence_history(
+        self, channel: str, reason: str, requested_by: Optional[str] = None
+    ) -> Result:
+        return await self._post(
+            self._channel_path(channel, "/presence/history/reset"),
+            _operator_payload(channel, "reset", reason, requested_by),
+        )
 
-    async def get_channel_presence_snapshot(self, channel: str, params: Optional[PresenceSnapshotParams] = None) -> Result:
-        return await self.get(self._channel_path(channel, "/presence/history/snapshot"), params.to_query() if params else None)
+    async def get_channel_presence_snapshot(
+        self, channel: str, params: Optional[PresenceSnapshotParams] = None
+    ) -> Result:
+        return await self.get(
+            self._channel_path(channel, "/presence/history/snapshot"),
+            params.to_query() if params else None,
+        )
 
     async def get_message(self, channel: str, message_serial: str) -> Result:
         return await self.get(self._message_path(channel, message_serial))
 
-    async def get_message_versions(self, channel: str, message_serial: str, params: Optional[MessageVersionsParams] = None) -> Result:
-        return await self.get(f"{self._message_path(channel, message_serial)}/versions", params.to_query() if params else None)
+    async def get_message_versions(
+        self,
+        channel: str,
+        message_serial: str,
+        params: Optional[MessageVersionsParams] = None,
+    ) -> Result:
+        return await self.get(
+            f"{self._message_path(channel, message_serial)}/versions",
+            params.to_query() if params else None,
+        )
 
-    async def update_message(self, channel: str, message_serial: str, mutation: Union[MessageMutation, Mapping[str, Any]]) -> Result:
-        return await self._post(f"{self._message_path(channel, message_serial)}/update", _mutation_payload(mutation, self._marshaller))
+    async def update_message(
+        self,
+        channel: str,
+        message_serial: str,
+        mutation: Union[MessageMutation, Mapping[str, Any]],
+    ) -> Result:
+        return await self._post(
+            f"{self._message_path(channel, message_serial)}/update",
+            _mutation_payload(mutation, self._marshaller),
+        )
 
-    async def delete_message(self, channel: str, message_serial: str, mutation: Optional[Union[MessageMutation, Mapping[str, Any]]] = None) -> Result:
-        return await self._post(f"{self._message_path(channel, message_serial)}/delete", _mutation_payload(mutation, self._marshaller) if mutation is not None else {})
+    async def delete_message(
+        self,
+        channel: str,
+        message_serial: str,
+        mutation: Optional[Union[MessageMutation, Mapping[str, Any]]] = None,
+    ) -> Result:
+        return await self._post(
+            f"{self._message_path(channel, message_serial)}/delete",
+            _mutation_payload(mutation, self._marshaller)
+            if mutation is not None
+            else {},
+        )
 
-    async def append_message(self, channel: str, message_serial: str, data: str, socket_id: Optional[str] = None) -> Result:
+    async def append_message(
+        self,
+        channel: str,
+        message_serial: str,
+        data: str,
+        socket_id: Optional[str] = None,
+    ) -> Result:
         if not data:
             raise SockudoError("append_message data must be non-empty")
-        return await self._post(f"{self._message_path(channel, message_serial)}/append", _clean_raw({"data": data, "socket_id": socket_id}))
+        return await self._post(
+            f"{self._message_path(channel, message_serial)}/append",
+            _clean_raw({"data": data, "socket_id": socket_id}),
+        )
 
-    async def publish_annotation(self, channel: str, message_serial: str, request: Union[PublishAnnotationRequest, Mapping[str, Any]]) -> Result:
-        payload = request.to_payload() if isinstance(request, PublishAnnotationRequest) else dict(request)
-        return await self._post(f"{self._message_path(channel, message_serial)}/annotations", payload)
+    async def publish_annotation(
+        self,
+        channel: str,
+        message_serial: str,
+        request: Union[PublishAnnotationRequest, Mapping[str, Any]],
+    ) -> Result:
+        payload = (
+            request.to_payload()
+            if isinstance(request, PublishAnnotationRequest)
+            else dict(request)
+        )
+        return await self._post(
+            f"{self._message_path(channel, message_serial)}/annotations", payload
+        )
 
-    async def list_annotations(self, channel: str, message_serial: str, params: Optional[AnnotationEventsParams] = None) -> Result:
-        return await self.get(f"{self._message_path(channel, message_serial)}/annotations", params.to_query() if params else None)
+    async def list_annotations(
+        self,
+        channel: str,
+        message_serial: str,
+        params: Optional[AnnotationEventsParams] = None,
+    ) -> Result:
+        return await self.get(
+            f"{self._message_path(channel, message_serial)}/annotations",
+            params.to_query() if params else None,
+        )
 
-    async def delete_annotation(self, channel: str, message_serial: str, annotation_serial: str, socket_id: Optional[str] = None) -> Result:
-        return await self._request("DELETE", f"{self._message_path(channel, message_serial)}/annotations/{quote(annotation_serial, safe='')}", None, params=_clean_query({"socket_id": socket_id}))
+    async def delete_annotation(
+        self,
+        channel: str,
+        message_serial: str,
+        annotation_serial: str,
+        socket_id: Optional[str] = None,
+    ) -> Result:
+        return await self._request(
+            "DELETE",
+            f"{self._message_path(channel, message_serial)}/annotations/{quote(annotation_serial, safe='')}",
+            None,
+            params=_clean_query({"socket_id": socket_id}),
+        )
 
     async def terminate_user_connections(self, user_id: str) -> Result:
-        return await self._post(self._path(f"/users/{quote(user_id, safe='')}/terminate_connections"), {})
+        return await self._post(
+            self._path(f"/users/{quote(user_id, safe='')}/terminate_connections"), {}
+        )
 
-    async def activate_device(self, device: Mapping[str, Any], rotate_device_identity_token: bool = False) -> Result:
+    async def activate_device(
+        self, device: Mapping[str, Any], rotate_device_identity_token: bool = False
+    ) -> Result:
         headers = self._push_headers("push-admin")
         if rotate_device_identity_token:
             headers["X-Sockudo-Rotate-Device-Identity-Token"] = "true"
-        return await self._post(self._push_path("/deviceRegistrations"), dict(device), headers=headers)
+        return await self._post(
+            self._push_path("/deviceRegistrations"), dict(device), headers=headers
+        )
 
     async def create_device_activation(self, device: Mapping[str, Any]) -> Result:
         return await self.activate_device(device)
 
-    async def update_device_registration(self, device: Mapping[str, Any], device_identity_token: str) -> Result:
+    async def update_device_registration(
+        self, device: Mapping[str, Any], device_identity_token: str
+    ) -> Result:
         return await self._post(
             self._push_path("/deviceRegistrations"),
             dict(device),
             headers=self._push_headers("push-subscribe", device_identity_token),
         )
 
-    async def list_device_registrations(self, params: Optional[PushCursorParams] = None) -> Result:
+    async def list_device_registrations(
+        self, params: Optional[PushCursorParams] = None
+    ) -> Result:
         return await self._request(
             "GET",
             self._push_path("/deviceRegistrations"),
@@ -988,13 +1482,35 @@ class AsyncSockudo(_BaseSockudo):
             headers=self._push_headers("push-admin"),
         )
 
-    async def get_device_registration(self, device_id: str, device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
-        return await self._request("GET", self._push_path(f"/deviceRegistrations/{quote(device_id, safe='')}"), None, headers=headers)
+    async def get_device_registration(
+        self, device_id: str, device_identity_token: Optional[str] = None
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
+        return await self._request(
+            "GET",
+            self._push_path(f"/deviceRegistrations/{quote(device_id, safe='')}"),
+            None,
+            headers=headers,
+        )
 
-    async def delete_device_registration(self, device_id: str, device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
-        return await self._request("DELETE", self._push_path(f"/deviceRegistrations/{quote(device_id, safe='')}"), None, headers=headers)
+    async def delete_device_registration(
+        self, device_id: str, device_identity_token: Optional[str] = None
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
+        return await self._request(
+            "DELETE",
+            self._push_path(f"/deviceRegistrations/{quote(device_id, safe='')}"),
+            None,
+            headers=headers,
+        )
 
     async def remove_device_registrations_by_client(self, client_id: str) -> Result:
         return await self._request(
@@ -1005,12 +1521,32 @@ class AsyncSockudo(_BaseSockudo):
             headers=self._push_headers("push-admin"),
         )
 
-    async def upsert_channel_push_subscription(self, subscription: Mapping[str, Any], device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
-        return await self._post(self._push_path("/channelSubscriptions"), dict(subscription), headers=headers)
+    async def upsert_channel_push_subscription(
+        self,
+        subscription: Mapping[str, Any],
+        device_identity_token: Optional[str] = None,
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
+        return await self._post(
+            self._push_path("/channelSubscriptions"),
+            dict(subscription),
+            headers=headers,
+        )
 
-    async def list_channel_push_subscriptions(self, params: Optional[PushSubscriptionParams] = None, device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
+    async def list_channel_push_subscriptions(
+        self,
+        params: Optional[PushSubscriptionParams] = None,
+        device_identity_token: Optional[str] = None,
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
         return await self._request(
             "GET",
             self._push_path("/channelSubscriptions"),
@@ -1019,8 +1555,16 @@ class AsyncSockudo(_BaseSockudo):
             headers=headers,
         )
 
-    async def delete_channel_push_subscriptions(self, params: PushSubscriptionParams, device_identity_token: Optional[str] = None) -> Result:
-        headers = self._push_headers("push-subscribe", device_identity_token) if device_identity_token else self._push_headers("push-admin")
+    async def delete_channel_push_subscriptions(
+        self,
+        params: PushSubscriptionParams,
+        device_identity_token: Optional[str] = None,
+    ) -> Result:
+        headers = (
+            self._push_headers("push-subscribe", device_identity_token)
+            if device_identity_token
+            else self._push_headers("push-admin")
+        )
         return await self._request(
             "DELETE",
             self._push_path("/channelSubscriptions"),
@@ -1029,7 +1573,9 @@ class AsyncSockudo(_BaseSockudo):
             headers=headers,
         )
 
-    async def list_channel_push_subscription_channels(self, params: Optional[PushCursorParams] = None) -> Result:
+    async def list_channel_push_subscription_channels(
+        self, params: Optional[PushCursorParams] = None
+    ) -> Result:
         return await self._request(
             "GET",
             self._push_path("/channelSubscriptions/channels"),
@@ -1038,16 +1584,34 @@ class AsyncSockudo(_BaseSockudo):
             headers=self._push_headers("push-admin"),
         )
 
-    async def list_push_credentials(self, params: Optional[PushCursorParams] = None) -> Result:
-        return await self._request("GET", self._push_path("/credentials"), None, params=params.to_query() if params else None, headers=self._push_headers("push-admin"))
+    async def list_push_credentials(
+        self, params: Optional[PushCursorParams] = None
+    ) -> Result:
+        return await self._request(
+            "GET",
+            self._push_path("/credentials"),
+            None,
+            params=params.to_query() if params else None,
+            headers=self._push_headers("push-admin"),
+        )
 
-    async def put_push_credential(self, provider: str, credential: Mapping[str, Any]) -> Result:
-        return await self._post(self._push_path(f"/credentials/{quote(provider, safe='')}"), dict(credential), headers=self._push_headers("push-admin"))
+    async def put_push_credential(
+        self, provider: str, credential: Mapping[str, Any]
+    ) -> Result:
+        return await self._post(
+            self._push_path(f"/credentials/{quote(provider, safe='')}"),
+            dict(credential),
+            headers=self._push_headers("push-admin"),
+        )
 
     async def publish_push(self, request: Mapping[str, Any]) -> Result:
         payload = dict(request)
         payload["sync"] = False
-        return await self._post(self._push_path("/publish"), payload, headers=self._push_headers("push-admin"))
+        return await self._post(
+            self._push_path("/publish"),
+            payload,
+            headers=self._push_headers("push-admin"),
+        )
 
     async def publish_push_direct(self, request: Mapping[str, Any]) -> Result:
         return await self.publish_push(request)
@@ -1058,7 +1622,11 @@ class AsyncSockudo(_BaseSockudo):
             item = dict(request)
             item["sync"] = False
             payload.append(item)
-        return await self._post(self._push_path("/batch/publish"), payload, headers=self._push_headers("push-admin"))
+        return await self._post(
+            self._push_path("/batch/publish"),
+            payload,
+            headers=self._push_headers("push-admin"),
+        )
 
     async def schedule_push(self, request: Mapping[str, Any]) -> Result:
         if "notBeforeMs" not in request:
@@ -1066,26 +1634,61 @@ class AsyncSockudo(_BaseSockudo):
         return await self.publish_push(request)
 
     async def get_publish_status(self, publish_id: str) -> Result:
-        return await self._request("GET", self._push_path(f"/publish/{quote(publish_id, safe='')}/status"), None, headers=self._push_headers("push-admin"))
+        return await self._request(
+            "GET",
+            self._push_path(f"/publish/{quote(publish_id, safe='')}/status"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
 
     async def cancel_scheduled_push(self, publish_id: str) -> Result:
-        return await self._request("DELETE", self._push_path(f"/scheduled/{quote(publish_id, safe='')}"), None, headers=self._push_headers("push-admin"))
+        return await self._request(
+            "DELETE",
+            self._push_path(f"/scheduled/{quote(publish_id, safe='')}"),
+            None,
+            headers=self._push_headers("push-admin"),
+        )
 
     async def post_push_delivery_status(self, event: Mapping[str, Any]) -> Result:
-        return await self._post(self._push_path("/deliveryStatus"), dict(event), headers=self._push_headers("push-admin"))
+        return await self._post(
+            self._push_path("/deliveryStatus"),
+            dict(event),
+            headers=self._push_headers("push-admin"),
+        )
 
     def _message_path(self, channel: str, message_serial: str) -> str:
-        return self._channel_path(channel, f"/messages/{quote(message_serial, safe='')}")
+        return self._channel_path(
+            channel, f"/messages/{quote(message_serial, safe='')}"
+        )
 
-    async def _post(self, path: str, payload: Mapping[str, Any], headers: Optional[Mapping[str, str]] = None) -> Result:
-        return await self._request("POST", path, self._serialize(payload), headers=headers)
+    async def _post(
+        self,
+        path: str,
+        payload: Mapping[str, Any],
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Result:
+        return await self._request(
+            "POST", path, self._serialize(payload), headers=headers
+        )
 
-    async def _request(self, method: str, path: str, body: Optional[str], params: Optional[Mapping[str, Any]] = None, headers: Optional[Mapping[str, str]] = None) -> Result:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        body: Optional[str],
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Result:
         url = self.signed_uri(method, path, body, params)
         last = Result(Status.NETWORK_ERROR, "request was not attempted")
         for attempt in range(1, self.options.max_retries + 1):
             try:
-                response = await self._client.request(method, url, content=body, headers={"Content-Type": "application/json", **dict(headers or {})})
+                response = await self._client.request(
+                    method,
+                    url,
+                    content=body,
+                    headers={"Content-Type": "application/json", **dict(headers or {})},
+                )
                 last = Result.from_response(response)
             except httpx.HTTPError as exc:
                 last = Result.from_exception(exc)
@@ -1102,7 +1705,11 @@ async def _async_sleep(delay: float) -> None:
 
 
 def _signature_string(method: str, path: str, query_params: Mapping[str, str]) -> str:
-    params = {key.lower(): value for key, value in query_params.items() if key != "auth_signature"}
+    params = {
+        key.lower(): value
+        for key, value in query_params.items()
+        if key != "auth_signature"
+    }
     query = "&".join(f"{key}={params[key]}" for key in sorted(params))
     return f"{method}\n{path}\n{query}"
 
@@ -1164,29 +1771,52 @@ def _apply_common_event_fields(
         payload["tags"] = tags
 
 
-def _mutation_payload(mutation: Union[MessageMutation, Mapping[str, Any]], marshaller: JsonMarshaller) -> JsonDict:
-    return mutation.to_payload(marshaller) if isinstance(mutation, MessageMutation) else dict(mutation)
+def _mutation_payload(
+    mutation: Union[MessageMutation, Mapping[str, Any]], marshaller: JsonMarshaller
+) -> JsonDict:
+    return (
+        mutation.to_payload(marshaller)
+        if isinstance(mutation, MessageMutation)
+        else dict(mutation)
+    )
 
 
-def _operator_payload(channel: str, operation: str, reason: str, requested_by: Optional[str]) -> JsonDict:
+def _operator_payload(
+    channel: str, operation: str, reason: str, requested_by: Optional[str]
+) -> JsonDict:
     if not reason:
         raise SockudoError("reason is required for operator history controls")
-    return _clean_raw({"confirm_channel": channel, "confirm_operation": operation, "reason": reason, "requested_by": requested_by})
+    return _clean_raw(
+        {
+            "confirm_channel": channel,
+            "confirm_operation": operation,
+            "reason": reason,
+            "requested_by": requested_by,
+        }
+    )
 
 
 def _make_sync_client(options: SockudoOptions) -> httpx.Client:
     try:
-        return httpx.Client(timeout=options.timeout, http2=options.http2, verify=options.verify_tls)
+        return httpx.Client(
+            timeout=options.timeout, http2=options.http2, verify=options.verify_tls
+        )
     except ImportError:
         if not options.http2:
             raise
-        return httpx.Client(timeout=options.timeout, http2=False, verify=options.verify_tls)
+        return httpx.Client(
+            timeout=options.timeout, http2=False, verify=options.verify_tls
+        )
 
 
 def _make_async_client(options: SockudoOptions) -> httpx.AsyncClient:
     try:
-        return httpx.AsyncClient(timeout=options.timeout, http2=options.http2, verify=options.verify_tls)
+        return httpx.AsyncClient(
+            timeout=options.timeout, http2=options.http2, verify=options.verify_tls
+        )
     except ImportError:
         if not options.http2:
             raise
-        return httpx.AsyncClient(timeout=options.timeout, http2=False, verify=options.verify_tls)
+        return httpx.AsyncClient(
+            timeout=options.timeout, http2=False, verify=options.verify_tls
+        )

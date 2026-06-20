@@ -327,8 +327,9 @@ impl PushFeedbackProcessor {
 
 fn result_event_id(result: &DeliveryResult) -> String {
     format!(
-        "result-{}-{}-{}-{}-{}",
+        "result-{}-{}-{}-{}-{}-{}",
         provider_label(result.provider),
+        result.publish_id,
         result.batch_id,
         result.device_id.as_deref().unwrap_or("provider-target"),
         result.attempt,
@@ -474,5 +475,63 @@ mod tests {
         assert_eq!(status.counters.succeeded, 1);
         assert_eq!(status.state, PublishLifecycleState::Succeeded);
         assert_eq!(metrics.get("sockudo_push_duplicate_suppressed_total"), 1);
+    }
+
+    #[tokio::test]
+    async fn feedback_dedupe_is_scoped_by_publish_id() {
+        let store = Arc::new(MemoryPushStore::new());
+        let queue = Arc::new(MemoryPushQueue::new());
+        for publish_id in ["publish-1", "publish-2"] {
+            store
+                .put_publish_status(PublishStatus {
+                    app_id: "app-1".to_owned(),
+                    publish_id: publish_id.to_owned(),
+                    state: PublishLifecycleState::Dispatching,
+                    counters: PublishCounters {
+                        planned: 1,
+                        dispatched: 0,
+                        succeeded: 0,
+                        failed: 0,
+                        expired: 0,
+                    },
+                    fanout_regime: None,
+                    retry_after_ms: None,
+                    error_reason: None,
+                })
+                .await
+                .unwrap();
+        }
+        let metrics = PushMetrics::default();
+        let processor =
+            PushFeedbackProcessor::new(store.clone(), queue).with_metrics(metrics.clone());
+
+        for publish_id in ["publish-1", "publish-2"] {
+            processor
+                .apply_result(DeliveryResult {
+                    app_id: "app-1".to_owned(),
+                    publish_id: publish_id.to_owned(),
+                    provider: PushProviderKind::Fcm,
+                    batch_id: "batch-1".to_owned(),
+                    device_id: Some("device-1".to_owned()),
+                    outcome: DeliveryOutcome::Accepted,
+                    provider_message_id: Some(format!("provider-{publish_id}")),
+                    error: None,
+                    attempt: 1,
+                })
+                .await
+                .unwrap();
+        }
+
+        for publish_id in ["publish-1", "publish-2"] {
+            let status = store
+                .get_publish_status("app-1", publish_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(status.counters.dispatched, 1);
+            assert_eq!(status.counters.succeeded, 1);
+            assert_eq!(status.state, PublishLifecycleState::Succeeded);
+        }
+        assert_eq!(metrics.get("sockudo_push_duplicate_suppressed_total"), 0);
     }
 }
