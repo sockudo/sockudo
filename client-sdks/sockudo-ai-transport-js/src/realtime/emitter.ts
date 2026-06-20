@@ -2,16 +2,10 @@ import type { Unsubscribe } from "./types.js";
 
 /** Small synchronous emitter used by realtime seam implementations. */
 export class RealtimeEmitter<Events extends object> {
-  private readonly listeners = new Map<
-    keyof Events,
-    Set<(payload: unknown) => void>
-  >();
+  private readonly listeners = new Map<keyof Events, Set<(payload: unknown) => void>>();
 
   /** Subscribes to an event. */
-  public on<K extends keyof Events>(
-    event: K,
-    listener: (payload: Events[K]) => void,
-  ): Unsubscribe {
+  public on<K extends keyof Events>(event: K, listener: (payload: Events[K]) => void): Unsubscribe {
     let listeners = this.listeners.get(event);
     if (!listeners) {
       listeners = new Set();

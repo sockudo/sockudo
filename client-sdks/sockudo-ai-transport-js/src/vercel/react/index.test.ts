@@ -5,10 +5,7 @@ import { SockudoProvider } from "@sockudo/client/react";
 import { useChat } from "@ai-sdk/react";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  ChatTransport as AiSdkChatTransport,
-  UIMessage as AiSdkUIMessage,
-} from "ai";
+import type { ChatTransport as AiSdkChatTransport, UIMessage as AiSdkUIMessage } from "ai";
 
 import {
   EVENT_AI_OUTPUT,
@@ -77,9 +74,7 @@ describe("Vercel React transport hooks", () => {
     expect(result.current.outer.chatTransportError).toBeUndefined();
     expect(result.current.view.messages).toEqual([]);
     expect(result.current.core.transportError).toBeUndefined();
-    expect(result.current.nearest.chatTransport).not.toBe(
-      result.current.outer.chatTransport,
-    );
+    expect(result.current.nearest.chatTransport).not.toBe(result.current.outer.chatTransport);
   });
 
   it("returns dual throwing stubs for missing, skipped, and failed providers", () => {
@@ -90,17 +85,13 @@ describe("Vercel React transport hooks", () => {
     expect(missing.result.current.transportError).toMatchObject({
       code: ErrorCode.InvalidArgument,
     });
-    expect(() => missing.result.current.chatTransport.streaming).toThrow(
-      ErrorInfo,
-    );
+    expect(() => missing.result.current.chatTransport.streaming).toThrow(ErrorInfo);
     expect(() => missing.result.current.transport.view).toThrow(ErrorInfo);
 
     const skipped = renderHook(() => useChatTransport({ skip: true }));
     expect(skipped.result.current.chatTransportError).toBeUndefined();
     expect(skipped.result.current.transportError).toBeUndefined();
-    expect(() => skipped.result.current.chatTransport.streaming).toThrow(
-      ErrorInfo,
-    );
+    expect(() => skipped.result.current.chatTransport.streaming).toThrow(ErrorInfo);
 
     const wrapper = ({ children }: { children?: ReactNode }) =>
       createElement(
@@ -172,10 +163,7 @@ describe("Vercel React transport hooks", () => {
     expect(result.current.chatTransport.streaming).toBe(true);
 
     act(() => {
-      result.current.transport.stageMessage(
-        "a1",
-        assistantText("a1", "tree changed"),
-      );
+      result.current.transport.stageMessage("a1", assistantText("a1", "tree changed"));
     });
     expect(setMessages).not.toHaveBeenCalled();
 
@@ -217,9 +205,7 @@ describe("Vercel React transport hooks", () => {
   });
 
   it("syncs remote channel updates into observer message state", () => {
-    const channel = createMockClient({ clientId: "source" }).getMockChannel(
-      "chat",
-    );
+    const channel = createMockClient({ clientId: "source" }).getMockChannel("chat");
     const clientA = sharedChannelClient("client-a", channel);
     let overlay: readonly AI.UIMessage[] = [];
     const setMessages = vi.fn(
@@ -262,9 +248,7 @@ describe("Vercel React transport hooks", () => {
   });
 
   it("bridges observer updates into real useChat state", () => {
-    const channel = createMockClient({ clientId: "source" }).getMockChannel(
-      "chat",
-    );
+    const channel = createMockClient({ clientId: "source" }).getMockChannel("chat");
     const clientA = sharedChannelClient("client-a", channel);
     const wrapper = ({ children }: { children?: ReactNode }) =>
       createElement(
@@ -285,8 +269,7 @@ describe("Vercel React transport hooks", () => {
         const { chatTransport } = useChatTransport();
         const chat = useChat({
           id: "chat-1",
-          transport:
-            chatTransport as unknown as AiSdkChatTransport<AiSdkUIMessage>,
+          transport: chatTransport as unknown as AiSdkChatTransport<AiSdkUIMessage>,
         });
         useMessageSync({
           setMessages: chat.setMessages as unknown as Parameters<
@@ -302,9 +285,7 @@ describe("Vercel React transport hooks", () => {
       channel.inject(outputStart("turn-b", "inv-b", "assistant-b", 2));
     });
 
-    expect(result.current.messages.map((message) => message.id)).toEqual([
-      "assistant-b",
-    ]);
+    expect(result.current.messages.map((message) => message.id)).toEqual(["assistant-b"]);
   });
 });
 
@@ -400,10 +381,7 @@ function assistantTool(
   };
 }
 
-function assistantWithPart(
-  id: string,
-  part: Record<string, unknown>,
-): AI.UIMessage {
+function assistantWithPart(id: string, part: Record<string, unknown>): AI.UIMessage {
   return {
     id,
     role: "assistant",
@@ -421,9 +399,7 @@ function dynamicTool(
   return part;
 }
 
-function partRecord(
-  part: AI.UIMessagePart | undefined,
-): Record<string, unknown> {
+function partRecord(part: AI.UIMessagePart | undefined): Record<string, unknown> {
   if (part === undefined) {
     throw new Error("expected part");
   }
@@ -460,10 +436,7 @@ function outputStart(
   };
 }
 
-function sharedChannelClient(
-  clientId: string,
-  channel: MockChannel,
-): ClientLike {
+function sharedChannelClient(clientId: string, channel: MockChannel): ClientLike {
   return {
     channels: {
       get: () => channel,
@@ -480,8 +453,6 @@ function okFetch(): typeof globalThis.fetch {
   return vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
 }
 
-function asSockudo(
-  client: unknown,
-): Parameters<typeof SockudoProvider>[0]["client"] {
+function asSockudo(client: unknown): Parameters<typeof SockudoProvider>[0]["client"] {
   return client as Parameters<typeof SockudoProvider>[0]["client"];
 }

@@ -28,11 +28,7 @@ describe("mock realtime client", () => {
     expect(delivered).toEqual(["create", "append", "update"]);
 
     const history = await channel.history({ limit: 10 });
-    expect(history.items.map((message) => message.action)).toEqual([
-      "create",
-      "append",
-      "update",
-    ]);
+    expect(history.items.map((message) => message.action)).toEqual(["create", "append", "update"]);
   });
 
   it("supports presence and continuity-loss injection", async () => {

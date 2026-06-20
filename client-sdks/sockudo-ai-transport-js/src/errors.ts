@@ -80,8 +80,7 @@ export class ErrorInfo extends Error {
     super(options.message, { cause: options.cause });
     this.name = "ErrorInfo";
     this.code = options.code;
-    this.statusCode =
-      options.statusCode ?? statusCodeForErrorCode(options.code);
+    this.statusCode = options.statusCode ?? statusCodeForErrorCode(options.code);
     if (options.cause !== undefined) {
       this.cause = options.cause;
     }
@@ -95,10 +94,7 @@ export class ErrorInfo extends Error {
 /**
  * Returns whether a value is an {@link ErrorInfo} with `code`.
  */
-export function errorInfoIs(
-  value: unknown,
-  code: ErrorCode | number,
-): value is ErrorInfo {
+export function errorInfoIs(value: unknown, code: ErrorCode | number): value is ErrorInfo {
   return value instanceof ErrorInfo && value.code === code;
 }
 
@@ -118,10 +114,7 @@ export function statusCodeForErrorCode(code: ErrorCode | number): number {
 /**
  * Converts unknown thrown values into {@link ErrorInfo}.
  */
-export function toErrorInfo(
-  value: unknown,
-  fallback: ErrorInfoOptions,
-): ErrorInfo {
+export function toErrorInfo(value: unknown, fallback: ErrorInfoOptions): ErrorInfo {
   if (value instanceof ErrorInfo) {
     return value;
   }
@@ -132,13 +125,8 @@ export function toErrorInfo(
   const error = data?.error;
   const status = readStatusCode(data);
   const mappedCode =
-    status === 401 || status === 403
-      ? ErrorCode.InsufficientCapability
-      : undefined;
-  if (
-    typeof code === "number" &&
-    (typeof message === "string" || typeof error === "string")
-  ) {
+    status === 401 || status === 403 ? ErrorCode.InsufficientCapability : undefined;
+  if (typeof code === "number" && (typeof message === "string" || typeof error === "string")) {
     const reason = typeof message === "string" ? message : (error as string);
     return new ErrorInfo({
       code: mappedCode ?? code,
@@ -148,10 +136,7 @@ export function toErrorInfo(
       ...(status !== undefined ? { statusCode: status } : {}),
     });
   }
-  if (
-    typeof code === "string" &&
-    (typeof message === "string" || typeof error === "string")
-  ) {
+  if (typeof code === "string" && (typeof message === "string" || typeof error === "string")) {
     const numeric = Number(code);
     const reason = typeof message === "string" ? message : (error as string);
     return new ErrorInfo({
@@ -180,9 +165,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function readStatusCode(
-  value: Record<string, unknown> | undefined,
-): number | undefined {
+function readStatusCode(value: Record<string, unknown> | undefined): number | undefined {
   const raw = value?.statusCode ?? value?.status;
   return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }

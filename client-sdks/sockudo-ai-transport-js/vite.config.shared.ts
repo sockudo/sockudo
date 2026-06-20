@@ -38,9 +38,7 @@ export function createLibraryConfig(entry: LibraryEntry): UserConfig {
         formats: ["es", "umd"],
         name: entry.name,
         fileName: (format) =>
-          format === "es"
-            ? `${entry.fileBase}.js`
-            : `${entry.fileBase}.umd.cjs`,
+          format === "es" ? `${entry.fileBase}.js` : `${entry.fileBase}.umd.cjs`,
       },
       outDir: "dist",
       rollupOptions: {

@@ -1,8 +1,4 @@
-import {
-  HEADER_INPUT_CLIENT_ID,
-  HEADER_TURN_CLIENT_ID,
-  HEADER_TURN_ID,
-} from "../../constants.js";
+import { HEADER_INPUT_CLIENT_ID, HEADER_TURN_CLIENT_ID, HEADER_TURN_ID } from "../../constants.js";
 import { ErrorCode, ErrorInfo } from "../../errors.js";
 import type { InboundMessage } from "../../realtime/index.js";
 import type { HeaderMap } from "../../utils.js";
@@ -59,10 +55,7 @@ export interface TurnManagerOptions {
 export class TurnManager {
   private readonly turns = new Map<string, ManagedTurn>();
   private readonly inputBuffer = new Map<string, BufferedInputEvent[]>();
-  private readonly inputWaiters = new Map<
-    string,
-    Set<(event: BufferedInputEvent) => void>
-  >();
+  private readonly inputWaiters = new Map<string, Set<(event: BufferedInputEvent) => void>>();
   private readonly bufferOrder: string[] = [];
   private readonly stragglerSeen = new Set<string>();
   private readonly bufferLimit: number;
@@ -124,10 +117,7 @@ export class TurnManager {
   }
 
   /** Looks up the first input event for an invocation id. */
-  public lookupInput(
-    invocationId: string,
-    timeoutMs: number,
-  ): Promise<BufferedInputEvent> {
+  public lookupInput(invocationId: string, timeoutMs: number): Promise<BufferedInputEvent> {
     const buffered = this.inputBuffer.get(invocationId)?.shift();
     if (buffered) {
       this.stragglerSeen.add(invocationId);
@@ -160,10 +150,7 @@ export class TurnManager {
   }
 
   /** Routes a cancel message to matching turns. */
-  public routeCancel(
-    message: InboundMessage,
-    fallbackFilter?: CancelFilter,
-  ): void {
+  public routeCancel(message: InboundMessage, fallbackFilter?: CancelFilter): void {
     const headers = message.getTransportHeaders();
     const filter = fallbackFilter ?? parseCancelFilter(headers, message.data);
     const matched = this.matchTurns(filter, headers);
@@ -193,10 +180,7 @@ export class TurnManager {
     this.inputWaiters.clear();
   }
 
-  private async authorizeAndAbort(
-    turn: ManagedTurn,
-    request: CancelRequest,
-  ): Promise<void> {
+  private async authorizeAndAbort(turn: ManagedTurn, request: CancelRequest): Promise<void> {
     try {
       if (turn.onCancel && !(await turn.onCancel(request))) {
         return;
@@ -265,9 +249,7 @@ function parseCancelFilter(headers: HeaderMap, data: unknown): CancelFilter {
     return { turnId: headers[HEADER_TURN_ID] };
   }
   const record =
-    data !== null && typeof data === "object"
-      ? (data as Record<string, unknown>)
-      : undefined;
+    data !== null && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
   if (typeof record?.turnId === "string") {
     return { turnId: record.turnId };
   }

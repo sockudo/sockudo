@@ -63,9 +63,7 @@ describe("SockudoPushRegistration", () => {
       "identity",
     );
 
-    expect(requests[0].url).toBe(
-      "https://api.example.test/push/deviceRegistrations",
-    );
+    expect(requests[0].url).toBe("https://api.example.test/push/deviceRegistrations");
     expect(requests[0].init.headers).toMatchObject({
       "X-Sockudo-Device-Identity-Token": "identity",
     });

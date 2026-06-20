@@ -3,9 +3,7 @@ import { Agent } from "https";
 import * as Sockudo from "sockudo";
 
 const sockudo = Sockudo.forURL(process.env.SOCKUDO_URL, {
-  encryptionMasterKeyBase64: Buffer.from(
-    "01234567890123456789012345678901",
-  ).toString("base64"),
+  encryptionMasterKeyBase64: Buffer.from("01234567890123456789012345678901").toString("base64"),
   agent: new Agent({ keepAlive: true }),
 });
 

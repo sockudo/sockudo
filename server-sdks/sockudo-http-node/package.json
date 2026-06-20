@@ -1,12 +1,18 @@
 {
   "name": "sockudo",
-  "description": "Node.js client to interact with the Sockudo REST API",
   "version": "1.0.0",
-  "author": "Sockudo",
+  "description": "Node.js client to interact with the Sockudo REST API",
+  "keywords": [
+    "realtime",
+    "sockudo",
+    "websockets"
+  ],
   "homepage": "https://github.com/sockudo/sockudo/tree/master/server-sdks/sockudo-http-node#readme",
   "bugs": {
     "url": "https://github.com/sockudo/sockudo/issues"
   },
+  "license": "MIT",
+  "author": "Sockudo",
   "contributors": [
     {
       "name": "fabrik42",
@@ -25,25 +31,55 @@
       "email": "me@ludvik.pl"
     }
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sockudo/sockudo.git",
+    "directory": "server-sdks/sockudo-http-node"
+  },
+  "files": [
+    "dist",
+    "index.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE.txt"
+  ],
+  "main": "dist/sockudo.js",
+  "types": "index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "local-test": "npx mocha 'tests/integration/**/*.js'",
+    "test": "npx mocha 'tests/{integration,remote}/**/*.js'",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prelocal-test": "npm run build",
+    "pretest": "npm run build",
+    "lint": "npx oxlint --config .oxlintrc.json src tests examples index.d.ts",
+    "format": "npx oxfmt src tests examples index.d.ts package.json tsconfig.json .oxlintrc.json",
+    "format:check": "npx oxfmt --check src tests examples index.d.ts package.json tsconfig.json .oxlintrc.json"
+  },
   "dependencies": {
     "abort-controller": "^3.0.0",
     "is-base64": "^1.1.0",
     "node-fetch": "^2.7.0",
-    "tweetnacl": "^1.0.0",
-    "tweetnacl-util": "^0.15.0"
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1"
   },
   "devDependencies": {
-    "@types/node": "^14.14.6",
-    "@types/node-fetch": "^2.5.7",
+    "@types/node": "^24.13.2",
+    "@types/node-fetch": "^2.6.13",
     "expect.js": "=0.3.1",
-    "express": "^4.22.1",
-    "https-proxy-agent": "^5.0.0",
+    "express": "^4.22.2",
+    "https-proxy-agent": "^9.1.0",
     "mocha": "^11.3.0",
-    "nock": "^12.0.3",
-    "oxfmt": "^0.4.0",
-    "oxlint": "^0.15.14",
-    "sinon": "=1.10.2",
-    "typescript": "^5.9.2",
+    "nock": "^14.0.15",
+    "oxfmt": "^0.55.0",
+    "oxlint": "^1.70.0",
+    "sinon": "^22.0.0",
+    "typescript": "^5.9.3",
     "webpack": "^5.107.2",
     "webpack-cli": "^7.0.3"
   },
@@ -59,43 +95,7 @@
     "sha.js": "^2.4.12",
     "tar": "^6.2.1"
   },
-  "scripts": {
-    "clean": "rm -rf dist",
-    "build": "npm run clean && tsc -p tsconfig.json",
-    "prepublishOnly": "npm run build",
-    "local-test": "npx mocha 'tests/integration/**/*.js'",
-    "test": "npx mocha 'tests/{integration,remote}/**/*.js'",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "prelocal-test": "npm run build",
-    "pretest": "npm run build",
-    "lint": "npx oxlint --config .oxlintrc.json src tests examples index.d.ts",
-    "format": "npx oxfmt src tests examples index.d.ts package.json tsconfig.json .oxlintrc.json",
-    "format:check": "npx oxfmt --check src tests examples index.d.ts package.json tsconfig.json .oxlintrc.json"
-  },
-  "keywords": [
-    "sockudo",
-    "websockets",
-    "realtime"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/sockudo/sockudo.git",
-    "directory": "server-sdks/sockudo-http-node"
-  },
-  "files": [
-    "dist",
-    "index.d.ts",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE.txt"
-  ],
-  "main": "dist/sockudo.js",
-  "types": "index.d.ts",
   "engines": {
     "node": ">=16"
-  },
-  "publishConfig": {
-    "access": "public"
   }
 }

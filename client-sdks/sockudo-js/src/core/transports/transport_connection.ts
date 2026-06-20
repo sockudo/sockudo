@@ -155,10 +155,7 @@ export default class TransportConnection extends EventsDispatcher {
 
   private onOpen() {
     if (this.hooks.beforeOpen) {
-      this.hooks.beforeOpen(
-        this.socket,
-        this.hooks.urls.getPath(this.key, this.options),
-      );
+      this.hooks.beforeOpen(this.socket, this.hooks.urls.getPath(this.key, this.options));
     }
     this.changeState("open");
     this.socket.onopen = undefined;

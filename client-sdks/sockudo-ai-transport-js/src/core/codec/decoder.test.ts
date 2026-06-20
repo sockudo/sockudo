@@ -10,11 +10,7 @@ import {
 import { createDecoderCore } from "./decoder.js";
 import type { DecoderCoreHooks } from "./decoder.js";
 import type { DecodedEvent } from "./types.js";
-import type {
-  InboundMessage,
-  InboundMessageAction,
-  Serial,
-} from "../../realtime/types.js";
+import type { InboundMessage, InboundMessageAction, Serial } from "../../realtime/types.js";
 
 describe("decoder core", () => {
   it("decodes non-stream creates as discrete events", () => {
@@ -236,10 +232,7 @@ describe("decoder core", () => {
           serial: 2,
         }),
       ),
-    ).toEqual([
-      event("start:xyz", "msg-1", 2),
-      event("delta:xyz:xyz", "msg-1", 2),
-    ]);
+    ).toEqual([event("start:xyz", "msg-1", 2), event("delta:xyz:xyz", "msg-1", 2)]);
     expect(replacements).toEqual(["msg-1"]);
   });
 
@@ -324,10 +317,7 @@ interface StreamEvent {
   value: string;
 }
 
-function decodeCompleteStream(
-  deltas: readonly string[],
-  joinIndex: number,
-): string {
+function decodeCompleteStream(deltas: readonly string[], joinIndex: number): string {
   const decoder = createDecoderCore<StreamEvent>({
     buildStartEvents(tracker) {
       return [streamEvent("start", tracker.accumulated, tracker)];
@@ -364,8 +354,7 @@ function decodeCompleteStream(
           data: deltas.slice(0, joinIndex + 1).join(""),
           transport: {
             [HEADER_STREAM]: "true",
-            [HEADER_STATUS]:
-              joinIndex === deltas.length - 1 ? "complete" : "streaming",
+            [HEADER_STATUS]: joinIndex === deltas.length - 1 ? "complete" : "streaming",
           },
         }),
       ),
@@ -380,8 +369,7 @@ function decodeCompleteStream(
           serial: index + 1,
           transport: {
             [HEADER_STREAM]: "true",
-            [HEADER_STATUS]:
-              index === deltas.length - 1 ? "complete" : "streaming",
+            [HEADER_STATUS]: index === deltas.length - 1 ? "complete" : "streaming",
           },
         }),
       ),
@@ -416,11 +404,7 @@ function hooks(): DecoderCoreHooks<string> {
     buildStartEvents(tracker) {
       const prefix = tracker.firstContact ? "start:first" : "start";
       return [
-        event(
-          `${prefix}:${tracker.accumulated}`,
-          tracker.messageId,
-          tracker.message.historySerial,
-        ),
+        event(`${prefix}:${tracker.accumulated}`, tracker.messageId, tracker.message.historySerial),
       ];
     },
     buildDeltaEvents(tracker, delta) {
@@ -434,39 +418,23 @@ function hooks(): DecoderCoreHooks<string> {
     },
     buildEndEvents(tracker) {
       return [
-        event(
-          `end:${tracker.accumulated}`,
-          tracker.messageId,
-          tracker.message.historySerial,
-        ),
+        event(`end:${tracker.accumulated}`, tracker.messageId, tracker.message.historySerial),
       ];
     },
     decodeDiscrete(inbound) {
       return [
-        event(
-          `discrete:${String(inbound.data)}`,
-          inbound.messageSerial,
-          inbound.historySerial,
-        ),
+        event(`discrete:${String(inbound.data)}`, inbound.messageSerial, inbound.historySerial),
       ];
     },
     buildDeleteEvents(tracker) {
       return [
-        event(
-          `delete:${tracker.accumulated}`,
-          tracker.messageId,
-          tracker.message.historySerial,
-        ),
+        event(`delete:${tracker.accumulated}`, tracker.messageId, tracker.message.historySerial),
       ];
     },
   };
 }
 
-function event(
-  value: string,
-  messageId: string,
-  serial: Serial,
-): DecodedEvent<string> {
+function event(value: string, messageId: string, serial: Serial): DecodedEvent<string> {
   return {
     event: value,
     messageId,

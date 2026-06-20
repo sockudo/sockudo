@@ -5,18 +5,11 @@ import Sockudo from "../sockudo";
 import { SockudoEvent } from "../connection/protocol/message-types";
 import Metadata from "./metadata";
 import UrlStore from "../utils/url_store";
-import {
-  ChannelAuthorizationData,
-  ChannelAuthorizationCallback,
-} from "../auth/options";
+import { ChannelAuthorizationData, ChannelAuthorizationCallback } from "../auth/options";
 import { HTTPAuthError } from "../errors";
 import { FilterNode } from "./filter";
 import { DeltaAlgorithm } from "../delta/types";
-import {
-  prefixedEvent,
-  prefixedInternal,
-  isInternalEvent,
-} from "../protocol_prefix";
+import { prefixedEvent, prefixedInternal, isInternalEvent } from "../protocol_prefix";
 import type { VersionedMessagesOptions } from "../options";
 
 export type SubscriptionRewind =
@@ -241,9 +234,7 @@ export default class Channel extends EventsDispatcher {
    */
   setDeltaSettings(settings: ChannelDeltaSettings | null): void {
     this.deltaSettings = settings;
-    Logger.debug(
-      `Delta settings for channel ${this.name}: ${JSON.stringify(settings)}`,
-    );
+    Logger.debug(`Delta settings for channel ${this.name}: ${JSON.stringify(settings)}`);
   }
 
   /**
@@ -253,9 +244,7 @@ export default class Channel extends EventsDispatcher {
     return this.deltaSettings;
   }
 
-  async channelHistory(
-    params: ChannelHistoryParams = {},
-  ): Promise<ChannelHistoryPage> {
+  async channelHistory(params: ChannelHistoryParams = {}): Promise<ChannelHistoryPage> {
     const config = this.sockudo.config.versionedMessages;
     if (!config?.endpoint) {
       throw new Error(
@@ -363,9 +352,7 @@ export default class Channel extends EventsDispatcher {
   /** Triggers an event */
   trigger(event: string, data: any) {
     if (event.indexOf("client-") !== 0) {
-      throw new Errors.BadEventName(
-        "Event '" + event + "' does not start with 'client-'",
-      );
+      throw new Errors.BadEventName("Event '" + event + "' does not start with 'client-'");
     }
     if (!this.subscribed) {
       const suffix = UrlStore.buildLogSuffix("triggeringClientEvents");
@@ -393,10 +380,7 @@ export default class Channel extends EventsDispatcher {
       this.handleSubscriptionSucceededEvent(event);
     } else if (eventName === prefixedInternal("subscription_count")) {
       this.handleSubscriptionCountEvent(event);
-    } else if (
-      eventName === prefixedInternal("message") &&
-      data?.action === "message.summary"
-    ) {
+    } else if (eventName === prefixedInternal("message") && data?.action === "message.summary") {
       const metadata: Metadata = {};
       this.emit("message.summary", data, metadata);
     } else if (eventName === prefixedInternal("annotation") && data?.action) {
@@ -510,9 +494,7 @@ export default class Channel extends EventsDispatcher {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(
-        `Versioned message request failed (${response.status}): ${text}`,
-      );
+      throw new Error(`Versioned message request failed (${response.status}): ${text}`);
     }
 
     return response.json() as Promise<Record<string, unknown>>;

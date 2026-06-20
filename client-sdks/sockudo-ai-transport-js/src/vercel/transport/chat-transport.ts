@@ -50,9 +50,7 @@ export interface PreparedSendMessagesRequest {
  */
 export interface ChatTransportOptions {
   /** Customizes the POST body/headers after Sockudo derives branch metadata. */
-  prepareSendMessagesRequest?(
-    ctx: SendMessagesRequestContext,
-  ): PreparedSendMessagesRequest;
+  prepareSendMessagesRequest?(ctx: SendMessagesRequestContext): PreparedSendMessagesRequest;
 }
 
 /**
@@ -183,8 +181,7 @@ export function deriveContinuationInputs(
       const baseApproval = approvalRecord(base?.approval);
       if (
         overlayApproval &&
-        (base?.state !== "approval-responded" ||
-          approvalDiffers(baseApproval, overlayApproval))
+        (base?.state !== "approval-responded" || approvalDiffers(baseApproval, overlayApproval))
       ) {
         const response: ToolApprovalResponse = {
           type: "tool-approval-response",
@@ -279,9 +276,7 @@ class SockudoChatTransport implements ChatTransport {
     }
   }
 
-  private decideRegenerate(
-    options: ChatTransportSendMessagesOptions,
-  ): SendDecision {
+  private decideRegenerate(options: ChatTransportSendMessagesOptions): SendDecision {
     const target = options.messageId ?? lastAssistantId(options.messages);
     if (target === undefined) {
       throw invalid("unable to regenerate; messageId is required");
@@ -307,18 +302,13 @@ class SockudoChatTransport implements ChatTransport {
     };
   }
 
-  private decideSubmit(
-    options: ChatTransportSendMessagesOptions,
-  ): SendDecision {
+  private decideSubmit(options: ChatTransportSendMessagesOptions): SendDecision {
     const last = options.messages.at(-1);
     if (last === undefined) {
       throw invalid("unable to submit; at least one message is required");
     }
     if (last.role === "assistant") {
-      const treeMessage = messageById(
-        this.transport.view.getMessages(),
-        last.id,
-      );
+      const treeMessage = messageById(this.transport.view.getMessages(), last.id);
       const metadata = this.transport.view.getMessageMetadata(last.id);
       if (treeMessage && metadata) {
         const inputs = deriveContinuationInputs(last, treeMessage);
@@ -347,17 +337,13 @@ class SockudoChatTransport implements ChatTransport {
     }
 
     const fork = forkOnUnresolvedTool(options.messages);
-    const history = fork
-      ? options.messages.slice(0, -2)
-      : options.messages.slice(0, -1);
+    const history = fork ? options.messages.slice(0, -2) : options.messages.slice(0, -1);
     const parent = options.messageId
       ? predecessorId(options.messages, options.messageId)
       : fork?.parent;
     const forkOf = options.messageId ?? fork?.forkOf;
     const sendOptions = this.sendOptions(options, {
-      ...(options.messageId !== undefined
-        ? { messageId: options.messageId }
-        : {}),
+      ...(options.messageId !== undefined ? { messageId: options.messageId } : {}),
       ...(parent !== undefined ? { parent } : {}),
       ...(forkOf !== undefined ? { forkOf } : {}),
       trigger: "submit-message",
@@ -385,8 +371,7 @@ class SockudoChatTransport implements ChatTransport {
       ...context,
       ...(options.chatId !== undefined ? { chatId: options.chatId } : {}),
     });
-    const prepared =
-      this.options.prepareSendMessagesRequest?.(preparedContext) ?? {};
+    const prepared = this.options.prepareSendMessagesRequest?.(preparedContext) ?? {};
     const body: Record<string, unknown> = {
       ...(options.chatId !== undefined ? { id: options.chatId } : {}),
       messages: context.messages,
@@ -394,9 +379,7 @@ class SockudoChatTransport implements ChatTransport {
       ...(context.parent !== undefined ? { parent: context.parent } : {}),
       ...(context.forkOf !== undefined ? { forkOf: context.forkOf } : {}),
       trigger: context.trigger,
-      ...(context.messageId !== undefined
-        ? { messageId: context.messageId }
-        : {}),
+      ...(context.messageId !== undefined ? { messageId: context.messageId } : {}),
       ...options.body,
       ...prepared.body,
     };
@@ -412,9 +395,7 @@ class SockudoChatTransport implements ChatTransport {
       ...(context.parent !== undefined ? { parent: context.parent } : {}),
       ...(context.forkOf !== undefined ? { forkOf: context.forkOf } : {}),
       trigger: context.trigger,
-      ...(context.messageId !== undefined
-        ? { messageId: context.messageId }
-        : {}),
+      ...(context.messageId !== undefined ? { messageId: context.messageId } : {}),
     };
   }
 
@@ -499,22 +480,16 @@ function forkOnUnresolvedTool(
     return undefined;
   }
   const parent = predecessorId(messages, previous.id);
-  return parent === undefined
-    ? { forkOf: previous.id }
-    : { forkOf: previous.id, parent };
+  return parent === undefined ? { forkOf: previous.id } : { forkOf: previous.id, parent };
 }
 
 function hasUnresolvedToolPart(message: AI.UIMessage): boolean {
   return message.parts.some(
-    (part) =>
-      part.type === "dynamic-tool" && unresolvedToolStates.has(part.state),
+    (part) => part.type === "dynamic-tool" && unresolvedToolStates.has(part.state),
   );
 }
 
-function predecessorId(
-  messages: readonly AI.UIMessage[],
-  messageId: string,
-): string | undefined {
+function predecessorId(messages: readonly AI.UIMessage[], messageId: string): string | undefined {
   const index = messages.findIndex((message) => message.id === messageId);
   if (index <= 0) {
     return undefined;
@@ -522,9 +497,7 @@ function predecessorId(
   return messages[index - 1]?.id;
 }
 
-function lastAssistantId(
-  messages: readonly AI.UIMessage[],
-): string | undefined {
+function lastAssistantId(messages: readonly AI.UIMessage[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role === "assistant") {
@@ -544,10 +517,7 @@ function messageById(
 function dynamicToolPartsByCallId(
   message: AI.UIMessage,
 ): Map<string, Extract<AI.UIMessagePart, { type: "dynamic-tool" }>> {
-  const parts = new Map<
-    string,
-    Extract<AI.UIMessagePart, { type: "dynamic-tool" }>
-  >();
+  const parts = new Map<string, Extract<AI.UIMessagePart, { type: "dynamic-tool" }>>();
   for (const part of message.parts) {
     if (part.type === "dynamic-tool") {
       parts.set(part.toolCallId, part);

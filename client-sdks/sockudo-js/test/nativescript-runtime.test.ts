@@ -11,10 +11,7 @@ describe("nativescript runtime surface", () => {
       join(currentDir, "..", "src", "runtimes", "nativescript", "runtime.ts"),
       "utf8",
     );
-    const entrySource = readFileSync(
-      join(currentDir, "..", "nativescript", "index.js"),
-      "utf8",
-    );
+    const entrySource = readFileSync(join(currentDir, "..", "nativescript", "index.js"), "utf8");
 
     expect(runtimeSource).toContain("globalThis.WebSocket");
     expect(runtimeSource).toContain("globalThis as any).XMLHttpRequest");

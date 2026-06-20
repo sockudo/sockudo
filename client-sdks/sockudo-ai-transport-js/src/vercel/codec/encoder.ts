@@ -14,11 +14,7 @@ import type {
   EncoderOptions,
   WriteOptions,
 } from "../../core/codec/index.js";
-import {
-  getTransportHeaders,
-  mergeHeaders,
-  type HeaderMap,
-} from "../../utils.js";
+import { getTransportHeaders, mergeHeaders, type HeaderMap } from "../../utils.js";
 import type {
   AI,
   ToolApprovalResponse,
@@ -38,9 +34,7 @@ export function createVercelEncoder(
 ): Encoder<VercelInput, VercelOutput> {
   const core = createEncoderCore(channel, options);
   const activeStreams = new Map<string, string>();
-  let activeMessageId = getTransportHeaders(options.extras)[
-    HEADER_CODEC_MESSAGE_ID
-  ];
+  let activeMessageId = getTransportHeaders(options.extras)[HEADER_CODEC_MESSAGE_ID];
   return {
     async publishInput(input, writeOptions = {}) {
       if (isUserMessage(input)) {
@@ -48,9 +42,7 @@ export function createVercelEncoder(
         if (!message) {
           throw new TypeError("expected Vercel UI message input");
         }
-        const parts = message.parts.length
-          ? message.parts
-          : [{ type: "text" as const, text: "" }];
+        const parts = message.parts.length ? message.parts : [{ type: "text" as const, text: "" }];
         let lastAck = await core.publishDiscrete(
           {
             id: message.id,
@@ -108,21 +100,14 @@ export function createVercelEncoder(
           activeMessageId ??
           nextGeneratedMessageId();
       }
-      const optionsForOutput = outputOptions(
-        output,
-        writeOptions,
-        activeMessageId,
-      );
+      const optionsForOutput = outputOptions(output, writeOptions, activeMessageId);
       if (output.type === "abort") {
         await core.cancelAllStreams("abort");
         return core.publishDiscrete(outputPayload(output), optionsForOutput);
       }
       const stream = streamDescriptor(output);
       if (!stream) {
-        const ack = await core.publishDiscrete(
-          outputPayload(output),
-          optionsForOutput,
-        );
+        const ack = await core.publishDiscrete(outputPayload(output), optionsForOutput);
         if (output.type === "finish") {
           activeMessageId = undefined;
         }
@@ -286,9 +271,7 @@ function isDataChunk(
   return chunk.type.startsWith("data-");
 }
 
-function inputPayload(
-  input: ToolResult | ToolResultError | ToolApprovalResponse,
-): unknown {
+function inputPayload(input: ToolResult | ToolResultError | ToolApprovalResponse): unknown {
   switch (input.type) {
     case "tool-result":
       return { output: input.output };
@@ -303,9 +286,7 @@ function inputPayload(
   }
 }
 
-function inputCodecHeaders(
-  input: ToolResult | ToolResultError | ToolApprovalResponse,
-): HeaderMap {
+function inputCodecHeaders(input: ToolResult | ToolResultError | ToolApprovalResponse): HeaderMap {
   switch (input.type) {
     case "tool-result":
       return { type: "tool-result", toolCallId: input.toolCallId };
@@ -317,9 +298,7 @@ function inputCodecHeaders(
         toolCallId: input.toolCallId,
         approved: input.approved ? "true" : "false",
         ...(input.reason !== undefined ? { reason: input.reason } : {}),
-        ...(input.approvalId !== undefined
-          ? { approvalId: input.approvalId }
-          : {}),
+        ...(input.approvalId !== undefined ? { approvalId: input.approvalId } : {}),
       };
   }
 }
@@ -348,9 +327,7 @@ function isUserMessage(input: VercelInput): input is { message: AI.UIMessage } {
 
 function userMessagePayload(input: unknown): AI.UIMessage | undefined {
   const candidate =
-    input !== null && typeof input === "object" && "message" in input
-      ? input.message
-      : input;
+    input !== null && typeof input === "object" && "message" in input ? input.message : input;
   if (
     candidate !== null &&
     typeof candidate === "object" &&
@@ -362,8 +339,6 @@ function userMessagePayload(input: unknown): AI.UIMessage | undefined {
   return undefined;
 }
 
-function isRegenerate(
-  input: VercelInput,
-): input is { target: string; parent: string } {
+function isRegenerate(input: VercelInput): input is { target: string; parent: string } {
   return "target" in input && "parent" in input;
 }

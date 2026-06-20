@@ -234,10 +234,7 @@ export default class Sockudo {
         if (eventName === prefixedEvent("delta_compression_enabled")) {
           this.deltaCompression.handleEnabled(event.data);
           // Don't return - let it emit to global listeners
-        } else if (
-          eventName === prefixedEvent("delta_cache_sync") &&
-          event.channel
-        ) {
+        } else if (eventName === prefixedEvent("delta_cache_sync") && event.channel) {
           this.deltaCompression.handleCacheSync(event.channel, event.data);
           return;
         } else if (eventName === prefixedEvent("delta") && event.channel) {
@@ -260,10 +257,7 @@ export default class Sockudo {
               channel.handleEvent(reconstructedEvent);
             }
             // Emit globally
-            this.global_emitter.emit(
-              reconstructedEvent.event,
-              reconstructedEvent.data,
-            );
+            this.global_emitter.emit(reconstructedEvent.event, reconstructedEvent.data);
           }
           return;
         }
@@ -305,14 +299,8 @@ export default class Sockudo {
             fullMessage = fullMessage.replace(/,"__delta_seq":\d+/g, "");
             fullMessage = fullMessage.replace(/"__delta_seq":\d+,/g, "");
             // Pattern matches: ,"__conflation_key":"..." or "__conflation_key":"...", at start
-            fullMessage = fullMessage.replace(
-              /,"__conflation_key":"[^"]*"/g,
-              "",
-            );
-            fullMessage = fullMessage.replace(
-              /"__conflation_key":"[^"]*",/g,
-              "",
-            );
+            fullMessage = fullMessage.replace(/,"__conflation_key":"[^"]*"/g, "");
+            fullMessage = fullMessage.replace(/"__conflation_key":"[^"]*",/g, "");
           }
 
           this.deltaCompression.handleFullMessage(
@@ -379,20 +367,12 @@ export default class Sockudo {
     }
   }
 
-  bind(
-    event_name: string,
-    callback: (...args: any[]) => any,
-    context?: any,
-  ): Sockudo {
+  bind(event_name: string, callback: (...args: any[]) => any, context?: any): Sockudo {
     this.global_emitter.bind(event_name, callback, context);
     return this;
   }
 
-  unbind(
-    event_name?: string,
-    callback?: (...args: any[]) => any,
-    context?: any,
-  ): Sockudo {
+  unbind(event_name?: string, callback?: (...args: any[]) => any, context?: any): Sockudo {
     this.global_emitter.unbind(event_name, callback, context);
     return this;
   }
@@ -492,10 +472,7 @@ export default class Sockudo {
 
     if (channel.subscriptionPending && channel.subscriptionCancelled) {
       channel.reinstateSubscription();
-    } else if (
-      !channel.subscriptionPending &&
-      this.connection.state === "connected"
-    ) {
+    } else if (!channel.subscriptionPending && this.connection.state === "connected") {
       channel.subscribe();
     }
     return channel;
@@ -567,10 +544,7 @@ export default class Sockudo {
     );
   }
 
-  setRecoveryPosition(
-    channelName: string,
-    position: RecoveryPosition | null,
-  ): void {
+  setRecoveryPosition(channelName: string, position: RecoveryPosition | null): void {
     if (position == null) {
       this.channelPositions.delete(channelName);
       return;
@@ -603,13 +577,9 @@ function normalizeResumeFailedData(data: any): ResumeFailedChannel {
     expected_stream_id: value.expected_stream_id ?? undefined,
     current_stream_id: value.current_stream_id ?? undefined,
     oldest_available_serial:
-      typeof value.oldest_available_serial === "number"
-        ? value.oldest_available_serial
-        : undefined,
+      typeof value.oldest_available_serial === "number" ? value.oldest_available_serial : undefined,
     newest_available_serial:
-      typeof value.newest_available_serial === "number"
-        ? value.newest_available_serial
-        : undefined,
+      typeof value.newest_available_serial === "number" ? value.newest_available_serial : undefined,
   };
 }
 
@@ -628,8 +598,7 @@ function normalizeResumeSuccessData(data: any): ResumeSuccessData {
 function normalizeRewindCompleteData(data: any): RewindCompleteData {
   const value = typeof data === "string" ? JSON.parse(data) : (data ?? {});
   return {
-    historical_count:
-      typeof value.historical_count === "number" ? value.historical_count : 0,
+    historical_count: typeof value.historical_count === "number" ? value.historical_count : 0,
     live_count: typeof value.live_count === "number" ? value.live_count : 0,
     complete: Boolean(value.complete),
     truncated_by_retention: Boolean(value.truncated_by_retention),

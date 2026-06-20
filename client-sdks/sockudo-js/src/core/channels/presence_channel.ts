@@ -6,11 +6,7 @@ import UrlStore from "core/utils/url_store";
 import { SockudoEvent } from "../connection/protocol/message-types";
 import Metadata from "./metadata";
 import { ChannelAuthorizationData } from "../auth/options";
-import {
-  prefixedEvent,
-  prefixedInternal,
-  isInternalEvent,
-} from "../protocol_prefix";
+import { prefixedEvent, prefixedInternal, isInternalEvent } from "../protocol_prefix";
 import type { PresenceHistoryOptions } from "../options";
 
 export type PresenceHistoryDirection = "newest_first" | "oldest_first";
@@ -213,9 +209,7 @@ export default class PresenceChannel extends PrivateChannel {
    * @param params - Query parameters: direction, limit, cursor, serial/time bounds
    * @returns Paged result with items, bounds, continuity, hasNext(), and next()
    */
-  async history(
-    params: PresenceHistoryParams = {},
-  ): Promise<PresenceHistoryPage> {
+  async history(params: PresenceHistoryParams = {}): Promise<PresenceHistoryPage> {
     const historyConfig = this.sockudo.config.presenceHistory;
     if (!historyConfig?.endpoint) {
       throw new Error(
@@ -237,9 +231,7 @@ export default class PresenceChannel extends PrivateChannel {
    * @param params - Optional bounds: at_time_ms or at_serial
    * @returns Snapshot with members and continuity metadata
    */
-  async snapshot(
-    params: PresenceSnapshotParams = {},
-  ): Promise<PresenceSnapshot> {
+  async snapshot(params: PresenceSnapshotParams = {}): Promise<PresenceSnapshot> {
     const historyConfig = this.sockudo.config.presenceHistory;
     if (!historyConfig?.endpoint) {
       throw new Error(
@@ -267,9 +259,7 @@ export default class PresenceChannel extends PrivateChannel {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(
-        `Presence snapshot request failed (${response.status}): ${body}`,
-      );
+      throw new Error(`Presence snapshot request failed (${response.status}): ${body}`);
     }
 
     return response.json() as Promise<PresenceSnapshot>;
@@ -298,9 +288,7 @@ export default class PresenceChannel extends PrivateChannel {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(
-        `Presence history request failed (${response.status}): ${body}`,
-      );
+      throw new Error(`Presence history request failed (${response.status}): ${body}`);
     }
 
     const data = await response.json();

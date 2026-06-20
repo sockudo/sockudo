@@ -35,20 +35,19 @@ import {
  * Construction errors are caught and exposed by {@link useClientTransport} as
  * `transportError`; children still render under the provider registry.
  */
-export type TransportProviderProps<TInput, TOutput, TProjection, TMessage> =
-  Omit<
-    ClientTransportOptions<TInput, TOutput, TProjection, TMessage>,
-    "client" | "channel" | "channelName"
-  > & {
-    /**
-     * Registry key and Sockudo channel name for unnamed hook lookups.
-     *
-     * @defaultValue No default; a channel name is required.
-     */
-    channelName: string;
-    /** Child React tree. */
-    children?: ReactNode;
-  };
+export type TransportProviderProps<TInput, TOutput, TProjection, TMessage> = Omit<
+  ClientTransportOptions<TInput, TOutput, TProjection, TMessage>,
+  "client" | "channel" | "channelName"
+> & {
+  /**
+   * Registry key and Sockudo channel name for unnamed hook lookups.
+   *
+   * @defaultValue No default; a channel name is required.
+   */
+  channelName: string;
+  /** Child React tree. */
+  children?: ReactNode;
+};
 
 /**
  * Options for {@link useClientTransport}.
@@ -83,12 +82,7 @@ export interface UseClientTransportOptions {
  * Missing, skipped, and failed providers expose a transport proxy that throws
  * {@link ErrorInfo} with {@link ErrorCode.InvalidArgument} on property access.
  */
-export interface UseClientTransportResult<
-  TInput,
-  TOutput,
-  TProjection,
-  TMessage,
-> {
+export interface UseClientTransportResult<TInput, TOutput, TProjection, TMessage> {
   /** Resolved transport or a throwing stub. */
   transport: ClientTransport<TInput, TOutput, TProjection, TMessage>;
   /**
@@ -282,15 +276,11 @@ export interface TransportHooks<TInput, TOutput, TProjection, TMessage> {
   /** Subscribes to a branch-aware view. */
   useView(options?: UseViewOptions<TInput, TMessage>): ViewHandle<TMessage>;
   /** Creates, owns, and subscribes to an additional view. */
-  useCreateView(
-    options?: UseCreateViewOptions<TInput, TMessage>,
-  ): ViewHandle<TMessage>;
+  useCreateView(options?: UseCreateViewOptions<TInput, TMessage>): ViewHandle<TMessage>;
   /** Returns stable tree callbacks without re-rendering on tree changes. */
   useTree(options?: UseTreeOptions<TInput, TMessage>): TreeHandle;
   /** Subscribes to active/suspended turn ownership. */
-  useActiveTurns(
-    options?: UseActiveTurnsOptions<TInput, TMessage>,
-  ): Map<string, Set<string>>;
+  useActiveTurns(options?: UseActiveTurnsOptions<TInput, TMessage>): Map<string, Set<string>>;
   /** Subscribes to raw normalized inbound messages. */
   useSockudoMessages(
     options?: UseSockudoMessagesOptions<TInput, TMessage>,
@@ -307,9 +297,7 @@ interface TransportRegistry {
   slots: Map<string, TransportSlot>;
 }
 
-const TransportContext = createContext<TransportRegistry | undefined>(
-  undefined,
-);
+const TransportContext = createContext<TransportRegistry | undefined>(undefined);
 const autoLoadedViews = new WeakSet<View<unknown, unknown>>();
 const pendingTransportCloses = new WeakMap<
   ClientTransport<unknown, unknown, unknown, unknown>,
@@ -361,24 +349,16 @@ export function createTransportHooks<
         slots.set(key, slot);
       }
       const defaultChannelName = key || parent?.defaultChannelName;
-      return defaultChannelName === undefined
-        ? { slots }
-        : { slots, defaultChannelName };
+      return defaultChannelName === undefined ? { slots } : { slots, defaultChannelName };
     }, [key, parent, slot]);
-    return createElement(
-      TransportContext.Provider,
-      { value: registry },
-      children,
-    );
+    return createElement(TransportContext.Provider, { value: registry }, children);
   }
 
   function useClientTransport(
     options: UseClientTransportOptions = {},
   ): UseClientTransportResult<TInput, TOutput, TProjection, TMessage> {
     const registry = useContext(TransportContext);
-    const callbackRef = useRef<((error: ErrorInfo) => void) | undefined>(
-      undefined,
-    );
+    const callbackRef = useRef<((error: ErrorInfo) => void) | undefined>(undefined);
     callbackRef.current =
       options.onError === undefined
         ? undefined
@@ -388,9 +368,7 @@ export function createTransportHooks<
     const slot = resolveSlot(registry, options.channelName);
     const skipped = options.skip === true;
     const transport = skipped ? undefined : slot?.transport;
-    const error = skipped
-      ? undefined
-      : (slot?.error ?? missingProviderError(options.channelName));
+    const error = skipped ? undefined : (slot?.error ?? missingProviderError(options.channelName));
     useEffect(() => {
       if (!transport || !callbackRef.current) {
         return;
@@ -401,34 +379,21 @@ export function createTransportHooks<
     }, [transport]);
     if (transport) {
       return {
-        transport: transport as ClientTransport<
-          TInput,
-          TOutput,
-          TProjection,
-          TMessage
-        >,
+        transport: transport as ClientTransport<TInput, TOutput, TProjection, TMessage>,
       };
     }
-    const result: UseClientTransportResult<
-      TInput,
-      TOutput,
-      TProjection,
-      TMessage
-    > = { transport: throwingTransportStub() };
+    const result: UseClientTransportResult<TInput, TOutput, TProjection, TMessage> = {
+      transport: throwingTransportStub(),
+    };
     if (error !== undefined) {
       result.transportError = error;
     }
     return result;
   }
 
-  function useView(
-    options: UseViewOptions<TInput, TMessage> = {},
-  ): ViewHandle<TMessage> {
-    const context = useClientTransport(
-      options.skip === undefined ? {} : { skip: options.skip },
-    );
-    const contextTransport =
-      context.transportError === undefined ? context.transport : undefined;
+  function useView(options: UseViewOptions<TInput, TMessage> = {}): ViewHandle<TMessage> {
+    const context = useClientTransport(options.skip === undefined ? {} : { skip: options.skip });
+    const contextTransport = context.transportError === undefined ? context.transport : undefined;
     const sourceView =
       options.skip === true
         ? undefined
@@ -439,15 +404,9 @@ export function createTransportHooks<
   function useCreateView(
     options: UseCreateViewOptions<TInput, TMessage> = {},
   ): ViewHandle<TMessage> {
-    const context = useClientTransport(
-      options.skip === undefined ? {} : { skip: options.skip },
-    );
-    const contextTransport =
-      context.transportError === undefined ? context.transport : undefined;
-    const transport =
-      options.skip === true
-        ? undefined
-        : (options.transport ?? contextTransport);
+    const context = useClientTransport(options.skip === undefined ? {} : { skip: options.skip });
+    const contextTransport = context.transportError === undefined ? context.transport : undefined;
+    const transport = options.skip === true ? undefined : (options.transport ?? contextTransport);
     const [view, setView] = useState<View<TInput, TMessage> | undefined>();
     useEffect(() => {
       if (options.skip === true || !transport) {
@@ -467,8 +426,7 @@ export function createTransportHooks<
     const context = useClientTransport({
       skip: options.transport !== undefined,
     });
-    const contextTransport =
-      context.transportError === undefined ? context.transport : undefined;
+    const contextTransport = context.transportError === undefined ? context.transport : undefined;
     const transport = options.transport ?? contextTransport;
     return useMemo<TreeHandle>(
       () => ({
@@ -492,8 +450,7 @@ export function createTransportHooks<
     const context = useClientTransport({
       skip: options.transport !== undefined,
     });
-    const contextTransport =
-      context.transportError === undefined ? context.transport : undefined;
+    const contextTransport = context.transportError === undefined ? context.transport : undefined;
     const transport = options.transport ?? contextTransport;
     const [active, setActive] = useState(() => cloneActiveTurns(transport));
     useEffect(() => {
@@ -515,15 +472,9 @@ export function createTransportHooks<
     const context = useClientTransport({
       skip: options.skip === true || options.transport !== undefined,
     });
-    const contextTransport =
-      context.transportError === undefined ? context.transport : undefined;
-    const transport =
-      options.skip === true
-        ? undefined
-        : (options.transport ?? contextTransport);
-    const [messages, setMessages] = useState<readonly InboundMessage[]>(
-      stableEmptyRawMessages,
-    );
+    const contextTransport = context.transportError === undefined ? context.transport : undefined;
+    const transport = options.skip === true ? undefined : (options.transport ?? contextTransport);
+    const [messages, setMessages] = useState<readonly InboundMessage[]>(stableEmptyRawMessages);
     useEffect(() => {
       if (!transport) {
         setMessages(stableEmptyRawMessages);
@@ -532,9 +483,7 @@ export function createTransportHooks<
       setMessages(stableEmptyRawMessages);
       return transport.on("message", (message) => {
         setMessages((current) =>
-          current === stableEmptyRawMessages
-            ? [message]
-            : [...current, message],
+          current === stableEmptyRawMessages ? [message] : [...current, message],
         );
       });
     }, [transport]);
@@ -591,9 +540,7 @@ export function useClientTransport(
  * Snapshot fields are stable empties before mount; methods that require a
  * resolved view throw {@link ErrorInfo} with {@link ErrorCode.InvalidArgument}.
  */
-export function useView(
-  options?: UseViewOptions<unknown, unknown>,
-): ViewHandle<unknown> {
+export function useView(options?: UseViewOptions<unknown, unknown>): ViewHandle<unknown> {
   return defaultHooks.useView(options);
 }
 
@@ -620,9 +567,7 @@ export function useCreateView(
  * Callback access throws `InvalidArgument` only when invoked without a resolved
  * transport.
  */
-export function useTree(
-  options?: UseTreeOptions<unknown, unknown>,
-): TreeHandle {
+export function useTree(options?: UseTreeOptions<unknown, unknown>): TreeHandle {
   return defaultHooks.useTree(options);
 }
 
@@ -681,33 +626,24 @@ function useViewHandle<TInput, TMessage>(
       void view.loadOlder(limit);
     }
   }, [limit, view]);
-  const loadOlder = useCallback(
-    async (requestedLimit?: number): Promise<void> => {
-      const current = viewRef.current;
-      if (!current || current.loading) {
-        return;
-      }
-      await current.loadOlder(requestedLimit);
-      setSnapshot(viewSnapshot(current));
-    },
-    [],
-  );
-  const select = useCallback(
-    (id: string, index: number, intent?: BranchSelectionIntent): void => {
-      viewRef.current?.select(id, index, intent);
-      setSnapshot(viewSnapshot(viewRef.current));
-    },
-    [],
-  );
+  const loadOlder = useCallback(async (requestedLimit?: number): Promise<void> => {
+    const current = viewRef.current;
+    if (!current || current.loading) {
+      return;
+    }
+    await current.loadOlder(requestedLimit);
+    setSnapshot(viewSnapshot(current));
+  }, []);
+  const select = useCallback((id: string, index: number, intent?: BranchSelectionIntent): void => {
+    viewRef.current?.select(id, index, intent);
+    setSnapshot(viewSnapshot(viewRef.current));
+  }, []);
   const getSelectedIndex = useCallback((id: string): number => {
     return viewRef.current?.getSelectedIndex(id) ?? 0;
   }, []);
-  const getSiblings = useCallback(
-    (id: string): readonly TurnNode<unknown>[] => {
-      return viewRef.current?.getSiblings(id) ?? stableEmptyNodes;
-    },
-    [],
-  );
+  const getSiblings = useCallback((id: string): readonly TurnNode<unknown>[] => {
+    return viewRef.current?.getSiblings(id) ?? stableEmptyNodes;
+  }, []);
   const hasSiblings = useCallback((id: string): boolean => {
     return viewRef.current?.hasSiblings(id) ?? false;
   }, []);
@@ -717,33 +653,22 @@ function useViewHandle<TInput, TMessage>(
   const send = useCallback((message: TMessage): Promise<unknown> => {
     return requireView(viewRef.current).send(message);
   }, []);
-  const regenerate = useCallback(
-    (target: string, parent: string): Promise<unknown> => {
-      return requireView(viewRef.current).regenerate(target, parent);
-    },
-    [],
-  );
-  const edit = useCallback(
-    (messageId: string, message: TMessage): Promise<unknown> => {
-      return requireView(viewRef.current).edit(messageId, message);
-    },
-    [],
-  );
-  const update = useCallback(
-    (messageId: string, patch: unknown): Promise<unknown> => {
-      return requireView(viewRef.current).update(messageId, patch);
-    },
-    [],
-  );
+  const regenerate = useCallback((target: string, parent: string): Promise<unknown> => {
+    return requireView(viewRef.current).regenerate(target, parent);
+  }, []);
+  const edit = useCallback((messageId: string, message: TMessage): Promise<unknown> => {
+    return requireView(viewRef.current).edit(messageId, message);
+  }, []);
+  const update = useCallback((messageId: string, patch: unknown): Promise<unknown> => {
+    return requireView(viewRef.current).update(messageId, patch);
+  }, []);
   return useMemo(
     () => ({
       messages: snapshot.messages,
       nodes: snapshot.nodes,
       hasOlder: snapshot.hasOlder,
       loading: snapshot.loading,
-      ...(snapshot.loadError !== undefined
-        ? { loadError: snapshot.loadError }
-        : {}),
+      ...(snapshot.loadError !== undefined ? { loadError: snapshot.loadError } : {}),
       loadOlder,
       select,
       getSelectedIndex,
@@ -868,12 +793,12 @@ function toConstructionError(error: unknown): ErrorInfo {
   });
 }
 
-function throwingTransportStub<
+function throwingTransportStub<TInput, TOutput, TProjection, TMessage>(): ClientTransport<
   TInput,
   TOutput,
   TProjection,
-  TMessage,
->(): ClientTransport<TInput, TOutput, TProjection, TMessage> {
+  TMessage
+> {
   return new Proxy(
     {},
     {

@@ -154,18 +154,11 @@ describe("Sockudo", function () {
         .reply(200, '{"channels":{"test_channel":{"subscription_count":123}}}');
 
       sockudo
-        .trigger(
-          "test_channel",
-          "my_event",
-          { some: "data " },
-          { info: "subscription_count" },
-        )
+        .trigger("test_channel", "my_event", { some: "data " }, { info: "subscription_count" })
         .then((response) => {
           expect(response.status).to.equal(200);
           return response.text().then((body) => {
-            expect(body).to.equal(
-              '{"channels":{"test_channel":{"subscription_count":123}}}',
-            );
+            expect(body).to.equal('{"channels":{"test_channel":{"subscription_count":123}}}');
             done();
           });
         })
@@ -190,18 +183,16 @@ describe("Sockudo", function () {
         )
         .reply(400, "Error");
 
-      sockudo
-        .trigger("test_channel", "my_event", { some: "data " })
-        .catch((error) => {
-          expect(error).to.be.a(Sockudo.RequestError);
-          expect(error.message).to.equal("Unexpected status code 400");
-          expect(error.url).to.match(
-            /^http:\/\/localhost\/apps\/1234\/events\?auth_key=f00d&auth_timestamp=[0-9]+&auth_version=1\.0&body_md5=[a-f0-9]{32}&auth_signature=[a-f0-9]+$/,
-          );
-          expect(error.status).to.equal(400);
-          expect(error.body).to.equal("Error");
-          done();
-        });
+      sockudo.trigger("test_channel", "my_event", { some: "data " }).catch((error) => {
+        expect(error).to.be.a(Sockudo.RequestError);
+        expect(error.message).to.equal("Unexpected status code 400");
+        expect(error.url).to.match(
+          /^http:\/\/localhost\/apps\/1234\/events\?auth_key=f00d&auth_timestamp=[0-9]+&auth_version=1\.0&body_md5=[a-f0-9]{32}&auth_signature=[a-f0-9]+$/,
+        );
+        expect(error.status).to.equal(400);
+        expect(error.body).to.equal("Error");
+        done();
+      });
     });
 
     it("should allow channel names with special characters: _ - = @ , . ;", function (done) {
@@ -239,9 +230,7 @@ describe("Sockudo", function () {
         sockudo.trigger(channels, "x", {});
       }).to.throwError(function (e) {
         expect(e).to.be.an(Error);
-        expect(e.message).to.equal(
-          "Can't trigger a message to more than 100 channels",
-        );
+        expect(e.message).to.equal("Can't trigger a message to more than 100 channels");
       });
     });
 
@@ -312,12 +301,7 @@ describe("Sockudo", function () {
         .reply(200, "{}");
 
       sockudo
-        .trigger(
-          "test_channel",
-          "my_event",
-          { some: "data " },
-          { socket_id: "123.567" },
-        )
+        .trigger("test_channel", "my_event", { some: "data " }, { socket_id: "123.567" })
         .then(() => done())
         .catch(done);
     });
@@ -377,12 +361,7 @@ describe("Sockudo", function () {
         .reply(200, "{}");
 
       sockudo
-        .trigger(
-          "test_channel",
-          "my_event",
-          { some: "data " },
-          { idempotency_key: true },
-        )
+        .trigger("test_channel", "my_event", { some: "data " }, { idempotency_key: true })
         .then(() => done())
         .catch(done);
     });
@@ -415,12 +394,7 @@ describe("Sockudo", function () {
         .reply(200);
 
       sockudo
-        .trigger(
-          "test_channel",
-          "my_event",
-          { some: "data " },
-          { socket_id: "123.567" },
-        )
+        .trigger("test_channel", "my_event", { some: "data " }, { socket_id: "123.567" })
         .catch((error) => {
           expect(error).to.be.a(Sockudo.RequestError);
           expect(error.message).to.equal("Request failed with an error");
@@ -511,8 +485,7 @@ describe("Sockudo", function () {
     });
 
     it("should auto-generate UUID v4 for batch events with idempotency_key set to true", function (done) {
-      const uuidRegex =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
       nock("http://localhost")
         .filteringPath(function (path) {
           return path
@@ -646,9 +619,7 @@ describe("Sockudo", function () {
 describe("Sockudo with encryptionMasterKey", function () {
   let sockudo;
 
-  const testMasterKey = Buffer.from(
-    "01234567890123456789012345678901",
-  ).toString("base64");
+  const testMasterKey = Buffer.from("01234567890123456789012345678901").toString("base64");
 
   beforeEach(function () {
     sockudo = new Sockudo({
@@ -712,9 +683,7 @@ describe("Sockudo with encryptionMasterKey", function () {
               nonce,
               channelSharedSecret,
             );
-            const receivedPlaintextJson = naclUtil.encodeUTF8(
-              receivedPlaintextBytes,
-            );
+            const receivedPlaintextJson = naclUtil.encodeUTF8(receivedPlaintextBytes);
             const receivedPlaintext = JSON.parse(receivedPlaintextJson);
             return receivedPlaintext === sentPlaintext;
           },
@@ -746,23 +715,18 @@ describe("Sockudo with encryptionMasterKey", function () {
             if (event1.name !== "event") return false;
             if (event1.data !== "test") return false;
             const event2 = body.batch[1];
-            if (event2.channel !== "private-encrypted-integration2")
-              return false;
+            if (event2.channel !== "private-encrypted-integration2") return false;
             if (event2.name !== "event2") return false;
             const encrypted = JSON.parse(event2.data);
             const nonce = naclUtil.decodeBase64(encrypted.nonce);
             const ciphertext = naclUtil.decodeBase64(encrypted.ciphertext);
-            const channelSharedSecret = sockudo.channelSharedSecret(
-              event2.channel,
-            );
+            const channelSharedSecret = sockudo.channelSharedSecret(event2.channel);
             const receivedPlaintextBytes = nacl.secretbox.open(
               ciphertext,
               nonce,
               channelSharedSecret,
             );
-            const receivedPlaintextJson = naclUtil.encodeUTF8(
-              receivedPlaintextBytes,
-            );
+            const receivedPlaintextJson = naclUtil.encodeUTF8(receivedPlaintextBytes);
             const receivedPlaintext = JSON.parse(receivedPlaintextJson);
             return receivedPlaintext === "test2";
           },

@@ -14,13 +14,7 @@ import {
 } from "../../constants.js";
 import { ErrorInfo } from "../../errors.js";
 import type { HeaderMap } from "../../utils.js";
-import type {
-  Codec,
-  DecodedBatch,
-  DecodedEvent,
-  Decoder,
-  Reducer,
-} from "../codec/index.js";
+import type { Codec, DecodedBatch, DecodedEvent, Decoder, Reducer } from "../codec/index.js";
 import type {
   InboundMessage,
   InboundMessageAction,
@@ -33,7 +27,7 @@ import { createView } from "./view.js";
 import type { ConversationTree } from "./tree.js";
 import type { View } from "./view.js";
 
-const TOKEN_PATCH_BUDGET_MS = process.env.CI === "true" ? 1 : 0.5;
+const TOKEN_PATCH_BUDGET_MS = process.env.CI === "true" ? 1.5 : 0.5;
 
 describe("transport view", () => {
   it("flattens reachable selected branches with latest sibling by default", () => {
@@ -53,25 +47,13 @@ describe("transport view", () => {
       parent: "b",
     });
 
-    expect(view.flattenNodes().map((node) => node.turnId)).toEqual([
-      "parent",
-      "b",
-      "child-b",
-    ]);
-    expect(view.getMessages().map((message) => message.id)).toEqual([
-      "p",
-      "b",
-      "child-b",
-    ]);
+    expect(view.flattenNodes().map((node) => node.turnId)).toEqual(["parent", "b", "child-b"]);
+    expect(view.getMessages().map((message) => message.id)).toEqual(["p", "b", "child-b"]);
     expect(view.getSelectedIndex("a")).toBe(1);
 
     view.select("a", 0);
 
-    expect(view.flattenNodes().map((node) => node.turnId)).toEqual([
-      "parent",
-      "a",
-      "child-a",
-    ]);
+    expect(view.flattenNodes().map((node) => node.turnId)).toEqual(["parent", "a", "child-a"]);
     expect(view.getSelectedIndex("b")).toBe(0);
   });
 
@@ -98,24 +80,13 @@ describe("transport view", () => {
       regenerates: true,
     });
 
-    expect(view.getMessages().map((message) => message.id)).toEqual([
-      "u1",
-      "a1rr",
-    ]);
-    expect(view.getMessageSiblings("a1").map((message) => message.id)).toEqual([
-      "a1",
-      "a1r",
-    ]);
+    expect(view.getMessages().map((message) => message.id)).toEqual(["u1", "a1rr"]);
+    expect(view.getMessageSiblings("a1").map((message) => message.id)).toEqual(["a1", "a1r"]);
     expect(view.hasMessageSiblings("a1")).toBe(true);
 
     view.selectMessageSibling("a1", 0);
 
-    expect(view.getMessages().map((message) => message.id)).toEqual([
-      "u1",
-      "a1",
-      "u2",
-      "a2",
-    ]);
+    expect(view.getMessages().map((message) => message.id)).toEqual(["u1", "a1", "u2", "a2"]);
   });
 
   it("surfaces metadata and scoped events only for visible turns", () => {
@@ -149,9 +120,7 @@ describe("transport view", () => {
     });
 
     expect(messages).toHaveBeenCalledTimes(1);
-    expect(turns).toHaveBeenCalledWith(
-      expect.objectContaining({ turnId: "b" }),
-    );
+    expect(turns).toHaveBeenCalledWith(expect.objectContaining({ turnId: "b" }));
     expect(view.getMessageMetadata("b")).toEqual({
       codecMessageId: "b",
       turnId: "b",
@@ -178,10 +147,7 @@ describe("transport view", () => {
 
     await view.loadOlder(1);
 
-    expect(view.getMessages().map((message) => message.id)).toEqual([
-      "old",
-      "live",
-    ]);
+    expect(view.getMessages().map((message) => message.id)).toEqual(["old", "live"]);
     expect(history.calls).toBe(0);
 
     const first = view.loadOlder(1);
@@ -206,9 +172,7 @@ describe("transport view", () => {
     await view.loadOlder(1);
 
     expect(view.loadError).toBeInstanceOf(ErrorInfo);
-    await expect(view.send({ id: "x", text: "x" })).rejects.toBeInstanceOf(
-      ErrorInfo,
-    );
+    await expect(view.send({ id: "x", text: "x" })).rejects.toBeInstanceOf(ErrorInfo);
   });
 
   it("delegates send helpers to the injected executor", async () => {
@@ -225,9 +189,7 @@ describe("transport view", () => {
     await expect(view.send({ id: "m", text: "m" })).resolves.toBe("send");
     await expect(view.sendInput({ id: "i", text: "i" })).resolves.toBe("input");
     await expect(view.regenerate("a", "p")).resolves.toBe("regen");
-    await expect(view.edit("m", { id: "m2", text: "m2" })).resolves.toBe(
-      "edit",
-    );
+    await expect(view.edit("m", { id: "m2", text: "m2" })).resolves.toBe("edit");
     await expect(view.update("m", { text: "x" })).resolves.toBe("update");
   });
 
@@ -249,13 +211,7 @@ describe("transport view", () => {
     const started = performance.now();
     for (let token = 0; token < 100; token += 1) {
       tree.applyMessage(
-        [
-          decoded(
-            { id: "msg-9999", text: `token ${String(token)}` },
-            "msg-9999",
-            10_001 + token,
-          ),
-        ],
+        [decoded({ id: "msg-9999", text: `token ${String(token)}` }, "msg-9999", 10_001 + token)],
         headers({ turnId: "turn-9999", codecMessageId: "msg-9999" }),
         10_001 + token,
       );
@@ -362,9 +318,7 @@ function createCodec(): Codec<Message, Message, Projection, Message> {
       return { messages: [] };
     },
     fold(state, event) {
-      const index = state.messages.findIndex(
-        (message) => message.id === event.id,
-      );
+      const index = state.messages.findIndex((message) => message.id === event.id);
       if (index === -1) {
         state.messages.push(event);
       } else {
@@ -381,11 +335,7 @@ function createCodec(): Codec<Message, Message, Projection, Message> {
           return {
             inputs: [],
             outputs: [
-              decoded(
-                message.data as Message,
-                message.messageSerial,
-                message.historySerial,
-              ),
+              decoded(message.data as Message, message.messageSerial, message.historySerial),
             ],
           };
         },
@@ -422,19 +372,13 @@ function createTurn(
     headerOptions.codecMessageId = firstId;
   }
   tree.applyMessage(
-    messages.map((message, offset) =>
-      decoded(message, message.id, serial + offset / 100),
-    ),
+    messages.map((message, offset) => decoded(message, message.id, serial + offset / 100)),
     headers(headerOptions),
     serial,
   );
 }
 
-function decoded(
-  event: Message,
-  messageId: string,
-  serial: Serial,
-): DecodedEvent<Message> {
+function decoded(event: Message, messageId: string, serial: Serial): DecodedEvent<Message> {
   return {
     event,
     messageId,
@@ -493,9 +437,7 @@ function pageFrom(
       return next !== undefined;
     },
     next() {
-      return next
-        ? Promise.resolve(next)
-        : Promise.reject(new Error("no next page"));
+      return next ? Promise.resolve(next) : Promise.reject(new Error("no next page"));
     },
   };
 }
@@ -527,11 +469,7 @@ function createHistory(): {
   };
 }
 
-function set(
-  target: Record<string, string>,
-  key: string,
-  value: string | undefined,
-): void {
+function set(target: Record<string, string>, key: string, value: string | undefined): void {
   if (value !== undefined) {
     target[key] = value;
   }

@@ -1,7 +1,4 @@
-import {
-  decode as decodeMsgpack,
-  encode as encodeMsgpack,
-} from "@msgpack/msgpack";
+import { decode as decodeMsgpack, encode as encodeMsgpack } from "@msgpack/msgpack";
 import protobuf from "protobufjs/light";
 import Action from "./action";
 import { SockudoEvent } from "./message-types";
@@ -86,11 +83,7 @@ function toUint8Array(payload: unknown): Uint8Array {
     return new Uint8Array(payload);
   }
   if (ArrayBuffer.isView(payload)) {
-    return new Uint8Array(
-      payload.buffer,
-      payload.byteOffset,
-      payload.byteLength,
-    );
+    return new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
   }
   throw new Error("Unsupported binary payload");
 }
@@ -160,10 +153,7 @@ function encodeMsgpackValue(value: any): any {
       };
     }
     return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
-        key,
-        encodeMsgpackValue(entry),
-      ]),
+      Object.entries(value).map(([key, entry]) => [key, encodeMsgpackValue(entry)]),
     );
   }
   return value;
@@ -218,10 +208,7 @@ function decodeMsgpackValue(value: any): any {
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
-        key,
-        decodeMsgpackValue(entry),
-      ]),
+      Object.entries(value).map(([key, entry]) => [key, decodeMsgpackValue(entry)]),
     );
   }
   return value;
@@ -233,10 +220,7 @@ function decodeMsgpackEnvelope(payload: any): Envelope {
     MSGPACK_ENVELOPE_FIELDS.forEach((field, index) => {
       const value = payload[index];
       if (value !== null && value !== undefined) {
-        envelope[field] =
-          field === "data"
-            ? decodeMsgpackValue(value)
-            : decodeMsgpackValue(value);
+        envelope[field] = field === "data" ? decodeMsgpackValue(value) : decodeMsgpackValue(value);
       }
     });
     return envelope;
@@ -320,10 +304,7 @@ function eventToEnvelope(event: SockudoEvent): Envelope {
   return envelope;
 }
 
-function envelopeToEvent(
-  messageData: Envelope,
-  rawMessage: string,
-): SockudoEvent {
+function envelopeToEvent(messageData: Envelope, rawMessage: string): SockudoEvent {
   const decodedEvent: SockudoEvent = {
     event: messageData.event,
     channel: messageData.channel,
@@ -340,8 +321,7 @@ function envelopeToEvent(
     decodedEvent.extras = messageData.extras;
   }
   const sequence = messageData.__delta_seq ?? messageData.sequence;
-  const conflationKey =
-    messageData.__conflation_key ?? messageData.conflation_key;
+  const conflationKey = messageData.__conflation_key ?? messageData.conflation_key;
   if (typeof sequence === "number") {
     decodedEvent.sequence = sequence;
   }
@@ -386,13 +366,10 @@ function encodeProtobuf(event: SockudoEvent): Uint8Array {
 }
 
 function decodeProtobuf(payload: Uint8Array): Envelope {
-  const decoded = ProtoPusherMessage.toObject(
-    ProtoPusherMessage.decode(payload),
-    {
-      longs: Number,
-      defaults: false,
-    },
-  ) as Record<string, any>;
+  const decoded = ProtoPusherMessage.toObject(ProtoPusherMessage.decode(payload), {
+    longs: Number,
+    defaults: false,
+  }) as Record<string, any>;
 
   const envelope: Envelope = {
     event: decoded.event,
@@ -427,9 +404,7 @@ const Protocol = {
 
       switch (wireFormat()) {
         case "messagepack": {
-          messageData = decodeMsgpackEnvelope(
-            decodeMsgpack(toUint8Array(messageEvent.data)),
-          );
+          messageData = decodeMsgpackEnvelope(decodeMsgpack(toUint8Array(messageEvent.data)));
           rawMessage = stringifyEnvelope(messageData);
           break;
         }

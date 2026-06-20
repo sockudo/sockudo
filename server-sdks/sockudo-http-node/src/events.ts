@@ -2,12 +2,7 @@ import crypto from "crypto";
 import nacl from "tweetnacl";
 import naclUtil from "tweetnacl-util";
 import { isEncryptedChannel } from "./util";
-import type {
-  BatchEvent,
-  IdempotencyKey,
-  ResponseWithIdempotency,
-  TriggerParams,
-} from "./types";
+import type { BatchEvent, IdempotencyKey, ResponseWithIdempotency, TriggerParams } from "./types";
 import type Sockudo = require("./sockudo");
 
 function generateUUIDv4(): string {
@@ -24,9 +19,7 @@ function generateUUIDv4(): string {
   ].join("-");
 }
 
-function resolveIdempotencyKey(
-  params?: TriggerParams,
-): TriggerParams | undefined {
+function resolveIdempotencyKey(params?: TriggerParams): TriggerParams | undefined {
   if (!params || params.idempotency_key === undefined) {
     return params;
   }
@@ -44,9 +37,7 @@ function ensureJSON(data: unknown): string {
 
 function encrypt(sockudo: Sockudo, channel: string, data: unknown): string {
   if (sockudo.config.encryptionMasterKey === undefined) {
-    throw new Error(
-      "Set encryptionMasterKey before triggering events on encrypted channels",
-    );
+    throw new Error("Set encryptionMasterKey before triggering events on encrypted channels");
   }
 
   const nonceBytes = nacl.randomBytes(24);
@@ -89,9 +80,7 @@ export function trigger(
 
   for (const channel of channels) {
     if (isEncryptedChannel(channel)) {
-      throw new Error(
-        "You cannot trigger to multiple channels when using encrypted channels",
-      );
+      throw new Error("You cannot trigger to multiple channels when using encrypted channels");
     }
   }
 

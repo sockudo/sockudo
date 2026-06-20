@@ -38,12 +38,7 @@ import {
  * Svelte store options for the Vercel AI SDK transport layer.
  */
 export type ChatTransportStoreOptions = Omit<
-  TransportStoreOptions<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >,
+  TransportStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "api" | "codec"
 > & {
   /** Server endpoint URL for the route handler.
@@ -87,15 +82,8 @@ export interface ChatTransportStore extends Readable<ChatTransportState> {
 /**
  * Creates a Sockudo-backed Vercel `ChatTransport` Svelte store.
  */
-export function createChatTransportStore(
-  options: ChatTransportStoreOptions,
-): ChatTransportStore {
-  const {
-    chatOptions,
-    api = "/api/chat",
-    closeOnDestroy,
-    ...transportOptions
-  } = options;
+export function createChatTransportStore(options: ChatTransportStoreOptions): ChatTransportStore {
+  const { chatOptions, api = "/api/chat", closeOnDestroy, ...transportOptions } = options;
   const client = createTransportStore({
     ...transportOptions,
     api,
@@ -117,9 +105,7 @@ export function createChatTransportStore(
   const store = readable<ChatTransportState>(
     {
       ...(chatTransport !== undefined ? { chatTransport } : {}),
-      ...(clientState.transport !== undefined
-        ? { transport: clientState.transport }
-        : {}),
+      ...(clientState.transport !== undefined ? { transport: clientState.transport } : {}),
       ...(chatTransportError !== undefined ? { chatTransportError } : {}),
       ...(clientState.transportError !== undefined
         ? { transportError: clientState.transportError }
@@ -129,13 +115,9 @@ export function createChatTransportStore(
       client.subscribe((state) => {
         set({
           ...(chatTransport !== undefined ? { chatTransport } : {}),
-          ...(state.transport !== undefined
-            ? { transport: state.transport }
-            : {}),
+          ...(state.transport !== undefined ? { transport: state.transport } : {}),
           ...(chatTransportError !== undefined ? { chatTransportError } : {}),
-          ...(state.transportError !== undefined
-            ? { transportError: state.transportError }
-            : {}),
+          ...(state.transportError !== undefined ? { transportError: state.transportError } : {}),
         });
       }),
   );
@@ -145,9 +127,7 @@ export function createChatTransportStore(
       await chatTransport?.close();
       await client.close();
     },
-    ...(options.channelName !== undefined
-      ? { channelName: options.channelName }
-      : {}),
+    ...(options.channelName !== undefined ? { channelName: options.channelName } : {}),
   };
   if (closeOnDestroy !== false) {
     safeOnDestroy(() => {
@@ -160,15 +140,11 @@ export function createChatTransportStore(
 /**
  * Creates, stores, and provides a Vercel chat transport in one call.
  */
-export function provideChatTransport(
-  options: ChatTransportStoreOptions,
-): ChatTransportStore {
+export function provideChatTransport(options: ChatTransportStoreOptions): ChatTransportStore {
   const store = createChatTransportStore(options);
   const clientState = get(store);
   if (clientState.transport !== undefined) {
-    setTransportContext(
-      createStaticTransportStore(options.channelName, clientState.transport),
-    );
+    setTransportContext(createStaticTransportStore(options.channelName, clientState.transport));
   }
   return store;
 }
@@ -179,21 +155,16 @@ export function provideChatTransport(
 export function getChatTransport(
   options: GetClientTransportOptions = {},
 ): Readable<ChatTransportState> {
-  const client = getClientTransport<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >(options);
+  const client = getClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(
+    options,
+  );
   const state = get(client);
   if (options.skip === true) {
     return readable({});
   }
   if (!state.transport) {
     return readable({
-      ...(state.transportError !== undefined
-        ? { transportError: state.transportError }
-        : {}),
+      ...(state.transportError !== undefined ? { transportError: state.transportError } : {}),
       chatTransportError: missingChatTransportError(options.channelName),
     });
   }
@@ -214,20 +185,10 @@ export function getChatTransport(
  */
 export function createClientTransportStore(
   options: Omit<
-    TransportStoreOptions<
-      VercelInput,
-      VercelOutput,
-      VercelProjection,
-      AI.UIMessage
-    >,
+    TransportStoreOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
     "codec"
   >,
-): ClientTransportStore<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
-> {
+): ClientTransportStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
   return createTransportStore({
     ...options,
     codec: UIMessageCodec,
@@ -255,9 +216,7 @@ export function createOwnedViewStore(
 /**
  * Creates stable tree callbacks for the Vercel transport.
  */
-export function createTreeHandle(
-  options: ActiveTurnsStoreOptions<VercelInput, AI.UIMessage> = {},
-) {
+export function createTreeHandle(options: ActiveTurnsStoreOptions<VercelInput, AI.UIMessage> = {}) {
   return createGenericTreeHandle(options);
 }
 
@@ -283,19 +242,9 @@ export function createSockudoMessagesStore(
 function createStaticTransportStore(
   channelName: string | undefined,
   transport: NonNullable<ChatTransportState["transport"]>,
-): ClientTransportStore<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
-> {
+): ClientTransportStore<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
   const store = readable<
-    ClientTransportState<
-      VercelInput,
-      VercelOutput,
-      VercelProjection,
-      AI.UIMessage
-    >
+    ClientTransportState<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>
   >({ transport });
   return {
     subscribe: store.subscribe,

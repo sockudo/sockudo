@@ -7,19 +7,13 @@ import { createApp, defineComponent, h, nextTick } from "vue";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import type SockudoType from "../src/index";
 import { useChannel as useReactChannel } from "../src/framework-react/index";
-import {
-  createSockudoPlugin,
-  useChannel as useVueChannel,
-} from "../src/framework-vue/index";
+import { createSockudoPlugin, useChannel as useVueChannel } from "../src/framework-vue/index";
 
 let Sockudo: typeof SockudoType;
 
 const liveTestsEnabled = () => process.env.SOCKUDO_LIVE_TESTS === "1";
 
-const waitForValue = async <T>(
-  supplier: () => T | undefined,
-  timeoutMs = 10000,
-): Promise<T> => {
+const waitForValue = async <T>(supplier: () => T | undefined, timeoutMs = 10000): Promise<T> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = supplier();
@@ -151,9 +145,7 @@ describe("live framework integrations", () => {
 
     client.connect();
 
-    await waitForValue(() =>
-      latest?.subscribed === true && latest.channel ? true : undefined,
-    );
+    await waitForValue(() => (latest?.subscribed === true && latest.channel ? true : undefined));
 
     await publishToLocalSockudo({
       channel: channelName,
@@ -166,9 +158,7 @@ describe("live framework integrations", () => {
     );
 
     expect(latest?.lastEventName).toBe(eventName);
-    expect((latest?.lastEventData as Record<string, unknown>)?.source).toBe(
-      "react",
-    );
+    expect((latest?.lastEventData as Record<string, unknown>)?.source).toBe("react");
   }, 20000);
 
   it("updates Vue composable state from live websocket traffic", async () => {
@@ -197,9 +187,7 @@ describe("live framework integrations", () => {
     client.connect();
 
     await waitForValue(() =>
-      latest?.subscribed.value === true && latest.channel.value
-        ? true
-        : undefined,
+      latest?.subscribed.value === true && latest.channel.value ? true : undefined,
     );
 
     await publishToLocalSockudo({
@@ -210,14 +198,10 @@ describe("live framework integrations", () => {
     await nextTick();
 
     await waitForValue(() =>
-      latest?.lastEventName.value === eventName
-        ? latest.lastEventData.value
-        : undefined,
+      latest?.lastEventName.value === eventName ? latest.lastEventData.value : undefined,
     );
 
     expect(latest?.lastEventName.value).toBe(eventName);
-    expect(
-      (latest?.lastEventData.value as Record<string, unknown>)?.source,
-    ).toBe("vue");
+    expect((latest?.lastEventData.value as Record<string, unknown>)?.source).toBe("vue");
   }, 20000);
 });

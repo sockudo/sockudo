@@ -1,8 +1,4 @@
-import {
-  Options,
-  PresenceHistoryOptions,
-  VersionedMessagesOptions,
-} from "./options";
+import { Options, PresenceHistoryOptions, VersionedMessagesOptions } from "./options";
 import Defaults from "./defaults";
 import {
   ChannelAuthorizationHandler,
@@ -78,12 +74,9 @@ export function getConfig(opts: Options, sockudo): Config {
   };
 
   if ("echoMessages" in opts) config.echoMessages = opts.echoMessages;
-  if ("disabledTransports" in opts)
-    config.disabledTransports = opts.disabledTransports;
-  if ("enabledTransports" in opts)
-    config.enabledTransports = opts.enabledTransports;
-  if ("ignoreNullOrigin" in opts)
-    config.ignoreNullOrigin = opts.ignoreNullOrigin;
+  if ("disabledTransports" in opts) config.disabledTransports = opts.disabledTransports;
+  if ("enabledTransports" in opts) config.enabledTransports = opts.enabledTransports;
+  if ("ignoreNullOrigin" in opts) config.ignoreNullOrigin = opts.ignoreNullOrigin;
   if ("timelineParams" in opts) config.timelineParams = opts.timelineParams;
   if ("wireFormat" in opts) config.wireFormat = opts.wireFormat;
   if ("nacl" in opts) {
@@ -150,10 +143,7 @@ function buildUserAuthenticator(opts: Options): UserAuthenticationHandler {
     ...Defaults.userAuthentication,
     ...opts.userAuthentication,
   };
-  if (
-    "customHandler" in userAuthentication &&
-    userAuthentication["customHandler"] != null
-  ) {
+  if ("customHandler" in userAuthentication && userAuthentication["customHandler"] != null) {
     return userAuthentication["customHandler"];
   }
 
@@ -174,8 +164,7 @@ function buildChannelAuth(opts: Options, sockudo): ChannelAuthorizationOptions {
     };
     if ("auth" in opts) {
       if ("params" in opts.auth) channelAuthorization.params = opts.auth.params;
-      if ("headers" in opts.auth)
-        channelAuthorization.headers = opts.auth.headers;
+      if ("headers" in opts.auth) channelAuthorization.headers = opts.auth.headers;
     }
     if ("authorizer" in opts)
       channelAuthorization.customHandler = ChannelAuthorizerProxy(
@@ -187,15 +176,9 @@ function buildChannelAuth(opts: Options, sockudo): ChannelAuthorizationOptions {
   return channelAuthorization;
 }
 
-function buildChannelAuthorizer(
-  opts: Options,
-  sockudo,
-): ChannelAuthorizationHandler {
+function buildChannelAuthorizer(opts: Options, sockudo): ChannelAuthorizationHandler {
   const channelAuthorization = buildChannelAuth(opts, sockudo);
-  if (
-    "customHandler" in channelAuthorization &&
-    channelAuthorization["customHandler"] != null
-  ) {
+  if ("customHandler" in channelAuthorization && channelAuthorization["customHandler"] != null) {
     return channelAuthorization["customHandler"];
   }
 

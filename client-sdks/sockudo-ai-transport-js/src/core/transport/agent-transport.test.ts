@@ -47,9 +47,7 @@ describe("server transport", () => {
     await turn.start();
 
     expect(turn.messages).toEqual([{ id: "input-1", text: "hello" }]);
-    expect(
-      published.filter((message) => message.name === EVENT_AI_TURN_START),
-    ).toHaveLength(1);
+    expect(published.filter((message) => message.name === EVENT_AI_TURN_START)).toHaveLength(1);
   });
 
   it("times out input lookup without publishing turn-start", async () => {
@@ -69,21 +67,17 @@ describe("server transport", () => {
       code: ErrorCode.InputEventNotFound,
       statusCode: 504,
     });
-    expect(
-      published.some((message) => message.name === EVENT_AI_TURN_START),
-    ).toBe(false);
+    expect(published.some((message) => message.name === EVENT_AI_TURN_START)).toBe(false);
   });
 
   it("routes own cancel through onCancel and aborts registered turns", async () => {
     const { channel } = setupChannel();
     const onCancel = vi.fn(() => true);
-    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn(
-      {
-        turnId: "turn-1",
-        clientId: "client-1",
-        onCancel,
-      },
-    );
+    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn({
+      turnId: "turn-1",
+      clientId: "client-1",
+      onCancel,
+    });
 
     channel.inject(cancel("client-1"));
     await Promise.resolve();
@@ -98,12 +92,10 @@ describe("server transport", () => {
 
   it("publishes discrete messages with override ids in order", async () => {
     const { channel, published } = setupChannel();
-    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn(
-      {
-        turnId: "turn-1",
-        clientId: "client-1",
-      },
-    );
+    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn({
+      turnId: "turn-1",
+      clientId: "client-1",
+    });
 
     await expect(
       turn.addMessages([
@@ -112,20 +104,15 @@ describe("server transport", () => {
       ]),
     ).resolves.toEqual({ msgIds: ["m1", "m2"] });
 
-    expect(published.map((message) => message.name)).toEqual([
-      EVENT_AI_INPUT,
-      EVENT_AI_INPUT,
-    ]);
+    expect(published.map((message) => message.name)).toEqual([EVENT_AI_INPUT, EVENT_AI_INPUT]);
   });
 
   it("pipes response chunks and returns complete without ending the turn", async () => {
     const { channel, published } = setupChannel();
-    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn(
-      {
-        turnId: "turn-1",
-        clientId: "client-1",
-      },
-    );
+    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn({
+      turnId: "turn-1",
+      clientId: "client-1",
+    });
 
     await expect(
       turn.streamResponse(
@@ -139,10 +126,7 @@ describe("server transport", () => {
       ),
     ).resolves.toEqual({ reason: "complete" });
 
-    expect(published.map((message) => message.name)).toEqual([
-      EVENT_AI_OUTPUT,
-      EVENT_AI_OUTPUT,
-    ]);
+    expect(published.map((message) => message.name)).toEqual([EVENT_AI_OUTPUT, EVENT_AI_OUTPUT]);
   });
 
   it("stamps one generated assistant message id onto streamed responses", async () => {
@@ -172,29 +156,22 @@ describe("server transport", () => {
     );
 
     expect(
-      published.map(
-        (message) =>
-          getTransportHeaders(message.extras)[HEADER_CODEC_MESSAGE_ID],
-      ),
+      published.map((message) => getTransportHeaders(message.extras)[HEADER_CODEC_MESSAGE_ID]),
     ).toEqual(["assistant-generated", "assistant-generated"]);
   });
 
   it("publishes turn-end before deregistering", async () => {
     const { channel, published } = setupChannel();
-    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn(
-      {
-        turnId: "turn-1",
-        clientId: "client-1",
-      },
-    );
+    const turn = createServerTransport({ channel, codec: testCodec() }).newTurn({
+      turnId: "turn-1",
+      clientId: "client-1",
+    });
 
     await turn.end("complete");
     channel.inject(cancel("client-1"));
     await Promise.resolve();
 
-    expect(published.map((message) => message.name)).toEqual([
-      EVENT_AI_TURN_END,
-    ]);
+    expect(published.map((message) => message.name)).toEqual([EVENT_AI_TURN_END]);
     expect(turn.abortSignal.aborted).toBe(false);
   });
 });
@@ -265,9 +242,7 @@ function testCodec(): Codec<Message, Message, Projection, Message> {
   return {
     init: () => ({ messages: [] }),
     fold(projection, event) {
-      const index = projection.messages.findIndex(
-        (message) => message.id === event.id,
-      );
+      const index = projection.messages.findIndex((message) => message.id === event.id);
       if (index === -1) {
         projection.messages.push(event);
       } else {
@@ -294,13 +269,11 @@ function testCodec(): Codec<Message, Message, Projection, Message> {
           const decoded = {
             event: data,
             messageId:
-              message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ??
-              message.messageSerial,
+              message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ?? message.messageSerial,
             meta: {
               serial: message.deliverySerial ?? message.historySerial,
               messageId:
-                message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ??
-                message.messageSerial,
+                message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ?? message.messageSerial,
             } satisfies ReducerMeta,
           };
           if (message.name === EVENT_AI_OUTPUT) {
@@ -323,9 +296,7 @@ function createTestEncoder(
         name: EVENT_AI_INPUT,
         data: input,
         extras: mergeExtras(options.extras, writeOptions.extras),
-        ...(writeOptions.messageId !== undefined
-          ? { messageId: writeOptions.messageId }
-          : {}),
+        ...(writeOptions.messageId !== undefined ? { messageId: writeOptions.messageId } : {}),
         ...((writeOptions.clientId ?? options.clientId)
           ? { clientId: writeOptions.clientId ?? options.clientId }
           : {}),
@@ -336,9 +307,7 @@ function createTestEncoder(
         name: EVENT_AI_OUTPUT,
         data: output,
         extras: mergeExtras(options.extras, writeOptions.extras),
-        ...(writeOptions.messageId !== undefined
-          ? { messageId: writeOptions.messageId }
-          : {}),
+        ...(writeOptions.messageId !== undefined ? { messageId: writeOptions.messageId } : {}),
         ...((writeOptions.clientId ?? options.clientId)
           ? { clientId: writeOptions.clientId ?? options.clientId }
           : {}),
@@ -369,9 +338,7 @@ function mergeExtras(left: unknown, right: unknown): unknown {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 interface Message {

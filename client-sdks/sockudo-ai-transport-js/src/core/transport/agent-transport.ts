@@ -8,12 +8,7 @@ import {
 } from "../../constants.js";
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
 import { LogLevel, makeLogger, type Logger } from "../../logger.js";
-import type {
-  ChannelLike,
-  ClientLike,
-  InboundMessage,
-  MessageAck,
-} from "../../realtime/index.js";
+import type { ChannelLike, ClientLike, InboundMessage, MessageAck } from "../../realtime/index.js";
 import {
   buildTransportHeaders,
   getCodecHeaders,
@@ -21,23 +16,10 @@ import {
   mergeHeaders,
   type HeaderMap,
 } from "../../utils.js";
-import type {
-  Codec,
-  DecodedEvent,
-  Encoder,
-  EncoderOptions,
-  WriteOptions,
-} from "../codec/index.js";
+import type { Codec, DecodedEvent, Encoder, EncoderOptions, WriteOptions } from "../codec/index.js";
 import type { TurnEndReason } from "./tree.js";
-import {
-  createDefaultInvocationIdProvider,
-  type InvocationIdProvider,
-} from "./invocation.js";
-import {
-  pipeStream,
-  type ResolveWriteOptions,
-  type StreamResult,
-} from "./pipe-stream.js";
+import { createDefaultInvocationIdProvider, type InvocationIdProvider } from "./invocation.js";
+import { pipeStream, type ResolveWriteOptions, type StreamResult } from "./pipe-stream.js";
 import {
   TurnManager,
   type BufferedInputEvent,
@@ -167,12 +149,7 @@ export interface Turn<TOutput, TProjection, TMessage> {
 }
 
 /** Server transport options. */
-export interface ServerTransportOptions<
-  TInput,
-  TOutput,
-  TProjection,
-  TMessage,
-> {
+export interface ServerTransportOptions<TInput, TOutput, TProjection, TMessage> {
   /** Realtime client used with `channelName`. */
   client?: ClientLike;
   /** Realtime channel. */
@@ -213,9 +190,7 @@ export interface ServerTransportOptions<
 /** Server-side transport. */
 export interface ServerTransport<TOutput, TProjection, TMessage> {
   /** Creates and registers a turn synchronously. */
-  newTurn(
-    options: NewTurnOptions<TOutput>,
-  ): Turn<TOutput, TProjection, TMessage>;
+  newTurn(options: NewTurnOptions<TOutput>): Turn<TOutput, TProjection, TMessage>;
   /** Unsubscribes, aborts turns, and clears state. */
   close(): void;
 }
@@ -227,9 +202,11 @@ export function createServerTransport<TInput, TOutput, TProjection, TMessage>(
   return new DefaultServerTransport(options);
 }
 
-class DefaultServerTransport<TInput, TOutput, TProjection, TMessage>
-  implements ServerTransport<TOutput, TProjection, TMessage>
-{
+class DefaultServerTransport<TInput, TOutput, TProjection, TMessage> implements ServerTransport<
+  TOutput,
+  TProjection,
+  TMessage
+> {
   private readonly channel: ChannelLike;
   private readonly manager: TurnManager;
   private readonly logger: Logger;
@@ -240,12 +217,7 @@ class DefaultServerTransport<TInput, TOutput, TProjection, TMessage>
   private closed = false;
 
   public constructor(
-    private readonly options: ServerTransportOptions<
-      TInput,
-      TOutput,
-      TProjection,
-      TMessage
-    >,
+    private readonly options: ServerTransportOptions<TInput, TOutput, TProjection, TMessage>,
   ) {
     this.channel =
       options.channel ??
@@ -259,9 +231,9 @@ class DefaultServerTransport<TInput, TOutput, TProjection, TMessage>
         ? {}
         : { inputEventBufferLimit: options.inputEventBufferLimit },
     );
-    this.logger = (
-      options.logger ?? makeLogger({ logLevel: LogLevel.Silent })
-    ).withContext({ component: "ServerTransport" });
+    this.logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
+      component: "ServerTransport",
+    });
     this.inputLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30_000;
     this.idProvider = options.idProvider ?? createDefaultInvocationIdProvider();
     this.unsubscribe = this.channel.subscribe((message) => {
@@ -273,9 +245,7 @@ class DefaultServerTransport<TInput, TOutput, TProjection, TMessage>
     ];
   }
 
-  public newTurn(
-    options: NewTurnOptions<TOutput>,
-  ): Turn<TOutput, TProjection, TMessage> {
+  public newTurn(options: NewTurnOptions<TOutput>): Turn<TOutput, TProjection, TMessage> {
     if (this.closed) {
       throw new ErrorInfo({
         code: ErrorCode.TransportClosed,
@@ -338,9 +308,11 @@ interface TurnDeps<TInput, TOutput, TProjection, TMessage> {
   logger: Logger;
 }
 
-class DefaultTurn<TInput, TOutput, TProjection, TMessage>
-  implements Turn<TOutput, TProjection, TMessage>
-{
+class DefaultTurn<TInput, TOutput, TProjection, TMessage> implements Turn<
+  TOutput,
+  TProjection,
+  TMessage
+> {
   private readonly internalAbort = new AbortController();
   private readonly signal: AbortSignal;
   private started = false;
@@ -351,23 +323,16 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage>
   public readonly turnId: string;
   public readonly managedTurn: ManagedTurn;
 
-  public constructor(
-    private readonly deps: TurnDeps<TInput, TOutput, TProjection, TMessage>,
-  ) {
+  public constructor(private readonly deps: TurnDeps<TInput, TOutput, TProjection, TMessage>) {
     this.turnId = deps.options.turnId;
-    this.signal = composeAbortSignal(
-      this.internalAbort.signal,
-      deps.options.signal,
-    );
+    this.signal = composeAbortSignal(this.internalAbort.signal, deps.options.signal);
     this.managedTurn = {
       turnId: this.turnId,
       abort: () => {
         this.internalAbort.abort();
       },
       cancelled: false,
-      ...(deps.options.clientId !== undefined
-        ? { clientId: deps.options.clientId }
-        : {}),
+      ...(deps.options.clientId !== undefined ? { clientId: deps.options.clientId } : {}),
       ...(deps.options.onCancel !== undefined
         ? { onCancel: (request) => deps.options.onCancel?.(request) ?? true }
         : {}),
@@ -416,12 +381,8 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage>
         ...(this.deps.options.clientId !== undefined
           ? { turnClientId: this.deps.options.clientId }
           : {}),
-        ...(this.deps.options.parent !== undefined
-          ? { parent: this.deps.options.parent }
-          : {}),
-        ...(this.deps.options.forkOf !== undefined
-          ? { forkOf: this.deps.options.forkOf }
-          : {}),
+        ...(this.deps.options.parent !== undefined ? { parent: this.deps.options.parent } : {}),
+        ...(this.deps.options.forkOf !== undefined ? { forkOf: this.deps.options.forkOf } : {}),
       }),
     );
     await this.publishLifecycle(EVENT_AI_TURN_START, headers);
@@ -448,9 +409,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage>
       const ack = await publishInput(encoder, input as unknown as TInput, {
         extras: { ai: { transport: headers } },
         ...(node.msgId !== undefined ? { messageId: node.msgId } : {}),
-        ...(options.clientId !== undefined
-          ? { clientId: options.clientId }
-          : {}),
+        ...(options.clientId !== undefined ? { clientId: options.clientId } : {}),
       });
       msgIds.push(node.msgId ?? ack.messageSerial);
     }
@@ -515,11 +474,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage>
     let projection = this.deps.codec.init();
     const seen = new Set<string>();
     if (this.capturedInput) {
-      projection = this.foldMessage(
-        projection,
-        this.capturedInput.message,
-        seen,
-      );
+      projection = this.foldMessage(projection, this.capturedInput.message, seen);
     }
     let page = await this.deps.channel.history({
       direction: "oldest_first",
@@ -539,9 +494,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage>
     return projection;
   }
 
-  public async loadConversation(
-    options: LoadConversationOptions = {},
-  ): Promise<TMessage[]> {
+  public async loadConversation(options: LoadConversationOptions = {}): Promise<TMessage[]> {
     await this.loadProjection();
     const maxMessages = options.maxMessages ?? 2_000;
     return this.loadedMessages.slice(-maxMessages);
@@ -581,9 +534,7 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage>
     }
     seen.add(key);
     const decoded = this.deps.codec.createDecoder().decode(message);
-    const events = [...decoded.inputs, ...decoded.outputs] as DecodedEvent<
-      TInput | TOutput
-    >[];
+    const events = [...decoded.inputs, ...decoded.outputs] as DecodedEvent<TInput | TOutput>[];
     let current = projection;
     for (const event of events) {
       current = this.deps.codec.fold(current, event.event, event.meta);
@@ -650,12 +601,8 @@ class DefaultTurn<TInput, TOutput, TProjection, TMessage>
             inputClientId: this.deps.options.clientId,
           }
         : {}),
-      ...(this.deps.options.parent !== undefined
-        ? { parent: this.deps.options.parent }
-        : {}),
-      ...(this.deps.options.forkOf !== undefined
-        ? { forkOf: this.deps.options.forkOf }
-        : {}),
+      ...(this.deps.options.parent !== undefined ? { parent: this.deps.options.parent } : {}),
+      ...(this.deps.options.forkOf !== undefined ? { forkOf: this.deps.options.forkOf } : {}),
       ...(overrides.parent !== undefined ? { parent: overrides.parent } : {}),
       ...(overrides.forkOf !== undefined ? { forkOf: overrides.forkOf } : {}),
       ...(overrides.codecMessageId !== undefined
@@ -673,10 +620,7 @@ function publishInput<TInput, TOutput>(
   return encoder.publishInput(input, options);
 }
 
-function mergeWriteOptions(
-  left: WriteOptions | undefined,
-  right: WriteOptions,
-): WriteOptions {
+function mergeWriteOptions(left: WriteOptions | undefined, right: WriteOptions): WriteOptions {
   return {
     ...left,
     ...right,
@@ -695,29 +639,21 @@ function mergeExtras(left: unknown, right: unknown): unknown {
     ai: {
       ...leftAi,
       ...rightAi,
-      transport: mergeHeaders(
-        getTransportHeaders(left),
-        getTransportHeaders(right),
-      ),
+      transport: mergeHeaders(getTransportHeaders(left), getTransportHeaders(right)),
       codec: mergeHeaders(getCodecHeaders(left), getCodecHeaders(right)),
     },
   };
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function emptyHeaders(): HeaderMap {
   return Object.create(null) as HeaderMap;
 }
 
-function composeAbortSignal(
-  internal: AbortSignal,
-  external: AbortSignal | undefined,
-): AbortSignal {
+function composeAbortSignal(internal: AbortSignal, external: AbortSignal | undefined): AbortSignal {
   if (!external) {
     return internal;
   }
@@ -739,8 +675,7 @@ function requireChannelName(
   if (!options.channelName) {
     throw new ErrorInfo({
       code: ErrorCode.InvalidArgument,
-      message:
-        "unable to create server transport; channelName is required with client",
+      message: "unable to create server transport; channelName is required with client",
     });
   }
   return options.channelName;

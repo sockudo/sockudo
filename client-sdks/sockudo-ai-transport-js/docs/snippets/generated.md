@@ -96,10 +96,7 @@ Source: `demo/server/api/chat.post.ts`
     inputEventId,
     ...(clientId === undefined ? {} : { clientId }),
     onCancel(request) {
-      return (
-        request.filter.all === true ||
-        request.turnOwners.get(turnId) === clientId
-      );
+      return request.filter.all === true || request.turnOwners.get(turnId) === clientId;
     },
     onError(error) {
       console.error("[sockudo-ai-transport-demo] turn failed", error.message);

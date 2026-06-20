@@ -46,11 +46,7 @@ import type {
 } from "./types";
 
 function validateChannel(channel: string): void {
-  if (
-    typeof channel !== "string" ||
-    channel === "" ||
-    channel.match(/[^A-Za-z0-9_\-=@,.;:]/)
-  ) {
+  if (typeof channel !== "string" || channel === "" || channel.match(/[^A-Za-z0-9_\-=@,.;:]/)) {
     throw new Error(`Invalid channel name: '${channel}'`);
   }
   if (channel.length > 200) {
@@ -61,18 +57,12 @@ function validateChannel(channel: string): void {
 function validatePresenceChannel(channel: string): void {
   validateChannel(channel);
   if (!channel.startsWith("presence-")) {
-    throw new Error(
-      `Presence history is only available for presence channels: '${channel}'`,
-    );
+    throw new Error(`Presence history is only available for presence channels: '${channel}'`);
   }
 }
 
 function validateSocketId(socketId: string): void {
-  if (
-    typeof socketId !== "string" ||
-    socketId === "" ||
-    !socketId.match(/^\d+\.\d+$/)
-  ) {
+  if (typeof socketId !== "string" || socketId === "" || !socketId.match(/^\d+\.\d+$/)) {
     throw new Error(`Invalid socket id: '${socketId}'`);
   }
 }
@@ -120,9 +110,7 @@ class Sockudo {
     this.idempotencyBaseId = generateBase64UrlId();
     this.publishSerial = 0;
     this.autoIdempotencyKey =
-      options.autoIdempotencyKey !== undefined
-        ? options.autoIdempotencyKey
-        : true;
+      options.autoIdempotencyKey !== undefined ? options.autoIdempotencyKey : true;
     this.maxRetries = options.maxRetries !== undefined ? options.maxRetries : 3;
   }
 
@@ -131,12 +119,7 @@ class Sockudo {
     const apiPath = apiUrl.pathname?.split("/") ?? [];
     const apiAuth = apiUrl.auth?.split(":");
 
-    if (
-      !apiUrl.protocol ||
-      !apiUrl.hostname ||
-      !apiAuth ||
-      apiPath.length === 0
-    ) {
+    if (!apiUrl.protocol || !apiUrl.hostname || !apiAuth || apiPath.length === 0) {
       throw new Error("Invalid Sockudo URL");
     }
 
@@ -151,10 +134,7 @@ class Sockudo {
     } as Options);
   }
 
-  static forCluster(
-    cluster: string,
-    options: Omit<Options, "cluster" | "host">,
-  ): Sockudo {
+  static forCluster(cluster: string, options: Omit<Options, "cluster" | "host">): Sockudo {
     return new Sockudo({
       ...options,
       host: `api-${cluster}.sockudo.com`,
@@ -169,34 +149,17 @@ class Sockudo {
     validateSocketId(socketId);
     validateChannel(channel);
 
-    return auth.getSocketSignature(
-      this,
-      this.config.token,
-      channel,
-      socketId,
-      data,
-    );
+    return auth.getSocketSignature(this, this.config.token, channel, socketId, data);
   }
 
-  authenticateUser(
-    socketId: string,
-    userData: UserChannelData,
-  ): UserAuthResponse {
+  authenticateUser(socketId: string, userData: UserChannelData): UserAuthResponse {
     validateSocketId(socketId);
     validateUserData(userData);
 
-    return auth.getSocketSignatureForUser(
-      this.config.token,
-      socketId,
-      userData,
-    );
+    return auth.getSocketSignatureForUser(this.config.token, socketId, userData);
   }
 
-  sendToUser(
-    userId: string,
-    event: string,
-    data: unknown,
-  ): Promise<ResponseWithIdempotency> {
+  sendToUser(userId: string, event: string, data: unknown): Promise<ResponseWithIdempotency> {
     if (event.length > 200) {
       throw new Error(`Too long event name: '${event}'`);
     }
@@ -237,10 +200,7 @@ class Sockudo {
     let idempotencyKey = params?.idempotency_key;
     let resolvedParams = params;
 
-    if (
-      this.autoIdempotencyKey &&
-      (!params || params.idempotency_key === undefined)
-    ) {
+    if (this.autoIdempotencyKey && (!params || params.idempotency_key === undefined)) {
       idempotencyKey = `${this.idempotencyBaseId}:${serial}`;
       resolvedParams = {
         ...params,
@@ -249,28 +209,23 @@ class Sockudo {
     }
 
     const attempt = (remaining: number): Promise<ResponseWithIdempotency> => {
-      return events
-        .trigger(this, normalizedChannels, event, data, resolvedParams)
-        .then(
-          (response) => {
-            response.idempotencyKey = idempotencyKey;
-            return response;
-          },
-          (err: RequestError) => {
-            const statusCode =
-              err.statusCode !== undefined ? err.statusCode : err.status;
-            const isAbortError =
-              err.error &&
-              ((err.error as any).name === "AbortError" ||
-                (err.error as any).type === "aborted");
-            const isRetryable =
-              !isAbortError && (statusCode === undefined || statusCode >= 500);
-            if (isRetryable && remaining > 1) {
-              return attempt(remaining - 1);
-            }
-            throw err;
-          },
-        );
+      return events.trigger(this, normalizedChannels, event, data, resolvedParams).then(
+        (response) => {
+          response.idempotencyKey = idempotencyKey;
+          return response;
+        },
+        (err: RequestError) => {
+          const statusCode = err.statusCode !== undefined ? err.statusCode : err.status;
+          const isAbortError =
+            err.error &&
+            ((err.error as any).name === "AbortError" || (err.error as any).type === "aborted");
+          const isRetryable = !isAbortError && (statusCode === undefined || statusCode >= 500);
+          if (isRetryable && remaining > 1) {
+            return attempt(remaining - 1);
+          }
+          throw err;
+        },
+      );
     };
 
     return attempt(this.maxRetries);
@@ -306,14 +261,11 @@ class Sockudo {
           return response;
         },
         (err: RequestError) => {
-          const statusCode =
-            err.statusCode !== undefined ? err.statusCode : err.status;
+          const statusCode = err.statusCode !== undefined ? err.statusCode : err.status;
           const isAbortError =
             err.error &&
-            ((err.error as any).name === "AbortError" ||
-              (err.error as any).type === "aborted");
-          const isRetryable =
-            !isAbortError && (statusCode === undefined || statusCode >= 500);
+            ((err.error as any).name === "AbortError" || (err.error as any).type === "aborted");
+          const isRetryable = !isAbortError && (statusCode === undefined || statusCode >= 500);
           if (isRetryable && remaining > 1) {
             return attempt(remaining - 1);
           }
@@ -371,14 +323,10 @@ class Sockudo {
       path: "/push/deviceRegistrations",
       body: device,
       headers,
-    }).then(
-      (response) => response.json() as Promise<PushDeviceRegistrationResponse>,
-    );
+    }).then((response) => response.json() as Promise<PushDeviceRegistrationResponse>);
   }
 
-  createDeviceActivation(
-    device: PushDeviceDetails,
-  ): Promise<PushDeviceRegistrationResponse> {
+  createDeviceActivation(device: PushDeviceDetails): Promise<PushDeviceRegistrationResponse> {
     return this.activateDevice(device);
   }
 
@@ -390,9 +338,7 @@ class Sockudo {
       path: "/push/deviceRegistrations",
       body: device,
       headers: this.pushHeaders("push-subscribe", deviceIdentityToken),
-    }).then(
-      (response) => response.json() as Promise<PushDeviceRegistrationResponse>,
-    );
+    }).then((response) => response.json() as Promise<PushDeviceRegistrationResponse>);
   }
 
   listDeviceRegistrations(
@@ -402,10 +348,7 @@ class Sockudo {
       path: "/push/deviceRegistrations",
       params,
       headers: this.pushHeaders("push-admin"),
-    }).then(
-      (response) =>
-        response.json() as Promise<PushListResponse<Record<string, unknown>>>,
-    );
+    }).then((response) => response.json() as Promise<PushListResponse<Record<string, unknown>>>);
   }
 
   getDeviceRegistration(
@@ -434,9 +377,7 @@ class Sockudo {
     });
   }
 
-  removeDeviceRegistrationsByClient(
-    clientId: string,
-  ): Promise<Record<string, unknown>> {
+  removeDeviceRegistrationsByClient(clientId: string): Promise<Record<string, unknown>> {
     return this.delete({
       path: "/push/deviceRegistrations",
       params: { clientId },
@@ -469,10 +410,7 @@ class Sockudo {
         deviceIdentityToken ? "push-subscribe" : "push-admin",
         deviceIdentityToken,
       ),
-    }).then(
-      (response) =>
-        response.json() as Promise<PushListResponse<PushChannelSubscription>>,
-    );
+    }).then((response) => response.json() as Promise<PushListResponse<PushChannelSubscription>>);
   }
 
   deleteChannelPushSubscriptions(
@@ -506,10 +444,7 @@ class Sockudo {
       path: "/push/credentials",
       params,
       headers: this.pushHeaders("push-admin"),
-    }).then(
-      (response) =>
-        response.json() as Promise<PushListResponse<Record<string, unknown>>>,
-    );
+    }).then((response) => response.json() as Promise<PushListResponse<Record<string, unknown>>>);
   }
 
   putPushCredential(
@@ -523,21 +458,15 @@ class Sockudo {
     }).then((response) => response.json() as Promise<Record<string, unknown>>);
   }
 
-  publishPush(
-    request: PushPublishRequest,
-  ): Promise<PushPublishAcceptedResponse> {
+  publishPush(request: PushPublishRequest): Promise<PushPublishAcceptedResponse> {
     return this.post({
       path: "/push/publish",
       body: { ...request, sync: false },
       headers: this.pushHeaders("push-admin"),
-    }).then(
-      (response) => response.json() as Promise<PushPublishAcceptedResponse>,
-    );
+    }).then((response) => response.json() as Promise<PushPublishAcceptedResponse>);
   }
 
-  publishPushDirect(
-    request: PushPublishRequest,
-  ): Promise<PushPublishAcceptedResponse> {
+  publishPushDirect(request: PushPublishRequest): Promise<PushPublishAcceptedResponse> {
     return this.publishPush(request);
   }
 
@@ -548,10 +477,7 @@ class Sockudo {
       path: "/push/batch/publish",
       body: requests.map((request) => ({ ...request, sync: false })),
       headers: this.pushHeaders("push-admin"),
-    }).then(
-      (response) =>
-        response.json() as Promise<{ items: PushPublishAcceptedResponse[] }>,
-    );
+    }).then((response) => response.json() as Promise<{ items: PushPublishAcceptedResponse[] }>);
   }
 
   schedulePush(
@@ -574,9 +500,7 @@ class Sockudo {
     });
   }
 
-  postPushDeliveryStatus(
-    event: PushDeliveryStatusEvent,
-  ): Promise<Record<string, unknown>> {
+  postPushDeliveryStatus(event: PushDeliveryStatusEvent): Promise<Record<string, unknown>> {
     return this.post({
       path: "/push/deliveryStatus",
       body: event,
@@ -584,10 +508,7 @@ class Sockudo {
     }).then((response) => response.json() as Promise<Record<string, unknown>>);
   }
 
-  channelHistory(
-    channel: string,
-    params: GetOptions["params"] = {},
-  ): Promise<HistoryPage> {
+  channelHistory(channel: string, params: GetOptions["params"] = {}): Promise<HistoryPage> {
     validateChannel(channel);
     return this.get({
       path: `/channels/${channel}/history`,
@@ -595,10 +516,7 @@ class Sockudo {
     }).then((response) => response.json() as Promise<HistoryPage>);
   }
 
-  getMessage(
-    channel: string,
-    messageSerial: string,
-  ): Promise<GetMessageResponse> {
+  getMessage(channel: string, messageSerial: string): Promise<GetMessageResponse> {
     validateChannel(channel);
     return this.get({
       path: `/channels/${channel}/messages/${messageSerial}`,
@@ -614,9 +532,7 @@ class Sockudo {
     return this.get({
       path: `/channels/${channel}/messages/${messageSerial}/versions`,
       params,
-    }).then(
-      (response) => response.json() as Promise<ListMessageVersionsResponse>,
-    );
+    }).then((response) => response.json() as Promise<ListMessageVersionsResponse>);
   }
 
   updateMessage(
@@ -664,9 +580,7 @@ class Sockudo {
     return this.post({
       path: `/channels/${channel}/messages/${messageSerial}/annotations`,
       body,
-    }).then(
-      (response) => response.json() as Promise<PublishAnnotationResponse>,
-    );
+    }).then((response) => response.json() as Promise<PublishAnnotationResponse>);
   }
 
   deleteAnnotation(
@@ -727,9 +641,7 @@ class Sockudo {
   channelSharedSecret(channel: string): Buffer {
     return crypto
       .createHash("sha256")
-      .update(
-        Buffer.concat([Buffer.from(channel), this.config.encryptionMasterKey!]),
-      )
+      .update(Buffer.concat([Buffer.from(channel), this.config.encryptionMasterKey!]))
       .digest();
   }
 }

@@ -100,9 +100,7 @@ export function makeLogger(options: MakeLoggerOptions = {}): Logger {
     const mergedContext = Object.assign({}, baseContext, context);
     const redacted = redactValue(mergedContext);
     const contextSuffix =
-      Object.keys(mergedContext).length > 0
-        ? `, context: ${JSON.stringify(redacted)}`
-        : "";
+      Object.keys(mergedContext).length > 0 ? `, context: ${JSON.stringify(redacted)}` : "";
     logHandler(
       `[${now()}] ${level.toUpperCase()} sockudo-ai-transport: ${message}${contextSuffix}`,
     );
@@ -148,9 +146,7 @@ export function redactValue(value: unknown): unknown {
     const source = value as Record<string, unknown>;
     const redacted = Object.create(null) as Record<string, unknown>;
     for (const [key, item] of Object.entries(source)) {
-      redacted[key] = sensitiveKeyPattern.test(key)
-        ? "[redacted]"
-        : redactValue(item);
+      redacted[key] = sensitiveKeyPattern.test(key) ? "[redacted]" : redactValue(item);
     }
     return redacted;
   }

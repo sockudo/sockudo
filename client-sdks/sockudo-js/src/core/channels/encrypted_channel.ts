@@ -5,10 +5,7 @@ import Sockudo from "../sockudo";
 import { decode as encodeUTF8 } from "@stablelib/utf8";
 import { decode as decodeBase64 } from "@stablelib/base64";
 import { SockudoEvent } from "../connection/protocol/message-types";
-import {
-  ChannelAuthorizationData,
-  ChannelAuthorizationCallback,
-} from "../auth/options";
+import { ChannelAuthorizationData, ChannelAuthorizationCallback } from "../auth/options";
 import * as nacl from "tweetnacl";
 import { isInternalEvent, isPlatformEvent } from "../protocol_prefix";
 
@@ -32,28 +29,23 @@ export default class EncryptedChannel extends PrivateChannel {
    * @param  {(...args: any[]) => any} callback
    */
   authorize(socketId: string, callback: ChannelAuthorizationCallback) {
-    super.authorize(
-      socketId,
-      (error: Error | null, authData: ChannelAuthorizationData) => {
-        if (error) {
-          callback(error, authData);
-          return;
-        }
-        let sharedSecret = authData["shared_secret"];
-        if (!sharedSecret) {
-          callback(
-            new Error(
-              `No shared_secret key in auth payload for encrypted channel: ${this.name}`,
-            ),
-            null,
-          );
-          return;
-        }
-        this.key = decodeBase64(sharedSecret);
-        delete authData["shared_secret"];
-        callback(null, authData);
-      },
-    );
+    super.authorize(socketId, (error: Error | null, authData: ChannelAuthorizationData) => {
+      if (error) {
+        callback(error, authData);
+        return;
+      }
+      let sharedSecret = authData["shared_secret"];
+      if (!sharedSecret) {
+        callback(
+          new Error(`No shared_secret key in auth payload for encrypted channel: ${this.name}`),
+          null,
+        );
+        return;
+      }
+      this.key = decodeBase64(sharedSecret);
+      delete authData["shared_secret"];
+      callback(null, authData);
+    });
   }
 
   trigger(_event: string, _data: any): boolean {
@@ -78,9 +70,7 @@ export default class EncryptedChannel extends PrivateChannel {
 
   private handleEncryptedEvent(event: string, data: any): void {
     if (!this.key) {
-      Logger.debug(
-        "Received encrypted event before key has been retrieved from the authEndpoint",
-      );
+      Logger.debug("Received encrypted event before key has been retrieved from the authEndpoint");
       return;
     }
     if (!data.ciphertext || !data.nonce) {
@@ -121,9 +111,7 @@ export default class EncryptedChannel extends PrivateChannel {
         }
         bytes = this.nacl.secretbox.open(cipherText, nonce, this.key);
         if (bytes === null) {
-          Logger.error(
-            `Failed to decrypt event with new key. Dropping encrypted event`,
-          );
+          Logger.error(`Failed to decrypt event with new key. Dropping encrypted event`);
           return;
         }
         this.emit(event, this.getDataToEmit(bytes));

@@ -15,9 +15,7 @@ beforeAll(async () => {
     DEPENDENCY_SUFFIX: "",
   });
 
-  ({
-    default: Protocol,
-  } = await import("../src/core/connection/protocol/protocol"));
+  ({ default: Protocol } = await import("../src/core/connection/protocol/protocol"));
   ({ setProtocolVersion } = await import("../src/core/protocol_prefix"));
   ({ setWireFormat } = await import("../src/core/wire_format"));
   ({ ws } = await import("../src/core/transports/url_schemes"));

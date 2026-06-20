@@ -28,10 +28,7 @@ export interface EventEmitterOptions {
  * site.
  */
 export class EventEmitter<Events extends EventsMap> {
-  private readonly listeners = new Map<
-    keyof Events,
-    Set<(payload: unknown) => void>
-  >();
+  private readonly listeners = new Map<keyof Events, Set<(payload: unknown) => void>>();
   private readonly logger: Logger;
 
   /** Creates an emitter. */

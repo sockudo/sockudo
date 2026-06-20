@@ -46,9 +46,7 @@ describe("EventEmitter", () => {
 
     expect(calls).toEqual([7]);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain(
-      "ERROR sockudo-ai-transport: event listener failed",
-    );
+    expect(lines[0]).toContain("ERROR sockudo-ai-transport: event listener failed");
     expect(lines[0]).toContain('"event":"ready"');
   });
 });

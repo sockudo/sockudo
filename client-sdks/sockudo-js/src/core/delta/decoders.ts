@@ -6,10 +6,8 @@ import { applyDelta as fossilApplyDelta } from "fossil-delta";
 import { decode as vcdiffDecode } from "@ably/vcdiff-decoder";
 
 // Also check for globals (for browser builds without bundler)
-const fossilDeltaGlobal =
-  typeof window !== "undefined" ? (window as any).fossilDelta : undefined;
-const vcdiffGlobal =
-  typeof window !== "undefined" ? (window as any).vcdiff : undefined;
+const fossilDeltaGlobal = typeof window !== "undefined" ? (window as any).fossilDelta : undefined;
+const vcdiffGlobal = typeof window !== "undefined" ? (window as any).vcdiff : undefined;
 
 /**
  * Base64 decode a string to Uint8Array

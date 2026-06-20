@@ -26,10 +26,7 @@ export default class Handshake {
   onMessage: (...args: any[]) => any;
   onClosed: (...args: any[]) => any;
 
-  constructor(
-    transport: TransportConnection,
-    callback: (result: HandshakePayload) => void,
-  ) {
+  constructor(transport: TransportConnection, callback: (result: HandshakePayload) => void) {
     this.transport = transport;
     this.callback = callback;
     this.bindListeners();
@@ -82,8 +79,6 @@ export default class Handshake {
   }
 
   private finish(action: string, params: any) {
-    this.callback(
-      Collections.extend({ transport: this.transport, action: action }, params),
-    );
+    this.callback(Collections.extend({ transport: this.transport, action: action }, params));
   }
 }

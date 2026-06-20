@@ -29,12 +29,7 @@ function handleInit(client) {
       );
     } else {
       const destinationUrl = url.parse(destination);
-      handleConnecting(
-        client,
-        destinationUrl.hostname,
-        destinationUrl.port || 80,
-        inBuffer,
-      );
+      handleConnecting(client, destinationUrl.hostname, destinationUrl.port || 80, inBuffer);
     }
   }
 
@@ -54,9 +49,7 @@ function handleConnectInit(client, hostname, port, inBuffer) {
       // discard the headers
       unbind();
       handleConnecting(client, hostname, port, blocks[1], function () {
-        client.write(
-          Buffer.from("HTTP/1.0 200 Connection established\r\n\r\n"),
-        );
+        client.write(Buffer.from("HTTP/1.0 200 Connection established\r\n\r\n"));
       });
     }
   }

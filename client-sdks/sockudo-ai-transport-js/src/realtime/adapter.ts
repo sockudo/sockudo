@@ -5,11 +5,7 @@ import {
   HEADER_ROLE,
 } from "../constants.js";
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../errors.js";
-import {
-  getCodecHeaders,
-  getTransportHeaders,
-  type HeaderMap,
-} from "../utils.js";
+import { getCodecHeaders, getTransportHeaders, type HeaderMap } from "../utils.js";
 import { RealtimeEmitter } from "./emitter.js";
 import type {
   AppendRollupWindow,
@@ -94,27 +90,15 @@ export interface SockudoChannelPeer {
     options?: Record<string, unknown>,
   ): Promise<unknown>;
   /** Update helper. */
-  updateMessage?(
-    messageSerial: string,
-    options?: Record<string, unknown>,
-  ): Promise<unknown>;
+  updateMessage?(messageSerial: string, options?: Record<string, unknown>): Promise<unknown>;
   /** Delete helper. */
-  deleteMessage?(
-    messageSerial: string,
-    options?: Record<string, unknown>,
-  ): Promise<unknown>;
+  deleteMessage?(messageSerial: string, options?: Record<string, unknown>): Promise<unknown>;
   /** Channel history helper. */
   channelHistory?(params?: Record<string, unknown>): Promise<unknown>;
   /** Event binding helper. */
-  bind?(
-    event: string,
-    listener: (...args: readonly unknown[]) => void,
-  ): unknown;
+  bind?(event: string, listener: (...args: readonly unknown[]) => void): unknown;
   /** Event unbinding helper. */
-  unbind?(
-    event?: string,
-    listener?: (...args: readonly unknown[]) => void,
-  ): unknown;
+  unbind?(event?: string, listener?: (...args: readonly unknown[]) => void): unknown;
   /** Global channel event binding helper. */
   bind_global?(listener: (...args: readonly unknown[]) => void): unknown;
   /** Raw event handler. */
@@ -146,10 +130,7 @@ export interface SockudoClientPeer {
     clientId?: string;
   };
   /** Subscribes to a channel. */
-  subscribe?(
-    name: string,
-    options?: Record<string, unknown>,
-  ): SockudoChannelPeer;
+  subscribe?(name: string, options?: Record<string, unknown>): SockudoChannelPeer;
   /** Finds a channel. */
   channel?(name: string): SockudoChannelPeer | undefined;
   /** Binds a global client event. */
@@ -175,8 +156,7 @@ export interface AdaptSockudoChannelOptions extends AdaptSockudoClientOptions {
 }
 
 /** Options for creating a Sockudo realtime client through the peer dependency. */
-export interface CreateSockudoRealtimeClientOptions
-  extends AdaptSockudoClientOptions {
+export interface CreateSockudoRealtimeClientOptions extends AdaptSockudoClientOptions {
   /** Options passed to `new Sockudo(appKey, options)`. */
   clientOptions?: Record<string, unknown>;
   /** Append rollup window passed as `transportParams.append_rollup_window`. */
@@ -193,10 +173,7 @@ export async function createSockudoRealtimeClient(
   options: CreateSockudoRealtimeClientOptions = {},
 ): Promise<ClientLike> {
   const Sockudo = await loadSockudoConstructor();
-  return adaptSockudoClient(
-    new Sockudo(appKey, normalizeClientOptions(options)),
-    options,
-  );
+  return adaptSockudoClient(new Sockudo(appKey, normalizeClientOptions(options)), options);
 }
 
 /** Adapts an existing Sockudo client into the realtime seam. */
@@ -208,11 +185,7 @@ export function adaptSockudoClient(
   return {
     channels: {
       get(name: string, getOptions?: GetChannelOptions): ChannelLike {
-        const channel = getOrCreateChannel(
-          client,
-          name,
-          getOptions?.params?.rewind,
-        );
+        const channel = getOrCreateChannel(client, name, getOptions?.params?.rewind);
         const cached = state.channels.get(name);
         if (cached) {
           return cached;
@@ -278,53 +251,32 @@ export function adaptSockudoChannel(
         if (!channel.appendMessage) {
           throw missingMethod("append to a message");
         }
-        return channel.appendMessage(
-          messageSerial,
-          data,
-          normalizeMutation(mutation),
-        );
+        return channel.appendMessage(messageSerial, data, normalizeMutation(mutation));
       });
     },
-    updateMessage(
-      messageSerial: string,
-      mutation: MessageMutation = {},
-    ): Promise<MessageAck> {
+    updateMessage(messageSerial: string, mutation: MessageMutation = {}): Promise<MessageAck> {
       return callAck("update a message", () => {
         if (!channel.updateMessage) {
           throw missingMethod("update a message");
         }
-        return channel.updateMessage(
-          messageSerial,
-          normalizeMutation(mutation),
-        );
+        return channel.updateMessage(messageSerial, normalizeMutation(mutation));
       });
     },
-    deleteMessage(
-      messageSerial: string,
-      mutation: MessageMutation = {},
-    ): Promise<MessageAck> {
+    deleteMessage(messageSerial: string, mutation: MessageMutation = {}): Promise<MessageAck> {
       return callAck("delete a message", () => {
         if (!channel.deleteMessage) {
           throw missingMethod("delete a message");
         }
-        return channel.deleteMessage(
-          messageSerial,
-          normalizeMutation(mutation),
-        );
+        return channel.deleteMessage(messageSerial, normalizeMutation(mutation));
       });
     },
-    subscribe(
-      listener: MessageListener,
-      subscribeOptions?: SubscribeOptions,
-    ): Unsubscribe {
+    subscribe(listener: MessageListener, subscribeOptions?: SubscribeOptions): Unsubscribe {
       if (subscribeOptions?.rewind !== undefined) {
         options.client?.subscribe?.(channel.name, {
           rewind: subscribeOptions.rewind,
         });
       }
-      const names = subscribeOptions?.names
-        ? new Set(subscribeOptions.names)
-        : undefined;
+      const names = subscribeOptions?.names ? new Set(subscribeOptions.names) : undefined;
       const wrapped = (message: InboundMessage): void => {
         if (!names || names.has(message.name)) {
           listener(message);
@@ -335,20 +287,15 @@ export function adaptSockudoChannel(
         state.listeners.delete(wrapped);
       };
     },
-    async history(historyOptions: HistoryOptions = {}): Promise<
-      PaginatedResult<InboundMessage>
-    > {
+    async history(historyOptions: HistoryOptions = {}): Promise<PaginatedResult<InboundMessage>> {
       if (!channel.channelHistory) {
         throw new ErrorInfo({
           code: ErrorCode.InvalidArgument,
-          message:
-            "unable to read channel history; Sockudo channel does not expose channelHistory",
+          message: "unable to read channel history; Sockudo channel does not expose channelHistory",
         });
       }
       try {
-        const page = await channel.channelHistory(
-          normalizeHistoryOptions(historyOptions),
-        );
+        const page = await channel.channelHistory(normalizeHistoryOptions(historyOptions));
         return normalizeHistoryPage(page, state.mutableMessageInfoReader);
       } catch (error) {
         throw mapFailure(error, "read channel history");
@@ -449,14 +396,8 @@ export function serialLessThanOrEqual(a: Serial, b: Serial): boolean {
 }
 
 /** Validates an append rollup window. */
-export function validateAppendRollupWindow(
-  value: unknown,
-): asserts value is AppendRollupWindow {
-  if (
-    typeof value !== "number" ||
-    !Number.isInteger(value) ||
-    !allowedRollupWindows.has(value)
-  ) {
+export function validateAppendRollupWindow(value: unknown): asserts value is AppendRollupWindow {
+  if (typeof value !== "number" || !Number.isInteger(value) || !allowedRollupWindows.has(value)) {
     throw new ErrorInfo({
       code: ErrorCode.InvalidArgument,
       message:
@@ -518,14 +459,10 @@ function bindRecovery(client: SockudoClientPeer, state: ClientState): void {
     const record = asRecord(payload);
     const channelName = readString(record?.channel);
     const code = readString(record?.code);
-    if (
-      !channelName ||
-      (code !== "stream_reset" && code !== "position_expired")
-    ) {
+    if (!channelName || (code !== "stream_reset" && code !== "position_expired")) {
       return;
     }
-    const channel =
-      client.channel?.(channelName) ?? client.channels?.find?.(channelName);
+    const channel = client.channel?.(channelName) ?? client.channels?.find?.(channelName);
     const channelState = channel ? channelStates.get(channel) : undefined;
     const error = new ErrorInfo({
       code: ErrorCode.ChannelContinuityLost,
@@ -541,10 +478,7 @@ function bindRecovery(client: SockudoClientPeer, state: ClientState): void {
   client.bind?.("resume_failed", handler);
 }
 
-function bindChannelStates(
-  channel: SockudoChannelPeer,
-  state: ChannelState,
-): void {
+function bindChannelStates(channel: SockudoChannelPeer, state: ChannelState): void {
   const attached = (): void => {
     state.events.emit("attached", undefined);
   };
@@ -577,10 +511,7 @@ function getOrCreateChannel(
     }
     return existing;
   }
-  const subscribed = client.subscribe?.(
-    name,
-    rewind === undefined ? undefined : { rewind },
-  );
+  const subscribed = client.subscribe?.(name, rewind === undefined ? undefined : { rewind });
   if (subscribed) {
     return subscribed;
   }
@@ -590,8 +521,7 @@ function getOrCreateChannel(
   }
   throw new ErrorInfo({
     code: ErrorCode.InvalidArgument,
-    message:
-      "unable to get channel; Sockudo client does not expose subscribe or channels.add",
+    message: "unable to get channel; Sockudo client does not expose subscribe or channels.add",
   });
 }
 
@@ -605,10 +535,7 @@ function dispatch(state: ChannelState, raw: SockudoRawMessage): void {
   }
 }
 
-async function callAck(
-  operation: string,
-  run: () => Promise<unknown>,
-): Promise<MessageAck> {
+async function callAck(operation: string, run: () => Promise<unknown>): Promise<MessageAck> {
   try {
     return normalizeAck(await run());
   } catch (error) {
@@ -625,15 +552,12 @@ function missingMethod(operation: string): ErrorInfo {
 
 function normalizeAck(value: unknown): MessageAck {
   const record = asRecord(value);
-  const messageSerial =
-    readString(record?.messageSerial) ?? readString(record?.message_serial);
-  const historySerial =
-    readSerial(record?.historySerial) ?? readSerial(record?.history_serial);
+  const messageSerial = readString(record?.messageSerial) ?? readString(record?.message_serial);
+  const historySerial = readSerial(record?.historySerial) ?? readSerial(record?.history_serial);
   if (!messageSerial || historySerial === undefined) {
     throw new ErrorInfo({
       code: ErrorCode.TransportSendFailed,
-      message:
-        "unable to normalize acknowledgement; missing messageSerial or historySerial",
+      message: "unable to normalize acknowledgement; missing messageSerial or historySerial",
       detail: value,
     });
   }
@@ -660,10 +584,7 @@ function normalizeHistoryPage(
   const rawItems = Array.isArray(record?.items) ? record.items : [];
   return {
     items: rawItems.map((item) =>
-      normalizeInboundMessage(
-        normalizeRawMessage(item),
-        mutableMessageInfoReader,
-      ),
+      normalizeInboundMessage(normalizeRawMessage(item), mutableMessageInfoReader),
     ),
     hasNext(): boolean {
       const hasNext = record?.hasNext;
@@ -676,8 +597,7 @@ function normalizeHistoryPage(
       if (typeof next !== "function") {
         throw new ErrorInfo({
           code: ErrorCode.InvalidArgument,
-          message:
-            "unable to read next history page; no next page is available",
+          message: "unable to read next history page; no next page is available",
         });
       }
       return normalizeHistoryPage(
@@ -695,16 +615,11 @@ function normalizeRawMessage(value: unknown): SockudoRawMessage {
   return {
     ...source,
     event:
-      readString(source.event) ??
-      readString(source.name) ??
-      readString(record.event_name) ??
-      "",
+      readString(source.event) ?? readString(source.name) ?? readString(record.event_name) ?? "",
   };
 }
 
-function normalizeHistoryOptions(
-  options: HistoryOptions,
-): Record<string, unknown> {
+function normalizeHistoryOptions(options: HistoryOptions): Record<string, unknown> {
   return compact({
     limit: options.limit,
     direction: options.direction,
@@ -783,17 +698,11 @@ function normalizeVersion(
       readString(raw.versionSerial) ??
       info?.versionSerial,
   );
-  setOptional(
-    version,
-    "clientId",
-    readString(source?.client_id) ?? readString(source?.clientId),
-  );
+  setOptional(version, "clientId", readString(source?.client_id) ?? readString(source?.clientId));
   setOptional(
     version,
     "timestamp",
-    readNumber(source?.timestamp_ms) ??
-      readNumber(source?.timestampMs) ??
-      info?.versionTimestampMs,
+    readNumber(source?.timestamp_ms) ?? readNumber(source?.timestampMs) ?? info?.versionTimestampMs,
   );
   setOptional(version, "description", readString(source?.description));
   setOptional(version, "metadata", source?.metadata);
@@ -811,8 +720,7 @@ function adaptPresence(channel: SockudoChannelPeer): PresenceLike {
       if (!channel.update) {
         throw new ErrorInfo({
           code: ErrorCode.InvalidArgument,
-          message:
-            "unable to update presence; Sockudo channel does not expose presence.update",
+          message: "unable to update presence; Sockudo channel does not expose presence.update",
         });
       }
       await channel.update(data);
@@ -853,9 +761,7 @@ function adaptPresence(channel: SockudoChannelPeer): PresenceLike {
   };
 }
 
-function snapshotMembers(
-  members: SockudoMembersPeer | undefined,
-): readonly PresenceMember[] {
+function snapshotMembers(members: SockudoMembersPeer | undefined): readonly PresenceMember[] {
   if (!members) {
     return [];
   }
@@ -879,11 +785,7 @@ function snapshotMembers(
 function normalizeMember(member: unknown): PresenceMember {
   const record = asRecord(member);
   return {
-    id:
-      readString(record?.id) ??
-      readString(record?.user_id) ??
-      readString(record?.clientId) ??
-      "",
+    id: readString(record?.id) ?? readString(record?.user_id) ?? readString(record?.clientId) ?? "",
     data: record && "info" in record ? record.info : record?.user_info,
   };
 }
@@ -908,10 +810,7 @@ function mapFailure(error: unknown, operation: string): ErrorInfo {
 function normalizeClientOptions(
   options: CreateSockudoRealtimeClientOptions,
 ): Record<string, unknown> {
-  const clientOptions: Record<string, unknown> = Object.assign(
-    {},
-    options.clientOptions,
-  );
+  const clientOptions: Record<string, unknown> = Object.assign({}, options.clientOptions);
   if (options.appendRollupWindow !== undefined) {
     validateAppendRollupWindow(options.appendRollupWindow);
     const transportParams = asRecord(clientOptions.transportParams);
@@ -935,8 +834,7 @@ async function loadSockudoConstructor(): Promise<
   if (typeof module?.default !== "function") {
     throw new ErrorInfo({
       code: ErrorCode.InvalidArgument,
-      message:
-        "unable to create realtime client; @sockudo/client did not provide a constructor",
+      message: "unable to create realtime client; @sockudo/client did not provide a constructor",
     });
   }
   return module.default as new (
@@ -953,10 +851,7 @@ function readAiHeader(
   return readString(asRecord(asRecord(asRecord(extras)?.ai)?.[tier])?.[key]);
 }
 
-function readExtrasHeaderSerial(
-  extras: unknown,
-  key: string,
-): Serial | undefined {
+function readExtrasHeaderSerial(extras: unknown, key: string): Serial | undefined {
   return readSerial(asRecord(asRecord(extras)?.headers)?.[key]);
 }
 
@@ -965,9 +860,7 @@ function readString(value: unknown): string | undefined {
 }
 
 function readNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function readSerial(value: unknown): Serial | undefined {

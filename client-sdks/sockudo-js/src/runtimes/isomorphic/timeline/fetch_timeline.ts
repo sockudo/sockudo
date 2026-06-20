@@ -5,8 +5,7 @@ import * as Collections from "core/utils/collections";
 const getAgent = (sender: TimelineSender, useTLS: boolean) => {
   return (data: unknown, _callback: (...args: any[]) => any) => {
     const scheme = `http${useTLS ? "s" : ""}://`;
-    let url =
-      scheme + (sender.host || sender.options.host) + sender.options.path;
+    let url = scheme + (sender.host || sender.options.host) + sender.options.path;
     const query = Collections.buildQueryString(data);
     url += `/${2}?${query}`;
 

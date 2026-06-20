@@ -1,7 +1,4 @@
-import type {
-  StreamResult,
-  TurnEndReason,
-} from "../../core/transport/index.js";
+import type { StreamResult, TurnEndReason } from "../../core/transport/index.js";
 
 /**
  * Finish reason values returned by Vercel AI SDK stream helpers.
@@ -40,11 +37,7 @@ function isAbortError(error: unknown): boolean {
   }
   if (error !== null && typeof error === "object") {
     const record = error as Record<string, unknown>;
-    return (
-      record.name === "AbortError" ||
-      record.code === "ABORT_ERR" ||
-      record.type === "aborted"
-    );
+    return record.name === "AbortError" || record.code === "ABORT_ERR" || record.type === "aborted";
   }
   return false;
 }

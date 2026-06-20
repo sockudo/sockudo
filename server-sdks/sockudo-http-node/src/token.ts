@@ -11,10 +11,7 @@ class Token {
   }
 
   sign(value: string): string {
-    return crypto
-      .createHmac("sha256", this.secret)
-      .update(Buffer.from(value))
-      .digest("hex");
+    return crypto.createHmac("sha256", this.secret).update(Buffer.from(value)).digest("hex");
   }
 
   verify(value: string, signature: string): boolean {

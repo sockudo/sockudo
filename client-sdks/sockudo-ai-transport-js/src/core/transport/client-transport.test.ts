@@ -16,13 +16,7 @@ import { ErrorCode } from "../../errors.js";
 import type { ErrorInfo } from "../../errors.js";
 import { createMockClient, type MockChannel } from "../../realtime/mocks.js";
 import type { SockudoRawMessage } from "../../realtime/adapter.js";
-import type {
-  Codec,
-  DecodedBatch,
-  Decoder,
-  ReducerMeta,
-  UserMessage,
-} from "../codec/index.js";
+import type { Codec, DecodedBatch, Decoder, ReducerMeta, UserMessage } from "../codec/index.js";
 import { createClientTransport } from "./client-transport.js";
 import type { ActiveTurn } from "./client-transport.js";
 import type { InvocationIdProvider } from "./invocation.js";
@@ -87,9 +81,9 @@ describe("client transport", () => {
       fetch: okFetch(),
     });
 
-    await expect(
-      transport.view.send({ id: "user-1", text: "hello" }),
-    ).rejects.toMatchObject({ code: ErrorCode.InsufficientCapability });
+    await expect(transport.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
+      code: ErrorCode.InsufficientCapability,
+    });
     expect(transport.view.getMessages()).toEqual([]);
   });
 
@@ -135,10 +129,9 @@ describe("client transport", () => {
   it("accepts clients that advertise ai-transport or cannot expose feature flags yet", () => {
     expect(() =>
       createClientTransport({
-        client: withConnectionFeatures(
-          createMockClient({ clientId: "client-1" }),
-          ["ai-transport"],
-        ),
+        client: withConnectionFeatures(createMockClient({ clientId: "client-1" }), [
+          "ai-transport",
+        ]),
         channelName: "chat",
         codec: testCodec(),
         api: "https://agent.test/run",
@@ -178,9 +171,7 @@ describe("client transport", () => {
     })) as ActiveTurn<Message>;
     await Promise.resolve();
 
-    expect(transport.view.getMessages()).toEqual([
-      { id: "user-1", text: "hello" },
-    ]);
+    expect(transport.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
     expect(errors).toHaveLength(1);
     await expect(active.stream.getReader().read()).rejects.toMatchObject({
       code: ErrorCode.TransportSendFailed,
@@ -224,9 +215,7 @@ describe("client transport", () => {
       turnStartDeadlineMs: 1,
     });
 
-    await expect(
-      transport.view.send({ id: "user-1", text: "hello" }),
-    ).rejects.toMatchObject({
+    await expect(transport.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
       code: ErrorCode.TurnStartDeadlineExceeded,
       statusCode: 504,
     });
@@ -257,9 +246,7 @@ describe("client transport", () => {
     })) as ActiveTurn<Message>;
     const waiting = transport.waitForTurn({ own: true });
     await active.cancel();
-    channel.inject(
-      lifecycle(EVENT_AI_TURN_END, "turn-1", "inv-1", 3, "cancelled"),
-    );
+    channel.inject(lifecycle(EVENT_AI_TURN_END, "turn-1", "inv-1", 3, "cancelled"));
 
     await expect(waiting).resolves.toBeUndefined();
     expect(published).toContainEqual(
@@ -284,9 +271,7 @@ describe("client transport", () => {
     });
 
     transport.stageEvents("assistant-1", [{ id: "assistant-1", text: "new" }]);
-    expect(transport.view.getMessages()).toEqual([
-      { id: "assistant-1", text: "new" },
-    ]);
+    expect(transport.view.getMessages()).toEqual([{ id: "assistant-1", text: "new" }]);
 
     await transport.view.send({ id: "user-1", text: "next" });
 
@@ -322,9 +307,10 @@ function setupCalls(calls: string[]): {
 }
 
 function okFetch(): ReturnType<typeof vi.fn> & typeof fetch {
-  return vi.fn(() =>
-    Promise.resolve(new Response(null, { status: 200 })),
-  ) as ReturnType<typeof vi.fn> & typeof fetch;
+  return vi.fn(() => Promise.resolve(new Response(null, { status: 200 }))) as ReturnType<
+    typeof vi.fn
+  > &
+    typeof fetch;
 }
 
 function requestBodyJson(request: RequestInit): unknown {
@@ -415,9 +401,7 @@ function testCodec(): Codec<Message, Message, Projection, Message> {
   return {
     init: () => ({ messages: [] }),
     fold(projection, event) {
-      const index = projection.messages.findIndex(
-        (message) => message.id === event.id,
-      );
+      const index = projection.messages.findIndex((message) => message.id === event.id);
       if (index === -1) {
         projection.messages.push(event);
       } else {
@@ -444,13 +428,11 @@ function testCodec(): Codec<Message, Message, Projection, Message> {
           const decoded = {
             event: data,
             messageId:
-              message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ??
-              message.messageSerial,
+              message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ?? message.messageSerial,
             meta: {
               serial: message.deliverySerial ?? message.historySerial,
               messageId:
-                message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ??
-                message.messageSerial,
+                message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ?? message.messageSerial,
             } satisfies ReducerMeta,
           };
           if (message.name === EVENT_AI_OUTPUT) {

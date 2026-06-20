@@ -18,10 +18,7 @@ look for src/runtimes/<platform>/runtime.ts. This is how the Sockudo client
 keeps core and platform-specific code separate.
 */
 export default interface Runtime {
-  setup(SockudoClass: {
-    new (key: string, options: unknown): Sockudo;
-    ready(): void;
-  }): void;
+  setup(SockudoClass: { new (key: string, options: unknown): Sockudo; ready(): void }): void;
   getProtocol(): string;
   getAuthorizers(): AuthTransports;
   getLocalStorage(): any;

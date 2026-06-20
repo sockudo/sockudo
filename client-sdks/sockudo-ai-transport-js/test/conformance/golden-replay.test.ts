@@ -4,11 +4,7 @@ import { normalizeInboundMessage } from "../../src/realtime/adapter.js";
 import { createConversationTree } from "../../src/core/transport/tree.js";
 import { createView } from "../../src/core/transport/view.js";
 import { UIMessageCodec } from "../../src/vercel/codec/index.js";
-import {
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
-  HEADER_TURN_REASON,
-} from "../../src/constants.js";
+import { EVENT_AI_TURN_END, EVENT_AI_TURN_START, HEADER_TURN_REASON } from "../../src/constants.js";
 import {
   hydrateGoldenFrame,
   loadGoldenTranscripts,
@@ -56,9 +52,7 @@ describe("golden transcript replay", () => {
           } as const;
           const turnReason = reason(headers[HEADER_TURN_REASON]);
           tree.applyTurnLifecycle(
-            turnReason === undefined
-              ? turnEnd
-              : { ...turnEnd, reason: turnReason },
+            turnReason === undefined ? turnEnd : { ...turnEnd, reason: turnReason },
           );
           lifecycleEvents += 1;
           continue;
@@ -80,9 +74,10 @@ describe("golden transcript replay", () => {
           status: node.status,
           messageCount: UIMessageCodec.getMessages(node.projection).length,
         })),
-        activeTurns: Array.from(tree.getActiveTurnIds()).map(
-          ([clientId, turns]) => [clientId, Array.from(turns).sort()],
-        ),
+        activeTurns: Array.from(tree.getActiveTurnIds()).map(([clientId, turns]) => [
+          clientId,
+          Array.from(turns).sort(),
+        ]),
       };
     });
 

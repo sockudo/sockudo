@@ -31,10 +31,7 @@ export {
   type LoadHistoryOptions,
   type LoadHistoryResult,
 } from "./decode-history.js";
-export {
-  createDefaultInvocationIdProvider,
-  type InvocationIdProvider,
-} from "./invocation.js";
+export { createDefaultInvocationIdProvider, type InvocationIdProvider } from "./invocation.js";
 export {
   createStreamRouter,
   type StreamRouter,

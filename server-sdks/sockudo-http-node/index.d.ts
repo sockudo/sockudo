@@ -13,24 +13,14 @@ declare class Sockudo {
     params?: Sockudo.TriggerParams,
   ): Promise<Response>;
 
-  trigger(
-    channel: string | Array<string>,
-    event: string,
-    data: any,
-  ): Promise<Response>;
+  trigger(channel: string | Array<string>, event: string, data: any): Promise<Response>;
 
   triggerBatch(events: Array<Sockudo.BatchEvent>): Promise<Response>;
 
   get(opts: Sockudo.GetOptions): Promise<Response>;
   delete(opts: Sockudo.GetOptions): Promise<Response>;
-  channelHistory(
-    channel: string,
-    params?: Sockudo.HistoryParams,
-  ): Promise<Sockudo.HistoryPage>;
-  getMessage(
-    channel: string,
-    messageSerial: string,
-  ): Promise<Sockudo.GetMessageResponse>;
+  channelHistory(channel: string, params?: Sockudo.HistoryParams): Promise<Sockudo.HistoryPage>;
+  getMessage(channel: string, messageSerial: string): Promise<Sockudo.GetMessageResponse>;
   getMessageVersions(
     channel: string,
     messageSerial: string,
@@ -88,10 +78,7 @@ declare class Sockudo {
     data?: Sockudo.PresenceChannelData,
   ): Sockudo.ChannelAuthResponse;
 
-  authenticateUser(
-    socketId: string,
-    userData: Sockudo.UserChannelData,
-  ): Sockudo.UserAuthResponse;
+  authenticateUser(socketId: string, userData: Sockudo.UserChannelData): Sockudo.UserAuthResponse;
 
   sendToUser(userId: string, event: string, data: any): Promise<Response>;
 
@@ -115,13 +102,8 @@ declare class Sockudo {
     deviceId: string,
     deviceIdentityToken?: string,
   ): Promise<Record<string, unknown>>;
-  deleteDeviceRegistration(
-    deviceId: string,
-    deviceIdentityToken?: string,
-  ): Promise<Response>;
-  removeDeviceRegistrationsByClient(
-    clientId: string,
-  ): Promise<Record<string, unknown>>;
+  deleteDeviceRegistration(deviceId: string, deviceIdentityToken?: string): Promise<Response>;
+  removeDeviceRegistrationsByClient(clientId: string): Promise<Record<string, unknown>>;
   upsertChannelPushSubscription(
     subscription: Sockudo.PushChannelSubscription,
     deviceIdentityToken?: string,
@@ -144,9 +126,7 @@ declare class Sockudo {
     provider: "fcm" | "apns" | "webpush" | "hms" | "wns",
     credential: Record<string, unknown>,
   ): Promise<Record<string, unknown>>;
-  publishPush(
-    request: Sockudo.PushPublishRequest,
-  ): Promise<Sockudo.PushPublishAcceptedResponse>;
+  publishPush(request: Sockudo.PushPublishRequest): Promise<Sockudo.PushPublishAcceptedResponse>;
   publishPushDirect(
     request: Sockudo.PushPublishRequest,
   ): Promise<Sockudo.PushPublishAcceptedResponse>;
@@ -158,9 +138,7 @@ declare class Sockudo {
   ): Promise<Sockudo.PushPublishAcceptedResponse>;
   getPublishStatus(publishId: string): Promise<Record<string, unknown>>;
   cancelScheduledPush(publishId: string): Promise<Response>;
-  postPushDeliveryStatus(
-    event: Sockudo.PushDeliveryStatusEvent,
-  ): Promise<Record<string, unknown>>;
+  postPushDeliveryStatus(event: Sockudo.PushDeliveryStatusEvent): Promise<Record<string, unknown>>;
 
   webhook(request: Sockudo.WebHookRequest): Sockudo.WebHook;
   createSignedQueryString(opts: Sockudo.SignedQueryStringOptions): string;
@@ -168,10 +146,7 @@ declare class Sockudo {
 
 declare namespace Sockudo {
   export function forCluster(cluster: string, opts: BaseOptions): Sockudo;
-  export function forURL(
-    connectionString: string,
-    opts?: Partial<Options>,
-  ): Sockudo;
+  export function forURL(connectionString: string, opts?: Partial<Options>): Sockudo;
 
   export interface BaseOptions {
     appId: string;
@@ -621,13 +596,7 @@ declare namespace Sockudo {
   }
 
   export class RequestError extends Error {
-    constructor(
-      message: string,
-      url: string,
-      error: Error,
-      status?: number,
-      body?: string,
-    );
+    constructor(message: string, url: string, error: Error, status?: number, body?: string);
     url: string;
     error: Error;
     status?: number;
@@ -635,12 +604,7 @@ declare namespace Sockudo {
   }
 
   export class WebHookError extends Error {
-    constructor(
-      message: string,
-      contentType: string,
-      body: string,
-      signature: string,
-    );
+    constructor(message: string, contentType: string, body: string, signature: string);
     contentType: string;
     body: string;
     signature: string;

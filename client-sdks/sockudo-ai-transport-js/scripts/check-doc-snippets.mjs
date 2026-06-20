@@ -66,9 +66,7 @@ if (writeMode) {
 } else {
   const current = await readFile(generatedPath, "utf8");
   if (current !== generated) {
-    throw new Error(
-      "docs/snippets/generated.md is stale; run pnpm docs:snippets:update",
-    );
+    throw new Error("docs/snippets/generated.md is stale; run pnpm docs:snippets:update");
   }
 }
 

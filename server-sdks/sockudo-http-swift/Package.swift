@@ -20,10 +20,6 @@ let package = Package(
       targets: ["Sockudo"]),
   ],
   dependencies: [
-    // Source code linting
-    .package(
-      url: "https://github.com/realm/SwiftLint",
-      .upToNextMajor(from: "0.43.1")),
     // Simple REST API client implementation with 'Codable' types
     .package(
       url: "https://github.com/danielrbrowne/APIota",

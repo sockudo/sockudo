@@ -80,9 +80,7 @@ export class MockClient implements ClientLike {
             versionCounter += 1;
             return `ver-${String(versionCounter)}`;
           },
-      now: options.providers?.now
-        ? () => options.providers?.now?.() ?? 0
-        : () => 0,
+      now: options.providers?.now ? () => options.providers?.now?.() ?? 0 : () => 0,
     };
     this.connection = {
       state: "connected",
@@ -178,36 +176,17 @@ export class MockChannel implements ChannelLike {
   }
 
   /** Updates a mock mutable message. */
-  public updateMessage(
-    messageSerial: string,
-    options: MessageMutation = {},
-  ): Promise<MessageAck> {
-    return this.mutate(
-      messageSerial,
-      "message.update",
-      options.data,
-      options.extras,
-    );
+  public updateMessage(messageSerial: string, options: MessageMutation = {}): Promise<MessageAck> {
+    return this.mutate(messageSerial, "message.update", options.data, options.extras);
   }
 
   /** Deletes a mock mutable message. */
-  public deleteMessage(
-    messageSerial: string,
-    options: MessageMutation = {},
-  ): Promise<MessageAck> {
-    return this.mutate(
-      messageSerial,
-      "message.delete",
-      options.data,
-      options.extras,
-    );
+  public deleteMessage(messageSerial: string, options: MessageMutation = {}): Promise<MessageAck> {
+    return this.mutate(messageSerial, "message.delete", options.data, options.extras);
   }
 
   /** Subscribes to mock message delivery. */
-  public subscribe(
-    listener: MessageListener,
-    options?: SubscribeOptions,
-  ): Unsubscribe {
+  public subscribe(listener: MessageListener, options?: SubscribeOptions): Unsubscribe {
     const names = options?.names ? new Set(options.names) : undefined;
     const wrapped = (message: InboundMessage): void => {
       if (!names || names.has(message.name)) {
@@ -225,9 +204,7 @@ export class MockChannel implements ChannelLike {
   }
 
   /** Reads mock channel history. */
-  public history(
-    options: HistoryOptions = {},
-  ): Promise<PaginatedResult<InboundMessage>> {
+  public history(options: HistoryOptions = {}): Promise<PaginatedResult<InboundMessage>> {
     const limit = options.limit ?? 100;
     const attachSerial = options.untilAttach ? this.attachSerial : undefined;
     const source =
@@ -381,11 +358,7 @@ class MockPresence implements PresenceLike {
   }
 }
 
-function mergeMockExtras(
-  extras: unknown,
-  action: string,
-  ack: MessageAck,
-): unknown {
+function mergeMockExtras(extras: unknown, action: string, ack: MessageAck): unknown {
   const root = isRecord(extras) ? { ...extras } : {};
   const headers = isRecord(root.headers) ? { ...root.headers } : {};
   headers.sockudo_action = action;
@@ -398,9 +371,7 @@ function mergeMockExtras(
   return root;
 }
 
-function pageFrom(
-  messages: readonly SockudoRawMessage[],
-): PaginatedResult<InboundMessage> {
+function pageFrom(messages: readonly SockudoRawMessage[]): PaginatedResult<InboundMessage> {
   return {
     items: messages.map((message) => normalizeInboundMessage(message)),
     hasNext(): boolean {
@@ -410,8 +381,7 @@ function pageFrom(
       return Promise.reject(
         new ErrorInfo({
           code: ErrorCode.InvalidArgument,
-          message:
-            "unable to read next history page; no next page is available",
+          message: "unable to read next history page; no next page is available",
         }),
       );
     },

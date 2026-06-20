@@ -1,7 +1,4 @@
-import {
-  ChannelAuthorizationOptions,
-  UserAuthenticationOptions,
-} from "./auth/options";
+import { ChannelAuthorizationOptions, UserAuthenticationOptions } from "./auth/options";
 import {
   ChannelAuthorizerGenerator,
   DeprecatedAuthOptions,
@@ -73,8 +70,6 @@ export function validateOptions(options) {
     throw "Options object must provide a cluster or wsHost";
   }
   if ("disableStats" in options) {
-    Logger.warn(
-      "The disableStats option is deprecated in favor of enableStats",
-    );
+    Logger.warn("The disableStats option is deprecated in favor of enableStats");
   }
 }

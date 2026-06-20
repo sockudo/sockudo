@@ -1,5 +1,5 @@
 const expect = require("expect.js");
-const HttpsProxyAgent = require("https-proxy-agent");
+const { HttpsProxyAgent } = require("https-proxy-agent");
 
 const Sockudo = require("../../../dist/sockudo");
 
@@ -37,9 +37,7 @@ describe("Sockudo", function () {
     it("should throw an exception if `useTLS` and `encrypted` are set", function () {
       expect(function () {
         new Sockudo({ useTLS: true, encrypted: false });
-      }).to.throwException(
-        /^Cannot set both `useTLS` and `encrypted` configuration options$/,
-      );
+      }).to.throwException(/^Cannot set both `useTLS` and `encrypted` configuration options$/);
     });
 
     it("should default `host` to 'localhost'", function () {

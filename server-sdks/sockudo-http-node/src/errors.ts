@@ -5,13 +5,7 @@ export class RequestError extends Error {
   statusCode?: number;
   body?: string;
 
-  constructor(
-    message: string,
-    url: string,
-    error?: Error,
-    status?: number,
-    body?: string,
-  ) {
+  constructor(message: string, url: string, error?: Error, status?: number, body?: string) {
     super(message);
     this.name = "SockudoRequestError";
     this.url = url;

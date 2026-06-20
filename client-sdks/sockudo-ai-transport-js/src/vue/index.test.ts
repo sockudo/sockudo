@@ -16,12 +16,8 @@ import {
 describe("Vue transport composables", () => {
   it("provides and resolves a typed client transport", () => {
     const client = createMockClient({ clientId: "vue-client" });
-    let provided:
-      | UseClientTransportResult<unknown, unknown, unknown, unknown>
-      | undefined;
-    let resolved:
-      | UseClientTransportResult<unknown, unknown, unknown, unknown>
-      | undefined;
+    let provided: UseClientTransportResult<unknown, unknown, unknown, unknown> | undefined;
+    let resolved: UseClientTransportResult<unknown, unknown, unknown, unknown> | undefined;
     let view: ViewHandle<unknown> | undefined;
 
     const Child = defineComponent({

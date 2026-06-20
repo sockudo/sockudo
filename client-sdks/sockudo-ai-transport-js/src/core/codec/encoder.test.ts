@@ -11,11 +11,7 @@ import { ErrorCode, ErrorInfo } from "../../errors.js";
 import { getCodecHeaders, getTransportHeaders } from "../../utils.js";
 import { createEncoderCore } from "./encoder.js";
 import type { ChannelWriter, EncoderOutboundMessage } from "./types.js";
-import type {
-  MessageAck,
-  MessageMutation,
-  PublishMessage,
-} from "../../realtime/types.js";
+import type { MessageAck, MessageMutation, PublishMessage } from "../../realtime/types.js";
 
 describe("encoder core", () => {
   it("publishes discrete messages with discrete stream headers", async () => {
@@ -64,15 +60,11 @@ describe("encoder core", () => {
         data: "ab",
       },
     });
-    expect(
-      getTransportHeaders(writer.appends.at(0)?.options.extras)["turn-id"],
-    ).toBe("turn-1");
-    expect(getCodecHeaders(writer.appends.at(0)?.options.extras).provider).toBe(
-      "unit",
+    expect(getTransportHeaders(writer.appends.at(0)?.options.extras)["turn-id"]).toBe("turn-1");
+    expect(getCodecHeaders(writer.appends.at(0)?.options.extras).provider).toBe("unit");
+    expect(getTransportHeaders(writer.updates.at(0)?.options.extras)[HEADER_STATUS]).toBe(
+      "complete",
     );
-    expect(
-      getTransportHeaders(writer.updates.at(0)?.options.extras)[HEADER_STATUS],
-    ).toBe("complete");
   });
 
   it("serializes stream appends before the terminal mutation", async () => {
@@ -98,9 +90,7 @@ describe("encoder core", () => {
     await closed;
 
     expect(writer.updates).toHaveLength(1);
-    expect(
-      getTransportHeaders(writer.updates[0]?.options.extras)[HEADER_STATUS],
-    ).toBe("complete");
+    expect(getTransportHeaders(writer.updates[0]?.options.extras)[HEADER_STATUS]).toBe("complete");
   });
 
   it("recovers failed appends with one aggregate update", async () => {
@@ -121,9 +111,7 @@ describe("encoder core", () => {
         data: "abc",
       },
     });
-    expect(
-      getTransportHeaders(writer.updates[0]?.options.extras)[HEADER_STATUS],
-    ).toBe("complete");
+    expect(getTransportHeaders(writer.updates[0]?.options.extras)[HEADER_STATUS]).toBe("complete");
   });
 
   it("throws 104000 when recovery update fails", async () => {
@@ -150,9 +138,7 @@ describe("encoder core", () => {
     await Promise.all([first, second]);
 
     expect(writer.updates).toHaveLength(1);
-    expect(
-      getTransportHeaders(writer.updates[0]?.options.extras)[HEADER_STATUS],
-    ).toBe("complete");
+    expect(getTransportHeaders(writer.updates[0]?.options.extras)[HEADER_STATUS]).toBe("complete");
   });
 
   it("isolates onMessage hook exceptions and allows mutation", async () => {

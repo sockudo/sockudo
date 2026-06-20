@@ -13,8 +13,7 @@ export function demoConfig(): DemoConfig {
   const port = Number(process.env.SOCKUDO_PORT ?? "6001");
   return {
     appBaseUrl:
-      process.env.SOCKUDO_DEMO_APP_BASE_URL ??
-      `http://127.0.0.1:${process.env.PORT ?? "5174"}`,
+      process.env.SOCKUDO_DEMO_APP_BASE_URL ?? `http://127.0.0.1:${process.env.PORT ?? "5174"}`,
     appId: process.env.SOCKUDO_APP_ID ?? "demo-app",
     appKey: process.env.SOCKUDO_APP_KEY ?? "demo-key",
     appSecret: process.env.SOCKUDO_APP_SECRET ?? "demo-secret",
@@ -33,8 +32,6 @@ export function publicDemoConfig() {
     host: config.host,
     model: config.model,
     port: config.port,
-    usingGatewayKey: Boolean(
-      process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_API_KEY,
-    ),
+    usingGatewayKey: Boolean(process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_API_KEY),
   };
 }

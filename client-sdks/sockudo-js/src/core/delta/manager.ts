@@ -12,13 +12,7 @@ import { SockudoEvent } from "../connection/protocol/message-types";
 import { prefixedEvent } from "../protocol_prefix";
 import ChannelState from "./channel_state";
 import { FossilDeltaDecoder, Xdelta3Decoder, base64ToBytes } from "./decoders";
-import {
-  DeltaOptions,
-  DeltaStats,
-  DeltaMessage,
-  DeltaAlgorithm,
-  CacheSyncData,
-} from "./types";
+import { DeltaOptions, DeltaStats, DeltaMessage, DeltaAlgorithm, CacheSyncData } from "./types";
 
 export default class DeltaCompressionManager {
   private options: Required<DeltaOptions>;
@@ -164,18 +158,14 @@ export default class DeltaCompressionManager {
   /**
    * Handle delta-compressed message
    */
-  handleDeltaMessage(
-    channel: string,
-    deltaData: DeltaMessage,
-  ): SockudoEvent | null {
+  handleDeltaMessage(channel: string, deltaData: DeltaMessage): SockudoEvent | null {
     let deltaBytes: Uint8Array | null = null;
 
     try {
       const event = deltaData.event;
       const delta = deltaData.delta;
       const sequence = deltaData.seq;
-      const algorithm =
-        deltaData.algorithm || this.defaultAlgorithm || "fossil";
+      const algorithm = deltaData.algorithm || this.defaultAlgorithm || "fossil";
       const conflationKey = deltaData.conflation_key;
       const baseIndex = deltaData.base_index;
 
@@ -210,9 +200,9 @@ export default class DeltaCompressionManager {
             this.log("Current conflation cache snapshot", {
               channel,
               conflationKey: channelState.conflationKey,
-              cacheSizes: Array.from(
-                channelState.conflationCaches.entries(),
-              ).map(([key, cache]) => ({ key, size: cache.length })),
+              cacheSizes: Array.from(channelState.conflationCaches.entries()).map(
+                ([key, cache]) => ({ key, size: cache.length }),
+              ),
             });
           }
           this.requestResync(channel);
@@ -239,10 +229,7 @@ export default class DeltaCompressionManager {
       // Apply delta based on algorithm
       let reconstructedMessage: string;
       if (algorithm === "fossil") {
-        reconstructedMessage = FossilDeltaDecoder.apply(
-          baseMessage,
-          deltaBytes,
-        );
+        reconstructedMessage = FossilDeltaDecoder.apply(baseMessage, deltaBytes);
       } else if (algorithm === "xdelta3") {
         reconstructedMessage = Xdelta3Decoder.apply(baseMessage, deltaBytes);
       } else {
@@ -251,11 +238,7 @@ export default class DeltaCompressionManager {
 
       // Update conflation cache with reconstructed message
       if (channelState.conflationKey) {
-        channelState.updateConflationCache(
-          conflationKey,
-          reconstructedMessage,
-          sequence,
-        );
+        channelState.updateConflationCache(conflationKey, reconstructedMessage, sequence);
       } else {
         // Update base for non-conflation channels
         channelState.setBase(reconstructedMessage, sequence);
@@ -279,8 +262,7 @@ export default class DeltaCompressionManager {
         originalSize: reconstructedMessage.length,
         deltaSize: deltaBytes.length,
         compressionRatio:
-          ((deltaBytes.length / reconstructedMessage.length) * 100).toFixed(1) +
-          "%",
+          ((deltaBytes.length / reconstructedMessage.length) * 100).toFixed(1) + "%",
       });
 
       // Parse and return the reconstructed event
@@ -425,16 +407,13 @@ export default class DeltaCompressionManager {
    */
   getStats(): DeltaStats {
     const bandwidthSaved =
-      this.stats.totalBytesWithoutCompression -
-      this.stats.totalBytesWithCompression;
+      this.stats.totalBytesWithoutCompression - this.stats.totalBytesWithCompression;
     const bandwidthSavedPercent =
       this.stats.totalBytesWithoutCompression > 0
         ? (bandwidthSaved / this.stats.totalBytesWithoutCompression) * 100
         : 0;
 
-    const channelStats = Array.from(this.channelStates.values()).map((state) =>
-      state.getStats(),
-    );
+    const channelStats = Array.from(this.channelStates.values()).map((state) => state.getStats());
 
     return {
       ...this.stats,

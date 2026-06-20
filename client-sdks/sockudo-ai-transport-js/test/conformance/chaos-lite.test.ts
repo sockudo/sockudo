@@ -38,36 +38,23 @@ import type {
   UserMessage,
 } from "../../src/core/codec/index.js";
 import { createClientTransport } from "../../src/core/transport/client-transport.js";
-import type {
-  ActiveTurn,
-  ClientTransport,
-} from "../../src/core/transport/client-transport.js";
+import type { ActiveTurn, ClientTransport } from "../../src/core/transport/client-transport.js";
 import type { InvocationIdProvider } from "../../src/core/transport/invocation.js";
 
-const stages = [
-  "pre-publish",
-  "post-publish-pre-post",
-  "mid-stream",
-  "pre-turn-end",
-] as const;
+const stages = ["pre-publish", "post-publish-pre-post", "mid-stream", "pre-turn-end"] as const;
 
 describe("chaos-lite deterministic matrix", () => {
   it("defines every websocket drop stage required by the release gate", () => {
-    expect(stages).toEqual([
-      "pre-publish",
-      "post-publish-pre-post",
-      "mid-stream",
-      "pre-turn-end",
-    ]);
+    expect(stages).toEqual(["pre-publish", "post-publish-pre-post", "mid-stream", "pre-turn-end"]);
   });
 
   it("drops before input publish and rolls back optimistic state", async () => {
     const { channel, transport } = setup();
     channel.failNextPublish(new Error("socket closed before publish"));
 
-    await expect(
-      transport.view.send({ id: "user-1", text: "hello" }),
-    ).rejects.toMatchObject({ code: ErrorCode.TransportSendFailed });
+    await expect(transport.view.send({ id: "user-1", text: "hello" })).rejects.toMatchObject({
+      code: ErrorCode.TransportSendFailed,
+    });
     expect(transport.view.getMessages()).toEqual([]);
     expect(channel.historySize()).toBe(0);
   });
@@ -87,9 +74,7 @@ describe("chaos-lite deterministic matrix", () => {
     await Promise.resolve();
 
     expect(channel.historySize()).toBe(1);
-    expect(transport.view.getMessages()).toEqual([
-      { id: "user-1", text: "hello" },
-    ]);
+    expect(transport.view.getMessages()).toEqual([{ id: "user-1", text: "hello" }]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ code: ErrorCode.TransportSendFailed });
     await expect(active.stream.getReader().read()).rejects.toMatchObject({
@@ -156,19 +141,12 @@ describe("chaos-lite deterministic matrix", () => {
 
   it("orders turns by server serial, not skewed local timestamps", async () => {
     const { channel, transport } = setup();
-    await transport.view.send(
-      { id: "user-1", text: "hello" },
-      { waitForTurnStart: false },
-    );
+    await transport.view.send({ id: "user-1", text: "hello" }, { waitForTurnStart: false });
 
     channel.inject(lifecycleFromIds("turn-late", "inv-late", 20, 100));
-    channel.inject(
-      outputFromIds("turn-late", "inv-late", "assistant-late", 21, 50),
-    );
+    channel.inject(outputFromIds("turn-late", "inv-late", "assistant-late", 21, 50));
     channel.inject(lifecycleFromIds("turn-early", "inv-early", 10, 10_000));
-    channel.inject(
-      outputFromIds("turn-early", "inv-early", "assistant-early", 11, 9_000),
-    );
+    channel.inject(outputFromIds("turn-early", "inv-early", "assistant-early", 11, 9_000));
 
     const assistantMessages = transport.view
       .getMessages()
@@ -225,9 +203,7 @@ function setup(
 class ChaosChannel implements ChannelLike {
   private readonly messages: SockudoRawMessage[] = [];
   private readonly listeners = new Set<MessageListener>();
-  private readonly continuityListeners = new Set<
-    (payload: ErrorInfo) => void
-  >();
+  private readonly continuityListeners = new Set<(payload: ErrorInfo) => void>();
   private nextPublishError: Error | undefined;
   private serial = 0;
 
@@ -272,34 +248,15 @@ class ChaosChannel implements ChannelLike {
     return this.mutate(messageSerial, "message.append", data, options.extras);
   }
 
-  public updateMessage(
-    messageSerial: string,
-    options: MessageMutation = {},
-  ): Promise<MessageAck> {
-    return this.mutate(
-      messageSerial,
-      "message.update",
-      options.data,
-      options.extras,
-    );
+  public updateMessage(messageSerial: string, options: MessageMutation = {}): Promise<MessageAck> {
+    return this.mutate(messageSerial, "message.update", options.data, options.extras);
   }
 
-  public deleteMessage(
-    messageSerial: string,
-    options: MessageMutation = {},
-  ): Promise<MessageAck> {
-    return this.mutate(
-      messageSerial,
-      "message.delete",
-      options.data,
-      options.extras,
-    );
+  public deleteMessage(messageSerial: string, options: MessageMutation = {}): Promise<MessageAck> {
+    return this.mutate(messageSerial, "message.delete", options.data, options.extras);
   }
 
-  public subscribe(
-    listener: MessageListener,
-    options?: SubscribeOptions,
-  ): Unsubscribe {
+  public subscribe(listener: MessageListener, options?: SubscribeOptions): Unsubscribe {
     const names = options?.names ? new Set(options.names) : undefined;
     const wrapped = (message: InboundMessage): void => {
       if (!names || names.has(message.name)) {
@@ -313,9 +270,7 @@ class ChaosChannel implements ChannelLike {
   }
 
   public history(): Promise<PaginatedResult<InboundMessage>> {
-    const items = this.messages.map((message) =>
-      normalizeInboundMessage(message),
-    );
+    const items = this.messages.map((message) => normalizeInboundMessage(message));
     return Promise.resolve({
       items,
       hasNext: () => false,
@@ -342,10 +297,7 @@ class ChaosChannel implements ChannelLike {
     };
   }
 
-  public inject(
-    raw: SockudoRawMessage,
-    options: { deliver?: boolean } = {},
-  ): void {
+  public inject(raw: SockudoRawMessage, options: { deliver?: boolean } = {}): void {
     this.messages.push(raw);
     if (options.deliver !== false) {
       this.dispatch(raw);
@@ -439,9 +391,7 @@ const noopPresence: PresenceLike = {
 };
 
 function okFetch(): typeof globalThis.fetch {
-  return vi.fn<typeof globalThis.fetch>(() =>
-    Promise.resolve(new Response(null, { status: 200 })),
-  );
+  return vi.fn<typeof globalThis.fetch>(() => Promise.resolve(new Response(null, { status: 200 })));
 }
 
 function noopUnsubscribe(): void {
@@ -464,14 +414,7 @@ function lifecycle(
   serial: number,
   reason?: "complete" | "cancelled" | "error" | "suspended",
 ): SockudoRawMessage {
-  return lifecycleFromIds(
-    turn.turnId,
-    turn.invocationId,
-    serial,
-    0,
-    name,
-    reason,
-  );
+  return lifecycleFromIds(turn.turnId, turn.invocationId, serial, 0, name, reason);
 }
 
 function lifecycleFromIds(
@@ -479,9 +422,7 @@ function lifecycleFromIds(
   invocationId: string,
   serial: number,
   timestampMs: number,
-  name:
-    | typeof EVENT_AI_TURN_START
-    | typeof EVENT_AI_TURN_END = EVENT_AI_TURN_START,
+  name: typeof EVENT_AI_TURN_START | typeof EVENT_AI_TURN_END = EVENT_AI_TURN_START,
   reason?: "complete" | "cancelled" | "error" | "suspended",
 ): SockudoRawMessage {
   return {
@@ -516,14 +457,7 @@ function output(
   text: string,
   serial: number,
 ): SockudoRawMessage {
-  return outputFromIds(
-    turn.turnId,
-    turn.invocationId,
-    messageId,
-    serial,
-    0,
-    text,
-  );
+  return outputFromIds(turn.turnId, turn.invocationId, messageId, serial, 0, text);
 }
 
 function outputFromIds(
@@ -566,9 +500,7 @@ function testCodec(): Codec<Message, Message, Projection, Message> {
   return {
     init: () => ({ messages: [] }),
     fold(projection, event) {
-      const index = projection.messages.findIndex(
-        (message) => message.id === event.id,
-      );
+      const index = projection.messages.findIndex((message) => message.id === event.id);
       if (index === -1) {
         projection.messages.push(event);
       } else {
@@ -593,8 +525,7 @@ function testCodec(): Codec<Message, Message, Projection, Message> {
         decode(message): DecodedBatch<Message, Message> {
           const data = message.data as Message;
           const messageId =
-            message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ??
-            message.messageSerial;
+            message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ?? message.messageSerial;
           const decoded = {
             event: data,
             messageId,

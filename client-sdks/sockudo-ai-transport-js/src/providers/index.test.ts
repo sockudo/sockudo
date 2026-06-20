@@ -135,9 +135,7 @@ describe("direct provider adapters", () => {
     );
 
     const fetchCall = fetch.mock.calls[0];
-    expect(fetchCall?.[0]).toBe(
-      "https://api.groq.com/openai/v1/chat/completions",
-    );
+    expect(fetchCall?.[0]).toBe("https://api.groq.com/openai/v1/chat/completions");
     expect(fetchCall?.[1]?.method).toBe("POST");
     expect(fetchCall?.[1]?.headers).toMatchObject({
       Authorization: "Bearer token",
@@ -241,17 +239,13 @@ describe("direct provider adapters", () => {
       }),
     });
 
-    const chunks = await collect(
-      await registry.streamText("local", { model: "", prompt: "hi" }),
-    );
+    const chunks = await collect(await registry.streamText("local", { model: "", prompt: "hi" }));
 
     expect(chunks.some((chunk) => chunk.type === "finish")).toBe(true);
   });
 });
 
-async function collect(
-  stream: ReadableStream<AI.UIMessageChunk>,
-): Promise<AI.UIMessageChunk[]> {
+async function collect(stream: ReadableStream<AI.UIMessageChunk>): Promise<AI.UIMessageChunk[]> {
   const reader = stream.getReader();
   const chunks: AI.UIMessageChunk[] = [];
   try {
@@ -267,9 +261,7 @@ async function collect(
   }
 }
 
-async function* asyncIterable(
-  items: readonly unknown[],
-): AsyncIterable<unknown> {
+async function* asyncIterable(items: readonly unknown[]): AsyncIterable<unknown> {
   for (const item of items) {
     await Promise.resolve();
     yield item;

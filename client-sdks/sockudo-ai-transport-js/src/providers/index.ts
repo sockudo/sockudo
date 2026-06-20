@@ -1,16 +1,8 @@
 export { version } from "../version.js";
 
 import { vercelTurnEndReason } from "../vercel/transport/index.js";
-import type {
-  StreamResult,
-  Turn,
-  TurnEndReason,
-} from "../core/transport/index.js";
-import type {
-  AI,
-  VercelOutput,
-  VercelProjection,
-} from "../vercel/codec/index.js";
+import type { StreamResult, Turn, TurnEndReason } from "../core/transport/index.js";
+import type { AI, VercelOutput, VercelProjection } from "../vercel/codec/index.js";
 
 /**
  * Well-known OpenAI-compatible provider identifiers.
@@ -118,9 +110,7 @@ export interface OpenAIChatCompletionsClient {
   chat: {
     completions: {
       /** Creates a streaming chat completion. */
-      create(
-        request: Record<string, unknown> & { stream: true },
-      ): Promise<AsyncIterable<unknown>>;
+      create(request: Record<string, unknown> & { stream: true }): Promise<AsyncIterable<unknown>>;
     };
   };
 }
@@ -132,9 +122,7 @@ export interface OpenAIResponsesClient {
   /** Responses namespace. */
   responses: {
     /** Creates a streaming response. */
-    create(
-      request: Record<string, unknown> & { stream: true },
-    ): Promise<AsyncIterable<unknown>>;
+    create(request: Record<string, unknown> & { stream: true }): Promise<AsyncIterable<unknown>>;
   };
 }
 
@@ -163,9 +151,7 @@ export interface AnthropicMessagesClient {
   /** Messages namespace. */
   messages: {
     /** Creates a streaming Anthropic messages response. */
-    create(
-      request: Record<string, unknown> & { stream: true },
-    ): Promise<AsyncIterable<unknown>>;
+    create(request: Record<string, unknown> & { stream: true }): Promise<AsyncIterable<unknown>>;
   };
 }
 
@@ -184,9 +170,7 @@ export interface AnthropicMessageStreamOptions extends ProviderTextRequest {
  */
 export interface DirectLlmProvider {
   /** Streams a provider response as Vercel UI message chunks for Sockudo. */
-  streamText(
-    request: ProviderTextRequest,
-  ): Promise<ReadableStream<VercelOutput>>;
+  streamText(request: ProviderTextRequest): Promise<ReadableStream<VercelOutput>>;
 }
 
 /**
@@ -196,10 +180,7 @@ export interface DirectLlmProviderRegistry {
   /** Resolves a provider by name. */
   get(name: string): DirectLlmProvider | undefined;
   /** Streams with a named provider. */
-  streamText(
-    name: string,
-    request: ProviderTextRequest,
-  ): Promise<ReadableStream<VercelOutput>>;
+  streamText(name: string, request: ProviderTextRequest): Promise<ReadableStream<VercelOutput>>;
 }
 
 /**
@@ -232,9 +213,7 @@ export async function streamOpenAICompatibleText(
   const response = await fetchFn(openAICompatibleUrl(options), requestInit);
   if (!response.ok || response.body === null) {
     throw new Error(
-      `OpenAI-compatible provider request failed with status ${String(
-        response.status,
-      )}`,
+      `OpenAI-compatible provider request failed with status ${String(response.status)}`,
     );
   }
   return openAIChatCompletionEventsToUIMessageStream(
@@ -270,9 +249,7 @@ export async function streamOpenAIResponse(
     ...(options.maxOutputTokens !== undefined
       ? { max_output_tokens: options.maxOutputTokens }
       : {}),
-    ...(options.temperature !== undefined
-      ? { temperature: options.temperature }
-      : {}),
+    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.topP !== undefined ? { top_p: options.topP } : {}),
     ...options.body,
     stream: true,
@@ -293,9 +270,7 @@ export async function streamAnthropicMessage(
     messages: anthropicMessages(options),
     ...(options.system !== undefined ? { system: options.system } : {}),
     max_tokens: options.maxOutputTokens ?? 1024,
-    ...(options.temperature !== undefined
-      ? { temperature: options.temperature }
-      : {}),
+    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.topP !== undefined ? { top_p: options.topP } : {}),
     ...options.body,
     stream: true,
@@ -485,12 +460,7 @@ export function openAIResponseEventsToUIMessageStream(
       if (type === "response.function_call_arguments.delta") {
         const callId = stringValue(item.item_id) ?? "tool-call";
         const name = stringValue(record(item.output_item).name) ?? "tool";
-        yield* emitToolDelta(
-          state,
-          callId,
-          name,
-          stringValue(item.delta) ?? "",
-        );
+        yield* emitToolDelta(state, callId, name, stringValue(item.delta) ?? "");
         continue;
       }
       if (type === "response.function_call_arguments.done") {
@@ -625,10 +595,7 @@ function* startMessage(state: StreamState): Iterable<VercelOutput> {
   };
 }
 
-function* emitTextDelta(
-  state: StreamState,
-  delta: string,
-): Iterable<VercelOutput> {
+function* emitTextDelta(state: StreamState, delta: string): Iterable<VercelOutput> {
   yield* startMessage(state);
   if (!state.textOpen) {
     state.textOpen = true;
@@ -660,10 +627,7 @@ function* closeText(state: StreamState): Iterable<VercelOutput> {
   };
 }
 
-function* emitReasoningDelta(
-  state: StreamState,
-  delta: string,
-): Iterable<VercelOutput> {
+function* emitReasoningDelta(state: StreamState, delta: string): Iterable<VercelOutput> {
   yield* startMessage(state);
   if (!state.reasoningOpen) {
     state.reasoningOpen = true;
@@ -695,10 +659,7 @@ function* closeReasoning(state: StreamState): Iterable<VercelOutput> {
   };
 }
 
-function* emitOpenAIToolDeltas(
-  state: StreamState,
-  toolCalls: unknown,
-): Iterable<VercelOutput> {
+function* emitOpenAIToolDeltas(state: StreamState, toolCalls: unknown): Iterable<VercelOutput> {
   if (!Array.isArray(toolCalls)) {
     return;
   }
@@ -707,8 +668,7 @@ function* emitOpenAIToolDeltas(
     const fn = record(call.function);
     const index = numberValue(call.index) ?? 0;
     const callId = stringValue(call.id) ?? `tool-${String(index)}`;
-    const name =
-      stringValue(fn.name) ?? state.tools.get(callId)?.name ?? "tool";
+    const name = stringValue(fn.name) ?? state.tools.get(callId)?.name ?? "tool";
     yield* emitToolDelta(state, callId, name, stringValue(fn.arguments) ?? "");
   }
 }
@@ -741,10 +701,7 @@ function* emitToolDelta(
   }
 }
 
-function* closeTool(
-  state: StreamState,
-  callId: string,
-): Iterable<VercelOutput> {
+function* closeTool(state: StreamState, callId: string): Iterable<VercelOutput> {
   const tool = state.tools.get(callId);
   if (!tool?.started) {
     return;
@@ -765,11 +722,7 @@ function* closeOpenAITools(state: StreamState): Iterable<VercelOutput> {
   }
 }
 
-function ensureTool(
-  state: StreamState,
-  callId: string,
-  name: string,
-): ToolState {
+function ensureTool(state: StreamState, callId: string, name: string): ToolState {
   let tool = state.tools.get(callId);
   if (!tool) {
     tool = { id: callId, name, started: false, input: "" };
@@ -791,35 +744,24 @@ function errorChunk(message: string): VercelOutput {
 
 function openAICompatibleUrl(options: OpenAICompatibleStreamOptions): string {
   const base =
-    options.baseURL ??
-    OPENAI_COMPATIBLE_PROVIDER_BASE_URLS[options.provider ?? "openai"];
+    options.baseURL ?? OPENAI_COMPATIBLE_PROVIDER_BASE_URLS[options.provider ?? "openai"];
   const path = options.path ?? "/chat/completions";
   return `${base.replace(/\/+$/u, "")}/${path.replace(/^\/+/u, "")}`;
 }
 
-function openAICompatibleBody(
-  options: ProviderTextRequest,
-): Record<string, unknown> {
+function openAICompatibleBody(options: ProviderTextRequest): Record<string, unknown> {
   return {
     model: options.model,
-    messages: options.messages ?? [
-      { role: "user", content: options.prompt ?? "" },
-    ],
+    messages: options.messages ?? [{ role: "user", content: options.prompt ?? "" }],
     stream: true,
-    ...(options.maxOutputTokens !== undefined
-      ? { max_tokens: options.maxOutputTokens }
-      : {}),
-    ...(options.temperature !== undefined
-      ? { temperature: options.temperature }
-      : {}),
+    ...(options.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}),
+    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.topP !== undefined ? { top_p: options.topP } : {}),
     ...options.body,
   };
 }
 
-function anthropicMessages(
-  options: ProviderTextRequest,
-): readonly Record<string, unknown>[] {
+function anthropicMessages(options: ProviderTextRequest): readonly Record<string, unknown>[] {
   if (options.messages !== undefined) {
     return options.messages
       .filter((message) => message.role !== "system")
@@ -831,9 +773,7 @@ function anthropicMessages(
   return [{ role: "user", content: options.prompt ?? "" }];
 }
 
-async function* streamSseJson(
-  body: ReadableStream<Uint8Array>,
-): AsyncIterable<unknown> {
+async function* streamSseJson(body: ReadableStream<Uint8Array>): AsyncIterable<unknown> {
   for await (const event of streamSse(body)) {
     if (event.data === "[DONE]") {
       return;
@@ -846,9 +786,7 @@ async function* streamSseJson(
   }
 }
 
-async function* streamSse(
-  body: ReadableStream<Uint8Array>,
-): AsyncIterable<SseEvent> {
+async function* streamSse(body: ReadableStream<Uint8Array>): AsyncIterable<SseEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -893,14 +831,10 @@ function parseSseBlock(block: string): SseEvent | undefined {
   if (data.length === 0) {
     return undefined;
   }
-  return event === undefined
-    ? { data: data.join("\n") }
-    : { event, data: data.join("\n") };
+  return event === undefined ? { data: data.join("\n") } : { event, data: data.join("\n") };
 }
 
-function readableFromAsync<T>(
-  create: () => AsyncIterable<T>,
-): ReadableStream<T> {
+function readableFromAsync<T>(create: () => AsyncIterable<T>): ReadableStream<T> {
   const iterator = create()[Symbol.asyncIterator]();
   return new ReadableStream<T>({
     async pull(controller) {
@@ -1006,9 +940,7 @@ function errorMessage(value: unknown): string {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -1016,7 +948,5 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

@@ -19,10 +19,7 @@ for (const entrypoint of entrypoints) {
   const esmModule = await import(entrypoint);
   const cjsModule = require(entrypoint);
 
-  if (
-    esmModule.version !== packageJson.version ||
-    cjsModule.version !== packageJson.version
-  ) {
+  if (esmModule.version !== packageJson.version || cjsModule.version !== packageJson.version) {
     throw new Error(`Unexpected version export from ${entrypoint}`);
   }
 }

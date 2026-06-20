@@ -1,15 +1,5 @@
-import type {
-  ReducerMeta,
-  Regenerate,
-  UserMessage,
-} from "../../core/codec/index.js";
-import type {
-  AI,
-  MessageTrackers,
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-} from "./events.js";
+import type { ReducerMeta, Regenerate, UserMessage } from "../../core/codec/index.js";
+import type { AI, MessageTrackers, VercelInput, VercelOutput, VercelProjection } from "./events.js";
 import { transitionToolPart } from "./tool-transitions.js";
 
 /** Creates an empty Vercel projection. */
@@ -84,11 +74,7 @@ function foldUserMessage(
   }
 }
 
-function foldOutput(
-  projection: VercelProjection,
-  chunk: VercelOutput,
-  meta: ReducerMeta,
-): void {
+function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: ReducerMeta): void {
   const messageId = messageIdFor(chunk, meta);
   switch (chunk.type) {
     case "start":
@@ -161,9 +147,7 @@ function foldOutput(
       ensureMessage(projection, messageId).parts.push({
         type: "file",
         url: chunk.url,
-        ...(chunk.mediaType !== undefined
-          ? { mediaType: chunk.mediaType }
-          : {}),
+        ...(chunk.mediaType !== undefined ? { mediaType: chunk.mediaType } : {}),
         ...(chunk.filename !== undefined ? { filename: chunk.filename } : {}),
       });
       return;
@@ -180,9 +164,7 @@ function foldOutput(
         type: "source-document",
         ...(chunk.sourceId !== undefined ? { sourceId: chunk.sourceId } : {}),
         ...(chunk.title !== undefined ? { title: chunk.title } : {}),
-        ...(chunk.mediaType !== undefined
-          ? { mediaType: chunk.mediaType }
-          : {}),
+        ...(chunk.mediaType !== undefined ? { mediaType: chunk.mediaType } : {}),
         ...(chunk.filename !== undefined ? { filename: chunk.filename } : {}),
       });
       return;
@@ -270,11 +252,7 @@ function startTool(
   });
 }
 
-function appendToolInput(
-  projection: VercelProjection,
-  toolCallId: string,
-  delta: string,
-): void {
+function appendToolInput(projection: VercelProjection, toolCallId: string, delta: string): void {
   const tracker = projection.trackers.tools.get(toolCallId);
   if (!tracker) {
     return;
@@ -301,10 +279,7 @@ function applyToolResolution(
   chunk: Extract<
     VercelOutput,
     {
-      type:
-        | "tool-output-available"
-        | "tool-output-error"
-        | "tool-output-denied";
+      type: "tool-output-available" | "tool-output-error" | "tool-output-denied";
     }
   >,
   meta: ReducerMeta,
@@ -328,10 +303,7 @@ function applyToolResolutionPart(
   chunk: Extract<
     VercelOutput,
     {
-      type:
-        | "tool-output-available"
-        | "tool-output-error"
-        | "tool-output-denied";
+      type: "tool-output-available" | "tool-output-error" | "tool-output-denied";
     }
   >,
 ): void {
@@ -430,34 +402,23 @@ function applyToolPart(
 }
 
 function retryPendingToolResolutions(projection: VercelProjection): void {
-  for (const [toolCallId, chunks] of Array.from(
-    projection.pendingToolResolutions,
-  )) {
+  for (const [toolCallId, chunks] of Array.from(projection.pendingToolResolutions)) {
     const tracker = projection.trackers.tools.get(toolCallId);
     const message = tracker
       ? projection.messages.find((item) => item.id === tracker.messageId)
       : undefined;
     const part = tracker ? message?.parts[tracker.partIndex] : undefined;
-    if (
-      !tracker ||
-      part?.type !== "dynamic-tool" ||
-      part.state === "input-streaming"
-    ) {
+    if (!tracker || part?.type !== "dynamic-tool" || part.state === "input-streaming") {
       continue;
     }
     projection.pendingToolResolutions.delete(toolCallId);
     const winner = chunks.reduce((current, candidate) =>
-      compareSerial(
-        String(candidate.meta.serial),
-        String(current.meta.serial),
-      ) > 0
+      compareSerial(String(candidate.meta.serial), String(current.meta.serial)) > 0
         ? candidate
         : current,
     );
     const targetMessageId = tracker.messageId;
-    const winningSerial = projection.conflictSerials.get(
-      `tool-output:${winner.event.toolCallId}`,
-    );
+    const winningSerial = projection.conflictSerials.get(`tool-output:${winner.event.toolCallId}`);
     if (
       winningSerial === undefined ||
       compareSerial(winningSerial, String(winner.meta.serial)) <= 0
@@ -501,11 +462,7 @@ function trackerMap(
   return map;
 }
 
-function wins(
-  projection: VercelProjection,
-  key: string,
-  meta: ReducerMeta,
-): boolean {
+function wins(projection: VercelProjection, key: string, meta: ReducerMeta): boolean {
   const serial = String(meta.serial);
   const previous = projection.conflictSerials.get(key);
   if (previous !== undefined && compareSerial(previous, serial) >= 0) {
@@ -538,10 +495,7 @@ function bufferPending(
   chunk: Extract<
     VercelOutput,
     {
-      type:
-        | "tool-output-available"
-        | "tool-output-error"
-        | "tool-output-denied";
+      type: "tool-output-available" | "tool-output-error" | "tool-output-denied";
     }
   >,
   meta: ReducerMeta,
@@ -594,25 +548,18 @@ function parseJsonish(value: string): unknown {
   }
 }
 
-function isUserMessage(
-  input: VercelInput | VercelOutput,
-): input is UserMessage<AI.UIMessage> {
+function isUserMessage(input: VercelInput | VercelOutput): input is UserMessage<AI.UIMessage> {
   return userMessagePayload(input) !== undefined;
 }
 
-function userMessagePayload(
-  input: VercelInput | VercelOutput,
-): AI.UIMessage | undefined {
+function userMessagePayload(input: VercelInput | VercelOutput): AI.UIMessage | undefined {
   const candidate = "message" in input ? input.message : input;
   return isUiMessage(candidate) ? candidate : undefined;
 }
 
 function isUiMessage(value: unknown): value is AI.UIMessage {
   return (
-    value !== null &&
-    typeof value === "object" &&
-    "parts" in value &&
-    Array.isArray(value.parts)
+    value !== null && typeof value === "object" && "parts" in value && Array.isArray(value.parts)
   );
 }
 

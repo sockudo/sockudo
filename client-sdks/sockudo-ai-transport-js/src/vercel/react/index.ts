@@ -39,17 +39,10 @@ import {
   type VercelProjection,
 } from "../codec/index.js";
 
-type VercelTransport = ClientTransport<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
->;
+type VercelTransport = ClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 type MessageSetter = (
-  value:
-    | readonly AI.UIMessage[]
-    | ((messages: readonly AI.UIMessage[]) => readonly AI.UIMessage[]),
+  value: readonly AI.UIMessage[] | ((messages: readonly AI.UIMessage[]) => readonly AI.UIMessage[]),
 ) => void;
 
 /**
@@ -62,12 +55,7 @@ type MessageSetter = (
  * @defaultValue `api` defaults to `"/api/chat"`.
  */
 export type ChatTransportProviderProps = Omit<
-  TransportProviderProps<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >,
+  TransportProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "api" | "codec"
 > & {
   /** Server endpoint URL for the route handler.
@@ -158,9 +146,7 @@ interface ChatTransportRegistry {
   slots: Map<string, ChatTransportSlot>;
 }
 
-const ChatTransportContext = createContext<ChatTransportRegistry | undefined>(
-  undefined,
-);
+const ChatTransportContext = createContext<ChatTransportRegistry | undefined>(undefined);
 const emptyChatOptions: ChatTransportOptions = {};
 const vercelHooks = createGenericTransportHooks<
   VercelInput,
@@ -180,12 +166,7 @@ export function createTransportHooks(): TransportHooks<
   VercelProjection,
   AI.UIMessage
 > {
-  return createGenericTransportHooks<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >();
+  return createGenericTransportHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 }
 
 /**
@@ -199,15 +180,8 @@ export function createTransportHooks(): TransportHooks<
 export function ChatTransportProvider(
   props: ChatTransportProviderProps,
 ): ReturnType<typeof createElement> {
-  const {
-    children,
-    chatOptions,
-    api = "/api/chat",
-    channelName,
-    ...transportOptions
-  } = props;
-  const innerProps =
-    chatOptions === undefined ? { channelName } : { channelName, chatOptions };
+  const { children, chatOptions, api = "/api/chat", channelName, ...transportOptions } = props;
+  const innerProps = chatOptions === undefined ? { channelName } : { channelName, chatOptions };
   return createElement(
     VercelTransportProvider,
     {
@@ -228,14 +202,10 @@ export function ChatTransportProvider(
  * Missing, skipped, and failed providers return throwing stubs; error fields are
  * omitted only when skipped.
  */
-export function useChatTransport(
-  options: UseChatTransportOptions = {},
-): UseChatTransportResult {
+export function useChatTransport(options: UseChatTransportOptions = {}): UseChatTransportResult {
   const registry = useContext(ChatTransportContext);
   const client = useClientTransport({
-    ...(options.channelName !== undefined
-      ? { channelName: options.channelName }
-      : {}),
+    ...(options.channelName !== undefined ? { channelName: options.channelName } : {}),
     ...(options.skip !== undefined ? { skip: options.skip } : {}),
   });
   if (options.skip === true) {
@@ -246,8 +216,7 @@ export function useChatTransport(
   }
   const slot = resolveChatSlot(registry, options.channelName);
   const chatTransport = slot?.chatTransport;
-  const chatError =
-    slot?.error ?? missingChatTransportError(options.channelName);
+  const chatError = slot?.error ?? missingChatTransportError(options.channelName);
   const result: UseChatTransportResult = {
     chatTransport: chatTransport ?? throwingChatTransportStub(),
     transport: client.transport,
@@ -272,24 +241,17 @@ export function useMessageSync(options: UseMessageSyncOptions): void {
   const { setMessages, channelName, skip } = options;
   const setMessagesRef = useRef(setMessages);
   setMessagesRef.current = setMessages;
-  const { chatTransport, transport, chatTransportError, transportError } =
-    useChatTransport({
-      ...(channelName !== undefined ? { channelName } : {}),
-      ...(skip !== undefined ? { skip } : {}),
-    });
+  const { chatTransport, transport, chatTransportError, transportError } = useChatTransport({
+    ...(channelName !== undefined ? { channelName } : {}),
+    ...(skip !== undefined ? { skip } : {}),
+  });
   useEffect(() => {
-    if (
-      skip === true ||
-      chatTransportError !== undefined ||
-      transportError !== undefined
-    ) {
+    if (skip === true || chatTransportError !== undefined || transportError !== undefined) {
       return;
     }
     const view = transport.view;
     const sync = (): void => {
-      setMessagesRef.current((overlay) =>
-        mergeMessages(view.getMessages(), overlay),
-      );
+      setMessagesRef.current((overlay) => mergeMessages(view.getMessages(), overlay));
     };
     const syncIfIdle = (): void => {
       if (!chatTransport.streaming) {
@@ -298,27 +260,18 @@ export function useMessageSync(options: UseMessageSyncOptions): void {
     };
     const unsubscribeView = view.on("update", syncIfIdle);
     const unsubscribeMessages = transport.on("message", () => undefined);
-    const unsubscribeStreaming = chatTransport.onStreamingChange(
-      (streaming) => {
-        if (!streaming) {
-          sync();
-        }
-      },
-    );
+    const unsubscribeStreaming = chatTransport.onStreamingChange((streaming) => {
+      if (!streaming) {
+        sync();
+      }
+    });
     syncIfIdle();
     return () => {
       unsubscribeView();
       unsubscribeMessages();
       unsubscribeStreaming();
     };
-  }, [
-    channelName,
-    chatTransport,
-    chatTransportError,
-    skip,
-    transport,
-    transportError,
-  ]);
+  }, [channelName, chatTransport, chatTransportError, skip, transport, transportError]);
 }
 
 /**
@@ -362,12 +315,7 @@ export function mergeMessages(
  */
 export function useClientTransport(
   options?: UseClientTransportOptions,
-): UseClientTransportResult<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
-> {
+): UseClientTransportResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
   return vercelHooks.useClientTransport(options);
 }
 
@@ -398,9 +346,7 @@ export function useCreateView(
  *
  * @defaultValue Uses the context transport.
  */
-export function useTree(
-  options?: UseTreeOptions<VercelInput, AI.UIMessage>,
-): TreeHandle {
+export function useTree(options?: UseTreeOptions<VercelInput, AI.UIMessage>): TreeHandle {
   return vercelHooks.useTree(options);
 }
 
@@ -454,17 +400,10 @@ function ChatTransportProviderInner({
     slots.set(channelName, slot);
     return { slots, defaultChannelName: channelName };
   }, [channelName, parent, slot]);
-  return createElement(
-    ChatTransportContext.Provider,
-    { value: registry },
-    children,
-  );
+  return createElement(ChatTransportContext.Provider, { value: registry }, children);
 }
 
-function mergeAssistantMessage(
-  treeMessage: AI.UIMessage,
-  overlay: AI.UIMessage,
-): AI.UIMessage {
+function mergeAssistantMessage(treeMessage: AI.UIMessage, overlay: AI.UIMessage): AI.UIMessage {
   const overlayParts = resolvedToolPartsByCallId(overlay.parts);
   let parts: AI.UIMessagePart[] | undefined;
   for (let index = 0; index < treeMessage.parts.length; index += 1) {
@@ -515,9 +454,7 @@ function mergeToolPartKeepingTreeType(
 function isUnresolvedToolPart(part: AI.UIMessagePart): boolean {
   const state = stateOf(part);
   return (
-    state === "input-streaming" ||
-    state === "input-available" ||
-    state === "approval-requested"
+    state === "input-streaming" || state === "input-available" || state === "approval-requested"
   );
 }
 
@@ -546,12 +483,7 @@ function recordPart(part: AI.UIMessagePart): Record<string, unknown> {
 }
 
 function VercelTransportProvider(
-  props: TransportProviderProps<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >,
+  props: TransportProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
 ): ReturnType<typeof createElement> {
   return vercelHooks.TransportProvider(props);
 }

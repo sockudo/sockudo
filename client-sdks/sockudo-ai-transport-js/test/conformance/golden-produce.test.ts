@@ -7,8 +7,7 @@ import { serverRoot } from "./golden-fixtures.js";
 import { SERVER_CONFORMANCE_RUNNER } from "./server-pin.js";
 
 const hasLiveServer =
-  process.env.SOCKUDO_URL !== undefined ||
-  process.env.SOCKUDO_BASE_URL !== undefined;
+  process.env.SOCKUDO_URL !== undefined || process.env.SOCKUDO_BASE_URL !== undefined;
 
 describe("golden transcript produce", () => {
   it.skipIf(!hasLiveServer)(
@@ -19,9 +18,7 @@ describe("golden transcript produce", () => {
       const result = await runNode(runner, {
         ...process.env,
         SOCKUDO_BASE_URL:
-          process.env.SOCKUDO_BASE_URL ??
-          process.env.SOCKUDO_URL ??
-          "http://127.0.0.1:6001",
+          process.env.SOCKUDO_BASE_URL ?? process.env.SOCKUDO_URL ?? "http://127.0.0.1:6001",
         SOCKUDO_APP_ID: process.env.SOCKUDO_APP_ID ?? "app-id",
         SOCKUDO_APP_KEY: process.env.SOCKUDO_APP_KEY ?? "app-key",
         SOCKUDO_APP_SECRET: process.env.SOCKUDO_APP_SECRET ?? "app-secret",

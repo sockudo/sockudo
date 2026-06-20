@@ -1,8 +1,4 @@
-import type {
-  ReducerMeta,
-  Regenerate,
-  UserMessage,
-} from "../../core/codec/index.js";
+import type { ReducerMeta, Regenerate, UserMessage } from "../../core/codec/index.js";
 
 /**
  * Structural Vercel AI SDK v6 type namespace used by the optional Vercel
@@ -218,10 +214,7 @@ export interface PendingToolResolution {
   event: Extract<
     VercelOutput,
     {
-      type:
-        | "tool-output-available"
-        | "tool-output-error"
-        | "tool-output-denied";
+      type: "tool-output-available" | "tool-output-error" | "tool-output-denied";
     }
   >;
   /** Original fold metadata. */

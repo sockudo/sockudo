@@ -35,13 +35,12 @@ export interface Reducer<TEvent, TProjection> {
  *
  * @defaultValue Reducers may mutate their projection for hot-path efficiency.
  */
-export interface Codec<TInput, TOutput, TProjection, TMessage>
-  extends Reducer<TInput | TOutput, TProjection> {
+export interface Codec<TInput, TOutput, TProjection, TMessage> extends Reducer<
+  TInput | TOutput,
+  TProjection
+> {
   /** Creates an encoder bound to a channel writer. */
-  createEncoder(
-    channel: ChannelWriter,
-    options?: EncoderOptions,
-  ): Encoder<TInput, TOutput>;
+  createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
   /** Creates a decoder for inbound Sockudo messages. */
   createDecoder(): Decoder<TInput, TOutput>;
   /** Returns the user-visible messages from a projection. */
@@ -51,10 +50,7 @@ export interface Codec<TInput, TOutput, TProjection, TMessage>
   /** Creates a regenerate command for a target and parent message. */
   createRegenerate(target: string, parent: string): Regenerate;
   /** Resolves a tool-call target from an output and current projection. */
-  resolveToolTarget(
-    output: TOutput,
-    projection: TProjection,
-  ): string | undefined;
+  resolveToolTarget(output: TOutput, projection: TProjection): string | undefined;
   /** Returns whether an output terminates its stream or message. */
   isTerminal(output: TOutput): boolean;
 }
@@ -62,12 +58,7 @@ export interface Codec<TInput, TOutput, TProjection, TMessage>
 /**
  * Docs-compatible two-generic codec alias.
  */
-export type Codec2<TEvent, TMessage> = Codec<
-  TEvent,
-  TEvent,
-  MessageProjection<TMessage>,
-  TMessage
->;
+export type Codec2<TEvent, TMessage> = Codec<TEvent, TEvent, MessageProjection<TMessage>, TMessage>;
 
 /**
  * Projection shape used by the docs-compatible codec alias.
@@ -110,10 +101,7 @@ export interface ChannelWriter {
     options?: Omit<MessageMutation, "data">,
   ): Promise<MessageAck>;
   /** Updates a mutable message aggregate. */
-  updateMessage(
-    messageSerial: string,
-    options?: MessageMutation,
-  ): Promise<MessageAck>;
+  updateMessage(messageSerial: string, options?: MessageMutation): Promise<MessageAck>;
 }
 
 /**

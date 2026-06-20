@@ -49,10 +49,7 @@ class Logger {
     }
   }
 
-  private log(
-    defaultLoggingFunction: (message: string) => void,
-    ..._args: any[]
-  ) {
+  private log(defaultLoggingFunction: (message: string) => void, ..._args: any[]) {
     const message = stringify.apply(this, arguments);
     if (config.log) {
       config.log(message);

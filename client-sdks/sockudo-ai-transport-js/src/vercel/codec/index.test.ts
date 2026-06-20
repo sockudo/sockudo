@@ -6,21 +6,10 @@ import {
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import {
-  EVENT_AI_INPUT,
-  EVENT_AI_OUTPUT,
-  HEADER_CODEC_MESSAGE_ID,
-} from "../../constants.js";
-import {
-  normalizeInboundMessage,
-  type SockudoRawMessage,
-} from "../../realtime/adapter.js";
+import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_CODEC_MESSAGE_ID } from "../../constants.js";
+import { normalizeInboundMessage, type SockudoRawMessage } from "../../realtime/adapter.js";
 import type { ChannelWriter } from "../../core/codec/index.js";
-import type {
-  MessageAck,
-  MessageMutation,
-  PublishMessage,
-} from "../../realtime/index.js";
+import type { MessageAck, MessageMutation, PublishMessage } from "../../realtime/index.js";
 import { UIMessageCodec } from "./index.js";
 import { createVercelProjection, foldVercelEvent } from "./reducer.js";
 import { transitionToolPart } from "./tool-transitions.js";
@@ -61,9 +50,8 @@ describe("UIMessageCodec", () => {
       const decoder = UIMessageCodec.createDecoder();
 
       await encoder.publishOutput(source);
-      const decoded = decoder.decode(
-        rawFromPublish(expectDefined(writer.publishes[0]), "msg-1"),
-      ).outputs[0]?.event;
+      const decoded = decoder.decode(rawFromPublish(expectDefined(writer.publishes[0]), "msg-1"))
+        .outputs[0]?.event;
 
       expect(decoded).toMatchObject(source);
     }
@@ -167,17 +155,11 @@ describe("UIMessageCodec", () => {
         await encoder.publishOutput(chunk);
       }
       const initialData =
-        typeof writer.publishes[0]?.data === "string"
-          ? writer.publishes[0].data
-          : "";
+        typeof writer.publishes[0]?.data === "string" ? writer.publishes[0].data : "";
 
       const events = [
-        ...decoder.decode(
-          rawFromPublish(expectDefined(writer.publishes[0]), "msg-1"),
-        ).outputs,
-        ...decoder.decode(
-          rawFromAppend(expectDefined(writer.appends[0]), "append", 2),
-        ).outputs,
+        ...decoder.decode(rawFromPublish(expectDefined(writer.publishes[0]), "msg-1")).outputs,
+        ...decoder.decode(rawFromAppend(expectDefined(writer.appends[0]), "append", 2)).outputs,
         ...decoder.decode(
           rawFromUpdate(
             expectDefined(writer.updates[0]),
@@ -208,8 +190,7 @@ describe("UIMessageCodec", () => {
     await encoder.publishOutput(chunk);
 
     expect(
-      decoder.decode(rawFromPublish(expectDefined(writer.publishes[0]), "m1"))
-        .outputs[0]?.event,
+      decoder.decode(rawFromPublish(expectDefined(writer.publishes[0]), "m1")).outputs[0]?.event,
     ).toEqual(chunk);
   });
 
@@ -290,9 +271,7 @@ describe("UIMessageCodec", () => {
       await encoder.publishInput(input);
       const publish = expectDefined(writer.publishes.shift());
       expect(publish.name).toBe(EVENT_AI_INPUT);
-      expect(
-        decoder.decode(rawFromPublish(publish, "u1")).inputs[0]?.event,
-      ).toEqual(expected);
+      expect(decoder.decode(rawFromPublish(publish, "u1")).inputs[0]?.event).toEqual(expected);
     }
   });
 
@@ -353,18 +332,9 @@ describe("UIMessageCodec", () => {
       },
       7,
     );
-    fold(
-      { type: "tool-input-delta", toolCallId: "tc1", delta: '{"q":"x"}' },
-      8,
-    );
-    fold(
-      { type: "tool-input-available", toolCallId: "tc1", messageId: "m1" },
-      9,
-    );
-    fold(
-      { type: "tool-output-available", toolCallId: "tc1", output: "done" },
-      10,
-    );
+    fold({ type: "tool-input-delta", toolCallId: "tc1", delta: '{"q":"x"}' }, 8);
+    fold({ type: "tool-input-available", toolCallId: "tc1", messageId: "m1" }, 9);
+    fold({ type: "tool-output-available", toolCallId: "tc1", output: "done" }, 10);
 
     expect(UIMessageCodec.getMessages(projection)[0]).toMatchObject({
       id: "m1",
@@ -480,10 +450,7 @@ describe("UIMessageCodec", () => {
       },
       1,
     );
-    fold(
-      { type: "tool-input-available", toolCallId: "tc1", messageId: "m1" },
-      2,
-    );
+    fold({ type: "tool-input-available", toolCallId: "tc1", messageId: "m1" }, 2);
     fold(
       {
         type: "tool-approval-request",
@@ -508,10 +475,7 @@ describe("UIMessageCodec", () => {
       approval: { approvalId: "ap1", approved: true },
     });
 
-    fold(
-      { type: "tool-output-available", toolCallId: "tc1", output: "done" },
-      5,
-    );
+    fold({ type: "tool-output-available", toolCallId: "tc1", output: "done" }, 5);
 
     expect(UIMessageCodec.getMessages(projection)[0]?.parts[0]).toMatchObject({
       state: "output-available",
@@ -528,9 +492,7 @@ describe("UIMessageCodec", () => {
       output: "done",
     };
 
-    expect(
-      transitionToolPart(part, "output-error", { errorText: "late" }),
-    ).toEqual(part);
+    expect(transitionToolPart(part, "output-error", { errorText: "late" })).toEqual(part);
   });
 
   it("matches Vercel readUIMessageStream accumulation for generated valid streams", async () => {
@@ -545,12 +507,8 @@ describe("UIMessageCodec", () => {
           });
         });
 
-        expect(
-          normalizeMessages(UIMessageCodec.getMessages(projection)),
-        ).toEqual(
-          normalizeMessages(
-            await readVercelMessages(chunks.map(toVercelAIChunk)),
-          ),
+        expect(normalizeMessages(UIMessageCodec.getMessages(projection))).toEqual(
+          normalizeMessages(await readVercelMessages(chunks.map(toVercelAIChunk))),
         );
       }),
       { numRuns: 50 },
@@ -755,9 +713,7 @@ describe("UIMessageCodec", () => {
       });
     });
 
-    expect(
-      UIMessageCodec.getMessages(projection).map((message) => message.id),
-    ).toEqual(["m1"]);
+    expect(UIMessageCodec.getMessages(projection).map((message) => message.id)).toEqual(["m1"]);
     expect(UIMessageCodec.getMessages(projection)[0]?.parts).toEqual([
       { type: "text", id: "text", text: "Hello" },
     ]);
@@ -817,9 +773,9 @@ describe("UIMessageCodec", () => {
       });
     });
 
-    expect(
-      UIMessageCodec.getMessages(projection).map((message) => message.id),
-    ).toEqual(["assistant-generated"]);
+    expect(UIMessageCodec.getMessages(projection).map((message) => message.id)).toEqual([
+      "assistant-generated",
+    ]);
     expect(UIMessageCodec.getMessages(projection)[0]?.parts).toEqual([
       { type: "text", id: "text", text: "Hello" },
     ]);
@@ -861,9 +817,7 @@ describe("UIMessageCodec", () => {
     const messages = UIMessageCodec.getMessages(projection);
     expect(messages).toHaveLength(1);
     expect(messages[0]?.id).toMatch(/^msg_/);
-    expect(messages[0]?.parts).toEqual([
-      { type: "text", id: "text", text: "Eight" },
-    ]);
+    expect(messages[0]?.parts).toEqual([{ type: "text", id: "text", text: "Eight" }]);
   });
 });
 
@@ -1201,9 +1155,7 @@ function toVercelAIChunk(chunk: VercelOutput): VercelAIChunk {
       return {
         type: chunk.type,
         data: chunk.data,
-        ...(chunk.transient !== undefined
-          ? { transient: chunk.transient }
-          : {}),
+        ...(chunk.transient !== undefined ? { transient: chunk.transient } : {}),
       };
   }
 }
@@ -1219,9 +1171,7 @@ function toVercelFinishChunk(
 
 function isVercelFinishReason(
   value: string | undefined,
-): value is NonNullable<
-  Extract<VercelAIChunk, { type: "finish" }>["finishReason"]
-> {
+): value is NonNullable<Extract<VercelAIChunk, { type: "finish" }>["finishReason"]> {
   const allowed: readonly string[] = [
     "stop",
     "length",
@@ -1233,9 +1183,7 @@ function isVercelFinishReason(
   return value !== undefined && allowed.includes(value);
 }
 
-async function readVercelMessages(
-  chunks: readonly VercelAIChunk[],
-): Promise<VercelAIMessage[]> {
+async function readVercelMessages(chunks: readonly VercelAIChunk[]): Promise<VercelAIMessage[]> {
   let last: VercelAIMessage | undefined;
   const stream = new ReadableStream<VercelAIChunk>({
     start(controller) {
@@ -1251,9 +1199,7 @@ async function readVercelMessages(
   return last ? [last] : [];
 }
 
-function normalizeMessages(
-  messages: readonly (AI.UIMessage | VercelAIMessage)[],
-): unknown {
+function normalizeMessages(messages: readonly (AI.UIMessage | VercelAIMessage)[]): unknown {
   return messages.map((message) => ({
     id: message.id,
     role: message.role,
@@ -1262,9 +1208,7 @@ function normalizeMessages(
   }));
 }
 
-function normalizePart(
-  part: AI.UIMessagePart | VercelAIMessage["parts"][number],
-): unknown {
+function normalizePart(part: AI.UIMessagePart | VercelAIMessage["parts"][number]): unknown {
   const value = part as Record<string, unknown>;
   if (typeof value.type === "string" && value.type.startsWith("tool-")) {
     return stripUndefinedRecord({
@@ -1319,9 +1263,7 @@ function normalizeWireTranscript(writer: TestWriter): unknown {
   });
 }
 
-function stripUndefinedRecord(
-  value: Record<string, unknown>,
-): Record<string, unknown> {
+function stripUndefinedRecord(value: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
     if (item !== undefined) {

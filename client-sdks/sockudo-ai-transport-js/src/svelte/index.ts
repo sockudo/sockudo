@@ -1,13 +1,7 @@
 export { version } from "../version.js";
 
 import { getContext, onDestroy, setContext } from "svelte";
-import {
-  get,
-  readable,
-  writable,
-  type Readable,
-  type Writable,
-} from "svelte/store";
+import { get, readable, writable, type Readable, type Writable } from "svelte/store";
 import { ErrorCode, ErrorInfo } from "../errors.js";
 import type { InboundMessage } from "../realtime/index.js";
 import {
@@ -22,14 +16,18 @@ import {
 /**
  * Svelte transport store options.
  */
-export type TransportStoreOptions<TInput, TOutput, TProjection, TMessage> =
-  ClientTransportOptions<TInput, TOutput, TProjection, TMessage> & {
-    /** Closes the transport when the current Svelte component is destroyed.
-     *
-     * @defaultValue `true`.
-     */
-    closeOnDestroy?: boolean;
-  };
+export type TransportStoreOptions<TInput, TOutput, TProjection, TMessage> = ClientTransportOptions<
+  TInput,
+  TOutput,
+  TProjection,
+  TMessage
+> & {
+  /** Closes the transport when the current Svelte component is destroyed.
+   *
+   * @defaultValue `true`.
+   */
+  closeOnDestroy?: boolean;
+};
 
 /**
  * Options for {@link getClientTransport}.
@@ -56,10 +54,9 @@ export interface ClientTransportState<TInput, TOutput, TProjection, TMessage> {
 /**
  * Svelte transport store.
  */
-export interface ClientTransportStore<TInput, TOutput, TProjection, TMessage>
-  extends Readable<
-    ClientTransportState<TInput, TOutput, TProjection, TMessage>
-  > {
+export interface ClientTransportStore<TInput, TOutput, TProjection, TMessage> extends Readable<
+  ClientTransportState<TInput, TOutput, TProjection, TMessage>
+> {
   /** Channel registry key. */
   readonly channelName?: string;
   /** Closes the transport if it exists. */
@@ -171,12 +168,8 @@ export function createTransportStore<
 >(
   options: TransportStoreOptions<TInput, TOutput, TProjection, TMessage>,
 ): ClientTransportStore<TInput, TOutput, TProjection, TMessage> {
-  const state = writable<
-    ClientTransportState<TInput, TOutput, TProjection, TMessage>
-  >({});
-  let transport:
-    | ClientTransport<TInput, TOutput, TProjection, TMessage>
-    | undefined;
+  const state = writable<ClientTransportState<TInput, TOutput, TProjection, TMessage>>({});
+  let transport: ClientTransport<TInput, TOutput, TProjection, TMessage> | undefined;
   try {
     transport = createClientTransport(options);
     state.set({ transport });
@@ -188,9 +181,7 @@ export function createTransportStore<
     close() {
       return transport?.close() ?? Promise.resolve();
     },
-    ...(options.channelName !== undefined
-      ? { channelName: options.channelName }
-      : {}),
+    ...(options.channelName !== undefined ? { channelName: options.channelName } : {}),
   };
   if (options.closeOnDestroy !== false) {
     safeOnDestroy(() => {
@@ -257,12 +248,7 @@ export function getClientTransport<
       transportError: missingProviderError(options.channelName),
     });
   }
-  const typed = store as ClientTransportStore<
-    TInput,
-    TOutput,
-    TProjection,
-    TMessage
-  >;
+  const typed = store as ClientTransportStore<TInput, TOutput, TProjection, TMessage>;
   if (options.onError) {
     const state = get(typed);
     const unsubscribe = state.transport?.on("error", (error) => {
@@ -282,8 +268,7 @@ export function createViewStore<TInput = unknown, TMessage = unknown>(
   options: ViewStoreOptions<TInput, TMessage> = {},
 ): ViewStore<TMessage> {
   const transport = resolveTransport(options.transport);
-  const view =
-    options.skip === true ? undefined : (options.view ?? transport?.view);
+  const view = options.skip === true ? undefined : (options.view ?? transport?.view);
   return createViewStoreFromView(view, options.limit, false);
 }
 
@@ -347,14 +332,10 @@ export function createActiveTurnsStore<TInput = unknown, TMessage = unknown>(
 /**
  * Subscribes to the raw normalized Sockudo inbound message firehose.
  */
-export function createSockudoMessagesStore<
-  TInput = unknown,
-  TMessage = unknown,
->(
+export function createSockudoMessagesStore<TInput = unknown, TMessage = unknown>(
   options: SockudoMessagesStoreOptions<TInput, TMessage> = {},
 ): Readable<readonly InboundMessage[]> {
-  const transport =
-    options.skip === true ? undefined : resolveTransport(options.transport);
+  const transport = options.skip === true ? undefined : resolveTransport(options.transport);
   return readable(stableEmptyRawMessages, (set) => {
     if (!transport) {
       set(stableEmptyRawMessages);
@@ -362,10 +343,7 @@ export function createSockudoMessagesStore<
     }
     let messages = stableEmptyRawMessages;
     return transport.on("message", (message) => {
-      messages =
-        messages === stableEmptyRawMessages
-          ? [message]
-          : [...messages, message];
+      messages = messages === stableEmptyRawMessages ? [message] : [...messages, message];
       set(messages);
     });
   });
@@ -445,8 +423,7 @@ function resolveTransport<TInput, TMessage>(
   if (source !== undefined) {
     return isReadable(source) ? get(source).transport : source;
   }
-  return get(getClientTransport<TInput, unknown, unknown, TMessage>())
-    .transport;
+  return get(getClientTransport<TInput, unknown, unknown, TMessage>()).transport;
 }
 
 function readRegistry(): TransportRegistry | undefined {

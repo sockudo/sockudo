@@ -5,17 +5,12 @@ import { vercelTurnEndReason } from "./run-end-reason.js";
 describe("vercelTurnEndReason", () => {
   it("returns non-complete pipe results and observes finish rejections", async () => {
     const finish = Promise.reject(new Error("ignored"));
-    await expect(
-      vercelTurnEndReason({ reason: "cancelled" }, finish),
-    ).resolves.toBe("cancelled");
+    await expect(vercelTurnEndReason({ reason: "cancelled" }, finish)).resolves.toBe("cancelled");
   });
 
   it("suspends complete streams that finish with tool calls", async () => {
     await expect(
-      vercelTurnEndReason(
-        { reason: "complete" },
-        Promise.resolve("tool-calls"),
-      ),
+      vercelTurnEndReason({ reason: "complete" }, Promise.resolve("tool-calls")),
     ).resolves.toBe("suspended");
   });
 
@@ -36,10 +31,7 @@ describe("vercelTurnEndReason", () => {
 
   it("maps other finish rejection to error", async () => {
     await expect(
-      vercelTurnEndReason(
-        { reason: "complete" },
-        Promise.reject(new Error("failed")),
-      ),
+      vercelTurnEndReason({ reason: "complete" }, Promise.reject(new Error("failed"))),
     ).resolves.toBe("error");
   });
 });

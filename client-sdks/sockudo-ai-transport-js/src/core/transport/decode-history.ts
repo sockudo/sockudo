@@ -1,14 +1,6 @@
-import {
-  EVENT_AI_TURN_END,
-  EVENT_AI_TURN_START,
-  HEADER_TURN_REASON,
-} from "../../constants.js";
+import { EVENT_AI_TURN_END, EVENT_AI_TURN_START, HEADER_TURN_REASON } from "../../constants.js";
 import type { Decoder, DecodedEvent } from "../codec/index.js";
-import type {
-  InboundMessage,
-  PaginatedResult,
-  Serial,
-} from "../../realtime/types.js";
+import type { InboundMessage, PaginatedResult, Serial } from "../../realtime/types.js";
 import type { ConversationTree, TurnEndReason } from "./tree.js";
 
 /**
@@ -57,10 +49,7 @@ export function decodeHistoryPage<TInput, TOutput, TProjection>(
       continue;
     }
     const decoded = decoder.decode(message);
-    const events: DecodedEvent<TInput | TOutput>[] = [
-      ...decoded.inputs,
-      ...decoded.outputs,
-    ];
+    const events: DecodedEvent<TInput | TOutput>[] = [...decoded.inputs, ...decoded.outputs];
     decodedEvents += events.length;
     tree.applyMessage(events, headers, message.historySerial);
   }

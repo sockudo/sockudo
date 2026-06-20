@@ -40,9 +40,7 @@ interface BoundChannelCallbacks<TChannel extends Channel> {
   onMemberRemoved?: (member: any) => void;
 }
 
-export function isPresenceChannel(
-  channel: Channel | null,
-): channel is PresenceChannel {
+export function isPresenceChannel(channel: Channel | null): channel is PresenceChannel {
   return Boolean(channel && "members" in channel);
 }
 
@@ -141,10 +139,7 @@ export function bindChannelState<TChannel extends Channel = Channel>(
   };
 
   channel.bind_global(globalHandler);
-  channel.bind(
-    prefixedEvent("subscription_succeeded"),
-    subscriptionSucceededHandler,
-  );
+  channel.bind(prefixedEvent("subscription_succeeded"), subscriptionSucceededHandler);
   channel.bind(prefixedEvent("subscription_error"), subscriptionErrorHandler);
 
   if (isPresenceChannel(channel)) {
@@ -156,14 +151,8 @@ export function bindChannelState<TChannel extends Channel = Channel>(
 
   return () => {
     channel.unbind_global(globalHandler);
-    channel.unbind(
-      prefixedEvent("subscription_succeeded"),
-      subscriptionSucceededHandler,
-    );
-    channel.unbind(
-      prefixedEvent("subscription_error"),
-      subscriptionErrorHandler,
-    );
+    channel.unbind(prefixedEvent("subscription_succeeded"), subscriptionSucceededHandler);
+    channel.unbind(prefixedEvent("subscription_error"), subscriptionErrorHandler);
 
     if (isPresenceChannel(channel)) {
       channel.unbind(prefixedEvent("member_added"), memberAddedHandler);

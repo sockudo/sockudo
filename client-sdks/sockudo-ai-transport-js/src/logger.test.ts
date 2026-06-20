@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  LogLevel,
-  consoleLogger,
-  makeLogger,
-  redactValue,
-  type LogContext,
-} from "./logger.js";
+import { LogLevel, consoleLogger, makeLogger, redactValue, type LogContext } from "./logger.js";
 
 describe("logger", () => {
   it("is silent by default and filters by level", () => {
@@ -22,9 +16,7 @@ describe("logger", () => {
     logger.info("ignored");
     logger.warn("visible");
 
-    expect(lines).toEqual([
-      "[2026-06-04T00:00:00.000Z] WARN sockudo-ai-transport: visible",
-    ]);
+    expect(lines).toEqual(["[2026-06-04T00:00:00.000Z] WARN sockudo-ai-transport: visible"]);
   });
 
   it("uses the current ISO timestamp by default", () => {
@@ -34,9 +26,7 @@ describe("logger", () => {
       logHandler: (line) => lines.push(line),
     }).error("visible");
 
-    expect(lines[0]).toMatch(
-      /^\[\d{4}-\d{2}-\d{2}T.*Z\] ERROR sockudo-ai-transport: visible$/u,
-    );
+    expect(lines[0]).toMatch(/^\[\d{4}-\d{2}-\d{2}T.*Z\] ERROR sockudo-ai-transport: visible$/u);
   });
 
   it("formats all enabled levels with merged redacted context", () => {

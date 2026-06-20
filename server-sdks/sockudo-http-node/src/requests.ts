@@ -3,11 +3,7 @@ import AbortController from "abort-controller";
 import { RequestError } from "./errors";
 import { getMD5, toOrderedArray, toOrderedArrayLowercaseKeys } from "./util";
 import sockudoLibraryVersion = require("./version");
-import type {
-  RequestOptions,
-  SignedQueryStringOptions,
-  SignedRequest,
-} from "./types";
+import type { RequestOptions, SignedQueryStringOptions, SignedRequest } from "./types";
 import type SockudoConfig = require("./sockudo_config");
 import type Token = require("./token");
 
@@ -27,15 +23,12 @@ export function send(
   const path = config.prefixPath(options.path);
   const body = options.body ? JSON.stringify(options.body) : undefined;
 
-  const url = `${config.getBaseURL()}${path}?${createSignedQueryString(
-    config.token,
-    {
-      method,
-      path,
-      params: options.params,
-      body,
-    },
-  )}`;
+  const url = `${config.getBaseURL()}${path}?${createSignedQueryString(config.token, {
+    method,
+    path,
+    params: options.params,
+    body,
+  })}`;
 
   const headers: Record<string, string> = {
     "x-pusher-library": `sockudo-http-node ${sockudoLibraryVersion}`,
@@ -108,9 +101,7 @@ export function createSignedQueryString(
   if (request.params) {
     for (const key of Object.keys(request.params)) {
       if (RESERVED_QUERY_KEYS[key] !== undefined) {
-        throw new Error(
-          `${key} is a required parameter and cannot be overidden`,
-        );
+        throw new Error(`${key} is a required parameter and cannot be overidden`);
       }
       params[key] = request.params[key];
     }

@@ -1,18 +1,11 @@
 import Sockudo from "./sockudo";
 import Logger from "./logger";
-import {
-  UserAuthenticationData,
-  UserAuthenticationCallback,
-} from "./auth/options";
+import { UserAuthenticationData, UserAuthenticationCallback } from "./auth/options";
 import Channel from "./channels/channel";
 import WatchlistFacade from "./watchlist";
 import EventsDispatcher from "./events/dispatcher";
 import flatPromise from "./utils/flat_promise";
-import {
-  prefixedEvent,
-  isInternalEvent,
-  isPlatformEvent,
-} from "./protocol_prefix";
+import { prefixedEvent, isInternalEvent, isPlatformEvent } from "./protocol_prefix";
 
 export default class UserFacade extends EventsDispatcher {
   sockudo: Sockudo;
@@ -45,10 +38,7 @@ export default class UserFacade extends EventsDispatcher {
       if (eventName === prefixedEvent("signin_success")) {
         this._onSigninSuccess(event.data);
       }
-      if (
-        this.serverToUserChannel &&
-        this.serverToUserChannel.name === event.channel
-      ) {
+      if (this.serverToUserChannel && this.serverToUserChannel.name === event.channel) {
         this.serverToUserChannel.handleEvent(event);
       }
     });
@@ -83,10 +73,7 @@ export default class UserFacade extends EventsDispatcher {
     );
   }
 
-  private _onAuthorize: UserAuthenticationCallback = (
-    err,
-    authData: UserAuthenticationData,
-  ) => {
+  private _onAuthorize: UserAuthenticationCallback = (err, authData: UserAuthenticationData) => {
     if (err) {
       Logger.warn(`Error during signin: ${err}`);
       this._cleanup();
@@ -111,9 +98,7 @@ export default class UserFacade extends EventsDispatcher {
     }
 
     if (typeof this.user_data.id !== "string" || this.user_data.id === "") {
-      Logger.error(
-        `user_data doesn't contain an id. user_data: ${this.user_data}`,
-      );
+      Logger.error(`user_data doesn't contain an id. user_data: ${this.user_data}`);
       this._cleanup();
       return;
     }
@@ -127,18 +112,12 @@ export default class UserFacade extends EventsDispatcher {
     const ensure_subscribed = (channel) => {
       if (channel.subscriptionPending && channel.subscriptionCancelled) {
         channel.reinstateSubscription();
-      } else if (
-        !channel.subscriptionPending &&
-        this.sockudo.connection.state === "connected"
-      ) {
+      } else if (!channel.subscriptionPending && this.sockudo.connection.state === "connected") {
         channel.subscribe();
       }
     };
 
-    this.serverToUserChannel = new Channel(
-      `#server-to-user-${this.user_data.id}`,
-      this.sockudo,
-    );
+    this.serverToUserChannel = new Channel(`#server-to-user-${this.user_data.id}`, this.sockudo);
     this.serverToUserChannel.bind_global((eventName, data) => {
       if (isInternalEvent(eventName) || isPlatformEvent(eventName)) {
         // ignore internal events

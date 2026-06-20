@@ -12,11 +12,7 @@ export default class IfStrategy implements Strategy {
   trueBranch: Strategy;
   falseBranch: Strategy;
 
-  constructor(
-    test: () => boolean,
-    trueBranch: Strategy,
-    falseBranch: Strategy,
-  ) {
+  constructor(test: () => boolean, trueBranch: Strategy, falseBranch: Strategy) {
     this.test = test;
     this.trueBranch = trueBranch;
     this.falseBranch = falseBranch;
@@ -27,10 +23,7 @@ export default class IfStrategy implements Strategy {
     return branch.isSupported();
   }
 
-  connect(
-    minPriority: number,
-    callback: (...args: any[]) => any,
-  ): StrategyRunner {
+  connect(minPriority: number, callback: (...args: any[]) => any): StrategyRunner {
     const branch = this.test() ? this.trueBranch : this.falseBranch;
     return branch.connect(minPriority, callback);
   }

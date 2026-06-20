@@ -16,9 +16,7 @@ describe("Sockudo", function () {
     });
 
     it("should pass the token to the WebHook", function () {
-      expect(sockudo.webhook({ headers: {}, body: "" }).token).to.be(
-        sockudo.config.token,
-      );
+      expect(sockudo.webhook({ headers: {}, body: "" }).token).to.be(sockudo.config.token);
     });
   });
 });

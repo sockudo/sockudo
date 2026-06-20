@@ -88,10 +88,7 @@ describe("framework shared helpers", () => {
     channel.emit(prefixedEvent("member_removed"), { id: "u-2" });
 
     expect(onStateChange).toHaveBeenCalled();
-    expect(onEvent).toHaveBeenCalledWith(
-      prefixedEvent("subscription_succeeded"),
-      { ready: true },
-    );
+    expect(onEvent).toHaveBeenCalledWith(prefixedEvent("subscription_succeeded"), { ready: true });
     expect(onSubscriptionSucceeded).toHaveBeenCalledWith({ ready: true });
     expect(onSubscriptionError).toHaveBeenCalledWith({ reason: "denied" });
     expect(onMemberAdded).toHaveBeenCalledWith({ id: "u-2" });

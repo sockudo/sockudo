@@ -76,9 +76,7 @@ function createChannel(name: string, sockudo: Sockudo): Channel {
   } else if (name.indexOf("presence-") === 0) {
     return Factory.createPresenceChannel(name, sockudo);
   } else if (name.indexOf("#") === 0) {
-    throw new Errors.BadChannelName(
-      'Cannot create a channel with name "' + name + '".',
-    );
+    throw new Errors.BadChannelName('Cannot create a channel with name "' + name + '".');
   } else {
     return Factory.createChannel(name, sockudo);
   }

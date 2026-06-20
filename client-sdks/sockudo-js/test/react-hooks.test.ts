@@ -6,11 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Dispatcher from "../src/core/events/dispatcher";
 import Members from "../src/core/channels/members";
 import { prefixedEvent } from "../src/core/protocol_prefix";
-import {
-  SockudoProvider,
-  useChannel,
-  useSockudoEvent,
-} from "../src/framework-react/index";
+import { SockudoProvider, useChannel, useSockudoEvent } from "../src/framework-react/index";
 
 class FakePresenceChannel extends Dispatcher {
   name = "presence-room";
@@ -56,9 +52,7 @@ describe("react hooks", () => {
     root = createRoot(container);
 
     await act(async () => {
-      root?.render(
-        createElement(SockudoProvider, { client }, createElement(Consumer)),
-      );
+      root?.render(createElement(SockudoProvider, { client }, createElement(Consumer)));
     });
 
     expect(client.subscribe).toHaveBeenCalledWith("presence-room", undefined);
@@ -109,9 +103,7 @@ describe("react hooks", () => {
     root = createRoot(container);
 
     await act(async () => {
-      root?.render(
-        createElement(SockudoProvider, { client }, createElement(Consumer)),
-      );
+      root?.render(createElement(SockudoProvider, { client }, createElement(Consumer)));
     });
 
     await act(async () => {

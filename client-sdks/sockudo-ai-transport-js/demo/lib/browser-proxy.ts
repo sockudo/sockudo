@@ -118,9 +118,7 @@ async function readProxyHistory(
   if (options.direction === "newest_first") {
     rawItems.reverse();
   }
-  const items = rawItems.map((item) =>
-    normalizeProxyHistoryItem(item, Number(Date.now())),
-  );
+  const items = rawItems.map((item) => normalizeProxyHistoryItem(item, Number(Date.now())));
   const cursor = typeof payload.next === "string" ? payload.next : undefined;
   return {
     items,
@@ -128,24 +126,16 @@ async function readProxyHistory(
       return Boolean(cursor ?? payload.has_more);
     },
     next() {
-      return readProxyHistory(
-        channel,
-        cursor === undefined ? options : { ...options, cursor },
-      );
+      return readProxyHistory(channel, cursor === undefined ? options : { ...options, cursor });
     },
   };
 }
 
-function normalizeProxyHistoryItem(
-  item: unknown,
-  fallbackSerial: number,
-): InboundMessage {
+function normalizeProxyHistoryItem(item: unknown, fallbackSerial: number): InboundMessage {
   const wrapper = record(item);
   const message = record(wrapper.message ?? item);
-  const serial =
-    stringValue(message.message_serial ?? message.messageSerial) ?? "";
-  const historySerial =
-    serialValue(wrapper.serial ?? message.serial) ?? fallbackSerial;
+  const serial = stringValue(message.message_serial ?? message.messageSerial) ?? "";
+  const historySerial = serialValue(wrapper.serial ?? message.serial) ?? fallbackSerial;
   const extras = message.extras;
   const transport = getTransportHeaders(extras);
   return {
@@ -156,10 +146,7 @@ function normalizeProxyHistoryItem(
     historySerial,
     timestamp: Number(message.time_ms ?? message.timestamp ?? Date.now()),
     raw: item,
-    ...optional(
-      "messageId",
-      stringValue(message.message_id ?? message.messageId),
-    ),
+    ...optional("messageId", stringValue(message.message_id ?? message.messageId)),
     ...optional("extras", extras),
     getTransportHeaders() {
       return transport;
@@ -184,9 +171,7 @@ function historyAction(
   ) {
     return action;
   }
-  return transport.stream === "true" && typeof data === "string"
-    ? "update"
-    : "create";
+  return transport.stream === "true" && typeof data === "string" ? "update" : "create";
 }
 
 function mutationPayload(
@@ -232,19 +217,13 @@ async function versionedProxy<T>(body: Record<string, unknown>): Promise<T> {
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(
-      `versioned proxy failed ${String(response.status)}: ${text}`,
-    );
+    throw new Error(`versioned proxy failed ${String(response.status)}: ${text}`);
   }
   return (text.length > 0 ? JSON.parse(text) : {}) as T;
 }
 
-function stripUndefined(
-  body: Record<string, unknown>,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(body).filter(([, value]) => value !== undefined),
-  );
+function stripUndefined(body: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined));
 }
 
 function optional<K extends string, V>(
@@ -270,15 +249,11 @@ function parseJsonish(value: unknown): unknown {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function serialValue(value: unknown): string | number | undefined {
-  return typeof value === "string" || typeof value === "number"
-    ? value
-    : undefined;
+  return typeof value === "string" || typeof value === "number" ? value : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

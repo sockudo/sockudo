@@ -46,16 +46,12 @@ export function serverRoot(): string {
 
 export async function loadGoldenTranscripts(): Promise<GoldenTranscript[]> {
   const dir = join(serverRoot(), GOLDEN_TRANSCRIPT_RELATIVE_DIR);
-  const files = (await readdir(dir))
-    .filter((file) => file.endsWith(".json"))
-    .sort();
+  const files = (await readdir(dir)).filter((file) => file.endsWith(".json")).sort();
   return Promise.all(
     files.map(async (file) => ({
       name: file.replace(/\.json$/u, ""),
       path: join(dir, file),
-      frames: JSON.parse(
-        await readFile(join(dir, file), "utf8"),
-      ) as GoldenFrame[],
+      frames: JSON.parse(await readFile(join(dir, file), "utf8")) as GoldenFrame[],
     })),
   );
 }
@@ -115,9 +111,7 @@ function logicalName(frame: GoldenFrame): string {
   if (frame.event === "history:get_latest") {
     return EVENT_AI_OUTPUT;
   }
-  return frame.event.startsWith("sockudo:message.")
-    ? EVENT_AI_OUTPUT
-    : frame.event;
+  return frame.event.startsWith("sockudo:message.") ? EVENT_AI_OUTPUT : frame.event;
 }
 
 function rawMutableAction(action: string | undefined): string | undefined {
@@ -178,10 +172,7 @@ function transportHeaders(
   return transport;
 }
 
-function codecHeaders(
-  frame: GoldenFrame,
-  messageSerial: string,
-): Record<string, string> {
+function codecHeaders(frame: GoldenFrame, messageSerial: string): Record<string, string> {
   if (
     !(
       frame.event === EVENT_AI_OUTPUT ||
@@ -225,11 +216,7 @@ function streamStatus(frame: GoldenFrame, scenario: string): string {
 }
 
 function isStateOnlyOutput(frame: GoldenFrame): boolean {
-  return (
-    frame.event === EVENT_AI_OUTPUT &&
-    typeof frame.data === "string" &&
-    frame.data !== ""
-  );
+  return frame.event === EVENT_AI_OUTPUT && typeof frame.data === "string" && frame.data !== "";
 }
 
 function isTerminalMutation(frame: GoldenFrame): boolean {
@@ -269,12 +256,8 @@ function turnReason(scenario: string): string {
   }
 }
 
-function placeholder<T extends string | number>(
-  value: T | string | undefined,
-  fallback: T,
-): T {
-  return value === undefined ||
-    (typeof value === "string" && value.startsWith("<"))
+function placeholder<T extends string | number>(value: T | string | undefined, fallback: T): T {
+  return value === undefined || (typeof value === "string" && value.startsWith("<"))
     ? fallback
     : (value as T);
 }

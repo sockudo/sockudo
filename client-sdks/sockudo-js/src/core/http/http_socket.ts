@@ -48,10 +48,9 @@ class HTTPSocket implements Socket {
   sendRaw(payload: any): boolean {
     if (this.readyState === State.OPEN) {
       try {
-        this.createRequest(
-          "POST",
-          getUniqueURL(getSendURL(this.location, this.session)),
-        ).start(payload);
+        this.createRequest("POST", getUniqueURL(getSendURL(this.location, this.session))).start(
+          payload,
+        );
         return true;
       } catch {
         return false;

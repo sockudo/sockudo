@@ -273,10 +273,7 @@ export function buildQueryString(data: any): string {
     return value !== undefined;
   });
 
-  const query = map(
-    flatten(encodeParamsObject(params)),
-    Util.method("join", "="),
-  ).join("&");
+  const query = map(flatten(encodeParamsObject(params)), Util.method("join", "=")).join("&");
 
   return query;
 }
@@ -320,10 +317,7 @@ export function decycleObject(object: any): any {
           nu = {};
           for (name in value) {
             if (Object.prototype.hasOwnProperty.call(value, name)) {
-              nu[name] = derez(
-                value[name],
-                path + "[" + JSON.stringify(name) + "]",
-              );
+              nu[name] = derez(value[name], path + "[" + JSON.stringify(name) + "]");
             }
           }
         }

@@ -1,12 +1,7 @@
 import type { ChannelWriter, Codec, Codec2 } from "../../core/codec/index.js";
 import { createVercelDecoder } from "./decoder.js";
 import { createVercelEncoder } from "./encoder.js";
-import type {
-  AI,
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-} from "./events.js";
+import type { AI, VercelInput, VercelOutput, VercelProjection } from "./events.js";
 import { createVercelProjection, foldVercelEvent } from "./reducer.js";
 
 /**
@@ -23,12 +18,7 @@ import { createVercelProjection, foldVercelEvent } from "./reducer.js";
  * tool errors, approval responses, and regenerate requests are `ai-input`
  * discretes with their tool/branch ids in codec or transport headers.
  */
-export const UIMessageCodec: Codec<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
-> = {
+export const UIMessageCodec: Codec<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = {
   init: createVercelProjection,
   fold: foldVercelEvent,
   getMessages: (projection) => projection.messages,
@@ -48,8 +38,7 @@ export const UIMessageCodec: Codec<
           (part) =>
             part.type === "dynamic-tool" &&
             part.toolCallId === output.toolCallId &&
-            (part.state === "approval-requested" ||
-              part.state === "approval-responded"),
+            (part.state === "approval-requested" || part.state === "approval-responded"),
         )
       ) {
         return message.id;
@@ -58,11 +47,7 @@ export const UIMessageCodec: Codec<
     return undefined;
   },
   isTerminal(output) {
-    return (
-      output.type === "finish" ||
-      output.type === "error" ||
-      output.type === "abort"
-    );
+    return output.type === "finish" || output.type === "error" || output.type === "abort";
   },
   createEncoder(channel: ChannelWriter, options = {}) {
     return createVercelEncoder(channel, options);

@@ -109,9 +109,7 @@ export function useChannel<TChannel extends Channel = Channel>(
   const lastEventData = ref<any>(undefined);
   let unbindChannel: (() => void) | null = null;
 
-  const applySnapshot = (
-    snapshot: ReturnType<typeof createChannelSnapshot>,
-  ) => {
+  const applySnapshot = (snapshot: ReturnType<typeof createChannelSnapshot>) => {
     channel.value = snapshot.channel as TChannel | null;
     subscribed.value = snapshot.subscribed;
     subscriptionPending.value = snapshot.subscriptionPending;
@@ -128,11 +126,7 @@ export function useChannel<TChannel extends Channel = Channel>(
       return;
     }
 
-    const subscribedChannel = subscribeToChannel<TChannel>(
-      client,
-      channelName,
-      options,
-    );
+    const subscribedChannel = subscribeToChannel<TChannel>(client, channelName, options);
 
     unbindChannel = bindChannelState(subscribedChannel, {
       onStateChange: (snapshot) => applySnapshot(snapshot),

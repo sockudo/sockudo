@@ -76,14 +76,8 @@ describe("versioned message helpers", () => {
   });
 
   it("treats append as concatenate semantics", () => {
-    const updated = reduceMutableMessageEvent(
-      null,
-      mutableEvent("message.update", "hello"),
-    );
-    const appended = reduceMutableMessageEvent(
-      updated,
-      mutableEvent("message.append", " world"),
-    );
+    const updated = reduceMutableMessageEvent(null, mutableEvent("message.update", "hello"));
+    const appended = reduceMutableMessageEvent(updated, mutableEvent("message.append", " world"));
 
     expect(appended.action).toBe("message.append");
     expect(appended.data).toBe("hello world");
@@ -94,10 +88,7 @@ describe("versioned message helpers", () => {
       null,
       mutableEvent("message.update", { text: "hello" }),
     );
-    const deleted = reduceMutableMessageEvent(
-      updated,
-      mutableEvent("message.delete", null),
-    );
+    const deleted = reduceMutableMessageEvent(updated, mutableEvent("message.delete", null));
 
     expect(deleted.action).toBe("message.delete");
     expect(deleted.data).toBeNull();
@@ -114,9 +105,9 @@ describe("versioned message helpers", () => {
   });
 
   it("throws when append arrives without a string base", () => {
-    expect(() =>
-      reduceMutableMessageEvent(null, mutableEvent("message.append", " world")),
-    ).toThrow(/requires an existing string base/);
+    expect(() => reduceMutableMessageEvent(null, mutableEvent("message.append", " world"))).toThrow(
+      /requires an existing string base/,
+    );
   });
 
   it("fetches the latest message through the configured proxy endpoint", async () => {
@@ -149,9 +140,7 @@ describe("versioned message helpers", () => {
         limit: 2,
         has_more: true,
         next_cursor: "cursor-2",
-        items: [
-          { message_serial: "msg:1", action: "update", data: "hello brave" },
-        ],
+        items: [{ message_serial: "msg:1", action: "update", data: "hello brave" }],
       }),
     });
     vi.stubGlobal("fetch", fetchMock as any);

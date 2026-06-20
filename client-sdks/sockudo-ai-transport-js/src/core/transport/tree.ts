@@ -122,9 +122,7 @@ export interface ConversationTree<TEvent, TProjection> {
     serial: TreeSerial,
   ): TurnNode<TProjection> | undefined;
   /** Applies turn lifecycle metadata. */
-  applyTurnLifecycle(
-    event: TurnLifecycleEvent,
-  ): TurnNode<TProjection> | undefined;
+  applyTurnLifecycle(event: TurnLifecycleEvent): TurnNode<TProjection> | undefined;
   /** Deletes a codec message id and removes unreachable turns. */
   delete(codecMessageId: string): void;
   /** Docs-compatible upsert alias for {@link applyMessage}. */
@@ -136,9 +134,7 @@ export interface ConversationTree<TEvent, TProjection> {
   /** Gets a node by turn id. */
   getTurnNode(turnId: string): TurnNode<TProjection> | undefined;
   /** Gets a node by codec message id. */
-  getTurnByCodecMessageId(
-    codecMessageId: string,
-  ): TurnNode<TProjection> | undefined;
+  getTurnByCodecMessageId(codecMessageId: string): TurnNode<TProjection> | undefined;
   /** Docs-compatible message-granularity node lookup. */
   getNode(codecMessageId: string): TurnNode<TProjection> | undefined;
   /** Gets edit siblings for a turn id or codec message id. */
@@ -179,12 +175,8 @@ export function createConversationTree<TEvent, TProjection>(
   return new ConversationTreeImpl(reducer, options);
 }
 
-class ConversationTreeImpl<TEvent, TProjection>
-  implements ConversationTree<TEvent, TProjection>
-{
-  private readonly emitter = new EventEmitter<
-    ConversationTreeEvents<TEvent, TProjection>
-  >();
+class ConversationTreeImpl<TEvent, TProjection> implements ConversationTree<TEvent, TProjection> {
+  private readonly emitter = new EventEmitter<ConversationTreeEvents<TEvent, TProjection>>();
   private readonly turnIndex = new Map<string, TurnNode<TProjection>>();
   private readonly codecMessageIdToTurnId = new Map<string, string>();
   private readonly turnCodecMessageIds = new Map<string, Set<string>>();
@@ -196,10 +188,7 @@ class ConversationTreeImpl<TEvent, TProjection>
   private readonly pendingParentRefByTurn = new Map<string, string>();
   private readonly pendingForkRefByTurn = new Map<string, string>();
   private readonly siblingCache = new Map<string, CachedNodes<TProjection>>();
-  private readonly regenerateCache = new Map<
-    string,
-    CachedNodes<TProjection>
-  >();
+  private readonly regenerateCache = new Map<string, CachedNodes<TProjection>>();
   private readonly latestContinuationInvocation = new Map<string, string>();
   private version = 0;
 
@@ -235,14 +224,11 @@ class ConversationTreeImpl<TEvent, TProjection>
     }
     for (const decoded of decodedEvents) {
       const messageId =
-        decoded.messageId ??
-        decoded.meta.messageId ??
-        transportHeaders[HEADER_CODEC_MESSAGE_ID];
+        decoded.messageId ?? decoded.meta.messageId ?? transportHeaders[HEADER_CODEC_MESSAGE_ID];
       if (messageId !== undefined) {
         this.attachCodecMessage(node.turnId, messageId, transportHeaders);
       }
-      const meta: ReducerMeta =
-        messageId === undefined ? { serial } : { serial, messageId };
+      const meta: ReducerMeta = messageId === undefined ? { serial } : { serial, messageId };
       node.projection = this.reducer.fold(node.projection, decoded.event, meta);
       const event: TreeMessageEvent<TEvent, TProjection> = {
         turnId: node.turnId,
@@ -258,9 +244,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     return node;
   }
 
-  public applyTurnLifecycle(
-    event: TurnLifecycleEvent,
-  ): TurnNode<TProjection> | undefined {
+  public applyTurnLifecycle(event: TurnLifecycleEvent): TurnNode<TProjection> | undefined {
     const turnId = event.headers[HEADER_TURN_ID];
     if (!turnId) {
       return undefined;
@@ -304,8 +288,7 @@ class ConversationTreeImpl<TEvent, TProjection>
       this.metadataFromHeaders(turnId, event.headers, true),
       undefined,
     );
-    const reason =
-      event.reason ?? readTurnReason(event.headers[HEADER_TURN_REASON]);
+    const reason = event.reason ?? readTurnReason(event.headers[HEADER_TURN_REASON]);
     let changed = false;
     if (reason !== undefined && node.status !== reason) {
       node.status = reason;
@@ -351,9 +334,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     return this.turnIndex.get(turnId);
   }
 
-  public getTurnByCodecMessageId(
-    codecMessageId: string,
-  ): TurnNode<TProjection> | undefined {
+  public getTurnByCodecMessageId(codecMessageId: string): TurnNode<TProjection> | undefined {
     const turnId = this.codecMessageIdToTurnId.get(codecMessageId);
     return turnId === undefined ? undefined : this.turnIndex.get(turnId);
   }
@@ -391,9 +372,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     return this.hasSiblingTurns(id);
   }
 
-  public getRegenerateGroup(
-    codecMessageId: string,
-  ): readonly TurnNode<TProjection>[] {
+  public getRegenerateGroup(codecMessageId: string): readonly TurnNode<TProjection>[] {
     const cached = this.regenerateCache.get(codecMessageId);
     if (cached?.version === this.version) {
       return cached.nodes;
@@ -408,8 +387,7 @@ class ConversationTreeImpl<TEvent, TProjection>
 
   public getLatestContinuationInvocation(turnId: string): string | undefined {
     return (
-      this.latestContinuationInvocation.get(turnId) ??
-      this.turnIndex.get(turnId)?.invocationId
+      this.latestContinuationInvocation.get(turnId) ?? this.turnIndex.get(turnId)?.invocationId
     );
   }
 
@@ -501,15 +479,13 @@ class ConversationTreeImpl<TEvent, TProjection>
         metadata.forkRef = forkRef;
       }
       if (headers[HEADER_MSG_REGENERATE] === "true") {
-        const anchor =
-          headers[HEADER_FORK_OF] ?? headers[HEADER_CODEC_MESSAGE_ID];
+        const anchor = headers[HEADER_FORK_OF] ?? headers[HEADER_CODEC_MESSAGE_ID];
         if (anchor !== undefined) {
           metadata.regeneratesCodecMessageId = anchor;
         }
       }
     }
-    const clientId =
-      headers[HEADER_TURN_CLIENT_ID] ?? headers[HEADER_INPUT_CLIENT_ID];
+    const clientId = headers[HEADER_TURN_CLIENT_ID] ?? headers[HEADER_INPUT_CLIENT_ID];
     if (clientId !== undefined) {
       metadata.clientId = clientId;
     }
@@ -548,10 +524,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     return node;
   }
 
-  private backfillMetadata(
-    node: TurnNode<TProjection>,
-    metadata: TurnMetadata,
-  ): boolean {
+  private backfillMetadata(node: TurnNode<TProjection>, metadata: TurnMetadata): boolean {
     let changed = false;
     if (
       metadata.parentTurnId !== undefined &&
@@ -582,31 +555,19 @@ class ConversationTreeImpl<TEvent, TProjection>
       this.moveRegenerateAnchor(node, metadata.regeneratesCodecMessageId);
       changed = true;
     }
-    if (
-      metadata.clientId !== undefined &&
-      node.clientId !== metadata.clientId
-    ) {
+    if (metadata.clientId !== undefined && node.clientId !== metadata.clientId) {
       node.clientId = metadata.clientId;
       changed = true;
     }
-    if (
-      metadata.invocationId !== undefined &&
-      node.invocationId !== metadata.invocationId
-    ) {
+    if (metadata.invocationId !== undefined && node.invocationId !== metadata.invocationId) {
       node.invocationId = metadata.invocationId;
       changed = true;
     }
     return changed;
   }
 
-  private promoteSerial(
-    node: TurnNode<TProjection>,
-    serial: TreeSerial,
-  ): boolean {
-    if (
-      node.startSerial !== undefined &&
-      compareSerial(serial, node.startSerial) >= 0
-    ) {
+  private promoteSerial(node: TurnNode<TProjection>, serial: TreeSerial): boolean {
+    if (node.startSerial !== undefined && compareSerial(serial, node.startSerial) >= 0) {
       return false;
     }
     node.startSerial = serial;
@@ -614,11 +575,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     return true;
   }
 
-  private attachCodecMessage(
-    turnId: string,
-    codecMessageId: string,
-    headers: HeaderMap,
-  ): void {
+  private attachCodecMessage(turnId: string, codecMessageId: string, headers: HeaderMap): void {
     const previous = this.codecMessageIdToTurnId.get(codecMessageId);
     if (previous === turnId) {
       this.headersByCodecMessageId.set(codecMessageId, headers);
@@ -639,10 +596,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     this.bump();
   }
 
-  private resolvePendingReferences(
-    reference: string,
-    resolvedTurnId: string,
-  ): void {
+  private resolvePendingReferences(reference: string, resolvedTurnId: string): void {
     for (const [turnId, pendingRef] of this.pendingParentRefByTurn) {
       if (pendingRef !== reference || turnId === resolvedTurnId) {
         continue;
@@ -697,14 +651,9 @@ class ConversationTreeImpl<TEvent, TProjection>
     }
   }
 
-  private moveRegenerateAnchor(
-    node: TurnNode<TProjection>,
-    anchor: string,
-  ): void {
+  private moveRegenerateAnchor(node: TurnNode<TProjection>, anchor: string): void {
     if (node.regeneratesCodecMessageId !== undefined) {
-      this.regenerateByMsgId
-        .get(node.regeneratesCodecMessageId)
-        ?.delete(node.turnId);
+      this.regenerateByMsgId.get(node.regeneratesCodecMessageId)?.delete(node.turnId);
     }
     node.regeneratesCodecMessageId = anchor;
     let turns = this.regenerateByMsgId.get(anchor);
@@ -715,19 +664,13 @@ class ConversationTreeImpl<TEvent, TProjection>
     turns.add(node.turnId);
   }
 
-  private moveForkChildrenToParent(
-    node: TurnNode<TProjection>,
-    seen: Set<string>,
-  ): void {
+  private moveForkChildrenToParent(node: TurnNode<TProjection>, seen: Set<string>): void {
     if (seen.has(node.turnId)) {
       return;
     }
     seen.add(node.turnId);
     for (const candidate of this.turnIndex.values()) {
-      if (
-        candidate.turnId !== node.turnId &&
-        candidate.forkOf === node.turnId
-      ) {
+      if (candidate.turnId !== node.turnId && candidate.forkOf === node.turnId) {
         this.moveParent(candidate, node.parentTurnId, false);
         this.moveForkChildrenToParent(candidate, seen);
       }
@@ -751,9 +694,7 @@ class ConversationTreeImpl<TEvent, TProjection>
       this.rootTurns.delete(turnId);
     }
     if (node.regeneratesCodecMessageId !== undefined) {
-      this.regenerateByMsgId
-        .get(node.regeneratesCodecMessageId)
-        ?.delete(turnId);
+      this.regenerateByMsgId.get(node.regeneratesCodecMessageId)?.delete(turnId);
     }
     for (const codecMessageId of this.turnCodecMessageIds.get(turnId) ?? []) {
       this.codecMessageIdToTurnId.delete(codecMessageId);
@@ -771,13 +712,9 @@ class ConversationTreeImpl<TEvent, TProjection>
     this.latestContinuationInvocation.delete(turnId);
   }
 
-  private computeSiblingTurns(
-    node: TurnNode<TProjection>,
-  ): TurnNode<TProjection>[] {
+  private computeSiblingTurns(node: TurnNode<TProjection>): TurnNode<TProjection>[] {
     const candidateIds =
-      node.parentTurnId === undefined
-        ? this.rootTurns
-        : this.parentIndex.get(node.parentTurnId);
+      node.parentTurnId === undefined ? this.rootTurns : this.parentIndex.get(node.parentTurnId);
     if (!candidateIds) {
       return [node];
     }
@@ -787,10 +724,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     while (changed) {
       changed = false;
       for (const candidateId of candidateSet) {
-        if (
-          group.has(candidateId) ||
-          this.isDescendant(candidateId, node.turnId)
-        ) {
+        if (group.has(candidateId) || this.isDescendant(candidateId, node.turnId)) {
           continue;
         }
         const candidate = this.turnIndex.get(candidateId);
@@ -810,9 +744,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     return this.nodesInSortOrder(group);
   }
 
-  private computeRegenerateGroup(
-    codecMessageId: string,
-  ): TurnNode<TProjection>[] {
+  private computeRegenerateGroup(codecMessageId: string): TurnNode<TProjection>[] {
     const nodes: TurnNode<TProjection>[] = [];
     const owner = this.getTurnByCodecMessageId(codecMessageId);
     if (owner) {
@@ -829,10 +761,7 @@ class ConversationTreeImpl<TEvent, TProjection>
     return nodes;
   }
 
-  private forkChainTouches(
-    node: TurnNode<TProjection>,
-    group: Set<string>,
-  ): boolean {
+  private forkChainTouches(node: TurnNode<TProjection>, group: Set<string>): boolean {
     const seen = new Set<string>();
     let current: string | undefined = node.forkOf;
     while (current !== undefined && !seen.has(current)) {
@@ -879,20 +808,14 @@ class ConversationTreeImpl<TEvent, TProjection>
     if (reference === undefined) {
       return undefined;
     }
-    return (
-      this.codecMessageIdToTurnId.get(reference) ??
-      this.turnIndex.get(reference)?.turnId
-    );
+    return this.codecMessageIdToTurnId.get(reference) ?? this.turnIndex.get(reference)?.turnId;
   }
 
   private sortTurns(): void {
     this.sortedTurns.sort((left, right) => {
       const leftNode = this.turnIndex.get(left);
       const rightNode = this.turnIndex.get(right);
-      return compareOptionalSerial(
-        leftNode?.startSerial,
-        rightNode?.startSerial,
-      );
+      return compareOptionalSerial(leftNode?.startSerial, rightNode?.startSerial);
     });
   }
 
@@ -961,11 +884,7 @@ function compareSerial(left: TreeSerial, right: TreeSerial): -1 | 0 | 1 {
   if (leftBigInt !== undefined && rightBigInt !== undefined) {
     return leftBigInt < rightBigInt ? -1 : leftBigInt > rightBigInt ? 1 : 0;
   }
-  return String(left) < String(right)
-    ? -1
-    : String(left) > String(right)
-      ? 1
-      : 0;
+  return String(left) < String(right) ? -1 : String(left) > String(right) ? 1 : 0;
 }
 
 function serialBigInt(value: TreeSerial): bigint | undefined {

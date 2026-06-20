@@ -6,10 +6,7 @@ export default defineConfig({
     emptyOutDir: false,
     lib: {
       entry: {
-        "sockudo-with-encryption": path.resolve(
-          __dirname,
-          "src/core/sockudo-with-encryption.ts",
-        ),
+        "sockudo-with-encryption": path.resolve(__dirname, "src/core/sockudo-with-encryption.ts"),
       },
       name: "Sockudo",
       formats: ["es"],

@@ -18,10 +18,7 @@ const liveWireFormat = (): "json" | "messagepack" | "protobuf" => {
   }
 };
 
-const waitForValue = async <T>(
-  supplier: () => T | undefined,
-  timeoutMs = 8000,
-): Promise<T> => {
+const waitForValue = async <T>(supplier: () => T | undefined, timeoutMs = 8000): Promise<T> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = supplier();
@@ -366,9 +363,7 @@ describe("live wire format integration", () => {
       payload: { marker: "miss" },
     });
 
-    await waitForValue(() =>
-      receivedMarkers.includes("match") ? true : undefined,
-    );
+    await waitForValue(() => (receivedMarkers.includes("match") ? true : undefined));
     expect(receivedMarkers).toContain("match");
     expect(receivedMarkers).not.toContain("miss");
     client.disconnect();
@@ -391,10 +386,7 @@ describe("live wire format integration", () => {
     await connectAndWaitForSubscription(metaClient, `[meta]${baseChannel}`);
     metaClient.connection.bind("message", (event) => {
       const message = event as Record<string, unknown>;
-      if (
-        message.channel === `[meta]${baseChannel}` &&
-        typeof message.event === "string"
-      ) {
+      if (message.channel === `[meta]${baseChannel}` && typeof message.event === "string") {
         metaEvents.push({
           event: message.event as string,
           data: message.data as Record<string, unknown> | undefined,
@@ -405,9 +397,7 @@ describe("live wire format integration", () => {
     await connectAndWaitForSubscription(memberClient, baseChannel);
 
     const occupied = await waitForValue(() =>
-      metaEvents.find(
-        (entry) => entry.event === "sockudo_internal:channel_occupied",
-      ),
+      metaEvents.find((entry) => entry.event === "sockudo_internal:channel_occupied"),
     );
     expect(occupied.data?.channel).toBe(baseChannel);
 
@@ -420,9 +410,7 @@ describe("live wire format integration", () => {
           Number(entry.data.subscription_count) >= 1,
       ),
     );
-    expect(Number(countUpdate.data?.subscription_count)).toBeGreaterThanOrEqual(
-      1,
-    );
+    expect(Number(countUpdate.data?.subscription_count)).toBeGreaterThanOrEqual(1);
 
     memberClient.disconnect();
     metaClient.disconnect();

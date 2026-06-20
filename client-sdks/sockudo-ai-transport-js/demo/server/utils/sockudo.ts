@@ -19,10 +19,7 @@ import { demoConfig } from "./config";
 
 export function isAllowedDemoChannel(channelName: string): boolean {
   const config = demoConfig();
-  return (
-    channelName === config.channelName ||
-    channelName.startsWith("private-ai-e2e-")
-  );
+  return channelName === config.channelName || channelName.startsWith("private-ai-e2e-");
 }
 
 export function realtimeClient(): ClientLike {
@@ -43,10 +40,7 @@ export function realtimeClient(): ClientLike {
   return createServerProxyClient(new Sockudo(config.appKey, options));
 }
 
-export function channelAuth(
-  socketId: string,
-  channelName: string,
-): { auth: string } {
+export function channelAuth(socketId: string, channelName: string): { auth: string } {
   const config = demoConfig();
   const signature = createHmac("sha256", config.appSecret)
     .update(`${socketId}:${channelName}`)
@@ -73,15 +67,11 @@ export function capabilityJwt(clientId: string): {
     },
   };
   const unsigned = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
-  const signature = createHmac("sha256", config.appSecret)
-    .update(unsigned)
-    .digest("base64url");
+  const signature = createHmac("sha256", config.appSecret).update(unsigned).digest("base64url");
   return { token: `${unsigned}.${signature}`, expiresAt };
 }
 
-export async function proxyVersionedMessage(
-  body: Record<string, unknown>,
-): Promise<unknown> {
+export async function proxyVersionedMessage(body: Record<string, unknown>): Promise<unknown> {
   const channel = requireString(body.channel, "channel");
   if (!isAllowedDemoChannel(channel)) {
     throw createError({ statusCode: 400, statusMessage: "unexpected channel" });
@@ -132,9 +122,7 @@ export async function proxyVersionedMessage(
     const query = params.toString();
     return signedSockudoRequest(
       "GET",
-      `/apps/{appId}/channels/${encodeURIComponent(channel)}/history${
-        query ? `?${query}` : ""
-      }`,
+      `/apps/{appId}/channels/${encodeURIComponent(channel)}/history${query ? `?${query}` : ""}`,
     );
   }
   throw createError({ statusCode: 400, statusMessage: "unsupported action" });
@@ -174,10 +162,7 @@ function createServerProxyClient(raw: Sockudo): ClientLike {
   };
 }
 
-async function publishCreate(
-  channel: string,
-  message: PublishMessage,
-): Promise<MessageAck> {
+async function publishCreate(channel: string, message: PublishMessage): Promise<MessageAck> {
   const payload = await signedSockudoRequest("POST", "/apps/{appId}/events", {
     name: message.name ?? "sockudo:message.create",
     channel,
@@ -220,18 +205,14 @@ async function readChannelHistory(
   const query = params.toString();
   const payload = await signedSockudoRequest(
     "GET",
-    `/apps/{appId}/channels/${encodeURIComponent(channel)}/history${
-      query ? `?${query}` : ""
-    }`,
+    `/apps/{appId}/channels/${encodeURIComponent(channel)}/history${query ? `?${query}` : ""}`,
   );
   const record = asRecord(payload);
   const rawItems = Array.isArray(record.items) ? [...record.items] : [];
   if (options.direction === "newest_first") {
     rawItems.reverse();
   }
-  const items = rawItems.map((item) =>
-    normalizeHistoryItem(item, Number(Date.now())),
-  );
+  const items = rawItems.map((item) => normalizeHistoryItem(item, Number(Date.now())));
   const cursor = typeof record.next === "string" ? record.next : undefined;
   return {
     items,
@@ -239,10 +220,7 @@ async function readChannelHistory(
       return Boolean(cursor ?? record.has_more);
     },
     next() {
-      return readChannelHistory(
-        channel,
-        cursor === undefined ? options : { ...options, cursor },
-      );
+      return readChannelHistory(channel, cursor === undefined ? options : { ...options, cursor });
     },
   };
 }
@@ -254,11 +232,8 @@ async function signedSockudoRequest(
 ): Promise<unknown> {
   const config = demoConfig();
   const pathWithQuery = rawPathWithQuery.replace("{appId}", config.appId);
-  const rawBody =
-    body === undefined ? undefined : JSON.stringify(stripUndefined(body));
-  const url = new URL(
-    `http://${config.host}:${String(config.port)}${pathWithQuery}`,
-  );
+  const rawBody = body === undefined ? undefined : JSON.stringify(stripUndefined(body));
+  const url = new URL(`http://${config.host}:${String(config.port)}${pathWithQuery}`);
   const params = Object.fromEntries(url.searchParams.entries());
   params.auth_key = config.appKey;
   params.auth_timestamp = String(Math.floor(Date.now() / 1000));
@@ -296,10 +271,7 @@ function normalizeAck(payload: unknown, fallback?: string): MessageAck {
   const first = channels === undefined ? record : Object.values(channels)[0];
   const ack = asRecord(first) ?? record;
   const result: MessageAck = {
-    messageSerial: stringOr(
-      ack.message_serial ?? ack.messageSerial,
-      fallback ?? "msg-demo",
-    ),
+    messageSerial: stringOr(ack.message_serial ?? ack.messageSerial, fallback ?? "msg-demo"),
     historySerial: serialValue(ack.history_serial ?? ack.historySerial) ?? 1,
   };
   const deliverySerial = serialValue(ack.delivery_serial ?? ack.deliverySerial);
@@ -313,16 +285,11 @@ function normalizeAck(payload: unknown, fallback?: string): MessageAck {
   return result;
 }
 
-function normalizeHistoryItem(
-  item: unknown,
-  fallbackSerial: number,
-): InboundMessage {
+function normalizeHistoryItem(item: unknown, fallbackSerial: number): InboundMessage {
   const wrapper = asRecord(item);
   const message = asRecord(wrapper.message ?? item);
-  const serial =
-    stringValue(message.message_serial ?? message.messageSerial) ?? "";
-  const historySerial =
-    serialValue(wrapper.serial ?? message.serial) ?? fallbackSerial;
+  const serial = stringValue(message.message_serial ?? message.messageSerial) ?? "";
+  const historySerial = serialValue(wrapper.serial ?? message.serial) ?? fallbackSerial;
   const extras = message.extras;
   const transport = getTransportHeaders(extras);
   return {
@@ -333,10 +300,7 @@ function normalizeHistoryItem(
     historySerial,
     timestamp: Number(message.time_ms ?? message.timestamp ?? Date.now()),
     raw: item,
-    ...optional(
-      "messageId",
-      stringValue(message.message_id ?? message.messageId),
-    ),
+    ...optional("messageId", stringValue(message.message_id ?? message.messageId)),
     ...optional("extras", extras),
     getTransportHeaders() {
       return transport;
@@ -361,9 +325,7 @@ function historyAction(
   ) {
     return action;
   }
-  return transport.stream === "true" && typeof data === "string"
-    ? "update"
-    : "create";
+  return transport.stream === "true" && typeof data === "string" ? "update" : "create";
 }
 
 function historyParams(options: HistoryOptions): Record<string, string> {
@@ -411,15 +373,11 @@ function parseJsonish(value: unknown): unknown {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function serialValue(value: unknown): string | number | undefined {
-  return typeof value === "string" || typeof value === "number"
-    ? value
-    : undefined;
+  return typeof value === "string" || typeof value === "number" ? value : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -441,12 +399,8 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
-function stripUndefined(
-  body: Record<string, unknown>,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(body).filter(([, value]) => value !== undefined),
-  );
+function stripUndefined(body: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined));
 }
 
 function base64Url(value: string): string {

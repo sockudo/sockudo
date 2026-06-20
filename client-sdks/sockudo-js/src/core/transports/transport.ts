@@ -41,12 +41,7 @@ export default class Transport {
    * @param {Object} options
    * @returns {TransportConnection}
    */
-  createConnection(
-    name: string,
-    priority: number,
-    key: string,
-    options: any,
-  ): TransportConnection {
+  createConnection(name: string, priority: number, key: string, options: any): TransportConnection {
     return new TransportConnection(this.hooks, name, priority, key, options);
   }
 }

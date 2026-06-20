@@ -8,12 +8,7 @@ export type Serial = number | string;
 export type AppendRollupWindow = 0 | 20 | 40 | 100 | 500;
 
 /** Versioned-message action normalized for core logic. */
-export type InboundMessageAction =
-  | "create"
-  | "append"
-  | "update"
-  | "delete"
-  | "summary";
+export type InboundMessageAction = "create" | "append" | "update" | "delete" | "summary";
 
 /** Version metadata for a mutable Sockudo message. */
 export interface InboundMessageVersion {
@@ -122,13 +117,7 @@ export interface HistoryOptions {
   /** Page size. */
   limit?: number;
   /** Page direction. */
-  direction?:
-    | "newest_first"
-    | "oldest_first"
-    | "backwards"
-    | "reverse"
-    | "forwards"
-    | "forward";
+  direction?: "newest_first" | "oldest_first" | "backwards" | "reverse" | "forwards" | "forward";
   /** Opaque cursor. */
   cursor?: string;
   /** Inclusive start bound alias. */
@@ -196,9 +185,7 @@ export interface PresenceLike {
   /** Gets current members. */
   get(): Promise<readonly PresenceMember[]>;
   /** Subscribes to presence events. */
-  subscribe(
-    listener: (event: PresenceEventName, member: PresenceMember) => void,
-  ): Unsubscribe;
+  subscribe(listener: (event: PresenceEventName, member: PresenceMember) => void): Unsubscribe;
 }
 
 /** Channel-level seam events. */
@@ -230,15 +217,9 @@ export interface ChannelLike {
     options?: Omit<MessageMutation, "data">,
   ): Promise<MessageAck>;
   /** Updates a mutable message by message serial. */
-  updateMessage(
-    messageSerial: string,
-    options?: MessageMutation,
-  ): Promise<MessageAck>;
+  updateMessage(messageSerial: string, options?: MessageMutation): Promise<MessageAck>;
   /** Deletes a mutable message by message serial. */
-  deleteMessage(
-    messageSerial: string,
-    options?: MessageMutation,
-  ): Promise<MessageAck>;
+  deleteMessage(messageSerial: string, options?: MessageMutation): Promise<MessageAck>;
   /** Subscribes to the unfiltered delivery firehose. */
   subscribe(listener: MessageListener, options?: SubscribeOptions): Unsubscribe;
   /** Reads channel history. */

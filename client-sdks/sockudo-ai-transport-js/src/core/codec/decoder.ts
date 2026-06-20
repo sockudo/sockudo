@@ -29,10 +29,7 @@ export interface DecoderCoreHooks<TEvent> {
   /** Builds stream-start events. */
   buildStartEvents(tracker: DecoderStreamTracker): DecodedEvent<TEvent>[];
   /** Builds stream-delta events. */
-  buildDeltaEvents(
-    tracker: DecoderStreamTracker,
-    delta: string,
-  ): DecodedEvent<TEvent>[];
+  buildDeltaEvents(tracker: DecoderStreamTracker, delta: string): DecodedEvent<TEvent>[];
   /** Builds stream-end events. */
   buildEndEvents(
     tracker: DecoderStreamTracker,
@@ -92,9 +89,7 @@ export function createDecoderCore<TEvent>(
       const messageId = codecMessageId(message);
       const transport = message.getTransportHeaders();
       const stream = transport[HEADER_STREAM] === "true";
-      const trackerId = stream
-        ? streamTrackerId(message, messageId)
-        : messageId;
+      const trackerId = stream ? streamTrackerId(message, messageId) : messageId;
       switch (message.action) {
         case "create":
           if (!stream) {
@@ -160,9 +155,7 @@ function metadataUpdate<TEvent>(
   }
   touch(trackers, trackerId, tracker);
   tracker.message = message;
-  return isTerminal(message)
-    ? closeTracker(trackers, hooks, options, tracker, message)
-    : [];
+  return isTerminal(message) ? closeTracker(trackers, hooks, options, tracker, message) : [];
 }
 
 interface MutableTracker extends DecoderStreamTracker {
@@ -404,10 +397,7 @@ function touch(
 }
 
 function codecMessageId(message: InboundMessage): string {
-  return (
-    message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ??
-    message.messageSerial
-  );
+  return message.getTransportHeaders()[HEADER_CODEC_MESSAGE_ID] ?? message.messageSerial;
 }
 
 function streamTrackerId(message: InboundMessage, messageId: string): string {

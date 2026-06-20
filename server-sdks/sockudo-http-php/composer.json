@@ -13,8 +13,8 @@
     },
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.80",
-        "phpunit/phpunit": "^9.3",
-        "overtrue/phplint": "^2.3"
+        "phpunit/phpunit": "^9.6|^13.0",
+        "overtrue/phplint": "^2.4|^9.7"
     },
     "autoload": {
         "psr-4": {

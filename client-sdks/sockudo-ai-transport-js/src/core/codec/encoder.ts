@@ -8,11 +8,7 @@ import {
 import { ErrorCode, ErrorInfo, toErrorInfo } from "../../errors.js";
 import { getCodecHeaders, getTransportHeaders } from "../../utils.js";
 import type { HeaderMap } from "../../utils.js";
-import type {
-  MessageAck,
-  MessageMutation,
-  PublishMessage,
-} from "../../realtime/types.js";
+import type { MessageAck, MessageMutation, PublishMessage } from "../../realtime/types.js";
 import type {
   ChannelWriter,
   CodecHeaderSet,
@@ -36,10 +32,7 @@ export interface EncoderCoreWriteOptions extends WriteOptions, CodecHeaderSet {
  */
 export interface EncoderCore {
   /** Publishes one discrete create. */
-  publishDiscrete(
-    payload: unknown,
-    options?: EncoderCoreWriteOptions,
-  ): Promise<MessageAck>;
+  publishDiscrete(payload: unknown, options?: EncoderCoreWriteOptions): Promise<MessageAck>;
   /** Publishes discrete creates sequentially. */
   publishDiscreteBatch(
     payloads: readonly unknown[],
@@ -52,22 +45,11 @@ export interface EncoderCore {
     options?: EncoderCoreWriteOptions,
   ): Promise<string>;
   /** Appends stream data without awaiting the mutation. */
-  appendStream(
-    streamId: string,
-    delta: string,
-    options?: EncoderCoreWriteOptions,
-  ): void;
+  appendStream(streamId: string, delta: string, options?: EncoderCoreWriteOptions): void;
   /** Completes a stream, flushing and recovering failed appends. */
-  closeStream(
-    streamId: string,
-    options?: EncoderCoreWriteOptions,
-  ): Promise<void>;
+  closeStream(streamId: string, options?: EncoderCoreWriteOptions): Promise<void>;
   /** Cancels a stream, flushing and recovering failed appends. */
-  cancelStream(
-    streamId: string,
-    reason?: string,
-    options?: EncoderCoreWriteOptions,
-  ): Promise<void>;
+  cancelStream(streamId: string, reason?: string, options?: EncoderCoreWriteOptions): Promise<void>;
   /** Cancels every active stream. */
   cancelAllStreams(reason?: string): Promise<void>;
   /** Closes all active streams as complete. */
@@ -113,19 +95,12 @@ export function createEncoderCore(
       if (ack.messageSerial === "") {
         throw new ErrorInfo({
           code: ErrorCode.BadRequest,
-          message:
-            "unable to start stream; Sockudo acknowledgement did not include messageSerial",
+          message: "unable to start stream; Sockudo acknowledgement did not include messageSerial",
           detail: ack,
         });
       }
-      const transport = mergeHeaderMap(
-        getTransportHeaders(publish.extras),
-        writeOptions.transport,
-      );
-      const codec = mergeHeaderMap(
-        getCodecHeaders(publish.extras),
-        writeOptions.codec,
-      );
+      const transport = mergeHeaderMap(getTransportHeaders(publish.extras), writeOptions.transport);
+      const codec = mergeHeaderMap(getCodecHeaders(publish.extras), writeOptions.codec);
       streams.set(streamId, {
         serial: ack.messageSerial,
         accumulated: payload,
@@ -229,22 +204,14 @@ function terminalStream(input: TerminalOptions): Promise<void> {
   return state.closing;
 }
 
-async function doTerminalStream(
-  input: TerminalOptions,
-  state: StreamState,
-): Promise<void> {
+async function doTerminalStream(input: TerminalOptions, state: StreamState): Promise<void> {
   const terminalHeaders: Record<string, string> = {
     [HEADER_STATUS]: input.status,
   };
   if (input.reason !== undefined) {
     terminalHeaders[HEADER_ERROR_MESSAGE] = input.reason;
   }
-  const mutation = buildMutation(
-    input.options,
-    input.writeOptions,
-    state,
-    terminalHeaders,
-  );
+  const mutation = buildMutation(input.options, input.writeOptions, state, terminalHeaders);
   fireHook(input.options, {
     kind: "update",
     messageSerial: state.serial,
@@ -268,12 +235,7 @@ async function doTerminalStream(
   if (!results.some((result) => result.status === "rejected")) {
     return;
   }
-  const recovery = buildMutation(
-    input.options,
-    input.writeOptions,
-    state,
-    terminalHeaders,
-  );
+  const recovery = buildMutation(input.options, input.writeOptions, state, terminalHeaders);
   const update: MessageMutation = {
     ...recovery,
     data: state.accumulated,
@@ -288,8 +250,7 @@ async function doTerminalStream(
   } catch (error) {
     throw new ErrorInfo({
       code: ErrorCode.EncoderRecoveryFailed,
-      message:
-        "unable to recover stream after append failure; updateMessage failed",
+      message: "unable to recover stream after append failure; updateMessage failed",
       cause: error,
       detail: {
         messageSerial: state.serial,
@@ -371,9 +332,7 @@ function cloneRecord(value: unknown): Record<string, unknown> {
   return { ...(value as Record<string, unknown>) };
 }
 
-function mergeHeaderMap(
-  ...sources: readonly (HeaderMap | undefined)[]
-): HeaderMap {
+function mergeHeaderMap(...sources: readonly (HeaderMap | undefined)[]): HeaderMap {
   const merged = Object.create(null) as Record<string, string>;
   for (const source of sources) {
     if (source === undefined) {
@@ -386,10 +345,7 @@ function mergeHeaderMap(
   return merged;
 }
 
-function fireHook(
-  options: EncoderOptions,
-  message: EncoderOutboundMessage,
-): void {
+function fireHook(options: EncoderOptions, message: EncoderOutboundMessage): void {
   try {
     options.onMessage?.(message);
   } catch {
@@ -419,14 +375,12 @@ function appendWithError(
   mutation: Omit<MessageMutation, "data">,
 ): Promise<MessageAck> {
   try {
-    return writer
-      .appendMessage(messageSerial, data, mutation)
-      .catch((error: unknown) => {
-        throw toErrorInfo(error, {
-          code: ErrorCode.TransportSendFailed,
-          message: "unable to append stream; channel append failed",
-        });
+    return writer.appendMessage(messageSerial, data, mutation).catch((error: unknown) => {
+      throw toErrorInfo(error, {
+        code: ErrorCode.TransportSendFailed,
+        message: "unable to append stream; channel append failed",
       });
+    });
   } catch (error) {
     throw toErrorInfo(error, {
       code: ErrorCode.TransportSendFailed,
@@ -441,14 +395,12 @@ function updateWithError(
   mutation: MessageMutation,
 ): Promise<MessageAck> {
   try {
-    return writer
-      .updateMessage(messageSerial, mutation)
-      .catch((error: unknown) => {
-        throw toErrorInfo(error, {
-          code: ErrorCode.TransportSendFailed,
-          message: "unable to update stream; channel update failed",
-        });
+    return writer.updateMessage(messageSerial, mutation).catch((error: unknown) => {
+      throw toErrorInfo(error, {
+        code: ErrorCode.TransportSendFailed,
+        message: "unable to update stream; channel update failed",
       });
+    });
   } catch (error) {
     throw toErrorInfo(error, {
       code: ErrorCode.TransportSendFailed,
@@ -457,10 +409,7 @@ function updateWithError(
   }
 }
 
-function requireStream(
-  streams: Map<string, StreamState>,
-  streamId: string,
-): StreamState {
+function requireStream(streams: Map<string, StreamState>, streamId: string): StreamState {
   const state = streams.get(streamId);
   if (!state) {
     throw new ErrorInfo({

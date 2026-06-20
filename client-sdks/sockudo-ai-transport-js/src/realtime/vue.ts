@@ -10,9 +10,7 @@ export function useSockudoRealtimeClient(
   explicitClient?: ClientLike | SockudoClientPeer,
 ): ClientLike {
   const client = explicitClient ?? (useSockudo() as unknown);
-  return isClientLike(client)
-    ? client
-    : adaptSockudoClient(client as SockudoClientPeer);
+  return isClientLike(client) ? client : adaptSockudoClient(client as SockudoClientPeer);
 }
 
 function isClientLike(client: unknown): client is ClientLike {

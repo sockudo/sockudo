@@ -43,13 +43,7 @@ describe("constants", () => {
       EVENT_AI_TURN_START,
       EVENT_AI_TURN_END,
       EVENT_AI_CANCEL,
-    ]).toEqual([
-      "ai-input",
-      "ai-output",
-      "ai-turn-start",
-      "ai-turn-end",
-      "ai-cancel",
-    ]);
+    ]).toEqual(["ai-input", "ai-output", "ai-turn-start", "ai-turn-end", "ai-cancel"]);
     expect([
       HEADER_TURN_ID,
       HEADER_TURN_CLIENT_ID,

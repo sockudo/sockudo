@@ -41,9 +41,7 @@ function parseNumericHeader(value: unknown): number | undefined {
   return undefined;
 }
 
-export function isMutableMessageEvent(
-  event: Pick<SockudoEvent, "event" | "extras">,
-): boolean {
+export function isMutableMessageEvent(event: Pick<SockudoEvent, "event" | "extras">): boolean {
   return getMutableMessageInfo(event) !== null;
 }
 
@@ -54,13 +52,9 @@ export function getMutableMessageInfo(
   const messageSerialHeader = event.extras?.headers?.sockudo_message_serial;
   const versionSerialHeader = event.extras?.headers?.sockudo_version_serial;
   const historySerialHeader = event.extras?.headers?.sockudo_history_serial;
-  const versionTimestampHeader =
-    event.extras?.headers?.sockudo_version_timestamp_ms;
+  const versionTimestampHeader = event.extras?.headers?.sockudo_version_timestamp_ms;
 
-  if (
-    typeof actionHeader !== "string" ||
-    typeof messageSerialHeader !== "string"
-  ) {
+  if (typeof actionHeader !== "string" || typeof messageSerialHeader !== "string") {
     return null;
   }
 
@@ -77,8 +71,7 @@ export function getMutableMessageInfo(
     action: actionHeader,
     event: event.event,
     messageSerial: messageSerialHeader,
-    versionSerial:
-      typeof versionSerialHeader === "string" ? versionSerialHeader : undefined,
+    versionSerial: typeof versionSerialHeader === "string" ? versionSerialHeader : undefined,
     historySerial: parseNumericHeader(historySerialHeader),
     versionTimestampMs: parseNumericHeader(versionTimestampHeader),
   };
@@ -138,9 +131,7 @@ export function reduceMutableMessageEvent(
   };
 }
 
-export function reduceMutableMessageEvents(
-  events: SockudoEvent[],
-): MutableMessageState | null {
+export function reduceMutableMessageEvents(events: SockudoEvent[]): MutableMessageState | null {
   let state: MutableMessageState | null = null;
   for (const event of events) {
     state = reduceMutableMessageEvent(state, event);

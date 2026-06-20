@@ -4,12 +4,7 @@ import type { Codec, Decoder } from "../codec/index.js";
 import type { InboundMessage, PaginatedResult } from "../../realtime/types.js";
 import { decodeHistoryPage, type HistoryReader } from "./decode-history.js";
 import type { SendOptions } from "./client-transport.js";
-import type {
-  ConversationTree,
-  TreeMessageEvent,
-  TurnEndReason,
-  TurnNode,
-} from "./tree.js";
+import type { ConversationTree, TreeMessageEvent, TurnEndReason, TurnNode } from "./tree.js";
 
 /**
  * View-visible message metadata.
@@ -37,28 +32,13 @@ export interface ViewSendExecutor<TInput, TMessage> {
   /** Sends a user message. */
   send(message: TMessage, options?: SendOptions): Promise<unknown>;
   /** Sends a codec input event. */
-  sendInput(
-    input: TInput | readonly TInput[],
-    options?: SendOptions,
-  ): Promise<unknown>;
+  sendInput(input: TInput | readonly TInput[], options?: SendOptions): Promise<unknown>;
   /** Requests regeneration. */
-  regenerate(
-    target: string,
-    parent: string,
-    options?: SendOptions,
-  ): Promise<unknown>;
+  regenerate(target: string, parent: string, options?: SendOptions): Promise<unknown>;
   /** Edits a message. */
-  edit(
-    messageId: string,
-    message: TMessage,
-    options?: SendOptions,
-  ): Promise<unknown>;
+  edit(messageId: string, message: TMessage, options?: SendOptions): Promise<unknown>;
   /** Updates a message. */
-  update(
-    messageId: string,
-    patch: unknown,
-    options?: SendOptions,
-  ): Promise<unknown>;
+  update(messageId: string, patch: unknown, options?: SendOptions): Promise<unknown>;
 }
 
 /**
@@ -124,36 +104,17 @@ export interface View<TInput, TMessage> {
   /** Gets selected message sibling index. */
   getSelectedMessageSiblingIndex(msgId: string): number;
   /** Selects a message sibling. */
-  selectMessageSibling(
-    msgId: string,
-    index: number,
-    intent?: BranchSelectionIntent,
-  ): void;
+  selectMessageSibling(msgId: string, index: number, intent?: BranchSelectionIntent): void;
   /** Sends a user message. */
   send(message: TMessage, options?: SendOptions): Promise<unknown>;
   /** Sends a codec input. */
-  sendInput(
-    input: TInput | readonly TInput[],
-    options?: SendOptions,
-  ): Promise<unknown>;
+  sendInput(input: TInput | readonly TInput[], options?: SendOptions): Promise<unknown>;
   /** Requests regeneration. */
-  regenerate(
-    target: string,
-    parent: string,
-    options?: SendOptions,
-  ): Promise<unknown>;
+  regenerate(target: string, parent: string, options?: SendOptions): Promise<unknown>;
   /** Edits a message. */
-  edit(
-    messageId: string,
-    message: TMessage,
-    options?: SendOptions,
-  ): Promise<unknown>;
+  edit(messageId: string, message: TMessage, options?: SendOptions): Promise<unknown>;
   /** Updates a message. */
-  update(
-    messageId: string,
-    patch: unknown,
-    options?: SendOptions,
-  ): Promise<unknown>;
+  update(messageId: string, patch: unknown, options?: SendOptions): Promise<unknown>;
   /** Subscribes to scoped view events. */
   on<K extends keyof ViewEvents<TMessage>>(
     event: K,
@@ -176,21 +137,13 @@ export function createView<TInput, TOutput, TProjection, TMessage>(
   return new ViewImpl(options);
 }
 
-class ViewImpl<TInput, TOutput, TProjection, TMessage>
-  implements View<TInput, TMessage>
-{
+class ViewImpl<TInput, TOutput, TProjection, TMessage> implements View<TInput, TMessage> {
   private readonly emitter = new EventEmitter<ViewEvents<TMessage>>();
   private readonly getMessageId: (message: TMessage) => string | undefined;
   private readonly siblingSelections = new Map<string, string>();
-  private readonly siblingSelectionIntents = new Map<
-    string,
-    BranchSelectionIntent
-  >();
+  private readonly siblingSelectionIntents = new Map<string, BranchSelectionIntent>();
   private readonly messageSelections = new Map<string, string>();
-  private readonly messageSelectionIntents = new Map<
-    string,
-    BranchSelectionIntent
-  >();
+  private readonly messageSelectionIntents = new Map<string, BranchSelectionIntent>();
   private readonly withheldTurnIds: string[];
   private readonly unsubscribes: EventUnsubscribe[];
   private cachedVersion = -1;
@@ -207,15 +160,9 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
   private loadErrorValue: ErrorInfo | undefined;
 
   public constructor(
-    private readonly options: ViewOptions<
-      TInput,
-      TOutput,
-      TProjection,
-      TMessage
-    >,
+    private readonly options: ViewOptions<TInput, TOutput, TProjection, TMessage>,
   ) {
-    this.getMessageId = (message) =>
-      options.getMessageId?.(message) ?? defaultMessageId(message);
+    this.getMessageId = (message) => options.getMessageId?.(message) ?? defaultMessageId(message);
     this.withheldTurnIds = [...(options.withheldTurnIds ?? [])];
     this.unsubscribes = [
       options.tree.on("update", () => {
@@ -252,8 +199,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
   public hasOlder(): boolean {
     return (
       this.withheldTurnIds.length > 0 ||
-      (!this.historyExhausted &&
-        (this.historyPage === undefined || this.historyPage.hasNext()))
+      (!this.historyExhausted && (this.historyPage === undefined || this.historyPage.hasNext()))
     );
   }
 
@@ -309,11 +255,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
     }
   }
 
-  public select(
-    id: string,
-    index: number,
-    intent: BranchSelectionIntent = "user",
-  ): void {
+  public select(id: string, index: number, intent: BranchSelectionIntent = "user"): void {
     const siblings = this.getSiblings(id);
     if (siblings.length === 0) {
       return;
@@ -351,10 +293,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
   }
 
   public getNode(id: string): TurnNode<unknown> | undefined {
-    return (
-      this.options.tree.getTurnNode(id) ??
-      this.options.tree.getTurnByCodecMessageId(id)
-    );
+    return this.options.tree.getTurnNode(id) ?? this.options.tree.getTurnByCodecMessageId(id);
   }
 
   public getMessageMetadata(msgId: string): MessageMetadata | undefined {
@@ -392,9 +331,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
     if (!selected) {
       return siblings.length - 1;
     }
-    const index = siblings.findIndex(
-      (message) => this.getMessageId(message) === selected,
-    );
+    const index = siblings.findIndex((message) => this.getMessageId(message) === selected);
     return Math.max(0, index);
   }
 
@@ -408,8 +345,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
       return;
     }
     const selected = siblings[clamp(index, 0, siblings.length - 1)];
-    const selectedId =
-      selected === undefined ? undefined : this.getMessageId(selected);
+    const selectedId = selected === undefined ? undefined : this.getMessageId(selected);
     if (selectedId === undefined) {
       return;
     }
@@ -420,47 +356,28 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
   }
 
   public send(message: TMessage, options?: SendOptions): Promise<unknown> {
-    return this.callExecutor("send", () =>
-      this.requireExecutor().send(message, options),
-    );
+    return this.callExecutor("send", () => this.requireExecutor().send(message, options));
   }
 
-  public sendInput(
-    input: TInput | readonly TInput[],
-    options?: SendOptions,
-  ): Promise<unknown> {
-    return this.callExecutor("send input", () =>
-      this.requireExecutor().sendInput(input, options),
-    );
+  public sendInput(input: TInput | readonly TInput[], options?: SendOptions): Promise<unknown> {
+    return this.callExecutor("send input", () => this.requireExecutor().sendInput(input, options));
   }
 
-  public regenerate(
-    target: string,
-    parent: string,
-    options?: SendOptions,
-  ): Promise<unknown> {
+  public regenerate(target: string, parent: string, options?: SendOptions): Promise<unknown> {
     this.messageSelectionIntents.set(target, "pending");
     return this.callExecutor("regenerate", () =>
       this.requireExecutor().regenerate(target, parent, options),
     );
   }
 
-  public edit(
-    messageId: string,
-    message: TMessage,
-    options?: SendOptions,
-  ): Promise<unknown> {
+  public edit(messageId: string, message: TMessage, options?: SendOptions): Promise<unknown> {
     this.messageSelectionIntents.set(messageId, "pending");
     return this.callExecutor("edit message", () =>
       this.requireExecutor().edit(messageId, message, options),
     );
   }
 
-  public update(
-    messageId: string,
-    patch: unknown,
-    options?: SendOptions,
-  ): Promise<unknown> {
+  public update(messageId: string, patch: unknown, options?: SendOptions): Promise<unknown> {
     return this.callExecutor("update message", () =>
       this.requireExecutor().update(messageId, patch, options),
     );
@@ -509,10 +426,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
       if (withheld.has(node.turnId) || node.regeneratesCodecMessageId) {
         continue;
       }
-      if (
-        node.parentTurnId !== undefined &&
-        !reachable.has(node.parentTurnId)
-      ) {
+      if (node.parentTurnId !== undefined && !reachable.has(node.parentTurnId)) {
         continue;
       }
       const siblings = this.options.tree
@@ -557,10 +471,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
     return { messages, metadata, objects, ranges };
   }
 
-  private extractTurnMessages(
-    node: TurnNode<TProjection>,
-    seenAnchors: Set<string>,
-  ): TMessage[] {
+  private extractTurnMessages(node: TurnNode<TProjection>, seenAnchors: Set<string>): TMessage[] {
     const source = this.options.codec.getMessages(node.projection);
     const output: TMessage[] = [];
     for (const message of source) {
@@ -575,17 +486,13 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
         continue;
       }
       seenAnchors.add(id);
-      output.push(
-        ...this.extractTurnMessages(selectedRegenerator, seenAnchors),
-      );
+      output.push(...this.extractTurnMessages(selectedRegenerator, seenAnchors));
       return output;
     }
     return output;
   }
 
-  private selectedRegenerator(
-    codecMessageId: string,
-  ): TurnNode<TProjection> | undefined {
+  private selectedRegenerator(codecMessageId: string): TurnNode<TProjection> | undefined {
     const group = this.options.tree.getRegenerateGroup(codecMessageId);
     if (group.length <= 1) {
       return undefined;
@@ -606,8 +513,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
     codecMessageId: string,
     fallbackNode: TurnNode<TProjection>,
   ): MessageMetadata {
-    const owner =
-      this.options.tree.getTurnByCodecMessageId(codecMessageId) ?? fallbackNode;
+    const owner = this.options.tree.getTurnByCodecMessageId(codecMessageId) ?? fallbackNode;
     const metadata: MessageMetadata = {
       codecMessageId,
       turnId: owner.turnId,
@@ -620,9 +526,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
   }
 
   private firstMessage(node: TurnNode<unknown>): TMessage[] {
-    const messages = this.options.codec.getMessages(
-      node.projection as TProjection,
-    );
+    const messages = this.options.codec.getMessages(node.projection as TProjection);
     const first = messages[0];
     return first === undefined ? [] : [first];
   }
@@ -634,15 +538,9 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
       .slice(0, 1);
   }
 
-  private selectedTurnId(
-    key: string,
-    siblings: readonly TurnNode<unknown>[],
-  ): string | undefined {
+  private selectedTurnId(key: string, siblings: readonly TurnNode<unknown>[]): string | undefined {
     const selected = this.siblingSelections.get(key);
-    if (
-      selected !== undefined &&
-      siblings.some((node) => node.turnId === selected)
-    ) {
+    if (selected !== undefined && siblings.some((node) => node.turnId === selected)) {
       return selected;
     }
     return siblings[siblings.length - 1]?.turnId;
@@ -676,12 +574,8 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
     }
   }
 
-  private handleProjectionUpdate(
-    event: TreeMessageEvent<TInput | TOutput, TProjection>,
-  ): void {
-    const visibleNode = this.cachedNodes.find(
-      (node) => node.turnId === event.turnId,
-    );
+  private handleProjectionUpdate(event: TreeMessageEvent<TInput | TOutput, TProjection>): void {
+    const visibleNode = this.cachedNodes.find((node) => node.turnId === event.turnId);
     if (
       visibleNode &&
       !visibleNode.regeneratesCodecMessageId &&
@@ -689,9 +583,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
     ) {
       this.patchTurnMessages(visibleNode);
       const message =
-        event.messageId === undefined
-          ? undefined
-          : this.cachedMessageObjects.get(event.messageId);
+        event.messageId === undefined ? undefined : this.cachedMessageObjects.get(event.messageId);
       if (message !== undefined) {
         this.emitter.emit("message", message);
       }
@@ -703,9 +595,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
       this.emitUpdate();
     }
     const message =
-      event.messageId === undefined
-        ? undefined
-        : this.cachedMessageObjects.get(event.messageId);
+      event.messageId === undefined ? undefined : this.cachedMessageObjects.get(event.messageId);
     if (message !== undefined) {
       this.emitter.emit("message", message);
     }
@@ -740,11 +630,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
         this.cachedMessageObjects.delete(id);
       }
     }
-    this.cachedMessages.splice(
-      range.start,
-      range.end - range.start,
-      ...nextMessages,
-    );
+    this.cachedMessages.splice(range.start, range.end - range.start, ...nextMessages);
     const delta = nextMessages.length - (range.end - range.start);
     range.end = range.start + nextMessages.length;
     for (const [turnId, otherRange] of this.cachedRanges) {
@@ -766,9 +652,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
   private turnHasVisibleRegeneration(node: TurnNode<TProjection>): boolean {
     return this.options.codec.getMessages(node.projection).some((message) => {
       const id = this.getMessageId(message);
-      return (
-        id !== undefined && this.options.tree.getRegenerateGroup(id).length > 1
-      );
+      return id !== undefined && this.options.tree.getRegenerateGroup(id).length > 1;
     });
   }
 
@@ -782,10 +666,7 @@ class ViewImpl<TInput, TOutput, TProjection, TMessage>
     return this.options.sendExecutor;
   }
 
-  private async callExecutor(
-    operation: string,
-    run: () => Promise<unknown>,
-  ): Promise<unknown> {
+  private async callExecutor(operation: string, run: () => Promise<unknown>): Promise<unknown> {
     try {
       return await run();
     } catch (error) {
@@ -816,10 +697,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
-function sameMessageRefs<TMessage>(
-  left: readonly TMessage[],
-  right: readonly TMessage[],
-): boolean {
+function sameMessageRefs<TMessage>(left: readonly TMessage[], right: readonly TMessage[]): boolean {
   if (left.length !== right.length) {
     return false;
   }

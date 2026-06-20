@@ -57,9 +57,7 @@ describe("Sockudo", function () {
           path: "/event",
           body: "example body",
         });
-        expect(queryString).to.match(
-          /^(.*&)?body_md5=165d5e6d7ca8f73b3853ce45addf42fc(&.*)?$/,
-        );
+        expect(queryString).to.match(/^(.*&)?body_md5=165d5e6d7ca8f73b3853ce45addf42fc(&.*)?$/);
       });
 
       it("should set the auth_signature to a correct hash", function () {
@@ -153,9 +151,7 @@ describe("Sockudo", function () {
             path: "/event",
             params: { auth_key: "NOPE" },
           });
-        }).to.throwException(
-          /^auth_key is a required parameter and cannot be overidden$/,
-        );
+        }).to.throwException(/^auth_key is a required parameter and cannot be overidden$/);
       });
 
       it("should raise an expcetion when overriding the auth_timestamp param", function () {
@@ -165,9 +161,7 @@ describe("Sockudo", function () {
             path: "/event",
             params: { auth_timestamp: "NOPE" },
           });
-        }).to.throwException(
-          /^auth_timestamp is a required parameter and cannot be overidden$/,
-        );
+        }).to.throwException(/^auth_timestamp is a required parameter and cannot be overidden$/);
       });
 
       it("should raise an expcetion when overriding the auth_version param", function () {
@@ -177,9 +171,7 @@ describe("Sockudo", function () {
             path: "/event",
             params: { auth_version: "NOPE" },
           });
-        }).to.throwException(
-          /^auth_version is a required parameter and cannot be overidden$/,
-        );
+        }).to.throwException(/^auth_version is a required parameter and cannot be overidden$/);
       });
 
       it("should raise an expcetion when overriding the auth_signature param", function () {
@@ -189,9 +181,7 @@ describe("Sockudo", function () {
             path: "/event",
             params: { auth_signature: "NOPE" },
           });
-        }).to.throwException(
-          /^auth_signature is a required parameter and cannot be overidden$/,
-        );
+        }).to.throwException(/^auth_signature is a required parameter and cannot be overidden$/);
       });
     });
   });

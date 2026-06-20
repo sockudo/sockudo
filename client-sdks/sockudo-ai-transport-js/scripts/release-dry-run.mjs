@@ -42,20 +42,13 @@ try {
   );
 
   await run("pnpm", ["build"]);
-  server = spawn(
-    "pnpm",
-    ["exec", "verdaccio", "--config", config, "--listen", registry],
-    {
-      cwd: root,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  server = spawn("pnpm", ["exec", "verdaccio", "--config", config, "--listen", registry], {
+    cwd: root,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   await waitForRegistry(registry);
   const token = await createVerdaccioUser(registry);
-  await writeFile(
-    npmrc,
-    `//127.0.0.1:4873/:_authToken=${token}\nregistry=${registry}\n`,
-  );
+  await writeFile(npmrc, `//127.0.0.1:4873/:_authToken=${token}\nregistry=${registry}\n`);
 
   await run("mkdir", ["-p", packDir, appDir]);
   await run("npm", ["pack", "--pack-destination", packDir]);
@@ -90,19 +83,9 @@ try {
       2,
     ),
   );
-  await run(
-    "npm",
-    [
-      "install",
-      "--registry",
-      registry,
-      "--ignore-scripts",
-      "--legacy-peer-deps",
-    ],
-    {
-      cwd: appDir,
-    },
-  );
+  await run("npm", ["install", "--registry", registry, "--ignore-scripts", "--legacy-peer-deps"], {
+    cwd: appDir,
+  });
   await writeFile(
     join(appDir, "smoke.mjs"),
     [
@@ -131,10 +114,7 @@ function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? root,
-      stdio:
-        options.input === undefined
-          ? "inherit"
-          : ["pipe", "inherit", "inherit"],
+      stdio: options.input === undefined ? "inherit" : ["pipe", "inherit", "inherit"],
     });
     if (options.input !== undefined) {
       child.stdin.end(options.input);
@@ -144,9 +124,7 @@ function run(command, args, options = {}) {
       if (code === 0) {
         resolve();
       } else {
-        reject(
-          new Error(`${command} ${args.join(" ")} exited with ${String(code)}`),
-        );
+        reject(new Error(`${command} ${args.join(" ")} exited with ${String(code)}`));
       }
     });
   });
@@ -169,27 +147,22 @@ async function waitForRegistry(url) {
 }
 
 async function createVerdaccioUser(url) {
-  const response = await globalThis.fetch(
-    `${url}/-/user/org.couchdb.user:sockudo`,
-    {
-      method: "PUT",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        name: "sockudo",
-        password: "sockudo",
-        email: "release@example.com",
-        type: "user",
-        roles: [],
-        date: new Date().toISOString(),
-      }),
+  const response = await globalThis.fetch(`${url}/-/user/org.couchdb.user:sockudo`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
     },
-  );
+    body: JSON.stringify({
+      name: "sockudo",
+      password: "sockudo",
+      email: "release@example.com",
+      type: "user",
+      roles: [],
+      date: new Date().toISOString(),
+    }),
+  });
   if (!response.ok) {
-    throw new Error(
-      `Verdaccio user creation failed with ${String(response.status)}`,
-    );
+    throw new Error(`Verdaccio user creation failed with ${String(response.status)}`);
   }
   const payload = await response.json();
   if (typeof payload.token !== "string" || payload.token.length === 0) {

@@ -38,7 +38,7 @@ class WebHook {
       : [];
 
     const tokens: Array<Token | TokenShape> = [this.token, ...normalized];
-    for (let token of tokens) {
+    for (const token of tokens) {
       let candidate: Token;
       if (token instanceof Token) {
         candidate = token;
@@ -65,12 +65,7 @@ class WebHook {
 
   getData(): WebHookData {
     if (!this.isBodyValid()) {
-      throw new WebHookError(
-        "Invalid WebHook body",
-        this.contentType,
-        this.body,
-        this.signature,
-      );
+      throw new WebHookError("Invalid WebHook body", this.contentType, this.body, this.signature);
     }
     return this.data!;
   }

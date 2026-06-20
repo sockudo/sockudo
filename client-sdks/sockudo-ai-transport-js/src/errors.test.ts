@@ -16,9 +16,7 @@ describe("ErrorInfo", () => {
     expect(statusCodeForErrorCode(ErrorCode.TokenExpired)).toBe(401);
     expect(statusCodeForErrorCode(ErrorCode.InsufficientCapability)).toBe(401);
     expect(statusCodeForErrorCode(ErrorCode.EncoderRecoveryFailed)).toBe(500);
-    expect(statusCodeForErrorCode(ErrorCode.TransportSubscriptionError)).toBe(
-      500,
-    );
+    expect(statusCodeForErrorCode(ErrorCode.TransportSubscriptionError)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.CancelListenerError)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.TurnLifecycleError)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.TransportClosed)).toBe(500);
@@ -26,9 +24,7 @@ describe("ErrorInfo", () => {
     expect(statusCodeForErrorCode(ErrorCode.ChannelContinuityLost)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.ChannelNotReady)).toBe(500);
     expect(statusCodeForErrorCode(ErrorCode.StreamError)).toBe(500);
-    expect(statusCodeForErrorCode(ErrorCode.TurnStartDeadlineExceeded)).toBe(
-      504,
-    );
+    expect(statusCodeForErrorCode(ErrorCode.TurnStartDeadlineExceeded)).toBe(504);
     expect(statusCodeForErrorCode(ErrorCode.InputEventNotFound)).toBe(504);
     expect(statusCodeForErrorCode(93002)).toBe(500);
   });

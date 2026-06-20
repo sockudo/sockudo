@@ -169,22 +169,18 @@ describe("realtime adapter", () => {
       message_serial: "msg-2",
     });
 
-    await expect(adapted.publish({ name: "ai-output" })).resolves.toMatchObject(
-      {
-        messageSerial: "msg-1",
-        historySerial: 1,
-        deliverySerial: 2,
-        versionSerial: "ver-1",
-      },
-    );
+    await expect(adapted.publish({ name: "ai-output" })).resolves.toMatchObject({
+      messageSerial: "msg-1",
+      historySerial: 1,
+      deliverySerial: 2,
+      versionSerial: "ver-1",
+    });
     await expect(adapted.appendMessage("msg-1", "x")).resolves.toMatchObject({
       historySerial: 3,
     });
-    await expect(adapted.history({ untilAttach: true })).resolves.toMatchObject(
-      {
-        items: [expect.objectContaining({ messageSerial: "msg-history" })],
-      },
-    );
+    await expect(adapted.history({ untilAttach: true })).resolves.toMatchObject({
+      items: [expect.objectContaining({ messageSerial: "msg-history" })],
+    });
     expect(delivered).toEqual(["ai-output"]);
   });
 });

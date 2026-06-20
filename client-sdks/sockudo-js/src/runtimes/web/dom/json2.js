@@ -246,11 +246,7 @@ if (typeof JSON !== "object") {
 
     // If the value has a toJSON method, call it to obtain a replacement value.
 
-    if (
-      value &&
-      typeof value === "object" &&
-      typeof value.toJSON === "function"
-    ) {
+    if (value && typeof value === "object" && typeof value.toJSON === "function") {
       value = value.toJSON(key);
     }
 
@@ -466,10 +462,7 @@ if (typeof JSON !== "object") {
         /^[\],:{}\s]*$/.test(
           text
             .replace(/\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4})/g, "@")
-            .replace(
-              /"[^"\\\n\r]*"|true|false|null|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?/g,
-              "]",
-            )
+            .replace(/"[^"\\\n\r]*"|true|false|null|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?/g, "]")
             .replace(/(?:^|:|,)(?:\s*\[)+/g, ""),
         )
       ) {

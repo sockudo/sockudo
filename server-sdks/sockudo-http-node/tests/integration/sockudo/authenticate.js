@@ -29,9 +29,7 @@ describe("Sockudo", function () {
         auth: "aaaa:f4b1fdeea7c93e32648c7230e32b172057c5623cace6cfce791c6e7035e0babd",
         user_data: '{"id":"45678"}',
       });
-      expect(
-        sockudo.authenticateUser("123.456", { id: "55555", user_name: "test" }),
-      ).to.eql({
+      expect(sockudo.authenticateUser("123.456", { id: "55555", user_name: "test" })).to.eql({
         auth: "aaaa:b8a9f173455903792ae2b788add0c4c78ad7372b3ae7fb5769479276a1993743",
         user_data: JSON.stringify({ id: "55555", user_name: "test" }),
       });
@@ -170,19 +168,16 @@ describe("Sockudo", function () {
     });
 
     it("should return the channel data", function () {
-      expect(
-        sockudo.authorizeChannel("123.456", "test", { foo: "bar" })
-          .channel_data,
-      ).to.eql('{"foo":"bar"}');
+      expect(sockudo.authorizeChannel("123.456", "test", { foo: "bar" }).channel_data).to.eql(
+        '{"foo":"bar"}',
+      );
     });
 
     it("should return correct authentication signatures with and without the channel data", function () {
       expect(sockudo.authorizeChannel("123.456", "test")).to.eql({
         auth: "aaaa:efa6cf7644a0b35cba36aa0f776f3cbf7bb60e95ea2696bde1dbe8403b61bd7c",
       });
-      expect(
-        sockudo.authorizeChannel("123.456", "test", { foo: "bar" }),
-      ).to.eql({
+      expect(sockudo.authorizeChannel("123.456", "test", { foo: "bar" })).to.eql({
         auth: "aaaa:f41faf9ead2ea76772cc6b1168363057459f02499ae4d92e88229dc7f4efa2d4",
         channel_data: '{"foo":"bar"}',
       });
@@ -249,9 +244,7 @@ describe("Sockudo", function () {
     it("should throw an error for private-encrypted- channels", function () {
       expect(function () {
         sockudo.authorizeChannel("123.456", "private-encrypted-bla", "foo");
-      }).to.throwException(
-        "Cannot generate shared_secret because encryptionMasterKey is not set",
-      );
+      }).to.throwException("Cannot generate shared_secret because encryptionMasterKey is not set");
     });
   });
 });
@@ -272,9 +265,7 @@ describe("Sockudo with encryptionMasterKey", function () {
 
   describe("#authorizeChannel", function () {
     it("should return a shared_secret for private-encrypted- channels", function () {
-      expect(
-        sockudo.authorizeChannel("123.456", "private-encrypted-bla", "foo"),
-      ).to.eql({
+      expect(sockudo.authorizeChannel("123.456", "private-encrypted-bla", "foo")).to.eql({
         auth: "f00d:962c48b78bf93d98ff4c92ee7dff04865821455b7b401e9d60a9e0a90af2c105",
         channel_data: '"foo"',
         shared_secret: "nlr49ISQHz91yS3cy/yWmW8wFMNeTnNL5tNHnbPJcLQ=",

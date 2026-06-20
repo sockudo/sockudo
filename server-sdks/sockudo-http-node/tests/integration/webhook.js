@@ -16,8 +16,7 @@ describe("WebHook", function () {
       const webhook = new WebHook(token, {
         headers: {
           "x-pusher-key": "123456789",
-          "x-pusher-signature":
-            "c17257e92037cd7de407ebc1ed174ceb7b2e518db127f44411b9ffc4f5b28cc5",
+          "x-pusher-signature": "c17257e92037cd7de407ebc1ed174ceb7b2e518db127f44411b9ffc4f5b28cc5",
           "content-type": "application/json",
         },
         rawBody: JSON.stringify({
@@ -32,8 +31,7 @@ describe("WebHook", function () {
       const webhook = new WebHook(token, {
         headers: {
           "x-pusher-key": "000",
-          "x-pusher-signature":
-            "df1465f5ff93f83238152fd002cb904f9562d39569e68f00a6bfa0d8ccf88334",
+          "x-pusher-signature": "df1465f5ff93f83238152fd002cb904f9562d39569e68f00a6bfa0d8ccf88334",
           "content-type": "application/json",
         },
         rawBody: JSON.stringify({
@@ -63,8 +61,7 @@ describe("WebHook", function () {
       const webhook = new WebHook(token, {
         headers: {
           "x-pusher-key": "1234",
-          "x-pusher-signature":
-            "c17257e92037cd7de407ebc1ed174ceb7b2e518db127f44411b9ffc4f5b28cc5",
+          "x-pusher-signature": "c17257e92037cd7de407ebc1ed174ceb7b2e518db127f44411b9ffc4f5b28cc5",
           "content-type": "application/json",
         },
         rawBody: JSON.stringify({
@@ -79,8 +76,7 @@ describe("WebHook", function () {
       const webhook = new WebHook(token, {
         headers: {
           "x-pusher-key": "3",
-          "x-pusher-signature":
-            "c17257e92037cd7de407ebc1ed174ceb7b2e518db127f44411b9ffc4f5b28cc5",
+          "x-pusher-signature": "c17257e92037cd7de407ebc1ed174ceb7b2e518db127f44411b9ffc4f5b28cc5",
           "content-type": "application/json",
         },
         rawBody: JSON.stringify({

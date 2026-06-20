@@ -19,21 +19,6 @@ pub struct MessageExtras {
     pub echo: Option<bool>,
 }
 
-#[cfg(all(feature = "encryption", feature = "sodiumoxide"))]
-use std::sync::Once;
-
-#[cfg(all(feature = "encryption", feature = "sodiumoxide"))]
-static SODIUM_INIT: Once = Once::new();
-
-/// Initialize sodiumoxide once
-#[cfg(all(feature = "encryption", feature = "sodiumoxide"))]
-fn init_sodium() -> Result<()> {
-    SODIUM_INIT.call_once(|| {
-        sodiumoxide::init().expect("Failed to initialize sodiumoxide");
-    });
-    Ok(())
-}
-
 /// Event data that can be either a string or JSON
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventData {
@@ -314,79 +299,15 @@ impl TriggerParamsBuilder {
 /// Encrypts data for encrypted channels
 #[cfg(feature = "encryption")]
 fn encrypt(sockudo: &Sockudo, channel: &str, data: &EventData) -> Result<String> {
-    #[cfg(feature = "sodiumoxide")]
-    {
-        encrypt_sodiumoxide(sockudo, channel, data)
-    }
-
-    #[cfg(not(feature = "sodiumoxide"))]
-    {
-        encrypt_pure_rust(sockudo, channel, data)
-    }
+    encrypt_secretbox(sockudo, channel, data)
 }
 
-/// Encrypts data using sodiumoxide
-#[cfg(all(feature = "encryption", feature = "sodiumoxide"))]
-fn encrypt_sodiumoxide(sockudo: &Sockudo, channel: &str, data: &EventData) -> Result<String> {
-    init_sodium()?;
-
-    // Ensure master key is present
-    let _master_key =
-        sockudo
-            .config()
-            .encryption_master_key()
-            .ok_or_else(|| SockudoError::Encryption {
-                message: "Set encryptionMasterKey before triggering events on encrypted channels"
-                    .to_string(),
-            })?;
-
-    // Generate a random nonce
-    let nonce_bytes =
-        sodiumoxide::randombytes::randombytes(sodiumoxide::crypto::secretbox::NONCEBYTES);
-    let nonce =
-        sodiumoxide::crypto::secretbox::Nonce::from_slice(&nonce_bytes).ok_or_else(|| {
-            SockudoError::Encryption {
-                message: "Failed to create nonce from random bytes".to_string(),
-            }
-        })?;
-
-    // Get channel shared secret
-    let shared_secret_bytes = sockudo.channel_shared_secret(channel)?;
-
-    // Convert to cryptographic Key type
-    let key =
-        sodiumoxide::crypto::secretbox::Key::from_slice(&shared_secret_bytes).ok_or_else(|| {
-            SockudoError::Encryption {
-                message: format!(
-                    "Channel shared secret must be {} bytes long, but was {} bytes.",
-                    sodiumoxide::crypto::secretbox::KEYBYTES,
-                    shared_secret_bytes.len()
-                ),
-            }
-        })?;
-
-    // Get data as bytes
-    let data_string = data.to_string();
-    let data_bytes = data_string.as_bytes();
-
-    // Encrypt the data
-    let ciphertext = sodiumoxide::crypto::secretbox::seal(data_bytes, &nonce, &key);
-
-    // Return encrypted payload as JSON string
-    let encrypted_payload = json!({
-        "nonce": BASE64.encode(nonce.as_ref()),
-        "ciphertext": BASE64.encode(&ciphertext),
-    });
-
-    Ok(sonic_rs::to_string(&encrypted_payload)?)
-}
-
-/// Encrypts data using pure Rust crypto libraries
-#[cfg(all(feature = "encryption", not(feature = "sodiumoxide")))]
-fn encrypt_pure_rust(sockudo: &Sockudo, channel: &str, data: &EventData) -> Result<String> {
-    use chacha20poly1305::{
-        ChaCha20Poly1305, Nonce,
-        aead::{Aead, AeadCore, KeyInit, OsRng},
+/// Encrypts data using NaCl-compatible XSalsa20-Poly1305.
+#[cfg(feature = "encryption")]
+fn encrypt_secretbox(sockudo: &Sockudo, channel: &str, data: &EventData) -> Result<String> {
+    use crypto_secretbox::{
+        XSalsa20Poly1305,
+        aead::{Aead, AeadCore, KeyInit},
     };
 
     // Ensure master key is present
@@ -403,14 +324,16 @@ fn encrypt_pure_rust(sockudo: &Sockudo, channel: &str, data: &EventData) -> Resu
     let shared_secret_bytes = sockudo.channel_shared_secret(channel)?;
 
     // Create cipher
-    let cipher = ChaCha20Poly1305::new_from_slice(&shared_secret_bytes).map_err(|_| {
+    let cipher = XSalsa20Poly1305::new_from_slice(&shared_secret_bytes).map_err(|_| {
         SockudoError::Encryption {
             message: "Failed to create cipher from shared secret".to_string(),
         }
     })?;
 
     // Generate random nonce
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let nonce = XSalsa20Poly1305::generate_nonce().map_err(|_| SockudoError::Encryption {
+        message: "failed to generate encryption nonce".to_string(),
+    })?;
 
     // Encrypt the data
     let data_string = data.to_string();
@@ -422,7 +345,7 @@ fn encrypt_pure_rust(sockudo: &Sockudo, channel: &str, data: &EventData) -> Resu
 
     // Return encrypted payload as JSON string
     let encrypted_payload = json!({
-        "nonce": BASE64.encode(&nonce),
+        "nonce": BASE64.encode(nonce),
         "ciphertext": BASE64.encode(&ciphertext),
     });
 

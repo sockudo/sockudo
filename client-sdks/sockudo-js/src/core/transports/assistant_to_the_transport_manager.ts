@@ -25,11 +25,7 @@ export default class AssistantToTheTransportManager {
   maxPingDelay: number;
   pingDelay: number;
 
-  constructor(
-    manager: TransportManager,
-    transport: Transport,
-    options: PingDelayOptions,
-  ) {
+  constructor(manager: TransportManager, transport: Transport, options: PingDelayOptions) {
     this.manager = manager;
     this.transport = transport;
     this.minPingDelay = options.minPingDelay;
@@ -56,12 +52,7 @@ export default class AssistantToTheTransportManager {
     options = Collections.extend({}, options, {
       activityTimeout: this.pingDelay,
     });
-    const connection = this.transport.createConnection(
-      name,
-      priority,
-      key,
-      options,
-    );
+    const connection = this.transport.createConnection(name, priority, key, options);
 
     let openTimestamp = null;
 

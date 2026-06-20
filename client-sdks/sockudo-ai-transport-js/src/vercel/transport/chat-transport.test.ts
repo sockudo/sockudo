@@ -101,11 +101,7 @@ describe("Vercel ChatTransport", () => {
     });
   });
 
-  it.each([
-    "input-streaming",
-    "input-available",
-    "approval-requested",
-  ] as const)(
+  it.each(["input-streaming", "input-available", "approval-requested"] as const)(
     "forks a user submit away from unresolved %s tool state",
     async (state) => {
       const { chat, fetch } = setup();
@@ -126,27 +122,25 @@ describe("Vercel ChatTransport", () => {
     },
   );
 
-  it.each([
-    "approval-responded",
-    "output-available",
-    "output-error",
-    "output-denied",
-  ] as const)("does not fork resolved %s tool state", async (state) => {
-    const { chat, fetch } = setup();
-    const assistant = assistantWithTool("a1", state);
+  it.each(["approval-responded", "output-available", "output-error", "output-denied"] as const)(
+    "does not fork resolved %s tool state",
+    async (state) => {
+      const { chat, fetch } = setup();
+      const assistant = assistantWithTool("a1", state);
 
-    await chat.sendMessages({
-      trigger: "submit-message",
-      chatId: "chat-1",
-      messages: [user("u1", "ask"), assistant, user("u2", "next")],
-    });
+      await chat.sendMessages({
+        trigger: "submit-message",
+        chatId: "chat-1",
+        messages: [user("u1", "ask"), assistant, user("u2", "next")],
+      });
 
-    expect(bodyOf(fetch)).toMatchObject({
-      history: [user("u1", "ask"), assistant],
-      messages: [user("u2", "next")],
-    });
-    expect(bodyOf(fetch)).not.toMatchObject({ forkOf: "a1" });
-  });
+      expect(bodyOf(fetch)).toMatchObject({
+        history: [user("u1", "ask"), assistant],
+        messages: [user("u2", "next")],
+      });
+      expect(bodyOf(fetch)).not.toMatchObject({ forkOf: "a1" });
+    },
+  );
 
   it("regenerates the target assistant message as a sibling", async () => {
     const { chat, fetch, published } = setup();
@@ -248,9 +242,7 @@ describe("Vercel ChatTransport", () => {
     controller.abort();
     await stream.cancel();
 
-    expect(published.some((message) => message.name === "ai-cancel")).toBe(
-      true,
-    );
+    expect(published.some((message) => message.name === "ai-cancel")).toBe(true);
   });
 
   it("rejects already-aborted sends before publishing", async () => {
@@ -297,9 +289,7 @@ describe("Vercel ChatTransport", () => {
   it("returns null for reconnect because channel observation owns recovery", async () => {
     const { chat } = setup();
 
-    await expect(chat.reconnectToStream({ chatId: "chat-1" })).resolves.toBe(
-      null,
-    );
+    await expect(chat.reconnectToStream({ chatId: "chat-1" })).resolves.toBe(null);
   });
 });
 
@@ -343,9 +333,10 @@ function setup(
 }
 
 function okFetch(): ReturnType<typeof vi.fn> & typeof fetch {
-  return vi.fn(() =>
-    Promise.resolve(new Response(null, { status: 200 })),
-  ) as ReturnType<typeof vi.fn> & typeof fetch;
+  return vi.fn(() => Promise.resolve(new Response(null, { status: 200 }))) as ReturnType<
+    typeof vi.fn
+  > &
+    typeof fetch;
 }
 
 function bodyOf(fetch: ReturnType<typeof okFetch>): Record<string, unknown> {
@@ -356,12 +347,8 @@ function bodyOf(fetch: ReturnType<typeof okFetch>): Record<string, unknown> {
   return JSON.parse(request.body) as Record<string, unknown>;
 }
 
-function transportHeaders(
-  message: PublishMessage | undefined,
-): Record<string, string> {
-  const extras = message?.extras as
-    | { ai?: { transport?: Record<string, string> } }
-    | undefined;
+function transportHeaders(message: PublishMessage | undefined): Record<string, string> {
+  const extras = message?.extras as { ai?: { transport?: Record<string, string> } } | undefined;
   return extras?.ai?.transport ?? {};
 }
 

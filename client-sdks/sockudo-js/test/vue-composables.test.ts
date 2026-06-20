@@ -5,11 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Dispatcher from "../src/core/events/dispatcher";
 import Members from "../src/core/channels/members";
 import { prefixedEvent } from "../src/core/protocol_prefix";
-import {
-  createSockudoPlugin,
-  useChannel,
-  useSockudoEvent,
-} from "../src/framework-vue/index";
+import { createSockudoPlugin, useChannel, useSockudoEvent } from "../src/framework-vue/index";
 
 class FakePresenceChannel extends Dispatcher {
   name = "presence-room";

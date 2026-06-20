@@ -17,9 +17,7 @@ const HTTP: HTTPFactory = {
   },
 
   createSocket(hooks: SocketHooks, url: string): HTTPSocket {
-    return new HTTPSocket(hooks, url, (method, requestUrl) =>
-      this.createXHR(method, requestUrl),
-    );
+    return new HTTPSocket(hooks, url, (method, requestUrl) => this.createXHR(method, requestUrl));
   },
 
   createXHR(method: string, url: string): HTTPRequest {

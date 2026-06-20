@@ -91,8 +91,7 @@ export function headerWriter(): {
     },
     set(key, value) {
       if (value !== undefined) {
-        headers[key] =
-          typeof value === "boolean" ? String(value) : String(value);
+        headers[key] = typeof value === "boolean" ? String(value) : String(value);
       }
     },
     setJson(key, value) {
@@ -155,9 +154,7 @@ export function mergeHeaders(...sources: readonly HeaderMap[]): HeaderMap {
 }
 
 /** Returns a shallow copy with `undefined` properties omitted. */
-export function stripUndefined<T extends Record<string, unknown>>(
-  value: T,
-): Partial<T> {
+export function stripUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
   const stripped: Partial<T> = {};
   for (const key of Object.keys(value) as (keyof T)[]) {
     if (value[key] !== undefined) {
@@ -168,9 +165,7 @@ export function stripUndefined<T extends Record<string, unknown>>(
 }
 
 /** Builds canonical Sockudo AI transport headers. */
-export function buildTransportHeaders(
-  options: BuildTransportHeadersOptions,
-): HeaderMap {
+export function buildTransportHeaders(options: BuildTransportHeadersOptions): HeaderMap {
   const writer = headerWriter();
   writer.set(HEADER_ROLE, options.role);
   writer.set(HEADER_TURN_ID, options.turnId);
@@ -186,10 +181,7 @@ export function buildTransportHeaders(
   return writer.headers;
 }
 
-function readHeaderTier(
-  extras: unknown,
-  tier: "transport" | "codec",
-): HeaderMap {
+function readHeaderTier(extras: unknown, tier: "transport" | "codec"): HeaderMap {
   const result = readSockudoHeaderFallbacks(extras, tier);
   const ai = asRecord(asRecord(extras)?.ai);
   const source = asRecord(ai?.[tier]);
@@ -264,8 +256,7 @@ function readSockudoHeaderFallbacks(
   if (!headers) {
     return result;
   }
-  const mappings =
-    tier === "transport" ? transportHeaderFallbacks : codecHeaderFallbacks;
+  const mappings = tier === "transport" ? transportHeaderFallbacks : codecHeaderFallbacks;
   for (const [rawKey, rawValue] of Object.entries(headers)) {
     const mapped = mappings[rawKey.toLowerCase()];
     const value = stringifyHeader(rawValue);

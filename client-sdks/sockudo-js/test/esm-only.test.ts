@@ -18,12 +18,8 @@ describe("esm-only packaging", () => {
     expect(packageJson.nativescript).toBe("dist/nativescript/sockudo.js");
     expect(packageJson.exports["./react"].default).toBe("./react/index.js");
     expect(packageJson.exports["./vue"].default).toBe("./vue/index.js");
-    expect(packageJson.exports["./nativescript"].default).toBe(
-      "./nativescript/index.js",
-    );
+    expect(packageJson.exports["./nativescript"].default).toBe("./nativescript/index.js");
     expect(JSON.stringify(packageJson.exports).includes(".cjs")).toBe(false);
-    expect(JSON.stringify(packageJson.exports).includes('"require"')).toBe(
-      false,
-    );
+    expect(JSON.stringify(packageJson.exports).includes('"require"')).toBe(false);
   });
 });

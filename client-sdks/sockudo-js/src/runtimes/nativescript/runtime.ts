@@ -49,9 +49,7 @@ const NativeScript: Runtime = {
   createXHR() {
     const Constructor = this.getXHRAPI();
     if (!Constructor) {
-      throw new Error(
-        "XMLHttpRequest is not available in the NativeScript runtime.",
-      );
+      throw new Error("XMLHttpRequest is not available in the NativeScript runtime.");
     }
 
     return new Constructor();

@@ -17,9 +17,7 @@ describe("stream router", () => {
       done: false,
       value: { text: "a" },
     });
-    expect(router.route("turn-1", "inv-1", { text: "end", done: true })).toBe(
-      true,
-    );
+    expect(router.route("turn-1", "inv-1", { text: "end", done: true })).toBe(true);
     expect(await reader.read()).toEqual({
       done: false,
       value: { text: "end", done: true },

@@ -11,19 +11,14 @@ describe("lifecycle tracker", () => {
       },
       {
         name: "start-step",
-        buildEvent: (scopeId, context) =>
-          `${scopeId}:${context.turn}:start-step`,
+        buildEvent: (scopeId, context) => `${scopeId}:${context.turn}:start-step`,
       },
     ]);
 
     const preamble = tracker.ensurePhases("scope-1", { turn: "turn-1" });
     const delivered = [...preamble, "real-event"];
 
-    expect(delivered).toEqual([
-      "scope-1:turn-1:start",
-      "scope-1:turn-1:start-step",
-      "real-event",
-    ]);
+    expect(delivered).toEqual(["scope-1:turn-1:start", "scope-1:turn-1:start-step", "real-event"]);
     expect(tracker.ensurePhases("scope-1", { turn: "turn-1" })).toEqual([]);
   });
 
@@ -40,20 +35,12 @@ describe("lifecycle tracker", () => {
     ]);
 
     tracker.markEmitted("scope-1", "start");
-    expect(tracker.ensurePhases("scope-1", undefined)).toEqual([
-      "scope-1:step",
-    ]);
+    expect(tracker.ensurePhases("scope-1", undefined)).toEqual(["scope-1:step"]);
 
     tracker.resetPhase("scope-1", "start");
-    expect(tracker.ensurePhases("scope-1", undefined)).toEqual([
-      "scope-1:start",
-      "scope-1:step",
-    ]);
+    expect(tracker.ensurePhases("scope-1", undefined)).toEqual(["scope-1:start", "scope-1:step"]);
 
     tracker.clearScope("scope-1");
-    expect(tracker.ensurePhases("scope-1", undefined)).toEqual([
-      "scope-1:start",
-      "scope-1:step",
-    ]);
+    expect(tracker.ensurePhases("scope-1", undefined)).toEqual(["scope-1:start", "scope-1:step"]);
   });
 });

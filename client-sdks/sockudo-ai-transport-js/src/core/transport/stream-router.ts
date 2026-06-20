@@ -9,11 +9,7 @@ export interface StreamRouter<TOutput> {
   /** Rebinds a suspended turn stream to a continuation invocation. */
   rebindStream(turnId: string, invocationId: string): boolean;
   /** Routes one decoded output to an active own-turn stream. */
-  route(
-    turnId: string,
-    invocationId: string | undefined,
-    output: TOutput,
-  ): boolean;
+  route(turnId: string, invocationId: string | undefined, output: TOutput): boolean;
   /** Closes an active stream. */
   closeStream(turnId: string): boolean;
   /** Errors an active stream. */
@@ -64,10 +60,7 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     this.maxQueuedChunks = options.maxQueuedChunks ?? 1024;
   }
 
-  public createStream(
-    turnId: string,
-    invocationId: string,
-  ): ReadableStream<TOutput> {
+  public createStream(turnId: string, invocationId: string): ReadableStream<TOutput> {
     let controller: ReadableStreamDefaultController<TOutput> | undefined;
     const stream = new ReadableStream<TOutput>(
       {
@@ -83,8 +76,7 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     if (!controller) {
       throw new ErrorInfo({
         code: ErrorCode.TransportSubscriptionError,
-        message:
-          "unable to create stream; ReadableStream did not provide a controller",
+        message: "unable to create stream; ReadableStream did not provide a controller",
       });
     }
     this.entries.set(turnId, { controller, stream, invocationId });
@@ -100,11 +92,7 @@ class DefaultStreamRouter<TOutput> implements StreamRouter<TOutput> {
     return true;
   }
 
-  public route(
-    turnId: string,
-    invocationId: string | undefined,
-    output: TOutput,
-  ): boolean {
+  public route(turnId: string, invocationId: string | undefined, output: TOutput): boolean {
     const entry = this.entries.get(turnId);
     if (!entry) {
       return false;

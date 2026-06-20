@@ -25,10 +25,7 @@ export interface ChannelAuthorizationRequestParams {
 }
 
 export interface ChannelAuthorizationHandler {
-  (
-    params: ChannelAuthorizationRequestParams,
-    callback: ChannelAuthorizationCallback,
-  ): void;
+  (params: ChannelAuthorizationRequestParams, callback: ChannelAuthorizationCallback): void;
 }
 
 export interface UserAuthenticationData {
@@ -46,15 +43,10 @@ export interface UserAuthenticationRequestParams {
 }
 
 export interface UserAuthenticationHandler {
-  (
-    params: UserAuthenticationRequestParams,
-    callback: UserAuthenticationCallback,
-  ): void;
+  (params: UserAuthenticationRequestParams, callback: UserAuthenticationCallback): void;
 }
 
-export type AuthTransportCallback =
-  | ChannelAuthorizationCallback
-  | UserAuthenticationCallback;
+export type AuthTransportCallback = ChannelAuthorizationCallback | UserAuthenticationCallback;
 
 export interface AuthOptionsT<AuthHandler> {
   transport: AuthTransportType;
@@ -66,10 +58,8 @@ export interface AuthOptionsT<AuthHandler> {
   customHandler?: AuthHandler;
 }
 
-export declare type UserAuthenticationOptions =
-  AuthOptionsT<UserAuthenticationHandler>;
-export declare type ChannelAuthorizationOptions =
-  AuthOptionsT<ChannelAuthorizationHandler>;
+export declare type UserAuthenticationOptions = AuthOptionsT<UserAuthenticationHandler>;
+export declare type ChannelAuthorizationOptions = AuthOptionsT<ChannelAuthorizationHandler>;
 
 export interface InternalAuthOptions {
   transport: AuthTransportType;

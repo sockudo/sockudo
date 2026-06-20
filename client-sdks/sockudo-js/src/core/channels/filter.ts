@@ -300,11 +300,7 @@ export function validateFilter(filter: FilterNode): string | null {
 
     // Check value requirements based on operator
     if (filter.cmp === "in" || filter.cmp === "nin") {
-      if (
-        !filter.vals ||
-        !Array.isArray(filter.vals) ||
-        filter.vals.length === 0
-      ) {
+      if (!filter.vals || !Array.isArray(filter.vals) || filter.vals.length === 0) {
         return `${filter.cmp} operation requires non-empty vals array`;
       }
     } else if (filter.cmp === "ex" || filter.cmp === "nex") {
@@ -349,9 +345,6 @@ export const FilterExamples = {
   importantEvents: (xGThreshold: string) =>
     Filter.or(
       Filter.eq("event_type", "goal"),
-      Filter.and(
-        Filter.eq("event_type", "shot"),
-        Filter.gte("xG", xGThreshold),
-      ),
+      Filter.and(Filter.eq("event_type", "shot"), Filter.gte("xG", xGThreshold)),
     ),
 };

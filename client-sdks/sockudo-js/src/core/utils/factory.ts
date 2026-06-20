@@ -7,10 +7,7 @@ import HandshakePayload from "../connection/handshake/handshake_payload";
 import TransportConnection from "../transports/transport_connection";
 
 import Timeline from "../timeline/timeline";
-import {
-  default as TimelineSender,
-  TimelineSenderOptions,
-} from "../timeline/timeline_sender";
+import { default as TimelineSender, TimelineSenderOptions } from "../timeline/timeline_sender";
 import PresenceChannel from "../channels/presence_channel";
 import PrivateChannel from "../channels/private_channel";
 import EncryptedChannel from "../channels/encrypted_channel";
@@ -26,10 +23,7 @@ const Factory = {
     return new Channels();
   },
 
-  createConnectionManager(
-    key: string,
-    options: ConnectionManagerOptions,
-  ): ConnectionManager {
+  createConnectionManager(key: string, options: ConnectionManagerOptions): ConnectionManager {
     return new ConnectionManager(key, options);
   },
 
@@ -45,11 +39,7 @@ const Factory = {
     return new PresenceChannel(name, sockudo);
   },
 
-  createEncryptedChannel(
-    name: string,
-    sockudo: Sockudo,
-    nacl: nacl,
-  ): EncryptedChannel {
+  createEncryptedChannel(name: string, sockudo: Sockudo, nacl: nacl): EncryptedChannel {
     return new EncryptedChannel(name, sockudo, nacl);
   },
 

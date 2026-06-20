@@ -19,12 +19,7 @@ export default class TransportStrategy implements Strategy {
   transport: Transport;
   options: StrategyOptions;
 
-  constructor(
-    name: string,
-    priority: number,
-    transport: Transport,
-    options: StrategyOptions,
-  ) {
+  constructor(name: string, priority: number, transport: Transport, options: StrategyOptions) {
     this.name = name;
     this.priority = priority;
     this.transport = transport;

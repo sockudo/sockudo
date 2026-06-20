@@ -6,11 +6,7 @@ export {
   type DecoderCoreOptions,
   type DecoderStreamTracker,
 } from "./decoder.js";
-export {
-  createEncoderCore,
-  type EncoderCore,
-  type EncoderCoreWriteOptions,
-} from "./encoder.js";
+export { createEncoderCore, type EncoderCore, type EncoderCoreWriteOptions } from "./encoder.js";
 export {
   createLifecycleTracker,
   type LifecycleTracker,

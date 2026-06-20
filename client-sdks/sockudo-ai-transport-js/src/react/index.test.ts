@@ -17,12 +17,7 @@ import { ErrorCode, ErrorInfo } from "../errors.js";
 import { EventEmitter } from "../event-emitter.js";
 import { createMockClient, type MockChannel } from "../realtime/mocks.js";
 import type { SockudoRawMessage } from "../realtime/adapter.js";
-import type {
-  Codec,
-  DecodedBatch,
-  Decoder,
-  UserMessage,
-} from "../core/codec/index.js";
+import type { Codec, DecodedBatch, Decoder, UserMessage } from "../core/codec/index.js";
 import {
   createClientTransport,
   type ClientTransport,
@@ -87,9 +82,7 @@ describe("React transport hooks", () => {
 
     expect(result.current.nearest.transportError).toBeUndefined();
     expect(result.current.outer.transportError).toBeUndefined();
-    expect(result.current.nearest.transport).not.toBe(
-      result.current.outer.transport,
-    );
+    expect(result.current.nearest.transport).not.toBe(result.current.outer.transport);
   });
 
   it("returns throwing stubs for missing, skipped, and failed providers", () => {
@@ -127,9 +120,7 @@ describe("React transport hooks", () => {
   it("non-client hooks are stable without a provider", () => {
     const view = renderHook(() => useView());
     expect(view.result.current.messages).toEqual([]);
-    expect(() => view.result.current.send({ id: "m1", text: "x" })).toThrow(
-      ErrorInfo,
-    );
+    expect(() => view.result.current.send({ id: "m1", text: "x" })).toThrow(ErrorInfo);
 
     const created = renderHook(() => useCreateView());
     expect(created.result.current.nodes).toEqual([]);
@@ -145,9 +136,7 @@ describe("React transport hooks", () => {
   });
 
   it("defers provider close until after unmount microtask", async () => {
-    let captured:
-      | ClientTransport<Message, Message, Projection, Message>
-      | undefined;
+    let captured: ClientTransport<Message, Message, Projection, Message> | undefined;
     const client = createMockClient({ clientId: "client-1" });
     function Capture(): null {
       captured = useClientTransport().transport as ClientTransport<
@@ -219,9 +208,7 @@ describe("React transport hooks", () => {
     view.hasOlderValue = true;
     const transport = fakeTransport(view);
 
-    const { result, unmount } = renderHook(() =>
-      useCreateView({ transport, limit: 5 }),
-    );
+    const { result, unmount } = renderHook(() => useCreateView({ transport, limit: 5 }));
 
     expect(transport.createViewMock.mock.calls).toHaveLength(1);
     expect(view.loadOlder.mock.calls).toContainEqual([5]);
@@ -291,9 +278,7 @@ describe("React transport hooks", () => {
     });
 
     expect(result.current).not.toBe(first);
-    expect(Array.from(result.current.get("client-1") ?? [])).toEqual([
-      "turn-1",
-    ]);
+    expect(Array.from(result.current.get("client-1") ?? [])).toEqual(["turn-1"]);
   });
 
   it("useSockudoMessages subscribes to the raw normalized firehose", () => {
@@ -309,9 +294,7 @@ describe("React transport hooks", () => {
       channel.inject(output("turn-1", "inv-1", "m1", 1));
     });
 
-    expect(result.current.map((message) => message.messageSerial)).toEqual([
-      "m1",
-    ]);
+    expect(result.current.map((message) => message.messageSerial)).toEqual(["m1"]);
 
     const next = createRealTransport(createMockClient().getMockChannel("next"));
     rerender({ current: next });
@@ -333,21 +316,16 @@ describe("React transport hooks", () => {
             channelName: "chat",
             codec: testCodec(),
             api: "/api/chat",
-            fetch: vi.fn(() =>
-              Promise.resolve(new Response(null, { status: 200 })),
-            ),
+            fetch: vi.fn(() => Promise.resolve(new Response(null, { status: 200 }))),
             turnStartDeadlineMs: 0,
           },
           children,
         ),
       );
-    const { result, rerender } = renderHook(
-      ({ onError }) => useClientTransport({ onError }),
-      {
-        initialProps: { onError: first },
-        wrapper,
-      },
-    );
+    const { result, rerender } = renderHook(({ onError }) => useClientTransport({ onError }), {
+      initialProps: { onError: first },
+      wrapper,
+    });
 
     rerender({ onError: second });
     act(() => {
@@ -458,9 +436,7 @@ class FakeView<TMessage> implements View<unknown, TMessage> {
 }
 
 type FakeTransport = ClientTransport<unknown, unknown, unknown, Message> & {
-  readonly createViewMock: ReturnType<
-    typeof vi.fn<() => View<unknown, Message>>
-  >;
+  readonly createViewMock: ReturnType<typeof vi.fn<() => View<unknown, Message>>>;
 };
 
 function fakeTransport(view: View<unknown, Message>): FakeTransport {
@@ -493,9 +469,7 @@ function createRealTransport(
   });
 }
 
-function asSockudo(
-  client: unknown,
-): Parameters<typeof SockudoProvider>[0]["client"] {
+function asSockudo(client: unknown): Parameters<typeof SockudoProvider>[0]["client"] {
   return client as Parameters<typeof SockudoProvider>[0]["client"];
 }
 
@@ -545,9 +519,7 @@ function testCodec(): Codec<Message, Message, Projection, Message> {
   return {
     init: () => ({ messages: [] }),
     fold(projection, event) {
-      const index = projection.messages.findIndex(
-        (message) => message.id === event.id,
-      );
+      const index = projection.messages.findIndex((message) => message.id === event.id);
       if (index === -1) {
         projection.messages.push(event);
       } else {

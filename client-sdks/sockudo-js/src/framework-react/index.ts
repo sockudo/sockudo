@@ -69,8 +69,9 @@ export function useSockudoEvent(
   return resolvedClient;
 }
 
-export interface UseChannelResult<TChannel extends Channel = Channel>
-  extends ChannelStateSnapshot<TChannel> {
+export interface UseChannelResult<
+  TChannel extends Channel = Channel,
+> extends ChannelStateSnapshot<TChannel> {
   client: Sockudo;
 }
 
@@ -104,15 +105,11 @@ export function useChannel<TChannel extends Channel = Channel>(
     const channel = subscribeToChannel<TChannel>(client, channelName, options);
     const unbind = bindChannelState(channel, {
       onStateChange: setSnapshot,
-      onEvent: (eventName, data) =>
-        callbacksRef.current.onEvent?.(eventName, data),
-      onSubscriptionSucceeded: (data) =>
-        callbacksRef.current.onSubscriptionSucceeded?.(data),
-      onSubscriptionError: (error) =>
-        callbacksRef.current.onSubscriptionError?.(error),
+      onEvent: (eventName, data) => callbacksRef.current.onEvent?.(eventName, data),
+      onSubscriptionSucceeded: (data) => callbacksRef.current.onSubscriptionSucceeded?.(data),
+      onSubscriptionError: (error) => callbacksRef.current.onSubscriptionError?.(error),
       onMemberAdded: (member) => callbacksRef.current.onMemberAdded?.(member),
-      onMemberRemoved: (member) =>
-        callbacksRef.current.onMemberRemoved?.(member),
+      onMemberRemoved: (member) => callbacksRef.current.onMemberRemoved?.(member),
     });
 
     setSnapshot(createChannelSnapshot(channel));

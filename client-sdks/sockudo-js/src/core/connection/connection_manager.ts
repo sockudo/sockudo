@@ -10,11 +10,7 @@ import Timeline from "../timeline/timeline";
 import ConnectionManagerOptions from "./connection_manager_options";
 import Runtime from "runtime";
 
-import {
-  ErrorCallbacks,
-  HandshakeCallbacks,
-  ConnectionCallbacks,
-} from "./callbacks";
+import { ErrorCallbacks, HandshakeCallbacks, ConnectionCallbacks } from "./callbacks";
 import Action from "./protocol/action";
 import { prefixedEvent } from "../protocol_prefix";
 
@@ -73,9 +69,7 @@ export default class ConnectionManager extends EventsDispatcher {
     this.usingTLS = this.options.useTLS;
 
     this.errorCallbacks = this.buildErrorCallbacks();
-    this.connectionCallbacks = this.buildConnectionCallbacks(
-      this.errorCallbacks,
-    );
+    this.connectionCallbacks = this.buildConnectionCallbacks(this.errorCallbacks);
     this.handshakeCallbacks = this.buildHandshakeCallbacks(this.errorCallbacks);
 
     const Network = Runtime.getNetwork();
@@ -252,9 +246,7 @@ export default class ConnectionManager extends EventsDispatcher {
     }
   }
 
-  private buildConnectionCallbacks(
-    errorCallbacks: ErrorCallbacks,
-  ): ConnectionCallbacks {
+  private buildConnectionCallbacks(errorCallbacks: ErrorCallbacks): ConnectionCallbacks {
     return Collections.extend<ConnectionCallbacks>({}, errorCallbacks, {
       message: (message) => {
         // includes pong messages from server
@@ -280,9 +272,7 @@ export default class ConnectionManager extends EventsDispatcher {
     });
   }
 
-  private buildHandshakeCallbacks(
-    errorCallbacks: ErrorCallbacks,
-  ): HandshakeCallbacks {
+  private buildHandshakeCallbacks(errorCallbacks: ErrorCallbacks): HandshakeCallbacks {
     return Collections.extend<HandshakeCallbacks>({}, errorCallbacks, {
       connected: (handshake: HandshakePayload) => {
         this.activityTimeout = Math.min(
@@ -355,10 +345,7 @@ export default class ConnectionManager extends EventsDispatcher {
       if (newStateDescription === "connected") {
         newStateDescription += " with new socket ID " + data.socket_id;
       }
-      Logger.debug(
-        "State changed",
-        previousState + " -> " + newStateDescription,
-      );
+      Logger.debug("State changed", previousState + " -> " + newStateDescription);
       this.timeline.info({ state: newState, params: data });
       this.emit("state_change", { previous: previousState, current: newState });
       this.emit(newState, data);

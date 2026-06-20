@@ -10,9 +10,7 @@ export interface StreamResult {
 }
 
 /** Per-output write option resolver. */
-export type ResolveWriteOptions<TOutput> = (
-  output: TOutput,
-) => WriteOptions | undefined;
+export type ResolveWriteOptions<TOutput> = (output: TOutput) => WriteOptions | undefined;
 
 /** Hooks used by {@link pipeStream}. */
 export interface PipeStreamHooks<TOutput> {
@@ -35,9 +33,7 @@ export async function pipeStream<TInput, TOutput>(
 ): Promise<StreamResult> {
   const reader = stream.getReader();
   const write = (output: TOutput): Promise<void> =>
-    encoder
-      .publishOutput(output, hooks.resolveWriteOptions?.(output))
-      .then(() => undefined);
+    encoder.publishOutput(output, hooks.resolveWriteOptions?.(output)).then(() => undefined);
   try {
     for (;;) {
       if (abortSignal.aborted) {

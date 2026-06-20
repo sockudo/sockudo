@@ -69,27 +69,25 @@ export default class WebSocketPrioritizedCachedStrategy implements Strategy {
     }
 
     let startTimestamp = Util.now();
-    let runner = strategies
-      .pop()
-      .connect(minPriority, function cb(error, handshake) {
-        if (error) {
-          flushTransportCache(usingTLS);
-          if (strategies.length > 0) {
-            startTimestamp = Util.now();
-            runner = strategies.pop().connect(minPriority, cb);
-          } else {
-            callback(error);
-          }
+    let runner = strategies.pop().connect(minPriority, function cb(error, handshake) {
+      if (error) {
+        flushTransportCache(usingTLS);
+        if (strategies.length > 0) {
+          startTimestamp = Util.now();
+          runner = strategies.pop().connect(minPriority, cb);
         } else {
-          storeTransportCache(
-            usingTLS,
-            handshake.transport.name,
-            Util.now() - startTimestamp,
-            cacheSkipCount,
-          );
-          callback(null, handshake);
+          callback(error);
         }
-      });
+      } else {
+        storeTransportCache(
+          usingTLS,
+          handshake.transport.name,
+          Util.now() - startTimestamp,
+          cacheSkipCount,
+        );
+        callback(null, handshake);
+      }
+    });
 
     return {
       abort: function () {

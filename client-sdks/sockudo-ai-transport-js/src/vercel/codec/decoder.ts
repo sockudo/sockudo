@@ -1,38 +1,19 @@
-import {
-  EVENT_AI_INPUT,
-  EVENT_AI_OUTPUT,
-  HEADER_FORK_OF,
-  HEADER_PARENT,
-} from "../../constants.js";
-import {
-  createDecoderCore,
-  type DecoderStreamTracker,
-} from "../../core/codec/decoder.js";
+import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_FORK_OF, HEADER_PARENT } from "../../constants.js";
+import { createDecoderCore, type DecoderStreamTracker } from "../../core/codec/decoder.js";
 import type { DecodedEvent, Decoder } from "../../core/codec/index.js";
 import type { InboundMessage } from "../../realtime/index.js";
 import type { HeaderMap } from "../../utils.js";
 import type { AI, VercelInput, VercelOutput } from "./events.js";
-import {
-  chunkType,
-  normalizeVercelHeaders,
-  readJsonHeader,
-} from "./headers.js";
+import { chunkType, normalizeVercelHeaders, readJsonHeader } from "./headers.js";
 
 /** Creates the inverse Vercel wire decoder. */
 export function createVercelDecoder(): Decoder<VercelInput, VercelOutput> {
   const outputCore = createDecoderCore<VercelOutput>({
-    buildStartEvents: (tracker) => [
-      decoded(chunkFromHeaders(tracker, "start"), tracker.message),
-    ],
+    buildStartEvents: (tracker) => [decoded(chunkFromHeaders(tracker, "start"), tracker.message)],
     buildDeltaEvents: (tracker, delta) =>
-      delta === ""
-        ? []
-        : [decoded(chunkFromHeaders(tracker, "delta", delta), tracker.message)],
+      delta === "" ? [] : [decoded(chunkFromHeaders(tracker, "delta", delta), tracker.message)],
     buildEndEvents: (tracker, headers) => [
-      decoded(
-        chunkFromHeaders(tracker, "end", undefined, headers),
-        tracker.message,
-      ),
+      decoded(chunkFromHeaders(tracker, "end", undefined, headers), tracker.message),
     ],
     decodeDiscrete: (message) => decodeOutputDiscrete(message),
   });
@@ -79,9 +60,7 @@ function decodeInput(message: InboundMessage): DecodedEvent<VercelInput>[] {
             id: stringValue(payload.id) ?? messageId,
             role: roleValue(payload.role) ?? "user",
             parts: [partValue(payload.part)],
-            ...(payload.metadata !== undefined
-              ? { metadata: payload.metadata }
-              : {}),
+            ...(payload.metadata !== undefined ? { metadata: payload.metadata } : {}),
           },
         },
         message,
@@ -120,9 +99,7 @@ function decodeInput(message: InboundMessage): DecodedEvent<VercelInput>[] {
           toolCallId: headers.toolCallId ?? "",
           approved: headers.approved === "true",
           ...(headers.reason !== undefined ? { reason: headers.reason } : {}),
-          ...(headers.approvalId !== undefined
-            ? { approvalId: headers.approvalId }
-            : {}),
+          ...(headers.approvalId !== undefined ? { approvalId: headers.approvalId } : {}),
         },
         message,
       ),
@@ -143,9 +120,7 @@ function decodeInput(message: InboundMessage): DecodedEvent<VercelInput>[] {
   return [];
 }
 
-function decodeOutputDiscrete(
-  message: InboundMessage,
-): DecodedEvent<VercelOutput>[] {
+function decodeOutputDiscrete(message: InboundMessage): DecodedEvent<VercelOutput>[] {
   const headers = normalizeVercelHeaders(message.getCodecHeaders());
   const type = chunkType(headers);
   if (!type) {
@@ -161,9 +136,7 @@ function chunkFromHeaders(
   closingHeaders?: HeaderMap,
 ): VercelOutput {
   const headers = normalizeVercelHeaders(
-    phase === "end" && closingHeaders
-      ? closingHeaders
-      : tracker.message.getCodecHeaders(),
+    phase === "end" && closingHeaders ? closingHeaders : tracker.message.getCodecHeaders(),
   );
   const type = chunkType(headers);
   if (type?.startsWith("text-")) {
@@ -219,11 +192,7 @@ function chunkFromHeaders(
   });
 }
 
-function chunkFromType(
-  type: string,
-  data: unknown,
-  headers: HeaderMap,
-): VercelOutput {
+function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelOutput {
   switch (type) {
     case "start":
       return chunk({
@@ -255,8 +224,7 @@ function chunkFromType(
         type: "tool-input-error",
         toolCallId: headers.toolCallId ?? "",
         toolName: headers.toolName,
-        errorText:
-          stringValue(record(data).errorText) ?? stringValue(data) ?? "",
+        errorText: stringValue(record(data).errorText) ?? stringValue(data) ?? "",
         messageId: headers.messageId,
       });
     case "tool-input-available":
@@ -266,13 +234,8 @@ function chunkFromType(
         toolName: headers.toolName,
         input: data === "" ? undefined : data,
         providerExecuted:
-          headers.providerExecuted === undefined
-            ? undefined
-            : headers.providerExecuted === "true",
-        preliminary:
-          headers.preliminary === undefined
-            ? undefined
-            : headers.preliminary === "true",
+          headers.providerExecuted === undefined ? undefined : headers.providerExecuted === "true",
+        preliminary: headers.preliminary === undefined ? undefined : headers.preliminary === "true",
         messageId: headers.messageId,
       });
     case "tool-output-available":
@@ -286,8 +249,7 @@ function chunkFromType(
       return chunk({
         type,
         toolCallId: headers.toolCallId ?? "",
-        errorText:
-          stringValue(record(data).errorText) ?? stringValue(data) ?? "",
+        errorText: stringValue(record(data).errorText) ?? stringValue(data) ?? "",
         messageId: headers.messageId,
       });
     case "tool-approval-request":
@@ -338,10 +300,7 @@ function chunkFromType(
   }
 }
 
-function decoded<TEvent>(
-  event: TEvent,
-  message: InboundMessage,
-): DecodedEvent<TEvent> {
+function decoded<TEvent>(event: TEvent, message: InboundMessage): DecodedEvent<TEvent> {
   const messageId =
     normalizeVercelHeaders(message.getCodecHeaders()).messageId ??
     message.getTransportHeaders()["codec-message-id"] ??
@@ -365,16 +324,12 @@ function parseJsonish(value: string): unknown {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function userMessagePayload(value: unknown): AI.UIMessage | undefined {
   const candidate =
-    value !== null && typeof value === "object" && "message" in value
-      ? value.message
-      : value;
+    value !== null && typeof value === "object" && "message" in value ? value.message : value;
   if (
     candidate !== null &&
     typeof candidate === "object" &&
@@ -392,10 +347,7 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function roleValue(value: unknown): AI.UIMessage["role"] | undefined {
-  return value === "system" ||
-    value === "user" ||
-    value === "assistant" ||
-    value === "tool"
+  return value === "system" || value === "user" || value === "assistant" || value === "tool"
     ? value
     : undefined;
 }

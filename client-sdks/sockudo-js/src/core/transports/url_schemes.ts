@@ -2,11 +2,7 @@ import Defaults from "../defaults";
 import { default as URLScheme, URLSchemeParams } from "./url_scheme";
 import { protocolVersion } from "../protocol_prefix";
 
-function getGenericURL(
-  baseScheme: string,
-  params: URLSchemeParams,
-  path: string,
-): string {
+function getGenericURL(baseScheme: string, params: URLSchemeParams, path: string): string {
   const scheme = baseScheme + (params.useTLS ? "s" : "");
   const host = params.useTLS ? params.hostTLS : params.hostNonTLS;
   return scheme + "://" + host + path;

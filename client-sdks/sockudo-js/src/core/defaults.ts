@@ -1,7 +1,4 @@
-import {
-  ChannelAuthorizationOptions,
-  UserAuthenticationOptions,
-} from "./auth/options";
+import { ChannelAuthorizationOptions, UserAuthenticationOptions } from "./auth/options";
 import { AuthTransport } from "./config";
 
 export interface DefaultConfig {

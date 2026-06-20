@@ -11,10 +11,7 @@ export interface DeprecatedChannelAuthorizer {
 }
 
 export interface ChannelAuthorizerGenerator {
-  (
-    channel: Channel,
-    options: DeprecatedAuthorizerOptions,
-  ): DeprecatedChannelAuthorizer;
+  (channel: Channel, options: DeprecatedAuthorizerOptions): DeprecatedChannelAuthorizer;
 }
 
 export interface DeprecatedAuthOptions {
@@ -41,16 +38,15 @@ export const ChannelAuthorizerProxy = (
       headers: authOptions.headers,
     },
   };
-  return (
-    params: ChannelAuthorizationRequestParams,
-    callback: ChannelAuthorizationCallback,
-  ) => {
+  return (params: ChannelAuthorizationRequestParams, callback: ChannelAuthorizationCallback) => {
     const channel = sockudo.channel(params.channelName);
     // This line creates a new channel authorizer every time.
     // In the past, this was only done once per channel and reused.
     // We can do that again if we want to keep this behavior intact.
-    const channelAuthorizer: DeprecatedChannelAuthorizer =
-      channelAuthorizerGenerator(channel, deprecatedAuthorizerOptions);
+    const channelAuthorizer: DeprecatedChannelAuthorizer = channelAuthorizerGenerator(
+      channel,
+      deprecatedAuthorizerOptions,
+    );
     channelAuthorizer.authorize(params.socketId, callback);
   };
 };

@@ -22,12 +22,7 @@ import {
  * @defaultValue `api` defaults to `"/api/chat"`.
  */
 export type VercelClientTransportOptions = Omit<
-  ClientTransportOptions<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >,
+  ClientTransportOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "api" | "codec"
 > & {
   /** Server endpoint URL for the HTTP poke.
@@ -41,12 +36,7 @@ export type VercelClientTransportOptions = Omit<
  * Server transport options for Vercel UI messages.
  */
 export type VercelServerTransportOptions = Omit<
-  ServerTransportOptions<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >,
+  ServerTransportOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "codec"
 >;
 

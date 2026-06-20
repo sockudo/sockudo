@@ -13,10 +13,7 @@ import type { ClientLike } from "./types.js";
 export function useSockudoRealtimeClient(): ClientLike {
   const client = useSockudo() as unknown;
   return useMemo(
-    () =>
-      isClientLike(client)
-        ? client
-        : adaptSockudoClient(client as SockudoClientPeer),
+    () => (isClientLike(client) ? client : adaptSockudoClient(client as SockudoClientPeer)),
     [client],
   );
 }

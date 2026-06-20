@@ -18,8 +18,7 @@ const urlStore = {
       path: "/client/usage#client-events",
     },
     encryptedChannelSupport: {
-      fullUrl:
-        "https://github.com/sockudo/sockudo-js#encrypted-channel-support",
+      fullUrl: "https://github.com/sockudo/sockudo-js#encrypted-channel-support",
     },
   },
 };

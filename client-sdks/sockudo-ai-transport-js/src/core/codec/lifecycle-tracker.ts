@@ -64,10 +64,7 @@ export function createLifecycleTracker<TContext, TEvent>(
   };
 }
 
-function ensureScope(
-  emittedByScope: Map<string, Set<string>>,
-  scopeId: string,
-): Set<string> {
+function ensureScope(emittedByScope: Map<string, Set<string>>, scopeId: string): Set<string> {
   let emitted = emittedByScope.get(scopeId);
   if (!emitted) {
     emitted = new Set();

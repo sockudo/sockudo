@@ -84,9 +84,7 @@ const Runtime: Browser = {
 
   isXHRSupported(): boolean {
     const Constructor = this.getXHRAPI();
-    return (
-      Boolean(Constructor) && new Constructor().withCredentials !== undefined
-    );
+    return Boolean(Constructor) && new Constructor().withCredentials !== undefined;
   },
 
   addUnloadListener(listener: any) {

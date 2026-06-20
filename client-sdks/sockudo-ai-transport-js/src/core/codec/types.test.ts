@@ -1,12 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { createAccumulator } from "./types.js";
-import type {
-  AssertChannelWriter,
-  ChannelWriter,
-  Codec,
-  DecodedEvent,
-} from "./types.js";
+import type { AssertChannelWriter, ChannelWriter, Codec, DecodedEvent } from "./types.js";
 import type { ChannelLike } from "../../realtime/types.js";
 
 describe("codec types", () => {
@@ -36,9 +31,7 @@ describe("codec types", () => {
       { id: "server", text: "hello!" },
       { id: "manual", text: "optimistic" },
     ]);
-    expect(accumulator.completedMessages).toEqual([
-      { id: "server", text: "hello!" },
-    ]);
+    expect(accumulator.completedMessages).toEqual([{ id: "server", text: "hello!" }]);
     expect(accumulator.hasActiveStream).toBe(true);
 
     accumulator.completeMessage({ id: "manual", text: "optimistic" });
@@ -64,9 +57,7 @@ function createMessageCodec(): Codec<Message, Message, Projection, Message> {
       return { messages: [] };
     },
     fold(state, event) {
-      const index = state.messages.findIndex(
-        (message) => message.id === event.id,
-      );
+      const index = state.messages.findIndex((message) => message.id === event.id);
       const next = { id: event.id, text: event.text };
       if (index === -1) {
         state.messages.push(next);
@@ -99,11 +90,7 @@ function createMessageCodec(): Codec<Message, Message, Projection, Message> {
   };
 }
 
-function decoded(
-  event: Message,
-  messageId: string,
-  serial: number,
-): DecodedEvent<Message> {
+function decoded(event: Message, messageId: string, serial: number): DecodedEvent<Message> {
   return {
     event,
     messageId,

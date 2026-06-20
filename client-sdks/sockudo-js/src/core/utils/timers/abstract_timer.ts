@@ -5,12 +5,7 @@ abstract class Timer {
   protected clear: Canceller;
   protected timer: number | void;
 
-  constructor(
-    set: Scheduler,
-    clear: Canceller,
-    delay: Delay,
-    callback: TimedCallback,
-  ) {
+  constructor(set: Scheduler, clear: Canceller, delay: Delay, callback: TimedCallback) {
     this.clear = clear;
     this.timer = set(() => {
       if (this.timer) {

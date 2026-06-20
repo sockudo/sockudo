@@ -116,28 +116,18 @@ export class SockudoPushRegistration {
   }
 
   getDeviceRegistration(deviceId: string): Promise<unknown> {
-    return this.request(
-      "GET",
-      `/deviceRegistrations/${encodeURIComponent(deviceId)}`,
-    );
+    return this.request("GET", `/deviceRegistrations/${encodeURIComponent(deviceId)}`);
   }
 
   deleteDeviceRegistration(deviceId: string): Promise<unknown> {
-    return this.request(
-      "DELETE",
-      `/deviceRegistrations/${encodeURIComponent(deviceId)}`,
-    );
+    return this.request("DELETE", `/deviceRegistrations/${encodeURIComponent(deviceId)}`);
   }
 
-  upsertChannelSubscription(
-    subscription: PushChannelSubscription,
-  ): Promise<unknown> {
+  upsertChannelSubscription(subscription: PushChannelSubscription): Promise<unknown> {
     return this.request("POST", "/channelSubscriptions", subscription);
   }
 
-  listChannelSubscriptions(
-    params: PushSubscriptionParams = {},
-  ): Promise<unknown> {
+  listChannelSubscriptions(params: PushSubscriptionParams = {}): Promise<unknown> {
     return this.request("GET", "/channelSubscriptions", undefined, params);
   }
 
@@ -157,24 +147,16 @@ export class SockudoPushRegistration {
     );
   }
 
-  schedulePublish(
-    request: PushPublishRequest & { notBeforeMs: number },
-  ): Promise<unknown> {
+  schedulePublish(request: PushPublishRequest & { notBeforeMs: number }): Promise<unknown> {
     return this.publish(request);
   }
 
   getPublishStatus(publishId: string): Promise<unknown> {
-    return this.request(
-      "GET",
-      `/publish/${encodeURIComponent(publishId)}/status`,
-    );
+    return this.request("GET", `/publish/${encodeURIComponent(publishId)}/status`);
   }
 
   cancelScheduledPublish(publishId: string): Promise<unknown> {
-    return this.request(
-      "DELETE",
-      `/scheduled/${encodeURIComponent(publishId)}`,
-    );
+    return this.request("DELETE", `/scheduled/${encodeURIComponent(publishId)}`);
   }
 
   postDeliveryStatus(event: Record<string, unknown>): Promise<unknown> {
@@ -202,9 +184,7 @@ export class SockudoPushRegistration {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(
-        `Sockudo push request failed with HTTP ${response.status}`,
-      );
+      throw new Error(`Sockudo push request failed with HTTP ${response.status}`);
     }
     if (response.status === 204) {
       return undefined;
@@ -212,13 +192,8 @@ export class SockudoPushRegistration {
     return response.json();
   }
 
-  private async resolveHeaders(
-    headers?: Record<string, string>,
-  ): Promise<Record<string, string>> {
-    const base =
-      typeof this.headers === "function"
-        ? await this.headers()
-        : this.headers || {};
+  private async resolveHeaders(headers?: Record<string, string>): Promise<Record<string, string>> {
+    const base = typeof this.headers === "function" ? await this.headers() : this.headers || {};
     return {
       ...base,
       ...headers,

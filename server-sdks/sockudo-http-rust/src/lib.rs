@@ -87,11 +87,7 @@ impl BuildInfo {
     /// Returns the encryption backend being used
     #[cfg(feature = "encryption")]
     pub fn encryption_backend() -> &'static str {
-        if cfg!(feature = "sodiumoxide") {
-            "sodiumoxide"
-        } else {
-            "chacha20poly1305"
-        }
+        "crypto_secretbox"
     }
 }
 

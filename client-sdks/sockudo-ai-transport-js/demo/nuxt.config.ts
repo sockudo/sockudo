@@ -22,21 +22,15 @@ export default defineNuxtConfig({
       alias: [
         {
           find: /^@sockudo\/ai-transport$/,
-          replacement: fileURLToPath(
-            new URL("../src/index.ts", import.meta.url),
-          ),
+          replacement: fileURLToPath(new URL("../src/index.ts", import.meta.url)),
         },
         {
           find: /^@sockudo\/ai-transport\/vercel$/,
-          replacement: fileURLToPath(
-            new URL("../src/vercel/index.ts", import.meta.url),
-          ),
+          replacement: fileURLToPath(new URL("../src/vercel/index.ts", import.meta.url)),
         },
         {
           find: /^@sockudo\/ai-transport\/vercel\/vue$/,
-          replacement: fileURLToPath(
-            new URL("../src/vercel/vue/index.ts", import.meta.url),
-          ),
+          replacement: fileURLToPath(new URL("../src/vercel/vue/index.ts", import.meta.url)),
         },
       ],
     },

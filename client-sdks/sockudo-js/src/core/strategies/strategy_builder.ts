@@ -31,10 +31,7 @@ export const defineTransport = function (
 
   let transport;
   if (enabled) {
-    options = Object.assign(
-      { ignoreNullOrigin: config.ignoreNullOrigin },
-      options,
-    );
+    options = Object.assign({ ignoreNullOrigin: config.ignoreNullOrigin }, options);
 
     transport = new TransportStrategy(
       name,

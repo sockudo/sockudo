@@ -53,10 +53,7 @@ export function transitionToolPart(
   };
 }
 
-function isLegalTransition(
-  from: AI.DynamicToolState,
-  to: AI.DynamicToolState,
-): boolean {
+function isLegalTransition(from: AI.DynamicToolState, to: AI.DynamicToolState): boolean {
   if (from === to) {
     return true;
   }

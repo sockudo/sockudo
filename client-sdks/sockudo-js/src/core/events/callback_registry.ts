@@ -15,8 +15,7 @@ export default class CallbackRegistry {
 
   add(name: string, callback: (...args: any[]) => any, context: any) {
     const prefixedEventName = prefix(name);
-    this._callbacks[prefixedEventName] =
-      this._callbacks[prefixedEventName] || [];
+    this._callbacks[prefixedEventName] = this._callbacks[prefixedEventName] || [];
     this._callbacks[prefixedEventName].push({
       fn: callback,
       context: context,
@@ -38,23 +37,13 @@ export default class CallbackRegistry {
     }
   }
 
-  private removeCallback(
-    names: string[],
-    callback: (...args: any[]) => any,
-    context: any,
-  ) {
+  private removeCallback(names: string[], callback: (...args: any[]) => any, context: any) {
     Collections.apply(
       names,
       function (name) {
-        this._callbacks[name] = Collections.filter(
-          this._callbacks[name] || [],
-          function (binding) {
-            return (
-              (callback && callback !== binding.fn) ||
-              (context && context !== binding.context)
-            );
-          },
-        );
+        this._callbacks[name] = Collections.filter(this._callbacks[name] || [], function (binding) {
+          return (callback && callback !== binding.fn) || (context && context !== binding.context);
+        });
         if (this._callbacks[name].length === 0) {
           delete this._callbacks[name];
         }

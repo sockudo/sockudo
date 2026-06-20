@@ -4,8 +4,7 @@ export default function encode(s: any): string {
 
 const fromCharCode = String.fromCharCode;
 
-const b64chars =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const b64tab = {};
 
 for (let i = 0, l = b64chars.length; i < l; i++) {

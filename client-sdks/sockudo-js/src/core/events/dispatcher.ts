@@ -27,11 +27,7 @@ export default class Dispatcher {
     return this;
   }
 
-  unbind(
-    eventName?: string,
-    callback?: (...args: any[]) => any,
-    context?: any,
-  ) {
+  unbind(eventName?: string, callback?: (...args: any[]) => any, context?: any) {
     this.callbacks.remove(eventName, callback, context);
     return this;
   }
@@ -42,10 +38,7 @@ export default class Dispatcher {
       return this;
     }
 
-    this.global_callbacks = Collections.filter(
-      this.global_callbacks || [],
-      (c) => c !== callback,
-    );
+    this.global_callbacks = Collections.filter(this.global_callbacks || [], (c) => c !== callback);
 
     return this;
   }

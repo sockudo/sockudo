@@ -1,6 +1,6 @@
 const expect = require("expect.js");
 
-const HttpsProxyAgent = require("https-proxy-agent");
+const { HttpsProxyAgent } = require("https-proxy-agent");
 
 const http_proxy = require("../../helpers/http_proxy");
 const Sockudo = require("../../../dist/sockudo");

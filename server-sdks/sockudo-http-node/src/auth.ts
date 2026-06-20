@@ -41,14 +41,10 @@ export function getSocketSignature(
 
   if (isEncryptedChannel(channel)) {
     if (sockudo.config.encryptionMasterKey === undefined) {
-      throw new Error(
-        "Cannot generate shared_secret because encryptionMasterKey is not set",
-      );
+      throw new Error("Cannot generate shared_secret because encryptionMasterKey is not set");
     }
 
-    result.shared_secret = Buffer.from(
-      sockudo.channelSharedSecret(channel),
-    ).toString("base64");
+    result.shared_secret = Buffer.from(sockudo.channelSharedSecret(channel)).toString("base64");
   }
 
   return result;

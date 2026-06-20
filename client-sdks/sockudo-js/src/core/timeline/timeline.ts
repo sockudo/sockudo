@@ -30,9 +30,7 @@ export default class Timeline {
 
   log(level, event) {
     if (level <= this.options.level) {
-      this.events.push(
-        Collections.extend({}, event, { timestamp: Util.now() }),
-      );
+      this.events.push(Collections.extend({}, event, { timestamp: Util.now() }));
       if (this.options.limit && this.events.length > this.options.limit) {
         this.events.shift();
       }

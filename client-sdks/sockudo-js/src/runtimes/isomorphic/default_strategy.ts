@@ -24,14 +24,7 @@ const getDefaultStrategy = (
     options: StrategyOptions,
     manager?: TransportManager,
   ) => {
-    const transport = defineTransport(
-      config,
-      name,
-      type,
-      priority,
-      options,
-      manager,
-    );
+    const transport = defineTransport(config, name, type, priority, options, manager);
 
     definedTransports[name] = transport;
     return transport;
@@ -59,30 +52,15 @@ const getDefaultStrategy = (
     maxPingDelay: config.activityTimeout,
   });
 
-  const wsTransport = defineTransportStrategy(
-    "ws",
-    "ws",
-    3,
-    wsOptions,
-    wsManager,
-  );
-  const wssTransport = defineTransportStrategy(
-    "wss",
-    "ws",
-    3,
-    wssOptions,
-    wsManager,
-  );
+  const wsTransport = defineTransportStrategy("ws", "ws", 3, wsOptions, wsManager);
+  const wssTransport = defineTransportStrategy("wss", "ws", 3, wssOptions, wsManager);
 
   const wsLoop = new SequentialStrategy([wsTransport], timeouts);
   const wssLoop = new SequentialStrategy([wssTransport], timeouts);
 
   const wsStrategy: Strategy = baseOptions.useTLS
     ? wsLoop
-    : new BestConnectedEverStrategy([
-        wsLoop,
-        new DelayedStrategy(wssLoop, { delay: 2000 }),
-      ]);
+    : new BestConnectedEverStrategy([wsLoop, new DelayedStrategy(wssLoop, { delay: 2000 })]);
 
   return new WebSocketPrioritizedCachedStrategy(
     new FirstConnectedStrategy(wsStrategy),

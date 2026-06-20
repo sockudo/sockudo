@@ -15,9 +15,7 @@ class Config {
   constructor(options: BaseOptions = { appId: "", key: "", secret: "" }) {
     let useTLS = false;
     if (options.useTLS !== undefined && options.encrypted !== undefined) {
-      throw new Error(
-        "Cannot set both `useTLS` and `encrypted` configuration options",
-      );
+      throw new Error("Cannot set both `useTLS` and `encrypted` configuration options");
     } else if (options.useTLS !== undefined) {
       useTLS = options.useTLS;
     } else if (options.encrypted !== undefined) {
@@ -61,10 +59,7 @@ class Config {
         throw new Error("encryptionMasterKeyBase64 must be valid base64");
       }
 
-      const decodedKey = Buffer.from(
-        options.encryptionMasterKeyBase64,
-        "base64",
-      );
+      const decodedKey = Buffer.from(options.encryptionMasterKeyBase64, "base64");
       if (decodedKey.length !== 32) {
         throw new Error(
           `encryptionMasterKeyBase64 must decode to 32 bytes, but the string '${options.encryptionMasterKeyBase64}' decodes to ${decodedKey.length} bytes`,
@@ -76,9 +71,7 @@ class Config {
   }
 
   prefixPath(): string {
-    throw new Error(
-      "NotImplementedError: #prefixPath should be implemented by subclasses",
-    );
+    throw new Error("NotImplementedError: #prefixPath should be implemented by subclasses");
   }
 
   getBaseURL(): string {

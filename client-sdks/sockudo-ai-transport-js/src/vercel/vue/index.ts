@@ -39,23 +39,13 @@ import {
   type VercelProjection,
 } from "../codec/index.js";
 
-type VercelTransport = ClientTransport<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
->;
+type VercelTransport = ClientTransport<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 /**
  * Provider options for the Vercel AI SDK Vue transport layer.
  */
 export type ChatTransportProviderOptions = Omit<
-  TransportProviderOptions<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >,
+  TransportProviderOptions<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
   "api" | "codec"
 > & {
   /** Server endpoint URL for the route handler.
@@ -119,10 +109,7 @@ export function provideChatTransport(
   const chatTransportError = shallowRef<ErrorInfo | undefined>();
   if (client.transport.value) {
     try {
-      chatTransport.value = createChatTransport(
-        client.transport.value,
-        chatOptions,
-      );
+      chatTransport.value = createChatTransport(client.transport.value, chatOptions);
     } catch (error) {
       chatTransportError.value = toChatTransportError(error);
     }
@@ -137,9 +124,7 @@ export function provideChatTransport(
   const defaultChannelName = options.channelName || parent?.defaultChannelName;
   provide(
     chatTransportKey,
-    defaultChannelName === undefined
-      ? { slots }
-      : { slots, defaultChannelName },
+    defaultChannelName === undefined ? { slots } : { slots, defaultChannelName },
   );
   onScopeDispose(() => {
     void chatTransport.value?.close();
@@ -155,9 +140,7 @@ export function provideChatTransport(
 /**
  * Reads the nearest or named Vercel chat transport.
  */
-export function useChatTransport(
-  options: UseClientTransportOptions = {},
-): UseChatTransportResult {
+export function useChatTransport(options: UseClientTransportOptions = {}): UseChatTransportResult {
   const client = useClientTransport(options);
   if (options.skip === true) {
     return {
@@ -175,8 +158,7 @@ export function useChatTransport(
   return {
     chatTransport: slot?.chatTransport ?? shallowRef(undefined),
     transport: client.transport,
-    chatTransportError:
-      slot?.chatTransport.value === undefined ? chatTransportError : slot.error,
+    chatTransportError: slot?.chatTransport.value === undefined ? chatTransportError : slot.error,
     transportError: client.transportError,
   };
 }
@@ -185,12 +167,7 @@ export function useChatTransport(
  * Creates a Vercel-typed generic transport scope.
  */
 export function createTransportScope() {
-  return createVueTransportScope<
-    VercelInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >();
+  return createVueTransportScope<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 }
 
 /**
@@ -198,12 +175,7 @@ export function createTransportScope() {
  */
 export function useClientTransport(
   options?: UseClientTransportOptions,
-): UseClientTransportResult<
-  VercelInput,
-  VercelOutput,
-  VercelProjection,
-  AI.UIMessage
-> {
+): UseClientTransportResult<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> {
   return vercelScope.useClientTransport(options);
 }
 
@@ -228,9 +200,7 @@ export function useCreateView(
 /**
  * Returns stable tree callbacks for the Vercel transport.
  */
-export function useTree(
-  options?: UseTreeOptions<VercelInput, AI.UIMessage>,
-): TreeHandle {
+export function useTree(options?: UseTreeOptions<VercelInput, AI.UIMessage>): TreeHandle {
   return vercelScope.useTree(options);
 }
 

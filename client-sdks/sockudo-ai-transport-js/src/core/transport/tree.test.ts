@@ -16,12 +16,7 @@ import {
 } from "../../constants.js";
 import type { HeaderMap } from "../../utils.js";
 import { createConversationTree } from "./tree.js";
-import type {
-  ConversationTree,
-  TreeSerial,
-  TurnEndReason,
-  TurnNode,
-} from "./tree.js";
+import type { ConversationTree, TreeSerial, TurnEndReason, TurnNode } from "./tree.js";
 import type { DecodedEvent, Reducer } from "../codec/index.js";
 
 const REPLAY_BUDGET_MS = process.env.CI === "true" ? 750 : 250;
@@ -30,9 +25,7 @@ describe("conversation tree", () => {
   it("guards against phantom turns from metadata-only messages", () => {
     const tree = createTestTree();
 
-    expect(
-      tree.applyMessage([], headers({ turnId: "turn-1" }), 1),
-    ).toBeUndefined();
+    expect(tree.applyMessage([], headers({ turnId: "turn-1" }), 1)).toBeUndefined();
     expect(tree.getTurnNode("turn-1")).toBeUndefined();
     expect(tree.structuralVersion).toBe(0);
   });
@@ -78,9 +71,10 @@ describe("conversation tree", () => {
     });
 
     expect(user?.turnId).toBe("turn-1");
-    expect(
-      tree.getTurnByCodecMessageId("msg-assistant")?.projection.events,
-    ).toEqual(["2:msg-user:user", "3:msg-assistant:assistant"]);
+    expect(tree.getTurnByCodecMessageId("msg-assistant")?.projection.events).toEqual([
+      "2:msg-user:user",
+      "3:msg-assistant:assistant",
+    ]);
     expect(tree.getTurnNode("turn-1")).toMatchObject({
       startSerial: 1,
       endSerial: 4,
@@ -88,9 +82,7 @@ describe("conversation tree", () => {
       invocationId: "inv-1",
       clientId: "client-1",
     });
-    expect(Array.from(tree.getActiveTurnIds().get("client-1") ?? [])).toEqual([
-      "turn-1",
-    ]);
+    expect(Array.from(tree.getActiveTurnIds().get("client-1") ?? [])).toEqual(["turn-1"]);
   });
 
   it("tolerates assistant output before turn-start and backfills parent metadata", () => {
@@ -175,15 +167,11 @@ describe("conversation tree", () => {
     createTurn(tree, "c", "msg-c", 4, { forkOf: "msg-b" });
     createTurn(tree, "descendant", "msg-descendant", 5, { parent: "msg-a" });
 
-    expect(tree.getSiblingTurns("msg-a").map((node) => node.turnId)).toEqual([
-      "a",
-      "b",
-      "c",
-    ]);
+    expect(tree.getSiblingTurns("msg-a").map((node) => node.turnId)).toEqual(["a", "b", "c"]);
     expect(tree.hasSiblingTurns("msg-c")).toBe(true);
-    expect(
-      tree.getSiblingTurns("msg-descendant").map((node) => node.turnId),
-    ).toEqual(["descendant"]);
+    expect(tree.getSiblingTurns("msg-descendant").map((node) => node.turnId)).toEqual([
+      "descendant",
+    ]);
   });
 
   it("orders regenerate groups owner first and backfills unresolved owners", () => {
@@ -195,9 +183,10 @@ describe("conversation tree", () => {
     });
     createTurn(tree, "owner", "msg-owner", 1);
 
-    expect(
-      tree.getRegenerateGroup("msg-owner").map((node) => node.turnId),
-    ).toEqual(["owner", "regen"]);
+    expect(tree.getRegenerateGroup("msg-owner").map((node) => node.turnId)).toEqual([
+      "owner",
+      "regen",
+    ]);
     expect(tree.getTurnNode("regen")).toMatchObject({
       forkOf: "owner",
     });
@@ -209,10 +198,7 @@ describe("conversation tree", () => {
     createTurn(tree, "late", "msg-late", 20);
     createTurn(tree, "early", "msg-early", 10);
 
-    expect(tree.getTurnNodes().map((node) => node.turnId)).toEqual([
-      "early",
-      "late",
-    ]);
+    expect(tree.getTurnNodes().map((node) => node.turnId)).toEqual(["early", "late"]);
   });
 
   it("deletes unreachable turns and descendants by codec message id", () => {
@@ -233,12 +219,8 @@ describe("conversation tree", () => {
     const emitted: string[] = [];
     tree.on("message", (event) => emitted.push(`message:${event.turnId}`));
     tree.on("ably-message", (event) => emitted.push(`ably:${event.turnId}`));
-    tree.on("turn-projection-updated", (event) =>
-      emitted.push(`projection:${event.turnId}`),
-    );
-    tree.on("update", (event) =>
-      emitted.push(`update:${String(event.structuralVersion)}`),
-    );
+    tree.on("turn-projection-updated", (event) => emitted.push(`projection:${event.turnId}`));
+    tree.on("update", (event) => emitted.push(`update:${String(event.structuralVersion)}`));
 
     tree.applyMessage(
       [decoded("first", "msg-1", 1)],
@@ -311,9 +293,7 @@ const reducer: Reducer<string, Projection> = {
     return { events: [] };
   },
   fold(state, event, meta) {
-    state.events.push(
-      `${String(meta.serial)}:${meta.messageId ?? "none"}:${event}`,
-    );
+    state.events.push(`${String(meta.serial)}:${meta.messageId ?? "none"}:${event}`);
     return state;
   },
 };
@@ -338,11 +318,7 @@ function headers(options: HeaderOptions): HeaderMap {
   return map;
 }
 
-function decoded(
-  event: string,
-  messageId: string,
-  serial: TreeSerial,
-): DecodedEvent<string> {
+function decoded(event: string, messageId: string, serial: TreeSerial): DecodedEvent<string> {
   return {
     event,
     messageId,
@@ -478,11 +454,7 @@ function summarize(tree: TestTree): unknown {
   });
 }
 
-function set(
-  target: Record<string, string>,
-  key: string,
-  value: string | undefined,
-): void {
+function set(target: Record<string, string>, key: string, value: string | undefined): void {
   if (value !== undefined) {
     target[key] = value;
   }

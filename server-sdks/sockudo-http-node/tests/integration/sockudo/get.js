@@ -48,9 +48,7 @@ describe("Sockudo", function () {
             .replace(/auth_timestamp=[0-9]+/, "auth_timestamp=X")
             .replace(/auth_signature=[0-9a-f]{64}/, "auth_signature=Y");
         })
-        .get(
-          "/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y",
-        )
+        .get("/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y")
         .reply(200, '{"test key": "test value"}');
 
       sockudo
@@ -72,9 +70,7 @@ describe("Sockudo", function () {
             .replace(/auth_timestamp=[0-9]+/, "auth_timestamp=X")
             .replace(/auth_signature=[0-9a-f]{64}/, "auth_signature=Y");
         })
-        .get(
-          "/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y",
-        )
+        .get("/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y")
         .reply(400, "Error");
 
       sockudo.get({ path: "/test", params: {} }).catch((error) => {
@@ -104,9 +100,7 @@ describe("Sockudo", function () {
             .replace(/auth_timestamp=[0-9]+/, "auth_timestamp=X")
             .replace(/auth_signature=[0-9a-f]{64}/, "auth_signature=Y");
         })
-        .get(
-          "/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y",
-        )
+        .get("/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y")
         .reply(200, '{"test key": "test value"}');
 
       sockudo
@@ -128,9 +122,7 @@ describe("Sockudo", function () {
             .replace(/auth_timestamp=[0-9]+/, "auth_timestamp=X")
             .replace(/auth_signature=[0-9a-f]{64}/, "auth_signature=Y");
         })
-        .get(
-          "/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y",
-        )
+        .get("/apps/999/test?auth_key=111111&auth_timestamp=X&auth_version=1.0&auth_signature=Y")
         .delayConnection(101)
         .reply(200);
 

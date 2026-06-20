@@ -27,21 +27,20 @@ import {
 /**
  * Provider options for the generic AI Transport Vue layer.
  */
-export type TransportProviderOptions<TInput, TOutput, TProjection, TMessage> =
-  Omit<
-    ClientTransportOptions<TInput, TOutput, TProjection, TMessage>,
-    "client" | "channel" | "channelName"
-  > & {
-    /** Registry key and Sockudo channel name. */
-    channelName: string;
-    /** Explicit realtime client. Defaults to `@sockudo/client/vue` context. */
-    client?: ClientLike;
-    /** Closes the transport when the current Vue effect scope is disposed.
-     *
-     * @defaultValue `true`.
-     */
-    closeOnScopeDispose?: boolean;
-  };
+export type TransportProviderOptions<TInput, TOutput, TProjection, TMessage> = Omit<
+  ClientTransportOptions<TInput, TOutput, TProjection, TMessage>,
+  "client" | "channel" | "channelName"
+> & {
+  /** Registry key and Sockudo channel name. */
+  channelName: string;
+  /** Explicit realtime client. Defaults to `@sockudo/client/vue` context. */
+  client?: ClientLike;
+  /** Closes the transport when the current Vue effect scope is disposed.
+   *
+   * @defaultValue `true`.
+   */
+  closeOnScopeDispose?: boolean;
+};
 
 /**
  * Options for {@link useClientTransport}.
@@ -58,16 +57,9 @@ export interface UseClientTransportOptions {
 /**
  * Result returned by {@link useClientTransport}.
  */
-export interface UseClientTransportResult<
-  TInput,
-  TOutput,
-  TProjection,
-  TMessage,
-> {
+export interface UseClientTransportResult<TInput, TOutput, TProjection, TMessage> {
   /** Resolved transport ref. */
-  transport: ShallowRef<
-    ClientTransport<TInput, TOutput, TProjection, TMessage> | undefined
-  >;
+  transport: ShallowRef<ClientTransport<TInput, TOutput, TProjection, TMessage> | undefined>;
   /** Provider construction or lookup error ref. */
   transportError: ShallowRef<ErrorInfo | undefined>;
 }
@@ -187,9 +179,7 @@ export interface TransportScope<TInput, TOutput, TProjection, TMessage> {
   /** Subscribes to a branch-aware view. */
   useView(options?: UseViewOptions<TInput, TMessage>): ViewHandle<TMessage>;
   /** Creates, owns, and subscribes to an additional view. */
-  useCreateView(
-    options?: UseCreateViewOptions<TInput, TMessage>,
-  ): ViewHandle<TMessage>;
+  useCreateView(options?: UseCreateViewOptions<TInput, TMessage>): ViewHandle<TMessage>;
   /** Returns stable tree callbacks without re-rendering on tree changes. */
   useTree(options?: UseTreeOptions<TInput, TMessage>): TreeHandle;
   /** Subscribes to active/suspended turn ownership. */
@@ -203,9 +193,7 @@ export interface TransportScope<TInput, TOutput, TProjection, TMessage> {
 }
 
 interface TransportSlot {
-  transport: ShallowRef<
-    ClientTransport<unknown, unknown, unknown, unknown> | undefined
-  >;
+  transport: ShallowRef<ClientTransport<unknown, unknown, unknown, unknown> | undefined>;
   transportError: ShallowRef<ErrorInfo | undefined>;
 }
 
@@ -214,9 +202,7 @@ interface TransportRegistry {
   slots: Map<string, TransportSlot>;
 }
 
-const defaultTransportKey: InjectionKey<TransportRegistry> = Symbol(
-  "sockudo-ai-transport",
-);
+const defaultTransportKey: InjectionKey<TransportRegistry> = Symbol("sockudo-ai-transport");
 const stableEmptyMessages: readonly unknown[] = [];
 const stableEmptyNodes: readonly TurnNode<unknown>[] = [];
 const stableEmptyRawMessages: readonly InboundMessage[] = [];
@@ -261,14 +247,8 @@ export function createTransportScope<
     };
     const slots = new Map(parent?.slots);
     slots.set(options.channelName, slot);
-    const defaultChannelName =
-      options.channelName || parent?.defaultChannelName;
-    provide(
-      key,
-      defaultChannelName === undefined
-        ? { slots }
-        : { slots, defaultChannelName },
-    );
+    const defaultChannelName = options.channelName || parent?.defaultChannelName;
+    provide(key, defaultChannelName === undefined ? { slots } : { slots, defaultChannelName });
     if (options.closeOnScopeDispose !== false) {
       onScopeDispose(() => {
         void transport.value?.close();
@@ -282,9 +262,7 @@ export function createTransportScope<
   ): UseClientTransportResult<TInput, TOutput, TProjection, TMessage> {
     const registry = inject(key, undefined);
     const missing = shallowRef<ErrorInfo | undefined>(
-      options.skip === true
-        ? undefined
-        : missingProviderError(options.channelName),
+      options.skip === true ? undefined : missingProviderError(options.channelName),
     );
     if (options.skip === true) {
       return {
@@ -315,16 +293,12 @@ export function createTransportScope<
     return result;
   }
 
-  function useView(
-    options: UseViewOptions<TInput, TMessage> = {},
-  ): ViewHandle<TMessage> {
+  function useView(options: UseViewOptions<TInput, TMessage> = {}): ViewHandle<TMessage> {
     const context = useClientTransport({ skip: options.skip === true });
     const sourceView =
       options.skip === true
         ? undefined
-        : (options.view ??
-          options.transport?.view ??
-          context.transport.value?.view);
+        : (options.view ?? options.transport?.view ?? context.transport.value?.view);
     return createViewHandle(sourceView, options.limit);
   }
 
@@ -333,9 +307,7 @@ export function createTransportScope<
   ): ViewHandle<TMessage> {
     const context = useClientTransport({ skip: options.skip === true });
     const transport =
-      options.skip === true
-        ? undefined
-        : (options.transport ?? context.transport.value);
+      options.skip === true ? undefined : (options.transport ?? context.transport.value);
     const view = transport?.createView();
     if (view) {
       onScopeDispose(() => {
@@ -390,16 +362,12 @@ export function createTransportScope<
       skip: options.skip === true || options.transport !== undefined,
     });
     const transport =
-      options.skip === true
-        ? undefined
-        : (options.transport ?? context.transport.value);
+      options.skip === true ? undefined : (options.transport ?? context.transport.value);
     const messages = ref<readonly InboundMessage[]>(stableEmptyRawMessages);
     if (transport) {
       const unsubscribe = transport.on("message", (message) => {
         messages.value =
-          messages.value === stableEmptyRawMessages
-            ? [message]
-            : [...messages.value, message];
+          messages.value === stableEmptyRawMessages ? [message] : [...messages.value, message];
       });
       onScopeDispose(unsubscribe);
     }
@@ -440,9 +408,7 @@ export function useClientTransport(
 /**
  * Subscribes to a branch-aware view and returns reactive refs.
  */
-export function useView(
-  options?: UseViewOptions<unknown, unknown>,
-): ViewHandle<unknown> {
+export function useView(options?: UseViewOptions<unknown, unknown>): ViewHandle<unknown> {
   return defaultScope.useView(options);
 }
 
@@ -458,9 +424,7 @@ export function useCreateView(
 /**
  * Returns stable tree callbacks without subscribing to tree updates.
  */
-export function useTree(
-  options?: UseTreeOptions<unknown, unknown>,
-): TreeHandle {
+export function useTree(options?: UseTreeOptions<unknown, unknown>): TreeHandle {
   return defaultScope.useTree(options);
 }
 

@@ -37,13 +37,7 @@ test("streams, mirrors, cancels, and replays history in the browser", async ({
   const normal = (await readState(page)).normal;
   expect(normal?.primaryText).toContain("Echo: browser normal");
   expect(normal?.chunks).toEqual(
-    expect.arrayContaining([
-      "start",
-      "text-start",
-      "text-delta",
-      "text-end",
-      "finish",
-    ]),
+    expect.arrayContaining(["start", "text-start", "text-delta", "text-end", "finish"]),
   );
 
   await page.getByTestId("load-late").click();
@@ -53,9 +47,7 @@ test("streams, mirrors, cancels, and replays history in the browser", async ({
   expect((await readState(page)).late?.count).toBeGreaterThanOrEqual(1);
 
   await page.getByTestId("run-cancel").click();
-  await expect
-    .poll(async () => (await readState(page)).cancel?.ended)
-    .toBe(true);
+  await expect.poll(async () => (await readState(page)).cancel?.ended).toBe(true);
   const cancel = (await readState(page)).cancel;
   expect(cancel?.turnId).toMatch(/^turn[_-]/u);
   expect(cancel?.cancelEvent).toBe(true);
