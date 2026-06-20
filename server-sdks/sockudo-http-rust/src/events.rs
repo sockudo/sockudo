@@ -345,7 +345,7 @@ fn encrypt_secretbox(sockudo: &Sockudo, channel: &str, data: &EventData) -> Resu
 
     // Return encrypted payload as JSON string
     let encrypted_payload = json!({
-        "nonce": BASE64.encode(&nonce),
+        "nonce": BASE64.encode(nonce),
         "ciphertext": BASE64.encode(&ciphertext),
     });
 

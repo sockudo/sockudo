@@ -392,7 +392,7 @@ jobs:
           composer validate --strict
           composer install --no-interaction --prefer-dist
           vendor/bin/php-cs-fixer fix --dry-run --diff --using-cache=no
-          vendor/bin/phplint
+          vendor/bin/phplint src tests
           vendor/bin/phpunit
 
   ruby-server-sdk:
