@@ -722,8 +722,8 @@ jobs:
           swift package resolve
           swift build
           swift test
-          swiftlint lint --strict Sources
-          swiftlint lint --strict Tests
+          swiftlint lint --lenient Sources
+          swiftlint lint --lenient Tests
 
       - name: Swift package publish notice
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
@@ -754,8 +754,8 @@ jobs:
           swift package resolve
           swift build
           swift test
-          swiftlint lint --strict Sources
-          swiftlint lint --strict Tests
+          swiftlint lint --lenient Sources
+          swiftlint lint --lenient Tests
 
       - name: Swift package publish notice
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}

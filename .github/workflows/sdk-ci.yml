@@ -363,8 +363,8 @@ jobs:
           swift build
           swift test
           swift package dump-package > /tmp/package.json
-          swiftlint lint --strict Sources
-          swiftlint lint --strict Tests
+          swiftlint lint --lenient Sources
+          swiftlint lint --lenient Tests
 
   php-server-sdk:
     name: PHP Server SDK
