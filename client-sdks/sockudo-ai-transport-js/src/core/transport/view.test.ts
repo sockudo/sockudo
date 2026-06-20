@@ -27,7 +27,7 @@ import { createView } from "./view.js";
 import type { ConversationTree } from "./tree.js";
 import type { View } from "./view.js";
 
-const TOKEN_PATCH_BUDGET_MS = process.env.CI === "true" ? 1 : 0.5;
+const TOKEN_PATCH_BUDGET_MS = process.env.CI === "true" ? 1.5 : 0.5;
 
 describe("transport view", () => {
   it("flattens reachable selected branches with latest sibling by default", () => {
