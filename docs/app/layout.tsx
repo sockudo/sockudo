@@ -2,6 +2,7 @@ import { RootProvider } from 'fumadocs-ui/provider/next';
 import type { Metadata, Viewport } from 'next';
 import './global.css';
 import { Inter } from 'next/font/google';
+import { DatabuddyAnalytics } from '@/components/databuddy-analytics';
 import { siteUrl } from '@/lib/shared';
 
 const inter = Inter({
@@ -44,6 +45,7 @@ export default function Layout({ children }: LayoutProps<'/'>) {
     <html lang="en" className={inter.className} suppressHydrationWarning>
       <body className="flex flex-col min-h-screen">
         <RootProvider>{children}</RootProvider>
+        <DatabuddyAnalytics />
       </body>
     </html>
   );

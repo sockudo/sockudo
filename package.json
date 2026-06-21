@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@databuddy/sdk": "^2.4.20",
     "axios": "^1.16.1",
     "vue-sonner": "^2.0.9"
   }

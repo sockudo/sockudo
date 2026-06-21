@@ -12,6 +12,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@databuddy/sdk": "^2.4.20",
     "fumadocs-core": "16.8.12",
     "fumadocs-mdx": "15.0.7",
     "fumadocs-ui": "16.8.12",

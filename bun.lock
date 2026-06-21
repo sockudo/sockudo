@@ -4,12 +4,15 @@
   "workspaces": {
     "": {
       "dependencies": {
+        "@databuddy/sdk": "^2.4.20",
         "axios": "^1.16.1",
         "vue-sonner": "^2.0.9",
       },
     },
   },
   "packages": {
+    "@databuddy/sdk": ["@databuddy/sdk@2.4.20", "", { "peerDependencies": { "react": ">=18", "vue": ">=3" }, "optionalPeers": ["react", "vue"] }, "sha512-gp8PLX7ZlVP7nKey0OuVtSKAdmDm5RcZbcpW5cmUqRoDcKQ6CnF0U3vi9fh7GwtXABIACq8FWunJthT1NmcTfQ=="],
+
     "agent-base": ["agent-base@6.0.2", "", { "dependencies": { "debug": "4" } }, "sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ=="],
 
     "asynckit": ["asynckit@0.4.0", "", {}, "sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q=="],
