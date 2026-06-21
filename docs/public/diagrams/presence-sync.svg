@@ -1,26 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 440" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 440" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="13" role="img" aria-labelledby="presence-title presence-desc">
+  <title id="presence-title">Cluster presence registry</title>
+  <desc id="presence-desc">Two Sockudo nodes exchange presence member updates, resolve sequence conflicts, and clean dead node entries.</desc>
   <style>
-    .box { rx: 8; ry: 8; stroke-width: 1.5; }
+    .box { rx: 8; ry: 8; stroke-width: 1.8; }
     .label { text-anchor: middle; dominant-baseline: central; }
     .label-left { dominant-baseline: central; }
-    .edge-label { text-anchor: middle; dominant-baseline: central; font-size: 11; }
-    .arrow { stroke-width: 1.5; fill: none; marker-end: url(#ah2); }
-    .arrow-both { stroke-width: 1.5; fill: none; marker-start: url(#ah2-rev); marker-end: url(#ah2); }
+    .edge-label { text-anchor: middle; dominant-baseline: central; font-size: 11; font-weight: 650; }
+    .arrow { stroke-width: 1.8; fill: none; marker-end: url(#ah2); }
+    .arrow-both { stroke-width: 1.8; fill: none; marker-start: url(#ah2-rev); marker-end: url(#ah2); }
     @media (prefers-color-scheme: dark) {
       .box-node    { fill: #1a3328; stroke: #34d399; }
       .box-entry   { fill: #1e293b; stroke: #475569; }
       .box-channel { fill: #1e3a5f; stroke: #38bdf8; }
       .box-action  { fill: #3b2f1a; stroke: #fbbf24; }
       .box-infra   { fill: #3b1f5e; stroke: #a78bfa; }
-      .group-bg    { fill: #0f172a; stroke: #334155; }
+      .group-bg    { fill: #111827; stroke: #475569; }
       .label       { fill: #e2e8f0; }
       .label-left  { fill: #e2e8f0; }
-      .label-dim   { fill: #94a3b8; }
-      .edge-label  { fill: #94a3b8; }
-      .arrow       { stroke: #64748b; }
-      .arrow-both  { stroke: #64748b; }
-      .arrow-head  { fill: #64748b; }
-      .divider     { stroke: #334155; }
+      .label-dim   { fill: #cbd5e1; }
+      .edge-label  { fill: #cbd5e1; }
+      .arrow       { stroke: #94a3b8; }
+      .arrow-both  { stroke: #94a3b8; }
+      .arrow-head  { fill: #94a3b8; }
+      .divider     { stroke: #475569; }
     }
     @media (prefers-color-scheme: light) {
       .box-node    { fill: #ecfdf5; stroke: #10b981; }
@@ -28,15 +30,15 @@
       .box-channel { fill: #eff6ff; stroke: #3b82f6; }
       .box-action  { fill: #fefce8; stroke: #eab308; }
       .box-infra   { fill: #f5f3ff; stroke: #8b5cf6; }
-      .group-bg    { fill: #f8fafc; stroke: #e2e8f0; }
+      .group-bg    { fill: #ffffff; stroke: #cbd5e1; }
       .label       { fill: #1e293b; }
       .label-left  { fill: #1e293b; }
-      .label-dim   { fill: #64748b; }
-      .edge-label  { fill: #64748b; }
-      .arrow       { stroke: #94a3b8; }
-      .arrow-both  { stroke: #94a3b8; }
-      .arrow-head  { fill: #94a3b8; }
-      .divider     { stroke: #e2e8f0; }
+      .label-dim   { fill: #475569; }
+      .edge-label  { fill: #475569; }
+      .arrow       { stroke: #64748b; }
+      .arrow-both  { stroke: #64748b; }
+      .arrow-head  { fill: #64748b; }
+      .divider     { stroke: #cbd5e1; }
     }
   </style>
   <defs>
@@ -53,7 +55,7 @@
   <text class="label label-dim" x="390" y="42" font-size="11">Each node tracks presence data from all nodes</text>
 
   <!-- Node A group -->
-  <rect class="box group-bg" x="20" y="60" width="360" height="160" rx="12" ry="12" opacity="0.5"/>
+  <rect class="box group-bg" x="20" y="60" width="360" height="160" rx="12" ry="12"/>
   <rect class="box box-node" x="30" y="70" width="100" height="36"/>
   <text class="label" x="80" y="88" font-weight="700">Node A</text>
 
@@ -74,7 +76,7 @@
   <text class="label-left label-dim" x="220" y="194" font-size="10">user: bob  seq: 17</text>
 
   <!-- Node B group -->
-  <rect class="box group-bg" x="400" y="60" width="360" height="160" rx="12" ry="12" opacity="0.5"/>
+  <rect class="box group-bg" x="400" y="60" width="360" height="160" rx="12" ry="12"/>
   <rect class="box box-node" x="410" y="70" width="100" height="36"/>
   <text class="label" x="460" y="88" font-weight="700">Node B</text>
 

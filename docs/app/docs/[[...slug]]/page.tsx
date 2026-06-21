@@ -9,6 +9,7 @@ import {
 } from 'fumadocs-ui/layouts/docs/page';
 import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/components/mdx';
+import { TypeUIPanel } from '@/components/typeui-panel';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { gitConfig } from '@/lib/shared';
@@ -20,6 +21,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
 
   const MDX = page.data.body;
   const markdownUrl = getPageMarkdownUrl(page).url;
+  const showTypeUIPanel = page.path === 'index.mdx';
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
@@ -40,6 +42,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
           })}
         />
       </DocsBody>
+      {showTypeUIPanel ? <TypeUIPanel defaultMinimized /> : null}
     </DocsPage>
   );
 }

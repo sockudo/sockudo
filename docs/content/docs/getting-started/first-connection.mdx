@@ -131,3 +131,17 @@ Push publishes should be async in production. Expect `202 Accepted` and track th
 2. The HTTP publish returns success.
 3. If push is configured, the push publish returns a `publish_id`.
 4. Metrics under `/metrics` show connection and publish counters moving.
+
+## Debug checkpoints
+
+Use this table when the first loop does not behave as expected.
+
+| Symptom | Check | Fix |
+| --- | --- | --- |
+| WebSocket connection fails | Browser devtools shows a failed request to `/app/app-key`. | Confirm `wsHost`, `wsPort`, `forceTLS`, and `enabledTransports` match the local server. |
+| Subscribe succeeds but no event arrives | The backend publish may target a different app, channel, or event name. | Reuse the same `app-key`, `app-id`, channel, and event name from the snippets above. |
+| Private or presence channels reject auth | Auth signatures are generated on a trusted backend and include the exact socket ID and channel name. | Use a server SDK for channel auth before writing custom signing code. |
+| Retried publishes create duplicates | The request does not include a stable idempotency key. | Derive keys from business identifiers such as `order-created-ord_123`. |
+| Metrics do not move | You may be checking the wrong process, port, or app credentials. | Query `/up`, then scrape `:9601/metrics` while publishing a fresh event. |
+
+When debugging compatibility, first prove the same event works with a public channel. Then add private auth, presence user data, Protocol V2 options, history, push, or mutations one feature at a time.

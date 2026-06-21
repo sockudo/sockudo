@@ -1,28 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 520" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 520" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="13" role="img" aria-labelledby="architecture-title architecture-desc">
+  <title id="architecture-title">Sockudo architecture</title>
+  <desc id="architecture-desc">Clients connect to Sockudo over WebSocket while trusted backends publish over the HTTP API.</desc>
   <style>
-    .box { rx: 10; ry: 10; stroke-width: 1.5; }
+    .box { rx: 10; ry: 10; stroke-width: 1.8; }
+    .protocol-pill { rx: 10; ry: 10; stroke-width: 1.8; }
     .label { text-anchor: middle; dominant-baseline: central; }
-    .edge-label { text-anchor: middle; dominant-baseline: central; font-size: 11; }
-    .arrow { stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    .edge-label { text-anchor: middle; dominant-baseline: central; font-size: 11; font-weight: 650; }
+    .arrow { stroke-width: 1.8; fill: none; marker-end: url(#arrowhead); }
     @media (prefers-color-scheme: dark) {
       .box-primary { fill: #1e3a5f; stroke: #38bdf8; }
       .box-server  { fill: #1a3328; stroke: #34d399; }
       .box-backend { fill: #3b1f5e; stroke: #a78bfa; }
+      .protocol-ws { fill: #dbeafe; stroke: #38bdf8; }
+      .protocol-http { fill: #ede9fe; stroke: #a78bfa; }
+      .protocol-text { fill: #0f172a; }
       .label       { fill: #e2e8f0; }
-      .edge-label  { fill: #94a3b8; }
-      .arrow       { stroke: #64748b; }
-      .arrow-head  { fill: #64748b; }
-      .divider     { stroke: #334155; }
+      .edge-label  { fill: #cbd5e1; }
+      .arrow       { stroke: #94a3b8; }
+      .arrow-head  { fill: #94a3b8; }
+      .divider     { stroke: #475569; }
     }
     @media (prefers-color-scheme: light) {
       .box-primary { fill: #eff6ff; stroke: #3b82f6; }
       .box-server  { fill: #ecfdf5; stroke: #10b981; }
       .box-backend { fill: #f5f3ff; stroke: #8b5cf6; }
+      .protocol-ws { fill: #dbeafe; stroke: #0284c7; }
+      .protocol-http { fill: #ede9fe; stroke: #7c3aed; }
+      .protocol-text { fill: #0f172a; }
       .label       { fill: #1e293b; }
-      .edge-label  { fill: #64748b; }
-      .arrow       { stroke: #94a3b8; }
-      .arrow-head  { fill: #94a3b8; }
-      .divider     { stroke: #e2e8f0; }
+      .edge-label  { fill: #475569; }
+      .arrow       { stroke: #64748b; }
+      .arrow-head  { fill: #64748b; }
+      .divider     { stroke: #cbd5e1; }
     }
   </style>
   <defs>
@@ -47,8 +56,8 @@
   <line class="arrow" x1="580" y1="80" x2="410" y2="175"/>
 
   <!-- Protocol label -->
-  <rect class="box box-primary" x="430" y="110" width="230" height="36" opacity="0.5"/>
-  <text class="edge-label" x="545" y="128" font-size="12" font-weight="500">WebSocket  /app/{appKey}</text>
+  <rect class="protocol-pill protocol-ws" x="430" y="110" width="230" height="36"/>
+  <text class="edge-label protocol-text" x="545" y="128" font-size="12">WebSocket  /app/{appKey}</text>
 
   <!-- Sockudo server -->
   <rect class="box box-server" x="230" y="175" width="260" height="70"/>
@@ -61,8 +70,8 @@
   <line class="arrow" x1="440" y1="245" x2="580" y2="335"/>
 
   <!-- Protocol label -->
-  <rect class="box box-backend" x="430" y="270" width="260" height="36" opacity="0.5"/>
-  <text class="edge-label" x="560" y="288" font-size="12" font-weight="500">HTTP API  /apps/{appId}/events</text>
+  <rect class="protocol-pill protocol-http" x="430" y="270" width="260" height="36"/>
+  <text class="edge-label protocol-text" x="560" y="288" font-size="12">HTTP API  /apps/{appId}/events</text>
 
   <!-- Backend row -->
   <rect class="box box-backend" x="40" y="335" width="200" height="50"/>

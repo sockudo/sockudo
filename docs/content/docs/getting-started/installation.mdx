@@ -4,7 +4,9 @@ description: Run Sockudo locally or build a production binary with the right fea
 icon: Download
 ---
 
-The fastest way to evaluate Sockudo is Docker Compose. The most controlled production path is a Cargo build with only the features you need.
+The fastest way to evaluate Sockudo is Docker Compose. For a single binary, use `cargo-binstall`
+or `cargo install`. For container platforms, pull the published image from GitHub Container Registry
+or Docker Hub. The most controlled production path is a Cargo build with only the features you need.
 
 ## Docker Compose
 
@@ -22,6 +24,91 @@ The default server listens on:
 | Prometheus metrics | `http://127.0.0.1:9601/metrics` |
 
 Use Compose when you want Redis, local configuration, and repeatable development infrastructure without compiling Rust first.
+
+## Install a prebuilt binary
+
+Use `cargo-binstall` when you want the released Sockudo binary without cloning the repository or
+compiling the server locally.
+
+```bash
+cargo install cargo-binstall
+cargo binstall sockudo
+```
+
+Pin a release when your deployment needs repeatable installs:
+
+```bash
+cargo binstall sockudo --version 4.6.0
+```
+
+Run the installed binary with a local configuration file:
+
+```bash
+sockudo --config ./config/config.toml
+```
+
+## Install from crates.io
+
+Use `cargo install` when you prefer building the published crate on the target host:
+
+```bash
+cargo install sockudo --locked
+```
+
+Pin a release or enable the same production-oriented features you would use from source:
+
+```bash
+cargo install sockudo --version 4.6.0 --locked
+cargo install sockudo --locked --features "redis,postgres,push"
+```
+
+This path compiles on the machine where you run it, so it needs a Rust toolchain and any native
+libraries required by the selected storage or adapter features.
+
+## Pull a container image
+
+Sockudo publishes multi-architecture images to GitHub Container Registry and Docker Hub. GHCR is the
+primary registry; Docker Hub mirrors the same release tags.
+
+```bash
+docker pull ghcr.io/sockudo/sockudo:latest
+docker pull sockudo/sockudo:latest
+```
+
+Use versioned tags for production rollouts:
+
+```bash
+docker pull ghcr.io/sockudo/sockudo:4.6.0
+docker pull sockudo/sockudo:4.6.0
+```
+
+Start a local container with an in-memory app and Prometheus metrics exposed:
+
+```bash
+docker run --rm --name sockudo \
+  -p 6001:6001 \
+  -p 9601:9601 \
+  -e HOST=0.0.0.0 \
+  -e PORT=6001 \
+  -e METRICS_PORT=9601 \
+  -e METRICS_ENABLED=true \
+  -e SOCKUDO_DEFAULT_APP_ID=demo-app \
+  -e SOCKUDO_DEFAULT_APP_KEY=demo-key \
+  -e SOCKUDO_DEFAULT_APP_SECRET=demo-secret \
+  ghcr.io/sockudo/sockudo:latest
+```
+
+Mount a checked-in configuration file when you need the same settings locally, in CI, and in
+production:
+
+```bash
+docker run --rm --name sockudo \
+  -p 6001:6001 \
+  -p 9601:9601 \
+  -v "$PWD/config/config.toml:/app/config/config.toml:ro" \
+  ghcr.io/sockudo/sockudo:latest \
+  sockudo --config /app/config/config.toml
+```
 
 ## Run from source
 
