@@ -23,16 +23,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sockudo-http = { path = "../sockudo/server-sdks/sockudo-http-rust" }
-sonic-rs = "0.5"
-tokio = { version = "1", features = ["full"] }
-```
-
-If your application lives inside this monorepo, use:
-
-```toml
-[dependencies]
-sockudo-http = { path = "server-sdks/sockudo-http-rust" }
+sockudo-http = "2.0.0"
 sonic-rs = "0.5"
 tokio = { version = "1", features = ["full"] }
 ```

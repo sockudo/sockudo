@@ -8,21 +8,14 @@ icon: Braces
 
 ## Install
 
-Clone the monorepo, build the SDK, then install it from the local checkout until npm publishing is enabled:
+Install the published package from npm:
 
 ```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo/client-sdks/sockudo-js
-bun install
-bun run build:all
-
-# From your app:
-npm install ../sockudo/client-sdks/sockudo-js
-# or: bun add ../sockudo/client-sdks/sockudo-js
-# or: pnpm add ../sockudo/client-sdks/sockudo-js
+npm install @sockudo/client
+# or: bun add @sockudo/client
+# or: pnpm add @sockudo/client
+# or: yarn add @sockudo/client
 ```
-
-The package will be installable as `@sockudo/client` once package publishing is enabled.
 
 ## Runtime imports
 

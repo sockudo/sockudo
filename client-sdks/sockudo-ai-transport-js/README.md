@@ -15,21 +15,17 @@ For apps, install the published packages:
 pnpm add @sockudo/client @sockudo/ai-transport
 ```
 
-For local monorepo development, build this SDK and `@sockudo/client`, then install them from local
-paths:
+For contributors working inside this repository, build this SDK and `@sockudo/client` from their
+package directories:
 
 ```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo/client-sdks/sockudo-js
+cd client-sdks/sockudo-js
 bun install
 bun run build:all
 
 cd ../sockudo-ai-transport-js
 pnpm install
 pnpm build
-
-# From your app:
-pnpm add ../sockudo/client-sdks/sockudo-js ../sockudo/client-sdks/sockudo-ai-transport-js
 ```
 
 React and Vercel helpers use optional peers:

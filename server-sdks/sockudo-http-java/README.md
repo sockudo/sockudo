@@ -10,14 +10,7 @@ A Java server SDK for interacting with the [Sockudo](https://github.com/sockudo/
 
 ## Installation
 
-Clone the Sockudo monorepo and publish the SDK to your local Maven repository until the package is
-published:
-
-```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo/server-sdks/sockudo-http-java
-./gradlew publishToMavenLocal
-```
+Install the published package from Maven Central:
 
 ### Maven
 
@@ -34,6 +27,8 @@ cd sockudo/server-sdks/sockudo-http-java
 ```kotlin
 implementation("io.sockudo:sockudo-http-java:2.0.0")
 ```
+
+For local monorepo development, run `./gradlew publishToMavenLocal` from this directory.
 
 ## Synchronous vs asynchronous
 

@@ -16,18 +16,12 @@ npm install sockudo
 # or: bun add sockudo
 ```
 
-For local monorepo development, build the SDK, then install it from the local checkout:
+For contributors working inside this repository, build the SDK from its package directory:
 
 ```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo/server-sdks/sockudo-http-node
+cd server-sdks/sockudo-http-node
 npm install
 npm run build
-
-# From your app:
-npm install ../sockudo/server-sdks/sockudo-http-node
-# or: yarn add ../sockudo/server-sdks/sockudo-http-node
-# or: bun add ../sockudo/server-sdks/sockudo-http-node
 ```
 
 ## Importing

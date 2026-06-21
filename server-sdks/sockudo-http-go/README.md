@@ -24,8 +24,7 @@ Official Go server SDK for [Sockudo](https://github.com/sockudo/sockudo) — a f
 
 ## Installation
 
-Clone the Sockudo monorepo and use a local `replace` until this module is published from the
-monorepo:
+Install the v2 Go module. Go resolves this package through the module path and the `v2.0.0` Git tag:
 
 ```sh
 go get github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2

@@ -19,17 +19,20 @@ Official .NET client SDK for Sockudo.
 
 ## Installation
 
-Clone the Sockudo monorepo and reference the project directly until the NuGet package is published:
+Install the published NuGet package:
 
 ```bash
-git clone https://github.com/sockudo/sockudo.git
+dotnet add package Sockudo.Client --version 2.0.0
 ```
+
+Or add it directly to your project file:
 
 ```xml
-<ProjectReference Include="../sockudo/client-sdks/sockudo-dotnet/src/Sockudo.Client/Sockudo.Client.csproj" />
+<PackageReference Include="Sockudo.Client" Version="2.0.0" />
 ```
 
-From this monorepo, use `client-sdks/sockudo-dotnet/src/Sockudo.Client/Sockudo.Client.csproj`.
+For local monorepo development, reference
+`client-sdks/sockudo-dotnet/src/Sockudo.Client/Sockudo.Client.csproj` directly.
 
 ## Quick Start
 

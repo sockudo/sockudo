@@ -16,24 +16,29 @@ Official Kotlin client for Sockudo.
 - User sign-in and watchlist event handling
 - Continuity-aware connection recovery and subscribe-time rewind on Protocol V2
 - Live integration tests against Sockudo on `127.0.0.1:6001`
-- Gradle CI and planned Maven publication workflow
+- Gradle CI and Maven Central publication workflow
 
 ## Installation
 
-Clone the Sockudo monorepo and publish the SDK to your local Maven repository until the package is
-published:
-
-```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo/client-sdks/sockudo-kotlin
-./gradlew :lib:publishToMavenLocal
-```
+Install the published package from Maven Central:
 
 ```kotlin
 dependencies {
     implementation("io.sockudo:sockudo-kotlin:2.0.0")
 }
 ```
+
+For Maven projects:
+
+```xml
+<dependency>
+  <groupId>io.sockudo</groupId>
+  <artifactId>sockudo-kotlin</artifactId>
+  <version>2.0.0</version>
+</dependency>
+```
+
+For local monorepo development, run `./gradlew :lib:publishToMavenLocal` from this directory.
 
 ## Quick Start
 
