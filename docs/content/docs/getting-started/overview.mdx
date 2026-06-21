@@ -17,6 +17,15 @@ Sockudo has four major surfaces:
 | Client SDKs | Browser, mobile, desktop, and .NET realtime clients that subscribe and react to events. | [Realtime Clients](/docs/clients) |
 | Server SDKs | Backend libraries that sign auth responses, publish events, validate webhooks, and call REST endpoints. | [Server SDKs](/docs/server-sdks) |
 
+## Pick your path
+
+| You are building | Start with | You should finish with |
+| --- | --- | --- |
+| A Pusher replacement | [Migration](/docs/getting-started/migration) and [Protocol reference](/docs/reference/protocol) | Existing clients connecting through Protocol V1 with unchanged auth and publish semantics. |
+| A new realtime product | [First connection](/docs/getting-started/first-connection) and [Authentication](/docs/getting-started/authentication) | Public, private, and presence channels wired through client and server SDKs. |
+| A clustered production deployment | [Scaling](/docs/server/scaling), [Security](/docs/server/security), and [Observability](/docs/server/observability) | Load-balanced nodes, shared adapter, health probes, metrics, and dependency-specific alerts. |
+| A durable collaboration or AI workflow | [Protocol V2](/docs/clients/protocol-v2), [History and recovery](/docs/server/history-recovery), and [Mutable messages](/docs/server/mutable-messages) | Serial continuity, message IDs, rewind, annotations, and safe retry behavior. |
+
 ## Protocol modes
 
 Protocol V1 is the compatibility layer. Use it when you want existing `pusher-js`, Laravel Echo, or Pusher-shaped server SDK integrations to keep working with minimal changes.
@@ -32,6 +41,19 @@ Protocol V2 is the native layer. Use it when your application needs one or more 
 - versioned mutable messages
 - annotations for reactions, receipts, moderation, and summaries
 - push notification helper workflows
+
+```mermaid
+flowchart LR
+  A[Existing Pusher clients] --> B[Protocol V1 compatibility]
+  C[New Sockudo clients] --> D[Protocol V2 native features]
+  B --> E{Need durable semantics?}
+  E -->|No| F[Keep V1 contracts stable]
+  E -->|Yes| G[Move selected channels to V2]
+  D --> G
+  G --> H[Recovery, rewind, tags, deltas, annotations]
+```
+
+Adopt V2 by channel or client cohort. Keeping V1 clients stable while enabling V2 for new experiences is the safest migration shape.
 
 ## Channel types
 
