@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" fill="none">
+  <style>
+    .grid { stroke: #7938d3; stroke-opacity: 0.08; }
+    .rail { stroke: #7938d3; stroke-opacity: 0.24; }
+    .node { fill: #ffffff; stroke: #7938d3; stroke-opacity: 0.28; }
+    .node-accent { fill: #7938d3; fill-opacity: 0.12; stroke: #7938d3; stroke-opacity: 0.34; }
+    .node-success { fill: #10b981; fill-opacity: 0.12; stroke: #10b981; stroke-opacity: 0.34; }
+    .text { fill: #0a131a; fill-opacity: 0.18; }
+    @media (prefers-color-scheme: dark) {
+      .grid { stroke: #a855f7; stroke-opacity: 0.11; }
+      .rail { stroke: #a855f7; stroke-opacity: 0.3; }
+      .node { fill: #111114; stroke: #a855f7; stroke-opacity: 0.34; }
+      .node-accent { fill: #a855f7; fill-opacity: 0.18; stroke: #a855f7; stroke-opacity: 0.42; }
+      .node-success { fill: #10b981; fill-opacity: 0.16; stroke: #10b981; stroke-opacity: 0.44; }
+      .text { fill: #f7f7fb; fill-opacity: 0.2; }
+    }
+  </style>
+  <defs>
+    <pattern id="docs-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path class="grid" d="M40 0H0V40" />
+    </pattern>
+  </defs>
+  <rect width="720" height="420" fill="url(#docs-grid)" />
+  <path class="rail" stroke-width="2" d="M112 96H272C300 96 314 110 314 138V252C314 280 328 294 356 294H610" />
+  <path class="rail" stroke-width="2" d="M142 250H258C286 250 300 236 300 208V150C300 122 314 108 342 108H596" />
+  <path class="rail" stroke-width="2" d="M178 330H420C448 330 462 316 462 288V168C462 140 476 126 504 126H660" />
+  <rect class="node-accent" x="88" y="70" width="138" height="52" rx="16" />
+  <rect class="node" x="268" y="78" width="150" height="72" rx="18" />
+  <rect class="node-success" x="470" y="94" width="142" height="58" rx="18" />
+  <rect class="node" x="122" y="226" width="142" height="58" rx="18" />
+  <rect class="node-accent" x="364" y="268" width="156" height="64" rx="18" />
+  <rect class="node" x="552" y="268" width="120" height="64" rx="18" />
+  <circle class="node-success" cx="314" cy="208" r="20" />
+  <circle class="node-accent" cx="462" cy="208" r="20" />
+  <path class="text" d="M112 93H202V100H112V93ZM292 106H386V113H292V106ZM292 124H360V131H292V124ZM494 118H588V125H494V118ZM146 250H236V257H146V250ZM146 268H212V275H146V268ZM390 296H486V303H390V296ZM390 314H454V321H390V314ZM576 296H640V303H576V296Z" />
+</svg>

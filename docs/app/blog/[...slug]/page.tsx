@@ -1,6 +1,8 @@
 import { getBlogPost, blogPosts } from '@/lib/blog';
 import { getMDXComponents } from '@/components/mdx';
 import { DocsBody } from 'fumadocs-ui/layouts/docs/page';
+import { ArrowLeft, CalendarDays } from 'lucide-react';
+import Link from 'next/link';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 
@@ -13,9 +15,16 @@ export default async function BlogPostPage(props: PageProps<'/blog/[...slug]'>) 
 
   return (
     <main className="blog-article">
+      <Link className="blog-back-link" href="/blog">
+        <ArrowLeft className="size-4" />
+        Blog
+      </Link>
       <header className="blog-article-header">
         <span className="doc-chip">
-          {post.category} · {post.date}
+          {post.category}
+          <span aria-hidden="true">·</span>
+          <CalendarDays className="size-4" />
+          {post.date}
         </span>
         <h1>{post.title}</h1>
         <p>{post.description}</p>

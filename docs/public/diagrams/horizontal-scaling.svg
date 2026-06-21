@@ -1,10 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 480" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 480" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="13" role="img" aria-labelledby="scaling-title scaling-desc">
+  <title id="scaling-title">Horizontal Sockudo scaling</title>
+  <desc id="scaling-desc">Clients connect through a load balancer to multiple Sockudo nodes that coordinate over Redis or NATS and expose Prometheus metrics.</desc>
   <style>
-    .box { rx: 10; ry: 10; stroke-width: 1.5; }
+    .box { rx: 10; ry: 10; stroke-width: 1.8; }
     .label { text-anchor: middle; dominant-baseline: central; }
-    .edge-label { text-anchor: middle; dominant-baseline: central; font-size: 11; }
-    .arrow { stroke-width: 1.5; fill: none; marker-end: url(#ah); }
-    .arrow-both { stroke-width: 1.5; fill: none; marker-start: url(#ah-rev); marker-end: url(#ah); }
+    .edge-label { text-anchor: middle; dominant-baseline: central; font-size: 11; font-weight: 650; }
+    .arrow { stroke-width: 1.8; fill: none; marker-end: url(#ah); }
+    .arrow-both { stroke-width: 1.8; fill: none; marker-start: url(#ah-rev); marker-end: url(#ah); }
     .dashed { stroke-dasharray: 6 3; }
     @media (prefers-color-scheme: dark) {
       .box-client  { fill: #1e3a5f; stroke: #38bdf8; }
@@ -12,13 +14,13 @@
       .box-server  { fill: #1a3328; stroke: #34d399; }
       .box-infra   { fill: #3b1f5e; stroke: #a78bfa; }
       .box-metrics { fill: #3b1a1a; stroke: #f87171; }
-      .group-bg    { fill: #0f172a; stroke: #334155; opacity: 0.5; }
+      .group-bg    { fill: #111827; stroke: #475569; }
       .label       { fill: #e2e8f0; }
-      .label-dim   { fill: #94a3b8; }
-      .edge-label  { fill: #94a3b8; }
-      .arrow       { stroke: #64748b; }
-      .arrow-both  { stroke: #64748b; }
-      .arrow-head  { fill: #64748b; }
+      .label-dim   { fill: #cbd5e1; }
+      .edge-label  { fill: #cbd5e1; }
+      .arrow       { stroke: #94a3b8; }
+      .arrow-both  { stroke: #94a3b8; }
+      .arrow-head  { fill: #94a3b8; }
     }
     @media (prefers-color-scheme: light) {
       .box-client  { fill: #eff6ff; stroke: #3b82f6; }
@@ -26,13 +28,13 @@
       .box-server  { fill: #ecfdf5; stroke: #10b981; }
       .box-infra   { fill: #f5f3ff; stroke: #8b5cf6; }
       .box-metrics { fill: #fef2f2; stroke: #ef4444; }
-      .group-bg    { fill: #f8fafc; stroke: #e2e8f0; opacity: 0.6; }
+      .group-bg    { fill: #ffffff; stroke: #cbd5e1; }
       .label       { fill: #1e293b; }
-      .label-dim   { fill: #64748b; }
-      .edge-label  { fill: #64748b; }
-      .arrow       { stroke: #94a3b8; }
-      .arrow-both  { stroke: #94a3b8; }
-      .arrow-head  { fill: #94a3b8; }
+      .label-dim   { fill: #475569; }
+      .edge-label  { fill: #475569; }
+      .arrow       { stroke: #64748b; }
+      .arrow-both  { stroke: #64748b; }
+      .arrow-head  { fill: #64748b; }
     }
   </style>
   <defs>
