@@ -24,17 +24,10 @@ For apps, install the published package:
 pip install sockudo-python
 ```
 
-For local monorepo development, install from the local path:
+For contributors working inside this repository:
 
 ```bash
-git clone https://github.com/sockudo/sockudo.git
-pip install -e sockudo/client-sdks/sockudo-python
-```
-
-Using `requirements.txt` for local development:
-
-```
--e ../sockudo/client-sdks/sockudo-python
+pip install -e client-sdks/sockudo-python
 ```
 
 Using `pyproject.toml` for local development:

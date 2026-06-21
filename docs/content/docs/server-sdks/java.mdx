@@ -6,24 +6,18 @@ icon: FileCode
 
 ## Install
 
-Clone the monorepo and publish the SDK to your local Maven repository until the package is published:
-
-```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo/server-sdks/sockudo-http-java
-./gradlew publishToMavenLocal
-```
+Install the published package from Maven Central:
 
 ```xml
 <dependency>
   <groupId>io.sockudo</groupId>
   <artifactId>sockudo-http-java</artifactId>
-  <version>1.0.0</version>
+  <version>2.0.0</version>
 </dependency>
 ```
 
 ```kotlin
-implementation("io.sockudo:sockudo-http-java:1.0.0")
+implementation("io.sockudo:sockudo-http-java:2.0.0")
 ```
 
 ## Configure

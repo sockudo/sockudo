@@ -8,18 +8,22 @@ icon: Smartphone
 
 ## Install
 
-Clone the monorepo and publish the SDK to your local Maven repository until the package is published:
-
-```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo/client-sdks/sockudo-kotlin
-./gradlew :lib:publishToMavenLocal
-```
+Install the published package from Maven Central:
 
 ```kotlin
 dependencies {
-    implementation("io.sockudo:sockudo-kotlin:0.1.0")
+    implementation("io.sockudo:sockudo-kotlin:2.0.0")
 }
+```
+
+For Maven projects:
+
+```xml
+<dependency>
+  <groupId>io.sockudo</groupId>
+  <artifactId>sockudo-kotlin</artifactId>
+  <version>2.0.0</version>
+</dependency>
 ```
 
 ## Connect

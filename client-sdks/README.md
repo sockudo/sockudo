@@ -20,4 +20,4 @@ in this monorepo.
 | `@sockudo/client` | `client-sdks/sockudo-js` |
 | `io.sockudo:sockudo-kotlin` | `client-sdks/sockudo-kotlin` |
 | `sockudo-python` | `client-sdks/sockudo-python` |
-| `SockudoSwift` | `client-sdks/sockudo-swift` |
+| `SockudoSwift` via SwiftPM | `client-sdks/sockudo-swift` |

@@ -24,14 +24,7 @@ For apps, install the published package:
 pip install sockudo-http-python
 ```
 
-For local monorepo development, install from the local path:
-
-```bash
-git clone https://github.com/sockudo/sockudo.git
-pip install -e sockudo/server-sdks/sockudo-http-python
-```
-
-For local development from this monorepo:
+For contributors working inside this repository:
 
 ```bash
 pip install -e server-sdks/sockudo-http-python[dev]

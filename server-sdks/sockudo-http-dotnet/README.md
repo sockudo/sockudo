@@ -32,17 +32,20 @@ A .NET server SDK for interacting with the [Sockudo](https://github.com/sockudo/
 
 ## Installation
 
-Clone the Sockudo monorepo and reference the project directly until the NuGet package is published:
+Install the published NuGet package:
 
 ```bash
-git clone https://github.com/sockudo/sockudo.git
+dotnet add package SockudoServer --version 2.0.0
 ```
+
+Or add it directly to your project file:
 
 ```xml
-<ProjectReference Include="../sockudo/server-sdks/sockudo-http-dotnet/SockudoServer/SockudoServer.csproj" />
+<PackageReference Include="SockudoServer" Version="2.0.0" />
 ```
 
-From this monorepo, use `server-sdks/sockudo-http-dotnet/SockudoServer/SockudoServer.csproj`.
+For local monorepo development, reference
+`server-sdks/sockudo-http-dotnet/SockudoServer/SockudoServer.csproj` directly.
 
 ## Getting started
 
