@@ -138,8 +138,8 @@ impl ConnectionManager for ScriptedCM {
         _app_id: &str,
         _channel: &str,
         _socket_id: &SocketId,
-    ) -> Result<bool> {
-        Ok(false)
+    ) -> Result<(bool, bool)> {
+        Ok((false, false))
     }
 
     async fn remove_from_channel(
@@ -147,8 +147,8 @@ impl ConnectionManager for ScriptedCM {
         _app_id: &str,
         _channel: &str,
         _socket_id: &SocketId,
-    ) -> Result<bool> {
-        Ok(false)
+    ) -> Result<(bool, bool)> {
+        Ok((false, false))
     }
 
     async fn get_presence_member(

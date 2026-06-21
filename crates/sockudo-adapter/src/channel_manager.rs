@@ -18,6 +18,7 @@ struct ChannelLeave {
     channel_name: String,
     app_id: String,
     was_removed: bool,
+    local_vacated: bool,
     local_remaining: usize,
 }
 
@@ -54,6 +55,9 @@ pub struct LeaveResponse {
     pub(crate) left: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remaining_connections: Option<usize>,
+    /// Last local socket left the channel. Don't derive this from a count read.
+    #[serde(default)]
+    pub vacated_locally: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<PresenceMember>,
 }
@@ -101,11 +105,13 @@ impl ChannelManager {
     fn create_leave_response(
         left: bool,
         remaining_connections: usize,
+        vacated_locally: bool,
         member: Option<PresenceMember>,
     ) -> LeaveResponse {
         LeaveResponse {
             left,
             remaining_connections: Some(remaining_connections),
+            vacated_locally,
             member,
         }
     }
@@ -144,11 +150,10 @@ impl ChannelManager {
         // of the subscribe hot path; callers that need them can query after the
         // client acknowledgement has been sent.
         let t_before_lock = t_start.elapsed().as_micros();
-        let (newly_subscribed, local_connections) = connection_manager
+        let (newly_subscribed, activated_locally, local_connections) = connection_manager
             .add_to_channel_and_count_local(app_id, channel_name, &socket_id_owned)
             .await?;
         let is_already_in_channel = !newly_subscribed;
-        let activated_locally = newly_subscribed && local_connections == 1;
         let t_after_lock = t_start.elapsed().as_micros();
 
         if is_already_in_channel {
@@ -245,10 +250,12 @@ impl ChannelManager {
             None
         };
 
-        let (socket_removed, local_remaining) = connection_manager
+        let (socket_removed, vacated, local_remaining) = connection_manager
             .remove_from_channel_and_count_local(app_id, channel_name, &socket_id_owned)
             .await?;
 
+        // Clears the channel's filter index and prunes the empty namespace, which
+        // remove_from_channel does not do.
         if local_remaining == 0 {
             connection_manager
                 .remove_channel(app_id, channel_name)
@@ -258,6 +265,7 @@ impl ChannelManager {
         Ok(Self::create_leave_response(
             socket_removed,
             local_remaining,
+            vacated,
             member,
         ))
     }
@@ -292,8 +300,8 @@ impl ChannelManager {
         };
 
         // Remove socket and handle cleanup atomically
-        let (socket_removed, remaining_connections) = {
-            let socket_removed = connection_manager
+        let (socket_removed, vacated, remaining_connections) = {
+            let (socket_removed, vacated) = connection_manager
                 .remove_from_channel(app_id, channel_name, &socket_id_owned)
                 .await?;
 
@@ -308,12 +316,13 @@ impl ChannelManager {
                     .await;
             }
 
-            (socket_removed, remaining)
+            (socket_removed, vacated, remaining)
         };
 
         Ok(Self::create_leave_response(
             socket_removed,
             remaining_connections,
+            vacated,
             member,
         ))
     }
@@ -555,7 +564,7 @@ impl ChannelManager {
                 .remove_from_channel(app_id, channel_name, &socket_id_owned)
                 .await
             {
-                Ok(was_removed) => {
+                Ok((was_removed, local_vacated)) => {
                     let local_remaining = connection_manager
                         .get_local_channel_socket_count(app_id, channel_name)
                         .await;
@@ -563,6 +572,7 @@ impl ChannelManager {
                         channel_name: channel_name.clone(),
                         app_id: app_id.clone(),
                         was_removed,
+                        local_vacated,
                         local_remaining,
                     }));
                 }
@@ -619,6 +629,7 @@ impl ChannelManager {
                     channel_name,
                     app_id,
                     was_removed,
+                    local_vacated,
                     local_remaining,
                 }) => {
                     let remote = remote_counts
@@ -629,7 +640,6 @@ impl ChannelManager {
                     if total == 0 {
                         channels_to_cleanup.push((app_id, channel_name.clone()));
                     }
-                    let local_vacated = was_removed && local_remaining == 0;
                     results.push((channel_name, Ok((was_removed, total, local_vacated))));
                 }
                 Err((channel_name, e)) => {

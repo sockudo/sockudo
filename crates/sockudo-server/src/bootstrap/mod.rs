@@ -54,7 +54,7 @@ struct ServerState {
     queue_manager: Option<Arc<QueueManager>>,
     webhooks_integration: Arc<WebhookIntegration>,
     metrics: Option<Arc<dyn MetricsInterface + Send + Sync>>,
-    running: AtomicBool,
+    running: Arc<AtomicBool>,
     http_api_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     websocket_rate_limiter: Option<Arc<dyn RateLimiter + Send + Sync>>,
     #[cfg(feature = "push")]

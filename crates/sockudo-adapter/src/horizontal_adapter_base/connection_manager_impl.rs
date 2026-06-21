@@ -547,7 +547,7 @@ where
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Result<bool> {
+    ) -> Result<(bool, bool)> {
         // Fast path: direct local adapter access without locking horizontal
         self.local_adapter
             .add_to_channel(app_id, channel, socket_id)
@@ -559,7 +559,7 @@ where
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Result<bool> {
+    ) -> Result<(bool, bool)> {
         // Fast path: direct local adapter access without locking horizontal
         self.local_adapter
             .remove_from_channel(app_id, channel, socket_id)

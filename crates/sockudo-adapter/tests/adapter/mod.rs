@@ -84,3 +84,6 @@ mod presence_concurrency_tests;
 
 #[cfg(test)]
 mod presence_lock_scope_tests;
+
+#[cfg(test)]
+mod connected_gauge_regression_tests;

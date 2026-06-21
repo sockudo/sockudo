@@ -447,7 +447,7 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Result<bool> {
+    ) -> Result<(bool, bool)> {
         let t_start = std::time::Instant::now();
         let t_before_ns = t_start.elapsed().as_micros();
         let namespace = self.get_or_create_namespace(app_id).await;
@@ -474,7 +474,7 @@ impl ConnectionManager for LocalAdapter {
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Result<bool> {
+    ) -> Result<(bool, bool)> {
         let namespace = self.get_or_create_namespace(app_id).await;
 
         // Clean up the filter index even if the socket was already removed
