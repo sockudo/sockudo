@@ -185,6 +185,59 @@ fn test_ai_header_validation_rejects_limits_and_domains() {
 }
 
 #[test]
+fn test_ai_transport_model_key_accepted() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([
+                ("turn-id".to_string(), "turn-1".to_string()),
+                ("model".to_string(), "gpt-4o".to_string()),
+            ])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+    assert!(extras.validate_ai_headers().is_ok());
+
+    let headers = extras.ai_transport_headers().expect("transport headers");
+    assert_eq!(headers.model(), Some("gpt-4o"));
+    assert_eq!(headers.turn_id(), Some("turn-1"));
+}
+
+#[test]
+fn test_ai_transport_model_key_rejects_empty() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([
+                ("model".to_string(), "".to_string()),
+            ])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        extras.validate_ai_headers().unwrap_err().code,
+        AI_ERROR_INVALID_TRANSPORT_HEADER
+    );
+}
+
+#[test]
+fn test_ai_transport_model_key_optional() {
+    let extras = MessageExtras {
+        ai: Some(AiExtras {
+            transport: Some(HashMap::from([
+                ("turn-id".to_string(), "turn-1".to_string()),
+            ])),
+            codec: None,
+        }),
+        ..Default::default()
+    };
+    assert!(extras.validate_ai_headers().is_ok());
+
+    let headers = extras.ai_transport_headers().expect("transport headers");
+    assert_eq!(headers.model(), None);
+}
+
+#[test]
 fn test_signin_success_format() {
     // According to spec: data should be an Object with only user_data field
     let user_data = r#"{"id":"123","name":"John"}"#.to_string();
