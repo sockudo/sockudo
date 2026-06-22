@@ -207,9 +207,7 @@ fn test_ai_transport_model_key_accepted() {
 fn test_ai_transport_model_key_rejects_empty() {
     let extras = MessageExtras {
         ai: Some(AiExtras {
-            transport: Some(HashMap::from([
-                ("model".to_string(), "".to_string()),
-            ])),
+            transport: Some(HashMap::from([("model".to_string(), "".to_string())])),
             codec: None,
         }),
         ..Default::default()
@@ -224,9 +222,10 @@ fn test_ai_transport_model_key_rejects_empty() {
 fn test_ai_transport_model_key_optional() {
     let extras = MessageExtras {
         ai: Some(AiExtras {
-            transport: Some(HashMap::from([
-                ("turn-id".to_string(), "turn-1".to_string()),
-            ])),
+            transport: Some(HashMap::from([(
+                "turn-id".to_string(),
+                "turn-1".to_string(),
+            )])),
             codec: None,
         }),
         ..Default::default()
