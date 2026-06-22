@@ -263,6 +263,13 @@ impl<'a> AiTransportHeaders<'a> {
         self.get("error-message")
     }
 
+    /// Opaque model identifier set by the publishing worker/agent.
+    /// Not interpreted by Sockudo beyond non-empty validation.
+    #[inline]
+    pub fn model(&self) -> Option<&'a str> {
+        self.get("model")
+    }
+
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (&'a str, &'a str)> {
         self.inner
@@ -367,7 +374,7 @@ fn is_ai_header_key(key: &str) -> bool {
 fn validate_transport_key_domain(key: &str, value: &str) -> Result<(), AiHeaderValidationError> {
     match key {
         "turn-id" | "codec-message-id" | "parent" | "fork-of" | "stream-id" | "invocation-id"
-        | "event-id" | "input-client-id" | "turn-client-id" | "error-code" => {
+        | "event-id" | "input-client-id" | "turn-client-id" | "error-code" | "model" => {
             if value.is_empty() {
                 return Err(AiHeaderValidationError::invalid_transport(format!(
                     "extras.ai.transport.{key} must not be empty"
