@@ -88,7 +88,7 @@ module Sockudo
     def data
       @data ||= case @content_type
                 when 'application/json'
-                  MultiJson.decode(@body)
+                  MultiJson.load(@body)
                 else
                   raise "Unknown Content-Type (#{@content_type})"
                 end

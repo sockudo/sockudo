@@ -16,12 +16,12 @@ module Sockudo
     end
 
     def post(params, headers = {})
-      body = MultiJson.encode(params)
+      body = MultiJson.dump(params)
       create_request(:post, {}, body, headers).send_sync
     end
 
     def post_async(params, headers = {})
-      body = MultiJson.encode(params)
+      body = MultiJson.dump(params)
       create_request(:post, {}, body, headers).send_async
     end
 

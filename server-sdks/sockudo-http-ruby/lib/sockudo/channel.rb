@@ -230,7 +230,7 @@ module Sockudo
     # @private Custom data is sent to server as JSON-encoded string
     #
     def authenticate(socket_id, custom_data = nil)
-      custom_data = MultiJson.encode(custom_data) if custom_data
+      custom_data = MultiJson.dump(custom_data) if custom_data
       auth = authentication_string(socket_id, custom_data)
       r = { auth: auth }
       r[:channel_data] = custom_data if custom_data
