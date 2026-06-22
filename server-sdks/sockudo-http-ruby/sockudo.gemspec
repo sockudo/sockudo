@@ -18,7 +18,7 @@ Gem::Specification.new do |s|
   s.add_dependency 'httpclient', '~> 2.8'
   s.add_dependency 'jruby-openssl' if defined?(JRUBY_VERSION)
   s.add_dependency 'logger', '~> 1.7'
-  s.add_dependency 'multi_json', '~> 1.15'
+  s.add_dependency 'multi_json', '~> 1.21.1'
   s.add_dependency 'pusher-signature', '~> 0.1.8'
 
   s.add_development_dependency 'addressable', '~> 2.7'

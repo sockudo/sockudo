@@ -105,9 +105,9 @@ module Sockudo
     def handle_response(status_code, body)
       case status_code
       when 200, 201
-        symbolize_first_level(MultiJson.decode(body))
+        symbolize_first_level(MultiJson.load(body))
       when 202
-        body.empty? || symbolize_first_level(MultiJson.decode(body))
+        body.empty? || symbolize_first_level(MultiJson.load(body))
       when 204
         {}
       when 400
