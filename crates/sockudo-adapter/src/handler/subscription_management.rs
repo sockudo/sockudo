@@ -395,12 +395,19 @@ impl ConnectionHandler {
             return Ok(());
         }
 
-        // Skip the cluster-wide count request/reply entirely when nothing consumes
-        // it. This is the room-switch hot path; a fanout here per subscribe is the
-        // dominant churn cost on multi-node clusters.
-        if !self
-            .subscription_count_has_consumer(app_config, channel)
-            .await
+        // Skip count reads entirely when this join cannot produce an observable
+        // count-derived event.
+        let wants_channel_occupied_webhook =
+            self.subscription_count_webhook_configured(app_config, "channel_occupied");
+        let wants_subscription_count_webhook =
+            self.subscription_count_webhook_configured(app_config, "subscription_count");
+        let wants_meta_channel = self
+            .subscription_count_meta_channel_has_local_subscriber(app_config, channel)
+            .await;
+
+        if !wants_channel_occupied_webhook
+            && !wants_subscription_count_webhook
+            && !wants_meta_channel
         {
             return Ok(());
         }
@@ -410,23 +417,39 @@ impl ConnectionHandler {
             .get_channel_socket_count(&app_config.id, channel)
             .await;
 
-        if current_count == 1 {
-            if let Some(webhook_integration) = &self.webhook_integration
-                && let Err(e) = webhook_integration
-                    .send_channel_occupied(app_config, channel)
-                    .await
-            {
-                tracing::warn!(
-                    "Failed to send channel_occupied webhook for {}: {}",
+        if current_count == 1
+            && wants_channel_occupied_webhook
+            && let Some(webhook_integration) = &self.webhook_integration
+            && let Err(e) = webhook_integration
+                .send_channel_occupied(app_config, channel)
+                .await
+        {
+            tracing::warn!(
+                "Failed to send channel_occupied webhook for {}: {}",
+                channel,
+                e
+            );
+        }
+
+        if wants_meta_channel {
+            if current_count == 1 {
+                self.broadcast_metachannel_event(
+                    app_config,
                     channel,
-                    e
-                );
+                    "channel_occupied",
+                    sonic_rs::json!({
+                        "channel": channel,
+                        "subscription_count": current_count,
+                    }),
+                )
+                .await
+                .ok();
             }
 
             self.broadcast_metachannel_event(
                 app_config,
                 channel,
-                "channel_occupied",
+                "subscription_count",
                 sonic_rs::json!({
                     "channel": channel,
                     "subscription_count": current_count,
@@ -436,19 +459,8 @@ impl ConnectionHandler {
             .ok();
         }
 
-        self.broadcast_metachannel_event(
-            app_config,
-            channel,
-            "subscription_count",
-            sonic_rs::json!({
-                "channel": channel,
-                "subscription_count": current_count,
-            }),
-        )
-        .await
-        .ok();
-
-        if !channel.starts_with("presence-")
+        if wants_subscription_count_webhook
+            && !channel.starts_with("presence-")
             && let Some(webhook_integration) = &self.webhook_integration
         {
             webhook_integration

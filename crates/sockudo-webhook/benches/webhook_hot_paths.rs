@@ -46,11 +46,13 @@ impl QueueInterface for NoopQueue {
 }
 
 fn test_app() -> App {
-    let mut policy = AppPolicy::default();
-    policy.webhooks = Some(vec![Webhook {
-        event_types: vec!["member_added".to_string()],
-        ..Webhook::default()
-    }]);
+    let policy = AppPolicy {
+        webhooks: Some(vec![Webhook {
+            event_types: vec!["member_added".to_string()],
+            ..Webhook::default()
+        }]),
+        ..AppPolicy::default()
+    };
 
     App::from_policy(
         "bench-app".to_string(),
@@ -116,16 +118,15 @@ fn bench_send_member_added_direct(c: &mut Criterion) {
             runtime.block_on(async {
                 let start = Instant::now();
                 for _ in 0..iterations {
-                    black_box(
-                        integration
-                            .send_member_added(
-                                black_box(&app),
-                                black_box("presence-status"),
-                                black_box("user-123"),
-                            )
-                            .await
-                            .unwrap(),
-                    );
+                    integration
+                        .send_member_added(
+                            black_box(&app),
+                            black_box("presence-status"),
+                            black_box("user-123"),
+                        )
+                        .await
+                        .unwrap();
+                    black_box(());
                 }
                 start.elapsed()
             })

@@ -31,6 +31,137 @@ struct ParkingReplayState {
     messages: ParkingMutex<VecDeque<Vec<u8>>>,
 }
 
+#[derive(Clone, Copy)]
+struct CountConsumers {
+    channel_occupied_webhook: bool,
+    channel_vacated_webhook: bool,
+    subscription_count_webhook: bool,
+    meta_channel: bool,
+}
+
+fn subscription_count_payload(channel: &str, count: usize) -> sonic_rs::Value {
+    sonic_rs::json!({
+        "channel": channel,
+        "subscription_count": count,
+    })
+}
+
+fn legacy_join_count_work(channels: &[String], consumers: CountConsumers) -> usize {
+    let has_webhook = consumers.channel_occupied_webhook
+        || consumers.channel_vacated_webhook
+        || consumers.subscription_count_webhook;
+    if !has_webhook && !consumers.meta_channel {
+        return 0;
+    }
+
+    let mut work = 0;
+    for (index, channel) in channels.iter().enumerate() {
+        let current_count = if index % 4 == 0 { 1 } else { 2 };
+
+        if current_count == 1 {
+            if consumers.channel_occupied_webhook {
+                work += 1;
+            }
+            black_box(subscription_count_payload(channel, current_count));
+            work += 1;
+        }
+
+        black_box(subscription_count_payload(channel, current_count));
+        work += 1;
+
+        if consumers.subscription_count_webhook {
+            work += 1;
+        }
+    }
+    work
+}
+
+fn optimized_join_count_work(channels: &[String], consumers: CountConsumers) -> usize {
+    if !consumers.channel_occupied_webhook
+        && !consumers.subscription_count_webhook
+        && !consumers.meta_channel
+    {
+        return 0;
+    }
+
+    let mut work = 0;
+    for (index, channel) in channels.iter().enumerate() {
+        let current_count = if index % 4 == 0 { 1 } else { 2 };
+
+        if current_count == 1 && consumers.channel_occupied_webhook {
+            work += 1;
+        }
+
+        if consumers.meta_channel {
+            if current_count == 1 {
+                black_box(subscription_count_payload(channel, current_count));
+                work += 1;
+            }
+            black_box(subscription_count_payload(channel, current_count));
+            work += 1;
+        }
+
+        if consumers.subscription_count_webhook {
+            work += 1;
+        }
+    }
+    work
+}
+
+fn legacy_leave_count_work(channels: &[String], consumers: CountConsumers) -> usize {
+    let has_webhook = consumers.channel_occupied_webhook
+        || consumers.channel_vacated_webhook
+        || consumers.subscription_count_webhook;
+    if !has_webhook && !consumers.meta_channel {
+        return 0;
+    }
+
+    let mut work = 0;
+    for (index, channel) in channels.iter().enumerate() {
+        let current_count = if index % 4 == 0 { 0 } else { 1 };
+
+        if consumers.subscription_count_webhook {
+            work += 1;
+        }
+
+        black_box(subscription_count_payload(channel, current_count));
+        work += 1;
+
+        if current_count == 0 && consumers.channel_vacated_webhook {
+            work += 1;
+        }
+    }
+    work
+}
+
+fn optimized_leave_count_work(channels: &[String], consumers: CountConsumers) -> usize {
+    if !consumers.channel_vacated_webhook
+        && !consumers.subscription_count_webhook
+        && !consumers.meta_channel
+    {
+        return 0;
+    }
+
+    let mut work = 0;
+    for (index, channel) in channels.iter().enumerate() {
+        let current_count = if index % 4 == 0 { 0 } else { 1 };
+
+        if consumers.subscription_count_webhook {
+            work += 1;
+        }
+
+        if consumers.meta_channel {
+            black_box(subscription_count_payload(channel, current_count));
+            work += 1;
+        }
+
+        if current_count == 0 && consumers.channel_vacated_webhook {
+            work += 1;
+        }
+    }
+    work
+}
+
 fn bench_base_message_hash(c: &mut Criterion) {
     let mut group = c.benchmark_group("adapter_base_message_hash");
 
@@ -131,6 +262,74 @@ fn long_channel_names(count: usize) -> Vec<String> {
     (0..count)
         .map(|index| format!("presence-enterprise-region-eu-customer-{index:04}-updates"))
         .collect()
+}
+
+fn bench_subscription_count_notification_plans(c: &mut Criterion) {
+    const ITEMS: usize = 4096;
+    let channels = long_channel_names(ITEMS);
+    let webhook_only_occupancy = CountConsumers {
+        channel_occupied_webhook: true,
+        channel_vacated_webhook: true,
+        subscription_count_webhook: false,
+        meta_channel: false,
+    };
+    let webhook_and_meta_occupancy = CountConsumers {
+        meta_channel: true,
+        ..webhook_only_occupancy
+    };
+
+    let mut group = c.benchmark_group("adapter_subscription_count_notification_plans");
+    group.throughput(Throughput::Elements(ITEMS as u64));
+    group.bench_function("legacy_webhook_only_join", |b| {
+        b.iter(|| black_box(legacy_join_count_work(&channels, webhook_only_occupancy)));
+    });
+    group.bench_function("optimized_webhook_only_join", |b| {
+        b.iter(|| black_box(optimized_join_count_work(&channels, webhook_only_occupancy)));
+    });
+    group.bench_function("legacy_webhook_only_leave", |b| {
+        b.iter(|| black_box(legacy_leave_count_work(&channels, webhook_only_occupancy)));
+    });
+    group.bench_function("optimized_webhook_only_leave", |b| {
+        b.iter(|| {
+            black_box(optimized_leave_count_work(
+                &channels,
+                webhook_only_occupancy,
+            ))
+        });
+    });
+    group.bench_function("legacy_webhook_and_meta_join", |b| {
+        b.iter(|| {
+            black_box(legacy_join_count_work(
+                &channels,
+                webhook_and_meta_occupancy,
+            ))
+        });
+    });
+    group.bench_function("optimized_webhook_and_meta_join", |b| {
+        b.iter(|| {
+            black_box(optimized_join_count_work(
+                &channels,
+                webhook_and_meta_occupancy,
+            ))
+        });
+    });
+    group.bench_function("legacy_webhook_and_meta_leave", |b| {
+        b.iter(|| {
+            black_box(legacy_leave_count_work(
+                &channels,
+                webhook_and_meta_occupancy,
+            ))
+        });
+    });
+    group.bench_function("optimized_webhook_and_meta_leave", |b| {
+        b.iter(|| {
+            black_box(optimized_leave_count_work(
+                &channels,
+                webhook_and_meta_occupancy,
+            ))
+        });
+    });
+    group.finish();
 }
 
 fn bench_compact_string_candidates(c: &mut Criterion) {
@@ -650,6 +849,7 @@ criterion_group!(
     bench_presence_stagger_hash,
     bench_replay_lock_store,
     bench_compact_string_candidates,
-    bench_concurrent_map_candidates
+    bench_concurrent_map_candidates,
+    bench_subscription_count_notification_plans
 );
 criterion_main!(benches);

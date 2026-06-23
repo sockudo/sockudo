@@ -86,8 +86,8 @@ impl WebhookSender {
 
     fn create_pusher_body(&self, time_ms: i64, events: &[Value]) -> Result<String> {
         let pusher_payload = BorrowedPusherWebhookPayload { time_ms, events };
-        Ok(sonic_rs::to_string(&pusher_payload)
-            .map_err(|e| Error::Serialization(format!("Failed to serialize webhook body: {e}")))?)
+        sonic_rs::to_string(&pusher_payload)
+            .map_err(|e| Error::Serialization(format!("Failed to serialize webhook body: {e}")))
     }
 
     fn event_matches_webhook_filter(
