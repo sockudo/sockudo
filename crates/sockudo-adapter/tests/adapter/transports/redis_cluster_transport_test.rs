@@ -28,6 +28,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         request_timeout_ms: 1000,
         use_connection_manager: false,
         use_sharded_pubsub: false,
+        serialization: "json".to_string(),
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -40,6 +41,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         request_timeout_ms: 1000,
         use_connection_manager: false,
         use_sharded_pubsub: false,
+        serialization: "json".to_string(),
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -55,6 +57,7 @@ async fn test_redis_cluster_config_edge_cases() -> Result<()> {
         request_timeout_ms: 1000,
         use_connection_manager: true, // Enable connection manager
         use_sharded_pubsub: false,
+        serialization: "json".to_string(),
     };
 
     let transport = RedisClusterTransport::new(config).await?;
@@ -72,6 +75,7 @@ async fn test_redis_cluster_invalid_config() {
         request_timeout_ms: 1000,
         use_connection_manager: false,
         use_sharded_pubsub: false,
+        serialization: "json".to_string(),
     };
 
     let result = RedisClusterTransport::new(config).await;
@@ -88,6 +92,7 @@ async fn test_redis_cluster_invalid_config() {
         request_timeout_ms: 1000,
         use_connection_manager: false,
         use_sharded_pubsub: false,
+        serialization: "json".to_string(),
     };
 
     let result = tokio::time::timeout(
@@ -409,6 +414,7 @@ async fn test_redis_cluster_node_count_is_real_time_conditional() {
         request_timeout_ms: 1000,
         use_connection_manager: false,
         use_sharded_pubsub: true,
+        serialization: "json".to_string(),
     };
     let Ok(transport_sharded) = RedisClusterTransport::new(config_sharded).await else {
         return; // Skip if Redis Cluster not available
@@ -468,6 +474,7 @@ async fn test_redis_cluster_reply_channel_format() {
         request_timeout_ms: 1000,
         use_connection_manager: false,
         use_sharded_pubsub: false,
+        serialization: "json".to_string(),
     };
     let Ok(transport) = RedisClusterTransport::new(config).await else {
         return; // Skip if Redis Cluster not available

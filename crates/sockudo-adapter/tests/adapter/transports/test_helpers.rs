@@ -1,4 +1,5 @@
 use ahash::AHashMap;
+use sockudo_adapter::serialization::Serialization;
 use sockudo_adapter::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 #[cfg(feature = "redis")]
 use sockudo_adapter::transports::RedisAdapterConfig;
@@ -22,6 +23,7 @@ pub fn get_redis_config() -> RedisAdapterConfig {
         request_timeout_ms: 1000, // Reduced timeout
         cluster_mode: false,
         sentinel: None,
+        serialization: Serialization::default(),
     }
 }
 
@@ -38,6 +40,7 @@ pub fn get_redis_cluster_config() -> RedisClusterAdapterConfig {
         request_timeout_ms: 1000,      // Reduced timeout
         use_connection_manager: false, // Disable for grokzen cluster compatibility
         use_sharded_pubsub: false,     // Use standard pub/sub for tests
+        serialization: "json".to_string(),
     }
 }
 

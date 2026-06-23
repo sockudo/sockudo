@@ -45,5 +45,24 @@ impl ChannelType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceMemberInfo {
     pub user_id: String,
+    #[serde(default, deserialize_with = "deserialize_optional_sonic_value")]
     pub user_info: Option<sonic_rs::Value>,
+}
+
+fn deserialize_optional_sonic_value<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<sonic_rs::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let fallback: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match fallback {
+        None => Ok(None),
+        Some(v) => {
+            let bytes = serde_json::to_vec(&v).map_err(serde::de::Error::custom)?;
+            let sonic = sonic_rs::from_slice(&bytes).map_err(serde::de::Error::custom)?;
+            Ok(Some(sonic))
+        }
+    }
 }

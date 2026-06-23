@@ -1,4 +1,5 @@
 use crate::ConnectionManager;
+use crate::serialization::Serialization;
 #[cfg(feature = "google-pubsub")]
 use crate::google_pubsub_adapter::GooglePubSubAdapter;
 #[cfg(feature = "iggy")]
@@ -252,6 +253,7 @@ impl AdapterFactory {
                     request_timeout_ms: config.redis.requests_timeout,
                     cluster_mode: config.redis.cluster_mode,
                     sentinel,
+                    serialization: Serialization::from_config(&config.serialization),
                 };
                 match RedisAdapter::new(adapter_options).await {
                     Ok(mut adapter) => {
@@ -313,6 +315,7 @@ impl AdapterFactory {
                     request_timeout_ms: config.cluster.request_timeout_ms,
                     use_connection_manager: config.cluster.use_connection_manager,
                     use_sharded_pubsub: config.cluster.use_sharded_pubsub,
+                    serialization: config.serialization.clone(),
                 };
                 match RedisClusterAdapter::new(cluster_adapter_config).await {
                     Ok(mut adapter) => {

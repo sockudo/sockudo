@@ -33,6 +33,12 @@ For deployment overrides and secrets, use the complete [environment variable ref
 | `[queue]` | Webhook and push background work. |
 | `[rate_limiter]` | Request, connection, event, and push limits. |
 
+## Adapter
+
+| Key | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `serialization` | `string` | `"json"` | Serialization format for inter-node pub/sub payloads. `"json"` (default, backward compatible) or `"msgpack"` (~45-55% smaller). Receive-side auto-detects format for safe rolling deploys. |
+
 ## Redis Sentinel and TLS
 
 `[database.redis]` configures the Redis connection used by the Redis adapter, cache, queue, and rate limiter. When `sentinels` is non-empty, Sockudo connects through Redis Sentinel using a native Sentinel client (rather than a direct URL) and can secure both connection hops independently.

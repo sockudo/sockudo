@@ -20,6 +20,9 @@ pub(super) fn apply(options: &mut ServerOptions) -> Result<(), Box<dyn std::erro
         "ADAPTER_FALLBACK_TO_LOCAL",
         options.adapter.fallback_to_local,
     );
+    if let Ok(v) = std::env::var("ADAPTER_SERIALIZATION") {
+        options.adapter.serialization = v;
+    }
     if let Ok(driver_str) = std::env::var("CACHE_DRIVER") {
         options.cache.driver = parse_driver_enum(driver_str, options.cache.driver.clone(), "Cache");
     }

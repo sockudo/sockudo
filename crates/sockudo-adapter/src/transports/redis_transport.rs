@@ -1,3 +1,4 @@
+use crate::serialization::{self, Serialization};
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use crate::transports::redis_client::RedisClient;
@@ -24,6 +25,7 @@ pub struct RedisAdapterConfig {
     /// When set, connect via Redis Sentinel (with optional TLS / client certs)
     /// instead of opening `url` directly. `url` is then used only for diagnostics.
     pub sentinel: Option<SentinelSpec>,
+    pub serialization: Serialization,
 }
 
 impl Default for RedisAdapterConfig {
@@ -34,6 +36,7 @@ impl Default for RedisAdapterConfig {
             request_timeout_ms: 5000,
             cluster_mode: false,
             sentinel: None,
+            serialization: Serialization::default(),
         }
     }
 }
@@ -56,6 +59,7 @@ pub struct RedisTransport {
     response_channel: String,
     prefix: String,
     reply_channel: String,
+    serialization: Serialization,
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
@@ -83,6 +87,7 @@ impl HorizontalTransport for RedisTransport {
             response_channel,
             prefix: config.prefix.clone(),
             reply_channel,
+            serialization: config.serialization,
             metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
@@ -91,7 +96,7 @@ impl HorizontalTransport for RedisTransport {
     }
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
-        let broadcast_json = sonic_rs::to_string(message)?;
+        let payload = serialization::serialize(message, self.serialization)?;
 
         // Retry broadcast with exponential backoff to handle connection recovery
         let mut retry_delay = 100u64; // Start with 100ms
@@ -122,7 +127,7 @@ impl HorizontalTransport for RedisTransport {
                 }
             };
             match conn
-                .publish::<_, _, i32>(&self.broadcast_channel, &broadcast_json)
+                .publish::<_, _, i32>(&self.broadcast_channel, &payload)
                 .await
             {
                 Ok(_subscriber_count) => {
@@ -161,11 +166,10 @@ impl HorizontalTransport for RedisTransport {
     }
 
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
-        let request_json = sonic_rs::to_string(request)
-            .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        let payload = serialization::serialize(request, self.serialization)?;
 
         let mut conn = self.client.command_connection().await?;
-        let subscriber_count: i32 = match conn.publish(&self.request_channel, &request_json).await {
+        let subscriber_count: i32 = match conn.publish(&self.request_channel, &payload).await {
             Ok(count) => count,
             Err(e) => {
                 self.client.invalidate();
@@ -181,12 +185,11 @@ impl HorizontalTransport for RedisTransport {
     }
 
     async fn publish_response(&self, response: &ResponseBody) -> Result<()> {
-        let response_json = sonic_rs::to_string(response)
-            .map_err(|e| Error::Other(format!("Failed to serialize response: {e}")))?;
+        let payload = serialization::serialize(response, self.serialization)?;
 
         let mut conn = self.client.command_connection().await?;
         if let Err(e) = conn
-            .publish::<_, _, ()>(&self.response_channel, response_json)
+            .publish::<_, _, ()>(&self.response_channel, &payload)
             .await
         {
             self.client.invalidate();
@@ -216,10 +219,9 @@ impl HorizontalTransport for RedisTransport {
         target_node_id: &str,
     ) -> Result<()> {
         let target_channel = format!("{}:#node:{}", self.prefix, target_node_id);
-        let request_json = sonic_rs::to_string(request)
-            .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        let payload = serialization::serialize(request, self.serialization)?;
         let mut conn = self.client.command_connection().await?;
-        let _: i32 = match conn.publish(&target_channel, &request_json).await {
+        let _: i32 = match conn.publish(&target_channel, &payload).await {
             Ok(count) => count,
             Err(e) => {
                 self.client.invalidate();
@@ -243,6 +245,7 @@ impl HorizontalTransport for RedisTransport {
         let response_channel = self.response_channel.clone();
         let node_channel = format!("{}:#node:{}", self.prefix, handlers.node_id);
         let reply_channel = self.reply_channel.clone();
+        let serialization = self.serialization;
         let metrics = self.metrics.clone();
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
@@ -335,7 +338,7 @@ impl HorizontalTransport for RedisTransport {
 
                             tokio::spawn(async move {
                                 if let Ok(broadcast) =
-                                    sonic_rs::from_slice::<BroadcastMessage>(&payload)
+                                    serialization::deserialize::<BroadcastMessage>(&payload)
                                 {
                                     broadcast_handler(broadcast).await;
                                 } else if let Some(metrics) = metrics_clone.get() {
@@ -349,21 +352,27 @@ impl HorizontalTransport for RedisTransport {
                             let pub_client_clone = pub_client.clone();
                             let response_channel_clone = response_channel.clone();
                             let metrics_clone = metrics.clone();
+                            let serialization = serialization;
 
                             tokio::spawn(async move {
-                                if let Ok(request) = sonic_rs::from_slice::<RequestBody>(&payload) {
+                                if let Ok(request) =
+                                    serialization::deserialize::<RequestBody>(&payload)
+                                {
                                     let reply_to = request.reply_to.clone();
                                     let response_result = request_handler(request).await;
 
                                     if let Ok(response) = response_result
-                                        && let Ok(response_json) = sonic_rs::to_string(&response)
+                                        && let Ok(response_data) = serialization::serialize(
+                                            &response,
+                                            serialization,
+                                        )
                                     {
                                         let target =
                                             reply_to.unwrap_or(response_channel_clone.clone());
                                         match pub_client_clone.command_connection().await {
                                             Ok(mut conn) => {
                                                 if conn
-                                                    .publish::<_, _, ()>(&target, response_json)
+                                                    .publish::<_, _, ()>(&target, &response_data)
                                                     .await
                                                     .is_err()
                                                 {
@@ -390,7 +399,8 @@ impl HorizontalTransport for RedisTransport {
                             let metrics_clone = metrics.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&payload)
+                                if let Ok(response) =
+                                    serialization::deserialize::<ResponseBody>(&payload)
                                 {
                                     response_handler(response).await;
                                 } else {
@@ -525,6 +535,7 @@ impl Clone for RedisTransport {
             response_channel: self.response_channel.clone(),
             prefix: self.prefix.clone(),
             reply_channel: self.reply_channel.clone(),
+            serialization: self.serialization,
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),

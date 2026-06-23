@@ -1,3 +1,4 @@
+use crate::serialization::{self, Serialization};
 use crate::horizontal_adapter::{BroadcastMessage, RequestBody, ResponseBody};
 use crate::horizontal_transport::{HorizontalTransport, TransportConfig, TransportHandlers};
 use async_trait::async_trait;
@@ -69,6 +70,7 @@ pub struct RedisClusterTransport {
     use_sharded_pubsub: bool,
     prefix: String,
     reply_channel: String,
+    serialization: Serialization,
     metrics: Arc<OnceLock<Arc<dyn MetricsInterface + Send + Sync>>>,
     shutdown: Arc<Notify>,
     is_running: Arc<AtomicBool>,
@@ -110,6 +112,7 @@ impl HorizontalTransport for RedisClusterTransport {
         let reply_channel = format!("{}:#reply:{}", prefix, uuid.as_simple());
 
         let use_sharded_pubsub = config.use_sharded_pubsub;
+        let serialization = Serialization::from_config(&config.serialization);
 
         if use_sharded_pubsub {
             info!(
@@ -134,6 +137,7 @@ impl HorizontalTransport for RedisClusterTransport {
             use_sharded_pubsub,
             prefix,
             reply_channel,
+            serialization,
             metrics: Arc::new(OnceLock::new()),
             shutdown: Arc::new(Notify::new()),
             is_running: Arc::new(AtomicBool::new(true)),
@@ -142,7 +146,7 @@ impl HorizontalTransport for RedisClusterTransport {
     }
 
     async fn publish_broadcast(&self, message: &BroadcastMessage) -> Result<()> {
-        let broadcast_json = sonic_rs::to_string(message)?;
+        let payload = serialization::serialize(message, self.serialization)?;
 
         // Retry logic with exponential backoff using persistent connection
         let mut retry_delay = 100u64; // Start with 100ms
@@ -155,10 +159,9 @@ impl HorizontalTransport for RedisClusterTransport {
 
             // Use SPUBLISH for sharded pub/sub if enabled, otherwise standard PUBLISH
             let publish_result: redis::RedisResult<()> = if self.use_sharded_pubsub {
-                conn.spublish(&self.broadcast_channel, &broadcast_json)
-                    .await
+                conn.spublish(&self.broadcast_channel, &payload).await
             } else {
-                conn.publish(&self.broadcast_channel, &broadcast_json).await
+                conn.publish(&self.broadcast_channel, &payload).await
             };
 
             match publish_result {
@@ -190,8 +193,7 @@ impl HorizontalTransport for RedisClusterTransport {
     }
 
     async fn publish_request(&self, request: &RequestBody) -> Result<()> {
-        let request_json = sonic_rs::to_string(request)
-            .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        let payload = serialization::serialize(request, self.serialization)?;
 
         // Retry logic with exponential backoff using persistent connection
         let mut retry_delay = 100u64;
@@ -204,9 +206,9 @@ impl HorizontalTransport for RedisClusterTransport {
 
             // Use SPUBLISH for sharded pub/sub if enabled, otherwise standard PUBLISH
             let publish_result: redis::RedisResult<i32> = if self.use_sharded_pubsub {
-                conn.spublish(&self.request_channel, &request_json).await
+                conn.spublish(&self.request_channel, &payload).await
             } else {
-                conn.publish(&self.request_channel, &request_json).await
+                conn.publish(&self.request_channel, &payload).await
             };
 
             match publish_result {
@@ -238,8 +240,7 @@ impl HorizontalTransport for RedisClusterTransport {
     }
 
     async fn publish_response(&self, response: &ResponseBody) -> Result<()> {
-        let response_json = sonic_rs::to_string(response)
-            .map_err(|e| Error::Other(format!("Failed to serialize response: {e}")))?;
+        let payload = serialization::serialize(response, self.serialization)?;
 
         // Retry logic with exponential backoff using persistent connection
         let mut retry_delay = 100u64;
@@ -252,9 +253,9 @@ impl HorizontalTransport for RedisClusterTransport {
 
             // Use SPUBLISH for sharded pub/sub if enabled, otherwise standard PUBLISH
             let publish_result: redis::RedisResult<()> = if self.use_sharded_pubsub {
-                conn.spublish(&self.response_channel, &response_json).await
+                conn.spublish(&self.response_channel, &payload).await
             } else {
-                conn.publish(&self.response_channel, &response_json).await
+                conn.publish(&self.response_channel, &payload).await
             };
 
             match publish_result {
@@ -305,14 +306,13 @@ impl HorizontalTransport for RedisClusterTransport {
         target_node_id: &str,
     ) -> Result<()> {
         let target_channel = format!("{}:#node:{}", self.prefix, target_node_id);
-        let request_json = sonic_rs::to_string(request)
-            .map_err(|e| Error::Other(format!("Failed to serialize request: {e}")))?;
+        let payload = serialization::serialize(request, self.serialization)?;
         let mut conn = self.publish_connection.clone();
 
         let publish_result: redis::RedisResult<()> = if self.use_sharded_pubsub {
-            conn.spublish(&target_channel, &request_json).await
+            conn.spublish(&target_channel, &payload).await
         } else {
-            conn.publish(&target_channel, &request_json).await
+            conn.publish(&target_channel, &payload).await
         };
 
         publish_result.map_err(|e| {
@@ -334,6 +334,7 @@ impl HorizontalTransport for RedisClusterTransport {
         let use_sharded_pubsub = self.use_sharded_pubsub;
         // Clone the publish connection for use in handlers (cheap, thread-safe)
         let publish_connection = self.publish_connection.clone();
+        let serialization = self.serialization;
         let metrics = self.metrics.clone();
         let shutdown = self.shutdown.clone();
         let is_running = self.is_running.clone();
@@ -510,7 +511,7 @@ impl HorizontalTransport for RedisClusterTransport {
 
                             tokio::spawn(async move {
                                 if let Ok(broadcast) =
-                                    sonic_rs::from_slice::<BroadcastMessage>(&payload)
+                                    serialization::deserialize::<BroadcastMessage>(&payload)
                                 {
                                     broadcast_handler(broadcast).await;
                                 } else if let Some(metrics) = metrics_clone.get() {
@@ -527,21 +528,26 @@ impl HorizontalTransport for RedisClusterTransport {
                             let sharded = use_sharded_pubsub;
 
                             tokio::spawn(async move {
-                                if let Ok(request) = sonic_rs::from_slice::<RequestBody>(&payload) {
+                                if let Ok(request) =
+                                    serialization::deserialize::<RequestBody>(&payload)
+                                {
                                     let reply_to = request.reply_to.clone();
                                     let response_result = request_handler(request).await;
 
                                     if let Ok(response) = response_result
-                                        && let Ok(response_json) = sonic_rs::to_string(&response)
+                                        && let Ok(response_data) = serialization::serialize(
+                                            &response,
+                                            serialization,
+                                        )
                                     {
                                         let target = reply_to.unwrap_or(response_channel_clone);
                                         // Clone connection (cheap, thread-safe per redis-rs docs)
                                         let mut conn = publish_conn.clone();
 
                                         let _: redis::RedisResult<()> = if sharded {
-                                            conn.spublish(&target, &response_json).await
+                                            conn.spublish(&target, &response_data).await
                                         } else {
-                                            conn.publish(&target, response_json).await
+                                            conn.publish(&target, &response_data).await
                                         };
                                     }
                                 } else if let Some(metrics) = metrics_clone.get() {
@@ -555,7 +561,8 @@ impl HorizontalTransport for RedisClusterTransport {
                             let metrics_clone = metrics.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&payload)
+                                if let Ok(response) =
+                                    serialization::deserialize::<ResponseBody>(&payload)
                                 {
                                     response_handler(response).await;
                                 } else if let Some(metrics) = metrics_clone.get() {
@@ -569,7 +576,8 @@ impl HorizontalTransport for RedisClusterTransport {
                             let metrics_clone = metrics.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(response) = sonic_rs::from_slice::<ResponseBody>(&payload)
+                                if let Ok(response) =
+                                    serialization::deserialize::<ResponseBody>(&payload)
                                 {
                                     response_handler(response).await;
                                 } else if let Some(metrics) = metrics_clone.get() {
@@ -695,6 +703,7 @@ impl Clone for RedisClusterTransport {
             use_sharded_pubsub: self.use_sharded_pubsub,
             prefix: self.prefix.clone(),
             reply_channel: self.reply_channel.clone(),
+            serialization: self.serialization,
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
             is_running: self.is_running.clone(),

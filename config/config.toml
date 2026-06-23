@@ -13,6 +13,11 @@ driver = "local"
 enable_socket_counting = true
 aggregate_counts = false
 fallback_to_local = true
+# Serialization format for inter-node horizontal pub/sub payloads.
+# "json" (default) — sonic_rs JSON, backward compatible with all versions.
+# "msgpack" — MessagePack via rmp-serde, ~45-55% smaller payloads.
+# Receive-side auto-detects format for safe rolling deploys.
+serialization = "json"
 
 [adapter.nats]
 servers = ["nats://127.0.0.1:4222"]

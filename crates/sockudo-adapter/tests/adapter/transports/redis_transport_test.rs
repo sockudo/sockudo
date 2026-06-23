@@ -1,3 +1,4 @@
+use sockudo_adapter::serialization::Serialization;
 use sockudo_adapter::horizontal_transport::HorizontalTransport;
 use sockudo_adapter::transports::{RedisAdapterConfig, RedisTransport};
 use sockudo_core::error::Result;
@@ -24,6 +25,7 @@ async fn test_redis_transport_new_with_invalid_url() {
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        serialization: Serialization::default(),
     };
 
     // Add a timeout to prevent test from hanging
@@ -46,6 +48,7 @@ async fn test_redis_transport_config_edge_cases() -> Result<()> {
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        serialization: Serialization::default(),
     };
 
     let transport = RedisTransport::new(config).await?;
@@ -58,6 +61,7 @@ async fn test_redis_transport_config_edge_cases() -> Result<()> {
         request_timeout_ms: 1, // 1ms timeout
         cluster_mode: false,
         sentinel: None,
+        serialization: Serialization::default(),
     };
 
     let transport = RedisTransport::new(config).await?;
@@ -70,6 +74,7 @@ async fn test_redis_transport_config_edge_cases() -> Result<()> {
         request_timeout_ms: 0, // Zero timeout
         cluster_mode: false,
         sentinel: None,
+        serialization: Serialization::default(),
     };
 
     let transport = RedisTransport::new(config).await?;
@@ -97,6 +102,7 @@ async fn test_redis_transport_malformed_url() {
             request_timeout_ms: 1000,
             cluster_mode: false,
             sentinel: None,
+            serialization: Serialization::default(),
         };
 
         let result = tokio::time::timeout(
@@ -275,6 +281,7 @@ async fn test_channel_names() -> Result<()> {
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        serialization: Serialization::default(),
     };
 
     let transport = RedisTransport::new(config.clone()).await?;
@@ -570,6 +577,142 @@ async fn test_redis_reply_channel_format() -> Result<()> {
         suffix.chars().all(|c| c.is_ascii_hexdigit()),
         "UUID suffix must be lowercase hex, got: '{suffix}'"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_msgpack_broadcast_roundtrip() -> Result<()> {
+    let mut config_a = get_redis_config();
+    config_a.serialization = Serialization::MessagePack;
+    let mut config_b = config_a.clone();
+    config_b.prefix = config_a.prefix.clone(); // same prefix = same channels
+
+    let transport_a = match RedisTransport::new(config_a).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!("Skipping test_msgpack_broadcast_roundtrip: Redis not available");
+            return Ok(());
+        }
+    };
+    let transport_b = match RedisTransport::new(config_b).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!("Skipping test_msgpack_broadcast_roundtrip: Redis not available");
+            return Ok(());
+        }
+    };
+
+    let collector = MessageCollector::new();
+    let handlers = create_test_handlers(collector.clone());
+    transport_b.start_listeners(handlers).await?;
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let msg = create_test_broadcast("msgpack-test");
+    transport_a.publish_broadcast(&msg).await?;
+
+    let received = collector.wait_for_broadcast(2000).await;
+    assert!(
+        received.is_some(),
+        "Should receive broadcast via MessagePack"
+    );
+    assert_eq!(received.unwrap().channel, msg.channel);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_backward_compat_json_to_msgpack_receiver() -> Result<()> {
+    use redis::AsyncCommands;
+
+    let mut config = get_redis_config();
+    config.serialization = Serialization::MessagePack;
+    let prefix = config.prefix.clone();
+
+    let transport = match RedisTransport::new(config).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!("Skipping test_backward_compat_json_to_msgpack_receiver: Redis not available");
+            return Ok(());
+        }
+    };
+
+    let collector = MessageCollector::new();
+    let handlers = create_test_handlers(collector.clone());
+    transport.start_listeners(handlers).await?;
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Publish raw JSON directly (simulating old node)
+    let client = redis::Client::open("redis://127.0.0.1:16379/")
+        .map_err(|e| sockudo_core::error::Error::Other(format!("Redis client error: {e}")))?;
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| sockudo_core::error::Error::Other(format!("Redis connection error: {e}")))?;
+
+    let broadcast_channel = format!("{}:#broadcast", prefix);
+    let json_payload = r#"{"node_id":"old-node","app_id":"test-app","channel":"test-channel","message":"{\"event\":\"test\"}","except_socket_id":null,"timestamp_ms":null,"compression_metadata":null,"idempotency_key":null,"ephemeral":false}"#;
+
+    let _: i32 = conn
+        .publish(&broadcast_channel, json_payload)
+        .await
+        .map_err(|e| sockudo_core::error::Error::Other(format!("Publish error: {e}")))?;
+
+    let received = collector.wait_for_broadcast(2000).await;
+    assert!(
+        received.is_some(),
+        "MessagePack receiver should auto-detect and parse JSON from old node"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_msgpack_sender_json_receiver() -> Result<()> {
+    let config_base = get_redis_config();
+    let prefix = config_base.prefix.clone();
+
+    // Sender: MessagePack
+    let mut config_sender = config_base.clone();
+    config_sender.serialization = Serialization::MessagePack;
+
+    // Receiver: Json (default) — but auto-detects MessagePack
+    let mut config_receiver = config_base;
+    config_receiver.prefix = prefix;
+    config_receiver.serialization = Serialization::Json;
+
+    let transport_sender = match RedisTransport::new(config_sender).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!("Skipping test_msgpack_sender_json_receiver: Redis not available");
+            return Ok(());
+        }
+    };
+    let transport_receiver = match RedisTransport::new(config_receiver).await {
+        Ok(t) => t,
+        Err(_) => {
+            println!("Skipping test_msgpack_sender_json_receiver: Redis not available");
+            return Ok(());
+        }
+    };
+
+    let collector = MessageCollector::new();
+    let handlers = create_test_handlers(collector.clone());
+    transport_receiver.start_listeners(handlers).await?;
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let msg = create_test_broadcast("msgpack-to-json-receiver");
+    transport_sender.publish_broadcast(&msg).await?;
+
+    let received = collector.wait_for_broadcast(2000).await;
+    assert!(
+        received.is_some(),
+        "JSON receiver should auto-detect and parse MessagePack from new node"
+    );
+    assert_eq!(received.unwrap().channel, msg.channel);
 
     Ok(())
 }

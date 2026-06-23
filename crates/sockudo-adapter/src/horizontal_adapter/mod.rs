@@ -73,7 +73,11 @@ pub struct RequestBody {
     pub user_id: Option<String>,
 
     // Additional fields for cluster presence replication
-    pub user_info: Option<sonic_rs::Value>, // For presence member info (needed for rich presence data)
+    #[serde(
+        default,
+        deserialize_with = "crate::serialization::compat_value"
+    )]
+    pub user_info: Option<sonic_rs::Value>,
     pub timestamp: Option<u64>,             // For heartbeat timestamp
     pub dead_node_id: Option<String>,       // For dead node notifications
     pub target_node_id: Option<String>,     // Which node should process this request
@@ -170,6 +174,10 @@ pub struct AggregationStats {
 pub struct PresenceEntry {
     // Arc keeps registry-lock hold times short: readers clone the pointer under
     // the lock and deep-clone the value after releasing it.
+    #[serde(
+        default,
+        deserialize_with = "crate::serialization::compat_arc_value"
+    )]
     pub user_info: Option<Arc<sonic_rs::Value>>,
     pub node_id: String,      // Which node owns this connection
     pub app_id: String,       // Which app this member belongs to

@@ -57,7 +57,9 @@ redis = { workspace = true, optional = true }
 rdkafka = { workspace = true, optional = true }
 iggy = { workspace = true, optional = true }
 regex = { workspace = true }
+rmp-serde = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sockudo-ws = { workspace = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }

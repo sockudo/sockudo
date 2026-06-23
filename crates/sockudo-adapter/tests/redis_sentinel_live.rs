@@ -103,6 +103,8 @@ fn transport_config(test_name: &str) -> RedisAdapterConfig {
         request_timeout_ms: 5000,
         cluster_mode: false,
         sentinel: connection.sentinel_spec(),
+        serialization: sockudo_adapter::serialization::Serialization::default(
+        ),
     }
 }
 

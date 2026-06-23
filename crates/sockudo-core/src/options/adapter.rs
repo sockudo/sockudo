@@ -26,10 +26,18 @@ pub struct AdapterConfig {
     /// cross-node fan-out. Off by default; falls back to request/reply when off.
     #[serde(default = "default_aggregate_counts")]
     pub aggregate_counts: bool,
+    /// Wire format for inter-node adapter pub/sub payloads.
+    /// Accepted values: `"json"` (default), `"msgpack"` / `"messagepack"`.
+    #[serde(default = "default_serialization")]
+    pub serialization: String,
 }
 
 fn default_aggregate_counts() -> bool {
     false
+}
+
+fn default_serialization() -> String {
+    "json".to_string()
 }
 
 fn default_enable_socket_counting() -> bool {
@@ -61,6 +69,7 @@ impl Default for AdapterConfig {
             enable_socket_counting: default_enable_socket_counting(),
             fallback_to_local: default_fallback_to_local(),
             aggregate_counts: default_aggregate_counts(),
+            serialization: default_serialization(),
         }
     }
 }
@@ -84,6 +93,8 @@ pub struct RedisClusterAdapterConfig {
     pub use_connection_manager: bool,
     #[serde(default)]
     pub use_sharded_pubsub: bool,
+    #[serde(default = "default_serialization")]
+    pub serialization: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +200,7 @@ impl Default for RedisClusterAdapterConfig {
             request_timeout_ms: 1000,
             use_connection_manager: true,
             use_sharded_pubsub: false,
+            serialization: default_serialization(),
         }
     }
 }

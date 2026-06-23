@@ -1,3 +1,4 @@
+pub mod serialization;
 pub mod channel_manager;
 pub mod cleanup;
 pub mod connection_manager;

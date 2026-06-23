@@ -218,6 +218,8 @@ async fn build_redis_node_with_version_store(
         request_timeout_ms: 1000,
         cluster_mode: false,
         sentinel: None,
+        serialization: sockudo_adapter::serialization::Serialization::default(
+        ),
     })
     .await
     .unwrap();
