@@ -24,7 +24,6 @@ ahash = { workspace = true }
 async-trait = { workspace = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
-dashmap = { workspace = true }
 futures = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 moka = { workspace = true }

@@ -16,7 +16,6 @@ redis-cluster = ["redis", "sockudo-core/redis-cluster"]
 
 [dependencies]
 sockudo-core = { workspace = true }
-sockudo-metrics = { workspace = true }
 
 async-trait = { workspace = true }
 axum = { workspace = true }

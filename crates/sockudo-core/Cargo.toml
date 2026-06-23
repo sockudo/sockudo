@@ -29,7 +29,7 @@ full = [
   "sns",
   "lambda",
 ]
-redis = ["dep:redis"]
+redis = []
 redis-cluster = ["redis"]
 nats = []
 pulsar = []
@@ -62,9 +62,7 @@ hex = { workspace = true }
 hmac = { workspace = true }
 jsonwebtoken = { workspace = true }
 md5 = { workspace = true }
-memchr = { workspace = true }
 rand = { workspace = true }
-redis = { workspace = true, optional = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde-aux = { workspace = true }
