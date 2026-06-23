@@ -156,32 +156,32 @@ pub trait ConnectionManager: Send + Sync {
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Result<bool>;
+    ) -> Result<(bool, bool)>;
     async fn add_to_channel_and_count_local(
         &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Result<(bool, usize)> {
-        let added = self.add_to_channel(app_id, channel, socket_id).await?;
+    ) -> Result<(bool, bool, usize)> {
+        let (newly_inserted, activated) = self.add_to_channel(app_id, channel, socket_id).await?;
         let count = self.get_local_channel_socket_count(app_id, channel).await;
-        Ok((added, count))
+        Ok((newly_inserted, activated, count))
     }
     async fn remove_from_channel(
         &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Result<bool>;
+    ) -> Result<(bool, bool)>;
     async fn remove_from_channel_and_count_local(
         &self,
         app_id: &str,
         channel: &str,
         socket_id: &SocketId,
-    ) -> Result<(bool, usize)> {
-        let removed = self.remove_from_channel(app_id, channel, socket_id).await?;
+    ) -> Result<(bool, bool, usize)> {
+        let (was_removed, vacated) = self.remove_from_channel(app_id, channel, socket_id).await?;
         let count = self.get_local_channel_socket_count(app_id, channel).await;
-        Ok((removed, count))
+        Ok((was_removed, vacated, count))
     }
     async fn get_presence_member(
         &self,

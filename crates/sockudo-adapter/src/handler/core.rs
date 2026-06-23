@@ -92,12 +92,9 @@ impl ConnectionHandler {
                 metrics.mark_channel_unsubscription(&app_config.id, channel_type_str);
             }
 
-            // Per-pod gauge: deactivate when the channel empties on this node, not cluster-wide.
-            let local_sub_count = self
-                .connection_manager
-                .get_local_channel_socket_count(&app_config.id, &channel_name)
-                .await;
-            if leave_response.left && local_sub_count == 0 {
+            // Per-pod gauge: deactivate on the transition from unsubscribe_local,
+            // not a separate count read.
+            if leave_response.vacated_locally {
                 metrics.mark_channel_deactivated(&app_config.id, channel_type_str);
             }
         }

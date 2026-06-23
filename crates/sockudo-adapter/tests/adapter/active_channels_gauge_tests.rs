@@ -79,21 +79,21 @@ async fn join_channel_fast_reports_transition_only_on_first_join() {
     let first = adapter.join_channel_fast(APP_ID, channel, &socket_id);
     assert_eq!(
         first,
-        Some((1, true)),
+        Some((1, true, true)),
         "first join is a genuine 0->1 transition"
     );
 
     let second = adapter.join_channel_fast(APP_ID, channel, &socket_id);
     assert_eq!(
         second,
-        Some((1, false)),
+        Some((1, false, false)),
         "re-subscribe must not report a new transition"
     );
 
     let third = adapter.join_channel_fast(APP_ID, channel, &socket_id);
     assert_eq!(
         third,
-        Some((1, false)),
+        Some((1, false, false)),
         "repeated re-subscribes stay non-transitional"
     );
 }

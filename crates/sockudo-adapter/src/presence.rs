@@ -1227,16 +1227,16 @@ mod tests {
             _app_id: &str,
             _channel: &str,
             _socket_id: &SocketId,
-        ) -> Result<bool> {
-            Ok(false)
+        ) -> Result<(bool, bool)> {
+            Ok((false, false))
         }
         async fn remove_from_channel(
             &self,
             _app_id: &str,
             _channel: &str,
             _socket_id: &SocketId,
-        ) -> Result<bool> {
-            Ok(false)
+        ) -> Result<(bool, bool)> {
+            Ok((false, false))
         }
         async fn get_presence_member(
             &self,

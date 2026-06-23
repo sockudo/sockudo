@@ -5,6 +5,7 @@ use crate::utils::wildcard_pattern_matches;
 use crate::websocket::{SocketId, WebSocket, WebSocketBufferConfig, WebSocketRef};
 use ahash::AHashMap as HashMap;
 use ahash::AHashSet;
+use dashmap::mapref::entry::Entry;
 use dashmap::{DashMap, DashSet};
 use futures_util::future::join_all;
 use sockudo_ws::axum_integration::WebSocketWriter;
@@ -467,15 +468,20 @@ impl Namespace {
         Ok(())
     }
 
-    pub fn add_channel_to_socket(&self, channel: &str, socket_id: &SocketId) -> bool {
+    /// `activated` reports the first socket joining the channel, computed under
+    /// the shard write lock so it is safe against concurrent add/remove.
+    pub fn add_channel_to_socket(&self, channel: &str, socket_id: &SocketId) -> (bool, bool) {
         let t_start = std::time::Instant::now();
 
         let t_before_entry = t_start.elapsed().as_nanos();
-        let result = self
-            .channels
-            .entry(channel.to_string())
-            .or_default()
-            .insert(*socket_id);
+        let (newly_inserted, activated) = match self.channels.entry(channel.to_string()) {
+            Entry::Occupied(entry) => (entry.get().insert(*socket_id), false),
+            Entry::Vacant(entry) => {
+                let set_ref = entry.insert(DashSet::new());
+                set_ref.insert(*socket_id);
+                (true, true)
+            }
+        };
         let t_after_entry = t_start.elapsed().as_nanos();
 
         self.socket_channels
@@ -492,13 +498,16 @@ impl Namespace {
             channel,
             socket_id,
             t_after_entry - t_before_entry,
-            result
+            newly_inserted
         );
 
-        result
+        (newly_inserted, activated)
     }
 
-    pub fn remove_channel_from_socket(&self, channel: &str, socket_id: &SocketId) -> bool {
+    /// `vacated` reports the last socket leaving: `remove_if` saw an empty set and
+    /// deleted the entry under the shard write lock. Exactly one concurrent remover
+    /// wins, so it pairs with `add`'s `activated`.
+    pub fn remove_channel_from_socket(&self, channel: &str, socket_id: &SocketId) -> (bool, bool) {
         if let Some(socket_channels_ref) = self.socket_channels.get(socket_id) {
             socket_channels_ref.remove(channel);
         }
@@ -507,19 +516,19 @@ impl Namespace {
             let removed = channel_sockets_ref.remove(socket_id);
             drop(channel_sockets_ref);
 
-            if self
+            let vacated = self
                 .channels
                 .remove_if(channel, |_, set| set.is_empty())
-                .is_some()
-            {
+                .is_some();
+            if vacated {
                 if channel.contains('*') {
                     self.wildcard_channels.remove(channel);
                 }
                 debug!("Removed empty channel entry: {}", channel);
             }
-            return removed.is_some();
+            return (removed.is_some(), vacated);
         }
-        false
+        (false, false)
     }
 
     pub fn remove_connection(&self, socket_id: &SocketId) {
@@ -874,5 +883,100 @@ mod tests {
         assert!(!namespace.is_in_channel("room-1", &socket_id));
         assert!(!namespace.is_in_channel("room-2", &socket_id));
         assert!(!namespace.is_in_channel("presence-x", &socket_id));
+    }
+
+    #[test]
+    fn add_reports_activation_only_on_first_socket() {
+        let namespace = Namespace::new("app".to_string());
+        let s1 = SocketId::new();
+        let s2 = SocketId::new();
+
+        let (newly1, activated1) = namespace.add_channel_to_socket("presence-room", &s1);
+        assert!(newly1);
+        assert!(activated1, "first socket must activate the channel");
+
+        let (newly2, activated2) = namespace.add_channel_to_socket("presence-room", &s2);
+        assert!(newly2);
+        assert!(!activated2, "second socket must not re-activate");
+
+        let (newly1_again, activated1_again) =
+            namespace.add_channel_to_socket("presence-room", &s1);
+        assert!(!newly1_again, "re-subscribe is not a new insertion");
+        assert!(!activated1_again, "re-subscribe must not activate");
+    }
+
+    #[test]
+    fn remove_reports_vacation_only_on_last_socket() {
+        let namespace = Namespace::new("app".to_string());
+        let s1 = SocketId::new();
+        let s2 = SocketId::new();
+        namespace.add_channel_to_socket("presence-room", &s1);
+        namespace.add_channel_to_socket("presence-room", &s2);
+
+        let (removed1, vacated1) = namespace.remove_channel_from_socket("presence-room", &s1);
+        assert!(removed1);
+        assert!(!vacated1, "channel still has a socket, must not vacate");
+
+        let (removed2, vacated2) = namespace.remove_channel_from_socket("presence-room", &s2);
+        assert!(removed2);
+        assert!(vacated2, "last socket leaving must vacate the channel");
+
+        let (removed_absent, vacated_absent) =
+            namespace.remove_channel_from_socket("presence-room", &s1);
+        assert!(!removed_absent, "socket already gone");
+        assert!(!vacated_absent, "absent channel must not report vacation");
+    }
+
+    // Under concurrent churn on a shared channel, activations and vacations must
+    // stay balanced: each entry is created once and deleted once, so the gauge
+    // never goes negative.
+    #[test]
+    fn concurrent_churn_keeps_activation_and_vacation_balanced() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        let namespace = Arc::new(Namespace::new("app".to_string()));
+        let channel = "presence-shared";
+        let activations = Arc::new(AtomicI64::new(0));
+        let vacations = Arc::new(AtomicI64::new(0));
+
+        let threads = 16;
+        let iterations = 2_000;
+
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let namespace = Arc::clone(&namespace);
+                let activations = Arc::clone(&activations);
+                let vacations = Arc::clone(&vacations);
+                std::thread::spawn(move || {
+                    for _ in 0..iterations {
+                        let socket_id = SocketId::new();
+                        let (_, activated) = namespace.add_channel_to_socket(channel, &socket_id);
+                        if activated {
+                            activations.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let (_, vacated) =
+                            namespace.remove_channel_from_socket(channel, &socket_id);
+                        if vacated {
+                            vacations.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(
+            activations.load(Ordering::Relaxed),
+            vacations.load(Ordering::Relaxed),
+            "every activation must pair with exactly one vacation (gauge returns to zero)"
+        );
+        assert_eq!(
+            namespace.get_channel_socket_count(channel),
+            0,
+            "channel must be empty after all sockets leave"
+        );
     }
 }
