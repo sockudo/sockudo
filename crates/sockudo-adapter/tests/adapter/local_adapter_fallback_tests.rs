@@ -22,7 +22,7 @@ async fn test_local_adapter_cluster_health_disabled() {
     let socket_id = SocketId::from_string("socket-123").unwrap();
 
     // Add to channel should work
-    let added = adapter
+    let (added, _activated) = adapter
         .add_to_channel(app_id, channel, &socket_id)
         .await
         .unwrap();
@@ -39,7 +39,7 @@ async fn test_local_adapter_cluster_health_disabled() {
     assert!(exists, "Socket should exist in channel");
 
     // Remove from channel
-    let removed = adapter
+    let (removed, _vacated) = adapter
         .remove_from_channel(app_id, channel, &socket_id)
         .await
         .unwrap();
@@ -391,7 +391,7 @@ async fn test_local_adapter_error_handling() {
     let socket_id = SocketId::from_string("error-socket").unwrap();
 
     // Try to remove from non-existent channel
-    let removed = adapter
+    let (removed, _vacated) = adapter
         .remove_from_channel(app_id, channel, &socket_id)
         .await
         .unwrap();

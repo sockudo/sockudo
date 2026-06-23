@@ -694,7 +694,7 @@ impl SockudoServer {
             queue_manager: queue_manager_opt,
             webhooks_integration: webhook_integration.clone(),
             metrics: metrics.clone(),
-            running: AtomicBool::new(true),
+            running: Arc::new(AtomicBool::new(true)),
             http_api_rate_limiter: Some(http_api_rate_limiter_instance.clone()),
             websocket_rate_limiter: Some(websocket_rate_limiter_instance.clone()),
             #[cfg(feature = "push")]
@@ -862,6 +862,7 @@ impl SockudoServer {
             builder = builder.delta_compression(delta_compression_manager.clone());
         }
 
+        builder = builder.running(Arc::clone(&state.running));
         let handler = Arc::new(builder.build());
 
         // Start dead node cleanup event processing loop (only runs if cluster health is enabled)

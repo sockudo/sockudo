@@ -24,25 +24,57 @@ messages, presence, push, and the `@sockudo/client` SDK in this monorepo.
 
 ## Provider flow
 
-```mermaid
-sequenceDiagram
-  participant U as User client
-  participant S as Sockudo channel
-  participant A as Agent route or worker
-  participant P as Model provider
-  participant H as History and version store
-
-  U->>S: ai-input create
-  S->>H: persist user message and turn start
-  A->>S: subscribe or receive webhook
-  A->>P: stream prompt/messages/tools
-  P-->>A: deltas, tool calls, finish
-  A->>S: ai-output create + append/update
-  S->>H: persist every mutation
-  S-->>U: live append rollup fanout
-  U->>S: rewind/history after refresh
-  S-->>U: reconstructed transcript
-```
+<div className="provider-flow-diagram not-prose" role="img" aria-label="Provider flow showing how the user, Sockudo channel, agent worker, model provider, and durable stores cooperate during an AI turn.">
+  <div className="provider-flow-lanes" aria-hidden="true">
+    <span>User client</span>
+    <span>Sockudo channel</span>
+    <span>Agent worker</span>
+    <span>Model provider</span>
+    <span>Stores</span>
+  </div>
+  <ol className="provider-flow-steps">
+    <li>
+      <span>01</span>
+      <div>
+        <strong>User starts a turn</strong>
+        <p>{"The client publishes ai-input create into the private AI session channel."}</p>
+      </div>
+      <code>User -&gt; Sockudo</code>
+    </li>
+    <li>
+      <span>02</span>
+      <div>
+        <strong>Sockudo persists intent</strong>
+        <p>{"The channel records the user message and turn start before provider work begins."}</p>
+      </div>
+      <code>Sockudo -&gt; stores</code>
+    </li>
+    <li>
+      <span>03</span>
+      <div>
+        <strong>Agent streams provider output</strong>
+        <p>{"The worker calls the selected model provider and receives deltas, tool calls, and finish signals."}</p>
+      </div>
+      <code>Agent &lt;-&gt; provider</code>
+    </li>
+    <li>
+      <span>04</span>
+      <div>
+        <strong>Every mutation becomes realtime state</strong>
+        <p>{"The worker creates ai-output and appends or updates the message through Sockudo."}</p>
+      </div>
+      <code>Agent -&gt; Sockudo</code>
+    </li>
+    <li>
+      <span>05</span>
+      <div>
+        <strong>Clients recover from the channel</strong>
+        <p>{"Live clients receive rollups; refreshed clients rewind history and reconstruct the transcript."}</p>
+      </div>
+      <code>Sockudo -&gt; clients</code>
+    </li>
+  </ol>
+</div>
 
 The provider never needs to know about connection recovery, rewind, history cursors, branch trees,
 presence, or multi-device fanout. It streams chunks. Sockudo makes those chunks durable and
@@ -319,4 +351,3 @@ sequenceDiagram
 
 Keep provider API keys server-side. Browser clients should only receive Sockudo public app keys,
 private/presence auth responses, and short-lived Protocol V2 capability tokens.
-

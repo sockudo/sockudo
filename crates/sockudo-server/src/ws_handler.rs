@@ -35,6 +35,12 @@ pub async fn handle_ws_upgrade(
     ws: WebSocketUpgrade,
     State(handler): State<Arc<ConnectionHandler>>,
 ) -> impl IntoResponse {
+    // Reject new connections once draining so a terminating pod stops taking work
+    // and its sockudo_connected gauge can decay to zero instead of spiking.
+    if !handler.is_accepting() {
+        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
     // Extract Origin header if present
     let origin = headers
         .get(axum::http::header::ORIGIN)

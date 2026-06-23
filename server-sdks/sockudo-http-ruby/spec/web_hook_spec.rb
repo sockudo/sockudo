@@ -21,7 +21,7 @@ describe Sockudo::WebHook do
                                     'HTTP_X_PUSHER_KEY' => '1234',
                                     'HTTP_X_PUSHER_SIGNATURE' => 'asdf',
                                     'CONTENT_TYPE' => 'application/json',
-                                    'rack.input' => StringIO.new(MultiJson.encode(@hook_data))
+                                    'rack.input' => StringIO.new(MultiJson.dump(@hook_data))
                                   })
       wh = Sockudo::WebHook.new(request)
       expect(wh.key).to eq('1234')
@@ -34,7 +34,7 @@ describe Sockudo::WebHook do
         key: '1234',
         signature: 'asdf',
         content_type: 'application/json',
-        body: MultiJson.encode(@hook_data)
+        body: MultiJson.dump(@hook_data)
       }
       wh = Sockudo::WebHook.new(request)
       expect(wh.key).to eq('1234')
@@ -45,7 +45,7 @@ describe Sockudo::WebHook do
 
   describe 'after initialization' do
     before :each do
-      @body = MultiJson.encode(@hook_data)
+      @body = MultiJson.dump(@hook_data)
       request = {
         key: '1234',
         signature: hmac('asdf', @body),

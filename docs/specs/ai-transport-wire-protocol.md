@@ -165,6 +165,7 @@ Transport keys:
 | `turn-continue` | `true` or `false` |
 | `error-code` | Non-empty opaque string |
 | `error-message` | Human-readable string within value limit |
+| `model` | Non-empty opaque string; model identifier set by the publishing worker/agent, not interpreted by Sockudo |
 
 Anti-spoof rule: any `*-client-id` value MUST match the verified connection identity from authenticated socket state or capability token. Trusted signed app-key HTTP publishes are exempt. Client publishes may send `ai-input` and `ai-cancel`; `ai-output`, `ai-turn-start`, and `ai-turn-end` require trusted app key until capability tokens land, then require an agent-capable token.
 
@@ -519,3 +520,5 @@ AIT-S95 [VERIFIED] HTTP AI publishes return `{ message_serial, history_serial, d
 AIT-S96 [VERIFIED] HTTP `X-Idempotency-Key` retries return the cached AI publish serial acknowledgement.
 AIT-S97 [VERIFIED] AI channel state includes `{ active_streams, last_history_serial, message_count }`.
 AIT-S98 [VERIFIED] HTTP batch AI acknowledgements are emitted in request order when serial info is requested.
+AIT-S99 [NEW] `extras.ai.transport.model` accepts non-empty opaque strings and rejects empty values.
+AIT-S100 [NEW] Messages without `extras.ai.transport.model` are accepted unchanged (key is fully optional).

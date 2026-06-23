@@ -1,20 +1,8 @@
 # Changelog
 
-## 2.0.4
-
-* [ADDED] Add `authenticate_user` method for user authentication flow
-
-## 2.0.3
-
-* [FIXED] Corrected the channels limit when publishing events. Upped from 10 to 100. 
-
-## 2.0.2
-
-* [CHANGED] made encryption_master_key_base64 globally configurable 
-
 ## 2.0.1
 
-* [CHANGED] Only include lib and essential docs in gem.
+* [FIXED] multi_json deprecation warning.
 
 ## 2.0.0
 
@@ -23,6 +11,10 @@
 * [FIXED] Handle empty or nil  configuration.
 * [REMOVED] Legacy Push Notification integration.
 * [ADDED] Stalebot and Github actions. 
+* [CHANGED] Only include lib and essential docs in gem.
+* [CHANGED] made encryption_master_key_base64 globally configurable 
+* [FIXED] Corrected the channels limit when publishing events. Upped from 10 to 100. 
+* [ADDED] Add `authenticate_user` method for user authentication flow
 
 ## 1.4.3
 

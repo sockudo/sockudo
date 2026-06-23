@@ -17,6 +17,25 @@ Use V1 for:
 - backend SDK compatibility
 - minimal drop-in deployments
 
+Typical V1 connection and event frames keep the Pusher names and payload conventions:
+
+```json
+{
+  "event": "pusher:connection_established",
+  "data": "{\"socket_id\":\"123.456\",\"activity_timeout\":120}"
+}
+```
+
+```json
+{
+  "event": "order.created",
+  "channel": "orders",
+  "data": "{\"id\":\"ord_123\",\"total\":4200}"
+}
+```
+
+Keep V1 payloads compatible with existing clients. Do not require V2-only fields such as `message_id`, `serial`, `stream_id`, tags, deltas, or annotation metadata when the recipient negotiated V1.
+
 ## Protocol V2
 
 Protocol V2 is Sockudo-native and uses `sockudo:` system event prefixes.
@@ -34,6 +53,39 @@ Use V2 for:
 - mutable messages
 - annotations
 - push-helper client workflows through backend proxies
+
+V2 keeps the event/channel shape familiar, then adds metadata required for continuity and durable workflows:
+
+```json
+{
+  "event": "order.created",
+  "channel": "orders",
+  "data": { "id": "ord_123", "total": 4200 },
+  "message_id": "msg_01HX6J2P5N0Z9E",
+  "stream_id": "orders",
+  "serial": 42,
+  "extras": {
+    "headers": { "tenant": "acme" },
+    "tags": { "status": "paid", "region": "eu" }
+  }
+}
+```
+
+Use V2 when the client needs to reconnect without guessing what it missed, rewind a subscription from known history, filter by tags, receive deltas, or render mutable message state.
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Sockudo
+  participant History
+  Client->>Sockudo: subscribe orders with protocol_version=2
+  Sockudo-->>Client: sockudo:subscription_succeeded
+  Sockudo->>History: persist event with stream_id and serial
+  Sockudo-->>Client: order.created with message_id and serial
+  Client->>Sockudo: resume from last serial
+  Sockudo->>History: read gap
+  Sockudo-->>Client: replay missed events
+```
 
 ## Prefixes
 
@@ -72,6 +124,20 @@ Use V2 for:
 ```
 
 V1 clients should not depend on V2-only fields.
+
+## Compatibility boundary
+
+The compatibility rule is simple: negotiate the richest protocol a client can safely understand, then deliver only fields that belong to that protocol.
+
+| Concern | V1 behavior | V2 behavior |
+| --- | --- | --- |
+| System prefixes | `pusher:` and `pusher_internal:` | `sockudo:` and `sockudo_internal:` |
+| Event metadata | Pusher-compatible event, channel, and data | Adds serials, message IDs, stream IDs, extras, tags, and headers where enabled. |
+| Recovery | Client reconnects and resubscribes | Client can resume from continuity metadata when recovery is configured. |
+| Mutable messages | Not exposed | Message updates, deletes, appends, versions, and annotations are explicit V2 events. |
+| Server publish | Pusher-shaped HTTP API | Same trusted API plus V2 acknowledgement fields when enabled. |
+
+For mixed deployments, treat Protocol V1 as a stable contract and Protocol V2 as an opt-in capability layer. A backend may publish once, but Sockudo must shape the delivery for each subscriber according to the subscriber protocol.
 
 ## Push is outside the WebSocket protocol
 

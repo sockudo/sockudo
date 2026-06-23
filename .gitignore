@@ -29,3 +29,7 @@ fcm_tokens.txt
 hms_tokens.txt
 wns_channel_uris.txt
 *_service_account.json
+
+# Java LSP / compiler output
+client-sdks/sockudo-kotlin/lib/bin/
+server-sdks/sockudo-http-java/bin/

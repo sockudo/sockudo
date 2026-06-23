@@ -104,7 +104,7 @@ impl ConnectionHandler {
                 }
 
                 match fast_result {
-                    Some((channel_connections, newly_subscribed)) => {
+                    Some((channel_connections, _newly_subscribed, activated_locally)) => {
                         let t_after_fast = t_start.elapsed().as_micros();
                         tracing::debug!(
                             "PERF[FAST_PATH] socket_id={} channel={} total={}μs channel_type={}μs",
@@ -116,8 +116,7 @@ impl ConnectionHandler {
                         JoinResponse {
                             success: true,
                             channel_connections: Some(channel_connections),
-                            // Fast path is local-only, so this is the local count.
-                            activated_locally: newly_subscribed && channel_connections == 1,
+                            activated_locally,
                             member: None,
                             auth_error: None,
                             error_message: None,

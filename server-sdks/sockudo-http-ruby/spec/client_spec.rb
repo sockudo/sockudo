@@ -236,10 +236,10 @@ describe Sockudo do
           api_path = %r{/apps/20/channels}
           stub_request(:get, api_path).to_return({
                                                    status: 200,
-                                                   body: MultiJson.encode('channels' => {
-                                                                            'channel1' => {},
-                                                                            'channel2' => {}
-                                                                          })
+                                                   body: MultiJson.dump('channels' => {
+                                                                          'channel1' => {},
+                                                                          'channel2' => {}
+                                                                        })
                                                  })
           expect(@client.channels).to eq({
                                            channels: {
@@ -255,9 +255,9 @@ describe Sockudo do
           api_path = %r{/apps/20/channels/mychannel}
           stub_request(:get, api_path).to_return({
                                                    status: 200,
-                                                   body: MultiJson.encode({
-                                                                            'occupied' => false
-                                                                          })
+                                                   body: MultiJson.dump({
+                                                                          'occupied' => false
+                                                                        })
                                                  })
           expect(@client.channel_info('mychannel')).to eq({
                                                             occupied: false
@@ -270,9 +270,9 @@ describe Sockudo do
           api_path = %r{/apps/20/channels/mychannel/users}
           stub_request(:get, api_path).to_return({
                                                    status: 200,
-                                                   body: MultiJson.encode({
-                                                                            'users' => [{ 'id' => 1 }]
-                                                                          })
+                                                   body: MultiJson.dump({
+                                                                          'users' => [{ 'id' => 1 }]
+                                                                        })
                                                  })
           expect(@client.channel_users('mychannel')).to eq({
                                                              users: [{ id: 1 }]
@@ -290,13 +290,13 @@ describe Sockudo do
             )
           ).to_return({
                         status: 200,
-                        body: MultiJson.encode({
-                                                 'items' => [
-                                                   { 'serial' => 2 },
-                                                   { 'serial' => 1 }
-                                                 ],
-                                                 'has_more' => false
-                                               })
+                        body: MultiJson.dump({
+                                               'items' => [
+                                                 { 'serial' => 2 },
+                                                 { 'serial' => 1 }
+                                               ],
+                                               'has_more' => false
+                                             })
                       })
 
           expect(@client.channel_history('mychannel', direction: 'newest_first', limit: 2)).to eq({
@@ -319,13 +319,13 @@ describe Sockudo do
             )
           ).to_return({
                         status: 200,
-                        body: MultiJson.encode({
-                                                 'items' => [
-                                                   { 'serial' => 2, 'event' => 'member_removed' },
-                                                   { 'serial' => 1, 'event' => 'member_added' }
-                                                 ],
-                                                 'has_more' => false
-                                               })
+                        body: MultiJson.dump({
+                                               'items' => [
+                                                 { 'serial' => 2, 'event' => 'member_removed' },
+                                                 { 'serial' => 1, 'event' => 'member_added' }
+                                               ],
+                                               'has_more' => false
+                                             })
                       })
 
           expect(@client.channel_presence_history('presence-mychannel', direction: 'newest_first', limit: 2)).to eq({
@@ -351,11 +351,11 @@ describe Sockudo do
             )
           ).to_return({
                         status: 200,
-                        body: MultiJson.encode({
-                                                 'channel' => 'presence-mychannel',
-                                                 'members' => [{ 'user_id' => 'u-1' }],
-                                                 'member_count' => 1
-                                               })
+                        body: MultiJson.dump({
+                                               'channel' => 'presence-mychannel',
+                                               'members' => [{ 'user_id' => 'u-1' }],
+                                               'member_count' => 1
+                                             })
                       })
 
           expect(@client.channel_presence_snapshot('presence-mychannel', at_serial: 4)).to eq({
@@ -371,10 +371,10 @@ describe Sockudo do
           api_path = %r{/apps/20/push/deviceRegistrations}
           stub_request(:post, api_path).to_return({
                                                     status: 201,
-                                                    body: MultiJson.encode({
-                                                                             'change' => 'inserted',
-                                                                             'deviceIdentityToken' => 'identity'
-                                                                           })
+                                                    body: MultiJson.dump({
+                                                                           'change' => 'inserted',
+                                                                           'deviceIdentityToken' => 'identity'
+                                                                         })
                                                   })
 
           expect(@client.activate_device({
@@ -387,7 +387,7 @@ describe Sockudo do
                                                                                        })
 
           expect(WebMock).to(have_requested(:post, api_path).with do |req|
-            parsed = MultiJson.decode(req.body)
+            parsed = MultiJson.load(req.body)
             expect(parsed['id']).to eq('device-1')
             expect(req.headers['X-Sockudo-Push-Capability']).to eq('push-admin')
             expect(req.headers['X-Sockudo-Rotate-Device-Identity-Token']).to eq('true')
@@ -400,11 +400,11 @@ describe Sockudo do
           api_path = %r{/apps/20/push/deviceRegistrations}
           stub_request(:get, api_path).to_return({
                                                    status: 200,
-                                                   body: MultiJson.encode({
-                                                                            'items' => [],
-                                                                            'has_more' => false,
-                                                                            'next_cursor' => nil
-                                                                          })
+                                                   body: MultiJson.dump({
+                                                                          'items' => [],
+                                                                          'has_more' => false,
+                                                                          'next_cursor' => nil
+                                                                        })
                                                  })
 
           expect(@client.list_device_registrations(limit: 10, cursor: 'c1')).to eq({
@@ -426,11 +426,11 @@ describe Sockudo do
           api_path = %r{/apps/20/push/channelSubscriptions}
           stub_request(:get, api_path).to_return({
                                                    status: 200,
-                                                   body: MultiJson.encode({
-                                                                            'items' => [],
-                                                                            'has_more' => false,
-                                                                            'next_cursor' => nil
-                                                                          })
+                                                   body: MultiJson.dump({
+                                                                          'items' => [],
+                                                                          'has_more' => false,
+                                                                          'next_cursor' => nil
+                                                                        })
                                                  })
 
           expect(@client.list_channel_push_subscriptions({
@@ -457,10 +457,10 @@ describe Sockudo do
           api_path = %r{/apps/20/push/publish}
           stub_request(:post, api_path).to_return({
                                                     status: 202,
-                                                    body: MultiJson.encode({
-                                                                             'publish_id' => 'pub_123',
-                                                                             'status' => 'queued'
-                                                                           })
+                                                    body: MultiJson.dump({
+                                                                           'publish_id' => 'pub_123',
+                                                                           'status' => 'queued'
+                                                                         })
                                                   })
 
           expect(@client.publish_push({
@@ -473,7 +473,7 @@ describe Sockudo do
                                                 })
 
           expect(WebMock).to(have_requested(:post, api_path).with do |req|
-            parsed = MultiJson.decode(req.body)
+            parsed = MultiJson.load(req.body)
             expect(parsed['sync']).to eq(false)
             expect(parsed['providerOverrides'][0]['provider']).to eq('fcm')
             expect(req.headers['X-Sockudo-Push-Capability']).to eq('push-admin')
@@ -498,7 +498,7 @@ describe Sockudo do
         end
 
         it 'should return a hash with signature including custom data and data as json string' do
-          allow(MultiJson).to receive(:encode).with(@custom_data).and_return 'a json string'
+          allow(MultiJson).to receive(:dump).with(@custom_data).and_return 'a json string'
 
           response = @client.authenticate('test_channel', '1.1', @custom_data)
 
@@ -509,7 +509,7 @@ describe Sockudo do
         end
 
         it 'should include a shared_secret if the private-encrypted channel' do
-          allow(MultiJson).to receive(:encode).with(@custom_data).and_return 'a json string'
+          allow(MultiJson).to receive(:dump).with(@custom_data).and_return 'a json string'
           @client.instance_variable_set(:@encryption_master_key, '3W1pfB/Etr+ZIlfMWwZP3gz8jEeCt4s2pe6Vpr+2c3M=')
 
           response = @client.authenticate('private-encrypted-test_channel', '1.1', @custom_data)
@@ -529,7 +529,7 @@ describe Sockudo do
         end
 
         it 'should return a hash with signature including custom data and data as json string' do
-          allow(MultiJson).to receive(:encode).with(@user_data).and_return 'a json string'
+          allow(MultiJson).to receive(:dump).with(@user_data).and_return 'a json string'
 
           response = @client.authenticate_user('1.1', @user_data)
 
@@ -545,7 +545,7 @@ describe Sockudo do
           @api_path = %r{/apps/20/events}
           stub_request(:post, @api_path).to_return({
                                                      status: 200,
-                                                     body: MultiJson.encode({})
+                                                     body: MultiJson.dump({})
                                                    })
         end
 
@@ -568,7 +568,7 @@ describe Sockudo do
                             socket_id: '12.34'
                           })
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            parsed = MultiJson.decode(req.body)
+            parsed = MultiJson.load(req.body)
             expect(parsed['name']).to eq('event')
             expect(parsed['channels']).to eq(%w[mychannel c2])
             expect(parsed['socket_id']).to eq('12.34')
@@ -578,14 +578,14 @@ describe Sockudo do
         it 'should convert non string data to JSON before posting' do
           @client.trigger(['mychannel'], 'event', { 'some' => 'data' })
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            expect(MultiJson.decode(req.body)['data']).to eq('{"some":"data"}')
+            expect(MultiJson.load(req.body)['data']).to eq('{"some":"data"}')
           end)
         end
 
         it 'should accept a single channel as well as an array' do
           @client.trigger('mychannel', 'event', { 'some' => 'data' })
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            expect(MultiJson.decode(req.body)['channels']).to eq(['mychannel'])
+            expect(MultiJson.load(req.body)['channels']).to eq(['mychannel'])
           end)
         end
 
@@ -596,7 +596,7 @@ describe Sockudo do
               @client.trigger('mychannel', 'event', { 'some' => 'data' })
             end.to raise_error(Sockudo::ConfigurationError)
             expect(WebMock).not_to(have_requested(:post, @api_path).with do |req|
-              expect(MultiJson.decode(req.body)['channels']).to eq(['mychannel'])
+              expect(MultiJson.load(req.body)['channels']).to eq(['mychannel'])
             end)
           end
         end
@@ -628,16 +628,16 @@ describe Sockudo do
           )
 
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            data = MultiJson.decode(MultiJson.decode(req.body)['data'])
+            data = MultiJson.load(MultiJson.load(req.body)['data'])
 
             key = RbNaCl::Hash.sha256(
               "private-encrypted-channel#{encryption_master_key}"
             )
 
-            expect(MultiJson.decode(RbNaCl::SecretBox.new(key).decrypt(
-                                      Base64.strict_decode64(data['nonce']),
-                                      Base64.strict_decode64(data['ciphertext'])
-                                    ))).to eq({ 'some' => 'data' })
+            expect(MultiJson.load(RbNaCl::SecretBox.new(key).decrypt(
+                                    Base64.strict_decode64(data['nonce']),
+                                    Base64.strict_decode64(data['ciphertext'])
+                                  ))).to eq({ 'some' => 'data' })
           end)
         end
 
@@ -646,7 +646,7 @@ describe Sockudo do
                             idempotency_key: 'test-key-123'
                           })
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            parsed = MultiJson.decode(req.body)
+            parsed = MultiJson.load(req.body)
             expect(parsed['idempotency_key']).to eq('test-key-123')
             expect(req.headers['X-Idempotency-Key']).to eq('test-key-123')
           end)
@@ -655,7 +655,7 @@ describe Sockudo do
         it 'should auto-generate idempotency_key when not provided' do
           @client.trigger('mychannel', 'event', { 'some' => 'data' })
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            parsed = MultiJson.decode(req.body)
+            parsed = MultiJson.load(req.body)
             expect(parsed['idempotency_key']).to match(/\A[\w-]+:\d+\z/)
             expect(req.headers['X-Idempotency-Key']).to eq(parsed['idempotency_key'])
           end)
@@ -667,7 +667,7 @@ describe Sockudo do
           @api_path = %r{/apps/20/batch_events}
           stub_request(:post, @api_path).to_return({
                                                      status: 200,
-                                                     body: MultiJson.encode({})
+                                                     body: MultiJson.dump({})
                                                    })
         end
 
@@ -682,7 +682,7 @@ describe Sockudo do
             { channel: 'mychannel', name: 'event', data: 'already encoded' }
           )
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            parsed = MultiJson.decode(req.body)
+            parsed = MultiJson.load(req.body)
             batch = parsed['batch']
             expect(batch[0]['channel']).to eq('mychannel')
             expect(batch[0]['name']).to eq('event')
@@ -721,22 +721,22 @@ describe Sockudo do
           )
 
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            batch = MultiJson.decode(req.body)['batch']
+            batch = MultiJson.load(req.body)['batch']
             expect(batch.length).to eq(2)
 
             expect(batch[0]['channel']).to eq('private-encrypted-channel')
             expect(batch[0]['name']).to eq('event')
 
-            data = MultiJson.decode(batch[0]['data'])
+            data = MultiJson.load(batch[0]['data'])
 
             key = RbNaCl::Hash.sha256(
               "private-encrypted-channel#{encryption_master_key}"
             )
 
-            expect(MultiJson.decode(RbNaCl::SecretBox.new(key).decrypt(
-                                      Base64.strict_decode64(data['nonce']),
-                                      Base64.strict_decode64(data['ciphertext'])
-                                    ))).to eq({ 'some' => 'data' })
+            expect(MultiJson.load(RbNaCl::SecretBox.new(key).decrypt(
+                                    Base64.strict_decode64(data['nonce']),
+                                    Base64.strict_decode64(data['ciphertext'])
+                                  ))).to eq({ 'some' => 'data' })
 
             expect(batch[1]['channel']).to eq('mychannel')
             expect(batch[1]['name']).to eq('event')
@@ -750,7 +750,7 @@ describe Sockudo do
             { channel: 'mychannel', name: 'event2', data: 'bar' }
           )
           expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-            batch = MultiJson.decode(req.body)['batch']
+            batch = MultiJson.load(req.body)['batch']
             expect(batch[0]['idempotency_key']).to eq('key-1')
             expect(batch[1]['idempotency_key']).to match(/\A[\w-]+:\d+:1\z/)
           end)
@@ -762,7 +762,7 @@ describe Sockudo do
           @api_path = %r{/apps/20/events}
           stub_request(:post, @api_path).to_return({
                                                      status: 200,
-                                                     body: MultiJson.encode({})
+                                                     body: MultiJson.dump({})
                                                    })
         end
 
@@ -781,7 +781,7 @@ describe Sockudo do
                                     socket_id: '12.34'
                                   }).callback do
               expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-                expect(MultiJson.decode(req.body)['socket_id']).to eq('12.34')
+                expect(MultiJson.load(req.body)['socket_id']).to eq('12.34')
               end)
               EM.stop
             end
@@ -792,7 +792,7 @@ describe Sockudo do
           EM.run do
             @client.trigger_async('mychannel', 'event', { 'some' => 'data' }).callback do
               expect(WebMock).to(have_requested(:post, @api_path).with do |req|
-                expect(MultiJson.decode(req.body)['data']).to eq('{"some":"data"}')
+                expect(MultiJson.load(req.body)['data']).to eq('{"some":"data"}')
               end)
               EM.stop
             end
@@ -824,7 +824,7 @@ describe Sockudo do
           it 'should format the respose hash with symbols at first level' do
             stub_request(verb, @url_regexp).to_return({
                                                         status: 200,
-                                                        body: MultiJson.encode({ 'something' => { 'a' => 'hash' } })
+                                                        body: MultiJson.dump({ 'something' => { 'a' => 'hash' } })
                                                       })
             expect(call_api).to eq({
                                      something: { a: 'hash' }
@@ -953,7 +953,7 @@ describe Sockudo do
               EM.run do
                 stub_request(verb, @url_regexp).to_return({
                                                             status: 200,
-                                                            body: MultiJson.encode({ 'something' => { 'a' => 'hash' } })
+                                                            body: MultiJson.dump({ 'something' => { 'a' => 'hash' } })
                                                           })
                 call_api.callback do |response|
                   expect(response).to eq({

@@ -19,18 +19,12 @@ npm install @sockudo/client
 # or: pnpm add @sockudo/client
 ```
 
-For local monorepo development, build the SDK, then install it from the local checkout:
+For contributors working inside this repository, build the SDK from its package directory:
 
 ```bash
-git clone https://github.com/sockudo/sockudo.git
-cd sockudo/client-sdks/sockudo-js
+cd client-sdks/sockudo-js
 bun install
 bun run build:all
-
-# From your app:
-npm install ../sockudo/client-sdks/sockudo-js
-# or: bun add ../sockudo/client-sdks/sockudo-js
-# or: pnpm add ../sockudo/client-sdks/sockudo-js
 ```
 
 ## Runtime Imports
@@ -226,7 +220,7 @@ const history = await channel.channelHistory({
 Install the framework peer dependencies:
 
 ```bash
-npm install ../sockudo/client-sdks/sockudo-js react react-dom
+npm install @sockudo/client react react-dom
 ```
 
 ```ts
@@ -274,7 +268,7 @@ Available React exports:
 Install the framework peer dependency:
 
 ```bash
-npm install ../sockudo/client-sdks/sockudo-js vue
+npm install @sockudo/client vue
 ```
 
 ```ts
@@ -326,7 +320,7 @@ Available Vue exports:
 - Install the NativeScript websocket polyfill:
 
 ```bash
-npm install ../sockudo/client-sdks/sockudo-js @valor/nativescript-websockets
+npm install @sockudo/client @valor/nativescript-websockets
 ```
 
 - Import `@sockudo/client/nativescript` to automatically load the websocket polyfill before the SDK.

@@ -157,7 +157,7 @@ SwiftPM packages are published from this monorepo through the root `Package.swif
 | --- | --- |
 | JavaScript / TypeScript | `@sockudo/client` |
 | AI Transport TypeScript | `@sockudo/ai-transport` |
-| Swift / Apple platforms | `SockudoSwift` from `https://github.com/sockudo/sockudo` |
+| Swift / Apple platforms | `SockudoSwift` via SwiftPM (`https://github.com/sockudo/sockudo`) |
 | Kotlin / JVM / Android | `io.sockudo:sockudo-kotlin` |
 | Flutter / Dart | `sockudo_flutter` |
 | .NET | `Sockudo.Client` |
@@ -214,7 +214,7 @@ modules and SwiftPM publish from this monorepo with package-manager-native tags 
 | Rust | `sockudo-http` |
 | Java | `io.sockudo:sockudo-http-java` |
 | .NET | `SockudoServer` |
-| Swift | `Sockudo` from `https://github.com/sockudo/sockudo` |
+| Swift | `Sockudo` via SwiftPM (`https://github.com/sockudo/sockudo`) |
 
 Node.js example:
 

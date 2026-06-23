@@ -22,4 +22,4 @@ this monorepo using their package-manager-native release rules.
 | `sockudo-http-python` | `server-sdks/sockudo-http-python` |
 | `sockudo` | `server-sdks/sockudo-http-ruby` |
 | `sockudo-http` | `server-sdks/sockudo-http-rust` |
-| `Sockudo` | `server-sdks/sockudo-http-swift` |
+| `Sockudo` via SwiftPM | `server-sdks/sockudo-http-swift` |

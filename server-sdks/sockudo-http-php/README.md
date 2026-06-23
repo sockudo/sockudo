@@ -10,16 +10,11 @@ Official PHP server SDK for [Sockudo](https://github.com/sockudo/sockudo) — a 
 
 ## Installation
 
-Clone the Sockudo monorepo and configure Composer to read the local package path until the package
-is published on Packagist:
-
 ```bash
-git clone https://github.com/sockudo/sockudo.git
-composer config repositories.sockudo-php-server path ../sockudo/server-sdks/sockudo-http-php
-composer require sockudo/sockudo-php-server:dev-main
+composer require sockudo/sockudo-php-server:^2.0
 ```
 
-Or add to `composer.json`:
+For local monorepo development, add a path repository to `composer.json`:
 
 ```json
 {
@@ -30,12 +25,12 @@ Or add to `composer.json`:
         }
     ],
     "require": {
-        "sockudo/sockudo-php-server": "dev-main"
+        "sockudo/sockudo-php-server": "*"
     }
 }
 ```
 
-Then run `composer update`.
+Then run `composer update sockudo/sockudo-php-server`.
 
 ## Constructor
 

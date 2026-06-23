@@ -25,17 +25,59 @@ prefix = "private-ai-"
 
 ## End-to-end model
 
-```mermaid
-flowchart LR
-  U[User device] -->|ai-input| C[AI session channel]
-  C -->|durable create| H[(History store)]
-  C -->|versioned create/append/update| V[(Version store)]
-  A[Agent worker] -->|ai-output stream| C
-  P[Provider] -->|tokens/tools/reasoning| A
-  C -->|fanout + rollup| U
-  C -->|presence| M[Other devices]
-  C -->|complete event| N[Push notifications]
-```
+<div className="ai-model-diagram not-prose" role="img" aria-label="AI Transport end-to-end model from clients and providers through a Sockudo session channel into durable stores and fanout surfaces.">
+  <div className="ai-model-grid">
+    <div className="ai-model-column">
+      <span className="ai-diagram-label">Turn sources</span>
+      <div className="ai-model-node">
+        <strong>User device</strong>
+        <small>{"Creates ai-input and receives live output."}</small>
+      </div>
+      <div className="ai-model-node">
+        <strong>Agent worker</strong>
+        <small>{"Owns ai-output create, append, update, and finish."}</small>
+      </div>
+      <div className="ai-model-node">
+        <strong>Model provider</strong>
+        <small>{"Streams tokens, tool calls, and reasoning to the worker."}</small>
+      </div>
+    </div>
+    <div className="ai-diagram-rail" aria-hidden="true">
+      <span>ai-input</span>
+      <span>ai-output</span>
+      <span>provider chunks</span>
+    </div>
+    <div className="ai-model-channel">
+      <span>Source of truth</span>
+      <strong>AI session channel</strong>
+      <p>{"A normal Protocol V2 channel that carries every turn event, message mutation, presence update, and recovery cursor."}</p>
+    </div>
+    <div className="ai-diagram-rail" aria-hidden="true">
+      <span>persist</span>
+      <span>version</span>
+      <span>fanout</span>
+    </div>
+    <div className="ai-model-column">
+      <span className="ai-diagram-label">Durable outcomes</span>
+      <div className="ai-model-node ai-model-node-store">
+        <strong>History store</strong>
+        <small>{"Replay, rewind, and recovery after refresh."}</small>
+      </div>
+      <div className="ai-model-node ai-model-node-store">
+        <strong>Version store</strong>
+        <small>{"Append/update/delete state and branch history."}</small>
+      </div>
+      <div className="ai-model-node">
+        <strong>Other devices</strong>
+        <small>{"Presence-aware live fanout and transcript sync."}</small>
+      </div>
+      <div className="ai-model-node">
+        <strong>Push notifications</strong>
+        <small>{"Completion and background delivery workflows."}</small>
+      </div>
+    </div>
+  </div>
+</div>
 
 The durable channel is the source of truth. HTTP streaming can start a turn, but the answer is no
 longer tied to that HTTP response. A browser refresh, mobile handoff, tab close, or temporary
@@ -57,24 +99,56 @@ network loss can recover from the same channel history.
 
 ## Turn lifecycle
 
-```mermaid
-sequenceDiagram
-  participant Client
-  participant Sockudo
-  participant Agent
-  participant Store as History/version store
-
-  Client->>Sockudo: ai-input create
-  Sockudo->>Store: persist input
-  Agent->>Sockudo: ai-turn-start
-  Agent->>Sockudo: ai-output create
-  loop provider stream
-    Agent->>Sockudo: message.append
-    Sockudo-->>Client: rolled-up append fanout
-  end
-  Agent->>Sockudo: ai-turn-end complete
-  Sockudo->>Store: final aggregate visible to history
-```
+<div className="turn-lifecycle-diagram not-prose" role="img" aria-label="AI Transport turn lifecycle from client input through Sockudo persistence, agent output, append rollup, and final history state.">
+  <div className="turn-lifecycle-actors" aria-hidden="true">
+    <span>Client</span>
+    <span>Sockudo</span>
+    <span>Agent worker</span>
+    <span>History + versions</span>
+  </div>
+  <ol className="turn-lifecycle-steps">
+    <li>
+      <span>01</span>
+      <div>
+        <strong>Input creates the turn</strong>
+        <p>{"The client publishes ai-input create; Sockudo persists the input before agent work starts."}</p>
+      </div>
+      <code>Client -&gt; Sockudo -&gt; Store</code>
+    </li>
+    <li>
+      <span>02</span>
+      <div>
+        <strong>Agent opens output state</strong>
+        <p>{"The worker emits ai-turn-start and creates the ai-output mutable message for this turn."}</p>
+      </div>
+      <code>Agent -&gt; Sockudo</code>
+    </li>
+    <li className="turn-lifecycle-stream">
+      <span>03</span>
+      <div>
+        <strong>Provider stream becomes append operations</strong>
+        <p>{"Every token, tool delta, reasoning chunk, or metadata update is encoded as message.append."}</p>
+      </div>
+      <code>append loop</code>
+    </li>
+    <li>
+      <span>04</span>
+      <div>
+        <strong>Live clients receive rolled-up fanout</strong>
+        <p>{"Sockudo can compact append bursts for WebSocket egress while preserving each original mutation internally."}</p>
+      </div>
+      <code>Sockudo -&gt; Client</code>
+    </li>
+    <li>
+      <span>05</span>
+      <div>
+        <strong>Turn closes into durable history</strong>
+        <p>{"The agent emits ai-turn-end complete; the final aggregate is visible to history, rewind, and recovery."}</p>
+      </div>
+      <code>Agent -&gt; Sockudo -&gt; Store</code>
+    </li>
+  </ol>
+</div>
 
 `ai-output` is a normal mutable message. Streaming text, reasoning, tool input, tool output, and
 source metadata are encoded as append/update operations by the SDK codec. Late joiners read the

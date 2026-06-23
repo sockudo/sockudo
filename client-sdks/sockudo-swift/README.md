@@ -311,7 +311,7 @@ Swift packages are distributed by git tag rather than a central package registry
 
 - CI: root workflow `.github/workflows/sdk-ci.yml`
 - Release gate: root workflow `.github/workflows/sdk-release.yml` with root tag `vX.Y.Z`
-- Distribution: root `Package.swift` from `https://github.com/sockudo/sockudo`
+- Distribution: SwiftPM package in the root `Package.swift`
 
 ## Status
 
