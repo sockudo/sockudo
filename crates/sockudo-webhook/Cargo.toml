@@ -17,17 +17,13 @@ lambda = ["sockudo-core/lambda", "dep:aws-config", "dep:aws-sdk-lambda", "dep:da
 sockudo-core = { workspace = true }
 
 ahash = { workspace = true }
-async-trait = { workspace = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-lambda = { workspace = true, optional = true }
 chrono = { workspace = true }
 dashmap = { workspace = true, optional = true }
-hex = { workspace = true }
-hmac = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
-sha2 = { workspace = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
