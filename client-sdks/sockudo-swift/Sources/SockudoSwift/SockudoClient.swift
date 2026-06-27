@@ -341,7 +341,6 @@ public final class SockudoClient: @unchecked Sendable {
     updateState(.connecting)
     openWebSocketAfterInitialAuth(using: transports[0])
     setUnavailableTimer()
-    reachability.start()
   }
 
   public func disconnect() {
@@ -580,6 +579,7 @@ public final class SockudoClient: @unchecked Sendable {
           min(config.activityTimeout * 1000, negotiatedTimeout) / 1000
         clearUnavailableTimer()
         updateState(.connected, metadata: ["socket_id": socketID])
+        reachability.start()
         subscribeAll()
         if config.connectionRecovery, channelPositions.isEmpty == false {
           let positionsPayload: [String: Any] = [
