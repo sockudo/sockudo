@@ -6,7 +6,7 @@ use sockudo_core::error::{Error, Result};
 use sockudo_core::namespace::Namespace;
 use sockudo_core::websocket::{SocketId, WebSocketRef};
 use sockudo_protocol::messages::PusherMessage;
-use sockudo_protocol::versioned_messages::extract_runtime_action;
+use sockudo_protocol::versioned_messages::{MessageAction, extract_runtime_action};
 #[cfg(feature = "delta")]
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -1000,11 +1000,16 @@ impl LocalAdapter {
     }
 
     pub(super) fn v1_compatible_message(message: &PusherMessage) -> Option<PusherMessage> {
-        if extract_runtime_action(message).is_some() {
-            return None;
+        let runtime_action = extract_runtime_action(message);
+        match runtime_action {
+            Some(MessageAction::Create) | None => {}
+            Some(_) => return None,
         }
 
         let mut v1_message = message.clone();
+        if runtime_action == Some(MessageAction::Create) {
+            v1_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V1);
+        }
         v1_message.serial = None;
         v1_message.message_id = None;
         v1_message.stream_id = None;
