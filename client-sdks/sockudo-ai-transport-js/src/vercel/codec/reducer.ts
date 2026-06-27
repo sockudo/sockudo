@@ -249,7 +249,7 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
       if (chunk.type.startsWith("data-") && !chunk.transient) {
         ensureMessage(projection, messageId).parts.push({
           type: chunk.type,
-          ...("id" in chunk && chunk.id !== undefined ? { id: chunk.id } : {}),
+          ...(chunk.id !== undefined ? { id: chunk.id } : {}),
           data: chunk.data,
         });
       }
