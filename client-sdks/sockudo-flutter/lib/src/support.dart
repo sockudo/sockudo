@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:fixnum/fixnum.dart';
+
 import 'models.dart';
 
 class EventBindingToken {
@@ -134,10 +136,70 @@ class SockudoEvent {
   final String? userId;
   final String? streamId;
   final String? messageId;
-  final int? sequence;
+  final Object? sequence;
   final String? conflationKey;
-  final int? serial;
+  final Object? serial;
   final MessageExtras? extras;
+}
+
+final BigInt _maxSafeJsonInteger = BigInt.from(9007199254740991);
+final BigInt _minSafeJsonInteger = BigInt.from(-9007199254740991);
+final RegExp _integerStringPattern = RegExp(r'^-?\d+$');
+final RegExp _jsonSerialFieldPattern = RegExp(
+  r'("[-_A-Za-z0-9]*serial[-_A-Za-z0-9]*"\s*:\s*)(-?\d+)',
+);
+
+String preserveUnsafeJsonSerials(String raw) {
+  return raw.replaceAllMapped(_jsonSerialFieldPattern, (match) {
+    final literal = match.group(2)!;
+    final normalized = normalizeWireSerial(literal);
+    if (normalized is String) {
+      return '${match.group(1)!}${jsonEncode(normalized)}';
+    }
+    return match.group(0)!;
+  });
+}
+
+Object? normalizeWireSerial(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  if (value is Int64) {
+    return _normalizeBigInt(BigInt.parse(value.toString()));
+  }
+  if (value is BigInt) {
+    return _normalizeBigInt(value);
+  }
+  if (value is int) {
+    return _normalizeBigInt(BigInt.from(value));
+  }
+  if (value is double) {
+    if (!value.isFinite || value.truncateToDouble() != value) {
+      return null;
+    }
+    final integer = value.toInt();
+    return _normalizeBigInt(BigInt.from(integer));
+  }
+  if (value is String) {
+    final trimmed = value.trim();
+    if (!_integerStringPattern.hasMatch(trimmed)) {
+      return null;
+    }
+    return _normalizeBigInt(BigInt.parse(trimmed));
+  }
+  return null;
+}
+
+int? wireSerialAsInt(Object? value) {
+  final normalized = normalizeWireSerial(value);
+  return normalized is int ? normalized : null;
+}
+
+Object? _normalizeBigInt(BigInt value) {
+  if (value <= _maxSafeJsonInteger && value >= _minSafeJsonInteger) {
+    return value.toInt();
+  }
+  return value.toString();
 }
 
 String encodeQuery(Map<String, Object?> params) {

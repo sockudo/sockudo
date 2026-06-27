@@ -5,4 +5,5 @@ pub mod versioned_messages;
 pub mod wire;
 
 pub use protocol_version::ProtocolVersion;
+pub use versioned_messages::AppendMode;
 pub use wire::WireFormat;

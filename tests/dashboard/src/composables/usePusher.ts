@@ -7,6 +7,7 @@ const protocolVersion = 2;
 const eventPrefix = protocolVersion >= 2 ? "sockudo:" : "pusher:";
 const internalPrefix =
   protocolVersion >= 2 ? "sockudo_internal:" : "pusher_internal:";
+const rawMessageListeners = new Set<(message: any) => void>();
 
 function eventName(name: string) {
   return `${eventPrefix}${name}`;
@@ -51,6 +52,7 @@ export function usePusher() {
       forceTLS: cfg.useTLS,
       enabledTransports: ["ws", "wss"],
       wireFormat: cfg.wireFormat,
+      appendMode: cfg.appendMode,
       transportParams: {
         append_rollup_window: cfg.appendRollupWindow,
       },
@@ -115,6 +117,9 @@ export function usePusher() {
     });
 
     pusher.connection.bind("message", (msg: any) => {
+      for (const listener of rawMessageListeners) {
+        listener(msg);
+      }
       if (
         msg?.event &&
         !msg.event.startsWith(internalPrefix) &&
@@ -171,7 +176,18 @@ export function usePusher() {
 
     const type = detectChannelType(channelName);
 
-    const channel = pusherInstance.subscribe(channelName);
+    let channel;
+    try {
+      channel = pusherInstance.subscribe(channelName);
+    } catch (err: any) {
+      store.addEvent({
+        direction: "system",
+        event: eventName("subscription_error"),
+        channel: channelName,
+        data: { error: err?.message ?? String(err) },
+      });
+      return null;
+    }
 
     channel.bind(eventName("subscription_succeeded"), (data: any) => {
       store.addEvent({
@@ -250,6 +266,16 @@ export function usePusher() {
     if (channel) channel.bind(eventName, callback);
   }
 
+  function bindRawEvent(channelName: string, callback: (message: any) => void) {
+    const listener = (message: any) => {
+      if (message?.channel === channelName) callback(message);
+    };
+    rawMessageListeners.add(listener);
+    return () => {
+      rawMessageListeners.delete(listener);
+    };
+  }
+
   function triggerClientEvent(
     channelName: string,
     eventName: string,
@@ -293,6 +319,7 @@ export function usePusher() {
     subscribe,
     unsubscribe,
     bindEvent,
+    bindRawEvent,
     triggerClientEvent,
     signin,
     sendPing,

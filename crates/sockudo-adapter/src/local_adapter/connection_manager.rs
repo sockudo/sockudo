@@ -14,6 +14,78 @@ use std::any::Any;
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
+fn partition_by_append_mode(sockets: Vec<WebSocketRef>) -> (Vec<WebSocketRef>, Vec<WebSocketRef>) {
+    sockets
+        .into_iter()
+        .partition(|socket| socket.append_mode == sockudo_protocol::AppendMode::Delta)
+}
+
+async fn send_v2_append_mode_groups(
+    adapter: &LocalAdapter,
+    message: PusherMessage,
+    sockets: Vec<WebSocketRef>,
+) -> Result<()> {
+    let (delta_sockets, full_sockets) = partition_by_append_mode(sockets);
+    for (append_mode, sockets) in [
+        (sockudo_protocol::AppendMode::Delta, delta_sockets),
+        (sockudo_protocol::AppendMode::Full, full_sockets),
+    ] {
+        if sockets.is_empty() {
+            continue;
+        }
+        let mode_message = crate::v2_broadcast::apply_append_mode(message.clone(), append_mode);
+        let (v2_message, _v2_bytes) = crate::v2_broadcast::prepare_v2_message(mode_message)?;
+        LocalAdapter::log_send_errors(
+            adapter
+                .send_protocol_messages_concurrent(sockets, v2_message)
+                .await,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "delta")]
+async fn send_v2_append_mode_groups_with_compression(
+    adapter: &LocalAdapter,
+    channel: &str,
+    message: PusherMessage,
+    sockets: Vec<WebSocketRef>,
+    delta_compression: Arc<sockudo_delta::DeltaCompressionManager>,
+    channel_settings: Option<&sockudo_delta::ChannelDeltaSettings>,
+) -> Result<()> {
+    let (delta_sockets, full_sockets) = partition_by_append_mode(sockets);
+    for (append_mode, sockets) in [
+        (sockudo_protocol::AppendMode::Delta, delta_sockets),
+        (sockudo_protocol::AppendMode::Full, full_sockets),
+    ] {
+        if sockets.is_empty() {
+            continue;
+        }
+        let mut v2_message = crate::v2_broadcast::apply_append_mode(message.clone(), append_mode);
+        v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
+        v2_message.idempotency_key = None;
+        let v2_event_name = v2_message.event.as_deref().unwrap_or("").to_string();
+        let v2_bytes = sonic_rs::to_vec(&v2_message)
+            .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
+        LocalAdapter::log_send_errors(
+            adapter
+                .send_messages_with_compression(
+                    sockets,
+                    v2_message,
+                    v2_bytes,
+                    channel,
+                    &v2_event_name,
+                    crate::connection_manager::CompressionParams {
+                        delta_compression: Arc::clone(&delta_compression),
+                        channel_settings,
+                    },
+                )
+                .await,
+        );
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl ConnectionManager for LocalAdapter {
     async fn init(&self) {
@@ -34,6 +106,7 @@ impl ConnectionManager for LocalAdapter {
         protocol_version: sockudo_protocol::ProtocolVersion,
         wire_format: sockudo_protocol::WireFormat,
         echo_messages: bool,
+        append_mode: sockudo_protocol::AppendMode,
     ) -> Result<()> {
         debug!(
             "LocalAdapter::add_socket: adding socket {} for app {}",
@@ -51,6 +124,7 @@ impl ConnectionManager for LocalAdapter {
                     protocol_version,
                     wire_format,
                     echo_messages,
+                    append_mode,
                 },
             )
             .await?;
@@ -101,7 +175,8 @@ impl ConnectionManager for LocalAdapter {
 
         match connection.protocol_version {
             sockudo_protocol::ProtocolVersion::V2 => {
-                let mut rewritten = message;
+                let mut rewritten =
+                    crate::v2_broadcast::apply_append_mode(message, connection.append_mode);
                 if Self::should_assign_v2_message_id(&rewritten) {
                     rewritten.message_id = Some(generate_message_id());
                 }
@@ -222,14 +297,7 @@ impl ConnectionManager for LocalAdapter {
         self.split_rewind_gated_sockets_in_place(channel, &message, &mut filtered_socket_refs)
             .await;
 
-        // Send to filtered V2 sockets (Sockudo-native: sockudo: prefix, serial + message_id)
-        if !filtered_socket_refs.is_empty() {
-            let (v2_message, _v2_bytes) = crate::v2_broadcast::prepare_v2_message(message)?;
-            Self::log_send_errors(
-                self.send_protocol_messages_concurrent(filtered_socket_refs, v2_message)
-                    .await,
-            );
-        }
+        send_v2_append_mode_groups(self, message, filtered_socket_refs).await?;
 
         Ok(())
     }
@@ -301,29 +369,15 @@ impl ConnectionManager for LocalAdapter {
 
         let message = self.maybe_strip_tags(message, channel_settings);
 
-        // V2 sockets get delta compression
-        if !filtered_socket_refs.is_empty() {
-            let mut v2_message = message;
-            v2_message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
-            v2_message.idempotency_key = None;
-            let v2_event_name = v2_message.event.as_deref().unwrap_or("").to_string();
-            let v2_bytes = sonic_rs::to_vec(&v2_message)
-                .map_err(|e| Error::InvalidMessageFormat(format!("Serialization failed: {e}")))?;
-            Self::log_send_errors(
-                self.send_messages_with_compression(
-                    filtered_socket_refs,
-                    v2_message,
-                    v2_bytes,
-                    channel,
-                    &v2_event_name,
-                    crate::connection_manager::CompressionParams {
-                        delta_compression,
-                        channel_settings,
-                    },
-                )
-                .await,
-            );
-        }
+        send_v2_append_mode_groups_with_compression(
+            self,
+            channel,
+            message,
+            filtered_socket_refs,
+            delta_compression,
+            channel_settings,
+        )
+        .await?;
 
         Ok(())
     }

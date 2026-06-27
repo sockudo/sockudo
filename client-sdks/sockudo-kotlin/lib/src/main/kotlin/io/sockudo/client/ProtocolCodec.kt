@@ -93,8 +93,8 @@ internal object ProtocolCodec {
             streamId = envelope["stream_id"] as? String,
             messageId = envelope["message_id"] as? String,
             rawMessage = decoded.rawMessage,
-            sequence = (envelope["__delta_seq"] ?: envelope["sequence"]).asInt(),
-            conflationKey = (envelope["__conflation_key"] ?: envelope["conflation_key"]) as? String,
+            sequence = (envelope["__delta_seq"] ?: envelope["delta_sequence"] ?: envelope["sequence"]).asInt(),
+            conflationKey = (envelope["__conflation_key"] ?: envelope["delta_conflation_key"] ?: envelope["conflation_key"]) as? String,
             serial = envelope["serial"].asLong(),
             extras = decodeExtras(envelope["extras"]),
         )
@@ -158,24 +158,20 @@ internal object ProtocolCodec {
 
     private fun encodeMessagePackExtras(rawExtras: Any?): Any? {
         val extras = decodeExtras(rawExtras) ?: return null
-        return buildMap<String, Any?> {
+        return linkedMapOf<String, Any?>().apply {
+            putAll(extras.toWireMap())
             extras.headers?.let { headers ->
-                put(
-                    "headers",
-                    headers.mapValues { (_, value) ->
-                        when (value) {
-                            is Number -> listOf("number", value.toDouble())
-                            is Boolean -> listOf("bool", value)
-                            else -> listOf("string", value.toString())
-                        }
-                    },
-                )
+                put("headers", headers.mapValues { (_, value) -> encodeMessagePackExtrasValue(value) })
             }
-            extras.ephemeral?.let { put("ephemeral", it) }
-            extras.idempotencyKey?.let { put("idempotency_key", it) }
-            extras.echo?.let { put("echo", it) }
         }
     }
+
+    private fun encodeMessagePackExtrasValue(value: Any): Any =
+        when (value) {
+            is Number -> listOf("number", value.toDouble())
+            is Boolean -> listOf("bool", value)
+            else -> listOf("string", value.toString())
+        }
 
     private fun decodeMessagePackValue(value: Any?): Any? =
         when (value) {
@@ -189,7 +185,19 @@ internal object ProtocolCodec {
                 } else {
                     value.map { decodeMessagePackValue(it) }
                 }
-            is Map<*, *> -> value.entries.associate { (key, entryValue) -> key.toString() to decodeMessagePackValue(entryValue) }
+            is Map<*, *> -> {
+                val decoded = value.entries.associate { (key, entryValue) -> key.toString() to decodeMessagePackValue(entryValue) }
+                val kind = decoded["kind"] as? String
+                if (kind != null && decoded.containsKey("value")) {
+                    when (kind) {
+                        "string", "json", "number", "bool" -> decoded["value"]
+                        "structured" -> decodeMessagePackValue(decoded["value"])
+                        else -> decoded
+                    }
+                } else {
+                    decoded
+                }
+            }
             else -> value
         }
 
@@ -230,21 +238,21 @@ internal object ProtocolCodec {
             writer.writeString(9, it)
         }
         (envelope["stream_id"] as? String)?.let {
-            writer.writeString(15, it)
+            writer.writeString(10, it)
         }
         envelope["serial"].asLong()?.let {
-            writer.writeUInt64(10, it)
+            writer.writeUInt64(11, it)
         }
         encodeExtras(envelope["extras"])?.let { extras ->
-            writer.writeTag(12, WireFormat.WIRETYPE_LENGTH_DELIMITED)
+            writer.writeTag(13, WireFormat.WIRETYPE_LENGTH_DELIMITED)
             writer.writeUInt32NoTag(extras.size)
             writer.writeRawBytes(extras)
         }
         envelope["__delta_seq"].asLong()?.let {
-            writer.writeUInt64(13, it)
+            writer.writeUInt64(14, it)
         }
         (envelope["__conflation_key"] as? String)?.let {
-            writer.writeString(14, it)
+            writer.writeString(15, it)
         }
 
         writer.flush()
@@ -261,14 +269,24 @@ internal object ProtocolCodec {
                 18 -> envelope["channel"] = input.readString()
                 26 -> envelope["data"] = decodeProtoData(input.readByteArray())
                 42 -> envelope["user_id"] = input.readString()
-                56 -> envelope["sequence"] = input.readUInt64().toLong()
+                56 -> envelope["sequence"] = input.readUInt64()
                 66 -> envelope["conflation_key"] = input.readString()
                 74 -> envelope["message_id"] = input.readString()
-                80 -> envelope["serial"] = input.readUInt64().toLong()
-                98 -> envelope["extras"] = decodeProtoExtras(input.readByteArray())
-                104 -> envelope["__delta_seq"] = input.readUInt64().toLong()
+                80 -> envelope["serial"] = input.readUInt64()
+                82 -> envelope["stream_id"] = input.readString()
+                88 -> envelope["serial"] = input.readUInt64()
+                98 -> runCatching {
+                    val bytes = input.readByteArray()
+                    val decoded = decodeProtoExtras(bytes)
+                    if (decoded.isNotEmpty()) {
+                        envelope["extras"] = decoded
+                    }
+                }
+                104 -> envelope["__delta_seq"] = input.readUInt64()
+                106 -> envelope["extras"] = decodeProtoExtras(input.readByteArray())
+                112 -> envelope["__delta_seq"] = input.readUInt64()
                 114 -> envelope["__conflation_key"] = input.readString()
-                122 -> envelope["stream_id"] = input.readString()
+                122 -> envelope["__conflation_key"] = input.readString()
                 else -> input.skipField(tag)
             }
         }
@@ -347,8 +365,41 @@ internal object ProtocolCodec {
         extras.ephemeral?.let { writer.writeBool(2, it) }
         extras.idempotencyKey?.let { writer.writeString(3, it) }
         extras.echo?.let { writer.writeBool(4, it) }
+        extras.ai?.let { ai ->
+            val bytes = encodeProtoAiExtras(ai)
+            writer.writeTag(5, WireFormat.WIRETYPE_LENGTH_DELIMITED)
+            writer.writeUInt32NoTag(bytes.size)
+            writer.writeRawBytes(bytes)
+        }
         writer.flush()
         return output.toByteString().toByteArray()
+    }
+
+    private fun encodeProtoAiExtras(ai: Map<String, Any?>): ByteArray {
+        val output = com.google.protobuf.ByteString.newOutput()
+        val writer = CodedOutputStream.newInstance(output)
+        (ai["transport"] as? Map<*, *>)?.let { encodeProtoStringMap(writer, 1, it) }
+        (ai["codec"] as? Map<*, *>)?.let { encodeProtoStringMap(writer, 2, it) }
+        writer.flush()
+        return output.toByteString().toByteArray()
+    }
+
+    private fun encodeProtoStringMap(
+        writer: CodedOutputStream,
+        fieldNumber: Int,
+        values: Map<*, *>,
+    ) {
+        values.forEach { (key, value) ->
+            writer.writeTag(fieldNumber, WireFormat.WIRETYPE_LENGTH_DELIMITED)
+            val entryOutput = com.google.protobuf.ByteString.newOutput()
+            val entryWriter = CodedOutputStream.newInstance(entryOutput)
+            entryWriter.writeString(1, key.toString())
+            entryWriter.writeString(2, value.toString())
+            entryWriter.flush()
+            val entryBytes = entryOutput.toByteString()
+            writer.writeUInt32NoTag(entryBytes.size())
+            writer.writeRawBytes(entryBytes)
+        }
     }
 
     private fun decodeProtoExtras(bytes: ByteArray): Map<String, Any?> {
@@ -375,6 +426,7 @@ internal object ProtocolCodec {
                 16 -> extras["ephemeral"] = input.readBool()
                 26 -> extras["idempotency_key"] = input.readString()
                 32 -> extras["echo"] = input.readBool()
+                42 -> extras["ai"] = decodeProtoAiExtras(input.readByteArray())
                 else -> input.skipField(tag)
             }
         }
@@ -382,6 +434,44 @@ internal object ProtocolCodec {
             extras["headers"] = headers
         }
         return extras
+    }
+
+    private fun decodeProtoAiExtras(bytes: ByteArray): Map<String, Any?> {
+        val input = CodedInputStream.newInstance(bytes)
+        val ai = linkedMapOf<String, Any?>()
+        val transport = linkedMapOf<String, String>()
+        val codec = linkedMapOf<String, String>()
+        while (!input.isAtEnd) {
+            when (val tag = input.readTag()) {
+                0 -> break
+                10 -> decodeProtoStringMapEntry(input.readByteArray())?.let { (key, value) -> transport[key] = value }
+                18 -> decodeProtoStringMapEntry(input.readByteArray())?.let { (key, value) -> codec[key] = value }
+                else -> input.skipField(tag)
+            }
+        }
+        if (transport.isNotEmpty()) {
+            ai["transport"] = transport
+        }
+        if (codec.isNotEmpty()) {
+            ai["codec"] = codec
+        }
+        return ai
+    }
+
+    private fun decodeProtoStringMapEntry(bytes: ByteArray): Pair<String, String>? {
+        val input = CodedInputStream.newInstance(bytes)
+        var key: String? = null
+        var value: String? = null
+        while (!input.isAtEnd) {
+            when (val tag = input.readTag()) {
+                0 -> break
+                10 -> key = input.readString()
+                18 -> value = input.readString()
+                else -> input.skipField(tag)
+            }
+        }
+        val resolvedKey = key ?: return null
+        return resolvedKey to value.orEmpty()
     }
 
     private fun encodeExtrasValue(value: Any): ByteArray {
@@ -432,6 +522,8 @@ internal object ProtocolCodec {
             ephemeral = extrasMap["ephemeral"] as? Boolean,
             idempotencyKey = (extrasMap["idempotency_key"] ?: extrasMap["idempotencyKey"]) as? String,
             echo = extrasMap["echo"] as? Boolean,
+            ai = (extrasMap["ai"] as? Map<*, *>)?.let(::normalizeMap),
+            raw = extrasMap,
         )
     }
 
@@ -446,15 +538,7 @@ internal object ProtocolCodec {
             is Byte, is Short, is Int, is Long -> packer.packLong((value as Number).toLong())
             is Float, is Double -> packer.packDouble((value as Number).toDouble())
             is MessageExtras ->
-                packValue(
-                    packer,
-                    linkedMapOf<String, Any?>().apply {
-                        value.headers?.let { put("headers", it) }
-                        value.ephemeral?.let { put("ephemeral", it) }
-                        value.idempotencyKey?.let { put("idempotency_key", it) }
-                        value.echo?.let { put("echo", it) }
-                    },
-                )
+                packValue(packer, value.toWireMap())
             is Map<*, *> -> {
                 packer.packMapHeader(value.size)
                 value.forEach { (key, entryValue) ->
@@ -504,13 +588,14 @@ internal object ProtocolCodec {
     }
 
     private fun normalizeMap(value: Map<*, *>): Map<String, Any?> =
-        value.mapKeys { it.key.toString() }.mapValues { (_, entryValue) ->
-            when (entryValue) {
-                is Map<*, *> -> normalizeMap(entryValue)
-                is List<*> -> entryValue.map { item -> if (item is Map<*, *>) normalizeMap(item) else item }
-                is JsonObject -> JsonSupport.fromJsonElement(entryValue)
-                else -> entryValue
-            }
+        value.mapKeys { it.key.toString() }.mapValues { (_, entryValue) -> normalizeValue(entryValue) }
+
+    private fun normalizeValue(value: Any?): Any? =
+        when (value) {
+            is Map<*, *> -> normalizeMap(value)
+            is List<*> -> value.map(::normalizeValue)
+            is JsonObject -> JsonSupport.fromJsonElement(value)
+            else -> value
         }
 
     private fun Any.asByteArray(): ByteArray =
@@ -522,18 +607,8 @@ internal object ProtocolCodec {
         }
 
     private fun Any?.asInt(): Int? =
-        when (this) {
-            is Int -> this
-            is Long -> toInt()
-            is Number -> toInt()
-            else -> null
-        }
+        parseSockudoInt(this)
 
     private fun Any?.asLong(): Long? =
-        when (this) {
-            is Long -> this
-            is Int -> toLong()
-            is Number -> toLong()
-            else -> null
-        }
+        parseSockudoLong(this)
 }

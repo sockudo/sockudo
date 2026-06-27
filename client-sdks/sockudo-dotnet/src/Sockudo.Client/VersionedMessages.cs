@@ -22,7 +22,7 @@ public sealed record MutableMessageState(
     MutableMessageAction Action,
     object? Data,
     string Event,
-    int? Serial = null,
+    long? Serial = null,
     string? StreamId = null,
     string? MessageId = null,
     string? VersionSerial = null,
@@ -40,15 +40,7 @@ public static class MutableMessageReducer
         ["message.append"] = MutableMessageAction.Append,
     };
 
-    private static long? ParseNumericHeader(object? value) =>
-        value switch
-        {
-            long l => l,
-            int i => (long)i,
-            double d when d == Math.Truncate(d) => (long)d,
-            string s when double.TryParse(s.Trim(), out var d) && d == Math.Truncate(d) => (long)d,
-            _ => null,
-        };
+    private static long? ParseNumericHeader(object? value) => ProtocolCodec.CoerceLong(value);
 
     public static bool IsMutableMessageEvent(SockudoEvent @event) =>
         GetMutableMessageInfo(@event) is not null;

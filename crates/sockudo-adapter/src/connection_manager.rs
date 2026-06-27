@@ -80,6 +80,7 @@ pub trait ConnectionManager: Send + Sync {
         protocol_version: ProtocolVersion,
         wire_format: WireFormat,
         echo_messages: bool,
+        append_mode: sockudo_protocol::AppendMode,
     ) -> Result<()>;
 
     async fn get_connection(&self, socket_id: &SocketId, app_id: &str) -> Option<WebSocketRef>;

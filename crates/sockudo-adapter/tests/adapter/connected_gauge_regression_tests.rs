@@ -134,6 +134,7 @@ impl ConnectionManager for FullCapacityAdapter {
         _: ProtocolVersion,
         _: WireFormat,
         _: bool,
+        _: sockudo_protocol::AppendMode,
     ) -> Result<()> {
         Ok(())
     }
@@ -382,6 +383,7 @@ async fn connected_gauge_setup_failure_decrements_on_cleanup() {
             ProtocolVersion::V1,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();
@@ -428,6 +430,7 @@ async fn connected_gauge_no_double_decrement_on_close_and_cleanup() {
             ProtocolVersion::V1,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();
@@ -464,6 +467,7 @@ async fn connected_gauge_socket_replacement_nets_zero() {
             ProtocolVersion::V1,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();
@@ -491,6 +495,7 @@ async fn connected_gauge_socket_replacement_nets_zero() {
             ProtocolVersion::V1,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();
@@ -538,6 +543,7 @@ async fn connected_gauge_over_quota_never_increments() {
             ProtocolVersion::V1,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
             None,
         )
         .await;

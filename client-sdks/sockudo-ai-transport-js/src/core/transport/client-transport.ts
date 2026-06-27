@@ -658,6 +658,9 @@ class DefaultClientTransport<TInput, TOutput, TProjection, TMessage> implements 
         this.handleTurnEnd(message, transportHeaders);
         return;
       }
+      if (message.action === "summary") {
+        return;
+      }
       const batch = this.decoder.decode(message);
       const folded = decodedForFold<TInput, TOutput>(batch);
       if (folded.length > 0) {

@@ -327,12 +327,14 @@ type AnnotationEventsResponse struct {
 }
 
 type MutationResponse struct {
-	Channel       string  `json:"channel"`
-	MessageSerial string  `json:"message_serial"`
-	Action        string  `json:"action"`
-	Accepted      bool    `json:"accepted"`
-	VersionSerial *string `json:"version_serial"`
-	Status        string  `json:"status"`
+	Channel        string  `json:"channel"`
+	MessageSerial  string  `json:"message_serial"`
+	Action         string  `json:"action"`
+	Accepted       bool    `json:"accepted"`
+	VersionSerial  *string `json:"version_serial"`
+	HistorySerial  *uint64 `json:"history_serial"`
+	DeliverySerial *uint64 `json:"delivery_serial"`
+	Status         string  `json:"status"`
 }
 
 type GetMessageResponse struct {

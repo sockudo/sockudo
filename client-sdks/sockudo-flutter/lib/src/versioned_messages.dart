@@ -32,7 +32,7 @@ class MutableMessageVersionInfo {
   final String event;
   final String messageSerial;
   final String? versionSerial;
-  final int? historySerial;
+  final Object? historySerial;
   final int? versionTimestampMs;
 }
 
@@ -54,13 +54,15 @@ class MutableMessageState {
   final MutableMessageAction action;
   final Object? data;
   final String event;
-  final int? serial;
+  final Object? serial;
   final String? streamId;
   final String? messageId;
   final String? versionSerial;
-  final int? historySerial;
+  final Object? historySerial;
   final int? versionTimestampMs;
 }
+
+Object? _parseSerialHeader(Object? value) => normalizeWireSerial(value);
 
 int? _parseNumericHeader(Object? value) {
   if (value is int) return value;
@@ -96,7 +98,7 @@ MutableMessageVersionInfo? getMutableMessageInfo(SockudoEvent event) {
   final versionSerialRaw = headers['sockudo_version_serial'];
   final versionSerial = versionSerialRaw is String ? versionSerialRaw : null;
 
-  final historySerial = _parseNumericHeader(headers['sockudo_history_serial']);
+  final historySerial = _parseSerialHeader(headers['sockudo_history_serial']);
   final versionTimestampMs = _parseNumericHeader(
     headers['sockudo_version_timestamp_ms'],
   );

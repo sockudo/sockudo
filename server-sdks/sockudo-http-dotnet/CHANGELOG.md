@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+* [ADDED] Preserve raw nested webhook event payloads while keeping the legacy string event projection.
+
 ## 5.0.0
 * [ADDED] Add support for channel attributes when triggering events
 

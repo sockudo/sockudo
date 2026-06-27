@@ -1,3 +1,5 @@
+import type { AppendMode } from "../options";
+
 export interface URLSchemeParams {
   useTLS: boolean;
   hostTLS: string;
@@ -5,6 +7,7 @@ export interface URLSchemeParams {
   httpPath: string;
   echoMessages?: boolean;
   wireFormat?: "json" | "messagepack" | "msgpack" | "protobuf" | "proto";
+  appendMode?: AppendMode;
 }
 
 interface URLScheme {

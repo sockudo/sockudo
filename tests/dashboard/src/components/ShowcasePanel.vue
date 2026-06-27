@@ -9,17 +9,21 @@ import {
   Globe,
   Gauge,
   History,
+  Loader2,
   MessagesSquare,
   Radio,
   RotateCcw,
+  Send,
   Sparkles,
   Users,
   Wifi,
   type LucideIcon,
 } from 'lucide-vue-next'
 import { useDashboardStore, type Tab } from '../stores/dashboard'
+import { useDemoSenders, type DemoSenderId } from '../composables/useDemoSenders'
 
 const store = useDashboardStore()
+const { runningSender, senderStatuses, runSender } = useDemoSenders()
 
 const featureGroups: Array<{
   title: string
@@ -106,6 +110,58 @@ const demoSequence: Array<{ label: string; tab: Tab; icon: LucideIcon }> = [
   { label: 'Delta', tab: 'delta', icon: BarChart3 },
   { label: 'Events', tab: 'events', icon: Activity },
 ]
+
+const demoSenders: Array<{
+  id: DemoSenderId
+  label: string
+  detail: string
+  tab: Tab
+  icon: LucideIcon
+}> = [
+  {
+    id: 'realtime',
+    label: 'Realtime Sender',
+    detail: 'Subscribe demo channels and publish chat plus ticker events.',
+    tab: 'events',
+    icon: Radio,
+  },
+  {
+    id: 'history',
+    label: 'History Seeder',
+    detail: 'Publish retained events and fetch recent history.',
+    tab: 'recovery',
+    icon: History,
+  },
+  {
+    id: 'mutable',
+    label: 'Mutable Flow',
+    detail: 'Create, update, append, annotate, and read versions.',
+    tab: 'mutable',
+    icon: MessagesSquare,
+  },
+  {
+    id: 'push',
+    label: 'Push Sender',
+    detail: 'Publish a channel notification payload.',
+    tab: 'push',
+    icon: Bell,
+  },
+  {
+    id: 'ai',
+    label: 'AI Transport Flow',
+    detail: 'Run input, output appends, completion, history, and push.',
+    tab: 'ai-chat',
+    icon: Bot,
+  },
+]
+
+function statusClasses(id: DemoSenderId) {
+  const state = senderStatuses.value[id].state
+  if (state === 'ok') return 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/20'
+  if (state === 'error') return 'bg-red-500/15 text-red-300 ring-red-500/20'
+  if (state === 'running') return 'bg-brand-500/15 text-brand-300 ring-brand-500/20'
+  return 'bg-surface-700/60 text-surface-400 ring-surface-600/40'
+}
 </script>
 
 <template>
@@ -141,17 +197,63 @@ const demoSequence: Array<{ label: string; tab: Tab; icon: LucideIcon }> = [
       </div>
     </div>
 
-    <div class="panel p-5">
-      <div class="flex flex-wrap gap-2">
-        <button
-          v-for="step in demoSequence"
-          :key="step.label"
-          @click="store.activeTab = step.tab"
-          class="btn-secondary btn-sm flex items-center gap-2"
+    <div class="panel p-5 space-y-4">
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h3 class="text-sm font-semibold text-surface-200">Guided Demo Senders</h3>
+          <p class="text-xs text-surface-500 mt-1 max-w-3xl">
+            Use these to seed live evidence quickly, then open the matching panel for details.
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="step in demoSequence"
+            :key="step.label"
+            @click="store.activeTab = step.tab"
+            class="btn-secondary btn-sm flex items-center gap-2"
+          >
+            <component :is="step.icon" class="w-3.5 h-3.5" />
+            {{ step.label }}
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+        <div
+          v-for="sender in demoSenders"
+          :key="sender.id"
+          class="rounded-lg border border-surface-700/35 bg-surface-800/35 p-3 space-y-3"
         >
-          <component :is="step.icon" class="w-3.5 h-3.5" />
-          {{ step.label }}
-        </button>
+          <div class="flex items-start gap-2">
+            <div class="p-2 rounded-lg bg-brand-500/10 text-brand-300">
+              <component :is="sender.icon" class="w-4 h-4" />
+            </div>
+            <div class="min-w-0">
+              <h4 class="text-xs font-semibold text-surface-100">{{ sender.label }}</h4>
+              <p class="text-[11px] text-surface-500 mt-0.5">{{ sender.detail }}</p>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <button
+              @click="runSender(sender.id)"
+              :disabled="Boolean(runningSender)"
+              class="btn-primary btn-sm flex-1 flex items-center justify-center gap-2"
+            >
+              <Loader2 v-if="runningSender === sender.id" class="w-3.5 h-3.5 animate-spin" />
+              <Send v-else class="w-3.5 h-3.5" />
+              Run
+            </button>
+            <button @click="store.activeTab = sender.tab" class="btn-secondary btn-sm">
+              Open
+            </button>
+          </div>
+
+          <div :class="['min-h-[56px] rounded-lg px-3 py-2 text-[11px] ring-1', statusClasses(sender.id)]">
+            <p class="font-semibold capitalize">{{ senderStatuses[sender.id].state }}</p>
+            <p class="mt-0.5 line-clamp-2">{{ senderStatuses[sender.id].detail }}</p>
+          </div>
+        </div>
       </div>
     </div>
 

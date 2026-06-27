@@ -1,5 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace PusherServer
 {
@@ -27,9 +30,32 @@ namespace PusherServer
             }
         }
         /// <summary>
-        /// Gets or sets the Events being triggered
+        /// Gets or sets the raw Events being triggered.
         /// </summary>
-        public Dictionary<string, string>[] events { get; set; }
+        [JsonProperty("events")]
+        public Dictionary<string, object>[] RawEvents { get; set; } = Array.Empty<Dictionary<string, object>>();
+
+        /// <summary>
+        /// Gets or sets the Events being triggered as the legacy string projection.
+        /// </summary>
+        [JsonIgnore]
+        public Dictionary<string, string>[] events
+        {
+            get
+            {
+                return (RawEvents ?? Array.Empty<Dictionary<string, object>>())
+                    .Select(ProjectStringEvent)
+                    .ToArray();
+            }
+            set
+            {
+                RawEvents = value?
+                    .Select(evt => evt.ToDictionary(
+                        item => item.Key,
+                        item => (object)item.Value))
+                    .ToArray();
+            }
+        }
 
         /// <summary>
         /// Gets the Time the Web Hook was created
@@ -53,6 +79,33 @@ namespace PusherServer
         private static DateTime DateTimeFromUnixTimestampMillis(long millis)
         {
             return UnixEpoch.AddMilliseconds(millis);
+        }
+
+        private static Dictionary<string, string> ProjectStringEvent(Dictionary<string, object> rawEvent)
+        {
+            return rawEvent.ToDictionary(
+                item => item.Key,
+                item => StringValue(item.Value));
+        }
+
+        private static string StringValue(object value)
+        {
+            if (value == null)
+            {
+                return string.Empty;
+            }
+
+            if (value is string stringValue)
+            {
+                return stringValue;
+            }
+
+            if (value is JToken token)
+            {
+                return token.ToString(Formatting.None);
+            }
+
+            return JsonConvert.SerializeObject(value);
         }
     }
 }

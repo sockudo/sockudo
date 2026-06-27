@@ -143,18 +143,39 @@ function chunkFromHeaders(
     const id = headers.id ?? tracker.messageId;
     const messageId = headers.messageId ?? tracker.messageId;
     if (phase === "start") {
-      return chunk({ type: "text-start", id, messageId });
+      return chunk({
+        type: "text-start",
+        id,
+        messageId,
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+      });
     }
     if (phase === "delta") {
-      return chunk({ type: "text-delta", id, delta: delta ?? "", messageId });
+      return chunk({
+        type: "text-delta",
+        id,
+        delta: delta ?? "",
+        messageId,
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+      });
     }
-    return chunk({ type: "text-end", id, messageId });
+    return chunk({
+      type: "text-end",
+      id,
+      messageId,
+      providerMetadata: readJsonHeader(headers, "providerMetadata"),
+    });
   }
   if (type?.startsWith("reasoning-")) {
     const id = headers.id ?? tracker.messageId;
     const messageId = headers.messageId ?? tracker.messageId;
     if (phase === "start") {
-      return chunk({ type: "reasoning-start", id, messageId });
+      return chunk({
+        type: "reasoning-start",
+        id,
+        messageId,
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+      });
     }
     if (phase === "delta") {
       return chunk({
@@ -162,9 +183,15 @@ function chunkFromHeaders(
         id,
         delta: delta ?? "",
         messageId,
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
       });
     }
-    return chunk({ type: "reasoning-end", id, messageId });
+    return chunk({
+      type: "reasoning-end",
+      id,
+      messageId,
+      providerMetadata: readJsonHeader(headers, "providerMetadata"),
+    });
   }
   const toolCallId = headers.toolCallId ?? tracker.messageId;
   if (phase === "start") {
@@ -173,13 +200,19 @@ function chunkFromHeaders(
       toolCallId,
       toolName: headers.toolName ?? "tool",
       messageId: headers.messageId,
+      providerExecuted:
+        headers.providerExecuted === undefined ? undefined : headers.providerExecuted === "true",
+      providerMetadata: readJsonHeader(headers, "providerMetadata"),
+      toolMetadata: readJsonHeader(headers, "toolMetadata"),
+      dynamic: headers.dynamic === undefined ? undefined : headers.dynamic === "true",
+      title: headers.title,
     });
   }
   if (phase === "delta") {
     return chunk({
       type: "tool-input-delta",
       toolCallId,
-      delta: delta ?? "",
+      inputTextDelta: delta ?? "",
       messageId: headers.messageId,
     });
   }
@@ -189,6 +222,12 @@ function chunkFromHeaders(
     toolName: headers.toolName,
     input: parseJsonish(tracker.accumulated.trimStart()),
     messageId: headers.messageId,
+    providerExecuted:
+      headers.providerExecuted === undefined ? undefined : headers.providerExecuted === "true",
+    providerMetadata: readJsonHeader(headers, "providerMetadata"),
+    toolMetadata: readJsonHeader(headers, "toolMetadata"),
+    dynamic: headers.dynamic === undefined ? undefined : headers.dynamic === "true",
+    title: headers.title,
   });
 }
 
@@ -208,7 +247,8 @@ function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelO
       return chunk({
         type: "finish",
         finishReason: headers.finishReason,
-        metadata: readJsonHeader(headers, "providerMetadata"),
+        messageMetadata:
+          readJsonHeader(headers, "messageMetadata") ?? readJsonHeader(headers, "providerMetadata"),
       });
     case "error":
       return { type: "error", errorText: stringValue(data) ?? "" };
@@ -224,8 +264,15 @@ function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelO
         type: "tool-input-error",
         toolCallId: headers.toolCallId ?? "",
         toolName: headers.toolName,
+        input: record(data).input,
         errorText: stringValue(record(data).errorText) ?? stringValue(data) ?? "",
         messageId: headers.messageId,
+        providerExecuted:
+          headers.providerExecuted === undefined ? undefined : headers.providerExecuted === "true",
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+        toolMetadata: readJsonHeader(headers, "toolMetadata"),
+        dynamic: headers.dynamic === undefined ? undefined : headers.dynamic === "true",
+        title: headers.title,
       });
     case "tool-input-available":
       return chunk({
@@ -237,6 +284,10 @@ function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelO
           headers.providerExecuted === undefined ? undefined : headers.providerExecuted === "true",
         preliminary: headers.preliminary === undefined ? undefined : headers.preliminary === "true",
         messageId: headers.messageId,
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+        toolMetadata: readJsonHeader(headers, "toolMetadata"),
+        dynamic: headers.dynamic === undefined ? undefined : headers.dynamic === "true",
+        title: headers.title,
       });
     case "tool-output-available":
       return chunk({
@@ -244,6 +295,12 @@ function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelO
         toolCallId: headers.toolCallId ?? "",
         output: data,
         messageId: headers.messageId,
+        providerExecuted:
+          headers.providerExecuted === undefined ? undefined : headers.providerExecuted === "true",
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+        toolMetadata: readJsonHeader(headers, "toolMetadata"),
+        dynamic: headers.dynamic === undefined ? undefined : headers.dynamic === "true",
+        preliminary: headers.preliminary === undefined ? undefined : headers.preliminary === "true",
       });
     case "tool-output-error":
       return chunk({
@@ -251,12 +308,31 @@ function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelO
         toolCallId: headers.toolCallId ?? "",
         errorText: stringValue(record(data).errorText) ?? stringValue(data) ?? "",
         messageId: headers.messageId,
+        providerExecuted:
+          headers.providerExecuted === undefined ? undefined : headers.providerExecuted === "true",
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+        toolMetadata: readJsonHeader(headers, "toolMetadata"),
+        dynamic: headers.dynamic === undefined ? undefined : headers.dynamic === "true",
       });
     case "tool-approval-request":
       return chunk({
         type,
         toolCallId: headers.toolCallId ?? "",
         approvalId: headers.approvalId,
+        isAutomatic: headers.isAutomatic === undefined ? undefined : headers.isAutomatic === "true",
+        signature: headers.signature,
+        messageId: headers.messageId,
+      });
+    case "tool-approval-response":
+      return chunk({
+        type,
+        toolCallId: headers.toolCallId,
+        approvalId: headers.approvalId ?? stringValue(record(data).approvalId) ?? "",
+        approved: headers.approved === "true" || record(data).approved === true,
+        reason: headers.reason ?? stringValue(record(data).reason),
+        providerExecuted:
+          headers.providerExecuted === undefined ? undefined : headers.providerExecuted === "true",
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
         messageId: headers.messageId,
       });
     case "tool-output-denied":
@@ -272,6 +348,20 @@ function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelO
         url: stringValue(data) ?? "",
         mediaType: headers.mediaType,
         filename: headers.filename,
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+      });
+    case "reasoning-file":
+      return chunk({
+        type,
+        url: stringValue(data) ?? "",
+        mediaType: headers.mediaType ?? "application/octet-stream",
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
+      });
+    case "custom":
+      return chunk({
+        type,
+        kind: headers.kind ?? "custom.content",
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
       });
     case "source-url":
       return chunk({
@@ -279,6 +369,7 @@ function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelO
         url: stringValue(data) ?? "",
         sourceId: headers.sourceId,
         title: headers.title,
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
       });
     case "source-document":
       return chunk({
@@ -287,11 +378,13 @@ function chunkFromType(type: string, data: unknown, headers: HeaderMap): VercelO
         title: headers.title,
         mediaType: headers.mediaType,
         filename: headers.filename,
+        providerMetadata: readJsonHeader(headers, "providerMetadata"),
       });
     default:
       if (type.startsWith("data-")) {
         return chunk({
           type,
+          id: headers.id,
           data,
           transient: headers.transient === "true",
         });

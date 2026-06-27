@@ -8,7 +8,7 @@ import { usePusher } from '../composables/usePusher'
 const store = useDashboardStore()
 const { subscribe } = usePusher()
 
-const channel = ref('versioned-room')
+const channel = ref('chat:mutable')
 const createEvent = ref('demo.message')
 const createData = ref('{"text":"First mutable message","status":"draft"}')
 const messageId = ref(`msg-${Date.now()}`)
@@ -39,7 +39,6 @@ const annotationType = ref('reactions:distinct.v1')
 const annotationName = ref('thumbsup')
 const annotationClientId = ref('demo-user')
 const annotationCount = ref('1')
-const annotationData = ref('{"source":"dashboard"}')
 const annotationSerial = ref('')
 const annotationResult = ref<ApiResponse | null>(null)
 const annotationsResult = ref<ApiResponse | null>(null)
@@ -52,20 +51,14 @@ function fmtResponse(data: unknown) {
   return typeof data === 'string' ? data : JSON.stringify(data, null, 2)
 }
 
-function parseMaybeJson(raw: string): unknown {
+function toWireData(raw: string) {
   const trimmed = raw.trim()
   if (!trimmed) return ''
   try {
-    return JSON.parse(trimmed)
+    return JSON.stringify(JSON.parse(trimmed))
   } catch {
     return raw
   }
-}
-
-function parseOptionalJson(raw: string): unknown | undefined {
-  const trimmed = raw.trim()
-  if (!trimmed) return undefined
-  return parseMaybeJson(trimmed)
 }
 
 function extractSerial(res: ApiResponse | null) {
@@ -98,7 +91,7 @@ async function createMessage() {
   createResult.value = await api.publishAdvancedEvent({
     name: createEvent.value.trim(),
     channel: channel.value.trim(),
-    data: parseMaybeJson(createData.value),
+    data: toWireData(createData.value),
     message_id: messageId.value.trim(),
     info: 'message_serial,history_serial,delivery_serial,version_serial',
     extras: {
@@ -133,7 +126,7 @@ function useVersionCursor() {
 async function updateMessage() {
   if (!messageSerial.value.trim()) return
   const body: Record<string, unknown> = {
-    data: parseMaybeJson(updateData.value),
+    data: toWireData(updateData.value),
     description: updateDescription.value.trim() || undefined,
   }
   if (updateOpId.value.trim()) body.op_id = updateOpId.value.trim()
@@ -176,7 +169,6 @@ async function publishAnnotation() {
     name: annotationName.value.trim() || undefined,
     clientId: annotationClientId.value.trim() || undefined,
     count: Number(annotationCount.value) || 1,
-    data: parseOptionalJson(annotationData.value),
   }
   annotationResult.value = await useHttpApi().publishAnnotation(
     channel.value.trim(),
@@ -329,7 +321,6 @@ async function removeAnnotation() {
             <input v-model="annotationClientId" class="input-field font-mono text-xs" />
             <input v-model="annotationCount" class="input-field font-mono text-xs" />
           </div>
-          <textarea v-model="annotationData" class="input-field font-mono text-xs h-14 resize-none" />
           <input v-model="annotationSerial" class="input-field font-mono text-xs" placeholder="annotation serial" />
           <div class="grid grid-cols-3 gap-2">
             <button @click="publishAnnotation" :disabled="!messageSerial.trim()" class="btn-primary btn-sm">Add</button>

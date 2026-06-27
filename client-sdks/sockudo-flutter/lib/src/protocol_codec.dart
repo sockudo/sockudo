@@ -58,7 +58,9 @@ class SockudoProtocolCodec {
             ? rawMessage
             : utf8.decode(_asBytes(rawMessage));
         return DecodedEnvelope(
-          envelope: _normalizeMap(jsonDecode(rawText)),
+          envelope: _normalizeMap(
+            jsonDecode(preserveUnsafeJsonSerials(rawText)),
+          ),
           rawMessage: rawText,
         );
       case SockudoWireFormat.messagepack:
@@ -91,7 +93,7 @@ class SockudoProtocolCodec {
     Object? data = rawData;
     if (rawData is String) {
       try {
-        data = jsonDecode(rawData);
+        data = jsonDecode(preserveUnsafeJsonSerials(rawData));
       } catch (_) {
         data = rawData;
       }
@@ -105,11 +107,13 @@ class SockudoProtocolCodec {
       streamId: envelope['stream_id'] as String?,
       rawMessage: decoded.rawMessage,
       messageId: envelope['message_id'] as String?,
-      sequence: _asInt(envelope['__delta_seq'] ?? envelope['sequence']),
+      sequence: normalizeWireSerial(
+        envelope['__delta_seq'] ?? envelope['sequence'],
+      ),
       conflationKey:
           (envelope['__conflation_key'] ?? envelope['conflation_key'])
               as String?,
-      serial: _asInt(envelope['serial']),
+      serial: normalizeWireSerial(envelope['serial']),
       extras: _decodeExtras(envelope['extras']),
     );
   }
@@ -152,6 +156,7 @@ class SockudoProtocolCodec {
       return null;
     }
     return <String, Object?>{
+      ...extras.raw,
       if (extras.headers != null)
         'headers': extras.headers!.map(
           (key, value) => MapEntry(key, _encodeMessagePackHeaderValue(value)),
@@ -188,9 +193,9 @@ class SockudoProtocolCodec {
       message.userId = userId;
     }
 
-    final serial = _asInt(envelope['serial']);
+    final serial = _asInt64(envelope['serial']);
     if (serial != null) {
-      message.serial = Int64(serial);
+      message.serial = serial;
     }
 
     final messageId = envelope['message_id'] as String?;
@@ -203,14 +208,14 @@ class SockudoProtocolCodec {
       message.streamId = streamId;
     }
 
-    final sequence = _asInt(envelope['sequence']);
+    final sequence = _asInt64(envelope['sequence']);
     if (sequence != null) {
-      message.sequence = Int64(sequence);
+      message.sequence = sequence;
     }
 
-    final deltaSequence = _asInt(envelope['__delta_seq']);
+    final deltaSequence = _asInt64(envelope['__delta_seq']);
     if (deltaSequence != null) {
-      message.deltaSequence = Int64(deltaSequence);
+      message.deltaSequence = deltaSequence;
     }
 
     final conflationKey = envelope['conflation_key'] as String?;
@@ -248,14 +253,18 @@ class SockudoProtocolCodec {
       'user_id': message.hasUserId() ? message.userId : null,
       'message_id': message.hasMessageId() ? message.messageId : null,
       'stream_id': message.hasStreamId() ? message.streamId : null,
-      'serial': message.hasSerial() ? message.serial.toInt() : null,
+      'serial': message.hasSerial()
+          ? normalizeWireSerial(message.serial)
+          : null,
       '__delta_seq': message.hasDeltaSequence()
-          ? message.deltaSequence.toInt()
+          ? normalizeWireSerial(message.deltaSequence)
           : null,
       '__conflation_key': message.hasDeltaConflationKey()
           ? message.deltaConflationKey
           : null,
-      'sequence': message.hasSequence() ? message.sequence.toInt() : null,
+      'sequence': message.hasSequence()
+          ? normalizeWireSerial(message.sequence)
+          : null,
       'conflation_key': message.hasConflationKey()
           ? message.conflationKey
           : null,
@@ -268,7 +277,7 @@ class SockudoProtocolCodec {
         case ProtoMessageData_Kind.jsonValue:
           final raw = message.data.jsonValue;
           try {
-            envelope['data'] = jsonDecode(raw);
+            envelope['data'] = jsonDecode(preserveUnsafeJsonSerials(raw));
           } catch (_) {
             envelope['data'] = raw;
           }
@@ -332,6 +341,10 @@ class SockudoProtocolCodec {
     if (extras.echo != null) {
       message.echo = extras.echo!;
     }
+    final ai = _encodeAiExtras(extras.ai);
+    if (ai != null) {
+      message.ai = ai;
+    }
     return message;
   }
 
@@ -343,26 +356,22 @@ class SockudoProtocolCodec {
       return rawExtras;
     }
     if (rawExtras is ProtoMessageExtras) {
-      return MessageExtras(
-        headers: rawExtras.headers.isEmpty
-            ? null
-            : rawExtras.headers.map(
-                (key, value) => MapEntry(key, _decodeExtrasValue(value)),
-              ),
-        ephemeral: rawExtras.hasEphemeral() ? rawExtras.ephemeral : null,
-        idempotencyKey: rawExtras.hasIdempotencyKey()
-            ? rawExtras.idempotencyKey
-            : null,
-        echo: rawExtras.hasEcho() ? rawExtras.echo : null,
-      );
+      return _messageExtrasFromMap(_decodeExtrasMap(rawExtras));
     }
-    final extras = _normalizeMap(rawExtras);
+    final extras = rawExtras is Map
+        ? _normalizeMap(rawExtras)
+        : <String, Object?>{'value': _normalizeValue(rawExtras)};
+    return _messageExtrasFromMap(extras);
+  }
+
+  static MessageExtras _messageExtrasFromMap(Map<String, Object?> extras) {
     return MessageExtras(
       headers: _normalizeExtrasHeaders(extras['headers']),
       ephemeral: extras['ephemeral'] as bool?,
       idempotencyKey:
           (extras['idempotency_key'] ?? extras['idempotencyKey']) as String?,
       echo: extras['echo'] as bool?,
+      raw: extras,
     );
   }
 
@@ -375,7 +384,50 @@ class SockudoProtocolCodec {
       if (extras.hasEphemeral()) 'ephemeral': extras.ephemeral,
       if (extras.hasIdempotencyKey()) 'idempotency_key': extras.idempotencyKey,
       if (extras.hasEcho()) 'echo': extras.echo,
+      if (extras.hasAi()) 'ai': _decodeAiExtrasMap(extras.ai),
     };
+  }
+
+  static ProtoAiExtras? _encodeAiExtras(Object? rawAi) {
+    if (rawAi is! Map) {
+      return null;
+    }
+    final ai = _normalizeMap(rawAi);
+    final message = ProtoAiExtras();
+    final transport = _stringMap(ai['transport']);
+    final codec = _stringMap(ai['codec']);
+    if (transport != null) {
+      message.transport.addAll(transport);
+    }
+    if (codec != null) {
+      message.codec.addAll(codec);
+    }
+    if (message.transport.isEmpty && message.codec.isEmpty) {
+      return null;
+    }
+    return message;
+  }
+
+  static Map<String, Object?> _decodeAiExtrasMap(ProtoAiExtras ai) {
+    return <String, Object?>{
+      if (ai.transport.isNotEmpty)
+        'transport': Map<String, String>.from(ai.transport),
+      if (ai.codec.isNotEmpty) 'codec': Map<String, String>.from(ai.codec),
+    };
+  }
+
+  static Map<String, String>? _stringMap(Object? value) {
+    if (value is! Map) {
+      return null;
+    }
+    final mapped = <String, String>{};
+    for (final entry in value.entries) {
+      final entryValue = entry.value;
+      if (entryValue != null) {
+        mapped['${entry.key}'] = '$entryValue';
+      }
+    }
+    return mapped;
   }
 
   static Object _decodeExtrasValue(ProtoExtrasValue value) {
@@ -442,9 +494,10 @@ class SockudoProtocolCodec {
         switch (kind) {
           case 'string':
           case 'json':
-          case 'number':
           case 'bool':
             return payload;
+          case 'number':
+            return normalizeWireSerial(payload) ?? payload;
           case 'structured':
             return _decodeMessagePackValue(payload);
         }
@@ -452,10 +505,16 @@ class SockudoProtocolCodec {
       return value.map(_decodeMessagePackValue).toList(growable: false);
     }
     if (value is Map) {
-      return value.map(
-        (key, entryValue) =>
-            MapEntry('$key', _decodeMessagePackValue(entryValue)),
-      );
+      return value.map((key, entryValue) {
+        final stringKey = '$key';
+        return MapEntry(
+          stringKey,
+          _normalizeValue(_decodeMessagePackValue(entryValue), stringKey),
+        );
+      });
+    }
+    if (value is Int64 || value is BigInt) {
+      return normalizeWireSerial(value) ?? value.toString();
     }
     return value;
   }
@@ -491,6 +550,7 @@ class SockudoProtocolCodec {
     }
     if (value is MessageExtras) {
       _packValue(packer, <String, Object?>{
+        ...value.raw,
         if (value.headers != null) 'headers': value.headers,
         if (value.ephemeral != null) 'ephemeral': value.ephemeral,
         if (value.idempotencyKey != null)
@@ -544,12 +604,19 @@ class SockudoProtocolCodec {
     if (value is! Map) {
       throw const SockudoException('Expected object payload');
     }
-    return value.map(
-      (key, entryValue) => MapEntry('$key', _normalizeValue(entryValue)),
-    );
+    return value.map((key, entryValue) {
+      final stringKey = '$key';
+      return MapEntry(stringKey, _normalizeValue(entryValue, stringKey));
+    });
   }
 
-  static Object? _normalizeValue(Object? value) {
+  static Object? _normalizeValue(Object? value, [String? key]) {
+    if (key != null && key.toLowerCase().contains('serial')) {
+      return normalizeWireSerial(value) ?? value;
+    }
+    if (value is Int64 || value is BigInt) {
+      return normalizeWireSerial(value) ?? value.toString();
+    }
     if (value is Map) {
       return _normalizeMap(value);
     }
@@ -559,15 +626,13 @@ class SockudoProtocolCodec {
     return value;
   }
 
-  static int? _asInt(Object? value) {
-    if (value is int) {
-      return value;
+  static Int64? _asInt64(Object? value) {
+    final normalized = normalizeWireSerial(value);
+    if (normalized is int) {
+      return Int64(normalized);
     }
-    if (value is Int64) {
-      return value.toInt();
-    }
-    if (value is num) {
-      return value.toInt();
+    if (normalized is String) {
+      return Int64.parseInt(normalized);
     }
     return null;
   }

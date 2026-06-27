@@ -6,6 +6,7 @@ typedef ChannelAuthorizationHandler =
     );
 typedef UserAuthenticationHandler =
     Future<UserAuthenticationData> Function(UserAuthenticationRequest request);
+typedef AuthTokenCallback = Future<String> Function();
 
 class ChannelAuthorizationRequest {
   const ChannelAuthorizationRequest({
@@ -95,9 +96,11 @@ class VersionedMessagesOptions {
     required this.endpoint,
     this.headers = const <String, String>{},
     this.headersProvider,
+    this.timeout = const Duration(seconds: 10),
   });
 
   final String endpoint;
   final Map<String, String> headers;
   final Map<String, String> Function()? headersProvider;
+  final Duration timeout;
 }

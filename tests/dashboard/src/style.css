@@ -178,3 +178,170 @@ body {
   box-shadow: 0 0 0 1px oklch(from var(--color-brand-500) l c h / 0.2);
   cursor: pointer;
 }
+
+.markdown-content {
+  overflow-wrap: anywhere;
+}
+
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content blockquote,
+.markdown-content pre,
+.markdown-content table,
+.markdown-content hr {
+  margin: 0.65rem 0;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  margin: 0.8rem 0 0.35rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--color-surface-50);
+}
+
+.markdown-content h1 { font-size: 1.15rem; }
+.markdown-content h2 { font-size: 1.05rem; }
+.markdown-content h3 { font-size: 0.98rem; }
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 { font-size: 0.92rem; }
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 1.25rem;
+}
+
+.markdown-content ul {
+  list-style: disc;
+}
+
+.markdown-content ol {
+  list-style: decimal;
+}
+
+.markdown-content li {
+  margin: 0.25rem 0;
+}
+
+.markdown-content li > p {
+  margin: 0.25rem 0;
+}
+
+.markdown-content input[type="checkbox"] {
+  margin-right: 0.45rem;
+  accent-color: var(--color-brand-500);
+}
+
+.markdown-content a {
+  color: var(--color-brand-300);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown-content strong {
+  color: var(--color-surface-50);
+  font-weight: 700;
+}
+
+.markdown-content em {
+  color: var(--color-surface-200);
+}
+
+.markdown-content code {
+  border-radius: 0.35rem;
+  background: oklch(from var(--color-surface-950) l c h / 0.75);
+  color: var(--color-brand-200);
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  padding: 0.1rem 0.3rem;
+}
+
+.markdown-content pre {
+  overflow-x: auto;
+  border-radius: 0.6rem;
+  border: 1px solid oklch(from var(--color-surface-700) l c h / 0.45);
+  background: oklch(from var(--color-surface-950) l c h / 0.88);
+  padding: 0.8rem;
+}
+
+.markdown-content pre code {
+  display: block;
+  background: transparent;
+  color: var(--color-surface-100);
+  padding: 0;
+  white-space: pre;
+}
+
+.markdown-content blockquote {
+  border-left: 3px solid var(--color-brand-500);
+  color: var(--color-surface-300);
+  padding-left: 0.8rem;
+}
+
+.markdown-content table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid oklch(from var(--color-surface-700) l c h / 0.65);
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-content th {
+  background: oklch(from var(--color-surface-800) l c h / 0.8);
+  color: var(--color-surface-100);
+  font-weight: 700;
+}
+
+.markdown-content td {
+  background: oklch(from var(--color-surface-900) l c h / 0.45);
+}
+
+.markdown-content hr {
+  border: 0;
+  border-top: 1px solid oklch(from var(--color-surface-700) l c h / 0.55);
+}
+
+.markdown-content img {
+  max-width: 100%;
+  border-radius: 0.5rem;
+}
+
+.markdown-content-user h1,
+.markdown-content-user h2,
+.markdown-content-user h3,
+.markdown-content-user h4,
+.markdown-content-user h5,
+.markdown-content-user h6,
+.markdown-content-user strong {
+  color: white;
+}
+
+.markdown-content-user a,
+.markdown-content-user code {
+  color: var(--color-brand-50);
+}
+
+.markdown-content-user code {
+  background: oklch(from var(--color-brand-900) l c h / 0.45);
+}

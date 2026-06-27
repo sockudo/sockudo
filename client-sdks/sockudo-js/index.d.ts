@@ -10,13 +10,14 @@ export {
   ChannelAuthorizationCallback,
   UserAuthenticationCallback,
 } from './types/core/auth/options';
-export { Options } from './types/core/options';
+export { AppendMode, Options } from './types/core/options';
 export type {
   RecoveryPosition,
   ResumeFailedChannel,
   ResumeRecoveredChannel,
   ResumeSuccessData,
   RewindCompleteData,
+  WireSerial,
 } from './types/core/connection/protocol/message-types';
 export type {
   ChannelSubscriptionOptions,

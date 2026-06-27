@@ -1,6 +1,7 @@
 import json
 import base64
 import hashlib
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -23,6 +24,7 @@ from sockudo_http_python import (
     Status,
     TriggerOptions,
     Validity,
+    Webhook,
     sign,
 )
 
@@ -42,6 +44,16 @@ def make_client(handler):
     )
 
 
+def load_forward_fixture(name):
+    for parent in Path(__file__).resolve().parents:
+        candidate = (
+            parent / "tests" / "ai-conformance" / "fixtures" / "forward-compat" / name
+        )
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+    raise AssertionError(f"forward-compat fixture not found: {name}")
+
+
 def test_signed_uri_contains_expected_signature_params():
     sockudo = Sockudo(
         "app-id", "key", "secret", options=SockudoOptions(host="localhost", port=6001)
@@ -57,6 +69,65 @@ def test_signed_uri_contains_expected_signature_params():
     assert query["auth_version"] == ["1.0"]
     assert "auth_timestamp" in query
     assert "auth_signature" in query
+    sockudo.close()
+
+
+def test_webhook_accepts_future_event_fixture_and_preserves_unknown_fields():
+    body = load_forward_fixture("future-webhook-events.json")
+    sockudo = Sockudo(
+        "app-id", "app-key", "app-secret", options=SockudoOptions(max_retries=1)
+    )
+
+    webhook = sockudo.parse_webhook("app-key", sign(body, "app-secret"), body)
+
+    assert webhook.time_ms == 1710000000000
+    assert [event.name for event in webhook.events] == [
+        "member_updated",
+        "ai_turn_started",
+        "message_version_created",
+    ]
+    assert webhook.events[0].channel == "presence-ai-forward"
+    assert webhook.events[0].user_id == "user-1"
+    assert webhook.events[0].raw["future_field"] == "must-pass-through"
+    assert webhook.events[1].raw["turn_id"] == "turn-1"
+    assert Webhook.parse(body).events[2].raw["version_serial"] == "ver-1"
+    sockudo.close()
+
+
+def test_webhook_preserves_nested_future_event_values():
+    body = json.dumps(
+        {
+            "time_ms": 1710000000000,
+            "events": [
+                {
+                    "name": "ai_turn_started",
+                    "channel": "private-ai-forward",
+                    "data": {
+                        "turn_id": "turn-1",
+                        "tokens": ["hello", "world"],
+                        "done": False,
+                        "nullable": None,
+                    },
+                    "future_field": {"nested": True},
+                }
+            ],
+        },
+        separators=(",", ":"),
+    )
+    sockudo = Sockudo(
+        "app-id", "app-key", "app-secret", options=SockudoOptions(max_retries=1)
+    )
+
+    webhook = sockudo.parse_webhook("app-key", sign(body, "app-secret"), body)
+
+    assert webhook.events[0].name == "ai_turn_started"
+    assert webhook.events[0].data == {
+        "turn_id": "turn-1",
+        "tokens": ["hello", "world"],
+        "done": False,
+        "nullable": None,
+    }
+    assert webhook.events[0].raw["future_field"] == {"nested": True}
     sockudo.close()
 
 

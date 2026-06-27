@@ -1,4 +1,5 @@
 import Timeline from '../timeline/timeline';
+import { AppendMode } from '../options';
 interface StrategyOptions {
     echoMessages?: boolean;
     failFast?: boolean;
@@ -13,5 +14,6 @@ interface StrategyOptions {
     timeoutLimit?: number;
     ttl?: number;
     useTLS?: boolean;
+    appendMode?: AppendMode;
 }
 export default StrategyOptions;

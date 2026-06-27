@@ -184,6 +184,18 @@ onMounted(checkAuth);
                     </div>
                     <div>
                         <label class="text-xs text-surface-400 mb-1 block"
+                            >Append Mode</label
+                        >
+                        <select
+                            v-model="store.config.appendMode"
+                            class="input-field font-mono"
+                        >
+                            <option value="delta">delta</option>
+                            <option value="full">full</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-xs text-surface-400 mb-1 block"
                             >Auth Endpoint</label
                         >
                         <input

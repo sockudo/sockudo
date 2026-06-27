@@ -117,17 +117,21 @@
     "changeset": "changeset"
   },
   "peerDependencies": {
-    "@ai-sdk/svelte": "^4",
-    "@ai-sdk/vue": "^3",
+    "@ai-sdk/react": "^3 || ^4",
+    "@ai-sdk/svelte": "^4 || ^5",
+    "@ai-sdk/vue": "^3 || ^4",
     "@anthropic-ai/sdk": "^0.103",
     "@sockudo/client": "^2",
-    "ai": "^6",
+    "ai": "^6 || ^7",
     "openai": "^6",
     "react": "^18 || ^19",
     "svelte": "^5",
     "vue": "^3"
   },
   "peerDependenciesMeta": {
+    "@ai-sdk/react": {
+      "optional": true
+    },
     "@ai-sdk/svelte": {
       "optional": true
     },
@@ -154,9 +158,9 @@
     }
   },
   "devDependencies": {
-    "@ai-sdk/react": "^3.0.210",
-    "@ai-sdk/svelte": "^4.0.208",
-    "@ai-sdk/vue": "^3.0.208",
+    "@ai-sdk/react": "^4.0.3",
+    "@ai-sdk/svelte": "^5.0.2",
+    "@ai-sdk/vue": "^4.0.2",
     "@changesets/cli": "^2.31.0",
     "@eslint/js": "^9.39.4",
     "@playwright/test": "^1.61.0",
@@ -171,7 +175,7 @@
     "@typescript-eslint/parser": "^8.61.1",
     "@vitejs/plugin-react": "^6.0.2",
     "@vitest/coverage-v8": "4.1.9",
-    "ai": "^6.0.208",
+    "ai": "^7.0.2",
     "eslint": "^9.39.4",
     "eslint-import-resolver-typescript": "^4.4.5",
     "eslint-plugin-import": "^2.32.0",

@@ -1,4 +1,4 @@
-import { Options, PresenceHistoryOptions, VersionedMessagesOptions } from "./options";
+import { AppendMode, Options, PresenceHistoryOptions, VersionedMessagesOptions } from "./options";
 import Defaults from "./defaults";
 import {
   ChannelAuthorizationHandler,
@@ -32,6 +32,7 @@ export interface Config {
   wsPort: number;
   wssPort: number;
   wireFormat?: "json" | "messagepack" | "msgpack" | "protobuf" | "proto";
+  appendMode?: AppendMode;
   userAuthenticator: UserAuthenticationHandler;
   channelAuthorizer: ChannelAuthorizationHandler;
 
@@ -79,6 +80,7 @@ export function getConfig(opts: Options, sockudo): Config {
   if ("ignoreNullOrigin" in opts) config.ignoreNullOrigin = opts.ignoreNullOrigin;
   if ("timelineParams" in opts) config.timelineParams = opts.timelineParams;
   if ("wireFormat" in opts) config.wireFormat = opts.wireFormat;
+  if ("appendMode" in opts) config.appendMode = opts.appendMode;
   if ("nacl" in opts) {
     config.nacl = opts.nacl;
   }

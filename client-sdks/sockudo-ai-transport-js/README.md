@@ -51,8 +51,8 @@ pnpm add @anthropic-ai/sdk
 ## Quickstart: Vercel AI SDK transport
 
 The Vercel path mirrors Ably's AI Transport flow with Sockudo channel auth, versioned-message
-proxying, and `streamText` in a route handler. The Nuxt demo uses the workspace `@sockudo/client`
-package from this monorepo.
+proxying, and AI SDK `toUIMessageStream` output in a route handler. The Nuxt demo uses the workspace
+`@sockudo/client` package from this monorepo.
 
 ```tsx
 import { ChatTransportProvider } from "@sockudo/ai-transport/vercel/react";
@@ -99,6 +99,14 @@ Built-in OpenAI-compatible presets include OpenAI, OpenRouter, Groq, Together AI
 DeepSeek, Perplexity, Mistral, xAI, Ollama, and LM Studio. OpenAI SDK Chat Completions, OpenAI SDK
 Responses, and Anthropic SDK Messages streams are adapted into Sockudo/Vercel UI message chunks.
 
+## AI SDK 7 Notes
+
+The Vercel codec supports AI SDK 6 and 7 UI message chunks. AI SDK 7 agent features such as
+reasoning controls, tool approvals, WorkflowAgent output, realtime voice transcripts, and generated
+media references are carried as durable Sockudo turn state when they are exposed as UI message
+chunks. Keep provider sessions, workflow checkpoints, tool execution context, uploaded media bytes,
+and secrets in the trusted AI runtime or external storage.
+
 ## Run Demos
 
 ```bash
@@ -128,12 +136,12 @@ These lanes are part of CI for the `0.1.x` release line.
 
 | Surface        | Supported range                                                      | CI evidence                                                              |
 | -------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Node.js        | 20, 22                                                               | `validate` and `integration` lanes                                       |
+| Node.js        | 20, 22, 24                                                           | `validate` and `integration` lanes; AI SDK 7 peers require Node 22+      |
 | Browsers       | Last 2 evergreen families via Playwright engines                     | `browser-smoke` on Chromium, Firefox, WebKit against `demo/`             |
 | React          | 18, 19                                                               | `react-compat` lane                                                      |
 | Vue            | 3.x                                                                  | Vue composable unit tests and typed package exports                      |
 | Svelte         | 5.x                                                                  | Svelte store unit tests and typed package exports                        |
-| Vercel AI SDK  | `ai` v6                                                              | locked dev lane plus peer range `^6`                                     |
+| Vercel AI SDK  | `ai` v6 or v7                                                        | locked v7 dev lane plus peer range `^6 \|\| ^7`                          |
 | Direct LLMs    | OpenAI SDK 6.x, Anthropic SDK 0.103.x, compatible HTTP/SSE endpoints | provider adapter unit tests                                              |
 | Sockudo server | 4.x with AI Transport wire protocol v1                               | pinned integration server SHA `f66434eab44e688d3df42e56d8ebaf9aba6b1575` |
 | Sockudo client | `@sockudo/client` `^2.0.0`                                           | peer dependency and integration adapter tests                            |

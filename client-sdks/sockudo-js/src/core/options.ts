@@ -20,6 +20,8 @@ export interface VersionedMessagesOptions {
   headersProvider?: () => Record<string, string>;
 }
 
+export type AppendMode = "delta" | "full";
+
 export interface Options {
   activityTimeout?: number;
 
@@ -36,6 +38,7 @@ export interface Options {
   cluster?: string;
   protocolVersion?: number;
   wireFormat?: "json" | "messagepack" | "msgpack" | "protobuf" | "proto";
+  appendMode?: AppendMode;
   deltaCompression?: DeltaOptions;
   messageDeduplication?: boolean;
   messageDeduplicationCapacity?: number;

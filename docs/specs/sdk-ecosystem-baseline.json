@@ -1,0 +1,305 @@
+{
+  "generatedAt": "2026-06-27T11:46:02+03:00",
+  "repository": {
+    "branch": "master",
+    "baselineServerSha": "1d3f871a911487ffffef5057dd83be3d63a56418",
+    "dirtyWorktreeAtAuditStart": true,
+    "notes": [
+      "Baseline claims are for the observed local workspace at the pinned SHA, not a pristine checkout.",
+      "No SDK production code was changed by the audit."
+    ]
+  },
+  "inventory": {
+    "clientPackages": 7,
+    "serverSdkPackages": 9,
+    "gitSubmodules": 0
+  },
+  "publishedVersions": [
+    {
+      "package": "@sockudo/client",
+      "registry": "npm",
+      "version": "2.0.0",
+      "source": "https://registry.npmjs.org/@sockudo%2fclient/latest"
+    },
+    {
+      "package": "@sockudo/ai-transport",
+      "registry": "npm",
+      "version": "2.0.0",
+      "source": "https://registry.npmjs.org/@sockudo%2fai-transport/latest"
+    },
+    {
+      "package": "sockudo-python",
+      "registry": "PyPI",
+      "version": "2.0.0",
+      "source": "https://pypi.org/pypi/sockudo-python/json"
+    },
+    {
+      "package": "Sockudo.Client",
+      "registry": "NuGet",
+      "version": "2.0.0",
+      "source": "https://api.nuget.org/v3-flatcontainer/sockudo.client/index.json"
+    },
+    {
+      "package": "sockudo_flutter",
+      "registry": "pub.dev",
+      "version": "2.0.0",
+      "source": "https://pub.dev/api/packages/sockudo_flutter"
+    },
+    {
+      "package": "io.sockudo:sockudo-kotlin",
+      "registry": "Maven Central",
+      "version": "2.0.0",
+      "source": "https://repo1.maven.org/maven2/io/sockudo/sockudo-kotlin/maven-metadata.xml"
+    },
+    {
+      "package": "SockudoSwift",
+      "registry": "SwiftPM",
+      "version": null,
+      "source": "client-sdks/sockudo-swift/Package.swift"
+    },
+    {
+      "package": "sockudo",
+      "registry": "npm",
+      "version": "2.0.0",
+      "source": "https://registry.npmjs.org/sockudo/latest"
+    },
+    {
+      "package": "sockudo-http-python",
+      "registry": "PyPI",
+      "version": "2.0.0",
+      "source": "https://pypi.org/pypi/sockudo-http-python/json"
+    },
+    {
+      "package": "SockudoServer",
+      "registry": "NuGet",
+      "version": "2.0.0",
+      "source": "https://api.nuget.org/v3-flatcontainer/sockudoserver/index.json"
+    },
+    {
+      "package": "github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2",
+      "registry": "Go module proxy",
+      "version": "v2.0.0",
+      "source": "https://proxy.golang.org/github.com/sockudo/sockudo/server-sdks/sockudo-http-go/v2/@v/list"
+    },
+    {
+      "package": "io.sockudo:sockudo-http-java",
+      "registry": "Maven Central",
+      "version": "2.0.0",
+      "source": "https://repo1.maven.org/maven2/io/sockudo/sockudo-http-java/maven-metadata.xml"
+    },
+    {
+      "package": "sockudo/sockudo-php-server",
+      "registry": "Packagist",
+      "version": "v2.0.0",
+      "source": "https://repo.packagist.org/p2/sockudo/sockudo-php-server.json"
+    },
+    {
+      "package": "sockudo",
+      "registry": "RubyGems",
+      "version": "2.0.1",
+      "source": "https://rubygems.org/api/v1/gems/sockudo.json",
+      "localVersion": "2.0.0"
+    },
+    {
+      "package": "sockudo-http",
+      "registry": "crates.io",
+      "version": "2.0.0",
+      "source": "https://crates.io/api/v1/crates/sockudo-http"
+    },
+    {
+      "package": "Sockudo",
+      "registry": "SwiftPM",
+      "version": null,
+      "source": "server-sdks/sockudo-http-swift/Package.swift"
+    },
+    {
+      "package": "pusher-js",
+      "registry": "npm",
+      "version": "8.5.0",
+      "source": "https://registry.npmjs.org/pusher-js/latest"
+    },
+    {
+      "package": "pusher",
+      "registry": "npm",
+      "version": "5.3.4",
+      "source": "https://registry.npmjs.org/pusher/latest"
+    }
+  ],
+  "toolchainsObserved": {
+    "bun": "1.3.14",
+    "pnpm": "11.7.0",
+    "npm": "11.13.0",
+    "node": "v24.16.0",
+    "python3": "3.9.6",
+    "pip": "26.0.1",
+    "dotnet": "10.0.301",
+    "flutter": "3.44.2",
+    "dart": "3.12.2",
+    "java": "openjdk 25.0.3",
+    "swift": "6.3.3",
+    "swiftlint": "0.63.3",
+    "go": "1.26.4",
+    "php": "8.4.22",
+    "composer": "2.9.5",
+    "ruby": "2.6.10",
+    "bundler": "1.17.2",
+    "cargo": "1.96.0"
+  },
+  "baselineRuns": [
+    {
+      "package": "client-sdks/sockudo-js",
+      "command": "bun run test",
+      "status": "pass",
+      "details": "First run passed: 12 suites, 43 tests. Later concurrent rerun failed on missing optional React/Vue peer deps after AI Transport pnpm install changed local dependency state."
+    },
+    {
+      "package": "client-sdks/sockudo-ai-transport-js",
+      "command": "CI=true pnpm test",
+      "status": "blocked",
+      "details": "pnpm failed before tests with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION for @ai-sdk/mcp@2.0.1 and @ai-sdk/react@4.0.3 in a dirty lockfile/package state."
+    },
+    {
+      "package": "client-sdks/sockudo-python",
+      "command": "python3 -m pytest",
+      "status": "blocked",
+      "details": "Local Python is 3.9.6 and pytest is not installed; package requires >=3.10."
+    },
+    {
+      "package": "client-sdks/sockudo-dotnet",
+      "command": "dotnet test tests/Sockudo.Client.Tests/Sockudo.Client.Tests.csproj --configuration Release --verbosity normal",
+      "status": "pass",
+      "details": "17 tests passed."
+    },
+    {
+      "package": "client-sdks/sockudo-flutter",
+      "command": "flutter pub get && flutter test",
+      "status": "pass",
+      "details": "18 tests passed."
+    },
+    {
+      "package": "client-sdks/sockudo-kotlin",
+      "command": "./gradlew --no-daemon :lib:test",
+      "status": "pass",
+      "details": "Build successful; JDK 25 Unsafe/deprecation warnings."
+    },
+    {
+      "package": "client-sdks/sockudo-swift",
+      "command": "swift test",
+      "status": "pass",
+      "details": "17 Swift Testing tests passed."
+    },
+    {
+      "package": "server-sdks/sockudo-http-node",
+      "command": "npm run local-test",
+      "status": "pass",
+      "details": "152 tests passed."
+    },
+    {
+      "package": "server-sdks/sockudo-http-python",
+      "command": "python3 -m pytest",
+      "status": "blocked",
+      "details": "Local Python environment lacks pytest."
+    },
+    {
+      "package": "server-sdks/sockudo-http-dotnet",
+      "command": "dotnet test sockudo-dotnet-server.sln && dotnet test pusher-dotnet-server.sln",
+      "status": "pass",
+      "details": "Sockudo solution: 142 passed, 54 skipped. Pusher solution: 133 passed, 54 skipped."
+    },
+    {
+      "package": "server-sdks/sockudo-http-go",
+      "command": "go test ./...",
+      "status": "pass",
+      "details": "Green."
+    },
+    {
+      "package": "server-sdks/sockudo-http-java",
+      "command": "./gradlew --no-daemon test",
+      "status": "pass",
+      "details": "Build successful; Gradle deprecation warnings."
+    },
+    {
+      "package": "server-sdks/sockudo-http-php",
+      "command": "composer install --no-interaction --prefer-dist && vendor/bin/phpunit",
+      "status": "fail",
+      "details": "Exit 1 despite 156 tests and 158 assertions completing; 21 PHPUnit warnings and 1 deprecation.",
+      "issue": "https://github.com/sockudo/sockudo/issues/297"
+    },
+    {
+      "package": "server-sdks/sockudo-http-ruby",
+      "command": "bundle exec rake spec",
+      "status": "blocked",
+      "details": "Local Ruby 2.6.10/Bundler 1.17.2 cannot satisfy Gemfile.lock Bundler 4.0.11."
+    },
+    {
+      "package": "server-sdks/sockudo-http-rust",
+      "command": "cargo test --all-features",
+      "status": "pass",
+      "details": "43 tests passed; doc tests 0."
+    },
+    {
+      "package": "server-sdks/sockudo-http-swift",
+      "command": "swift test",
+      "status": "pass",
+      "details": "97 tests passed, 35 skipped live tests due unset credentials."
+    }
+  ],
+  "thirdPartyCanary": {
+    "serverCommand": "cargo build -p sockudo --features ai-transport && ./target/debug/sockudo --config config/config.toml",
+    "clientPackage": "pusher-js@8.5.0",
+    "serverPackage": "pusher@5.3.4",
+    "status": "fail",
+    "observed": [
+      "pusher-js connected",
+      "pusher:subscription_succeeded delivered",
+      "official pusher trigger returned {\"size\":0,\"timeout\":0}",
+      "application event was not delivered within 10 seconds"
+    ],
+    "issue": "https://github.com/sockudo/sockudo/issues/298"
+  },
+  "riskSummary": {
+    "clientE2": [
+      "JS number serial handling and extras passthrough",
+      ".NET event serial int truncation and extras passthrough",
+      "Flutter web serial precision and extras passthrough",
+      "Kotlin numeric-string headers parsed through Double and extras passthrough",
+      "Python extras passthrough",
+      "Swift NSNumber.intValue serial truncation and extras passthrough"
+    ],
+    "serverE3": [
+      "Swift strict webhook event enum",
+      "Python strict WebhookEvent constructor",
+      "Rust webhook values typed as string",
+      ".NET webhook values typed as string",
+      "Go webhook data typed as string"
+    ]
+  },
+  "issuesFiled": [
+    {
+      "url": "https://github.com/sockudo/sockudo/issues/297",
+      "title": "SDK baseline: PHP test suite exits non-zero on PHPUnit duplicate-suite warnings"
+    },
+    {
+      "url": "https://github.com/sockudo/sockudo/issues/298",
+      "title": "V1 canary: vanilla pusher-js subscribes but does not receive official pusher trigger"
+    }
+  ],
+  "issueCandidatesNotFiled": [
+    {
+      "package": "client-sdks/sockudo-ai-transport-js",
+      "reason": "Failure occurred before tests because the local dirty pnpm lockfile/package state selected newly published dependencies blocked by minimumReleaseAge policy."
+    },
+    {
+      "package": "client-sdks/sockudo-python",
+      "reason": "Local Python version/dependency blocker, not a package failure."
+    },
+    {
+      "package": "server-sdks/sockudo-http-python",
+      "reason": "Local missing pytest blocker, not a package failure."
+    },
+    {
+      "package": "server-sdks/sockudo-http-ruby",
+      "reason": "Local Ruby/Bundler version blocker, not a package failure."
+    }
+  ]
+}

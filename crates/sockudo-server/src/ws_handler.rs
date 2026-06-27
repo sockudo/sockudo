@@ -7,7 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use serde::Deserialize;
-use sockudo_protocol::{ProtocolVersion, WireFormat};
+use sockudo_protocol::{AppendMode, ProtocolVersion, WireFormat};
 use sockudo_ws::axum_integration::WebSocketUpgrade;
 use std::sync::Arc;
 use tracing::log::error;
@@ -23,6 +23,8 @@ pub struct ConnectionQuery {
     echo_messages: Option<bool>,
     /// V2 AI Transport append rollup window preference.
     append_rollup_window: Option<u64>,
+    /// V2 mutable message append delivery mode: delta (default) or full.
+    append_mode: Option<String>,
     /// V2 capability-token authentication.
     token: Option<String>,
 }
@@ -73,6 +75,14 @@ pub async fn handle_ws_upgrade(
     {
         return axum::http::StatusCode::BAD_REQUEST.into_response();
     }
+    let append_mode = if protocol_version == ProtocolVersion::V2 {
+        match AppendMode::parse_query_param(params.append_mode.as_deref()) {
+            Ok(mode) => mode,
+            Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
+        }
+    } else {
+        AppendMode::Full
+    };
     let ws_cfg = server_options.websocket.to_sockudo_ws_config(
         server_options.websocket_max_payload_kb,
         server_options.activity_timeout,
@@ -88,6 +98,7 @@ pub async fn handle_ws_upgrade(
                     protocol_version,
                     wire_format,
                     echo_messages,
+                    append_mode,
                     params.token,
                 )
                 .await
@@ -142,5 +153,22 @@ mod tests {
         for value in [1, 19, 60, 501] {
             assert!(!rollup.allows_window(value));
         }
+    }
+
+    #[test]
+    fn append_mode_query_accepts_delta_and_full() {
+        assert_eq!(
+            AppendMode::parse_query_param(None).unwrap(),
+            AppendMode::Delta
+        );
+        assert_eq!(
+            AppendMode::parse_query_param(Some("delta")).unwrap(),
+            AppendMode::Delta
+        );
+        assert_eq!(
+            AppendMode::parse_query_param(Some("full")).unwrap(),
+            AppendMode::Full
+        );
+        assert!(AppendMode::parse_query_param(Some("snapshot")).is_err());
     }
 }

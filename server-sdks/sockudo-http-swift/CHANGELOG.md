@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Preserve unknown webhook event names and raw nested webhook payload fields for forward compatibility.
+
 ## [1.0.1](https://github.com/pusher/pusher-http-swift/compare/1.0.0...1.0.1) - 2021-12-30
 
 ### Fixed

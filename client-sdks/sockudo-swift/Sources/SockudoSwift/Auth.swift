@@ -50,6 +50,9 @@ public typealias UserAuthenticationHandler =
     UserAuthenticationRequest,
     @escaping @Sendable (Result<UserAuthenticationData, Error>) -> Void
   ) -> Void
+public typealias CapabilityTokenProvider =
+  (@escaping @Sendable (Result<String, Error>) -> Void) -> Void
+public typealias CapabilityTokenAsyncProvider = @Sendable () async throws -> String
 
 public struct ChannelAuthorizationOptions {
   public var endpoint: String
@@ -98,6 +101,57 @@ public struct UserAuthenticationOptions {
     self.headersProvider = headersProvider
     self.paramsProvider = paramsProvider
     self.customHandler = customHandler
+  }
+}
+
+public struct CapabilityTokenAuthData: Sendable, Equatable {
+  public let clientID: String?
+  public let jti: String?
+  public let exp: Int64?
+
+  public init(clientID: String? = nil, jti: String? = nil, exp: Int64? = nil) {
+    self.clientID = clientID
+    self.jti = jti
+    self.exp = exp
+  }
+}
+
+public struct CapabilityTokenExpiredData: Sendable, Equatable {
+  public let code: Int?
+  public let reason: String?
+
+  public init(code: Int? = nil, reason: String? = nil) {
+    self.code = code
+    self.reason = reason
+  }
+}
+
+public struct CapabilityTokenOptions {
+  public var token: String?
+  public var provider: CapabilityTokenProvider?
+
+  public init(
+    token: String? = nil,
+    provider: CapabilityTokenProvider? = nil
+  ) {
+    self.token = token
+    self.provider = provider
+  }
+
+  public init(
+    token: String? = nil,
+    asyncProvider: @escaping CapabilityTokenAsyncProvider
+  ) {
+    self.token = token
+    self.provider = { completion in
+      Task {
+        do {
+          completion(.success(try await asyncProvider()))
+        } catch {
+          completion(.failure(error))
+        }
+      }
+    }
   }
 }
 

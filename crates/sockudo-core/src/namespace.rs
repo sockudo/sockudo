@@ -29,6 +29,7 @@ pub struct SocketInitOptions {
     pub protocol_version: sockudo_protocol::ProtocolVersion,
     pub wire_format: sockudo_protocol::WireFormat,
     pub echo_messages: bool,
+    pub append_mode: sockudo_protocol::AppendMode,
 }
 
 impl Namespace {
@@ -77,6 +78,7 @@ impl Namespace {
         websocket.state.protocol_version = init.protocol_version;
         websocket.state.wire_format = init.wire_format;
         websocket.state.echo_messages = init.echo_messages;
+        websocket.state.append_mode = init.append_mode;
 
         let websocket_ref = WebSocketRef::new(websocket);
         self.sockets.insert(socket_id, websocket_ref.clone());
@@ -853,6 +855,7 @@ mod tests {
                     buffer_config: crate::websocket::WebSocketBufferConfig::default(),
                     protocol_version: ProtocolVersion::V2,
                     wire_format: WireFormat::Json,
+                    append_mode: sockudo_protocol::AppendMode::Delta,
                     echo_messages: true,
                 },
             )

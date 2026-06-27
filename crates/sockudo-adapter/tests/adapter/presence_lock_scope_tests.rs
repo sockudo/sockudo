@@ -79,6 +79,7 @@ impl ConnectionManager for ScriptedCM {
         _protocol_version: ProtocolVersion,
         _wire_format: WireFormat,
         _echo_messages: bool,
+        _append_mode: sockudo_protocol::AppendMode,
     ) -> Result<()> {
         Ok(())
     }

@@ -312,6 +312,7 @@ async fn connect_v2_socket(node: &ClusterNode, app: &App) -> (SocketId, ClientRe
             ProtocolVersion::V2,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();

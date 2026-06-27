@@ -34,7 +34,9 @@ export function createVercelEncoder(
 ): Encoder<VercelInput, VercelOutput> {
   const core = createEncoderCore(channel, options);
   const activeStreams = new Map<string, string>();
-  let activeMessageId = getTransportHeaders(options.extras)[HEADER_CODEC_MESSAGE_ID];
+  let activeMessageId: string | undefined = getTransportHeaders(options.extras)[
+    HEADER_CODEC_MESSAGE_ID
+  ];
   return {
     async publishInput(input, writeOptions = {}) {
       if (isUserMessage(input)) {
@@ -232,7 +234,7 @@ function streamDescriptor(
       return {
         op: "delta",
         key: `tool-input:${chunk.toolCallId}`,
-        delta: chunk.delta,
+        delta: inputDelta(chunk),
       };
     case "tool-input-available":
       return { op: "end", key: `tool-input:${chunk.toolCallId}` };
@@ -248,11 +250,14 @@ function outputPayload(chunk: AI.UIMessageChunk): unknown {
   switch (chunk.type) {
     case "text-delta":
     case "reasoning-delta":
-    case "tool-input-delta":
       return chunk.delta;
+    case "tool-input-delta":
+      return inputDelta(chunk);
     case "error":
       return chunk.errorText;
     case "file":
+      return chunk.url;
+    case "reasoning-file":
       return chunk.url;
     case "source-url":
       return chunk.url;
@@ -260,6 +265,12 @@ function outputPayload(chunk: AI.UIMessageChunk): unknown {
       return chunk.output;
     case "tool-input-available":
       return chunk.input ?? "";
+    case "tool-approval-response":
+      return {
+        approved: chunk.approved,
+        reason: chunk.reason,
+        approvalId: chunk.approvalId,
+      };
     default:
       return chunk;
   }
@@ -314,6 +325,10 @@ function shouldStartAssistantMessage(chunk: AI.UIMessageChunk): boolean {
     chunk.type === "reasoning-start" ||
     chunk.type === "tool-input-start"
   );
+}
+
+function inputDelta(chunk: Extract<AI.UIMessageChunk, { type: "tool-input-delta" }>): string {
+  return chunk.inputTextDelta ?? chunk.delta ?? "";
 }
 
 function nextGeneratedMessageId(): string {

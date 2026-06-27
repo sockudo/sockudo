@@ -40,6 +40,38 @@ private final class PushURLProtocol: URLProtocol, @unchecked Sendable {
   override func stopLoading() {}
 }
 
+private final class VersionedProxyURLProtocol: URLProtocol, @unchecked Sendable {
+  nonisolated(unsafe) static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data?))?
+
+  override class func canInit(with request: URLRequest) -> Bool {
+    true
+  }
+
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+    request
+  }
+
+  override func startLoading() {
+    guard let handler = Self.requestHandler else {
+      client?.urlProtocol(self, didFailWithError: TimeoutError())
+      return
+    }
+
+    do {
+      let (response, data) = try handler(request)
+      client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+      if let data {
+        client?.urlProtocol(self, didLoad: data)
+      }
+      client?.urlProtocolDidFinishLoading(self)
+    } catch {
+      client?.urlProtocol(self, didFailWithError: error)
+    }
+  }
+
+  override func stopLoading() {}
+}
+
 private struct TimeoutError: Error {}
 
 private func waitForValue<T>(
@@ -65,6 +97,19 @@ private func sha256HMAC(_ string: String, secret: String) -> String {
 
 private func md5Hex(_ data: Data) -> String {
   Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+private func unsignedJWT(claims: [String: Any]) throws -> String {
+  let header = try base64URL(JSONSerialization.data(withJSONObject: ["alg": "HS256"], options: []))
+  let payload = try base64URL(JSONSerialization.data(withJSONObject: claims, options: []))
+  return "\(header).\(payload).signature"
+}
+
+private func base64URL(_ data: Data) -> String {
+  data.base64EncodedString()
+    .replacingOccurrences(of: "+", with: "-")
+    .replacingOccurrences(of: "/", with: "_")
+    .replacingOccurrences(of: "=", with: "")
 }
 
 private func liveWireFormat() -> SockudoWireFormat {
@@ -196,6 +241,22 @@ private func decodedEvent(
   try ProtocolCodec.decodeEvent(message, format: .json)
 }
 
+private func forwardCompatFixture(_ name: String) throws -> String {
+  var url = URL(fileURLWithPath: #filePath)
+  for _ in 0..<5 {
+    url.deleteLastPathComponent()
+  }
+  url.appendPathComponent("tests/ai-conformance/fixtures/forward-compat/\(name)")
+  return try String(contentsOf: url, encoding: .utf8)
+}
+
+private func websocketMessage(from payload: EncodedPayload) -> URLSessionWebSocketTask.Message {
+  switch payload {
+  case .string(let text): .string(text)
+  case .data(let data): .data(data)
+  }
+}
+
 private func requestBodyData(_ request: URLRequest) -> Data? {
   if let body = request.httpBody {
     return body
@@ -264,6 +325,19 @@ func presenceHistoryParamsNormalizeAblyAliases() {
   #expect(payload["limit"] as? Int == 50)
   #expect(payload["start_time_ms"] as? Int64 == 1000)
   #expect(payload["end_time_ms"] as? Int64 == 2000)
+}
+
+@Test
+func channelHistoryParamsIncludeUntilAttach() {
+  let payload = ChannelHistoryParams(
+    direction: "newest_first",
+    limit: 20,
+    untilAttach: true
+  ).payload
+
+  #expect(payload["direction"] as? String == "newest_first")
+  #expect(payload["limit"] as? Int == 20)
+  #expect(payload["until_attach"] as? Bool == true)
 }
 
 @Test
@@ -482,6 +556,167 @@ func pushProxyHelpersUseBackendEndpointAndAsyncPublishDefaults() async throws {
 }
 
 @Test
+func versionedMessageProxyWritesUseEndpointTimeoutAndTypedAcks() async throws {
+  let requests = Box<[URLRequest]>()
+  requests.value = []
+  let bodies = Box<[[String: Any]]>()
+  bodies.value = []
+
+  let configuration = URLSessionConfiguration.ephemeral
+  configuration.protocolClasses = [VersionedProxyURLProtocol.self]
+  let session = URLSession(configuration: configuration)
+  defer {
+    VersionedProxyURLProtocol.requestHandler = nil
+    session.invalidateAndCancel()
+  }
+
+  VersionedProxyURLProtocol.requestHandler = { request in
+    requests.value?.append(request)
+    let bodyData = try #require(requestBodyData(request))
+    let body = try #require(try JSON.decode(bodyData) as? [String: Any])
+    bodies.value?.append(body)
+    let action = body["action"] as? String
+    let messageSerial = body["messageSerial"] as? String ?? "msg:1"
+    let payload: [String: Any]
+    switch action {
+    case "create_message":
+      payload = [
+        "channels": [
+          "chat": [
+            "message_serial": "msg:1",
+            "version_serial": "v1",
+            "history_serial": 1,
+            "delivery_serial": 1,
+          ]
+        ]
+      ]
+    case "update_message":
+      payload = [
+        "channel": "chat",
+        "message_serial": messageSerial,
+        "action": "update",
+        "accepted": true,
+        "version_serial": "v2",
+        "history_serial": 2,
+        "delivery_serial": 2,
+        "status": "applied",
+      ]
+    case "append_message":
+      payload = [
+        "channel": "chat",
+        "message_serial": messageSerial,
+        "action": "message.append",
+        "accepted": true,
+        "version_serial": "v3",
+        "history_serial": 3,
+        "delivery_serial": 3,
+        "status": "applied",
+      ]
+    case "delete_message":
+      payload = [
+        "channel": "chat",
+        "message_serial": messageSerial,
+        "action": "delete",
+        "accepted": true,
+        "version_serial": "v4",
+        "history_serial": 4,
+        "delivery_serial": 4,
+        "status": "applied",
+      ]
+    default:
+      payload = ["error": "unexpected action"]
+    }
+
+    let response = HTTPURLResponse(
+      url: request.url!,
+      statusCode: 200,
+      httpVersion: nil,
+      headerFields: ["Content-Type": "application/json"])!
+    let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+    return (response, data)
+  }
+
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(
+      cluster: "local",
+      versionedMessages: .init(
+        endpoint: "https://api.example.test/versioned",
+        headers: ["Authorization": "Bearer session"]
+      )
+    ),
+    urlSession: session
+  )
+  let channel = client.subscribe("chat")
+
+  let createBox = Box<Result<VersionedMessageAck, Error>>()
+  channel.createMessage(
+    .init(
+      name: "chat.message",
+      data: ["text": "hello"],
+      messageID: "message-id-1",
+      idempotencyKey: "idem-1"
+    )
+  ) { result in
+    createBox.value = result
+  }
+  let createAck = try await waitForValue { createBox.value }.get()
+
+  let updateBox = Box<Result<VersionedMessageAck, Error>>()
+  channel.updateMessage(
+    "msg:1",
+    request: .init(data: ["text": "patched"], clearFields: [.extras], opID: "op-update")
+  ) { result in
+    updateBox.value = result
+  }
+  let updateAck = try await waitForValue { updateBox.value }.get()
+
+  let appendBox = Box<Result<VersionedMessageAck, Error>>()
+  channel.appendMessage(
+    "msg:1",
+    request: .init(data: " world", opID: "op-append")
+  ) { result in
+    appendBox.value = result
+  }
+  let appendAck = try await waitForValue { appendBox.value }.get()
+
+  let deleteBox = Box<Result<VersionedMessageAck, Error>>()
+  channel.deleteMessage(
+    "msg:1",
+    request: .init(clearFields: [.data], opID: "op-delete")
+  ) { result in
+    deleteBox.value = result
+  }
+  let deleteAck = try await waitForValue { deleteBox.value }.get()
+
+  #expect(createAck.action == .create)
+  #expect(createAck.messageSerial == "msg:1")
+  #expect(createAck.historySerial == 1)
+  #expect(updateAck.action == .update)
+  #expect(updateAck.versionSerial == "v2")
+  #expect(appendAck.action == .append)
+  #expect(appendAck.deliverySerial == 3)
+  #expect(deleteAck.action == .delete)
+  #expect(deleteAck.status == "applied")
+
+  #expect(requests.value?.count == 4)
+  #expect(requests.value?.allSatisfy { $0.timeoutInterval == 10 } == true)
+  #expect(requests.value?.first?.value(forHTTPHeaderField: "Authorization") == "Bearer session")
+
+  let createBody = try #require(bodies.value?[0])
+  let updateBody = try #require(bodies.value?[1])
+  let appendBody = try #require(bodies.value?[2])
+  let deleteBody = try #require(bodies.value?[3])
+
+  #expect(createBody["action"] as? String == "create_message")
+  #expect((createBody["payload"] as? [String: Any])?["message_id"] as? String == "message-id-1")
+  #expect(updateBody["messageSerial"] as? String == "msg:1")
+  #expect((updateBody["payload"] as? [String: Any])?["clear_fields"] as? [String] == ["extras"])
+  #expect((appendBody["payload"] as? [String: Any])?["data"] as? String == " world")
+  #expect(deleteBody["action"] as? String == "delete_message")
+}
+
+@Test
 func channelExposesAnnotationInternalEvents() throws {
   let client = try SockudoClient(
     "app-key",
@@ -532,6 +767,32 @@ func channelExposesAnnotationInternalEvents() throws {
 }
 
 @Test
+func subscriptionSucceededCapturesAttachSerial() throws {
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(cluster: "local", protocolVersion: 2)
+  )
+  let channel = client.subscribe("chat")
+
+  channel.handle(
+    event: SockudoEvent(
+      event: "sockudo_internal:subscription_succeeded",
+      channel: "chat",
+      data: ["attach_serial": 42],
+      userID: nil,
+      streamID: nil,
+      messageId: nil,
+      rawMessage: "",
+      sequence: nil,
+      conflationKey: nil,
+      serial: nil,
+      extras: nil
+    ))
+
+  #expect(channel.attachSerial == 42)
+}
+
+@Test
 func websocketURLIncludesV2FormatQuery() throws {
   let client = try SockudoClient(
     "app-key",
@@ -543,7 +804,10 @@ func websocketURLIncludesV2FormatQuery() throws {
       wsHost: "ws.example.com",
       wsPort: 6001,
       wssPort: 6002,
-      wireFormat: .messagepack
+      capabilityToken: .init(token: "jwt-1"),
+      wireFormat: .messagepack,
+      appendMode: .full,
+      appendRollupWindow: 40
     )
   )
 
@@ -555,6 +819,9 @@ func websocketURLIncludesV2FormatQuery() throws {
 
   #expect(query["protocol"] == "2")
   #expect(query["format"] == "messagepack")
+  #expect(query["append_mode"] == "full")
+  #expect(query["append_rollup_window"] == "40")
+  #expect(query["token"] == "jwt-1")
 }
 
 @Test
@@ -579,6 +846,148 @@ func websocketURLUsesV1ByDefaultAndOmitsFormatQuery() throws {
 
   #expect(query["protocol"] == "7")
   #expect(query["format"] == nil)
+  #expect(query["append_mode"] == nil)
+  #expect(query["append_rollup_window"] == nil)
+  #expect(query["token"] == nil)
+}
+
+@Test
+func appendRollupWindowRejectsUnsupportedValues() {
+  do {
+    _ = try SockudoClient(
+      "app-key",
+      options: .init(cluster: "local", protocolVersion: 2, appendRollupWindow: 60)
+    )
+    Issue.record("Expected appendRollupWindow validation to fail")
+  } catch SockudoError.invalidOptions(let message) {
+    #expect(message.contains("appendRollupWindow"))
+  } catch {
+    Issue.record("Expected invalidOptions, got \(error)")
+  }
+}
+
+@Test
+func capabilityTokenAuthEventsUpdateStateAndProviderRefreshes() async throws {
+  let tokenRequests = Box<Int>()
+  tokenRequests.value = 0
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(
+      cluster: "local",
+      protocolVersion: 2,
+      capabilityToken: .init(provider: { completion in
+        tokenRequests.value = (tokenRequests.value ?? 0) + 1
+        completion(.success("fresh-token-\(tokenRequests.value ?? 0)"))
+      })
+    )
+  )
+
+  client.handle(
+    rawMessage: .string(
+      #"{"event":"sockudo:auth_success","data":{"client_id":"user-1","jti":"jti-1","exp":4102444800}}"#
+    ))
+  client.handle(
+    rawMessage: .string(
+      #"{"event":"sockudo:token_expired","data":{"code":40142,"reason":"expired"}}"#
+    ))
+
+  _ = try await waitForValue {
+    client.config.capabilityToken == "fresh-token-1" ? true : nil
+  }
+  #expect(client.capabilityTokenAuth == .init(clientID: "user-1", jti: "jti-1", exp: 4_102_444_800))
+  #expect(client.lastCapabilityTokenExpired == .init(code: 40142, reason: "expired"))
+  #expect(tokenRequests.value == 1)
+}
+
+@Test
+func capabilityTokenRefreshDelayUsesJWTIatAndExp() throws {
+  let token = try unsignedJWT(claims: ["iat": 1_000, "exp": 2_000])
+  let delay = try #require(
+    SockudoClient.capabilityTokenRefreshDelay(
+      for: token,
+      now: Date(timeIntervalSince1970: 1_700)
+    ))
+
+  #expect(abs(delay - 100) < 0.001)
+}
+
+@Test
+func capabilityTokenRefreshDelayFallsBackToNowWhenIatMissing() throws {
+  let token = try unsignedJWT(claims: ["exp": 2_000])
+  let delay = try #require(
+    SockudoClient.capabilityTokenRefreshDelay(
+      for: token,
+      now: Date(timeIntervalSince1970: 1_000)
+    ))
+
+  #expect(abs(delay - 800) < 0.001)
+  #expect(SockudoClient.capabilityTokenRefreshDelay(for: "opaque-token") == nil)
+  #expect(SockudoClient.capabilityTokenRefreshDelay(for: try unsignedJWT(claims: ["iat": 1])) == nil)
+}
+
+@Test
+func providerJWTCapabilityTokenSchedulesProactiveRefresh() async throws {
+  let issuedAt = 1_000
+  let expiresAt = 2_000
+  let token = try unsignedJWT(claims: ["iat": issuedAt, "exp": expiresAt])
+  let tokenRequests = Box<Int>()
+  tokenRequests.value = 0
+
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(
+      cluster: "local",
+      protocolVersion: 2,
+      capabilityToken: .init(provider: { completion in
+        tokenRequests.value = (tokenRequests.value ?? 0) + 1
+        completion(.success("opaque-refresh-\(tokenRequests.value ?? 0)"))
+      })
+    )
+  )
+
+  client.scheduleCapabilityTokenRefreshIfNeeded(
+    for: token,
+    now: Date(timeIntervalSince1970: 1_800)
+  )
+
+  #expect(client.hasCapabilityTokenRefreshTimer == true)
+  _ = try await waitForValue(timeout: 2) {
+    tokenRequests.value == 1 ? true : nil
+  }
+  #expect(client.config.capabilityToken == "opaque-refresh-1")
+  #expect(client.hasCapabilityTokenRefreshTimer == false)
+}
+
+@Test
+func staticOnlyAndOpaqueCapabilityTokensDoNotScheduleProactiveRefresh() throws {
+  let token = try unsignedJWT(claims: ["iat": 1_000, "exp": 2_000])
+  let staticOnly = try SockudoClient(
+    "app-key",
+    options: .init(
+      cluster: "local",
+      protocolVersion: 2,
+      capabilityToken: .init(token: token)
+    )
+  )
+  staticOnly.scheduleCapabilityTokenRefreshIfNeeded(
+    for: token,
+    now: Date(timeIntervalSince1970: 1_000)
+  )
+
+  let providerOpaque = try SockudoClient(
+    "app-key",
+    options: .init(
+      cluster: "local",
+      protocolVersion: 2,
+      capabilityToken: .init(provider: { completion in
+        completion(.success("another-token"))
+      })
+    )
+  )
+  providerOpaque.scheduleCapabilityTokenRefreshIfNeeded(for: "opaque-token")
+
+  #expect(staticOnly.hasCapabilityTokenRefreshTimer == false)
+  #expect(providerOpaque.hasCapabilityTokenRefreshTimer == false)
 }
 
 @Test
@@ -638,16 +1047,21 @@ func protobufRoundTrip() throws {
           "ttl": 5,
           "replay": true,
         ],
+        "ai": [
+          "transport": [
+            "turn-id": "turn-1",
+            "status": "streaming",
+          ],
+          "codec": [
+            "x-custom": "opaque"
+          ],
+        ],
         "echo": false,
       ],
     ],
     format: .protobuf
   )
-  let message: URLSessionWebSocketTask.Message =
-    switch payload {
-    case .string(let text): .string(text)
-    case .data(let data): .data(data)
-    }
+  let message = websocketMessage(from: payload)
 
   let decoded = try ProtocolCodec.decodeEvent(message, format: .protobuf)
 
@@ -663,6 +1077,216 @@ func protobufRoundTrip() throws {
   #expect(decoded.extras?.headers?["ttl"] == .int(5))
   #expect(decoded.extras?.headers?["replay"] == .bool(true))
   #expect(decoded.extras?.echo == false)
+  #expect(decoded.extras?.raw?["ai"]?["transport"]?["turn-id"]?.stringValue == "turn-1")
+  #expect(decoded.extras?.raw?["ai"]?["transport"]?["status"]?.stringValue == "streaming")
+  #expect(decoded.extras?.raw?["ai"]?["codec"]?["x-custom"]?.stringValue == "opaque")
+}
+
+@Test
+func forwardCompatFixturesReplayThroughClientDispatch() throws {
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(cluster: "local", protocolVersion: 2)
+  )
+  defer { client.disconnect() }
+
+  let channel = client.subscribe("private-ai-forward")
+  let knownCount = Box<Int>()
+  knownCount.value = 0
+  let channelEvents = Box<[String]>()
+  channelEvents.value = []
+
+  _ = channel.bind("app-known") { _, _ in
+    knownCount.value = (knownCount.value ?? 0) + 1
+  }
+  _ = channel.bindGlobal { event, _ in
+    channelEvents.value?.append(event)
+  }
+
+  client.handle(
+    rawMessage: .string(
+      #"{"event":"app-known","channel":"private-ai-forward","data":{"before":true}}"#))
+  let wasSubscribed = channel.isSubscribed
+  let wasPending = channel.subscriptionPending
+  let wasCancelled = channel.subscriptionCancelled
+
+  for fixture in [
+    "future-v2-frame.json",
+    "future-versioned-action.json",
+    "future-webhook-events.json",
+    "unknown-ai-extras.json",
+  ] {
+    client.handle(rawMessage: .string(try forwardCompatFixture(fixture)))
+  }
+
+  client.handle(
+    rawMessage: .string(
+      #"{"event":"app-known","channel":"private-ai-forward","data":{"after":true}}"#))
+
+  #expect(knownCount.value == 2)
+  #expect(channel.isSubscribed == wasSubscribed)
+  #expect(channel.subscriptionPending == wasPending)
+  #expect(channel.subscriptionCancelled == wasCancelled)
+  #expect(channelEvents.value?.contains("sockudo:future_event") == true)
+  #expect(channelEvents.value?.contains("sockudo:message.future") == true)
+  #expect(channelEvents.value?.contains("ai-output") == true)
+}
+
+@Test
+func forwardCompatJSONPreservesSerialBoundariesAndRawExtras() throws {
+  let futureFrame = try ProtocolCodec.decodeEvent(
+    .string(try forwardCompatFixture("future-v2-frame.json")),
+    format: .json
+  )
+  let int32Boundary = try ProtocolCodec.decodeEvent(
+    .string(#"{"event":"sockudo:test","channel":"private-ai-forward","serial":2147483648}"#),
+    format: .json
+  )
+  let extrasFrame = try ProtocolCodec.decodeEvent(
+    .string(try forwardCompatFixture("unknown-ai-extras.json")),
+    format: .json
+  )
+  let futureAction = try ProtocolCodec.decodeEvent(
+    .string(try forwardCompatFixture("future-versioned-action.json")),
+    format: .json
+  )
+
+  #expect(int32Boundary.serial == 2_147_483_648)
+  #expect(futureFrame.serial == 9_007_199_254_740_993)
+  #expect(futureAction.event == "sockudo:message.future")
+  #expect(isMutableMessageEvent(futureAction) == false)
+  #expect(extrasFrame.extras?.raw?["ai"]?["transport"]?["turn-id"]?.stringValue == "turn-1")
+  #expect(extrasFrame.extras?.raw?["ai"]?["transport"]?["status"]?.stringValue == "streaming")
+  #expect(extrasFrame.extras?.raw?["ai"]?["codec"]?["provider-future-key"]?.stringValue == "opaque")
+  #expect(extrasFrame.extras?.raw?["futureExtrasField"] == .bool(true))
+}
+
+@Test
+func binaryCodecsPreserveLargeSerialsAndAIExtras() throws {
+  let largeSerial = 9_007_199_254_740_993
+  let payload: [String: Any] = [
+    "event": "sockudo:test",
+    "channel": "private-ai-forward",
+    "data": "content",
+    "stream_id": "stream-1",
+    "serial": largeSerial,
+    "__delta_seq": largeSerial,
+    "extras": [
+      "headers": [
+        "sockudo_history_serial": largeSerial + 1
+      ],
+      "ai": [
+        "transport": [
+          "turn-id": "turn-1"
+        ]
+      ],
+    ],
+  ]
+
+  let messagePack = try ProtocolCodec.decodeEvent(
+    websocketMessage(from: try ProtocolCodec.encodeEnvelope(payload, format: .messagepack)),
+    format: .messagepack
+  )
+  let protobuf = try ProtocolCodec.decodeEvent(
+    websocketMessage(from: try ProtocolCodec.encodeEnvelope(payload, format: .protobuf)),
+    format: .protobuf
+  )
+
+  #expect(messagePack.serial == largeSerial)
+  #expect(messagePack.sequence == largeSerial)
+  #expect(messagePack.extras?.headers?["sockudo_history_serial"] == .int(largeSerial + 1))
+  #expect(messagePack.extras?.raw?["ai"]?["transport"]?["turn-id"]?.stringValue == "turn-1")
+  #expect(protobuf.serial == largeSerial)
+  #expect(protobuf.sequence == largeSerial)
+  #expect(protobuf.extras?.raw?["ai"]?["transport"]?["turn-id"]?.stringValue == "turn-1")
+}
+
+@Test
+func presenceUnknownInternalEventsDoNotCorruptMembers() throws {
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(cluster: "local", protocolVersion: 2)
+  )
+  defer { client.disconnect() }
+
+  let channel = try #require(client.subscribe("presence-ai-forward") as? PresenceChannel)
+  let channelEvents = Box<[String]>()
+  channelEvents.value = []
+  _ = channel.bindGlobal { event, _ in
+    channelEvents.value?.append(event)
+  }
+
+  channel.members.setMyID("user-1")
+  channel.members.applySubscriptionData([
+    "presence": [
+      "hash": [
+        "user-1": "reader"
+      ],
+      "count": 1,
+    ]
+  ])
+
+  channel.handle(
+    event: SockudoEvent(
+      event: "sockudo_internal:presence_update",
+      channel: "presence-ai-forward",
+      data: ["user_id": "user-1", "user_info": ["role": "writer"]],
+      userID: nil,
+      streamID: nil,
+      messageId: nil,
+      rawMessage: "",
+      sequence: nil,
+      conflationKey: nil,
+      serial: nil,
+      extras: nil
+    ))
+  channel.handle(
+    event: SockudoEvent(
+      event: "sockudo_internal:member_added",
+      channel: "presence-ai-forward",
+      data: ["user_info": ["malformed": true]],
+      userID: nil,
+      streamID: nil,
+      messageId: nil,
+      rawMessage: "",
+      sequence: nil,
+      conflationKey: nil,
+      serial: nil,
+      extras: nil
+    ))
+
+  let updatedInfo = channel.members.member(id: "user-1")?.info?.base as? SockudoJSONValue
+
+  #expect(channelEvents.value?.contains("sockudo:presence_update") == true)
+  #expect(channel.members.count == 1)
+  #expect(updatedInfo == .object(["role": .string("writer")]))
+  #expect(channel.members.member(id: "undefined") == nil)
+}
+
+@Test
+func presenceUpdateRequiresV2AndUsesConnectionSendPath() throws {
+  let v1Client = try SockudoClient(
+    "app-key",
+    options: .init(cluster: "local")
+  )
+  let v1Channel = try #require(v1Client.subscribe("presence-room") as? PresenceChannel)
+
+  do {
+    _ = try v1Channel.update(data: ["status": "thinking"])
+    Issue.record("Expected Protocol V1 presence update to fail")
+  } catch SockudoError.unsupportedFeature(let message) {
+    #expect(message.contains("Protocol V2"))
+  } catch {
+    Issue.record("Expected unsupportedFeature, got \(error)")
+  }
+
+  let v2Client = try SockudoClient(
+    "app-key",
+    options: .init(cluster: "local", protocolVersion: 2)
+  )
+  let v2Channel = try #require(v2Client.subscribe("presence-room") as? PresenceChannel)
+
+  #expect(try v2Channel.update(data: ["status": "thinking"]) == false)
 }
 
 @Test

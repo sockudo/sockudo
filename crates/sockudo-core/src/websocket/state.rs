@@ -84,6 +84,8 @@ pub struct ConnectionState {
     /// V2 only. Whether the publisher receives their own messages back.
     /// Default: true (echo enabled). Set from sockudo:connect options.
     pub echo_messages: bool,
+    /// V2 only. Whether live append frames carry deltas or full snapshots.
+    pub append_mode: sockudo_protocol::AppendMode,
 }
 
 impl Default for ConnectionState {
@@ -113,6 +115,7 @@ impl ConnectionState {
             protocol_version: ProtocolVersion::V1,
             wire_format: WireFormat::Json,
             echo_messages: true,
+            append_mode: sockudo_protocol::AppendMode::Delta,
         }
     }
 
@@ -136,6 +139,7 @@ impl ConnectionState {
             protocol_version: ProtocolVersion::V1,
             wire_format: WireFormat::Json,
             echo_messages: true,
+            append_mode: sockudo_protocol::AppendMode::Delta,
         }
     }
 

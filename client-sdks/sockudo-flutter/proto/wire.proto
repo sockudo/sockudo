@@ -40,6 +40,12 @@ message ProtoMessageExtras {
   optional bool ephemeral = 2;
   optional string idempotency_key = 3;
   optional bool echo = 4;
+  ProtoAiExtras ai = 5;
+}
+
+message ProtoAiExtras {
+  map<string, string> transport = 1;
+  map<string, string> codec = 2;
 }
 
 message ProtoExtrasValue {

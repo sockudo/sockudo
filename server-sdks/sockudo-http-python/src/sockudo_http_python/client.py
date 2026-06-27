@@ -387,6 +387,19 @@ class WebhookEvent:
     data: Optional[Any] = None
     socket_id: Optional[str] = None
     user_id: Optional[str] = None
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, Any]) -> "WebhookEvent":
+        return WebhookEvent(
+            name=_optional_string(payload.get("name")) or "",
+            channel=_optional_string(payload.get("channel")),
+            event=_optional_string(payload.get("event")),
+            data=payload.get("data"),
+            socket_id=_optional_string(payload.get("socket_id")),
+            user_id=_optional_string(payload.get("user_id")),
+            raw=dict(payload),
+        )
 
 
 @dataclass(frozen=True)
@@ -398,7 +411,11 @@ class Webhook:
     def parse(body: Union[str, bytes]) -> "Webhook":
         text = body.decode("utf-8") if isinstance(body, bytes) else body
         raw = json.loads(text)
-        events = tuple(WebhookEvent(**event) for event in raw.get("events", []))
+        events = tuple(
+            WebhookEvent.from_payload(event)
+            for event in raw.get("events", [])
+            if isinstance(event, Mapping)
+        )
         return Webhook(time_ms=raw.get("time_ms"), events=events)
 
 
@@ -702,13 +719,16 @@ class _BaseSockudo:
             nacl_exceptions.CryptoError,
         ) as exc:
             raise SockudoError("Failed to decrypt encrypted webhook event") from exc
+        raw = dict(event.raw)
+        raw["data"] = plaintext.decode("utf-8")
         return WebhookEvent(
             name=event.name,
             channel=event.channel,
             event=event.event,
-            data=plaintext.decode("utf-8"),
+            data=raw["data"],
             socket_id=event.socket_id,
             user_id=event.user_id,
+            raw=raw,
         )
 
     def _serialize(self, payload: Mapping[str, Any]) -> str:
@@ -1742,6 +1762,10 @@ def _join_info(info: Optional[Union[str, Sequence[str]]]) -> Optional[str]:
 
 def _clean_raw(values: Mapping[str, Any]) -> JsonDict:
     return {key: value for key, value in values.items() if value is not None}
+
+
+def _optional_string(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) else None
 
 
 def _clean_query(values: Mapping[str, Any]) -> Dict[str, str]:

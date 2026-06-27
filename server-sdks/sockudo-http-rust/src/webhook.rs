@@ -1,5 +1,6 @@
 use crate::{Result, SockudoError, Token, WebhookError};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
+use sonic_rs::{JsonValueTrait, Value};
 use std::collections::{BTreeMap, HashMap};
 
 /// Webhook for validating and accessing Sockudo webhook data
@@ -11,6 +12,7 @@ pub struct Webhook {
     content_type: Option<String>,
     body: String,
     data: Option<WebhookData>,
+    raw_json_events: Option<Vec<HashMap<String, Value>>>,
 }
 
 /// Webhook data structure matching Sockudo's format
@@ -19,7 +21,54 @@ pub struct WebhookData {
     /// The timestamp of the webhook in milliseconds
     pub time_ms: i64,
     /// The events received with the webhook
+    #[serde(default, deserialize_with = "deserialize_webhook_events")]
     pub events: Vec<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawWebhookData {
+    #[serde(default)]
+    events: Vec<HashMap<String, Value>>,
+}
+
+fn deserialize_webhook_events<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<HashMap<String, String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw_events = Vec::<HashMap<String, Value>>::deserialize(deserializer)?;
+    project_webhook_events(&raw_events)
+}
+
+fn project_webhook_events<E>(
+    raw_events: &[HashMap<String, Value>],
+) -> std::result::Result<Vec<HashMap<String, String>>, E>
+where
+    E: DeError,
+{
+    raw_events
+        .iter()
+        .map(|event| {
+            event
+                .iter()
+                .map(|(key, value)| {
+                    stringify_webhook_value(value).map(|value| (key.clone(), value))
+                })
+                .collect::<std::result::Result<HashMap<_, _>, E>>()
+        })
+        .collect()
+}
+
+fn stringify_webhook_value<E>(value: &Value) -> std::result::Result<String, E>
+where
+    E: DeError,
+{
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .map(Ok)
+        .unwrap_or_else(|| sonic_rs::to_string(&value).map_err(E::custom))
 }
 
 /// Strongly typed webhook event
@@ -66,10 +115,15 @@ impl Webhook {
         let signature = normalized_headers.get("x-sockudo-signature").cloned();
         let content_type = normalized_headers.get("content-type").cloned();
 
-        let data = if Self::validate_content_type(&content_type) {
-            sonic_rs::from_str::<WebhookData>(body).ok()
+        let (data, raw_json_events) = if Self::validate_content_type(&content_type) {
+            (
+                sonic_rs::from_str::<WebhookData>(body).ok(),
+                sonic_rs::from_str::<RawWebhookData>(body)
+                    .ok()
+                    .map(|raw| raw.events),
+            )
         } else {
-            None
+            (None, None)
         };
 
         Self {
@@ -79,6 +133,7 @@ impl Webhook {
             content_type,
             body: body.to_string(),
             data,
+            raw_json_events,
         }
     }
 
@@ -140,6 +195,18 @@ impl Webhook {
     /// Gets the raw events from webhook data
     pub fn get_raw_events(&self) -> Result<&Vec<HashMap<String, String>>> {
         Ok(&self.get_data()?.events)
+    }
+
+    /// Gets the original JSON event objects without stringifying nested values.
+    pub fn get_raw_json_events(&self) -> Result<&Vec<HashMap<String, Value>>> {
+        self.raw_json_events.as_ref().ok_or_else(|| {
+            SockudoError::Webhook(WebhookError::new(
+                "Invalid webhook body",
+                self.content_type.clone(),
+                &self.body,
+                self.signature.clone(),
+            ))
+        })
     }
 
     /// Gets the events as strongly typed enums
@@ -364,6 +431,8 @@ impl WebhookEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sonic_rs::JsonContainerTrait;
+
     #[test]
     fn test_webhook_data_parsing() {
         let json_str = r#"{
@@ -380,6 +449,97 @@ mod tests {
         assert_eq!(
             data.events[0].get("name"),
             Some(&"channel_occupied".to_string())
+        );
+    }
+
+    #[test]
+    fn test_webhook_data_accepts_nested_future_values() {
+        let json_str = r#"{
+            "time_ms": 1234567890,
+            "events": [
+                {"name": "ai_turn_started", "channel": "private-ai", "data": {"turn_id": "turn-1", "tokens": ["hello", "world"], "done": false, "nullable": null}}
+            ]
+        }"#;
+
+        let data: WebhookData = sonic_rs::from_str(json_str).unwrap();
+
+        assert_eq!(
+            data.events[0].get("name"),
+            Some(&"ai_turn_started".to_string())
+        );
+        assert_eq!(
+            data.events[0].get("data"),
+            Some(
+                &r#"{"turn_id":"turn-1","tokens":["hello","world"],"done":false,"nullable":null}"#
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_webhook_preserves_raw_nested_future_values() {
+        let token = Token::new("test_key", "test_secret");
+        let body = r#"{"time_ms":1710000000000,"events":[{"name":"ai_turn_started","channel":"private-ai-forward","data":{"turn_id":"turn-1","tokens":["hello","world"],"done":false,"nullable":null},"future_field":{"nested":true}}]}"#;
+        let signature = token.sign(body);
+
+        let mut headers = BTreeMap::new();
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        headers.insert("x-sockudo-key".to_string(), "test_key".to_string());
+        headers.insert("x-sockudo-signature".to_string(), signature);
+
+        let webhook = Webhook::new(&token, &headers, body);
+        let raw_events = webhook.get_raw_json_events().unwrap();
+        let raw_data = raw_events[0].get("data").unwrap();
+        let future_field = raw_events[0].get("future_field").unwrap();
+
+        assert!(webhook.is_valid(None));
+        assert_eq!(
+            raw_data.get("turn_id").and_then(|value| value.as_str()),
+            Some("turn-1")
+        );
+        assert_eq!(
+            raw_data
+                .get("tokens")
+                .and_then(|value| value.as_array())
+                .map(|items| items.len()),
+            Some(2)
+        );
+        assert_eq!(
+            raw_data.get("done").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            sonic_rs::to_string(raw_data.get("nullable").unwrap()).unwrap(),
+            "null"
+        );
+        assert_eq!(
+            future_field.get("nested").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_webhook_forward_compat_fixture() {
+        let fixture = include_str!(
+            "../../../tests/ai-conformance/fixtures/forward-compat/future-webhook-events.json"
+        );
+
+        let data: WebhookData = sonic_rs::from_str(fixture).unwrap();
+
+        assert_eq!(data.time_ms, 1710000000000);
+        assert_eq!(data.events.len(), 3);
+        assert_eq!(
+            data.events[0].get("name"),
+            Some(&"member_updated".to_string())
+        );
+        assert_eq!(
+            data.events[0].get("future_field"),
+            Some(&"must-pass-through".to_string())
+        );
+        assert_eq!(data.events[1].get("turn_id"), Some(&"turn-1".to_string()));
+        assert_eq!(
+            data.events[2].get("version_serial"),
+            Some(&"ver-1".to_string())
         );
     }
 

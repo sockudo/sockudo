@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+* [ADDED] Forward-compatibility coverage for future webhook event names and nested payload fields.
+
 ## 7.2.6
 
 * Bump supported versions to include PHP8.2, 8.3

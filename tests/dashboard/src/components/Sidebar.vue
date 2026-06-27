@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import {
   Wifi,
   Radio,
@@ -19,22 +20,35 @@ import { useDashboardStore, type Tab, type ConnectionState } from '../stores/das
 
 const store = useDashboardStore()
 
-const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
-  { id: 'showcase', label: 'Demo', icon: Sparkles },
-  { id: 'connection', label: 'Connection', icon: Wifi },
-  { id: 'channels', label: 'Channels', icon: Radio },
-  { id: 'events', label: 'Events', icon: Zap },
-  { id: 'presence', label: 'Presence', icon: Users },
-  { id: 'recovery', label: 'Recovery', icon: RotateCcw },
-  { id: 'api', label: 'HTTP API', icon: Globe },
-  { id: 'mutable', label: 'Messages', icon: MessagesSquare },
-  { id: 'filters', label: 'Filters', icon: Filter },
-  { id: 'delta', label: 'Delta', icon: BarChart3 },
-  { id: 'ops', label: 'Ops', icon: Gauge },
-  { id: 'push', label: 'Push', icon: Bell },
-  { id: 'ai-chat', label: 'AI Chat', icon: Bot },
-  { id: 'ai', label: 'AI Transport', icon: Bot },
+const tabs: { id: Tab; label: string; icon: LucideIcon; group: string }[] = [
+  { id: 'showcase', label: 'Demo', icon: Sparkles, group: 'Run' },
+  { id: 'connection', label: 'Connection', icon: Wifi, group: 'Realtime' },
+  { id: 'channels', label: 'Channels', icon: Radio, group: 'Realtime' },
+  { id: 'presence', label: 'Presence', icon: Users, group: 'Realtime' },
+  { id: 'api', label: 'HTTP API', icon: Globe, group: 'Realtime' },
+  { id: 'recovery', label: 'Recovery', icon: RotateCcw, group: 'Stateful' },
+  { id: 'mutable', label: 'Messages', icon: MessagesSquare, group: 'Stateful' },
+  { id: 'push', label: 'Push', icon: Bell, group: 'Delivery' },
+  { id: 'ai-chat', label: 'AI Chat', icon: Bot, group: 'Delivery' },
+  { id: 'events', label: 'Events', icon: Zap, group: 'Inspect' },
+  { id: 'filters', label: 'Filters', icon: Filter, group: 'Inspect' },
+  { id: 'delta', label: 'Delta', icon: BarChart3, group: 'Inspect' },
+  { id: 'ai', label: 'AI Transport', icon: Bot, group: 'Inspect' },
+  { id: 'ops', label: 'Ops', icon: Gauge, group: 'Inspect' },
 ]
+
+const tabSections = computed(() => {
+  const sections: Array<{ group: string; tabs: typeof tabs }> = []
+  for (const tab of tabs) {
+    let section = sections.find((item) => item.group === tab.group)
+    if (!section) {
+      section = { group: tab.group, tabs: [] }
+      sections.push(section)
+    }
+    section.tabs.push(tab)
+  }
+  return sections
+})
 
 const stateColors: Record<ConnectionState, string> = {
   connected: 'bg-emerald-400',
@@ -80,30 +94,35 @@ const stateLabels: Record<ConnectionState, string> = {
     </div>
 
     <!-- Nav -->
-    <nav class="flex-1 px-2 space-y-0.5 overflow-y-auto">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        @click="store.activeTab = tab.id"
-        :class="[
-          'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 group',
-          store.activeTab === tab.id
-            ? 'bg-brand-600/15 text-brand-300 shadow-sm'
-            : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/60',
-        ]"
-      >
-        <component
-          :is="tab.icon"
-          :class="['w-4 h-4', store.activeTab === tab.id ? 'text-brand-400' : 'text-surface-500 group-hover:text-surface-400']"
-        />
-        {{ tab.label }}
-        <span
-          v-if="tab.id === 'events' && store.eventLog.length > 0"
-          class="ml-auto text-[10px] font-mono bg-surface-700/80 text-surface-400 px-1.5 py-0.5 rounded-md"
+    <nav class="flex-1 px-2 space-y-3 overflow-y-auto">
+      <div v-for="section in tabSections" :key="section.group" class="space-y-0.5">
+        <p class="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-surface-600">
+          {{ section.group }}
+        </p>
+        <button
+          v-for="tab in section.tabs"
+          :key="tab.id"
+          @click="store.activeTab = tab.id"
+          :class="[
+            'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 group',
+            store.activeTab === tab.id
+              ? 'bg-brand-600/15 text-brand-300 shadow-sm'
+              : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/60',
+          ]"
         >
-          {{ store.eventLog.length }}
-        </span>
-      </button>
+          <component
+            :is="tab.icon"
+            :class="['w-4 h-4', store.activeTab === tab.id ? 'text-brand-400' : 'text-surface-500 group-hover:text-surface-400']"
+          />
+          {{ tab.label }}
+          <span
+            v-if="tab.id === 'events' && store.eventLog.length > 0"
+            class="ml-auto text-[10px] font-mono bg-surface-700/80 text-surface-400 px-1.5 py-0.5 rounded-md"
+          >
+            {{ store.eventLog.length }}
+          </span>
+        </button>
+      </div>
     </nav>
 
     <!-- Footer -->

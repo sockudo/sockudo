@@ -1,4 +1,6 @@
 const expect = require("expect.js");
+const fs = require("fs");
+const path = require("path");
 
 const Sockudo = require("../../dist/sockudo");
 const Token = require("../../dist/token");
@@ -215,6 +217,73 @@ describe("WebHook", function () {
         }),
       });
       expect(webhook.getEvents()).to.eql([1, 2, 3]);
+    });
+
+    it("should accept shared future webhook event fixtures", function () {
+      const body = fs.readFileSync(
+        path.join(
+          __dirname,
+          "..",
+          "..",
+          "..",
+          "..",
+          "tests",
+          "ai-conformance",
+          "fixtures",
+          "forward-compat",
+          "future-webhook-events.json",
+        ),
+        "utf8",
+      );
+      const webhook = new WebHook(token, {
+        headers: {
+          "x-pusher-key": "123456789",
+          "x-pusher-signature": token.sign(body),
+          "content-type": "application/json",
+        },
+        rawBody: body,
+      });
+
+      expect(webhook.isValid()).to.be(true);
+      expect(webhook.getTime()).to.eql(new Date(1710000000000));
+      expect(webhook.getEvents()[0].name).to.equal("member_updated");
+      expect(webhook.getEvents()[0].future_field).to.equal("must-pass-through");
+      expect(webhook.getEvents()[1].turn_id).to.equal("turn-1");
+      expect(webhook.getEvents()[2].version_serial).to.equal("ver-1");
+    });
+
+    it("should preserve nested future webhook values without coercion", function () {
+      const body = JSON.stringify({
+        time_ms: 1710000000000,
+        events: [
+          {
+            name: "ai_turn_started",
+            channel: "private-ai-forward",
+            data: {
+              turn_id: "turn-1",
+              tokens: ["hello", "world"],
+              done: false,
+              nullable: null,
+            },
+            future_field: { nested: true },
+          },
+        ],
+      });
+      const webhook = new WebHook(token, {
+        headers: {
+          "x-pusher-key": "123456789",
+          "x-pusher-signature": token.sign(body),
+          "content-type": "application/json",
+        },
+        rawBody: body,
+      });
+
+      expect(webhook.isValid()).to.be(true);
+      expect(webhook.getEvents()[0].name).to.equal("ai_turn_started");
+      expect(webhook.getEvents()[0].data.tokens).to.eql(["hello", "world"]);
+      expect(webhook.getEvents()[0].data.done).to.be(false);
+      expect(webhook.getEvents()[0].data.nullable).to.be(null);
+      expect(webhook.getEvents()[0].future_field).to.eql({ nested: true });
     });
   });
 });

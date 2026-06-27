@@ -9,10 +9,10 @@
     "typecheck": "nuxt typecheck"
   },
   "dependencies": {
-    "@ai-sdk/vue": "^3.0.198",
+    "@ai-sdk/vue": "^4.0.2",
     "@sockudo/ai-transport": "workspace:*",
     "@sockudo/client": "workspace:*",
-    "ai": "^6.0.196",
+    "ai": "^7.0.2",
     "nuxt": "^4.0.0",
     "vue": "^3.5.35",
     "zod": "^4.4.3"

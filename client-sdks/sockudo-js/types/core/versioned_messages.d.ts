@@ -1,4 +1,4 @@
-import type { SockudoEvent } from "./connection/protocol/message-types";
+import type { SockudoEvent, WireSerial } from "./connection/protocol/message-types";
 
 export type MutableMessageAction =
   | "message.create"
@@ -11,7 +11,7 @@ export interface MutableMessageVersionInfo {
   event: string;
   messageSerial: string;
   versionSerial?: string;
-  historySerial?: number;
+  historySerial?: WireSerial;
   versionTimestampMs?: number;
 }
 
@@ -20,11 +20,11 @@ export interface MutableMessageState<T = unknown> {
   action: MutableMessageAction;
   data: T | null;
   event: string;
-  serial?: number;
+  serial?: WireSerial;
   streamId?: string;
   messageId?: string;
   versionSerial?: string;
-  historySerial?: number;
+  historySerial?: WireSerial;
   versionTimestampMs?: number;
 }
 

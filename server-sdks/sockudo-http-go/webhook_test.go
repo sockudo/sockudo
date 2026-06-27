@@ -2,6 +2,8 @@ package sockudo
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"gopkg.in/stretchr/testify.v1/assert"
@@ -60,19 +62,43 @@ func TestWebhookNoSignature(t *testing.T) {
 func TestWebhookUnmarshalling(t *testing.T) {
 	body := []byte(`{"time_ms":1427233518933,"events":[{"name":"client_event","channel":"private-channel","event":"client-yolo","data":"{\"yolo\":\"woot\"}","socket_id":"44610.7511910"}]}`)
 	result, err := unmarshalledWebhook(body)
-	expected := &Webhook{
-		TimeMs: 1427233518933,
-		Events: []WebhookEvent{
-			WebhookEvent{
-				Name:     "client_event",
-				Channel:  "private-channel",
-				Event:    "client-yolo",
-				Data:     "{\"yolo\":\"woot\"}",
-				SocketID: "44610.7511910",
-			},
-		},
-	}
-
-	assert.Equal(t, expected, result)
 	assert.NoError(t, err)
+	assert.Equal(t, 1427233518933, result.TimeMs)
+	assert.Equal(t, 1, len(result.Events))
+	assert.Equal(t, "client_event", result.Events[0].Name)
+	assert.Equal(t, "private-channel", result.Events[0].Channel)
+	assert.Equal(t, "client-yolo", result.Events[0].Event)
+	assert.Equal(t, "{\"yolo\":\"woot\"}", result.Events[0].Data)
+	assert.Equal(t, "44610.7511910", result.Events[0].SocketID)
+	assert.Equal(t, []byte(`"{\"yolo\":\"woot\"}"`), []byte(result.Events[0].RawData))
+}
+
+func TestWebhookForwardCompatFixture(t *testing.T) {
+	body, readErr := os.ReadFile(filepath.Join("..", "..", "tests", "ai-conformance", "fixtures", "forward-compat", "future-webhook-events.json"))
+	assert.NoError(t, readErr)
+
+	result, err := unmarshalledWebhook(body)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 1710000000000, result.TimeMs)
+	assert.Equal(t, 3, len(result.Events))
+	assert.Equal(t, "member_updated", result.Events[0].Name)
+	assert.Equal(t, "presence-ai-forward", result.Events[0].Channel)
+	assert.Equal(t, "user-1", result.Events[0].UserID)
+	assert.Equal(t, []byte(`"must-pass-through"`), []byte(result.Events[0].Fields["future_field"]))
+	assert.Equal(t, "ai_turn_started", result.Events[1].Name)
+	assert.Equal(t, []byte(`"turn-1"`), []byte(result.Events[1].Fields["turn_id"]))
+	assert.Equal(t, "message_version_created", result.Events[2].Name)
+}
+
+func TestWebhookPreservesNestedFutureEventValues(t *testing.T) {
+	body := []byte(`{"time_ms":1710000000000,"events":[{"name":"ai_turn_started","channel":"private-ai-forward","data":{"turn_id":"turn-1","tokens":["hello","world"],"done":false,"nullable":null},"future_field":{"nested":true}}]}`)
+	result, err := unmarshalledWebhook(body)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(result.Events))
+	assert.Equal(t, "ai_turn_started", result.Events[0].Name)
+	assert.Equal(t, `{"turn_id":"turn-1","tokens":["hello","world"],"done":false,"nullable":null}`, result.Events[0].Data)
+	assert.Equal(t, []byte(`{"turn_id":"turn-1","tokens":["hello","world"],"done":false,"nullable":null}`), []byte(result.Events[0].RawData))
+	assert.Equal(t, []byte(`{"nested":true}`), []byte(result.Events[0].Fields["future_field"]))
 }

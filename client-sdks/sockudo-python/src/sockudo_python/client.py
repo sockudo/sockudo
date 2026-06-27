@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
+import inspect
 import json
 import struct
+import time
 import urllib.parse
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -58,6 +61,10 @@ class DeltaFailure(SockudoException):
     pass
 
 
+_ALLOWED_APPEND_ROLLUP_WINDOWS = {0, 20, 40, 100, 500}
+_TOKEN_REFRESH_CODES = {40142, 40160}
+
+
 class ConnectionState(str, Enum):
     INITIALIZED = "initialized"
     CONNECTING = "connecting"
@@ -80,6 +87,11 @@ class SockudoWireFormat(str, Enum):
     @property
     def is_binary(self) -> bool:
         return self is not SockudoWireFormat.JSON
+
+
+class AppendMode(str, Enum):
+    DELTA = "delta"
+    FULL = "full"
 
 
 class DeltaAlgorithm(str, Enum):
@@ -251,6 +263,31 @@ class MessageExtras:
     ephemeral: Optional[bool] = None
     idempotency_key: Optional[str] = None
     echo: Optional[bool] = None
+    ai: Optional[Dict[str, Any]] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = dict(self.raw)
+        if self.headers is not None:
+            payload["headers"] = self.headers
+        if self.ephemeral is not None:
+            payload["ephemeral"] = self.ephemeral
+        if self.idempotency_key is not None:
+            payload["idempotency_key"] = self.idempotency_key
+        if self.echo is not None:
+            payload["echo"] = self.echo
+        if self.ai is not None:
+            payload["ai"] = self.ai
+        return payload
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.to_dict().get(key, default)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.to_dict()
+
+    def __getitem__(self, key: str) -> Any:
+        return self.to_dict()[key]
 
 
 @dataclass
@@ -329,6 +366,7 @@ UserAuthHandler = Callable[
     ["UserAuthenticationRequest"], Awaitable["UserAuthenticationData"]
 ]
 PresenceHistoryHeadersProvider = Callable[[], Dict[str, str]]
+ProxyHeadersProvider = Callable[[], Dict[str, str]]
 
 
 @dataclass
@@ -342,6 +380,22 @@ class ChannelAuthorizationData:
 class UserAuthenticationData:
     auth: str
     user_data: str
+
+
+@dataclass
+class TokenAuthData:
+    token: str
+    expires_at: Optional[float] = None
+    expires_at_ms: Optional[int] = None
+    expires_in: Optional[float] = None
+    exp: Optional[float] = None
+    iat: Optional[float] = None
+    issued_at: Optional[float] = None
+    issued_at_ms: Optional[int] = None
+
+
+TokenAuthResult = Union[str, TokenAuthData]
+TokenAuthCallback = Callable[[], Union[TokenAuthResult, Awaitable[TokenAuthResult]]]
 
 
 @dataclass
@@ -383,6 +437,21 @@ class PresenceHistoryOptions:
 
 
 @dataclass
+class ChannelHistoryOptions:
+    endpoint: str
+    headers: Dict[str, str] = field(default_factory=dict)
+    headers_provider: Optional[ProxyHeadersProvider] = None
+
+
+@dataclass
+class VersionedMessageOptions:
+    endpoint: str
+    headers: Dict[str, str] = field(default_factory=dict)
+    headers_provider: Optional[ProxyHeadersProvider] = None
+    timeout: float = 10.0
+
+
+@dataclass
 class SockudoOptions:
     cluster: str
     protocol_version: int = 2
@@ -416,6 +485,13 @@ class SockudoOptions:
     connection_recovery: bool = False
     echo_messages: bool = True
     wire_format: SockudoWireFormat = SockudoWireFormat.JSON
+    append_mode: AppendMode = AppendMode.DELTA
+    append_rollup_window: Optional[int] = None
+    token: Optional[str] = None
+    auth_callback: Optional[TokenAuthCallback] = None
+    auth_refresh_leeway_seconds: float = 30.0
+    channel_history: Optional[ChannelHistoryOptions] = None
+    versioned_messages: Optional[VersionedMessageOptions] = None
 
 
 @dataclass
@@ -528,6 +604,75 @@ class PresenceSnapshot:
     snapshot_serial: Optional[int]
     snapshot_time_ms: Optional[int]
     continuity: PresenceHistoryContinuity
+
+
+@dataclass
+class ChannelHistoryParams:
+    direction: Optional[str] = None
+    limit: Optional[int] = None
+    cursor: Optional[str] = None
+    start_serial: Optional[int] = None
+    end_serial: Optional[int] = None
+    until_attach: bool = False
+    attach_serial: Optional[int] = None
+
+    def to_payload(self, default_attach_serial: Optional[int] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if self.direction is not None:
+            payload["direction"] = self.direction
+        if self.limit is not None:
+            payload["limit"] = self.limit
+        if self.cursor is not None:
+            payload["cursor"] = self.cursor
+        if self.start_serial is not None:
+            payload["start_serial"] = self.start_serial
+        if self.end_serial is not None:
+            payload["end_serial"] = self.end_serial
+        if self.until_attach:
+            payload["until_attach"] = True
+            attach_serial = (
+                self.attach_serial
+                if self.attach_serial is not None
+                else default_attach_serial
+            )
+            if attach_serial is not None:
+                payload["attach_serial"] = attach_serial
+        elif self.attach_serial is not None:
+            payload["attach_serial"] = self.attach_serial
+        return payload
+
+
+@dataclass
+class ChannelHistoryPage:
+    items: List[Dict[str, Any]]
+    direction: str
+    limit: int
+    has_more: bool
+    next_cursor: Optional[str]
+    attach_serial: Optional[int]
+    _fetch_next: Optional[Callable[[str], Awaitable["ChannelHistoryPage"]]] = None
+
+    def has_next(self) -> bool:
+        return self.has_more and self.next_cursor is not None
+
+    async def next(self) -> "ChannelHistoryPage":
+        if not self.has_next() or self._fetch_next is None:
+            raise SockudoException("No more pages available")
+        return await self._fetch_next(self.next_cursor)
+
+
+@dataclass
+class VersionedMessageAck:
+    action: str
+    channel: str
+    event: Optional[str]
+    message_id: Optional[str]
+    version_id: Optional[str]
+    message_serial: Optional[int]
+    version_serial: Optional[int]
+    history_serial: Optional[int]
+    delivery_serial: Optional[int]
+    raw: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -804,12 +949,12 @@ class ProtocolCodec:
         "sequence",
         "conflation_key",
         "message_id",
+        "stream_id",
         "serial",
         "idempotency_key",
         "extras",
         "__delta_seq",
         "__conflation_key",
-        "stream_id",
     ]
 
     @staticmethod
@@ -829,12 +974,12 @@ class ProtocolCodec:
                 envelope.get("sequence"),
                 envelope.get("conflation_key"),
                 envelope.get("message_id"),
+                envelope.get("stream_id"),
                 envelope.get("serial"),
                 envelope.get("idempotency_key"),
                 ProtocolCodec._encode_messagepack_extras(envelope.get("extras")),
                 envelope.get("__delta_seq"),
                 envelope.get("__conflation_key"),
-                envelope.get("stream_id"),
             ]
             return msgpack.packb(payload, use_bin_type=True)
         return ProtocolCodec._encode_protobuf(envelope)
@@ -851,18 +996,24 @@ class ProtocolCodec:
                 data = json.loads(raw_data)
             except json.JSONDecodeError:
                 data = raw_data
+        event_name = envelope.get("event")
+        channel = envelope.get("channel")
+        user_id = envelope.get("user_id")
+        message_id = envelope.get("message_id")
+        stream_id = envelope.get("stream_id")
+        conflation_key = envelope.get(
+            "__conflation_key", envelope.get("conflation_key")
+        )
         return SockudoEvent(
-            event=envelope["event"],
-            channel=envelope.get("channel"),
+            event=event_name if isinstance(event_name, str) else "",
+            channel=channel if isinstance(channel, str) else None,
             data=data,
-            user_id=envelope.get("user_id"),
-            message_id=envelope.get("message_id"),
-            stream_id=envelope.get("stream_id"),
+            user_id=user_id if isinstance(user_id, str) else None,
+            message_id=message_id if isinstance(message_id, str) else None,
+            stream_id=stream_id if isinstance(stream_id, str) else None,
             raw_message=raw_text,
             sequence=_coerce_int(envelope.get("__delta_seq", envelope.get("sequence"))),
-            conflation_key=envelope.get(
-                "__conflation_key", envelope.get("conflation_key")
-            ),
+            conflation_key=conflation_key if isinstance(conflation_key, str) else None,
             serial=_coerce_int(envelope.get("serial")),
             extras=ProtocolCodec._decode_extras(envelope.get("extras")),
         )
@@ -923,14 +1074,16 @@ class ProtocolCodec:
         extras = ProtocolCodec._decode_extras(raw_extras)
         if extras is None:
             return None
-        encoded: Dict[str, Any] = {}
+        encoded: Dict[str, Any] = dict(extras.to_dict())
         if extras.headers is not None:
             encoded_headers = {}
             for key, value in extras.headers.items():
                 if isinstance(value, bool):
                     encoded_headers[key] = ["bool", value]
-                elif isinstance(value, (int, float)):
-                    encoded_headers[key] = ["number", float(value)]
+                elif isinstance(value, int):
+                    encoded_headers[key] = ["number", value]
+                elif isinstance(value, float):
+                    encoded_headers[key] = ["number", value]
                 else:
                     encoded_headers[key] = ["string", str(value)]
             encoded["headers"] = encoded_headers
@@ -965,7 +1118,11 @@ class ProtocolCodec:
             return raw_extras
         if not isinstance(raw_extras, dict):
             return None
-        headers = raw_extras.get("headers")
+        raw = {
+            str(key): ProtocolCodec._decode_messagepack_value(value)
+            for key, value in raw_extras.items()
+        }
+        headers = raw.get("headers")
         if isinstance(headers, dict):
             decoded_headers = {}
             for key, value in headers.items():
@@ -974,11 +1131,15 @@ class ProtocolCodec:
                 else:
                     decoded_headers[key] = value
             headers = decoded_headers
+            raw["headers"] = decoded_headers
+        ai = raw.get("ai")
         return MessageExtras(
             headers=headers if isinstance(headers, dict) else None,
-            ephemeral=raw_extras.get("ephemeral"),
-            idempotency_key=raw_extras.get("idempotency_key"),
-            echo=raw_extras.get("echo"),
+            ephemeral=raw.get("ephemeral"),
+            idempotency_key=raw.get("idempotency_key"),
+            echo=raw.get("echo"),
+            ai=ai if isinstance(ai, dict) else None,
+            raw=raw,
         )
 
     @staticmethod
@@ -998,13 +1159,14 @@ class ProtocolCodec:
         _write_uint_field(output, 7, envelope.get("sequence"))
         _write_string_field(output, 8, envelope.get("conflation_key"))
         _write_string_field(output, 9, envelope.get("message_id"))
-        _write_uint_field(output, 10, envelope.get("serial"))
+        _write_string_field(output, 10, envelope.get("stream_id"))
+        _write_uint_field(output, 11, envelope.get("serial"))
+        _write_string_field(output, 12, envelope.get("idempotency_key"))
         extras = ProtocolCodec._encode_protobuf_extras(envelope.get("extras"))
         if extras is not None:
-            _write_bytes_field(output, 12, extras)
-        _write_uint_field(output, 13, envelope.get("__delta_seq"))
-        _write_string_field(output, 14, envelope.get("__conflation_key"))
-        _write_string_field(output, 15, envelope.get("stream_id"))
+            _write_bytes_field(output, 13, extras)
+        _write_uint_field(output, 14, envelope.get("__delta_seq"))
+        _write_string_field(output, 15, envelope.get("__conflation_key"))
         return bytes(output)
 
     @staticmethod
@@ -1029,7 +1191,37 @@ class ProtocolCodec:
         _write_optional_bool_field(output, 2, extras.ephemeral)
         _write_string_field(output, 3, extras.idempotency_key)
         _write_optional_bool_field(output, 4, extras.echo)
+        if extras.ai is not None:
+            ai_payload = ProtocolCodec._encode_proto_ai_extras(extras.ai)
+            if ai_payload:
+                _write_bytes_field(output, 5, ai_payload)
         return bytes(output)
+
+    @staticmethod
+    def _encode_proto_ai_extras(ai: Dict[str, Any]) -> bytes:
+        output = bytearray()
+        transport = ai.get("transport")
+        if isinstance(transport, dict):
+            for key, value in transport.items():
+                entry = ProtocolCodec._encode_proto_string_map_entry(key, value)
+                if entry:
+                    _write_bytes_field(output, 1, entry)
+        codec = ai.get("codec")
+        if isinstance(codec, dict):
+            for key, value in codec.items():
+                entry = ProtocolCodec._encode_proto_string_map_entry(key, value)
+                if entry:
+                    _write_bytes_field(output, 2, entry)
+        return bytes(output)
+
+    @staticmethod
+    def _encode_proto_string_map_entry(key: Any, value: Any) -> bytes:
+        if not isinstance(key, str):
+            return b""
+        entry = bytearray()
+        _write_string_field(entry, 1, key)
+        _write_string_field(entry, 2, str(value))
+        return bytes(entry)
 
     @staticmethod
     def _decode_protobuf(payload: bytes) -> Dict[str, Any]:
@@ -1039,7 +1231,7 @@ class ProtocolCodec:
             tag, index = _read_varint(payload, index)
             field = tag >> 3
             wire = tag & 0x7
-            if field in {1, 2, 5, 8, 9, 14, 15}:
+            if field in {1, 2, 5, 8, 9, 10, 12, 15} and wire == 2:
                 value, index = _read_length_delimited(payload, index)
                 envelope[
                     {
@@ -1048,19 +1240,26 @@ class ProtocolCodec:
                         5: "user_id",
                         8: "conflation_key",
                         9: "message_id",
-                        14: "__conflation_key",
-                        15: "stream_id",
+                        10: "stream_id",
+                        12: "idempotency_key",
+                        15: "__conflation_key",
                     }[field]
                 ] = value.decode("utf-8")
-            elif field in {7, 10, 13}:
+            elif field in {7, 11, 14} and wire == 0:
                 value, index = _read_varint(payload, index)
-                envelope[{7: "sequence", 10: "serial", 13: "__delta_seq"}[field]] = (
+                envelope[{7: "sequence", 11: "serial", 14: "__delta_seq"}[field]] = (
                     value
                 )
-            elif field == 3:
+            elif field == 10 and wire == 0:
+                value, index = _read_varint(payload, index)
+                envelope["serial"] = value
+            elif field == 13 and wire == 0:
+                value, index = _read_varint(payload, index)
+                envelope["__delta_seq"] = value
+            elif field == 3 and wire == 2:
                 value, index = _read_length_delimited(payload, index)
                 envelope["data"] = ProtocolCodec._decode_proto_data(value)
-            elif field == 12:
+            elif field == 13 and wire == 2:
                 value, index = _read_length_delimited(payload, index)
                 envelope["extras"] = ProtocolCodec._decode_proto_extras(value)
             else:
@@ -1109,6 +1308,11 @@ class ProtocolCodec:
             elif field == 4 and wire == 0:
                 value, index = _read_varint(payload, index)
                 result["echo"] = bool(value)
+            elif field == 5 and wire == 2:
+                value, index = _read_length_delimited(payload, index)
+                ai = ProtocolCodec._decode_proto_ai_extras(value)
+                if ai:
+                    result["ai"] = ai
             else:
                 index = _skip_unknown(payload, index, wire)
         if headers:
@@ -1151,6 +1355,53 @@ class ProtocolCodec:
                 return bool(raw)
             index = _skip_unknown(payload, index, wire)
         return None
+
+    @staticmethod
+    def _decode_proto_ai_extras(payload: bytes) -> Dict[str, Any]:
+        index = 0
+        transport: Dict[str, str] = {}
+        codec: Dict[str, str] = {}
+        while index < len(payload):
+            tag, index = _read_varint(payload, index)
+            field = tag >> 3
+            wire = tag & 0x7
+            if field in {1, 2} and wire == 2:
+                raw, index = _read_length_delimited(payload, index)
+                key, value = ProtocolCodec._decode_proto_string_map_entry(raw)
+                if key is not None and value is not None:
+                    if field == 1:
+                        transport[key] = value
+                    else:
+                        codec[key] = value
+            else:
+                index = _skip_unknown(payload, index, wire)
+        result: Dict[str, Any] = {}
+        if transport:
+            result["transport"] = transport
+        if codec:
+            result["codec"] = codec
+        return result
+
+    @staticmethod
+    def _decode_proto_string_map_entry(
+        payload: bytes,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        index = 0
+        key = None
+        value = None
+        while index < len(payload):
+            tag, index = _read_varint(payload, index)
+            field = tag >> 3
+            wire = tag & 0x7
+            if field == 1 and wire == 2:
+                raw, index = _read_length_delimited(payload, index)
+                key = raw.decode("utf-8")
+            elif field == 2 and wire == 2:
+                raw, index = _read_length_delimited(payload, index)
+                value = raw.decode("utf-8")
+            else:
+                index = _skip_unknown(payload, index, wire)
+        return key, value
 
 
 class DeltaCompressionManager:
@@ -1293,14 +1544,17 @@ class PresenceMembers:
         self.my_id = member_id
 
     def apply_subscription_data(self, data: Dict[str, Any]) -> None:
-        presence = data.get("presence", {})
-        hash_data = presence.get("hash", {}) if isinstance(presence, dict) else {}
+        if not isinstance(data, dict):
+            return
+        presence = data.get("presence")
+        if not isinstance(presence, dict):
+            return
+        hash_data = presence.get("hash", {})
+        if not isinstance(hash_data, dict):
+            return
         self._members = dict(hash_data)
-        self.count = (
-            int(presence.get("count", len(self._members)))
-            if isinstance(presence, dict)
-            else len(self._members)
-        )
+        count = _coerce_int(presence.get("count"))
+        self.count = count if count is not None else len(self._members)
         self.me = self.member(self.my_id) if self.my_id else None
 
     def add(self, data: Dict[str, Any]) -> Optional[PresenceMember]:
@@ -1310,6 +1564,14 @@ class PresenceMembers:
         if user_id not in self._members:
             self.count += 1
         self._members[user_id] = data.get("user_info")
+        return PresenceMember(user_id, self._members[user_id])
+
+    def update(self, data: Dict[str, Any]) -> Optional[PresenceMember]:
+        user_id = data.get("user_id")
+        if not isinstance(user_id, str) or user_id not in self._members:
+            return None
+        self._members[user_id] = data.get("user_info")
+        self.me = self.member(self.my_id) if self.my_id else None
         return PresenceMember(user_id, self._members[user_id])
 
     def remove(self, data: Dict[str, Any]) -> Optional[PresenceMember]:
@@ -1340,6 +1602,7 @@ class SockudoChannel:
         self.delta_settings: Optional[ChannelDeltaSettings] = None
         self.events_filter: Optional[List[str]] = None
         self.rewind: Optional[SubscriptionRewind] = None
+        self.attach_serial: Optional[int] = None
 
     def bind(
         self, event_name: str, callback: Callable[[Any, Optional[EventMetadata]], None]
@@ -1358,6 +1621,63 @@ class SockudoChannel:
         if not event.startswith("client-"):
             raise BadEventName(f"Event '{event}' does not start with 'client-'")
         return await self.client.send_event(event, data, self.name)
+
+    async def history(
+        self, params: Optional[ChannelHistoryParams] = None
+    ) -> ChannelHistoryPage:
+        return await self.channel_history(params)
+
+    async def channel_history(
+        self, params: Optional[ChannelHistoryParams] = None
+    ) -> ChannelHistoryPage:
+        return await self.client.config.fetch_channel_history(
+            self.name, params or ChannelHistoryParams(), self.attach_serial
+        )
+
+    async def create_versioned_message(
+        self,
+        event: str,
+        data: Any,
+        extras: Optional[Union[MessageExtras, Dict[str, Any]]] = None,
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        return await self.client.versioned_messages.create(
+            self.name, event, data, extras=extras, timeout=timeout
+        )
+
+    async def append_versioned_message(
+        self,
+        message_id: str,
+        data: Any,
+        extras: Optional[Union[MessageExtras, Dict[str, Any]]] = None,
+        event: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        return await self.client.versioned_messages.append(
+            self.name, message_id, data, extras=extras, event=event, timeout=timeout
+        )
+
+    async def update_versioned_message(
+        self,
+        message_id: str,
+        data: Any,
+        extras: Optional[Union[MessageExtras, Dict[str, Any]]] = None,
+        event: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        return await self.client.versioned_messages.update(
+            self.name, message_id, data, extras=extras, event=event, timeout=timeout
+        )
+
+    async def delete_versioned_message(
+        self,
+        message_id: str,
+        reason: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        return await self.client.versioned_messages.delete(
+            self.name, message_id, reason=reason, timeout=timeout
+        )
 
     async def authorize(self, socket_id: str) -> ChannelAuthorizationData:
         return ChannelAuthorizationData(auth="")
@@ -1408,12 +1728,15 @@ class SockudoChannel:
     def disconnect(self) -> None:
         self.is_subscribed = False
         self.subscription_pending = False
+        self.attach_serial = None
 
     def handle(self, event: SockudoEvent) -> None:
         p = self.client.prefix
         if event.event == p.internal("subscription_succeeded"):
             self.subscription_pending = False
             self.is_subscribed = True
+            payload = event.data if isinstance(event.data, dict) else {}
+            self.attach_serial = _coerce_int(payload.get("attach_serial"))
             if self.subscription_cancelled:
                 asyncio.create_task(self.client.unsubscribe(self.name))
             else:
@@ -1424,6 +1747,10 @@ class SockudoChannel:
                     event.data.get("subscription_count")
                 )
             self.dispatcher.emit(p.event("subscription_count"), event.data)
+        elif p.is_internal_event(event.event):
+            self.dispatcher.emit(
+                event.event, event.data, EventMetadata(user_id=event.user_id)
+            )
         elif not p.is_internal_event(event.event):
             self.dispatcher.emit(
                 event.event, event.data, EventMetadata(user_id=event.user_id)
@@ -1462,6 +1789,7 @@ class PresenceChannel(PrivateChannel):
             self.subscription_pending = False
             self.is_subscribed = True
             payload = event.data if isinstance(event.data, dict) else {}
+            self.attach_serial = _coerce_int(payload.get("attach_serial"))
             self.members.apply_subscription_data(payload)
             self.dispatcher.emit(p.event("subscription_succeeded"), self.members)
         elif event.event == p.internal("member_added") and isinstance(event.data, dict):
@@ -1474,6 +1802,13 @@ class PresenceChannel(PrivateChannel):
             member = self.members.remove(event.data)
             if member is not None:
                 self.dispatcher.emit(p.event("member_removed"), member)
+        elif event.event == p.internal("presence_update") and isinstance(
+            event.data, dict
+        ):
+            member = self.members.update(event.data)
+            if member is not None:
+                self.dispatcher.emit(p.event("presence_update"), member)
+                self.dispatcher.emit(event.event, event.data)
         else:
             super().handle(event)
 
@@ -1493,6 +1828,13 @@ class PresenceChannel(PrivateChannel):
     ) -> PresenceSnapshot:
         return await self.client.config.fetch_presence_snapshot(
             self.name, params or PresenceSnapshotParams()
+        )
+
+    async def update(self, data: Any) -> bool:
+        return await self.client.send_event(
+            self.client.prefix.event("presence_update"),
+            {"user_info": data},
+            self.name,
         )
 
 
@@ -1558,6 +1900,8 @@ class _ResolvedConfiguration:
         self.channel_options = options.channel_authorization
         self.user_options = options.user_authentication
         self.presence_history = options.presence_history
+        self.channel_history = options.channel_history
+        self.versioned_messages = options.versioned_messages
         self._http_client = httpx.AsyncClient()
 
     async def authorize_channel(
@@ -1665,6 +2009,69 @@ class _ResolvedConfiguration:
         )
         return self._decode_presence_snapshot(payload)
 
+    async def fetch_channel_history(
+        self,
+        channel_name: str,
+        params: ChannelHistoryParams,
+        attach_serial: Optional[int],
+    ) -> ChannelHistoryPage:
+        config = self.channel_history
+        if config is None:
+            raise UnsupportedFeature(
+                "channel_history.endpoint must be configured to use channel.history(). "
+                "This endpoint should proxy requests to the Sockudo server REST API."
+            )
+
+        payload = await self._perform_proxy_request(
+            config.endpoint,
+            config.headers,
+            config.headers_provider,
+            channel_name,
+            params.to_payload(attach_serial),
+            "history",
+        )
+        return self._decode_channel_history_page(
+            payload,
+            lambda cursor: self.fetch_channel_history(
+                channel_name,
+                ChannelHistoryParams(
+                    direction=params.direction,
+                    limit=params.limit,
+                    cursor=cursor,
+                    start_serial=params.start_serial,
+                    end_serial=params.end_serial,
+                    until_attach=params.until_attach,
+                    attach_serial=params.attach_serial,
+                ),
+                attach_serial,
+            ),
+        )
+
+    async def perform_versioned_message_action(
+        self,
+        channel_name: str,
+        action: str,
+        params: Dict[str, Any],
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        config = self.versioned_messages
+        if config is None:
+            raise UnsupportedFeature(
+                "versioned_messages.endpoint must be configured to use "
+                "client.versioned_messages. This endpoint should proxy requests "
+                "to the Sockudo server REST API."
+            )
+        payload = await self._perform_proxy_request(
+            config.endpoint,
+            config.headers,
+            config.headers_provider,
+            channel_name,
+            params,
+            action,
+            timeout=config.timeout if timeout is None else timeout,
+        )
+        return self._decode_versioned_message_ack(payload, action, channel_name)
+
     async def _perform_auth_request(
         self, endpoint: str, headers: Dict[str, str], params: Dict[str, AuthValue]
     ) -> Dict[str, Any]:
@@ -1723,6 +2130,41 @@ class _ResolvedConfiguration:
             raise SockudoException(f"Presence {action} endpoint returned invalid JSON")
         return payload
 
+    async def _perform_proxy_request(
+        self,
+        endpoint: str,
+        headers: Dict[str, str],
+        headers_provider: Optional[ProxyHeadersProvider],
+        channel_name: str,
+        params: Dict[str, Any],
+        action: str,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        merged_headers = {"Content-Type": "application/json", **headers}
+        if headers_provider:
+            merged_headers.update(headers_provider())
+        response = await self._http_client.post(
+            endpoint,
+            headers=merged_headers,
+            content=json.dumps(
+                {
+                    "channel": channel_name,
+                    "params": params,
+                    "action": action,
+                }
+            ),
+            timeout=timeout,
+        )
+        if response.status_code >= 400:
+            raise SockudoException(
+                f"Proxy {action} request failed ({response.status_code}): "
+                f"{response.text}"
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise SockudoException(f"Proxy {action} endpoint returned invalid JSON")
+        return payload
+
     def _decode_presence_history_page(
         self,
         payload: Dict[str, Any],
@@ -1767,6 +2209,56 @@ class _ResolvedConfiguration:
             ),
             _fetch_next=fetch_next,
         )
+
+    def _decode_channel_history_page(
+        self,
+        payload: Dict[str, Any],
+        fetch_next: Callable[[str], Awaitable[ChannelHistoryPage]],
+    ) -> ChannelHistoryPage:
+        return ChannelHistoryPage(
+            items=[
+                dict(item)
+                for item in payload.get("items", [])
+                if isinstance(item, dict)
+            ],
+            direction=str(payload.get("direction", "oldest_first")),
+            limit=int(payload.get("limit", 0)),
+            has_more=bool(payload.get("has_more", False)),
+            next_cursor=(
+                str(payload["next_cursor"])
+                if payload.get("next_cursor") is not None
+                else None
+            ),
+            attach_serial=_coerce_int(payload.get("attach_serial")),
+            _fetch_next=fetch_next,
+        )
+
+    def _decode_versioned_message_ack(
+        self, payload: Dict[str, Any], action: str, channel_name: str
+    ) -> VersionedMessageAck:
+        raw_ack = payload.get("ack", payload)
+        ack = raw_ack if isinstance(raw_ack, dict) else {}
+        raw = dict(ack)
+        return VersionedMessageAck(
+            action=str(ack.get("action", action)),
+            channel=str(ack.get("channel", channel_name)),
+            event=ack.get("event") if isinstance(ack.get("event"), str) else None,
+            message_id=self._string_field(ack, "message_id", "id"),
+            version_id=self._string_field(ack, "version_id", "version"),
+            message_serial=_coerce_int(ack.get("message_serial")),
+            version_serial=_coerce_int(ack.get("version_serial")),
+            history_serial=_coerce_int(ack.get("history_serial")),
+            delivery_serial=_coerce_int(ack.get("delivery_serial")),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _string_field(payload: Dict[str, Any], *names: str) -> Optional[str]:
+        for name in names:
+            value = payload.get(name)
+            if isinstance(value, str):
+                return value
+        return None
 
     def _decode_presence_snapshot(self, payload: Dict[str, Any]) -> PresenceSnapshot:
         return PresenceSnapshot(
@@ -1863,6 +2355,84 @@ class _ResolvedConfiguration:
         )
 
 
+class VersionedMessagesFacade:
+    def __init__(self, client: "SockudoClient") -> None:
+        self.client = client
+
+    async def create(
+        self,
+        channel: str,
+        event: str,
+        data: Any,
+        extras: Optional[Union[MessageExtras, Dict[str, Any]]] = None,
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        params: Dict[str, Any] = {"event": event, "data": data}
+        self._add_extras(params, extras)
+        return await self.client.config.perform_versioned_message_action(
+            channel, "create", params, timeout
+        )
+
+    async def append(
+        self,
+        channel: str,
+        message_id: str,
+        data: Any,
+        extras: Optional[Union[MessageExtras, Dict[str, Any]]] = None,
+        event: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        params: Dict[str, Any] = {"message_id": message_id, "data": data}
+        if event is not None:
+            params["event"] = event
+        self._add_extras(params, extras)
+        return await self.client.config.perform_versioned_message_action(
+            channel, "append", params, timeout
+        )
+
+    async def update(
+        self,
+        channel: str,
+        message_id: str,
+        data: Any,
+        extras: Optional[Union[MessageExtras, Dict[str, Any]]] = None,
+        event: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        params: Dict[str, Any] = {"message_id": message_id, "data": data}
+        if event is not None:
+            params["event"] = event
+        self._add_extras(params, extras)
+        return await self.client.config.perform_versioned_message_action(
+            channel, "update", params, timeout
+        )
+
+    async def delete(
+        self,
+        channel: str,
+        message_id: str,
+        reason: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> VersionedMessageAck:
+        params: Dict[str, Any] = {"message_id": message_id}
+        if reason is not None:
+            params["reason"] = reason
+        return await self.client.config.perform_versioned_message_action(
+            channel, "delete", params, timeout
+        )
+
+    @staticmethod
+    def _add_extras(
+        params: Dict[str, Any], extras: Optional[Union[MessageExtras, Dict[str, Any]]]
+    ) -> None:
+        if extras is None:
+            return
+        if isinstance(extras, MessageExtras):
+            params["extras"] = extras.to_dict()
+        elif isinstance(extras, dict):
+            params["extras"] = extras
+
+
 class SockudoClient:
     def __init__(self, key: str, options: SockudoOptions) -> None:
         if not key:
@@ -1871,6 +2441,14 @@ class SockudoClient:
             )
         if not options.cluster:
             raise InvalidOptions("Options must provide a cluster.")
+        if (
+            options.append_rollup_window is not None
+            and options.append_rollup_window not in _ALLOWED_APPEND_ROLLUP_WINDOWS
+        ):
+            allowed = ", ".join(
+                str(value) for value in sorted(_ALLOWED_APPEND_ROLLUP_WINDOWS)
+            )
+            raise InvalidOptions(f"append_rollup_window must be one of: {allowed}")
         self.key = key
         self.options = options
         self.prefix = ProtocolPrefix(options.protocol_version)
@@ -1884,9 +2462,15 @@ class SockudoClient:
         self._activity_task: Optional[asyncio.Task[Any]] = None
         self._retry_task: Optional[asyncio.Task[Any]] = None
         self._unavailable_task: Optional[asyncio.Task[Any]] = None
+        self._auth_refresh_task: Optional[asyncio.Task[Any]] = None
         self._manually_disconnected = False
         self._current_transport: Optional[SockudoTransport] = None
         self._attempted_fallback = False
+        self._auth_token: Optional[str] = options.token
+        (
+            self._auth_token_expires_at,
+            self._auth_token_issued_at,
+        ) = self._extract_token_times(options.token)
         self._channel_positions: Dict[str, RecoveryPosition] = {}
         self._deduplicator = (
             MessageDeduplicator(options.message_deduplication_capacity)
@@ -1902,6 +2486,7 @@ class SockudoClient:
         )
         self.user = self.UserFacade(self)
         self.watchlist = self.WatchlistFacade()
+        self.versioned_messages = VersionedMessagesFacade(self)
 
     def bind(
         self, event_name: str, callback: Callable[[Any, Optional[EventMetadata]], None]
@@ -1989,6 +2574,7 @@ class SockudoClient:
 
     async def _open_websocket(self, transport: SockudoTransport) -> None:
         self._current_transport = transport
+        await self._prepare_connection_auth_token()
         self.socket = await ws_connect(self._socket_url(transport))
         self._receive_task = asyncio.create_task(self._receive_loop())
 
@@ -2003,6 +2589,8 @@ class SockudoClient:
     async def _handle_raw_message(self, raw_message: Union[str, bytes]) -> None:
         try:
             event = ProtocolCodec.decode_event(raw_message, self.options.wire_format)
+            if not event.event:
+                return
             if event.message_id and self._deduplicator:
                 if self._deduplicator.is_duplicate(event.message_id):
                     return
@@ -2054,11 +2642,20 @@ class SockudoClient:
                 ):
                     assert self._delta_manager is not None
                     await self._delta_manager.enable()
+                self._schedule_auth_refresh()
                 await self.user.handle_connected()
             elif event_name == self.prefix.event("error"):
                 self.dispatcher.emit("error", event.data)
+                if self._is_token_refresh_payload(event.data):
+                    await self._refresh_auth_token()
             elif event_name == self.prefix.event("ping"):
                 await self.send_event(self.prefix.event("pong"), {}, None)
+            elif event_name == self.prefix.event("auth_success"):
+                self._handle_auth_success(event.data)
+                self.dispatcher.emit(event_name, event.data)
+            elif event_name == self.prefix.event("token_expired"):
+                self.dispatcher.emit(event_name, event.data)
+                await self._refresh_auth_token()
             elif event_name == self.prefix.event("signin_success"):
                 await self.user.handle_sign_in_success(event.data)
             elif event_name == self.prefix.event("resume_failed"):
@@ -2127,6 +2724,7 @@ class SockudoClient:
         self.socket = None
         self._cancel_activity_timer()
         self._clear_unavailable_timer()
+        self._cancel_auth_refresh_task()
         for channel in self.channels.values():
             channel.disconnect()
         if not self._manually_disconnected:
@@ -2178,9 +2776,180 @@ class SockudoClient:
         if self.options.protocol_version >= 2:
             query["format"] = self.options.wire_format.value
             query["echo_messages"] = "true" if self.options.echo_messages else "false"
+            query["append_mode"] = self.options.append_mode.value
+            if self.options.append_rollup_window is not None:
+                query["append_rollup_window"] = self.options.append_rollup_window
+            if self._auth_token is not None:
+                query["token"] = self._auth_token
         return urllib.parse.urlunsplit(
             (scheme, f"{host}:{port}", path, urllib.parse.urlencode(query), "")
         )
+
+    async def _prepare_connection_auth_token(self) -> None:
+        if self.options.auth_callback is None and self.options.token is None:
+            return
+        await self._resolve_auth_token()
+
+    async def _refresh_auth_token(self) -> None:
+        token = await self._resolve_auth_token()
+        if token is None:
+            return
+        await self.send_event(self.prefix.event("auth"), {"token": token}, None)
+        self._schedule_auth_refresh()
+
+    async def _resolve_auth_token(self) -> Optional[str]:
+        result: Optional[TokenAuthResult]
+        if self.options.auth_callback is not None:
+            value = self.options.auth_callback()
+            result = await value if inspect.isawaitable(value) else value
+        else:
+            result = self.options.token
+        token, expires_at, issued_at = self._normalize_auth_token(result)
+        self._auth_token = token
+        self._auth_token_expires_at = expires_at
+        self._auth_token_issued_at = issued_at
+        return token
+
+    def _normalize_auth_token(
+        self, result: Optional[TokenAuthResult]
+    ) -> Tuple[Optional[str], Optional[float], Optional[float]]:
+        if result is None:
+            return None, None, None
+        if isinstance(result, str):
+            expires_at, issued_at = self._extract_token_times(result)
+            return result, expires_at, issued_at
+        token = result.token
+        issued_at_ms = _coerce_int(result.issued_at_ms)
+        issued_at = (
+            issued_at_ms / 1000.0
+            if issued_at_ms is not None
+            else self._timestamp(None, result.issued_at, result.iat)
+        )
+        expires_at = self._timestamp(None, result.expires_at, result.exp)
+        now = time.time()
+        expires_at_ms = _coerce_int(result.expires_at_ms)
+        if expires_at_ms is not None:
+            expires_at = expires_at_ms / 1000.0
+        elif isinstance(result.expires_in, (int, float)) and not isinstance(
+            result.expires_in, bool
+        ):
+            if issued_at is None:
+                issued_at = now
+            expires_at = issued_at + float(result.expires_in)
+        token_expires_at, token_issued_at = self._extract_token_times(token)
+        if expires_at is None:
+            expires_at = token_expires_at
+        if issued_at is None:
+            issued_at = token_issued_at
+        return token, expires_at, issued_at
+
+    def _handle_auth_success(self, data: Any) -> None:
+        payload = data if isinstance(data, dict) else {}
+        token = payload.get("token")
+        if isinstance(token, str):
+            self._auth_token = token
+        issued_at_ms = _coerce_int(payload.get("issued_at_ms"))
+        issued_at = (
+            issued_at_ms / 1000.0
+            if issued_at_ms is not None
+            else self._timestamp(None, payload.get("issued_at"), payload.get("iat"))
+        )
+        expires_at = self._timestamp(
+            None, payload.get("expires_at"), payload.get("exp")
+        )
+        expires_at_ms = _coerce_int(payload.get("expires_at_ms"))
+        expires_in = payload.get("expires_in")
+        if expires_at_ms is not None:
+            expires_at = expires_at_ms / 1000.0
+        elif isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool):
+            if issued_at is None:
+                issued_at = time.time()
+            expires_at = issued_at + float(expires_in)
+        if expires_at is None and isinstance(token, str):
+            expires_at, token_issued_at = self._extract_token_times(token)
+            if issued_at is None:
+                issued_at = token_issued_at
+        if expires_at is not None:
+            self._auth_token_expires_at = expires_at
+        if issued_at is not None:
+            self._auth_token_issued_at = issued_at
+        self._schedule_auth_refresh()
+
+    def _schedule_auth_refresh(self) -> None:
+        self._cancel_auth_refresh_task()
+        if (
+            self.connection_state is not ConnectionState.CONNECTED
+            or self._auth_token is None
+        ):
+            return
+        delay = self._auth_refresh_delay()
+        if delay is None:
+            return
+
+        async def _timer() -> None:
+            await asyncio.sleep(delay)
+            await self._refresh_auth_token()
+
+        self._auth_refresh_task = asyncio.create_task(_timer())
+
+    def _auth_refresh_delay(self, now: Optional[float] = None) -> Optional[float]:
+        if self._auth_token_expires_at is None:
+            return None
+        current_time = time.time() if now is None else now
+        issued_at = (
+            self._auth_token_issued_at
+            if self._auth_token_issued_at is not None
+            else current_time
+        )
+        lifetime = self._auth_token_expires_at - issued_at
+        if lifetime <= 0:
+            return 1.0
+        refresh_at = issued_at + (lifetime * 0.8)
+        leeway = max(0.0, self.options.auth_refresh_leeway_seconds)
+        latest_refresh_at = self._auth_token_expires_at - leeway
+        if latest_refresh_at > current_time:
+            refresh_at = min(refresh_at, latest_refresh_at)
+        return max(1.0, refresh_at - current_time)
+
+    def _cancel_auth_refresh_task(self) -> None:
+        if self._auth_refresh_task:
+            self._auth_refresh_task.cancel()
+            self._auth_refresh_task = None
+
+    @staticmethod
+    def _extract_token_times(
+        token: Optional[str],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        if token is None or token.count(".") < 2:
+            return None, None
+        try:
+            payload_part = token.split(".")[1]
+            padded = payload_part + "=" * (-len(payload_part) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        except (binascii.Error, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            return None, None
+        if not isinstance(payload, dict):
+            return None, None
+        return (
+            SockudoClient._timestamp(None, payload.get("exp")),
+            SockudoClient._timestamp(None, payload.get("iat")),
+        )
+
+    @staticmethod
+    def _timestamp(*values: Any) -> Optional[float]:
+        for value in values:
+            coerced = _coerce_int(value)
+            if coerced is not None:
+                return float(coerced)
+            if isinstance(value, float) and not isinstance(value, bool):
+                return value
+        return None
+
+    @staticmethod
+    def _is_token_refresh_payload(data: Any) -> bool:
+        payload = data if isinstance(data, dict) else {}
+        code = _coerce_int(payload.get("code"))
+        return code in _TOKEN_REFRESH_CODES
 
     def _transport_sequence(self) -> List[SockudoTransport]:
         transports = (
@@ -2255,6 +3024,7 @@ class SockudoClient:
         if self._retry_task:
             self._retry_task.cancel()
             self._retry_task = None
+        self._cancel_auth_refresh_task()
 
     @staticmethod
     def _strip_delta_metadata(raw_message: str) -> str:
@@ -2369,13 +3139,23 @@ class SockudoClient:
                     self.dispatcher.emit(event["name"], event)
 
 
+_MAX_SAFE_FLOAT_INT = 2**53 - 1
+
+
 def _coerce_int(value: Any) -> Optional[int]:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("-"):
+            return int(text) if text[1:].isdigit() else None
+        return int(text) if text.isdigit() else None
     if isinstance(value, float):
-        return int(value)
+        if value.is_integer() and abs(value) <= _MAX_SAFE_FLOAT_INT:
+            return int(value)
+        return None
     return None
 
 

@@ -1,5 +1,7 @@
 using MessagePack;
+using System.Collections;
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Text;
 
 namespace Sockudo.Client;
@@ -52,6 +54,8 @@ public static class ProtocolCodec
             }
         }
 
+        var rawSerial = envelope.Get("serial");
+
         return new SockudoEvent(
             Event: envelope["event"] as string ?? throw new SockudoException("Unable to decode event envelope"),
             Channel: envelope.TryGetValue("channel", out var channel) ? channel as string : null,
@@ -62,7 +66,8 @@ public static class ProtocolCodec
             RawMessage: rawText,
             Sequence: CoerceInt(envelope.TryGetValue("__delta_seq", out var deltaSeq) ? deltaSeq : envelope.Get("sequence")),
             ConflationKey: envelope.TryGetValue("__conflation_key", out var deltaKey) ? deltaKey as string : envelope.Get("conflation_key") as string,
-            Serial: CoerceInt(envelope.Get("serial")),
+            Serial: CoerceLong(rawSerial),
+            SerialText: CoerceSerialText(rawSerial),
             Extras: DecodeExtras(envelope.Get("extras"))
         );
     }
@@ -205,6 +210,10 @@ public static class ProtocolCodec
         {
             payload["echo"] = extras.Echo.Value;
         }
+        foreach (var entry in extras.Raw)
+        {
+            payload.TryAdd(entry.Key, entry.Value);
+        }
         return payload;
     }
 
@@ -327,7 +336,7 @@ public static class ProtocolCodec
                     envelope["user_id"] = reader.ReadString();
                     break;
                 case 7:
-                    envelope["sequence"] = (long)reader.ReadUInt64();
+                    envelope["sequence"] = DecodeUInt64(reader.ReadUInt64());
                     break;
                 case 8:
                     envelope["conflation_key"] = reader.ReadString();
@@ -336,13 +345,13 @@ public static class ProtocolCodec
                     envelope["message_id"] = reader.ReadString();
                     break;
                 case 10:
-                    envelope["serial"] = (long)reader.ReadUInt64();
+                    envelope["serial"] = DecodeUInt64(reader.ReadUInt64());
                     break;
                 case 12:
                     envelope["extras"] = DecodeProtoExtras(reader.ReadBytes());
                     break;
                 case 13:
-                    envelope["__delta_seq"] = (long)reader.ReadUInt64();
+                    envelope["__delta_seq"] = DecodeUInt64(reader.ReadUInt64());
                     break;
                 case 14:
                     envelope["__conflation_key"] = reader.ReadString();
@@ -472,32 +481,68 @@ public static class ProtocolCodec
             return extras;
         }
 
-        if (rawExtras is not IDictionary<string, object?> map)
+        var map = ToObjectMap(rawExtras);
+        if (map is null)
         {
             return null;
         }
 
-        IDictionary<string, object>? headers = null;
-        if (map.TryGetValue("headers", out var rawHeaders) && rawHeaders is IDictionary<string, object> headerMap)
-        {
-            headers = headerMap;
-        }
+        var headers = map.TryGetValue("headers", out var rawHeaders) ? ToHeaderMap(rawHeaders) : null;
 
         return new MessageExtras(
             Headers: headers,
-            Ephemeral: map.TryGetValue("ephemeral", out var ephemeral) ? ephemeral as bool? : null,
+            Ephemeral: map.TryGetValue("ephemeral", out var ephemeral) ? CoerceBool(ephemeral) : null,
             IdempotencyKey: map.TryGetValue("idempotency_key", out var idempotencyKey) ? idempotencyKey as string : null,
-            Echo: map.TryGetValue("echo", out var echo) ? echo as bool? : null
-        );
+            Echo: map.TryGetValue("echo", out var echo) ? CoerceBool(echo) : null
+        )
+        {
+            Raw = map,
+        };
     }
 
     internal static int? CoerceInt(object? value)
     {
+        var number = CoerceLong(value);
+        if (number is < int.MinValue or > int.MaxValue)
+        {
+            return null;
+        }
+        return (int?)number;
+    }
+
+    internal static long? CoerceLong(object? value)
+    {
         return value switch
         {
             int number => number,
-            long number => (int)number,
-            double number => (int)number,
+            long number => number,
+            byte number => number,
+            sbyte number => number,
+            short number => number,
+            ushort number => number,
+            uint number => number,
+            ulong number when number <= long.MaxValue => (long)number,
+            double number when IsWholeNumber(number) && number >= long.MinValue && number <= long.MaxValue => (long)number,
+            string text when long.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) => number,
+            _ => null,
+        };
+    }
+
+    internal static string? CoerceSerialText(object? value)
+    {
+        return value switch
+        {
+            null => null,
+            string text when !string.IsNullOrWhiteSpace(text) => text.Trim(),
+            int number => number.ToString(CultureInfo.InvariantCulture),
+            long number => number.ToString(CultureInfo.InvariantCulture),
+            byte number => number.ToString(CultureInfo.InvariantCulture),
+            sbyte number => number.ToString(CultureInfo.InvariantCulture),
+            short number => number.ToString(CultureInfo.InvariantCulture),
+            ushort number => number.ToString(CultureInfo.InvariantCulture),
+            uint number => number.ToString(CultureInfo.InvariantCulture),
+            ulong number => number.ToString(CultureInfo.InvariantCulture),
+            double number when IsWholeNumber(number) => number.ToString("0", CultureInfo.InvariantCulture),
             _ => null,
         };
     }
@@ -508,11 +553,84 @@ public static class ProtocolCodec
         {
             null => null,
             int number => (ulong)number,
-            long number => (ulong)number,
+            long number when number >= 0 => (ulong)number,
+            byte number => number,
+            sbyte number when number >= 0 => (ulong)number,
+            short number when number >= 0 => (ulong)number,
+            ushort number => number,
+            uint number => number,
             ulong number => number,
-            double number => (ulong)number,
+            double number when IsWholeNumber(number) && number >= 0 && number <= ulong.MaxValue => (ulong)number,
+            string text when ulong.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) => number,
             _ => null,
         };
+    }
+
+    private static object DecodeUInt64(ulong value) =>
+        value <= long.MaxValue ? (long)value : value.ToString(CultureInfo.InvariantCulture);
+
+    private static bool? CoerceBool(object? value) =>
+        value switch
+        {
+            bool flag => flag,
+            string text when bool.TryParse(text, out var flag) => flag,
+            _ => null,
+        };
+
+    private static bool IsWholeNumber(double number) =>
+        !double.IsNaN(number) && !double.IsInfinity(number) && number == Math.Truncate(number);
+
+    private static Dictionary<string, object?>? ToObjectMap(object? value)
+    {
+        if (value is IDictionary<string, object?> nullableMap)
+        {
+            return nullableMap.ToDictionary(
+                entry => entry.Key,
+                entry => JsonSupport.Normalize(entry.Value),
+                StringComparer.Ordinal);
+        }
+
+        if (value is IDictionary<string, object> objectMap)
+        {
+            return objectMap.ToDictionary(
+                entry => entry.Key,
+                entry => JsonSupport.Normalize(entry.Value),
+                StringComparer.Ordinal);
+        }
+
+        if (value is IDictionary dictionary)
+        {
+            var result = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (DictionaryEntry entry in dictionary)
+            {
+                if (entry.Key is not null)
+                {
+                    result[entry.Key.ToString()!] = JsonSupport.Normalize(entry.Value);
+                }
+            }
+            return result;
+        }
+
+        return null;
+    }
+
+    private static IDictionary<string, object>? ToHeaderMap(object? value)
+    {
+        var map = ToObjectMap(value);
+        if (map is null)
+        {
+            return null;
+        }
+
+        var headers = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var entry in map)
+        {
+            if (entry.Value is not null)
+            {
+                headers[entry.Key] = entry.Value;
+            }
+        }
+        return headers.Count > 0 ? headers : null;
     }
 }
 

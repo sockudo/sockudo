@@ -5,7 +5,7 @@ import type { AI, VercelInput, VercelOutput, VercelProjection } from "./events.j
 import { createVercelProjection, foldVercelEvent } from "./reducer.js";
 
 /**
- * Vercel AI SDK v6 UI message codec.
+ * Vercel AI SDK v6/v7 UI message codec.
  *
  * Chunk mapping:
  * `text-start|text-delta|text-end`, `reasoning-start|reasoning-delta|reasoning-end`,

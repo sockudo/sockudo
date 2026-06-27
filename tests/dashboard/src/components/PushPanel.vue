@@ -16,9 +16,9 @@ const apnsPrivateKey = ref('')
 const credentialResult = ref<ApiResponse | null>(null)
 const credentialListResult = ref<ApiResponse | null>(null)
 
-const templateId = ref('demo-alert')
-const templateTitle = ref('Sockudo demo')
-const templateBody = ref('Push from the dashboard')
+const templateId = ref('ai-turn-alert')
+const templateTitle = ref('AI response ready')
+const templateBody = ref('Sockudo finished an AI Transport turn')
 const templateResult = ref<ApiResponse | null>(null)
 const templateListResult = ref<ApiResponse | null>(null)
 
@@ -37,14 +37,14 @@ const browserPushStatus = ref('Idle')
 const notificationPermission = ref('unknown')
 const browserReceipts = ref<Array<{ title: string; body: string; receivedAt: number; payload: unknown }>>([])
 
-const subscriptionChannel = ref('orders')
+const subscriptionChannel = ref('private-ai-demo')
 const subscriptionResult = ref<ApiResponse | null>(null)
 const subscriptionListResult = ref<ApiResponse | null>(null)
 const subscriptionChannelsResult = ref<ApiResponse | null>(null)
 
 const publishId = ref(`push-${Date.now()}`)
-const publishTitle = ref('Order updated')
-const publishBody = ref('Order ord_123 is packed')
+const publishTitle = ref('AI response ready')
+const publishBody = ref('The demo AI turn completed on private-ai-demo')
 const publishSync = ref(false)
 const publishTarget = ref<'channel' | 'client' | 'device'>('channel')
 const publishResult = ref<ApiResponse | null>(null)
@@ -130,7 +130,7 @@ async function prepareBrowserPush() {
       return
     }
 
-    const registration = await navigator.serviceWorker.register('/sockudo-push-sw.js')
+    const registration = await navigator.serviceWorker.register('/dashboard-push-sw.js')
     await navigator.serviceWorker.ready
 
     const existing = await registration.pushManager.getSubscription()
@@ -310,7 +310,7 @@ async function listSubscriptionChannels() {
 }
 
 async function deleteSubscriptions() {
-  const params = publishTarget.value === 'device'
+  const params: Record<string, string> = publishTarget.value === 'device'
     ? { deviceId: deviceId.value.trim() }
     : { channel: subscriptionChannel.value.trim() }
   subscriptionResult.value = await api().deletePushSubscriptions(params)

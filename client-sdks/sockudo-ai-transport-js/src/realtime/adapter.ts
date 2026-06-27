@@ -159,6 +159,8 @@ export interface AdaptSockudoChannelOptions extends AdaptSockudoClientOptions {
 export interface CreateSockudoRealtimeClientOptions extends AdaptSockudoClientOptions {
   /** Options passed to `new Sockudo(appKey, options)`. */
   clientOptions?: Record<string, unknown>;
+  /** Append delivery mode passed to `@sockudo/client` for V2 sockets. */
+  appendMode?: "delta" | "full";
   /** Append rollup window passed as `transportParams.append_rollup_window`. */
   appendRollupWindow?: AppendRollupWindow;
 }
@@ -406,6 +408,16 @@ export function validateAppendRollupWindow(value: unknown): asserts value is App
   }
 }
 
+/** Validates an append delivery mode. */
+export function validateAppendMode(value: unknown): asserts value is "delta" | "full" {
+  if (value !== "delta" && value !== "full") {
+    throw new ErrorInfo({
+      code: ErrorCode.InvalidArgument,
+      message: "unable to create realtime client; appendMode must be delta or full",
+    });
+  }
+}
+
 function ensureClientState(
   client: SockudoClientPeer,
   options: AdaptSockudoClientOptions,
@@ -529,6 +541,9 @@ function dispatch(state: ChannelState, raw: SockudoRawMessage): void {
   if (state.listeners.size === 0) {
     return;
   }
+  if (!isDeliverableRawMessage(raw)) {
+    return;
+  }
   const message = normalizeInboundMessage(raw, state.mutableMessageInfoReader);
   for (const listener of state.listeners) {
     listener(message);
@@ -583,9 +598,10 @@ function normalizeHistoryPage(
   const record = asRecord(page);
   const rawItems = Array.isArray(record?.items) ? record.items : [];
   return {
-    items: rawItems.map((item) =>
-      normalizeInboundMessage(normalizeRawMessage(item), mutableMessageInfoReader),
-    ),
+    items: rawItems
+      .map((item) => normalizeRawMessage(item))
+      .filter(isDeliverableRawMessage)
+      .map((item) => normalizeInboundMessage(item, mutableMessageInfoReader)),
     hasNext(): boolean {
       const hasNext = record?.hasNext;
       return typeof hasNext === "function"
@@ -665,12 +681,21 @@ function normalizeAction(
   raw: SockudoRawMessage,
   info: SockudoMutableMessageInfo | null | undefined,
 ): InboundMessageAction {
-  const action =
+  const explicitAction =
     info?.action ??
     readString((raw as Record<string, unknown>).action) ??
-    readString(asRecord(raw.data)?.action) ??
-    raw.event.replace(/^sockudo:/, "").replace(/^pusher:/, "");
+    readString(asRecord(raw.data)?.action);
+  if (explicitAction !== undefined) {
+    return normalizeKnownAction(explicitAction) ?? "summary";
+  }
+  const eventAction = raw.event.replace(/^sockudo:/, "").replace(/^pusher:/, "");
+  return normalizeKnownAction(eventAction) ?? (isInternalEvent(raw.event) ? "summary" : "create");
+}
+
+function normalizeKnownAction(action: string): InboundMessageAction | undefined {
   switch (action) {
+    case "message.create":
+      return "create";
     case "message.append":
       return "append";
     case "message.update":
@@ -680,8 +705,17 @@ function normalizeAction(
     case "message.summary":
       return "summary";
     default:
-      return "create";
+      return undefined;
   }
+}
+
+function isInternalEvent(event: string): boolean {
+  return (
+    event.startsWith("sockudo:") ||
+    event.startsWith("sockudo_internal:") ||
+    event.startsWith("pusher:") ||
+    event.startsWith("pusher_internal:")
+  );
 }
 
 function normalizeVersion(
@@ -733,13 +767,22 @@ function adaptPresence(channel: SockudoChannelPeer): PresenceLike {
     },
     subscribe(listener): Unsubscribe {
       const enter = (member: unknown): void => {
-        listener("enter", normalizeMember(member));
+        const normalized = normalizeMember(member);
+        if (normalized.id) {
+          listener("enter", normalized);
+        }
       };
       const update = (member: unknown): void => {
-        listener("update", normalizeMember(member));
+        const normalized = normalizeMember(member);
+        if (normalized.id) {
+          listener("update", normalized);
+        }
       };
       const leave = (member: unknown): void => {
-        listener("leave", normalizeMember(member));
+        const normalized = normalizeMember(member);
+        if (normalized.id) {
+          listener("leave", normalized);
+        }
       };
       channel.bind?.("member_added", enter);
       channel.bind?.("sockudo:member_added", enter);
@@ -768,7 +811,10 @@ function snapshotMembers(members: SockudoMembersPeer | undefined): readonly Pres
   const snapshot: PresenceMember[] = [];
   if (members.each) {
     members.each((member) => {
-      snapshot.push(normalizeMember(member));
+      const normalized = normalizeMember(member);
+      if (normalized.id) {
+        snapshot.push(normalized);
+      }
     });
     return snapshot;
   }
@@ -777,7 +823,9 @@ function snapshotMembers(members: SockudoMembersPeer | undefined): readonly Pres
     return snapshot;
   }
   for (const [id, data] of Object.entries(rawMembers)) {
-    snapshot.push({ id, data });
+    if (id) {
+      snapshot.push({ id, data });
+    }
   }
   return snapshot;
 }
@@ -811,6 +859,10 @@ function normalizeClientOptions(
   options: CreateSockudoRealtimeClientOptions,
 ): Record<string, unknown> {
   const clientOptions: Record<string, unknown> = Object.assign({}, options.clientOptions);
+  if (options.appendMode !== undefined) {
+    validateAppendMode(options.appendMode);
+    clientOptions.appendMode = options.appendMode;
+  }
   if (options.appendRollupWindow !== undefined) {
     validateAppendRollupWindow(options.appendRollupWindow);
     const transportParams = asRecord(clientOptions.transportParams);
@@ -864,6 +916,9 @@ function readNumber(value: unknown): number | undefined {
 }
 
 function readSerial(value: unknown): Serial | undefined {
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
@@ -895,6 +950,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object"
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function isDeliverableRawMessage(raw: SockudoRawMessage): boolean {
+  return typeof raw.event === "string" && raw.event !== "";
 }
 
 function setOptional<T extends object, K extends keyof T>(

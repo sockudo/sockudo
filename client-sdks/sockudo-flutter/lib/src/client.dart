@@ -16,10 +16,51 @@ import 'protocol_codec.dart';
 import 'protocol_prefix.dart';
 import 'support.dart';
 
+int _nextGeneratedMessageId = 0;
+
+String _generatedMessageId() {
+  final next = ++_nextGeneratedMessageId;
+  return 'flutter-${DateTime.now().microsecondsSinceEpoch}-$next';
+}
+
+Map<Object?, Object?>? _decodeJwtPayload(String token) {
+  final parts = token.split('.');
+  if (parts.length < 2) {
+    return null;
+  }
+  var payload = parts[1];
+  final padding = payload.length % 4;
+  if (padding != 0) {
+    payload = payload.padRight(payload.length + 4 - padding, '=');
+  }
+  try {
+    final decoded = utf8.decode(base64Url.decode(payload));
+    final value = jsonDecode(decoded);
+    return value is Map<Object?, Object?> ? value : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+double? _numericDateSeconds(Object? value) {
+  if (value is num && value.isFinite) {
+    return value.toDouble();
+  }
+  if (value is String) {
+    final parsed = double.tryParse(value);
+    if (parsed != null && parsed.isFinite) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
 class SockudoOptions {
   const SockudoOptions({
     required this.cluster,
     this.protocolVersion = 7,
+    this.token,
+    this.authCallback,
     this.activityTimeout = const Duration(seconds: 120),
     this.forceTls,
     this.enabledTransports,
@@ -43,6 +84,8 @@ class SockudoOptions {
     this.connectionRecovery = false,
     this.echoMessages = true,
     this.wireFormat = SockudoWireFormat.json,
+    this.appendMode = SockudoAppendMode.delta,
+    this.appendRollupWindow,
     this.channelAuthorization = const ChannelAuthorizationOptions(),
     this.userAuthentication = const UserAuthenticationOptions(),
     this.presenceHistory,
@@ -51,6 +94,8 @@ class SockudoOptions {
 
   final String cluster;
   final int protocolVersion;
+  final String? token;
+  final AuthTokenCallback? authCallback;
   final Duration activityTimeout;
   final bool? forceTls;
   final List<SockudoTransport>? enabledTransports;
@@ -74,6 +119,8 @@ class SockudoOptions {
   final bool connectionRecovery;
   final bool echoMessages;
   final SockudoWireFormat wireFormat;
+  final SockudoAppendMode appendMode;
+  final int? appendRollupWindow;
   final ChannelAuthorizationOptions channelAuthorization;
   final UserAuthenticationOptions userAuthentication;
   final PresenceHistoryOptions? presenceHistory;
@@ -92,6 +139,14 @@ class SockudoClient {
     }
     if (options.cluster.isEmpty) {
       throw const SockudoException('Options must provide a cluster.');
+    }
+    final appendRollupWindow = options.appendRollupWindow;
+    if (appendRollupWindow != null &&
+        !allowedAppendRollupWindows.contains(appendRollupWindow)) {
+      throw SockudoException(
+        'appendRollupWindow must be one of '
+        '${allowedAppendRollupWindows.join(', ')}.',
+      );
     }
 
     _deltaManager = options.deltaCompression == null
@@ -129,6 +184,9 @@ class SockudoClient {
   SockudoTransport? _currentTransport;
   bool _attemptedFallback = false;
   bool _manuallyDisconnected = false;
+  Future<void>? _authRefreshFuture;
+  Timer? _authRefreshTimer;
+  int _openAttempt = 0;
 
   final UserFacade user = UserFacade();
   final WatchlistFacade watchlist = WatchlistFacade();
@@ -218,6 +276,8 @@ class SockudoClient {
 
   void disconnect() {
     _manuallyDisconnected = true;
+    _openAttempt += 1;
+    _cancelAuthRefreshTimer();
     _invalidateTimers();
     _socketSubscription?.cancel();
     _socketSubscription = null;
@@ -308,7 +368,31 @@ class SockudoClient {
 
   void _openWebSocket(SockudoTransport transport) {
     _currentTransport = transport;
-    final uri = _socketUri(transport);
+    final attempt = ++_openAttempt;
+    unawaited(_openWebSocketWithToken(transport, attempt));
+  }
+
+  Future<void> _openWebSocketWithToken(
+    SockudoTransport transport,
+    int attempt,
+  ) async {
+    final String? token;
+    try {
+      token = await _resolveInitialCapabilityToken();
+    } catch (error) {
+      if (!_manuallyDisconnected && attempt == _openAttempt) {
+        _dispatcher.emit('error', error);
+        _scheduleRetry(const Duration(seconds: 1));
+      }
+      return;
+    }
+    if (_manuallyDisconnected ||
+        attempt != _openAttempt ||
+        _webSocket != null) {
+      return;
+    }
+
+    final uri = _socketUri(transport, token: token);
     final channel = IOWebSocketChannel.connect(
       uri,
       pingInterval: options.protocolVersion >= 2
@@ -326,6 +410,109 @@ class SockudoClient {
         _handleSocketClosed(channel.closeCode ?? 1000, channel.closeReason);
       },
     );
+  }
+
+  Future<String?> _resolveInitialCapabilityToken() async {
+    if (options.protocolVersion != 2) {
+      return null;
+    }
+    final initialToken = options.token;
+    if (initialToken != null && initialToken.isNotEmpty) {
+      _scheduleCapabilityTokenRefresh(initialToken);
+      return initialToken;
+    }
+    final callback = options.authCallback;
+    final token = callback == null ? null : await callback();
+    if (token == null || token.isEmpty) {
+      return null;
+    }
+    _scheduleCapabilityTokenRefresh(token);
+    return token;
+  }
+
+  Future<void> _refreshCapabilityToken() async {
+    if (options.protocolVersion != 2) {
+      return;
+    }
+    final callback = options.authCallback;
+    if (callback == null) {
+      return;
+    }
+    final existing = _authRefreshFuture;
+    if (existing != null) {
+      await existing;
+      return;
+    }
+
+    final future = () async {
+      final token = await callback();
+      if (token.isEmpty) {
+        throw const SockudoException('authCallback returned an empty token');
+      }
+      final sent = _sendEvent(_p.event('auth'), <String, Object?>{
+        'token': token,
+      }, null);
+      if (!sent) {
+        throw const SockudoException('Unable to refresh auth token');
+      }
+      _scheduleCapabilityTokenRefresh(token);
+    }();
+    _authRefreshFuture = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_authRefreshFuture, future)) {
+        _authRefreshFuture = null;
+      }
+    }
+  }
+
+  void _scheduleCapabilityTokenRefresh(String token) {
+    _cancelAuthRefreshTimer();
+    if (options.protocolVersion != 2 || options.authCallback == null) {
+      return;
+    }
+
+    final delay = _capabilityTokenRefreshDelay(token);
+    if (delay == null) {
+      return;
+    }
+    _authRefreshTimer = Timer(delay, () {
+      _authRefreshTimer = null;
+      if (_manuallyDisconnected || _webSocket == null) {
+        return;
+      }
+      unawaited(
+        _refreshCapabilityToken().catchError((Object error) {
+          _dispatcher.emit('error', error);
+        }),
+      );
+    });
+  }
+
+  Duration? _capabilityTokenRefreshDelay(String token) {
+    final claims = _decodeJwtPayload(token);
+    if (claims == null) {
+      return null;
+    }
+    final exp = _numericDateSeconds(claims['exp']);
+    if (exp == null) {
+      return null;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    final iat = _numericDateSeconds(claims['iat']);
+    final start = iat ?? now;
+    final refreshAt = start + ((exp - start) * 0.8);
+    final delayMs = ((refreshAt - now) * 1000).round();
+    if (delayMs <= 0) {
+      return Duration.zero;
+    }
+    return Duration(milliseconds: delayMs);
+  }
+
+  void _cancelAuthRefreshTimer() {
+    _authRefreshTimer?.cancel();
+    _authRefreshTimer = null;
   }
 
   void _handleRawMessage(Object? rawMessage) {
@@ -383,6 +570,17 @@ class SockudoClient {
         user._handleConnected();
       } else if (eventName == _p.event('error')) {
         _dispatcher.emit('error', event.data);
+      } else if (eventName == _p.event('auth_success')) {
+        _dispatcher.emit(eventName, event.data);
+      } else if (eventName == _p.event('token_expired')) {
+        _dispatcher.emit(eventName, event.data);
+        if (_tokenExpiredCode(event.data) == 40142) {
+          unawaited(
+            _refreshCapabilityToken().catchError((Object error) {
+              _dispatcher.emit('error', error);
+            }),
+          );
+        }
       } else if (eventName == _p.event('ping')) {
         _sendEvent(_p.event('pong'), const <String, Object?>{}, null);
       } else if (eventName == _p.event('pong')) {
@@ -451,12 +649,15 @@ class SockudoClient {
           if (!_p.isPlatformEvent(eventName) &&
               !_p.isInternalEvent(eventName) &&
               normalizedEvent.sequence != null) {
-            _deltaManager?.handleFullMessage(
-              channelName,
-              _stripDeltaMetadata(message),
-              normalizedEvent.sequence,
-              normalizedEvent.conflationKey,
-            );
+            final sequence = wireSerialAsInt(normalizedEvent.sequence);
+            if (sequence != null) {
+              _deltaManager?.handleFullMessage(
+                channelName,
+                _stripDeltaMetadata(message),
+                sequence,
+                normalizedEvent.conflationKey,
+              );
+            }
           }
         }
         if (!_p.isInternalEvent(eventName)) {
@@ -468,6 +669,11 @@ class SockudoClient {
         }
       }
     } catch (error) {
+      if (error is SockudoException &&
+          error.message == 'Unable to decode event envelope') {
+        SockudoLogger.debug('Ignoring socket payload without an event name');
+        return;
+      }
       _dispatcher.emit('error', error);
     }
   }
@@ -525,6 +731,11 @@ class SockudoClient {
     );
   }
 
+  int? _tokenExpiredCode(Object? raw) {
+    final payload = raw is Map ? raw : const <Object?, Object?>{};
+    return (payload['code'] as num?)?.toInt();
+  }
+
   String _stripDeltaMetadata(String rawMessage) {
     return rawMessage
         .replaceAll(RegExp(r',"__delta_seq":\d+'), '')
@@ -535,6 +746,7 @@ class SockudoClient {
 
   void _handleSocketClosed(int code, String? reason) {
     _activityTimer?.cancel();
+    _cancelAuthRefreshTimer();
     _clearUnavailableTimer();
     _socketSubscription?.cancel();
     _socketSubscription = null;
@@ -587,7 +799,7 @@ class SockudoClient {
     return _CloseAction.refused;
   }
 
-  Uri _socketUri(SockudoTransport transport) {
+  Uri _socketUri(SockudoTransport transport, {String? token}) {
     final isTls = transport == SockudoTransport.wss;
     final queryParameters = <String, String>{
       'protocol': '${options.protocolVersion}',
@@ -597,6 +809,14 @@ class SockudoClient {
     };
     if (options.protocolVersion == 2) {
       queryParameters['format'] = options.wireFormat.queryValue;
+      queryParameters['append_mode'] = options.appendMode.queryValue;
+      if (options.appendRollupWindow != null) {
+        queryParameters['append_rollup_window'] =
+            '${options.appendRollupWindow}';
+      }
+      if (token != null) {
+        queryParameters['token'] = token;
+      }
     }
     return Uri(
       scheme: isTls ? 'wss' : 'ws',
@@ -687,6 +907,7 @@ class SockudoClient {
   void _invalidateTimers() {
     _activityTimer?.cancel();
     _activityTimer = null;
+    _cancelAuthRefreshTimer();
     _clearUnavailableTimer();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -718,6 +939,7 @@ class SockudoChannel {
   bool subscriptionPending = false;
   bool subscriptionCancelled = false;
   int? subscriptionCount;
+  Object? attachSerial;
   FilterNode? filter;
   ChannelDeltaSettings? deltaSettings;
   List<String>? eventsFilter;
@@ -820,6 +1042,7 @@ class SockudoChannel {
   void _disconnect() {
     isSubscribed = false;
     subscriptionPending = false;
+    attachSerial = null;
   }
 
   void _handle(SockudoEvent event) {
@@ -827,26 +1050,38 @@ class SockudoChannel {
     if (event.event == p.internal('subscription_succeeded')) {
       subscriptionPending = false;
       isSubscribed = true;
+      final data = event.data is Map<Object?, Object?>
+          ? event.data as Map<Object?, Object?>
+          : null;
+      attachSerial = normalizeWireSerial(data?['attach_serial']);
       if (subscriptionCancelled) {
         client.unsubscribe(name);
       } else {
         _dispatcher.emit(p.event('subscription_succeeded'), event.data);
       }
     } else if (event.event == p.internal('subscription_count')) {
-      final data = event.data as Map<Object?, Object?>?;
-      subscriptionCount = data?['subscription_count'] as int?;
+      final data = event.data is Map<Object?, Object?>
+          ? event.data as Map<Object?, Object?>
+          : null;
+      subscriptionCount = (data?['subscription_count'] as num?)?.toInt();
       _dispatcher.emit(p.event('subscription_count'), event.data);
     } else if (event.event == p.internal('message')) {
-      final data = event.data as Map<Object?, Object?>?;
+      final data = event.data is Map<Object?, Object?>
+          ? event.data as Map<Object?, Object?>
+          : null;
       if (data?['action'] == 'message.summary') {
         _dispatcher.emit('message.summary', event.data);
       }
     } else if (event.event == p.internal('annotation')) {
-      final data = event.data as Map<Object?, Object?>?;
+      final data = event.data is Map<Object?, Object?>
+          ? event.data as Map<Object?, Object?>
+          : null;
       final action = data?['action'] as String?;
       if (action != null) {
         _dispatcher.emit(action, event.data);
       }
+    } else if (p.isInternalEvent(event.event)) {
+      _dispatcher.emit(event.event, event.data);
     } else if (!p.isInternalEvent(event.event)) {
       _dispatcher.emit(
         event.event,
@@ -854,6 +1089,39 @@ class SockudoChannel {
         metadata: EventMetadata(userId: event.userId),
       );
     }
+  }
+
+  Future<MessageAck> createMessage([
+    VersionedMessageCreateRequest request =
+        const VersionedMessageCreateRequest(),
+  ]) {
+    return client._config.createMessage(
+      name,
+      request,
+      defaultName: client._p.event('message.create'),
+    );
+  }
+
+  Future<MessageAck> appendMessage(
+    String messageSerial,
+    String data, [
+    VersionedMessageMutation mutation = const VersionedMessageMutation(),
+  ]) {
+    return client._config.appendMessage(name, messageSerial, data, mutation);
+  }
+
+  Future<MessageAck> updateMessage(
+    String messageSerial, [
+    VersionedMessageMutation mutation = const VersionedMessageMutation(),
+  ]) {
+    return client._config.updateMessage(name, messageSerial, mutation);
+  }
+
+  Future<MessageAck> deleteMessage(
+    String messageSerial, [
+    VersionedMessageMutation mutation = const VersionedMessageMutation(),
+  ]) {
+    return client._config.deleteMessage(name, messageSerial, mutation);
   }
 
   Future<PublishAnnotationResponse> publishAnnotation(
@@ -918,14 +1186,16 @@ class PresenceMembers {
   }
 
   void _applySubscriptionData(Map<Object?, Object?> data) {
-    final presence = data['presence'] as Map<Object?, Object?>?;
-    final hash =
-        (presence?['hash'] as Map<Object?, Object?>?) ??
-        const <Object?, Object?>{};
+    final presence = data['presence'] is Map<Object?, Object?>
+        ? data['presence'] as Map<Object?, Object?>
+        : null;
+    final hash = presence?['hash'] is Map<Object?, Object?>
+        ? presence!['hash'] as Map<Object?, Object?>
+        : const <Object?, Object?>{};
     _members
       ..clear()
       ..addAll(hash.map((key, value) => MapEntry('$key', value)));
-    count = (presence?['count'] as int?) ?? _members.length;
+    count = (presence?['count'] as num?)?.toInt() ?? _members.length;
     me = myId == null ? null : member(myId!);
   }
 
@@ -952,6 +1222,20 @@ class PresenceMembers {
     return PresenceMember(id: userId, info: info);
   }
 
+  PresenceMember? _update(Map<Object?, Object?> data) {
+    final userId = data['user_id'] as String?;
+    if (userId == null || !_members.containsKey(userId)) {
+      return null;
+    }
+    final info = data['user_info'];
+    _members[userId] = info;
+    final member = PresenceMember(id: userId, info: info);
+    if (myId == userId) {
+      me = member;
+    }
+    return member;
+  }
+
   void _reset() {
     _members.clear();
     count = 0;
@@ -964,6 +1248,22 @@ class PresenceChannel extends PrivateChannel {
   PresenceChannel({required super.name, required super.client});
 
   final PresenceMembers members = PresenceMembers();
+
+  bool update(Object? data) {
+    if (client.options.protocolVersion != 2) {
+      throw const SockudoException('presence_update requires Protocol V2');
+    }
+    if (!isSubscribed) {
+      SockudoLogger.warn(
+        'Presence update sent before channel subscription succeeded',
+      );
+    }
+    return client._sendEvent(
+      client._p.event('presence_update'),
+      <String, Object?>{'channel': name, 'data': data},
+      null,
+    );
+  }
 
   @override
   Future<ChannelAuthorizationData> _authorize(String socketId) async {
@@ -997,25 +1297,41 @@ class PresenceChannel extends PrivateChannel {
       if (subscriptionCancelled) {
         client.unsubscribe(name);
       } else {
-        final data =
-            event.data as Map<Object?, Object?>? ?? <Object?, Object?>{};
+        final data = event.data is Map<Object?, Object?>
+            ? event.data as Map<Object?, Object?>
+            : <Object?, Object?>{};
+        attachSerial = normalizeWireSerial(data['attach_serial']);
         members._applySubscriptionData(data);
         _dispatcher.emit(p.event('subscription_succeeded'), members);
       }
     } else if (event.event == p.internal('subscription_count')) {
       super._handle(event);
     } else if (event.event == p.internal('member_added')) {
-      final data = event.data as Map<Object?, Object?>? ?? <Object?, Object?>{};
+      final data = event.data is Map<Object?, Object?>
+          ? event.data as Map<Object?, Object?>
+          : <Object?, Object?>{};
       final member = members._add(data);
       if (member != null) {
         _dispatcher.emit(p.event('member_added'), member);
       }
     } else if (event.event == p.internal('member_removed')) {
-      final data = event.data as Map<Object?, Object?>? ?? <Object?, Object?>{};
+      final data = event.data is Map<Object?, Object?>
+          ? event.data as Map<Object?, Object?>
+          : <Object?, Object?>{};
       final member = members._remove(data);
       if (member != null) {
         _dispatcher.emit(p.event('member_removed'), member);
       }
+    } else if (event.event == p.internal('presence_update')) {
+      final data = event.data is Map<Object?, Object?>
+          ? event.data as Map<Object?, Object?>
+          : <Object?, Object?>{};
+      final member = members._update(data);
+      if (member != null) {
+        _dispatcher.emit(p.event('presence_update'), member);
+      }
+    } else if (p.isInternalEvent(event.event)) {
+      _dispatcher.emit(event.event, event.data);
     } else if (!p.isInternalEvent(event.event)) {
       _dispatcher.emit(
         event.event,
@@ -1541,6 +1857,7 @@ class ResolvedConfiguration {
           endSerial: params.endSerial,
           startTimeMs: params.startTimeMs,
           endTimeMs: params.endTimeMs,
+          untilAttach: params.untilAttach,
         ),
       ),
     );
@@ -1610,6 +1927,113 @@ class ResolvedConfiguration {
         ),
       ),
     );
+  }
+
+  Future<MessageAck> createMessage(
+    String channelName,
+    VersionedMessageCreateRequest request, {
+    required String defaultName,
+  }) async {
+    final config = options.versionedMessages;
+    if (config == null) {
+      throw const SockudoException(
+        'versionedMessages.endpoint must be configured to use createMessage(). This endpoint should proxy requests to the Sockudo server REST API.',
+      );
+    }
+
+    final fields = request.toJson(
+      defaultName: defaultName,
+      defaultMessageId: _generatedMessageId(),
+    );
+    final payload = await _performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: <String, String>{
+        ...config.headers,
+        ...?config.headersProvider?.call(),
+      },
+      channelName: channelName,
+      params: const <String, Object>{},
+      action: 'publish_create',
+      extraFields: fields,
+      timeout: config.timeout,
+    );
+
+    return _decodeMessageAck(
+      payload,
+      fallbackMessageSerial: request.messageSerial,
+    );
+  }
+
+  Future<MessageAck> appendMessage(
+    String channelName,
+    String messageSerial,
+    String data,
+    VersionedMessageMutation mutation,
+  ) {
+    return _mutateMessage(
+      channelName,
+      messageSerial,
+      action: 'message_append',
+      mutation: mutation,
+      dataOverride: data,
+    );
+  }
+
+  Future<MessageAck> updateMessage(
+    String channelName,
+    String messageSerial,
+    VersionedMessageMutation mutation,
+  ) {
+    return _mutateMessage(
+      channelName,
+      messageSerial,
+      action: 'message_update',
+      mutation: mutation,
+    );
+  }
+
+  Future<MessageAck> deleteMessage(
+    String channelName,
+    String messageSerial,
+    VersionedMessageMutation mutation,
+  ) {
+    return _mutateMessage(
+      channelName,
+      messageSerial,
+      action: 'message_delete',
+      mutation: mutation,
+    );
+  }
+
+  Future<MessageAck> _mutateMessage(
+    String channelName,
+    String messageSerial, {
+    required String action,
+    required VersionedMessageMutation mutation,
+    Object? dataOverride,
+  }) async {
+    final config = options.versionedMessages;
+    if (config == null) {
+      throw const SockudoException(
+        'versionedMessages.endpoint must be configured to use versioned message mutations. This endpoint should proxy requests to the Sockudo server REST API.',
+      );
+    }
+
+    final payload = await _performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: <String, String>{
+        ...config.headers,
+        ...?config.headersProvider?.call(),
+      },
+      channelName: channelName,
+      params: const <String, Object>{},
+      action: action,
+      messageSerial: messageSerial,
+      extraFields: mutation.toJson(dataOverride: dataOverride),
+      timeout: config.timeout,
+    );
+
+    return _decodeMessageAck(payload, fallbackMessageSerial: messageSerial);
   }
 
   Future<PublishAnnotationResponse> publishAnnotation(
@@ -1727,20 +2151,27 @@ class ResolvedConfiguration {
     String? annotationSerial,
     String? socketId,
     Map<String, Object?>? annotation,
+    Map<String, Object?> extraFields = const <String, Object?>{},
+    Duration? timeout,
   }) async {
-    final response = await _httpClient.post(
+    final body = <String, Object?>{
+      ...extraFields,
+      'channel': channelName,
+      'params': params,
+      'action': action,
+      'messageSerial': messageSerial,
+      'annotationSerial': annotationSerial,
+      'socketId': socketId,
+      'annotation': annotation,
+    }..removeWhere((_, value) => value == null);
+    final request = _httpClient.post(
       Uri.parse(endpoint),
       headers: <String, String>{'Content-Type': 'application/json', ...headers},
-      body: jsonEncode(<String, Object?>{
-        'channel': channelName,
-        'params': params,
-        'action': action,
-        'messageSerial': messageSerial,
-        'annotationSerial': annotationSerial,
-        'socketId': socketId,
-        'annotation': annotation,
-      }),
+      body: jsonEncode(body),
     );
+    final response = await (timeout == null
+        ? request
+        : request.timeout(timeout));
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw SockudoException(
@@ -1749,8 +2180,45 @@ class ResolvedConfiguration {
       );
     }
 
-    final parsed = JsonSupport.decode(response.body) as Map<Object?, Object?>;
+    final parsed =
+        jsonDecode(preserveUnsafeJsonSerials(response.body))
+            as Map<Object?, Object?>;
     return parsed;
+  }
+
+  MessageAck _decodeMessageAck(
+    Map<Object?, Object?> payload, {
+    String? fallbackMessageSerial,
+  }) {
+    final channels = payload['channels'];
+    final ack = channels is Map<Object?, Object?> && channels.isNotEmpty
+        ? channels.values.first
+        : payload;
+    final data = ack is Map<Object?, Object?>
+        ? ack
+        : const <Object?, Object?>{};
+    final messageSerial =
+        data['messageSerial'] as String? ??
+        data['message_serial'] as String? ??
+        fallbackMessageSerial;
+    final historySerial = normalizeWireSerial(
+      data['historySerial'] ?? data['history_serial'],
+    );
+    if (messageSerial == null || historySerial == null) {
+      throw const SockudoException(
+        'Versioned message acknowledgement missing messageSerial or historySerial',
+      );
+    }
+    return MessageAck(
+      messageSerial: messageSerial,
+      historySerial: historySerial,
+      deliverySerial: normalizeWireSerial(
+        data['deliverySerial'] ?? data['delivery_serial'],
+      ),
+      versionSerial:
+          data['versionSerial'] as String? ?? data['version_serial'] as String?,
+      status: data['status'] as String?,
+    );
   }
 
   ChannelHistoryPageProxy _decodeChannelHistoryPage(

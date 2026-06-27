@@ -1,4 +1,20 @@
+import AnyCodable
 import Foundation
+
+private struct DynamicCodingKey: CodingKey {
+  let stringValue: String
+  let intValue: Int?
+
+  init?(stringValue: String) {
+    self.stringValue = stringValue
+    self.intValue = nil
+  }
+
+  init?(intValue: Int) {
+    self.stringValue = String(intValue)
+    self.intValue = intValue
+  }
+}
 
 /// An event that is contained within a received `Webhook`.
 public struct WebhookEvent: WebhookEventRecord, Codable {
@@ -19,6 +35,9 @@ public struct WebhookEvent: WebhookEventRecord, Codable {
   /// (only set if `channel` is of type `presence`).
   public let userId: String?
 
+  /// The original webhook event object, including future fields not modeled by this SDK.
+  public let rawPayload: [String: AnyCodable]
+
   enum CodingKeys: String, CodingKey {
     case eventType = "name"
     case channelName = "channel"
@@ -35,13 +54,15 @@ public struct WebhookEvent: WebhookEventRecord, Codable {
     channel: Channel,
     event: Event? = nil,
     socketId: String? = nil,
-    userId: String? = nil
+    userId: String? = nil,
+    rawPayload: [String: AnyCodable] = [:]
   ) {
     self.eventType = eventType
     self.channel = channel
     self.event = event
     self.socketId = socketId
     self.userId = userId
+    self.rawPayload = rawPayload
   }
 
   // MARK: - Custom Encodable conformance (used in Tests)
@@ -61,6 +82,7 @@ public struct WebhookEvent: WebhookEventRecord, Codable {
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
+    let rawContainer = try decoder.container(keyedBy: DynamicCodingKey.self)
 
     eventType = try container.decode(WebhookEventType.self, forKey: .eventType)
 
@@ -77,6 +99,12 @@ public struct WebhookEvent: WebhookEventRecord, Codable {
 
     socketId = try container.decodeIfPresent(String.self, forKey: .socketId)
     userId = try container.decodeIfPresent(String.self, forKey: .userId)
+
+    var rawPayload: [String: AnyCodable] = [:]
+    for key in rawContainer.allKeys {
+      rawPayload[key.stringValue] = try rawContainer.decode(AnyCodable.self, forKey: key)
+    }
+    self.rawPayload = rawPayload
   }
 
   // MARK: - Event data decryption
@@ -106,11 +134,15 @@ public struct WebhookEvent: WebhookEventRecord, Codable {
       name: event.name,
       data: decryptedEventData,
       channel: channel)
+    var decryptedRawPayload = rawPayload
+    decryptedRawPayload["data"] = AnyCodable(
+      String(data: decryptedEventData, encoding: .utf8) ?? "")
     return WebhookEvent(
       eventType: eventType,
       channel: channel,
       event: decryptedEvent,
       socketId: socketId,
-      userId: userId)
+      userId: userId,
+      rawPayload: decryptedRawPayload)
   }
 }

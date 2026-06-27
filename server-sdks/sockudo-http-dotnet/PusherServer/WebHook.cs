@@ -79,6 +79,14 @@ namespace PusherServer
             }
         }
 
+        internal IReadOnlyList<IReadOnlyDictionary<string, object>> RawEvents
+        {
+            get
+            {
+                return this._webHookData.RawEvents ?? Array.Empty<Dictionary<string, object>>();
+            }
+        }
+
         public DateTime Time
         {
             get

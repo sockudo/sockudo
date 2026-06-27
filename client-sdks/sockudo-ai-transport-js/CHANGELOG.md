@@ -1,5 +1,11 @@
 # @sockudo/ai-transport
 
+## Unreleased
+
+- Hardened adapter-level forward-compatibility over `@sockudo/client` by replaying the shared E1
+  fixtures, preserving `extras.ai`, keeping unsafe serials as `number | string`, skipping event-less
+  frames, and treating future internal mutable actions as no-op summary frames.
+
 ## 0.1.0
 
 Initial GA release candidate for Sockudo AI Transport wire protocol v1.

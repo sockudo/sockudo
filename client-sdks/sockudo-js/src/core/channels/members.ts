@@ -46,13 +46,21 @@ export default class Members {
 
   /** Handles subscription data. For internal use only. */
   onSubscription(subscriptionData: any) {
-    this.members = subscriptionData.presence.hash;
-    this.count = subscriptionData.presence.count;
+    const presence = subscriptionData?.presence;
+    this.members =
+      presence?.hash && typeof presence.hash === "object" && !Array.isArray(presence.hash)
+        ? presence.hash
+        : {};
+    this.count =
+      typeof presence?.count === "number" ? presence.count : Object.keys(this.members).length;
     this.me = this.get(this.myID);
   }
 
   /** Adds a new member to the collection. For internal use only. */
   addMember(memberData: any) {
+    if (!memberData || typeof memberData.user_id !== "string") {
+      return null;
+    }
     if (this.get(memberData.user_id) === null) {
       this.count++;
     }
@@ -62,6 +70,9 @@ export default class Members {
 
   /** Adds a member from the collection. For internal use only. */
   removeMember(memberData: any) {
+    if (!memberData || typeof memberData.user_id !== "string") {
+      return null;
+    }
     const member = this.get(memberData.user_id);
     if (member) {
       delete this.members[memberData.user_id];

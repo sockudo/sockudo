@@ -1,12 +1,15 @@
+export type WireSerial = number | string;
 export interface MessageExtras {
     headers?: Record<string, string | number | boolean>;
     ephemeral?: boolean;
     idempotency_key?: string;
     echo?: boolean;
+    ai?: Record<string, unknown>;
+    [key: string]: unknown;
 }
 export interface RecoveryPosition {
     stream_id?: string;
-    serial: number;
+    serial: WireSerial;
     last_message_id?: string;
 }
 export interface ResumeRecoveredChannel {
@@ -20,8 +23,8 @@ export interface ResumeFailedChannel {
     reason: string;
     expected_stream_id?: string;
     current_stream_id?: string;
-    oldest_available_serial?: number;
-    newest_available_serial?: number;
+    oldest_available_serial?: WireSerial;
+    newest_available_serial?: WireSerial;
 }
 export interface ResumeSuccessData {
     recovered: ResumeRecoveredChannel[];
@@ -41,10 +44,10 @@ interface PusherEvent {
     user_id?: string;
     stream_id?: string;
     message_id?: string;
-    serial?: number;
+    serial?: WireSerial;
     extras?: MessageExtras;
     rawMessage?: string;
-    sequence?: number;
+    sequence?: WireSerial;
     conflation_key?: string;
 }
 export { PusherEvent };

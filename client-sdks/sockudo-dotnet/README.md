@@ -9,6 +9,8 @@ Official .NET client SDK for Sockudo.
 - Protocol V2 by default, with V1 compatibility
 - Public, private, presence, and encrypted channel types
 - Proxy-backed presence history and presence snapshot helpers
+- Protocol V2 capability-token URL auth and refresh events
+- Presence member data updates without leave/rejoin flaps
 - Tag filters and per-subscription event filters
 - Continuity-aware connection recovery (`stream_id` + `serial`)
 - Message deduplication
@@ -101,6 +103,42 @@ channel.Bind("order-placed", (data, meta) => Console.WriteLine(data));
 await client.ConnectAsync();
 ```
 
+### Capability Token Auth
+
+Protocol V2 connections can carry a Sockudo capability token in the initial WebSocket URL. Supply either a static token or an async provider:
+
+```csharp
+var client = new SockudoClient(
+    "app-key",
+    new SockudoOptions(
+        Cluster: "local",
+        WsHost: "127.0.0.1",
+        WsPort: 6001,
+        ForceTls: false,
+        TokenAuthentication: new TokenAuthenticationOptions(
+            TokenProvider: async cancellationToken =>
+            {
+                // Call your backend and return a fresh capability token.
+                return await FetchSockudoTokenAsync(cancellationToken);
+            }
+        )
+    )
+);
+
+client.Bind("sockudo:auth_success", (data, _) => Console.WriteLine(data));
+client.Bind("error", (error, _) =>
+{
+    if (error is TokenExpiredException or TokenRevokedException)
+    {
+        Console.WriteLine(error);
+    }
+});
+
+await client.ConnectAsync();
+```
+
+When `TokenProvider` returns a JWT with `exp`, the SDK parses `iat`/`exp` without validating the signature and schedules a `sockudo:auth` refresh at 80% of the token lifetime. If `iat` is missing, the schedule is based on the current time and `exp`. Opaque tokens, unparsable tokens, and static `Token` values without a provider are reactive/manual only. When the server emits `sockudo:token_expired` with code `40142`, the SDK still calls `TokenProvider` and sends a refresh frame; code `40160` is surfaced as `TokenRevokedException`.
+
 ### Presence Channels
 
 ```csharp
@@ -114,6 +152,18 @@ channel.Bind("pusher:member_removed", (data, meta) =>
     Console.WriteLine($"left: {data}"));
 
 await client.ConnectAsync();
+```
+
+Protocol V2 presence channels can update the current member data without a leave/rejoin cycle:
+
+```csharp
+var presence = (PresenceChannel)client.Subscribe("presence-lobby");
+presence.Bind("sockudo:presence_update", (member, _) => Console.WriteLine(member));
+
+await presence.UpdateAsync(new Dictionary<string, object?>
+{
+    ["status"] = "thinking",
+});
 ```
 
 ### Presence History
@@ -266,7 +316,7 @@ using Sockudo.Client;
 
 var client = new SockudoClient(
     "app-key",
-    new SockudoOptions { Cluster = "local", WsHost = "127.0.0.1", WsPort = 6001, Protocol = 2 }
+    new SockudoOptions { Cluster = "local", WsHost = "127.0.0.1", WsPort = 6001, ProtocolVersion = 2 }
 );
 
 MutableMessageState? state = null;
@@ -288,6 +338,33 @@ channel.BindGlobal((eventName, data) =>
 });
 
 await client.ConnectAsync();
+```
+
+Proxy-backed write helpers are available when `VersionedMessages.Endpoint` is configured. The client posts to your backend with actions such as `publish_create`, `message_append`, `message_update`, and `message_delete`; the backend signs and forwards to Sockudo HTTP APIs.
+
+```csharp
+var channel = client.Subscribe("chat:room-1");
+
+var created = await channel.CreateVersionedMessageAsync(
+    "ai-output",
+    "Hello",
+    new VersionedMessageCreateOptions(MessageId: "turn-1-output")
+);
+
+await channel.AppendVersionedMessageAsync(created.MessageSerial, " world");
+await channel.UpdateVersionedMessageAsync(
+    created.MessageSerial,
+    new VersionedMessageMutationOptions(Data: "Hello world!")
+);
+await channel.DeleteVersionedMessageAsync(created.MessageSerial);
+```
+
+For gap-free late-join backfills on V2, successful subscriptions expose `channel.AttachSerial` when the server includes `attach_serial`, and channel history accepts `UntilAttach`:
+
+```csharp
+var history = await channel.ChannelHistoryAsync(
+    new ChannelHistoryParams(Limit: 100, UntilAttach: true)
+);
 ```
 
 ### Encrypted Channels
@@ -352,10 +429,10 @@ V2 is the default. To explicitly request it or to downgrade to V1 for strict Pus
 
 ```csharp
 // V2 (default) — enables continuity tokens, message_id, recovery, filters, delta
-var client = new SockudoClient("app-key", new SockudoOptions { Protocol = 2 });
+var client = new SockudoClient("app-key", new SockudoOptions { Cluster = "local", ProtocolVersion = 2 });
 
 // V1 — plain Pusher protocol, compatible with official Pusher SDKs
-var client = new SockudoClient("app-key", new SockudoOptions { Protocol = 1 });
+var client = new SockudoClient("app-key", new SockudoOptions { Cluster = "local", ProtocolVersion = 1 });
 ```
 
 ## Requirements

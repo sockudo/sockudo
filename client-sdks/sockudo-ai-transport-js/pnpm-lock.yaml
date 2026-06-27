@@ -17,14 +17,14 @@ importers:
   .:
     devDependencies:
       "@ai-sdk/react":
-        specifier: ^3.0.210
-        version: 3.0.210(react@19.2.7)(zod@4.4.3)
+        specifier: ^4.0.3
+        version: 4.0.3(react@19.2.7)(zod@4.4.3)
       "@ai-sdk/svelte":
-        specifier: ^4.0.208
-        version: 4.0.208(svelte@5.56.3(@typescript-eslint/types@8.61.1))(zod@4.4.3)
+        specifier: ^5.0.2
+        version: 5.0.2(svelte@5.56.3(@typescript-eslint/types@8.61.1))(zod@4.4.3)
       "@ai-sdk/vue":
-        specifier: ^3.0.208
-        version: 3.0.208(vue@3.5.38(typescript@5.9.3))(zod@4.4.3)
+        specifier: ^4.0.2
+        version: 4.0.2(vue@3.5.38(typescript@5.9.3))(zod@4.4.3)
       "@changesets/cli":
         specifier: ^2.31.0
         version: 2.31.0(@types/node@24.13.2)
@@ -68,8 +68,8 @@ importers:
         specifier: 4.1.9
         version: 4.1.9(vitest@4.1.9)
       ai:
-        specifier: ^6.0.208
-        version: 6.0.208(zod@4.4.3)
+        specifier: ^7.0.2
+        version: 7.0.2(zod@4.4.3)
       eslint:
         specifier: ^9.39.4
         version: 9.39.4(jiti@2.7.0)
@@ -126,7 +126,7 @@ importers:
         version: 8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0)
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(@vitest/coverage-v8@4.1.9)(happy-dom@20.10.6)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0))
+        version: 4.1.9(@types/node@24.13.2)(@vitest/coverage-v8@4.1.9)(happy-dom@20.10.6)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0))
       vue:
         specifier: ^3.5.38
         version: 3.5.38(typescript@5.9.3)
@@ -196,7 +196,7 @@ importers:
         version: 8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0)
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(@vitest/coverage-v8@4.1.9)(happy-dom@20.10.6)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0))
+        version: 4.1.9(@types/node@24.13.2)(@vitest/coverage-v8@4.1.9)(happy-dom@20.10.6)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0))
       vue:
         specifier: ^3.5.38
         version: 3.5.38(typescript@5.9.3)
@@ -204,8 +204,8 @@ importers:
   demo:
     dependencies:
       "@ai-sdk/vue":
-        specifier: ^3.0.198
-        version: 3.0.198(vue@3.5.35(typescript@5.9.3))(zod@4.4.3)
+        specifier: ^4.0.2
+        version: 4.0.2(vue@3.5.35(typescript@5.9.3))(zod@4.4.3)
       "@sockudo/ai-transport":
         specifier: workspace:*
         version: link:..
@@ -213,8 +213,8 @@ importers:
         specifier: workspace:*
         version: link:../../sockudo-js
       ai:
-        specifier: ^6.0.196
-        version: 6.0.196(zod@4.4.3)
+        specifier: ^7.0.2
+        version: 7.0.2(zod@4.4.3)
       nuxt:
         specifier: ^4.0.0
         version: 4.4.8(@babel/plugin-syntax-jsx@7.29.7(@babel/core@7.29.7))(@babel/plugin-syntax-typescript@7.29.7(@babel/core@7.29.7))(@parcel/watcher@2.5.6)(@types/node@24.13.2)(@vue/compiler-sfc@3.5.38)(cac@6.7.14)(db0@0.3.4)(eslint@9.39.4(jiti@2.7.0))(ioredis@5.11.1)(lightningcss@1.32.0)(magicast@0.5.3)(optionator@0.9.4)(oxlint@1.70.0)(rolldown@1.0.3)(rollup-plugin-visualizer@7.0.1(rolldown@1.0.3)(rollup@4.62.0))(rollup@4.62.0)(terser@5.48.0)(typescript@5.9.3)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0))(vue-tsc@3.3.5(typescript@5.9.3))(yaml@2.9.0)
@@ -239,91 +239,64 @@ packages:
         integrity: sha512-VdA8vat5GIaG7gQaUL4ZpF5x3iHH9IolfcztEtQXJa7OSw++G/x9UrNQFXsdv4ZyiMAti6bRMR70G1zNkL67/g==,
       }
 
-  "@ai-sdk/gateway@3.0.124":
+  "@ai-sdk/gateway@4.0.2":
     resolution:
       {
-        integrity: sha512-h8CrmbSG+8X0C+M/E1M4oiDHYevqwbzAPN+uLRHS0eJaatF2MZ+juNtOHXNOjk7Bsk9mD2RjYMjJO9dFkb9I7Q==,
+        integrity: sha512-Jz1BiiTSvhDsCBJrkFRSqLHDRMVjFtYk9GdbSi3UOqY+/epza+oIESMDzfN4m+YHT/1IYmNEmxaMfjXOvxKDjQ==,
       }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  "@ai-sdk/gateway@3.0.126":
+  "@ai-sdk/mcp@2.0.1":
     resolution:
       {
-        integrity: sha512-OHwcwdVkzLo7Rx4eeFyyH3e/vlsYg11HIgKPf5yH6jkptI1Kzq8BX9xZPIBq4BrLBTF2p6pgvWqRfy6AvARGkQ==,
+        integrity: sha512-tsk+FAX7TN8BsA3eqwR7jf33PiYaGh+w/rHofk7hj13mFvicAhrdITgSOvncULUReUZcDoS0axHEXv1y1/yR8Q==,
       }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  "@ai-sdk/gateway@3.0.133":
+  "@ai-sdk/provider-utils@5.0.0":
     resolution:
       {
-        integrity: sha512-Ebs+7iS9zUgJu5B0RlxM2JmDWzq79Cpd6YdiqcCzB5qFdpfQJPUDiXutqlQP89F2XGjOdDeidulBTXUdXWzOxw==,
+        integrity: sha512-zj66M02jc6ASYwIgWZowsooDUwaVngeNZQ3H10GwcPMZ+KR6gHMhcUuKl6tkai+JPXTKDyHY1pnszuxRtw2D4A==,
       }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  "@ai-sdk/provider-utils@4.0.27":
+  "@ai-sdk/provider@4.0.0":
     resolution:
       {
-        integrity: sha512-ubkAJ+xODouwtmN1tYlvTPphH1hPOBfZaEQe8U7skGvFAnIRs9PPpsq57bC2+Ky/MB4yzhd6YOsxTAx9sGpazw==,
+        integrity: sha512-fr9Gs89prDWiuox/T+kCA+i2cJkHpxU5S+tr4megjTzRC27ZsvFhwjU/+XrqqMbvBUlfmXxTOYWy8ng45dsjIg==,
       }
-    engines: { node: ">=18" }
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
+    engines: { node: ">=22" }
 
-  "@ai-sdk/provider-utils@4.0.30":
+  "@ai-sdk/react@4.0.3":
     resolution:
       {
-        integrity: sha512-VO7I+vPffqI5sMnPoUq5DCSqKIgQIk/naJWRdQVpz2ma2zoprC/lqiJiUEl2s6DfvTD76TbhD3q39ROjlA6rGw==,
+        integrity: sha512-t06aGX/d87FJFmidEmxqkGiKXS1LSTDot4GWPK6TrIPTA1rDnwD6buCnhdE7ybr6ehUfmMjhY2O4I8P0MKqeZg==,
       }
-    engines: { node: ">=18" }
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  "@ai-sdk/provider@3.0.10":
-    resolution:
-      {
-        integrity: sha512-Q3BZ27qfpYqnCYGvE3vt+Qi6LGOF9R5Nmzn+9JoM1lCRsD9mYaIhfJLkSunN48nfGXJ6n+XNV0J/XVpqGQl7Dw==,
-      }
-    engines: { node: ">=18" }
-
-  "@ai-sdk/react@3.0.210":
-    resolution:
-      {
-        integrity: sha512-VprBlyc8yvwlpIdcIICL307vRncXrLlmcRTY/7JR5ND9+LvUcxJU16yW6prClFahqEWVza8Vr8P4Bgk5ZBtp4A==,
-      }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  "@ai-sdk/svelte@4.0.208":
+  "@ai-sdk/svelte@5.0.2":
     resolution:
       {
-        integrity: sha512-vAhyS2la8hlcjnFXuVfin/2sW+gava+O8Vk+sWFFUTw/JPJg3hO35Qa/jEhU0pHgMDgHXy2yo1920V3z876MAQ==,
+        integrity: sha512-45X218KBLcm3hETA+mxHOr5cp9Z1ZrULUXZjzQTa1i9v4VU38DKwdj7qkgX8XPlT/ecWKkx+ZftQI7VHViXpMw==,
       }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       svelte: ^5.31.0
 
-  "@ai-sdk/vue@3.0.198":
+  "@ai-sdk/vue@4.0.2":
     resolution:
       {
-        integrity: sha512-wp8uCYCGH9Tk+H/MqMWwpCoA9dmq3F+CvC4kwRm6VO5Tsoetex6y1xVOiMrJ7uMHf9WAyyt6g+4Bsbs+PQrOTQ==,
+        integrity: sha512-pgsI/+Uimp4+hWo1E9Sn0WXzYFMu4zoCJD50VC8IShkb2a4x3FphC2Whd68PHYpDoc1rijJfe97DHuiiWb4zBw==,
       }
-    engines: { node: ">=18" }
-    peerDependencies:
-      vue: ^3.3.4
-
-  "@ai-sdk/vue@3.0.208":
-    resolution:
-      {
-        integrity: sha512-krnycIZrS74Dpm4NH5U1yPbTmLZPDGyFbk8EdNGGpEqE4ZQ9UT2e0GHODaEg/m4QBAYHdwCJNxD4rD5EVrkosA==,
-      }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       vue: ^3.3.4
 
@@ -1467,13 +1440,6 @@ packages:
         optional: true
       rollup-plugin-visualizer:
         optional: true
-
-  "@opentelemetry/api@1.9.1":
-    resolution:
-      {
-        integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==,
-      }
-    engines: { node: ">=8.0.0" }
 
   "@oxc-minify/binding-android-arm-eabi@0.133.0":
     resolution:
@@ -4032,6 +3998,12 @@ packages:
         integrity: sha512-FTW0AFZNaK5/mOqvGBwVfUlNLU38TiQn4+DQgIFUnrBBJQ1crMJ82yeGQLV5jyKFsO8yRukpbuP7x+nRbH6aug==,
       }
 
+  "@workflow/serde@4.1.0":
+    resolution:
+      {
+        integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==,
+      }
+
   JSONStream@1.3.5:
     resolution:
       {
@@ -4106,30 +4078,12 @@ packages:
       }
     engines: { node: ">= 14" }
 
-  ai@6.0.196:
+  ai@7.0.2:
     resolution:
       {
-        integrity: sha512-2T45UeqKL4a11KQ14I5i1YYHOvCFrMF478E1k6PVjlQSGUvXSv4xrxIaQbUL4qgv91DADSbddwv3oR49pPAK3g==,
+        integrity: sha512-VMU08jHIDJnnKDrbC9AFa5ZsPpOTfAPRLvTRHtJk4FGAoeldmJROMxvZ2ak5lCjEJ2GP2OLPQbMRyEK8w0+S4A==,
       }
-    engines: { node: ">=18" }
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  ai@6.0.198:
-    resolution:
-      {
-        integrity: sha512-NEXlYGu3n7VTG6cn3SAeimfy60FLH/R5uRpl7zqDu0BLtIuoY1lALBGoJzltoVqd/iFQH1asIy/VqZqLPDWv0w==,
-      }
-    engines: { node: ">=18" }
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  ai@6.0.208:
-    resolution:
-      {
-        integrity: sha512-STz+AaZqJ4ZjH7UkpXkbHx+bjgIDOsE8fIUoZjkZ2whoZcfVmG9K/TqEKouJZ03SuZuD7lagntlU3zBhAEkRpQ==,
-      }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
@@ -8387,6 +8341,13 @@ packages:
       }
     hasBin: true
 
+  pkce-challenge@5.0.1:
+    resolution:
+      {
+        integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==,
+      }
+    engines: { node: ">=16.20.0" }
+
   pkg-types@1.3.1:
     resolution:
       {
@@ -10913,76 +10874,65 @@ packages:
 snapshots:
   "@ably/vcdiff-decoder@1.0.6": {}
 
-  "@ai-sdk/gateway@3.0.124(zod@4.4.3)":
+  "@ai-sdk/gateway@4.0.2(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider": 3.0.10
-      "@ai-sdk/provider-utils": 4.0.27(zod@4.4.3)
+      "@ai-sdk/provider": 4.0.0
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
       "@vercel/oidc": 3.2.0
       zod: 4.4.3
 
-  "@ai-sdk/gateway@3.0.126(zod@4.4.3)":
+  "@ai-sdk/mcp@2.0.1(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider": 3.0.10
-      "@ai-sdk/provider-utils": 4.0.27(zod@4.4.3)
-      "@vercel/oidc": 3.2.0
+      "@ai-sdk/provider": 4.0.0
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
+      pkce-challenge: 5.0.1
       zod: 4.4.3
 
-  "@ai-sdk/gateway@3.0.133(zod@4.4.3)":
+  "@ai-sdk/provider-utils@5.0.0(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider": 3.0.10
-      "@ai-sdk/provider-utils": 4.0.30(zod@4.4.3)
-      "@vercel/oidc": 3.2.0
-      zod: 4.4.3
-
-  "@ai-sdk/provider-utils@4.0.27(zod@4.4.3)":
-    dependencies:
-      "@ai-sdk/provider": 3.0.10
+      "@ai-sdk/provider": 4.0.0
       "@standard-schema/spec": 1.1.0
+      "@workflow/serde": 4.1.0
       eventsource-parser: 3.1.0
       zod: 4.4.3
 
-  "@ai-sdk/provider-utils@4.0.30(zod@4.4.3)":
-    dependencies:
-      "@ai-sdk/provider": 3.0.10
-      "@standard-schema/spec": 1.1.0
-      eventsource-parser: 3.1.0
-      zod: 4.4.3
-
-  "@ai-sdk/provider@3.0.10":
+  "@ai-sdk/provider@4.0.0":
     dependencies:
       json-schema: 0.4.0
 
-  "@ai-sdk/react@3.0.210(react@19.2.7)(zod@4.4.3)":
+  "@ai-sdk/react@4.0.3(react@19.2.7)(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider-utils": 4.0.30(zod@4.4.3)
-      ai: 6.0.208(zod@4.4.3)
+      "@ai-sdk/mcp": 2.0.1(zod@4.4.3)
+      "@ai-sdk/provider": 4.0.0
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
+      ai: 7.0.2(zod@4.4.3)
       react: 19.2.7
       swr: 2.4.1(react@19.2.7)
       throttleit: 2.1.0
     transitivePeerDependencies:
       - zod
 
-  "@ai-sdk/svelte@4.0.208(svelte@5.56.3(@typescript-eslint/types@8.61.1))(zod@4.4.3)":
+  "@ai-sdk/svelte@5.0.2(svelte@5.56.3(@typescript-eslint/types@8.61.1))(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider-utils": 4.0.30(zod@4.4.3)
-      ai: 6.0.208(zod@4.4.3)
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
+      ai: 7.0.2(zod@4.4.3)
       svelte: 5.56.3(@typescript-eslint/types@8.61.1)
     transitivePeerDependencies:
       - zod
 
-  "@ai-sdk/vue@3.0.198(vue@3.5.35(typescript@5.9.3))(zod@4.4.3)":
+  "@ai-sdk/vue@4.0.2(vue@3.5.35(typescript@5.9.3))(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider-utils": 4.0.27(zod@4.4.3)
-      ai: 6.0.198(zod@4.4.3)
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
+      ai: 7.0.2(zod@4.4.3)
       swrv: 1.2.0(vue@3.5.35(typescript@5.9.3))
       vue: 3.5.35(typescript@5.9.3)
     transitivePeerDependencies:
       - zod
 
-  "@ai-sdk/vue@3.0.208(vue@3.5.38(typescript@5.9.3))(zod@4.4.3)":
+  "@ai-sdk/vue@4.0.2(vue@3.5.38(typescript@5.9.3))(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider-utils": 4.0.30(zod@4.4.3)
-      ai: 6.0.208(zod@4.4.3)
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
+      ai: 7.0.2(zod@4.4.3)
       swrv: 1.2.0(vue@3.5.38(typescript@5.9.3))
       vue: 3.5.38(typescript@5.9.3)
     transitivePeerDependencies:
@@ -11974,8 +11924,6 @@ snapshots:
       - typescript
       - vue-tsc
       - yaml
-
-  "@opentelemetry/api@1.9.1": {}
 
   "@oxc-minify/binding-android-arm-eabi@0.133.0":
     optional: true
@@ -13122,7 +13070,7 @@ snapshots:
       obug: 2.1.3
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(@vitest/coverage-v8@4.1.9)(happy-dom@20.10.6)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0))
+      vitest: 4.1.9(@types/node@24.13.2)(@vitest/coverage-v8@4.1.9)(happy-dom@20.10.6)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0))
 
   "@vitest/expect@4.1.9":
     dependencies:
@@ -13353,6 +13301,8 @@ snapshots:
 
   "@vue/shared@3.5.38": {}
 
+  "@workflow/serde@4.1.0": {}
+
   JSONStream@1.3.5:
     dependencies:
       jsonparse: 1.3.1
@@ -13389,28 +13339,11 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@6.0.196(zod@4.4.3):
+  ai@7.0.2(zod@4.4.3):
     dependencies:
-      "@ai-sdk/gateway": 3.0.124(zod@4.4.3)
-      "@ai-sdk/provider": 3.0.10
-      "@ai-sdk/provider-utils": 4.0.27(zod@4.4.3)
-      "@opentelemetry/api": 1.9.1
-      zod: 4.4.3
-
-  ai@6.0.198(zod@4.4.3):
-    dependencies:
-      "@ai-sdk/gateway": 3.0.126(zod@4.4.3)
-      "@ai-sdk/provider": 3.0.10
-      "@ai-sdk/provider-utils": 4.0.27(zod@4.4.3)
-      "@opentelemetry/api": 1.9.1
-      zod: 4.4.3
-
-  ai@6.0.208(zod@4.4.3):
-    dependencies:
-      "@ai-sdk/gateway": 3.0.133(zod@4.4.3)
-      "@ai-sdk/provider": 3.0.10
-      "@ai-sdk/provider-utils": 4.0.30(zod@4.4.3)
-      "@opentelemetry/api": 1.9.1
+      "@ai-sdk/gateway": 4.0.2(zod@4.4.3)
+      "@ai-sdk/provider": 4.0.0
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
       zod: 4.4.3
 
   ajv@6.15.0:
@@ -16219,6 +16152,8 @@ snapshots:
       sonic-boom: 4.2.1
       thread-stream: 3.2.0
 
+  pkce-challenge@5.0.1: {}
+
   pkg-types@1.3.1:
     dependencies:
       confbox: 0.1.8
@@ -17646,7 +17581,7 @@ snapshots:
       terser: 5.48.0
       yaml: 2.9.0
 
-  vitest@4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(@vitest/coverage-v8@4.1.9)(happy-dom@20.10.6)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0)):
+  vitest@4.1.9(@types/node@24.13.2)(@vitest/coverage-v8@4.1.9)(happy-dom@20.10.6)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0)):
     dependencies:
       "@vitest/expect": 4.1.9
       "@vitest/mocker": 4.1.9(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0))
@@ -17669,7 +17604,6 @@ snapshots:
       vite: 8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      "@opentelemetry/api": 1.9.1
       "@types/node": 24.13.2
       "@vitest/coverage-v8": 4.1.9(vitest@4.1.9)
       happy-dom: 20.10.6

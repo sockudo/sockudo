@@ -8,6 +8,31 @@ pub const HEADER_MESSAGE_SERIAL: &str = "sockudo_message_serial";
 pub const HEADER_VERSION_SERIAL: &str = "sockudo_version_serial";
 pub const HEADER_HISTORY_SERIAL: &str = "sockudo_history_serial";
 pub const HEADER_VERSION_TIMESTAMP_MS: &str = "sockudo_version_timestamp_ms";
+const HEADER_APPEND_FRAGMENT: &str = "sockudo_append_fragment";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppendMode {
+    Delta,
+    Full,
+}
+
+impl AppendMode {
+    pub fn parse_query_param(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("") | Some("delta") => Ok(Self::Delta),
+            Some("full") => Ok(Self::Full),
+            Some(other) => Err(format!("unsupported append_mode '{other}'")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Delta => "delta",
+            Self::Full => "full",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -401,6 +426,40 @@ pub fn extract_runtime_action(message: &PusherMessage) -> Option<MessageAction> 
             _ => None,
         },
         _ => None,
+    }
+}
+
+pub fn set_runtime_append_fragment(message: &mut PusherMessage, fragment: impl Into<String>) {
+    let extras = message.extras.get_or_insert_with(MessageExtras::default);
+    let headers = extras.headers.get_or_insert_with(HashMap::new);
+    headers.insert(
+        HEADER_APPEND_FRAGMENT.to_string(),
+        ExtrasValue::String(fragment.into()),
+    );
+}
+
+pub fn extract_runtime_append_fragment(message: &PusherMessage) -> Option<&str> {
+    match message
+        .extras
+        .as_ref()
+        .and_then(|extras| extras.headers.as_ref())
+        .and_then(|headers| headers.get(HEADER_APPEND_FRAGMENT))
+    {
+        Some(ExtrasValue::String(value)) => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+pub fn clear_runtime_append_fragment(message: &mut PusherMessage) {
+    let Some(extras) = message.extras.as_mut() else {
+        return;
+    };
+    let Some(headers) = extras.headers.as_mut() else {
+        return;
+    };
+    headers.remove(HEADER_APPEND_FRAGMENT);
+    if headers.is_empty() {
+        extras.headers = None;
     }
 }
 

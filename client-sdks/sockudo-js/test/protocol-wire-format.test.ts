@@ -47,11 +47,13 @@ describe("protocol wire formats", () => {
       hostNonTLS: "ws.example.com",
       httpPath: "",
       wireFormat: "messagepack",
+      appendMode: "full",
       echoMessages: false,
     });
 
     expect(url).toContain("protocol=2");
     expect(url).toContain("format=messagepack");
+    expect(url).toContain("append_mode=full");
     expect(url).toContain("echo_messages=false");
   });
 

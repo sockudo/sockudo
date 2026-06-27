@@ -13,15 +13,19 @@ import {
     Orbit,
     AtSign,
     Waypoints,
+    Send,
 } from "lucide-vue-next";
 import { useDashboardStore, type ChannelInfo } from "../stores/dashboard";
 import { usePusher } from "../composables/usePusher";
+import { useHttpApi } from "../composables/useHttpApi";
 
 const store = useDashboardStore();
 const { subscribe, unsubscribe, bindEvent, triggerClientEvent } = usePusher();
 
 const channelInput = ref("");
 const eventBindName = ref("");
+const serverEventName = ref("demo.message");
+const serverEventData = ref('{"text": "hello from the channel sender"}');
 const clientEventName = ref("client-message");
 const clientEventData = ref('{"text": "hello"}');
 const selectedChannel = ref<string | null>(null);
@@ -67,7 +71,6 @@ const presets = [
     { name: "my-channel", label: "Public" },
     { name: "private-chat", label: "Private" },
     { name: "presence-room", label: "Presence" },
-    { name: "private-encrypted-secret", label: "Encrypted" },
     { name: "cache-state", label: "Cache" },
     { name: "ticker:btc", label: "Namespace" },
     { name: "ticker:*", label: "Wildcard" },
@@ -107,6 +110,15 @@ function handleBind() {
     ]);
     boundEvents.value = new Map(boundEvents.value);
     eventBindName.value = "";
+}
+
+async function handleServerPublish() {
+    if (!selectedChannel.value || !serverEventName.value.trim()) return;
+    await useHttpApi().publishEvent(
+        selectedChannel.value,
+        serverEventName.value.trim(),
+        serverEventData.value,
+    );
 }
 
 function handleTrigger() {
@@ -298,6 +310,29 @@ function handleUnsubscribe(name: string) {
                                 class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-500/15 text-brand-400 ring-1 ring-brand-500/20"
                                 >{{ evt }}</span
                             >
+                        </div>
+                    </div>
+
+                    <div>
+                        <p class="section-title">Send Server Event</p>
+                        <div class="space-y-2">
+                            <input
+                                v-model="serverEventName"
+                                class="input-field font-mono"
+                                placeholder="event-name"
+                            />
+                            <textarea
+                                v-model="serverEventData"
+                                class="input-field font-mono text-xs h-16 resize-none"
+                                placeholder='{"key": "value"}'
+                            />
+                            <button
+                                @click="handleServerPublish"
+                                class="btn-primary w-full btn-sm flex items-center justify-center gap-2"
+                                :disabled="!serverEventName.trim()"
+                            >
+                                <Send class="w-4 h-4" /> Send
+                            </button>
                         </div>
                     </div>
 

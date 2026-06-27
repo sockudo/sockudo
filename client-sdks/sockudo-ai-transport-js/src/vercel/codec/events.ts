@@ -1,7 +1,7 @@
 import type { ReducerMeta, Regenerate, UserMessage } from "../../core/codec/index.js";
 
 /**
- * Structural Vercel AI SDK v6 type namespace used by the optional Vercel
+ * Structural Vercel AI SDK v6/v7 type namespace used by the optional Vercel
  * integration without requiring the `ai` peer at build time.
  */
 // eslint-disable-next-line @typescript-eslint/no-namespace -- Preserve the documented AI.UIMessage public shape without requiring the optional ai peer.
@@ -16,30 +16,65 @@ export namespace AI {
     | "output-error"
     | "output-denied";
 
-  /** UI message part shape used by Vercel AI SDK v6. */
+  /** UI message part shape used by Vercel AI SDK v6/v7. */
   export type UIMessagePart =
-    | { type: "text"; text: string; id?: string }
-    | { type: "reasoning"; text: string; id?: string }
+    | {
+        type: "text";
+        text: string;
+        id?: string;
+        state?: "streaming" | "done";
+        providerMetadata?: unknown;
+      }
+    | {
+        type: "reasoning";
+        text: string;
+        id?: string;
+        state?: "streaming" | "done";
+        providerMetadata?: unknown;
+      }
+    | { type: "custom"; kind: `${string}.${string}`; providerMetadata?: unknown }
     | {
         type: "dynamic-tool";
         toolName: string;
         toolCallId: string;
         state: DynamicToolState;
+        title?: string;
+        toolMetadata?: Record<string, unknown>;
+        providerExecuted?: boolean;
         input?: unknown;
         output?: unknown;
         errorText?: string;
         approval?: ToolApproval;
+        preliminary?: boolean;
+        callProviderMetadata?: unknown;
+        resultProviderMetadata?: unknown;
       }
-    | { type: "file"; url: string; mediaType?: string; filename?: string }
-    | { type: "source-url"; sourceId?: string; url: string; title?: string }
+    | {
+        type: "file";
+        url: string;
+        mediaType?: string;
+        filename?: string;
+        providerReference?: unknown;
+        providerMetadata?: unknown;
+      }
+    | { type: "reasoning-file"; url: string; mediaType: string; providerMetadata?: unknown }
+    | {
+        type: "source-url";
+        sourceId?: string;
+        url: string;
+        title?: string;
+        providerMetadata?: unknown;
+      }
     | {
         type: "source-document";
         sourceId?: string;
         title?: string;
         mediaType?: string;
         filename?: string;
+        providerMetadata?: unknown;
       }
-    | { type: `data-${string}`; data: unknown; transient?: boolean };
+    | { type: `data-${string}`; id?: string; data: unknown; transient?: boolean }
+    | { type: "step-start" };
 
   /** Vercel UI message. */
   export interface UIMessage {
@@ -63,6 +98,10 @@ export namespace AI {
     approved: boolean;
     /** Optional denial reason. */
     reason?: string;
+    /** Whether approval can be handled automatically by the client. */
+    isAutomatic?: boolean;
+    /** Provider signature for approval verification. */
+    signature?: string;
   }
 
   /** Vercel UI message stream chunk. */
@@ -70,21 +109,29 @@ export namespace AI {
     | { type: "start"; messageId?: string; messageMetadata?: unknown }
     | { type: "start-step" }
     | { type: "finish-step" }
-    | { type: "finish"; finishReason?: string; metadata?: unknown }
+    | { type: "finish"; finishReason?: string; messageMetadata?: unknown; metadata?: unknown }
     | { type: "error"; errorText: string }
-    | { type: "abort" }
-    | { type: "message-metadata"; messageMetadata?: unknown }
-    | { type: "text-start"; id: string; messageId?: string }
-    | { type: "text-delta"; id: string; delta: string; messageId?: string }
-    | { type: "text-end"; id: string; messageId?: string }
-    | { type: "reasoning-start"; id: string; messageId?: string }
+    | { type: "abort"; reason?: string }
+    | { type: "message-metadata"; messageMetadata: unknown }
+    | { type: "text-start"; id: string; messageId?: string; providerMetadata?: unknown }
+    | {
+        type: "text-delta";
+        id: string;
+        delta: string;
+        messageId?: string;
+        providerMetadata?: unknown;
+      }
+    | { type: "text-end"; id: string; messageId?: string; providerMetadata?: unknown }
+    | { type: "reasoning-start"; id: string; messageId?: string; providerMetadata?: unknown }
     | {
         type: "reasoning-delta";
         id: string;
         delta: string;
         messageId?: string;
+        providerMetadata?: unknown;
       }
-    | { type: "reasoning-end"; id: string; messageId?: string }
+    | { type: "reasoning-end"; id: string; messageId?: string; providerMetadata?: unknown }
+    | { type: "custom"; kind: `${string}.${string}`; providerMetadata?: unknown }
     | {
         type: "tool-input-start";
         id?: string;
@@ -92,11 +139,17 @@ export namespace AI {
         toolName: string;
         dynamic?: boolean;
         messageId?: string;
+        providerExecuted?: boolean;
+        providerMetadata?: unknown;
+        toolMetadata?: Record<string, unknown>;
+        title?: string;
       }
     | {
         type: "tool-input-delta";
         toolCallId: string;
-        delta: string;
+        inputTextDelta?: string;
+        /** Legacy Sockudo alias accepted for pre-v7 compatibility. */
+        delta?: string;
         messageId?: string;
       }
     | {
@@ -107,30 +160,61 @@ export namespace AI {
         providerExecuted?: boolean;
         preliminary?: boolean;
         messageId?: string;
+        providerMetadata?: unknown;
+        toolMetadata?: Record<string, unknown>;
+        dynamic?: boolean;
+        title?: string;
       }
     | {
         type: "tool-input-error";
         toolCallId: string;
         toolName?: string;
+        input?: unknown;
         errorText: string;
         messageId?: string;
+        providerExecuted?: boolean;
+        providerMetadata?: unknown;
+        toolMetadata?: Record<string, unknown>;
+        dynamic?: boolean;
+        title?: string;
       }
     | {
         type: "tool-output-available";
         toolCallId: string;
         output: unknown;
         messageId?: string;
+        providerExecuted?: boolean;
+        providerMetadata?: unknown;
+        toolMetadata?: Record<string, unknown>;
+        dynamic?: boolean;
+        preliminary?: boolean;
       }
     | {
         type: "tool-output-error";
         toolCallId: string;
         errorText: string;
         messageId?: string;
+        providerExecuted?: boolean;
+        providerMetadata?: unknown;
+        toolMetadata?: Record<string, unknown>;
+        dynamic?: boolean;
       }
     | {
         type: "tool-approval-request";
         toolCallId: string;
         approvalId?: string;
+        isAutomatic?: boolean;
+        signature?: string;
+        messageId?: string;
+      }
+    | {
+        type: "tool-approval-response";
+        approvalId: string;
+        toolCallId?: string;
+        approved: boolean;
+        reason?: string;
+        providerExecuted?: boolean;
+        providerMetadata?: unknown;
         messageId?: string;
       }
     | {
@@ -139,16 +223,30 @@ export namespace AI {
         reason?: string;
         messageId?: string;
       }
-    | { type: "file"; url: string; mediaType?: string; filename?: string }
-    | { type: "source-url"; sourceId?: string; url: string; title?: string }
+    | {
+        type: "file";
+        url: string;
+        mediaType?: string;
+        filename?: string;
+        providerMetadata?: unknown;
+      }
+    | { type: "reasoning-file"; url: string; mediaType: string; providerMetadata?: unknown }
+    | {
+        type: "source-url";
+        sourceId?: string;
+        url: string;
+        title?: string;
+        providerMetadata?: unknown;
+      }
     | {
         type: "source-document";
         sourceId?: string;
         title?: string;
         mediaType?: string;
         filename?: string;
+        providerMetadata?: unknown;
       }
-    | { type: `data-${string}`; data: unknown; transient?: boolean };
+    | { type: `data-${string}`; id?: string; data: unknown; transient?: boolean };
 }
 
 /** Tool result input from client-side tool execution. */
@@ -236,4 +334,6 @@ export interface MessageTrackers {
       inputText: string;
     }
   >;
+  /** Approval id to tool call id. */
+  approvals: Map<string, string>;
 }

@@ -513,6 +513,7 @@ pub(crate) async fn attach_signed_in_mutation_actor(
             ProtocolVersion::V2,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();

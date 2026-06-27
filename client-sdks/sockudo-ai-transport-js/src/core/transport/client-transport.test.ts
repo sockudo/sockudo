@@ -204,6 +204,55 @@ describe("client transport", () => {
     });
   });
 
+  it("does not fold future summary actions into reduced state", () => {
+    const client = createMockClient({ clientId: "client-1" });
+    const channel = client.getMockChannel("chat");
+    const transport = createClientTransport({
+      channel,
+      codec: testCodec(),
+      api: "https://agent.test/run",
+      clientId: "client-1",
+      idProvider: fixedIds(),
+      fetch: okFetch(),
+      turnStartDeadlineMs: 0,
+    });
+    const rawMessages: string[] = [];
+    transport.on("message", (message) => {
+      rawMessages.push(`${message.name}:${message.action}`);
+    });
+
+    channel.inject(output("turn-1", "inv-1", "assistant-1", "before", 3));
+    expect(transport.view.getMessages()).toEqual([{ id: "assistant-1", text: "before" }]);
+
+    channel.inject({
+      event: "sockudo:message.future",
+      name: EVENT_AI_OUTPUT,
+      channel: "chat",
+      data: { id: "assistant-1", text: "corrupt" },
+      action: "future",
+      message_serial: "assistant-1",
+      history_serial: "9007199254740993",
+      delivery_serial: "9007199254740994",
+      extras: {
+        ai: {
+          transport: {
+            [HEADER_TURN_ID]: "turn-1",
+            [HEADER_INVOCATION_ID]: "inv-1",
+            [HEADER_CODEC_MESSAGE_ID]: "assistant-1",
+          },
+        },
+      },
+    });
+    expect(rawMessages).toContain(`${EVENT_AI_OUTPUT}:summary`);
+    expect(transport.view.getMessages()).toEqual([{ id: "assistant-1", text: "before" }]);
+
+    channel.inject(output("turn-1", "inv-1", "assistant-2", "after", 4));
+    expect(transport.view.getMessages()).toEqual([
+      { id: "assistant-1", text: "before" },
+      { id: "assistant-2", text: "after" },
+    ]);
+  });
+
   it("rejects when turn-start misses the configured deadline", async () => {
     const client = createMockClient({ clientId: "client-1" });
     const transport = createClientTransport({
