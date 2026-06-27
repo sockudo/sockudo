@@ -21,7 +21,7 @@ describe("UIMessageCodec", () => {
       { type: "start", messageId: "m1", messageMetadata: { topic: "t" } },
       { type: "start-step" },
       { type: "finish-step" },
-      { type: "finish", finishReason: "stop", metadata: { model: "m" } },
+      { type: "finish", finishReason: "stop", messageMetadata: { model: "m" } },
       { type: "error", errorText: "bad" },
       { type: "abort" },
       { type: "message-metadata", messageMetadata: { a: 1 } },
@@ -33,8 +33,11 @@ describe("UIMessageCodec", () => {
       },
       { type: "tool-output-error", toolCallId: "tc1", errorText: "bad output" },
       { type: "tool-approval-request", toolCallId: "tc1", approvalId: "ap1" },
+      { type: "tool-approval-response", approvalId: "ap1", approved: true },
       { type: "tool-output-denied", toolCallId: "tc1", reason: "no" },
       { type: "file", url: "https://file.test/a.png", mediaType: "image/png" },
+      { type: "reasoning-file", url: "https://file.test/reasoning.txt", mediaType: "text/plain" },
+      { type: "custom", kind: "openai.trace", providerMetadata: { span: "s1" } },
       {
         type: "source-url",
         sourceId: "s1",
@@ -113,7 +116,7 @@ describe("UIMessageCodec", () => {
             type: "tool-input-delta",
             toolCallId: "tc1",
             messageId: "m1",
-            delta: '{"q":"x"}',
+            inputTextDelta: '{"q":"x"}',
           },
           {
             type: "tool-input-available",
@@ -132,7 +135,7 @@ describe("UIMessageCodec", () => {
           {
             type: "tool-input-delta",
             toolCallId: "tc1",
-            delta: '{"q":"x"}',
+            inputTextDelta: '{"q":"x"}',
             messageId: "m1",
           },
           {
@@ -332,7 +335,7 @@ describe("UIMessageCodec", () => {
       },
       7,
     );
-    fold({ type: "tool-input-delta", toolCallId: "tc1", delta: '{"q":"x"}' }, 8);
+    fold({ type: "tool-input-delta", toolCallId: "tc1", inputTextDelta: '{"q":"x"}' }, 8);
     fold({ type: "tool-input-available", toolCallId: "tc1", messageId: "m1" }, 9);
     fold({ type: "tool-output-available", toolCallId: "tc1", output: "done" }, 10);
 
@@ -463,7 +466,6 @@ describe("UIMessageCodec", () => {
     fold(
       {
         type: "tool-approval-response",
-        toolCallId: "tc1",
         approvalId: "ap1",
         approved: true,
       },
@@ -543,7 +545,7 @@ describe("UIMessageCodec", () => {
     await encoder.publishOutput({
       type: "finish",
       finishReason: "stop",
-      metadata: { model: "demo-model" },
+      messageMetadata: { model: "demo-model" },
     });
 
     expect(normalizeWireTranscript(writer)).toMatchInlineSnapshot(`
@@ -641,7 +643,7 @@ describe("UIMessageCodec", () => {
         {
           "data": {
             "finishReason": "stop",
-            "metadata": {
+            "messageMetadata": {
               "model": "demo-model",
             },
             "type": "finish",
@@ -651,7 +653,7 @@ describe("UIMessageCodec", () => {
               "codec": {
                 "finish-reason": "stop",
                 "message-id": "m1",
-                "provider-metadata": "{"model":"demo-model"}",
+                "message-metadata": "{"model":"demo-model"}",
                 "type": "finish",
               },
               "transport": {
@@ -1006,7 +1008,7 @@ function chunksFromSpec(spec: StreamSpec): VercelOutput[] {
       {
         type: "tool-input-delta",
         toolCallId: "tool-1",
-        delta: JSON.stringify(input),
+        inputTextDelta: JSON.stringify(input),
         messageId: spec.messageId,
       },
       {
@@ -1083,6 +1085,14 @@ function toVercelAIChunk(chunk: VercelOutput): VercelAIChunk {
       return { type: "reasoning-delta", id: chunk.id, delta: chunk.delta };
     case "reasoning-end":
       return { type: "reasoning-end", id: chunk.id };
+    case "custom":
+      return {
+        type: "custom",
+        kind: chunk.kind,
+        ...(chunk.providerMetadata !== undefined
+          ? { providerMetadata: chunk.providerMetadata }
+          : {}),
+      } as unknown as VercelAIChunk;
     case "tool-input-start":
       return {
         type: "tool-input-start",
@@ -1093,7 +1103,7 @@ function toVercelAIChunk(chunk: VercelOutput): VercelAIChunk {
       return {
         type: "tool-input-delta",
         toolCallId: chunk.toolCallId,
-        inputTextDelta: chunk.delta,
+        inputTextDelta: chunk.inputTextDelta ?? chunk.delta ?? "",
       };
     case "tool-input-available":
       return {
@@ -1128,6 +1138,13 @@ function toVercelAIChunk(chunk: VercelOutput): VercelAIChunk {
         approvalId: chunk.approvalId ?? "",
         toolCallId: chunk.toolCallId,
       };
+    case "tool-approval-response":
+      return {
+        type: "tool-approval-response",
+        approvalId: chunk.approvalId,
+        approved: chunk.approved,
+        ...(chunk.reason !== undefined ? { reason: chunk.reason } : {}),
+      } as unknown as VercelAIChunk;
     case "tool-output-denied":
       return { type: "tool-output-denied", toolCallId: chunk.toolCallId };
     case "source-url":
@@ -1151,6 +1168,12 @@ function toVercelAIChunk(chunk: VercelOutput): VercelAIChunk {
         url: chunk.url,
         mediaType: chunk.mediaType ?? "application/octet-stream",
       };
+    case "reasoning-file":
+      return {
+        type: "reasoning-file",
+        url: chunk.url,
+        mediaType: chunk.mediaType,
+      } as unknown as VercelAIChunk;
     default:
       return {
         type: chunk.type,

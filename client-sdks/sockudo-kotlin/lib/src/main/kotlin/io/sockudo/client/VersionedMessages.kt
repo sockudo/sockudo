@@ -34,16 +34,155 @@ data class MutableMessageState(
     val versionTimestampMs: Long? = null,
 )
 
+data class VersionedMessageCreateRequest(
+    val eventName: String,
+    val data: Any?,
+    val extras: MessageExtras? = null,
+    val socketId: String? = null,
+    val idempotencyKey: String? = null,
+) {
+    internal fun toPayload(): Map<String, Any?> =
+        linkedMapOf<String, Any?>(
+            "event" to eventName,
+            "data" to data,
+            "extras" to extras?.toWireMap(),
+            "socket_id" to socketId,
+            "idempotency_key" to idempotencyKey,
+        ).filterValues { it != null }
+}
+
+data class VersionedMessageAppendRequest(
+    val messageSerial: String,
+    val data: Any?,
+    val extras: MessageExtras? = null,
+    val socketId: String? = null,
+    val idempotencyKey: String? = null,
+    val expectedVersionSerial: String? = null,
+) {
+    internal fun toPayload(): Map<String, Any?> =
+        linkedMapOf<String, Any?>(
+            "message_serial" to messageSerial,
+            "data" to data,
+            "extras" to extras?.toWireMap(),
+            "socket_id" to socketId,
+            "idempotency_key" to idempotencyKey,
+            "expected_version_serial" to expectedVersionSerial,
+        ).filterValues { it != null }
+}
+
+data class VersionedMessageUpdateRequest(
+    val messageSerial: String,
+    val data: Any?,
+    val extras: MessageExtras? = null,
+    val socketId: String? = null,
+    val idempotencyKey: String? = null,
+    val expectedVersionSerial: String? = null,
+) {
+    internal fun toPayload(): Map<String, Any?> =
+        linkedMapOf<String, Any?>(
+            "message_serial" to messageSerial,
+            "data" to data,
+            "extras" to extras?.toWireMap(),
+            "socket_id" to socketId,
+            "idempotency_key" to idempotencyKey,
+            "expected_version_serial" to expectedVersionSerial,
+        ).filterValues { it != null }
+}
+
+data class VersionedMessageDeleteRequest(
+    val messageSerial: String,
+    val data: Any? = null,
+    val extras: MessageExtras? = null,
+    val socketId: String? = null,
+    val idempotencyKey: String? = null,
+    val expectedVersionSerial: String? = null,
+) {
+    internal fun toPayload(): Map<String, Any?> =
+        linkedMapOf<String, Any?>(
+            "message_serial" to messageSerial,
+            "data" to data,
+            "extras" to extras?.toWireMap(),
+            "socket_id" to socketId,
+            "idempotency_key" to idempotencyKey,
+            "expected_version_serial" to expectedVersionSerial,
+        ).filterValues { it != null }
+}
+
+data class VersionedMessageCreateAck(
+    val messageSerial: String,
+    val versionSerial: String? = null,
+    val historySerial: Long? = null,
+    val deliverySerial: Long? = null,
+    val eventName: String? = null,
+    val raw: Map<String, Any?> = emptyMap(),
+)
+
+data class VersionedMessageAppendAck(
+    val messageSerial: String,
+    val versionSerial: String? = null,
+    val historySerial: Long? = null,
+    val deliverySerial: Long? = null,
+    val eventName: String? = null,
+    val raw: Map<String, Any?> = emptyMap(),
+)
+
+data class VersionedMessageUpdateAck(
+    val messageSerial: String,
+    val versionSerial: String? = null,
+    val historySerial: Long? = null,
+    val deliverySerial: Long? = null,
+    val eventName: String? = null,
+    val raw: Map<String, Any?> = emptyMap(),
+)
+
+data class VersionedMessageDeleteAck(
+    val messageSerial: String,
+    val versionSerial: String? = null,
+    val historySerial: Long? = null,
+    val deliverySerial: Long? = null,
+    val eventName: String? = null,
+    val raw: Map<String, Any?> = emptyMap(),
+)
+
+internal data class VersionedMessageAckFields(
+    val messageSerial: String,
+    val versionSerial: String?,
+    val historySerial: Long?,
+    val deliverySerial: Long?,
+    val eventName: String?,
+    val raw: Map<String, Any?>,
+)
+
+internal fun decodeVersionedMessageAckFields(payload: Map<String, Any?>): VersionedMessageAckFields {
+    val ack =
+        (payload["ack"] as? Map<*, *>)
+            ?: (payload["item"] as? Map<*, *>)
+            ?: payload
+    val normalized = ack.mapKeys { it.key.toString() }
+    return VersionedMessageAckFields(
+        messageSerial =
+            normalized["message_serial"] as? String
+                ?: normalized["messageSerial"] as? String
+                ?: "",
+        versionSerial =
+            normalized["version_serial"] as? String
+                ?: normalized["versionSerial"] as? String,
+        historySerial =
+            parseSockudoLong(normalized["history_serial"])
+                ?: parseSockudoLong(normalized["historySerial"]),
+        deliverySerial =
+            parseSockudoLong(normalized["delivery_serial"])
+                ?: parseSockudoLong(normalized["deliverySerial"]),
+        eventName =
+            normalized["event"] as? String
+                ?: normalized["eventName"] as? String
+                ?: normalized["name"] as? String,
+        raw = normalized,
+    )
+}
+
 private fun parseNumericHeader(value: Any?): Long? {
-    return when (value) {
-        is Long -> value
-        is Int -> value.toLong()
-        is Double -> if (value == kotlin.math.floor(value)) value.toLong() else null
-        is String -> value.trim().toDoubleOrNull()?.let { d ->
-            if (d == kotlin.math.floor(d)) d.toLong() else null
-        }
-        else -> null
-    }
+    return parseSockudoLong(value)
 }
 
 fun isMutableMessageEvent(event: SockudoEvent): Boolean =

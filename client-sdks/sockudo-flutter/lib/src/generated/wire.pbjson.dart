@@ -60,6 +60,7 @@ const ProtoPusherMessage$json = {
       '5': 9,
       '10': 'deltaConflationKey'
     },
+    {'1': 'stream_id', '3': 15, '4': 1, '5': 9, '10': 'streamId'},
   ],
   '3': [ProtoPusherMessage_TagsEntry$json],
 };
@@ -85,8 +86,9 @@ final $typed_data.Uint8List protoPusherMessageDescriptor = $convert.base64Decode
     'UgZzZXJpYWwSJwoPaWRlbXBvdGVuY3lfa2V5GAsgASgJUg5pZGVtcG90ZW5jeUtleRIzCgZleH'
     'RyYXMYDCABKAsyGy5zb2NrdWRvLlByb3RvTWVzc2FnZUV4dHJhc1IGZXh0cmFzEiUKDmRlbHRh'
     'X3NlcXVlbmNlGA0gASgEUg1kZWx0YVNlcXVlbmNlEjAKFGRlbHRhX2NvbmZsYXRpb25fa2V5GA'
-    '4gASgJUhJkZWx0YUNvbmZsYXRpb25LZXkaNwoJVGFnc0VudHJ5EhAKA2tleRgBIAEoCVIDa2V5'
-    'EhQKBXZhbHVlGAIgASgJUgV2YWx1ZToCOAE=');
+    '4gASgJUhJkZWx0YUNvbmZsYXRpb25LZXkSGwoJc3RyZWFtX2lkGA8gASgJUghzdHJlYW1JZBo3'
+    'CglUYWdzRW50cnkSEAoDa2V5GAEgASgJUgNrZXkSFAoFdmFsdWUYAiABKAlSBXZhbHVlOgI4AQ'
+    '==');
 
 @$core.Deprecated('Use protoMessageDataDescriptor instead')
 const ProtoMessageData$json = {
@@ -183,6 +185,14 @@ const ProtoMessageExtras$json = {
       '17': true
     },
     {'1': 'echo', '3': 4, '4': 1, '5': 8, '9': 2, '10': 'echo', '17': true},
+    {
+      '1': 'ai',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.sockudo.ProtoAiExtras',
+      '10': 'ai'
+    },
   ],
   '3': [ProtoMessageExtras_HeadersEntry$json],
   '8': [
@@ -214,9 +224,62 @@ final $typed_data.Uint8List protoMessageExtrasDescriptor = $convert.base64Decode
     'ChJQcm90b01lc3NhZ2VFeHRyYXMSQgoHaGVhZGVycxgBIAMoCzIoLnNvY2t1ZG8uUHJvdG9NZX'
     'NzYWdlRXh0cmFzLkhlYWRlcnNFbnRyeVIHaGVhZGVycxIhCgllcGhlbWVyYWwYAiABKAhIAFIJ'
     'ZXBoZW1lcmFsiAEBEiwKD2lkZW1wb3RlbmN5X2tleRgDIAEoCUgBUg5pZGVtcG90ZW5jeUtleY'
-    'gBARIXCgRlY2hvGAQgASgISAJSBGVjaG+IAQEaVQoMSGVhZGVyc0VudHJ5EhAKA2tleRgBIAEo'
-    'CVIDa2V5Ei8KBXZhbHVlGAIgASgLMhkuc29ja3Vkby5Qcm90b0V4dHJhc1ZhbHVlUgV2YWx1ZT'
-    'oCOAFCDAoKX2VwaGVtZXJhbEISChBfaWRlbXBvdGVuY3lfa2V5QgcKBV9lY2hv');
+    'gBARIXCgRlY2hvGAQgASgISAJSBGVjaG+IAQESJgoCYWkYBSABKAsyFi5zb2NrdWRvLlByb3Rv'
+    'QWlFeHRyYXNSAmFpGlUKDEhlYWRlcnNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIvCgV2YWx1ZR'
+    'gCIAEoCzIZLnNvY2t1ZG8uUHJvdG9FeHRyYXNWYWx1ZVIFdmFsdWU6AjgBQgwKCl9lcGhlbWVy'
+    'YWxCEgoQX2lkZW1wb3RlbmN5X2tleUIHCgVfZWNobw==');
+
+@$core.Deprecated('Use protoAiExtrasDescriptor instead')
+const ProtoAiExtras$json = {
+  '1': 'ProtoAiExtras',
+  '2': [
+    {
+      '1': 'transport',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.sockudo.ProtoAiExtras.TransportEntry',
+      '10': 'transport'
+    },
+    {
+      '1': 'codec',
+      '3': 2,
+      '4': 3,
+      '5': 11,
+      '6': '.sockudo.ProtoAiExtras.CodecEntry',
+      '10': 'codec'
+    },
+  ],
+  '3': [ProtoAiExtras_TransportEntry$json, ProtoAiExtras_CodecEntry$json],
+};
+
+@$core.Deprecated('Use protoAiExtrasDescriptor instead')
+const ProtoAiExtras_TransportEntry$json = {
+  '1': 'TransportEntry',
+  '2': [
+    {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
+    {'1': 'value', '3': 2, '4': 1, '5': 9, '10': 'value'},
+  ],
+  '7': {'7': true},
+};
+
+@$core.Deprecated('Use protoAiExtrasDescriptor instead')
+const ProtoAiExtras_CodecEntry$json = {
+  '1': 'CodecEntry',
+  '2': [
+    {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
+    {'1': 'value', '3': 2, '4': 1, '5': 9, '10': 'value'},
+  ],
+  '7': {'7': true},
+};
+
+/// Descriptor for `ProtoAiExtras`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List protoAiExtrasDescriptor = $convert.base64Decode(
+    'Cg1Qcm90b0FpRXh0cmFzEkMKCXRyYW5zcG9ydBgBIAMoCzIlLnNvY2t1ZG8uUHJvdG9BaUV4dH'
+    'Jhcy5UcmFuc3BvcnRFbnRyeVIJdHJhbnNwb3J0EjcKBWNvZGVjGAIgAygLMiEuc29ja3Vkby5Q'
+    'cm90b0FpRXh0cmFzLkNvZGVjRW50cnlSBWNvZGVjGjwKDlRyYW5zcG9ydEVudHJ5EhAKA2tleR'
+    'gBIAEoCVIDa2V5EhQKBXZhbHVlGAIgASgJUgV2YWx1ZToCOAEaOAoKQ29kZWNFbnRyeRIQCgNr'
+    'ZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgB');
 
 @$core.Deprecated('Use protoExtrasValueDescriptor instead')
 const ProtoExtrasValue$json = {

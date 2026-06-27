@@ -525,14 +525,16 @@ impl SockudoServer {
             .merge(api_router)
             .route("/up", get(up))
             .route("/up/{appId}", get(up))
-            .route("/live", get(live))
-            .layer(DefaultBodyLimit::max(body_limit_bytes))
-            .layer(cors);
+            .route("/live", get(live));
 
         if self.config.http_api.usage_enabled {
             router = router.route("/usage", get(usage));
             router = router.route("/stats", get(stats));
         }
+
+        router = router
+            .layer(DefaultBodyLimit::max(body_limit_bytes))
+            .layer(cors);
 
         // Return plain text 404 for unmatched routes.
         // Without this, Axum returns an empty-body 404 which nginx may serve as a file download.

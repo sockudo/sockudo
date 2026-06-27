@@ -148,6 +148,10 @@ export default class PresenceChannel extends PrivateChannel {
    */
   handleEvent(event: SockudoEvent) {
     const eventName = event.event;
+    if (typeof eventName !== "string" || eventName.length === 0) {
+      Logger.debug(`Ignoring presence frame without an event name on channel '${this.name}'`);
+      return;
+    }
     if (isInternalEvent(eventName)) {
       this.handleInternalEvent(event);
     } else {
@@ -161,6 +165,12 @@ export default class PresenceChannel extends PrivateChannel {
   }
   handleInternalEvent(event: SockudoEvent) {
     const eventName = event.event;
+    if (typeof eventName !== "string" || eventName.length === 0) {
+      Logger.debug(
+        `Ignoring presence internal frame without an event name on channel '${this.name}'`,
+      );
+      return;
+    }
     const data = event.data;
     switch (eventName) {
       case prefixedInternal("subscription_succeeded"):
@@ -171,13 +181,20 @@ export default class PresenceChannel extends PrivateChannel {
         break;
       case prefixedInternal("member_added"):
         const addedMember = this.members.addMember(data);
-        this.emit(prefixedEvent("member_added"), addedMember);
+        if (addedMember) {
+          this.emit(prefixedEvent("member_added"), addedMember);
+        }
         break;
       case prefixedInternal("member_removed"):
         const removedMember = this.members.removeMember(data);
         if (removedMember) {
           this.emit(prefixedEvent("member_removed"), removedMember);
         }
+        break;
+      default:
+        Logger.debug(`Ignoring unknown internal event '${eventName}' on channel '${this.name}'`);
+        const metadata: Metadata = {};
+        this.emit(eventName, data, metadata);
         break;
     }
   }

@@ -25,6 +25,35 @@ public sealed class AuthFailure : SockudoException
     public int? StatusCode { get; }
 }
 
+public class TokenAuthException : SockudoException
+{
+    public TokenAuthException(int code, string reason, string message) : base(message)
+    {
+        Code = code;
+        Reason = reason;
+    }
+
+    public int StatusCode => 401;
+    public int Code { get; }
+    public string Reason { get; }
+}
+
+public sealed class TokenExpiredException : TokenAuthException
+{
+    public TokenExpiredException(string reason = "expired")
+        : base(40142, reason, "Sockudo capability token expired")
+    {
+    }
+}
+
+public sealed class TokenRevokedException : TokenAuthException
+{
+    public TokenRevokedException(string reason = "revoked")
+        : base(40160, reason, "Sockudo capability token was revoked")
+    {
+    }
+}
+
 public sealed class UnsupportedFeature : SockudoException
 {
     public UnsupportedFeature(string message) : base(message)
@@ -55,9 +84,12 @@ public sealed class SockudoClient : IAsyncDisposable
     private Task? _activityLoop;
     private Task? _retryLoop;
     private Task? _unavailableLoop;
+    private Task? _authRefreshLoop;
+    private CancellationTokenSource? _authRefreshCts;
     private bool _manuallyDisconnected;
     private SockudoTransport? _currentTransport;
     private bool _attemptedFallback;
+    private string? _authToken;
 
     public SockudoClient(string key, SockudoOptions options, HttpClient? httpClient = null)
     {
@@ -111,18 +143,29 @@ public sealed class SockudoClient : IAsyncDisposable
         };
         if (Options.ProtocolVersion >= 2)
         {
+            Options.ValidateAppendRollupWindow();
             query["format"] = Options.WireFormat;
+            query["append_mode"] = Options.AppendMode;
             query["echo_messages"] = Options.EchoMessages;
+            if (Options.AppendRollupWindow is not null)
+            {
+                query["append_rollup_window"] = Options.AppendRollupWindow.Value;
+            }
+            var token = _authToken ?? Options.TokenAuthentication?.Token;
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                query["token"] = token;
+            }
         }
 
-        return new UriBuilder
+        var builder = new UriBuilder
         {
             Scheme = scheme,
             Host = host,
             Port = port,
             Path = path,
-            Query = QueryString.Encode(query),
-        }.Uri.ToString();
+        };
+        return $"{builder.Uri.GetLeftPart(UriPartial.Path)}?{QueryString.Encode(query)}";
     }
 
     public SockudoChannel Subscribe(string channelName, SubscriptionOptions? subscriptionOptions = null)
@@ -262,12 +305,31 @@ public sealed class SockudoClient : IAsyncDisposable
         return true;
     }
 
+    public async Task<bool> RefreshAuthAsync(CancellationToken cancellationToken = default)
+    {
+        if (Options.ProtocolVersion < 2)
+        {
+            throw new UnsupportedFeature("Token auth refresh is only supported on Protocol V2 connections.");
+        }
+
+        var token = await ResolveAuthTokenAsync(cancellationToken).ConfigureAwait(false);
+        _authToken = token;
+        var sent = await SendEventAsync(
+            _prefix.Event("auth"),
+            new Dictionary<string, object?> { ["token"] = token },
+            null,
+            cancellationToken).ConfigureAwait(false);
+        ScheduleAuthRefreshIfPossible(token);
+        return sent;
+    }
+
     public async ValueTask DisposeAsync()
     {
         await DisconnectAsync().ConfigureAwait(false);
         _httpClient.Dispose();
         _socketGate.Dispose();
         _socketCts?.Dispose();
+        _authRefreshCts?.Dispose();
     }
 
     private SockudoChannel CreateChannel(string name)
@@ -294,6 +356,8 @@ public sealed class SockudoClient : IAsyncDisposable
         _socketCts?.Dispose();
         _socketCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+        await EnsureUrlAuthTokenAsync(_socketCts.Token).ConfigureAwait(false);
+
         var socket = new ClientWebSocket();
         if (Options.ProtocolVersion >= 2)
         {
@@ -302,7 +366,151 @@ public sealed class SockudoClient : IAsyncDisposable
         }
         _socket = socket;
         await socket.ConnectAsync(new Uri(SocketUrl(transport)), _socketCts.Token).ConfigureAwait(false);
+        if (_authToken is not null)
+        {
+            ScheduleAuthRefreshIfPossible(_authToken);
+        }
         _receiveLoop = ReceiveLoopAsync(socket, _socketCts.Token);
+    }
+
+    private async Task EnsureUrlAuthTokenAsync(CancellationToken cancellationToken)
+    {
+        if (Options.ProtocolVersion < 2 || Options.TokenAuthentication is null)
+        {
+            return;
+        }
+
+        _authToken = await ResolveAuthTokenAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void ScheduleAuthRefreshIfPossible(string token)
+    {
+        CancelAuthRefreshTimer();
+        if (Options.ProtocolVersion < 2 || Options.TokenAuthentication?.TokenProvider is null)
+        {
+            return;
+        }
+
+        var refreshAt = TryGetJwtRefreshTime(token);
+        if (refreshAt is null)
+        {
+            return;
+        }
+
+        var delay = refreshAt.Value - DateTimeOffset.UtcNow;
+        if (delay < TimeSpan.Zero)
+        {
+            delay = TimeSpan.Zero;
+        }
+
+        var cts = new CancellationTokenSource();
+        _authRefreshCts = cts;
+        _authRefreshLoop = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(delay, cts.Token).ConfigureAwait(false);
+                if (!cts.Token.IsCancellationRequested)
+                {
+                    await RefreshAuthAsync(cts.Token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                _dispatcher.Emit("error", exception);
+            }
+        });
+    }
+
+    private static DateTimeOffset? TryGetJwtRefreshTime(string token)
+    {
+        var parts = token.Split('.');
+        if (parts.Length < 2)
+        {
+            return null;
+        }
+
+        try
+        {
+            var payload = JsonSupport.Decode(Encoding.UTF8.GetString(Base64UrlDecode(parts[1]))) as Dictionary<string, object?>;
+            var exp = ProtocolCodec.CoerceLong(payload?.Get("exp"));
+            if (exp is null)
+            {
+                return null;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var issuedAt = ProtocolCodec.CoerceLong(payload?.Get("iat")) ?? now.ToUnixTimeSeconds();
+            var expiresAt = exp.Value;
+            if (expiresAt <= issuedAt)
+            {
+                return now;
+            }
+
+            return DateTimeOffset.FromUnixTimeSeconds(issuedAt)
+                .AddSeconds((expiresAt - issuedAt) * 0.8);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static byte[] Base64UrlDecode(string value)
+    {
+        var encoded = value.Replace('-', '+').Replace('_', '/');
+        encoded = encoded.PadRight(encoded.Length + ((4 - encoded.Length % 4) % 4), '=');
+        return Convert.FromBase64String(encoded);
+    }
+
+    private async Task<string> ResolveAuthTokenAsync(CancellationToken cancellationToken)
+    {
+        var options = Options.TokenAuthentication ?? throw new UnsupportedFeature(
+            "TokenAuthentication must be configured before token auth can be used.");
+
+        var token = options.TokenProvider is not null
+            ? await options.TokenProvider(cancellationToken).ConfigureAwait(false)
+            : options.Token;
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            throw new AuthFailure(null, "TokenAuthentication returned an empty token.");
+        }
+        return token;
+    }
+
+    private async Task HandleTokenExpiredAsync(object? data)
+    {
+        var payload = data as Dictionary<string, object?>;
+        var code = ProtocolCodec.CoerceInt(payload?.Get("code")) ?? 40142;
+        var reason = payload?.Get("reason") as string ?? (code == 40160 ? "revoked" : "expired");
+
+        _dispatcher.Emit(_prefix.Event("token_expired"), data);
+
+        if (code == 40160)
+        {
+            _dispatcher.Emit("error", new TokenRevokedException(reason));
+            return;
+        }
+
+        if (Options.TokenAuthentication?.TokenProvider is not null)
+        {
+            try
+            {
+                await RefreshAuthAsync().ConfigureAwait(false);
+                return;
+            }
+            catch (Exception exception)
+            {
+                _dispatcher.Emit("error", exception);
+                return;
+            }
+        }
+
+        _dispatcher.Emit("error", new TokenExpiredException(reason));
     }
 
     private async Task ReceiveLoopAsync(ClientWebSocket socket, CancellationToken cancellationToken)
@@ -367,10 +575,10 @@ public sealed class SockudoClient : IAsyncDisposable
 
             ResetActivityTimer();
 
-            if (Options.ConnectionRecovery && @event.Channel is not null && @event.Serial is not null)
+            if (Options.ConnectionRecovery && @event.Channel is not null && (@event.Serial is not null || @event.SerialText is not null))
             {
                 _channelPositions[@event.Channel] = new RecoveryPosition(
-                    @event.Serial.Value,
+                    @event.Serial is not null ? @event.Serial.Value : @event.SerialText!,
                     @event.StreamId,
                     @event.MessageId
                 );
@@ -425,6 +633,18 @@ public sealed class SockudoClient : IAsyncDisposable
             if (@event.Event == _prefix.Event("ping"))
             {
                 await SendEventAsync(_prefix.Event("pong"), new Dictionary<string, object?>()).ConfigureAwait(false);
+                return;
+            }
+
+            if (@event.Event == _prefix.Event("auth_success"))
+            {
+                _dispatcher.Emit(@event.Event, @event.Data);
+                return;
+            }
+
+            if (@event.Event == _prefix.Event("token_expired"))
+            {
+                await HandleTokenExpiredAsync(@event.Data).ConfigureAwait(false);
                 return;
             }
 
@@ -518,6 +738,7 @@ public sealed class SockudoClient : IAsyncDisposable
         _socket?.Dispose();
         _socket = null;
         CancelActivityTimer();
+        CancelAuthRefreshTimer();
         ClearUnavailableTimer();
         SocketId = null;
 
@@ -638,9 +859,19 @@ public sealed class SockudoClient : IAsyncDisposable
         _unavailableLoop = null;
     }
 
+    private void CancelAuthRefreshTimer()
+    {
+        _authRefreshCts?.Cancel();
+        _authRefreshCts?.Dispose();
+        _authRefreshCts = null;
+        _authRefreshLoop?.DisposeSafe();
+        _authRefreshLoop = null;
+    }
+
     private void CancelTimers()
     {
         CancelActivityTimer();
+        CancelAuthRefreshTimer();
         ClearUnavailableTimer();
         _retryLoop?.DisposeSafe();
         _retryLoop = null;
@@ -950,6 +1181,236 @@ public sealed class SockudoClient : IAsyncDisposable
         return DecodeAnnotationEventsPage(
             payload,
             cursor => ListAnnotationsAsync(channelName, messageSerial, parameters with { Cursor = cursor }, cancellationToken));
+    }
+
+    internal async Task<VersionedMessageAck> PublishVersionedMessageAsync(
+        string channelName,
+        string eventName,
+        object? data,
+        VersionedMessageCreateOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["action"] = "publish_create",
+            ["channel"] = channelName,
+            ["name"] = eventName,
+            ["data"] = data,
+        };
+        AddIfNotNull(payload, "extras", options?.Extras);
+        AddIfNotNull(payload, "messageId", options?.MessageId);
+        AddIfNotNull(payload, "messageSerial", options?.MessageSerial);
+        AddIfNotNull(payload, "clientId", options?.ClientId);
+        AddIfNotNull(payload, "socketId", options?.SocketId);
+        AddIfNotNull(payload, "opId", options?.OpId);
+
+        var response = await PerformVersionedMutationRequestAsync(payload, cancellationToken).ConfigureAwait(false);
+        return DecodeVersionedMessageAck(response, channelName, MutableMessageAction.Create);
+    }
+
+    internal async Task<VersionedMessageAck> AppendVersionedMessageAsync(
+        string channelName,
+        string messageSerial,
+        string data,
+        VersionedMessageMutationOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = VersionedMutationPayload(
+            "message_append",
+            channelName,
+            messageSerial,
+            options,
+            MutableMessageAction.Append);
+        payload["data"] = data;
+
+        var response = await PerformVersionedMutationRequestAsync(payload, cancellationToken).ConfigureAwait(false);
+        return DecodeVersionedMessageAck(response, channelName, MutableMessageAction.Append);
+    }
+
+    internal async Task<VersionedMessageAck> UpdateVersionedMessageAsync(
+        string channelName,
+        string messageSerial,
+        VersionedMessageMutationOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = VersionedMutationPayload(
+            "message_update",
+            channelName,
+            messageSerial,
+            options,
+            MutableMessageAction.Update);
+
+        var response = await PerformVersionedMutationRequestAsync(payload, cancellationToken).ConfigureAwait(false);
+        return DecodeVersionedMessageAck(response, channelName, MutableMessageAction.Update);
+    }
+
+    internal async Task<VersionedMessageAck> DeleteVersionedMessageAsync(
+        string channelName,
+        string messageSerial,
+        VersionedMessageMutationOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = VersionedMutationPayload(
+            "message_delete",
+            channelName,
+            messageSerial,
+            options,
+            MutableMessageAction.Delete);
+
+        var response = await PerformVersionedMutationRequestAsync(payload, cancellationToken).ConfigureAwait(false);
+        return DecodeVersionedMessageAck(response, channelName, MutableMessageAction.Delete);
+    }
+
+    private async Task<Dictionary<string, object?>> PerformVersionedMutationRequestAsync(
+        Dictionary<string, object?> payload,
+        CancellationToken cancellationToken)
+    {
+        var config = Options.VersionedMessages ?? throw new UnsupportedFeature(
+            "VersionedMessages.Endpoint must be configured to use versioned message mutation helpers. This endpoint should proxy requests to the Sockudo server REST API.");
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, config.Endpoint);
+        request.Content = JsonContent.Create(payload);
+
+        if (config.Headers is not null)
+        {
+            foreach (var header in config.Headers)
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+        if (config.HeadersProvider is not null)
+        {
+            foreach (var header in config.HeadersProvider())
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        using var response = await _httpClient.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new SockudoException($"Versioned message request failed ({(int)response.StatusCode}): {content}");
+        }
+
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal);
+        }
+
+        var decoded = JsonSupport.Decode(content) as Dictionary<string, object?>;
+        if (decoded is null)
+        {
+            throw new SockudoException("Versioned message endpoint returned invalid JSON");
+        }
+        return decoded;
+    }
+
+    private static Dictionary<string, object?> VersionedMutationPayload(
+        string action,
+        string channelName,
+        string messageSerial,
+        VersionedMessageMutationOptions? options,
+        MutableMessageAction mutationAction)
+    {
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["action"] = action,
+            ["channel"] = channelName,
+            ["messageSerial"] = messageSerial,
+        };
+
+        if (mutationAction == MutableMessageAction.Update)
+        {
+            AddIfNotNull(payload, "name", options?.Name);
+        }
+        if (mutationAction is MutableMessageAction.Update or MutableMessageAction.Delete)
+        {
+            AddIfNotNull(payload, "data", options?.Data);
+            AddIfNotNull(payload, "clearFields", options?.ClearFields);
+        }
+
+        AddIfNotNull(payload, "extras", options?.Extras);
+        AddIfNotNull(payload, "clientId", options?.ClientId);
+        AddIfNotNull(payload, "socketId", options?.SocketId);
+        AddIfNotNull(payload, "description", options?.Description);
+        AddIfNotNull(payload, "metadata", options?.Metadata);
+        AddIfNotNull(payload, "opId", options?.OpId);
+        return payload;
+    }
+
+    private static VersionedMessageAck DecodeVersionedMessageAck(
+        Dictionary<string, object?> payload,
+        string channelName,
+        MutableMessageAction defaultAction)
+    {
+        var ackPayload = payload;
+        if (payload.Get("channels") is Dictionary<string, object?> channels &&
+            channels.Get(channelName) is Dictionary<string, object?> channelAck)
+        {
+            ackPayload = channelAck;
+        }
+
+        var historyRaw = FirstValue(ackPayload, "history_serial", "historySerial");
+        var deliveryRaw = FirstValue(ackPayload, "delivery_serial", "deliverySerial");
+        return new VersionedMessageAck(
+            Channel: StringValue(ackPayload, "channel") ?? channelName,
+            MessageSerial: StringValue(ackPayload, "message_serial", "messageSerial") ?? string.Empty,
+            Action: ParseMutableAction(FirstValue(ackPayload, "action"), defaultAction),
+            Accepted: BoolValue(ackPayload, "accepted") ?? true,
+            VersionSerial: StringValue(ackPayload, "version_serial", "versionSerial"),
+            HistorySerial: ProtocolCodec.CoerceLong(historyRaw),
+            DeliverySerial: ProtocolCodec.CoerceLong(deliveryRaw),
+            Status: StringValue(ackPayload, "status") ?? "accepted",
+            HistorySerialText: ProtocolCodec.CoerceSerialText(historyRaw),
+            DeliverySerialText: ProtocolCodec.CoerceSerialText(deliveryRaw));
+    }
+
+    private static MutableMessageAction ParseMutableAction(object? value, MutableMessageAction fallback)
+    {
+        var text = value?.ToString()?.Trim().ToLowerInvariant();
+        return text switch
+        {
+            "message.create" or "create" => MutableMessageAction.Create,
+            "message.update" or "update" => MutableMessageAction.Update,
+            "message.delete" or "delete" => MutableMessageAction.Delete,
+            "message.append" or "append" => MutableMessageAction.Append,
+            _ => fallback,
+        };
+    }
+
+    private static object? FirstValue(Dictionary<string, object?> payload, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (payload.TryGetValue(key, out var value))
+            {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static string? StringValue(Dictionary<string, object?> payload, params string[] keys) =>
+        FirstValue(payload, keys)?.ToString();
+
+    private static bool? BoolValue(Dictionary<string, object?> payload, params string[] keys) =>
+        FirstValue(payload, keys) switch
+        {
+            bool flag => flag,
+            string text when bool.TryParse(text, out var flag) => flag,
+            _ => null,
+        };
+
+    private static void AddIfNotNull(Dictionary<string, object?> payload, string key, object? value)
+    {
+        if (value is not null)
+        {
+            payload[key] = value;
+        }
     }
 
     private async Task<Dictionary<string, object?>> PerformPresenceHistoryRequestAsync(
@@ -1279,6 +1740,7 @@ public class SockudoChannel
     public bool SubscriptionPending { get; internal set; }
     public bool SubscriptionCancelled { get; internal set; }
     public int? SubscriptionCount { get; private set; }
+    public long? AttachSerial { get; private set; }
 
     public string Bind(string eventName, Action<object?, EventMetadata?> callback) => _dispatcher.Bind(eventName, callback);
     public string BindGlobal(Action<string, object?> callback) => _dispatcher.BindGlobal(callback);
@@ -1363,6 +1825,7 @@ public class SockudoChannel
     public async Task UnsubscribeAsync()
     {
         IsSubscribed = false;
+        AttachSerial = null;
         await Client.SendEventAsync(ClientPrefix().Event("unsubscribe"), new Dictionary<string, object?> { ["channel"] = Name }).ConfigureAwait(false);
     }
 
@@ -1370,6 +1833,7 @@ public class SockudoChannel
     {
         IsSubscribed = false;
         SubscriptionPending = false;
+        AttachSerial = null;
     }
 
     internal virtual void Handle(SockudoEvent @event)
@@ -1379,6 +1843,7 @@ public class SockudoChannel
         {
             SubscriptionPending = false;
             IsSubscribed = true;
+            RememberAttachSerial(@event.Data);
             if (SubscriptionCancelled)
             {
                 _ = Client.UnsubscribeAsync(Name);
@@ -1429,7 +1894,57 @@ public class SockudoChannel
         SubscribeIfPossible();
     }
 
+    protected void RememberAttachSerial(object? data)
+    {
+        if (data is Dictionary<string, object?> payload)
+        {
+            AttachSerial = ProtocolCodec.CoerceLong(payload.Get("attach_serial")) ?? AttachSerial;
+        }
+    }
+
     internal ProtocolPrefix ClientPrefix() => new(Client.Options.ProtocolVersion);
+
+    public Task<ChannelHistoryPageProxy> ChannelHistoryAsync(
+        ChannelHistoryParams? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        Client.FetchChannelHistoryAsync(Name, parameters ?? new ChannelHistoryParams(), cancellationToken);
+
+    public Task<Dictionary<string, object?>> GetMessageAsync(
+        string messageSerial,
+        CancellationToken cancellationToken = default) =>
+        Client.FetchLatestMessageAsync(Name, messageSerial, cancellationToken);
+
+    public Task<MessageVersionsPage> GetMessageVersionsAsync(
+        string messageSerial,
+        MessageVersionsParams? parameters = null,
+        CancellationToken cancellationToken = default) =>
+        Client.FetchMessageVersionsAsync(Name, messageSerial, parameters ?? new MessageVersionsParams(), cancellationToken);
+
+    public Task<VersionedMessageAck> CreateVersionedMessageAsync(
+        string eventName,
+        object? data,
+        VersionedMessageCreateOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        Client.PublishVersionedMessageAsync(Name, eventName, data, options, cancellationToken);
+
+    public Task<VersionedMessageAck> AppendVersionedMessageAsync(
+        string messageSerial,
+        string data,
+        VersionedMessageMutationOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        Client.AppendVersionedMessageAsync(Name, messageSerial, data, options, cancellationToken);
+
+    public Task<VersionedMessageAck> UpdateVersionedMessageAsync(
+        string messageSerial,
+        VersionedMessageMutationOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        Client.UpdateVersionedMessageAsync(Name, messageSerial, options, cancellationToken);
+
+    public Task<VersionedMessageAck> DeleteVersionedMessageAsync(
+        string messageSerial,
+        VersionedMessageMutationOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        Client.DeleteVersionedMessageAsync(Name, messageSerial, options, cancellationToken);
 
     public Task<PublishAnnotationResponse> PublishAnnotationAsync(
         string messageSerial,
@@ -1496,6 +2011,7 @@ public sealed class PresenceChannel : PrivateChannel
         {
             SubscriptionPending = false;
             IsSubscribed = true;
+            RememberAttachSerial(@event.Data);
             Members.ApplySubscriptionData(@event.Data as Dictionary<string, object?> ?? new Dictionary<string, object?>());
             Emit(prefix.Event("subscription_succeeded"), Members);
             return;
@@ -1521,6 +2037,16 @@ public sealed class PresenceChannel : PrivateChannel
             return;
         }
 
+        if (@event.Event == prefix.Internal("presence_update") && @event.Data is Dictionary<string, object?> updatedPayload)
+        {
+            var member = Members.Update(updatedPayload);
+            if (member is not null)
+            {
+                Emit(prefix.Event("presence_update"), member);
+            }
+            return;
+        }
+
         base.Handle(@event);
     }
 
@@ -1540,21 +2066,23 @@ public sealed class PresenceChannel : PrivateChannel
         CancellationToken cancellationToken = default) =>
         Client.FetchPresenceSnapshotAsync(Name, parameters ?? new PresenceSnapshotParams(), cancellationToken);
 
-    public Task<ChannelHistoryPageProxy> ChannelHistoryAsync(
-        ChannelHistoryParams? parameters = null,
-        CancellationToken cancellationToken = default) =>
-        Client.FetchChannelHistoryAsync(Name, parameters ?? new ChannelHistoryParams(), cancellationToken);
+    public Task<bool> UpdateAsync(object? data, CancellationToken cancellationToken = default)
+    {
+        if (Client.Options.ProtocolVersion < 2)
+        {
+            throw new UnsupportedFeature("Presence update is only supported on Protocol V2 presence channels.");
+        }
 
-    public Task<Dictionary<string, object?>> GetMessageAsync(
-        string messageSerial,
-        CancellationToken cancellationToken = default) =>
-        Client.FetchLatestMessageAsync(Name, messageSerial, cancellationToken);
-
-    public Task<MessageVersionsPage> GetMessageVersionsAsync(
-        string messageSerial,
-        MessageVersionsParams? parameters = null,
-        CancellationToken cancellationToken = default) =>
-        Client.FetchMessageVersionsAsync(Name, messageSerial, parameters ?? new MessageVersionsParams(), cancellationToken);
+        return Client.SendEventAsync(
+            ClientPrefix().Event("presence_update"),
+            new Dictionary<string, object?>
+            {
+                ["channel"] = Name,
+                ["data"] = data,
+            },
+            null,
+            cancellationToken);
+    }
 }
 
 public sealed class EncryptedChannel : PrivateChannel
@@ -1648,14 +2176,16 @@ public sealed class PresenceMembers
 
     internal void ApplySubscriptionData(Dictionary<string, object?> data)
     {
-        _members.Clear();
         var presence = data.Get("presence") as Dictionary<string, object?>;
-        if (presence?.Get("hash") is Dictionary<string, object?> hash)
+        if (presence?.Get("hash") is not Dictionary<string, object?> hash)
         {
-            foreach (var entry in hash)
-            {
-                _members[entry.Key] = entry.Value;
-            }
+            return;
+        }
+
+        _members.Clear();
+        foreach (var entry in hash)
+        {
+            _members[entry.Key] = entry.Value;
         }
         Count = ProtocolCodec.CoerceInt(presence?.Get("count")) ?? _members.Count;
         Me = MyId is not null ? Member(MyId) : null;
@@ -1686,6 +2216,19 @@ public sealed class PresenceMembers
         Count = Math.Max(0, Count - 1);
         Me = MyId is not null ? Member(MyId) : null;
         return new PresenceMember(userId, info);
+    }
+
+    internal PresenceMember? Update(Dictionary<string, object?> data)
+    {
+        if (data.Get("user_id") is not string userId || !_members.ContainsKey(userId))
+        {
+            return null;
+        }
+
+        _members[userId] = data.Get("user_info");
+        Count = Math.Max(Count, _members.Count);
+        Me = MyId is not null ? Member(MyId) : null;
+        return new PresenceMember(userId, _members[userId]);
     }
 
     internal void Reset()

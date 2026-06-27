@@ -6,6 +6,18 @@ require 'rack'
 require 'stringio'
 
 describe Sockudo::WebHook do
+  def forward_compat_fixture(name)
+    directory = __dir__
+    until directory == File.dirname(directory)
+      candidate = File.join(directory, 'tests', 'ai-conformance', 'fixtures', 'forward-compat', name)
+      return File.read(candidate) if File.file?(candidate)
+
+      directory = File.dirname(directory)
+    end
+
+    raise "Forward compatibility fixture not found: #{name}"
+  end
+
   before :each do
     @hook_data = {
       'time_ms' => 123_456,
@@ -114,6 +126,60 @@ describe Sockudo::WebHook do
 
     it 'should expose time' do
       expect(@wh.time).to eq(Time.at(123.456))
+    end
+
+    it 'accepts the shared future webhook event fixture' do
+      body = forward_compat_fixture('future-webhook-events.json')
+      request = {
+        key: '1234',
+        signature: hmac('asdf', body),
+        content_type: 'application/json',
+        body: body
+      }
+
+      wh = Sockudo::WebHook.new(request, @client)
+
+      expect(wh).to be_valid
+      expect(wh.time).to eq(Time.at(1_710_000_000))
+      expect(wh.events[0]['name']).to eq('member_updated')
+      expect(wh.events[0]['future_field']).to eq('must-pass-through')
+      expect(wh.events[1]['turn_id']).to eq('turn-1')
+      expect(wh.events[2]['version_serial']).to eq('ver-1')
+    end
+
+    it 'preserves nested future webhook values' do
+      body = MultiJson.dump({
+                              'time_ms' => 1_710_000_000_000,
+                              'events' => [
+                                {
+                                  'name' => 'ai_turn_started',
+                                  'channel' => 'private-ai-forward',
+                                  'data' => {
+                                    'turn_id' => 'turn-1',
+                                    'tokens' => %w[hello world],
+                                    'done' => false,
+                                    'nullable' => nil
+                                  },
+                                  'future_field' => { 'nested' => true }
+                                }
+                              ]
+                            })
+      request = {
+        key: '1234',
+        signature: hmac('asdf', body),
+        content_type: 'application/json',
+        body: body
+      }
+
+      wh = Sockudo::WebHook.new(request, @client)
+
+      expect(wh).to be_valid
+      expect(wh.events[0]['name']).to eq('ai_turn_started')
+      expect(wh.events[0]['data']['turn_id']).to eq('turn-1')
+      expect(wh.events[0]['data']['tokens']).to eq(%w[hello world])
+      expect(wh.events[0]['data']['done']).to be(false)
+      expect(wh.events[0]['data']['nullable']).to be_nil
+      expect(wh.events[0]['future_field']['nested']).to be(true)
     end
   end
 end

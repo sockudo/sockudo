@@ -234,6 +234,13 @@ async fn build_harness_with_store(
 }
 
 async fn connect_v2_socket(harness: &TestHarness) -> (SocketId, ClientReader) {
+    connect_v2_socket_with_append_mode(harness, sockudo_protocol::AppendMode::Delta).await
+}
+
+async fn connect_v2_socket_with_append_mode(
+    harness: &TestHarness,
+    append_mode: sockudo_protocol::AppendMode,
+) -> (SocketId, ClientReader) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -268,6 +275,7 @@ async fn connect_v2_socket(harness: &TestHarness) -> (SocketId, ClientReader) {
             ProtocolVersion::V2,
             WireFormat::Json,
             true,
+            append_mode,
         )
         .await
         .unwrap();
@@ -530,6 +538,10 @@ async fn mutate_ai_message(
         metadata: Some(mutation.metadata),
     };
 
+    let append_fragment = mutation
+        .append
+        .as_ref()
+        .map(|append| append.data_fragment.clone());
     let message = match mutation.action {
         CoreMessageAction::Append => current
             .message
@@ -562,9 +574,12 @@ async fn mutate_ai_message(
         .append_version(record.clone())
         .await
         .unwrap();
-    let runtime = harness
+    let mut runtime = harness
         .handler
         .build_runtime_message_from_record(&record, Some(reservation.stream_id));
+    if let Some(fragment) = append_fragment {
+        sockudo_protocol::versioned_messages::set_runtime_append_fragment(&mut runtime, fragment);
+    }
     harness
         .handler
         .broadcast_to_channel_force_full(&harness.app, channel, runtime.clone(), None, None)
@@ -624,7 +639,8 @@ async fn ai_transport_streamed_response_fans_out_and_rewinds_as_latest_message_e
 
     let (laptop_socket, mut laptop_reader) = connect_v2_socket(&harness).await;
     subscribe_v2(&harness, &laptop_socket, &mut laptop_reader, channel, None).await;
-    let (phone_socket, mut phone_reader) = connect_v2_socket(&harness).await;
+    let (phone_socket, mut phone_reader) =
+        connect_v2_socket_with_append_mode(&harness, sockudo_protocol::AppendMode::Full).await;
     subscribe_v2(&harness, &phone_socket, &mut phone_reader, channel, None).await;
 
     harness
@@ -680,7 +696,7 @@ async fn ai_transport_streamed_response_fans_out_and_rewinds_as_latest_message_e
         laptop_append.event.as_deref(),
         Some("sockudo:message.append")
     );
-    assert_eq!(message_string_data(&laptop_append), "Hello");
+    assert_eq!(message_string_data(&laptop_append), "lo");
     assert_eq!(message_string_data(&phone_append), "Hello");
 
     update_ai_message_status(
@@ -1455,6 +1471,7 @@ async fn cold_recovery_replays_real_deliveries_e2e() {
             ProtocolVersion::V2,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();
@@ -1666,6 +1683,7 @@ async fn writer_queue_full_fault_rejects_publish_without_live_delivery() {
             ProtocolVersion::V2,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();

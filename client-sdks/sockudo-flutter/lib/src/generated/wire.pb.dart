@@ -444,12 +444,14 @@ class ProtoMessageExtras extends $pb.GeneratedMessage {
     $core.bool? ephemeral,
     $core.String? idempotencyKey,
     $core.bool? echo,
+    ProtoAiExtras? ai,
   }) {
     final result = create();
     if (headers != null) result.headers.addEntries(headers);
     if (ephemeral != null) result.ephemeral = ephemeral;
     if (idempotencyKey != null) result.idempotencyKey = idempotencyKey;
     if (echo != null) result.echo = echo;
+    if (ai != null) result.ai = ai;
     return result;
   }
 
@@ -476,6 +478,8 @@ class ProtoMessageExtras extends $pb.GeneratedMessage {
     ..aOB(2, _omitFieldNames ? '' : 'ephemeral')
     ..aOS(3, _omitFieldNames ? '' : 'idempotencyKey')
     ..aOB(4, _omitFieldNames ? '' : 'echo')
+    ..aOM<ProtoAiExtras>(5, _omitFieldNames ? '' : 'ai',
+        subBuilder: ProtoAiExtras.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -526,6 +530,79 @@ class ProtoMessageExtras extends $pb.GeneratedMessage {
   $core.bool hasEcho() => $_has(3);
   @$pb.TagNumber(4)
   void clearEcho() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  ProtoAiExtras get ai => $_getN(4);
+  @$pb.TagNumber(5)
+  set ai(ProtoAiExtras value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasAi() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearAi() => $_clearField(5);
+  @$pb.TagNumber(5)
+  ProtoAiExtras ensureAi() => $_ensure(4);
+}
+
+class ProtoAiExtras extends $pb.GeneratedMessage {
+  factory ProtoAiExtras({
+    $core.Iterable<$core.MapEntry<$core.String, $core.String>>? transport,
+    $core.Iterable<$core.MapEntry<$core.String, $core.String>>? codec,
+  }) {
+    final result = create();
+    if (transport != null) result.transport.addEntries(transport);
+    if (codec != null) result.codec.addEntries(codec);
+    return result;
+  }
+
+  ProtoAiExtras._();
+
+  factory ProtoAiExtras.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ProtoAiExtras.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ProtoAiExtras',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'sockudo'),
+      createEmptyInstance: create)
+    ..m<$core.String, $core.String>(1, _omitFieldNames ? '' : 'transport',
+        entryClassName: 'ProtoAiExtras.TransportEntry',
+        keyFieldType: $pb.PbFieldType.OS,
+        valueFieldType: $pb.PbFieldType.OS,
+        packageName: const $pb.PackageName('sockudo'))
+    ..m<$core.String, $core.String>(2, _omitFieldNames ? '' : 'codec',
+        entryClassName: 'ProtoAiExtras.CodecEntry',
+        keyFieldType: $pb.PbFieldType.OS,
+        valueFieldType: $pb.PbFieldType.OS,
+        packageName: const $pb.PackageName('sockudo'))
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ProtoAiExtras clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ProtoAiExtras copyWith(void Function(ProtoAiExtras) updates) =>
+      super.copyWith((message) => updates(message as ProtoAiExtras))
+          as ProtoAiExtras;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ProtoAiExtras create() => ProtoAiExtras._();
+  @$core.override
+  ProtoAiExtras createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ProtoAiExtras getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ProtoAiExtras>(create);
+  static ProtoAiExtras? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbMap<$core.String, $core.String> get transport => $_getMap(0);
+
+  @$pb.TagNumber(2)
+  $pb.PbMap<$core.String, $core.String> get codec => $_getMap(1);
 }
 
 enum ProtoExtrasValue_Kind { stringValue, numberValue, boolValue, notSet }

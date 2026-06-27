@@ -375,6 +375,10 @@ export default class Channel extends EventsDispatcher {
    */
   handleEvent(event: SockudoEvent) {
     const eventName = event.event;
+    if (typeof eventName !== "string" || eventName.length === 0) {
+      Logger.debug(`Ignoring channel frame without an event name on channel '${this.name}'`);
+      return;
+    }
     const data = event.data;
     if (eventName === prefixedInternal("subscription_succeeded")) {
       this.handleSubscriptionSucceededEvent(event);
@@ -386,6 +390,10 @@ export default class Channel extends EventsDispatcher {
     } else if (eventName === prefixedInternal("annotation") && data?.action) {
       const metadata: Metadata = {};
       this.emit(data.action, data, metadata);
+    } else if (isInternalEvent(eventName)) {
+      Logger.debug(`Ignoring unknown internal event '${eventName}' on channel '${this.name}'`);
+      const metadata: Metadata = {};
+      this.emit(eventName, data, metadata);
     } else if (!isInternalEvent(eventName)) {
       const metadata: Metadata = {};
       this.emit(eventName, data, metadata);

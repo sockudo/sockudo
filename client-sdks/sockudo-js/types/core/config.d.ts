@@ -1,4 +1,4 @@
-import { Options } from './options';
+import { AppendMode, Options } from './options';
 import { ChannelAuthorizationHandler, UserAuthenticationHandler } from './auth/options';
 import * as nacl from 'tweetnacl';
 export type AuthTransport = 'ajax' | 'jsonp';
@@ -18,6 +18,7 @@ export interface Config {
     wsPath: string;
     wsPort: number;
     wssPort: number;
+    appendMode?: AppendMode;
     userAuthenticator: UserAuthenticationHandler;
     channelAuthorizer: ChannelAuthorizationHandler;
     echoMessages?: boolean;

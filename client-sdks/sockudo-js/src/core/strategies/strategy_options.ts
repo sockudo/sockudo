@@ -1,4 +1,5 @@
 import Timeline from "../timeline/timeline";
+import type { AppendMode } from "../options";
 
 interface StrategyOptions {
   echoMessages?: boolean;
@@ -15,6 +16,7 @@ interface StrategyOptions {
   ttl?: number;
   useTLS?: boolean;
   wireFormat?: "json" | "messagepack" | "msgpack" | "protobuf" | "proto";
+  appendMode?: AppendMode;
 }
 
 export default StrategyOptions;

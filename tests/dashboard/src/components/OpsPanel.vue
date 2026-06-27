@@ -34,9 +34,11 @@ function fmtResponse(data: unknown) {
   return typeof data === 'string' ? data : JSON.stringify(data, null, 2)
 }
 
-function parseMaybeJson(raw: string): unknown {
+function toWireData(raw: string) {
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
   try {
-    return JSON.parse(raw)
+    return JSON.stringify(JSON.parse(trimmed))
   } catch {
     return raw
   }
@@ -75,7 +77,7 @@ async function publishWebhookProbe() {
   webhookResult.value = await useHttpApi().publishAdvancedEvent({
     name: webhookEvent.value.trim(),
     channel: webhookChannel.value.trim(),
-    data: parseMaybeJson(webhookPayload.value),
+    data: toWireData(webhookPayload.value),
     idempotency_key: `webhook-probe-${Date.now()}`,
     info: 'subscription_count',
   })

@@ -36,6 +36,7 @@ import {
   isPlatformEvent,
 } from "./protocol_prefix";
 import { setWireFormat } from "./wire_format";
+import { isWireSerial, normalizeWireSerial } from "./serial";
 
 // Re-export filter types and utilities for easy access
 export { Filter, validateFilter, FilterExamples };
@@ -189,14 +190,14 @@ export default class Sockudo {
       }
 
       const eventName = event.event;
+      if (typeof eventName !== "string" || eventName.length === 0) {
+        Logger.debug("Dropping decoded frame without an event name", event);
+        return;
+      }
       const internal = isInternalEvent(eventName);
 
       // Track serial per channel for connection recovery
-      if (
-        this.connectionRecoveryEnabled &&
-        event.channel &&
-        typeof (event as any).serial === "number"
-      ) {
+      if (this.connectionRecoveryEnabled && event.channel && isWireSerial((event as any).serial)) {
         this.channelPositions.set(event.channel, {
           stream_id: event.stream_id,
           serial: event.serial,
@@ -576,10 +577,8 @@ function normalizeResumeFailedData(data: any): ResumeFailedChannel {
     reason: value.reason ?? "",
     expected_stream_id: value.expected_stream_id ?? undefined,
     current_stream_id: value.current_stream_id ?? undefined,
-    oldest_available_serial:
-      typeof value.oldest_available_serial === "number" ? value.oldest_available_serial : undefined,
-    newest_available_serial:
-      typeof value.newest_available_serial === "number" ? value.newest_available_serial : undefined,
+    oldest_available_serial: normalizeWireSerial(value.oldest_available_serial),
+    newest_available_serial: normalizeWireSerial(value.newest_available_serial),
   };
 }
 

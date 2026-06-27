@@ -1,4 +1,5 @@
-import type { SockudoEvent } from "./connection/protocol/message-types";
+import type { SockudoEvent, WireSerial } from "./connection/protocol/message-types";
+import { normalizeWireSerial } from "./serial";
 
 export type MutableMessageAction =
   | "message.create"
@@ -11,7 +12,7 @@ export interface MutableMessageVersionInfo {
   event: string;
   messageSerial: string;
   versionSerial?: string;
-  historySerial?: number;
+  historySerial?: WireSerial;
   versionTimestampMs?: number;
 }
 
@@ -20,25 +21,17 @@ export interface MutableMessageState<T = unknown> {
   action: MutableMessageAction;
   data: T | null;
   event: string;
-  serial?: number;
+  serial?: WireSerial;
   streamId?: string;
   messageId?: string;
   versionSerial?: string;
-  historySerial?: number;
+  historySerial?: WireSerial;
   versionTimestampMs?: number;
 }
 
-function parseNumericHeader(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return undefined;
+function parseSafeNumberHeader(value: unknown): number | undefined {
+  const serial = normalizeWireSerial(value);
+  return typeof serial === "number" ? serial : undefined;
 }
 
 export function isMutableMessageEvent(event: Pick<SockudoEvent, "event" | "extras">): boolean {
@@ -72,8 +65,8 @@ export function getMutableMessageInfo(
     event: event.event,
     messageSerial: messageSerialHeader,
     versionSerial: typeof versionSerialHeader === "string" ? versionSerialHeader : undefined,
-    historySerial: parseNumericHeader(historySerialHeader),
-    versionTimestampMs: parseNumericHeader(versionTimestampHeader),
+    historySerial: normalizeWireSerial(historySerialHeader),
+    versionTimestampMs: parseSafeNumberHeader(versionTimestampHeader),
   };
 }
 

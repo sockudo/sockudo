@@ -98,6 +98,8 @@ describe("direct provider adapters", () => {
       "tool-input-available",
       "finish",
     ]);
+    expect(chunks[2]).toMatchObject({ type: "tool-input-delta", inputTextDelta: '{"q"' });
+    expect(chunks[3]).toMatchObject({ type: "tool-input-delta", inputTextDelta: ':"x"}' });
     expect(chunks.at(-2)).toMatchObject({
       type: "tool-input-available",
       toolCallId: "call-1",

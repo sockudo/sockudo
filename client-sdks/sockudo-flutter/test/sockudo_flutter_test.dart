@@ -10,6 +10,7 @@ import 'package:sockudo_flutter/sockudo_flutter.dart';
 import 'package:sockudo_flutter/src/delta_compression.dart';
 import 'package:sockudo_flutter/src/fossil_delta.dart';
 import 'package:sockudo_flutter/src/protocol_codec.dart';
+import 'package:sockudo_flutter/src/support.dart';
 import 'package:sodium/sodium.dart' as sodium;
 
 void main() {
@@ -62,6 +63,25 @@ void main() {
         'limit': 50,
         'start_time_ms': 1000,
         'end_time_ms': 2000,
+      },
+    );
+  });
+
+  test('channel history params include until attach and string serials', () {
+    expect(
+      const ChannelHistoryParams(
+        direction: 'newest_first',
+        limit: 100,
+        startSerial: '9007199254740993',
+        endSerial: '9007199254740994',
+        untilAttach: true,
+      ).toJson(),
+      <String, Object>{
+        'direction': 'newest_first',
+        'limit': 100,
+        'start_serial': '9007199254740993',
+        'end_serial': '9007199254740994',
+        'until_attach': true,
       },
     );
   });
@@ -205,6 +225,102 @@ void main() {
     },
   );
 
+  test(
+    'versioned message proxy helpers send actions and decode acks',
+    () async {
+      final requests = <Map<Object?, Object?>>[];
+      final httpClient = RecordingHttpClient((request) async {
+        final body = jsonDecode(request.body) as Map<Object?, Object?>;
+        requests.add(body);
+        final action = body['action'];
+        if (action == 'publish_create') {
+          return http.Response(
+            jsonEncode(<String, Object?>{
+              'channels': <String, Object?>{
+                'chat:room-1': <String, Object?>{
+                  'message_serial': 'msg:1',
+                  'history_serial': 9007199254740993,
+                  'delivery_serial': 9007199254740994,
+                  'version_serial': 'ver:1',
+                  'status': 'applied',
+                },
+              },
+            }),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
+        return http.Response(
+          jsonEncode(<String, Object?>{
+            'messageSerial': body['messageSerial'],
+            'historySerial': '9007199254740995',
+            'deliverySerial': '9007199254740996',
+            'versionSerial': 'ver:2',
+            'status': 'applied',
+          }),
+          200,
+          headers: <String, String>{'content-type': 'application/json'},
+        );
+      });
+
+      final client = SockudoClient(
+        'app-key',
+        const SockudoOptions(
+          cluster: 'local',
+          protocolVersion: 2,
+          versionedMessages: VersionedMessagesOptions(
+            endpoint: 'https://api.example.test/versioned',
+            headers: <String, String>{'Authorization': 'Bearer session'},
+          ),
+        ),
+        httpClient: httpClient,
+      );
+      addTearDown(client.close);
+
+      final channel = client.subscribe('chat:room-1');
+      final created = await channel.createMessage(
+        const VersionedMessageCreateRequest(data: 'hello'),
+      );
+      final appended = await channel.appendMessage(
+        'msg:1',
+        ' world',
+        const VersionedMessageMutation(opId: 'op-append'),
+      );
+      await channel.updateMessage(
+        'msg:1',
+        const VersionedMessageMutation(
+          data: <String, Object?>{'text': 'updated'},
+          clearFields: <String>['extras'],
+        ),
+      );
+      await channel.deleteMessage(
+        'msg:1',
+        const VersionedMessageMutation(description: 'redacted'),
+      );
+
+      expect(created.messageSerial, 'msg:1');
+      expect(created.historySerial, '9007199254740993');
+      expect(created.deliverySerial, '9007199254740994');
+      expect(created.versionSerial, 'ver:1');
+      expect(created.status, 'applied');
+      expect(appended.historySerial, '9007199254740995');
+
+      expect(requests.map((request) => request['action']).toList(), <String>[
+        'publish_create',
+        'message_append',
+        'message_update',
+        'message_delete',
+      ]);
+      expect(requests[0]['name'], 'sockudo:message.create');
+      expect(requests[0]['messageId'], isA<String>());
+      expect(requests[1]['messageSerial'], 'msg:1');
+      expect(requests[1]['data'], ' world');
+      expect(requests[1]['opId'], 'op-append');
+      expect(requests[2]['clearFields'], <Object?>['extras']);
+      expect(requests[3]['description'], 'redacted');
+    },
+  );
+
   test('applies insert-only fossil delta', () {
     final result = FossilDelta.apply(
       Uint8List(0),
@@ -279,6 +395,9 @@ void main() {
         wsPort: server.port,
         wssPort: server.port,
         wireFormat: SockudoWireFormat.messagepack,
+        appendMode: SockudoAppendMode.full,
+        appendRollupWindow: 40,
+        token: 'initial-token',
       ),
     );
     addTearDown(client.close);
@@ -288,6 +407,23 @@ void main() {
     final query = await _waitForValue(() => queryBox.value);
     expect(query['protocol'], '2');
     expect(query['format'], 'messagepack');
+    expect(query['append_mode'], 'full');
+    expect(query['append_rollup_window'], '40');
+    expect(query['token'], 'initial-token');
+  });
+
+  test('validates append rollup window values locally', () {
+    expect(
+      () => SockudoClient(
+        'app-key',
+        const SockudoOptions(
+          cluster: 'local',
+          protocolVersion: 2,
+          appendRollupWindow: 60,
+        ),
+      ),
+      throwsA(isA<SockudoException>()),
+    );
   });
 
   test('uses v1 by default and omits the format query', () async {
@@ -323,6 +459,261 @@ void main() {
     final query = await _waitForValue(() => queryBox.value);
     expect(query['protocol'], '7');
     expect(query.containsKey('format'), isFalse);
+    expect(query.containsKey('append_mode'), isFalse);
+  });
+
+  test(
+    'auth callback supplies initial token and refreshes on expiry',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() async {
+        await server.close(force: true);
+      });
+
+      final queryBox = ValueBox<Map<String, String>>();
+      final authFrameBox = ValueBox<Map<Object?, Object?>>();
+      unawaited(() async {
+        final request = await server.first;
+        queryBox.value = request.uri.queryParameters;
+        final socket = await WebSocketTransformer.upgrade(request);
+        socket.listen((raw) {
+          final frame = jsonDecode(raw as String) as Map<Object?, Object?>;
+          authFrameBox.value = frame;
+          if (frame['event'] == 'sockudo:auth') {
+            socket.add(
+              jsonEncode(<String, Object?>{
+                'event': 'sockudo:auth_success',
+                'data': <String, Object?>{
+                  'client_id': 'client-1',
+                  'jti': 'jti-2',
+                  'exp': 123,
+                },
+              }),
+            );
+          }
+        });
+        socket.add(
+          jsonEncode(<String, Object?>{
+            'event': 'sockudo:connection_established',
+            'data': <String, Object?>{'socket_id': '1.1'},
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        socket.add(
+          jsonEncode(<String, Object?>{
+            'event': 'sockudo:token_expired',
+            'data': <String, Object?>{'code': 40142, 'reason': 'expired'},
+          }),
+        );
+      }());
+
+      var tokenCalls = 0;
+      final expiredBox = ValueBox<Map<Object?, Object?>>();
+      final successBox = ValueBox<Map<Object?, Object?>>();
+      final client = SockudoClient(
+        'app-key',
+        SockudoOptions(
+          cluster: 'local',
+          forceTls: false,
+          protocolVersion: 2,
+          enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+          wsHost: '127.0.0.1',
+          wsPort: server.port,
+          wssPort: server.port,
+          authCallback: () async => 'token-${++tokenCalls}',
+        ),
+      );
+      addTearDown(client.close);
+      client.bind('sockudo:token_expired', (data, _) {
+        expiredBox.value = data as Map<Object?, Object?>;
+      });
+      client.bind('sockudo:auth_success', (data, _) {
+        successBox.value = data as Map<Object?, Object?>;
+      });
+
+      client.connect();
+
+      final query = await _waitForValue(() => queryBox.value);
+      expect(query['token'], 'token-1');
+
+      final authFrame = await _waitForValue(() => authFrameBox.value);
+      expect(authFrame['event'], 'sockudo:auth');
+      expect((authFrame['data'] as Map<Object?, Object?>)['token'], 'token-2');
+      expect((await _waitForValue(() => expiredBox.value))['code'], 40142);
+      expect((await _waitForValue(() => successBox.value))['jti'], 'jti-2');
+      expect(tokenCalls, 2);
+    },
+  );
+
+  test(
+    'auth callback jwt proactively refreshes at 80 percent lifetime',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() async {
+        await server.close(force: true);
+      });
+
+      final queryBox = ValueBox<Map<String, String>>();
+      final authFrameBox = ValueBox<Map<Object?, Object?>>();
+      unawaited(() async {
+        final request = await server.first;
+        queryBox.value = request.uri.queryParameters;
+        final socket = await WebSocketTransformer.upgrade(request);
+        socket.listen((raw) {
+          final frame = jsonDecode(raw as String) as Map<Object?, Object?>;
+          if (frame['event'] == 'sockudo:auth') {
+            authFrameBox.value = frame;
+          }
+        });
+        socket.add(
+          jsonEncode(<String, Object?>{
+            'event': 'sockudo:connection_established',
+            'data': <String, Object?>{'socket_id': '1.1'},
+          }),
+        );
+      }());
+
+      var tokenCalls = 0;
+      final now = DateTime.now().millisecondsSinceEpoch / 1000.0;
+      final proactiveToken = _fakeJwt(iat: now - 0.1, exp: now + 0.4);
+      const refreshedToken = 'opaque-refresh-token';
+      final client = SockudoClient(
+        'app-key',
+        SockudoOptions(
+          cluster: 'local',
+          forceTls: false,
+          protocolVersion: 2,
+          enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+          wsHost: '127.0.0.1',
+          wsPort: server.port,
+          wssPort: server.port,
+          authCallback: () async {
+            tokenCalls += 1;
+            return tokenCalls == 1 ? proactiveToken : refreshedToken;
+          },
+        ),
+      );
+      addTearDown(client.close);
+
+      client.connect();
+
+      final query = await _waitForValue(() => queryBox.value);
+      expect(query['token'], proactiveToken);
+      final authFrame = await _waitForValue(
+        () => authFrameBox.value,
+        timeout: const Duration(seconds: 2),
+      );
+      expect(authFrame['event'], 'sockudo:auth');
+      expect(
+        (authFrame['data'] as Map<Object?, Object?>)['token'],
+        refreshedToken,
+      );
+      expect(tokenCalls, 2);
+    },
+  );
+
+  test(
+    'static jwt token without auth callback does not proactively refresh',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() async {
+        await server.close(force: true);
+      });
+
+      final authFrameBox = ValueBox<Map<Object?, Object?>>();
+      unawaited(() async {
+        final request = await server.first;
+        final socket = await WebSocketTransformer.upgrade(request);
+        socket.listen((raw) {
+          final frame = jsonDecode(raw as String) as Map<Object?, Object?>;
+          if (frame['event'] == 'sockudo:auth') {
+            authFrameBox.value = frame;
+          }
+        });
+        socket.add(
+          jsonEncode(<String, Object?>{
+            'event': 'sockudo:connection_established',
+            'data': <String, Object?>{'socket_id': '1.1'},
+          }),
+        );
+      }());
+
+      final now = DateTime.now().millisecondsSinceEpoch / 1000.0;
+      final client = SockudoClient(
+        'app-key',
+        SockudoOptions(
+          cluster: 'local',
+          forceTls: false,
+          protocolVersion: 2,
+          enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+          wsHost: '127.0.0.1',
+          wsPort: server.port,
+          wssPort: server.port,
+          token: _fakeJwt(iat: now - 0.1, exp: now + 0.4),
+        ),
+      );
+      addTearDown(client.close);
+
+      client.connect();
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      expect(authFrameBox.value, isNull);
+    },
+  );
+
+  test('disconnect cancels proactive auth refresh timer', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await server.close(force: true);
+    });
+
+    final queryBox = ValueBox<Map<String, String>>();
+    final authFrameBox = ValueBox<Map<Object?, Object?>>();
+    unawaited(() async {
+      final request = await server.first;
+      queryBox.value = request.uri.queryParameters;
+      final socket = await WebSocketTransformer.upgrade(request);
+      socket.listen((raw) {
+        final frame = jsonDecode(raw as String) as Map<Object?, Object?>;
+        if (frame['event'] == 'sockudo:auth') {
+          authFrameBox.value = frame;
+        }
+      });
+      socket.add(
+        jsonEncode(<String, Object?>{
+          'event': 'sockudo:connection_established',
+          'data': <String, Object?>{'socket_id': '1.1'},
+        }),
+      );
+    }());
+
+    var tokenCalls = 0;
+    final now = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    final client = SockudoClient(
+      'app-key',
+      SockudoOptions(
+        cluster: 'local',
+        forceTls: false,
+        protocolVersion: 2,
+        enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+        wsHost: '127.0.0.1',
+        wsPort: server.port,
+        wssPort: server.port,
+        authCallback: () async {
+          tokenCalls += 1;
+          return _fakeJwt(iat: now - 0.1, exp: now + 0.4);
+        },
+      ),
+    );
+    addTearDown(client.close);
+
+    client.connect();
+    await _waitForValue(() => queryBox.value);
+    client.disconnect();
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+
+    expect(authFrameBox.value, isNull);
+    expect(tokenCalls, 1);
   });
 
   test('round trips messagepack envelopes', () {
@@ -352,6 +743,77 @@ void main() {
     expect(decoded.conflationKey, 'room');
   });
 
+  test('preserves forward-compatible extras and serials while decoding', () {
+    final futureFrame = SockudoProtocolCodec.decodeEvent(
+      _forwardCompatFixture('future-v2-frame.json'),
+      SockudoWireFormat.json,
+    );
+    final safeFrame = SockudoProtocolCodec.decodeEvent(
+      jsonEncode(<String, Object?>{
+        'event': 'sockudo:test',
+        'channel': 'private-ai-forward',
+        'serial': 2147483648,
+      }),
+      SockudoWireFormat.json,
+    );
+    final extrasFrame = SockudoProtocolCodec.decodeEvent(
+      _forwardCompatFixture('unknown-ai-extras.json'),
+      SockudoWireFormat.json,
+    );
+    final futureVersionEnvelope = SockudoProtocolCodec.decodeEnvelope(
+      _forwardCompatFixture('future-versioned-action.json'),
+      SockudoWireFormat.json,
+    ).envelope;
+
+    expect(futureFrame.serial, '9007199254740993');
+    expect(safeFrame.serial, 2147483648);
+    expect(futureVersionEnvelope['history_serial'], '9007199254740993');
+    expect(futureVersionEnvelope['delivery_serial'], '9007199254740994');
+    expect(extrasFrame.extras?.ai, <String, Object?>{
+      'transport': <String, Object?>{
+        'turn-id': 'turn-1',
+        'status': 'streaming',
+      },
+      'codec': <String, Object?>{
+        'provider-future-key': 'opaque',
+        'x-custom': 'opaque',
+      },
+    });
+    expect(extrasFrame.extras?['futureExtrasField'], isTrue);
+  });
+
+  test('preserves large messagepack serials and raw extras', () {
+    final encoded = SockudoProtocolCodec.encodeEnvelope(<String, Object?>{
+      'event': 'sockudo:test',
+      'channel': 'private-ai-forward',
+      'data': 'content',
+      'stream_id': 'stream-1',
+      'serial': 9007199254740993,
+      'extras': <String, Object?>{
+        'headers': <String, Object?>{
+          'sockudo_history_serial': 9007199254740994,
+        },
+        'ai': <String, Object?>{
+          'transport': <String, Object?>{'turn-id': 'turn-1'},
+        },
+      },
+    }, SockudoWireFormat.messagepack);
+
+    final decoded = SockudoProtocolCodec.decodeEvent(
+      encoded,
+      SockudoWireFormat.messagepack,
+    );
+
+    expect(decoded.serial, '9007199254740993');
+    expect(
+      decoded.extras?.headers?['sockudo_history_serial'],
+      '9007199254740994',
+    );
+    expect(decoded.extras?.ai, <String, Object?>{
+      'transport': <String, Object?>{'turn-id': 'turn-1'},
+    });
+  });
+
   test('round trips protobuf envelopes', () {
     final encoded = SockudoProtocolCodec.encodeEnvelope(<String, Object?>{
       'event': 'sockudo:test',
@@ -365,6 +827,13 @@ void main() {
       'extras': <String, Object?>{
         'headers': <String, Object>{'region': 'eu', 'ttl': 5, 'replay': true},
         'echo': false,
+        'ai': <String, Object?>{
+          'transport': <String, Object?>{
+            'turn-id': 'turn-1',
+            'status': 'streaming',
+          },
+          'codec': <String, Object?>{'x-custom': 'opaque'},
+        },
       },
     }, SockudoWireFormat.protobuf);
 
@@ -387,6 +856,299 @@ void main() {
       'replay': true,
     });
     expect(decoded.extras?.echo, isFalse);
+    expect(decoded.extras?.ai, <String, Object?>{
+      'transport': <String, String>{'turn-id': 'turn-1', 'status': 'streaming'},
+      'codec': <String, String>{'x-custom': 'opaque'},
+    });
+  });
+
+  test('unknown mutable message actions are ignored by helpers', () {
+    final event = SockudoProtocolCodec.decodeEvent(
+      jsonEncode(<String, Object?>{
+        'event': 'sockudo:message.future',
+        'channel': 'private-ai-forward',
+        'data': 'opaque',
+        'extras': <String, Object?>{
+          'headers': <String, Object?>{
+            'sockudo_action': 'message.future',
+            'sockudo_message_serial': 'future-message',
+            'sockudo_history_serial': 9007199254740993,
+          },
+        },
+      }),
+      SockudoWireFormat.json,
+    );
+
+    expect(isMutableMessageEvent(event), isFalse);
+    expect(getMutableMessageInfo(event), isNull);
+  });
+
+  test(
+    'replays forward-compatible realtime fixtures through dispatch',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() async {
+        await server.close(force: true);
+      });
+
+      unawaited(() async {
+        final request = await server.first;
+        final socket = await WebSocketTransformer.upgrade(request);
+        socket.add(
+          jsonEncode(<String, Object?>{
+            'event': 'sockudo:connection_established',
+            'data': <String, Object?>{'socket_id': '1.1'},
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        for (final fixtureName in <String>[
+          'future-v2-frame.json',
+          'future-versioned-action.json',
+          'future-webhook-events.json',
+          'unknown-ai-extras.json',
+        ]) {
+          socket.add(_forwardCompatFixture(fixtureName));
+        }
+      }());
+
+      final received = <String, Object?>{};
+      final errors = <Object?>[];
+      final client = SockudoClient(
+        'app-key',
+        SockudoOptions(
+          cluster: 'local',
+          forceTls: false,
+          protocolVersion: 2,
+          enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+          wsHost: '127.0.0.1',
+          wsPort: server.port,
+          wssPort: server.port,
+        ),
+      );
+      addTearDown(client.close);
+
+      client.bindGlobal((eventName, data) {
+        received[eventName] = data;
+      });
+      client.bind('error', (data, _) {
+        errors.add(data);
+      });
+
+      client.connect();
+
+      await _waitFor(() => received.containsKey('sockudo:future_event'));
+      await _waitFor(() => received.containsKey('sockudo:message.future'));
+      await _waitFor(() => received.containsKey('ai-output'));
+
+      expect(received['sockudo:future_event'], <String, Object?>{
+        'known': true,
+        'futureObject': <String, Object?>{'nested': 'ignored'},
+      });
+      expect(received['sockudo:message.future'], 'opaque');
+      expect(received['ai-output'], 'content');
+      expect(errors, isEmpty);
+    },
+  );
+
+  test(
+    'future presence events and malformed member data do not mutate members',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() async {
+        await server.close(force: true);
+      });
+
+      unawaited(() async {
+        final request = await server.first;
+        final socket = await WebSocketTransformer.upgrade(request);
+        socket.add(
+          jsonEncode(<String, Object?>{
+            'event': 'sockudo:connection_established',
+            'data': <String, Object?>{'socket_id': '1.1'},
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        for (final frame in <Map<String, Object?>>[
+          <String, Object?>{
+            'event': 'sockudo_internal:subscription_succeeded',
+            'channel': 'presence-ai-forward',
+            'data': <String, Object?>{
+              'presence': <String, Object?>{
+                'hash': <String, Object?>{
+                  'user-1': <String, Object?>{'role': 'reader'},
+                },
+                'count': 1,
+              },
+            },
+          },
+          <String, Object?>{
+            'event': 'sockudo_internal:member_updated',
+            'channel': 'presence-ai-forward',
+            'data': <String, Object?>{
+              'user_id': 'user-1',
+              'user_info': <String, Object?>{'role': 'writer'},
+            },
+          },
+          <String, Object?>{
+            'event': 'sockudo_internal:member_added',
+            'channel': 'presence-ai-forward',
+            'data': <String, Object?>{
+              'user_info': <String, Object?>{'malformed': true},
+            },
+          },
+        ]) {
+          socket.add(jsonEncode(frame));
+        }
+      }());
+
+      final internalEvents = <String>[];
+      final addedMembers = <PresenceMember>[];
+      final errors = <Object?>[];
+      final client = SockudoClient(
+        'app-key',
+        SockudoOptions(
+          cluster: 'local',
+          forceTls: false,
+          protocolVersion: 2,
+          enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+          wsHost: '127.0.0.1',
+          wsPort: server.port,
+          wssPort: server.port,
+          channelAuthorization: const ChannelAuthorizationOptions(
+            customHandler: _presenceAuth,
+          ),
+        ),
+      );
+      addTearDown(client.close);
+
+      final channel =
+          client.subscribe('presence-ai-forward') as PresenceChannel;
+      channel.bindGlobal((eventName, _) {
+        internalEvents.add(eventName);
+      });
+      channel.bind('sockudo:member_added', (data, _) {
+        addedMembers.add(data as PresenceMember);
+      });
+      client.bind('error', (data, _) {
+        errors.add(data);
+      });
+
+      client.connect();
+
+      await _waitFor(
+        () => internalEvents.contains('sockudo_internal:member_updated'),
+      );
+
+      expect(channel.members.count, 1);
+      expect(channel.members.member('user-1')?.info, <String, Object?>{
+        'role': 'reader',
+      });
+      expect(channel.members.member('undefined'), isNull);
+      expect(addedMembers, isEmpty);
+      expect(errors, isEmpty);
+    },
+  );
+
+  test('presence update sends v2 frame and updates member state', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await server.close(force: true);
+    });
+
+    final presenceUpdateFrameBox = ValueBox<Map<Object?, Object?>>();
+    unawaited(() async {
+      final request = await server.first;
+      final socket = await WebSocketTransformer.upgrade(request);
+      socket.listen((raw) {
+        final frame = jsonDecode(raw as String) as Map<Object?, Object?>;
+        if (frame['event'] == 'sockudo:subscribe') {
+          socket.add(
+            jsonEncode(<String, Object?>{
+              'event': 'sockudo_internal:subscription_succeeded',
+              'channel': 'presence-agent',
+              'data': <String, Object?>{
+                'attach_serial': 9007199254740993,
+                'presence': <String, Object?>{
+                  'hash': <String, Object?>{
+                    'user-1': <String, Object?>{'status': 'idle'},
+                  },
+                  'count': 1,
+                },
+              },
+            }),
+          );
+        }
+        if (frame['event'] == 'sockudo:presence_update') {
+          presenceUpdateFrameBox.value = frame;
+          socket.add(
+            jsonEncode(<String, Object?>{
+              'event': 'sockudo_internal:presence_update',
+              'channel': 'presence-agent',
+              'data': <String, Object?>{
+                'user_id': 'user-1',
+                'user_info': <String, Object?>{'status': 'thinking'},
+              },
+            }),
+          );
+        }
+      });
+      socket.add(
+        jsonEncode(<String, Object?>{
+          'event': 'sockudo:connection_established',
+          'data': <String, Object?>{'socket_id': '1.1'},
+        }),
+      );
+    }());
+
+    final subscribedBox = ValueBox<bool>();
+    final updateBox = ValueBox<PresenceMember>();
+    final client = SockudoClient(
+      'app-key',
+      SockudoOptions(
+        cluster: 'local',
+        forceTls: false,
+        protocolVersion: 2,
+        enabledTransports: const <SockudoTransport>[SockudoTransport.ws],
+        wsHost: '127.0.0.1',
+        wsPort: server.port,
+        wssPort: server.port,
+        channelAuthorization: const ChannelAuthorizationOptions(
+          customHandler: _presenceAuth,
+        ),
+      ),
+    );
+    addTearDown(client.close);
+
+    final channel = client.subscribe('presence-agent') as PresenceChannel;
+    channel.bind('sockudo:subscription_succeeded', (_, _) {
+      subscribedBox.value = true;
+    });
+    channel.bind('sockudo:presence_update', (data, _) {
+      updateBox.value = data as PresenceMember;
+    });
+
+    client.connect();
+    await _waitFor(() => subscribedBox.value == true);
+    expect(channel.attachSerial, '9007199254740993');
+    expect(channel.members.member('user-1')?.info, <String, Object?>{
+      'status': 'idle',
+    });
+
+    expect(channel.update(<String, Object?>{'status': 'thinking'}), isTrue);
+
+    final updateFrame = await _waitForValue(() => presenceUpdateFrameBox.value);
+    expect(updateFrame['event'], 'sockudo:presence_update');
+    expect(updateFrame['data'], <String, Object?>{
+      'channel': 'presence-agent',
+      'data': <String, Object?>{'status': 'thinking'},
+    });
+
+    final updatedMember = await _waitForValue(() => updateBox.value);
+    expect(updatedMember.id, 'user-1');
+    expect(updatedMember.info, <String, Object?>{'status': 'thinking'});
+    expect(channel.members.member('user-1')?.info, <String, Object?>{
+      'status': 'thinking',
+    });
   });
 
   test('live public integration receives published event', () async {
@@ -724,6 +1486,33 @@ class ValueBox<T> {
 }
 
 bool _liveTestsEnabled() => Platform.environment['SOCKUDO_LIVE_TESTS'] == '1';
+
+String _forwardCompatFixture(String name) {
+  return File(
+    '../../tests/ai-conformance/fixtures/forward-compat/$name',
+  ).readAsStringSync();
+}
+
+Future<ChannelAuthorizationData> _presenceAuth(
+  ChannelAuthorizationRequest request,
+) async {
+  return ChannelAuthorizationData(
+    auth: 'test-auth',
+    channelData: jsonEncode(<String, Object?>{'user_id': 'user-1'}),
+  );
+}
+
+String _fakeJwt({double? iat, double? exp}) {
+  String encodePart(Object value) {
+    return base64Url.encode(utf8.encode(jsonEncode(value))).replaceAll('=', '');
+  }
+
+  return [
+    encodePart(<String, Object?>{'alg': 'none', 'typ': 'JWT'}),
+    encodePart(<String, Object?>{'iat': ?iat, 'exp': ?exp}),
+    'signature',
+  ].join('.');
+}
 
 String _rawSocketUrl(int protocolVersion) {
   final parameters = <String, String>{

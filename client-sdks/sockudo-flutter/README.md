@@ -14,7 +14,11 @@ Official Flutter and Dart client for Sockudo.
 - Fossil and Xdelta3/VCDIFF delta reconstruction in pure Dart
 - Encrypted channel payload decryption with libsodium
 - User sign-in and watchlist event handling
+- Protocol V2 capability-token initial auth and reactive refresh
 - Continuity-aware connection recovery and subscribe-time rewind on Protocol V2
+- Presence member updates for agent state channels
+- Proxy-backed channel history and mutable-message write helpers
+- AI extras and unsafe serial preservation for V2 frames
 - Root GitHub Actions CI and automated `pub.dev` publishing
 - Live integration tests against Sockudo on `127.0.0.1:6001`
 
@@ -88,6 +92,26 @@ Protocol V2 heartbeat behavior:
 - Flutter/Dart runtimes may still use lightweight `sockudo:ping` / `sockudo:pong` fallback messages for client-side activity checks where native ping APIs are not exposed consistently
 - fallback heartbeat messages are intentionally excluded from V2 recovery metadata such as `message_id`, `serial`, and `stream_id`
 
+Protocol V2 capability tokens:
+
+```dart
+final client = SockudoClient(
+  'app-key',
+  SockudoOptions(
+    cluster: 'local',
+    protocolVersion: 2,
+    token: 'initial-token',
+    authCallback: () async => fetchFreshSockudoToken(),
+  ),
+);
+```
+
+`token` is sent as the initial WebSocket query parameter. When `authCallback` is available and the current token looks like a JWT with an `exp` claim, the client decodes the payload without validating the signature and schedules refresh at 80% of the token lifetime. If `iat` is absent, the lifetime starts at the local decode time. Opaque tokens, JWTs without `exp`, and static-only `token` usage do not schedule proactive refreshes.
+
+When the server emits `sockudo:token_expired` with code `40142`, `authCallback` is called and the client sends `sockudo:auth` with the fresh token. Revocation code `40160` is emitted to listeners and left to the server close path.
+
+AI append rollup can be requested for Protocol V2 connections with `appendRollupWindow`; accepted values are `0`, `20`, `40`, `100`, and `500`.
+
 ## Advanced Usage
 
 ### Channel Authorization
@@ -148,6 +172,11 @@ final channel = client.subscribe(
     rewind: SubscriptionRewind.seconds(30),
   ),
 );
+
+final history = await channel.channelHistory(
+  const ChannelHistoryParams(untilAttach: true, limit: 100),
+);
+print(channel.attachSerial);
 
 channel.bind('message', (_, __) {
   print(client.getRecoveryPosition('market:BTC'));
@@ -213,6 +242,24 @@ channel.bindGlobal((eventName, data) {
 client.connect();
 ```
 
+Proxy-backed writes:
+
+```dart
+final channel = client.subscribe('chat:room-1');
+
+final created = await channel.createMessage(
+  const VersionedMessageCreateRequest(data: 'hello'),
+);
+await channel.appendMessage(created.messageSerial, ' world');
+await channel.updateMessage(
+  created.messageSerial,
+  const VersionedMessageMutation(data: {'text': 'hello world'}),
+);
+await channel.deleteMessage(created.messageSerial);
+```
+
+These helpers call your configured `versionedMessages.endpoint` with `publish_create`, `message_append`, `message_update`, or `message_delete` and expect a 10 second acknowledgement containing `messageSerial` and `historySerial`.
+
 ### Presence History
 
 Client-side presence history is proxy-backed. The Flutter/Dart client does not sign the server REST API directly; configure `presenceHistory` with a backend endpoint that accepts `{channel, params, action}` and forwards the request using server credentials.
@@ -243,6 +290,22 @@ final snapshot = await channel.snapshot(
   const PresenceSnapshotParams(atSerial: 4),
 );
 ```
+
+### Presence Updates
+
+Protocol V2 presence channels can update member data without a leave/rejoin cycle.
+
+```dart
+final channel = client.subscribe('presence-agent') as PresenceChannel;
+channel.bind('sockudo:subscription_succeeded', (_, __) {
+  channel.update(<String, Object?>{'status': 'thinking'});
+});
+channel.bind('sockudo:presence_update', (member, _) {
+  print((member as PresenceMember).info);
+});
+```
+
+Inbound `sockudo_internal:presence_update` updates `channel.members` and emits `sockudo:presence_update` with the updated `PresenceMember`.
 
 ### Push Proxy Helpers
 
@@ -327,3 +390,5 @@ GitHub Actions are managed from the monorepo root:
 ## Status
 
 The package now covers the core Sockudo client feature set, including pure-Dart VCDIFF decoding and encrypted channel handling, and is suitable for publishing as the official Flutter SDK.
+
+On Dart web, serial values that arrive as JSON numbers may already have been rounded by the JavaScript runtime before Dart sees them. The SDK preserves unsafe serials as strings when decoding raw JSON, MessagePack, protobuf, and proxy responses where the original literal is still available. Prefer string serials in app-level web APIs when values may exceed `2^53 - 1`.

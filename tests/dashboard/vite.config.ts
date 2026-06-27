@@ -3,6 +3,8 @@ import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath, URL } from "node:url";
 
+const authPort = process.env.AUTH_PORT ?? "3457";
+
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {
@@ -31,6 +33,18 @@ export default defineConfig({
       "@sockudo/client": fileURLToPath(
         new URL("../../client-sdks/sockudo-js/src/index.ts", import.meta.url),
       ),
+      "@sockudo/ai-transport/vercel": fileURLToPath(
+        new URL(
+          "../../client-sdks/sockudo-ai-transport-js/src/vercel/index.ts",
+          import.meta.url,
+        ),
+      ),
+      "@sockudo/ai-transport": fileURLToPath(
+        new URL(
+          "../../client-sdks/sockudo-ai-transport-js/src/index.ts",
+          import.meta.url,
+        ),
+      ),
     },
   },
   define: {
@@ -46,7 +60,11 @@ export default defineConfig({
     open: true,
     proxy: {
       "/pusher": {
-        target: "http://localhost:3457",
+        target: `http://localhost:${authPort}`,
+        changeOrigin: true,
+      },
+      "/demo": {
+        target: `http://localhost:${authPort}`,
         changeOrigin: true,
       },
       "/sockudo": {
@@ -55,7 +73,7 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/sockudo/, ""),
       },
       "/sockudo-metrics": {
-        target: "http://127.0.0.1:9611",
+        target: "http://127.0.0.1:9601",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/sockudo-metrics/, ""),
       },

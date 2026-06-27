@@ -3,6 +3,7 @@ import protobuf from "protobufjs/light";
 import Action from "./action";
 import { SockudoEvent } from "./message-types";
 import { prefixedEvent } from "../../protocol_prefix";
+import { normalizeWireSerial } from "../../serial";
 import { wireFormat } from "../../wire_format";
 
 const { Field, MapField, OneOf, Root, Type } = protobuf;
@@ -17,7 +18,12 @@ const ProtoMessageExtras = new Type("ProtoMessageExtras")
   .add(new MapField("headers", 1, "string", "ProtoExtrasValue"))
   .add(new Field("ephemeral", 2, "bool"))
   .add(new Field("idempotencyKey", 3, "string"))
-  .add(new Field("echo", 4, "bool"));
+  .add(new Field("echo", 4, "bool"))
+  .add(new Field("ai", 5, "ProtoAiExtras"));
+
+const ProtoAiExtras = new Type("ProtoAiExtras")
+  .add(new MapField("transport", 1, "string", "string"))
+  .add(new MapField("codec", 2, "string", "string"));
 
 const ProtoStructuredData = new Type("ProtoStructuredData")
   .add(new Field("channelData", 1, "string"))
@@ -52,6 +58,7 @@ new Root()
   .define("sockudo")
   .add(ProtoExtrasValue)
   .add(ProtoMessageExtras)
+  .add(ProtoAiExtras)
   .add(ProtoStructuredData)
   .add(ProtoMessageData)
   .add(ProtoPusherMessage);
@@ -88,25 +95,23 @@ function toUint8Array(payload: unknown): Uint8Array {
   throw new Error("Unsupported binary payload");
 }
 
-function normalizeNumeric(value: unknown): number | undefined {
-  if (typeof value === "number") {
-    return value;
-  }
-  if (
-    value != null &&
-    typeof value === "object" &&
-    "toNumber" in (value as Record<string, unknown>) &&
-    typeof (value as { toNumber: () => number }).toNumber === "function"
-  ) {
-    return (value as { toNumber: () => number }).toNumber();
-  }
-  return undefined;
+const JSON_SERIAL_FIELD_PATTERN = /("[-_A-Za-z0-9]*serial[-_A-Za-z0-9]*"\s*:\s*)(-?\d+)/g;
+
+function preserveUnsafeJsonSerials(raw: string): string {
+  return raw.replace(JSON_SERIAL_FIELD_PATTERN, (match, prefix: string, literal: string) => {
+    const serial = normalizeWireSerial(literal);
+    return typeof serial === "string" ? `${prefix}${JSON.stringify(serial)}` : match;
+  });
+}
+
+function parseJsonPreservingSerials(raw: string): any {
+  return JSON.parse(preserveUnsafeJsonSerials(raw));
 }
 
 function parseEventData(data: unknown): any {
   if (typeof data === "string") {
     try {
-      return JSON.parse(data);
+      return parseJsonPreservingSerials(data);
     } catch {
       return data;
     }
@@ -115,7 +120,9 @@ function parseEventData(data: unknown): any {
 }
 
 function stringifyEnvelope(messageData: Envelope): string {
-  return JSON.stringify(messageData);
+  return JSON.stringify(messageData, (_key, value) =>
+    typeof value === "bigint" ? value.toString() : value,
+  );
 }
 
 function encodeMsgpackValue(value: any): any {
@@ -130,27 +137,26 @@ function encodeMsgpackValue(value: any): any {
       "headers" in value ||
       "ephemeral" in value ||
       "idempotency_key" in value ||
-      "echo" in value
+      "echo" in value ||
+      "ai" in value
     ) {
-      const headers = value.headers
-        ? Object.fromEntries(
-            Object.entries(value.headers).map(([key, headerValue]) => {
-              if (typeof headerValue === "number") {
-                return [key, ["number", headerValue]];
-              }
-              if (typeof headerValue === "boolean") {
-                return [key, ["bool", headerValue]];
-              }
-              return [key, ["string", String(headerValue)]];
-            }),
-          )
-        : undefined;
-      return {
-        headers,
-        ephemeral: value.ephemeral ?? null,
-        idempotency_key: value.idempotency_key ?? null,
-        echo: value.echo ?? null,
-      };
+      const encoded = Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, encodeMsgpackValue(entry)]),
+      );
+      if (value.headers) {
+        encoded.headers = Object.fromEntries(
+          Object.entries(value.headers).map(([key, headerValue]) => {
+            if (typeof headerValue === "number") {
+              return [key, ["number", headerValue]];
+            }
+            if (typeof headerValue === "boolean") {
+              return [key, ["bool", headerValue]];
+            }
+            return [key, ["string", String(headerValue)]];
+          }),
+        );
+      }
+      return encoded;
     }
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [key, encodeMsgpackValue(entry)]),
@@ -189,15 +195,19 @@ function encodeMsgpackEnvelope(event: SockudoEvent): any[] {
 }
 
 function decodeMsgpackValue(value: any): any {
+  if (typeof value === "bigint") {
+    return normalizeWireSerial(value);
+  }
   if (Array.isArray(value)) {
     if (value.length === 2 && typeof value[0] === "string") {
       const [kind, payload] = value;
       switch (kind) {
         case "string":
         case "json":
-        case "number":
         case "bool":
           return payload;
+        case "number":
+          return decodeMsgpackValue(payload);
         case "structured":
           return decodeMsgpackValue(payload);
         default:
@@ -248,6 +258,12 @@ function extrasToProto(extras: Record<string, any> | undefined) {
     ephemeral: extras.ephemeral,
     idempotencyKey: extras.idempotency_key,
     echo: extras.echo,
+    ai: extras.ai
+      ? {
+          transport: extras.ai.transport,
+          codec: extras.ai.codec,
+        }
+      : undefined,
   };
 }
 
@@ -273,6 +289,12 @@ function extrasFromProto(extras: Record<string, any> | undefined) {
     ephemeral: extras.ephemeral,
     idempotency_key: extras.idempotencyKey,
     echo: extras.echo,
+    ai: extras.ai
+      ? {
+          transport: extras.ai.transport,
+          codec: extras.ai.codec,
+        }
+      : undefined,
   };
 }
 
@@ -286,13 +308,13 @@ function eventToEnvelope(event: SockudoEvent): Envelope {
   if (event.data !== undefined) {
     envelope.data = event.data;
   }
-  if (typeof event.sequence === "number") {
+  if (typeof event.sequence === "number" || typeof event.sequence === "string") {
     envelope.__delta_seq = event.sequence;
   }
   if (typeof event.conflation_key === "string") {
     envelope.__conflation_key = event.conflation_key;
   }
-  if (typeof (event as any).serial === "number") {
+  if (typeof (event as any).serial === "number" || typeof (event as any).serial === "string") {
     envelope.serial = event.serial;
   }
   if (typeof event.message_id === "string") {
@@ -322,14 +344,16 @@ function envelopeToEvent(messageData: Envelope, rawMessage: string): SockudoEven
   }
   const sequence = messageData.__delta_seq ?? messageData.sequence;
   const conflationKey = messageData.__conflation_key ?? messageData.conflation_key;
-  if (typeof sequence === "number") {
-    decodedEvent.sequence = sequence;
+  const normalizedSequence = normalizeWireSerial(sequence);
+  if (normalizedSequence !== undefined) {
+    decodedEvent.sequence = normalizedSequence;
   }
   if (typeof conflationKey === "string") {
     decodedEvent.conflation_key = conflationKey;
   }
-  if (typeof messageData.serial === "number") {
-    decodedEvent.serial = messageData.serial;
+  const normalizedSerial = normalizeWireSerial(messageData.serial);
+  if (normalizedSerial !== undefined) {
+    decodedEvent.serial = normalizedSerial;
   }
   if (typeof messageData.message_id === "string") {
     decodedEvent.message_id = messageData.message_id;
@@ -367,7 +391,7 @@ function encodeProtobuf(event: SockudoEvent): Uint8Array {
 
 function decodeProtobuf(payload: Uint8Array): Envelope {
   const decoded = ProtoPusherMessage.toObject(ProtoPusherMessage.decode(payload), {
-    longs: Number,
+    longs: String,
     defaults: false,
   }) as Record<string, any>;
 
@@ -376,9 +400,9 @@ function decodeProtobuf(payload: Uint8Array): Envelope {
     channel: decoded.channel,
     user_id: decoded.userId,
     stream_id: decoded.streamId,
-    serial: normalizeNumeric(decoded.serial),
+    serial: normalizeWireSerial(decoded.serial),
     message_id: decoded.messageId,
-    __delta_seq: normalizeNumeric(decoded.deltaSequence),
+    __delta_seq: normalizeWireSerial(decoded.deltaSequence),
     __conflation_key: decoded.deltaConflationKey,
     extras: extrasFromProto(decoded.extras),
   };
@@ -387,7 +411,7 @@ function decodeProtobuf(payload: Uint8Array): Envelope {
     envelope.data = decoded.data.stringValue;
   } else if (decoded.data?.jsonValue !== undefined) {
     try {
-      envelope.data = JSON.parse(decoded.data.jsonValue);
+      envelope.data = parseJsonPreservingSerials(decoded.data.jsonValue);
     } catch {
       envelope.data = decoded.data.jsonValue;
     }
@@ -404,7 +428,9 @@ const Protocol = {
 
       switch (wireFormat()) {
         case "messagepack": {
-          messageData = decodeMsgpackEnvelope(decodeMsgpack(toUint8Array(messageEvent.data)));
+          messageData = decodeMsgpackEnvelope(
+            decodeMsgpack(toUint8Array(messageEvent.data), { useBigInt64: true }),
+          );
           rawMessage = stringifyEnvelope(messageData);
           break;
         }
@@ -416,7 +442,7 @@ const Protocol = {
         case "json":
         default: {
           rawMessage = String(messageEvent.data);
-          messageData = JSON.parse(rawMessage);
+          messageData = parseJsonPreservingSerials(rawMessage);
           break;
         }
       }

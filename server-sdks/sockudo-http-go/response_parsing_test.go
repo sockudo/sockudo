@@ -68,3 +68,18 @@ func TestParserError(t *testing.T) {
 	_, err := unmarshalledChannelsList(testJSON)
 	assert.Error(t, err)
 }
+
+func TestParsingMutationResponsePreservesU64Serials(t *testing.T) {
+	testJSON := []byte(`{"channel":"private-ai-forward","message_serial":"msg-1","action":"update","accepted":true,"version_serial":"ver-1","history_serial":9007199254740993,"delivery_serial":9007199254740994,"status":"accepted","future_field":{"ignored":true}}`)
+
+	result, err := unmarshalledMutationResponse(testJSON)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "msg-1", result.MessageSerial)
+	if assert.NotNil(t, result.HistorySerial) {
+		assert.Equal(t, uint64(9007199254740993), *result.HistorySerial)
+	}
+	if assert.NotNil(t, result.DeliverySerial) {
+		assert.Equal(t, uint64(9007199254740994), *result.DeliverySerial)
+	}
+}

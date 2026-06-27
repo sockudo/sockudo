@@ -1,4 +1,6 @@
 ﻿using System;
+using System.IO;
+using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 
 namespace PusherServer.Tests.UnitTests
@@ -15,6 +17,29 @@ namespace PusherServer.Tests.UnitTests
 
         static string validBody = "{\"time_ms\": 1327078148132, \"events\": [{\"name\": \"channel_occupied\", \"channel\": \"test_channel\" }]}";
         static string validSignature = GenerateValidSignature(secret, validBody);
+
+        private static string LoadForwardCompatFixture(string name)
+        {
+            var directory = new DirectoryInfo(TestContext.CurrentContext.TestDirectory);
+            while (directory != null)
+            {
+                var candidate = Path.Combine(
+                    directory.FullName,
+                    "tests",
+                    "ai-conformance",
+                    "fixtures",
+                    "forward-compat",
+                    name);
+                if (File.Exists(candidate))
+                {
+                    return File.ReadAllText(candidate);
+                }
+
+                directory = directory.Parent;
+            }
+
+            throw new FileNotFoundException("Forward compatibility fixture not found.", name);
+        }
 
         [Test]
         public void the_WebHook_will_be_valid_if_all_params_are_as_expected()
@@ -172,6 +197,37 @@ namespace PusherServer.Tests.UnitTests
 
             var webHook = new WebHook(secret, expectedSignature, body);
             Assert.AreEqual(expectedDate, webHook.Time);
+        }
+
+        [Test]
+        public void future_webhook_fixture_events_are_accepted_and_preserved()
+        {
+            var body = LoadForwardCompatFixture("future-webhook-events.json");
+            IWebHook webHook = new WebHook(secret, GenerateValidSignature(secret, body), body);
+
+            Assert.IsTrue(webHook.IsValid);
+            Assert.AreEqual("member_updated", webHook.Events[0]["name"]);
+            Assert.AreEqual("must-pass-through", webHook.Events[0]["future_field"]);
+            Assert.AreEqual("ai_turn_started", webHook.Events[1]["name"]);
+            Assert.AreEqual("turn-1", webHook.GetRawEvents()[1]["turn_id"].ToString());
+            Assert.AreEqual("message_version_created", webHook.Events[2]["name"]);
+        }
+
+        [Test]
+        public void nested_future_webhook_values_do_not_invalidate_the_batch()
+        {
+            var body = "{\"time_ms\":1710000000000,\"events\":[{\"name\":\"ai_turn_started\",\"channel\":\"private-ai-forward\",\"data\":{\"turn_id\":\"turn-1\",\"tokens\":[\"hello\",\"world\"],\"done\":false,\"nullable\":null},\"future_field\":{\"nested\":true}}]}";
+            IWebHook webHook = new WebHook(secret, GenerateValidSignature(secret, body), body);
+
+            Assert.IsTrue(webHook.IsValid);
+            Assert.AreEqual("ai_turn_started", webHook.Events[0]["name"]);
+            Assert.AreEqual("{\"turn_id\":\"turn-1\",\"tokens\":[\"hello\",\"world\"],\"done\":false,\"nullable\":null}", webHook.Events[0]["data"]);
+            var rawData = (JObject)webHook.GetRawEvents()[0]["data"];
+            Assert.AreEqual("turn-1", rawData.Value<string>("turn_id"));
+            CollectionAssert.AreEqual(new[] { "hello", "world" }, rawData["tokens"].ToObject<string[]>());
+            Assert.AreEqual(false, rawData.Value<bool>("done"));
+            Assert.AreEqual(JTokenType.Null, rawData["nullable"].Type);
+            Assert.AreEqual(true, ((JObject)webHook.GetRawEvents()[0]["future_field"]).Value<bool>("nested"));
         }
     }
 }

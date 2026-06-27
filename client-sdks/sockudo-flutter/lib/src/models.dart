@@ -19,6 +19,18 @@ enum SockudoWireFormat {
   };
 }
 
+enum SockudoAppendMode {
+  delta,
+  full;
+
+  String get queryValue => switch (this) {
+    SockudoAppendMode.delta => 'delta',
+    SockudoAppendMode.full => 'full',
+  };
+}
+
+const Set<int> allowedAppendRollupWindows = <int>{0, 20, 40, 100, 500};
+
 enum ConnectionState {
   initialized,
   connecting,
@@ -225,15 +237,17 @@ class ChannelHistoryParams {
     this.endSerial,
     this.startTimeMs,
     this.endTimeMs,
+    this.untilAttach,
   });
 
   final String? direction;
   final int? limit;
   final String? cursor;
-  final int? startSerial;
-  final int? endSerial;
-  final int? startTimeMs;
-  final int? endTimeMs;
+  final Object? startSerial;
+  final Object? endSerial;
+  final Object? startTimeMs;
+  final Object? endTimeMs;
+  final bool? untilAttach;
 
   Map<String, Object> toJson() => <String, Object>{
     'direction': ?direction,
@@ -243,6 +257,7 @@ class ChannelHistoryParams {
     'end_serial': ?endSerial,
     'start_time_ms': ?startTimeMs,
     'end_time_ms': ?endTimeMs,
+    'until_attach': ?untilAttach,
   };
 }
 
@@ -322,6 +337,94 @@ class MessageVersionsPage {
     }
     return fetchNext(cursor);
   }
+}
+
+class VersionedMessageCreateRequest {
+  const VersionedMessageCreateRequest({
+    this.name,
+    this.data,
+    this.extras,
+    this.messageId,
+    this.messageSerial,
+    this.clientId,
+    this.socketId,
+    this.opId,
+  });
+
+  final String? name;
+  final Object? data;
+  final Object? extras;
+  final String? messageId;
+  final String? messageSerial;
+  final String? clientId;
+  final String? socketId;
+  final String? opId;
+
+  Map<String, Object?> toJson({
+    required String defaultName,
+    required String defaultMessageId,
+  }) => <String, Object?>{
+    'name': name ?? defaultName,
+    'data': data,
+    'extras': extras,
+    'messageId': messageId ?? defaultMessageId,
+    'messageSerial': messageSerial,
+    'clientId': clientId,
+    'socketId': socketId,
+    'opId': opId,
+  };
+}
+
+class VersionedMessageMutation {
+  const VersionedMessageMutation({
+    this.data,
+    this.name,
+    this.extras,
+    this.clearFields,
+    this.opId,
+    this.clientId,
+    this.socketId,
+    this.description,
+    this.metadata,
+  });
+
+  final Object? data;
+  final String? name;
+  final Object? extras;
+  final List<String>? clearFields;
+  final String? opId;
+  final String? clientId;
+  final String? socketId;
+  final String? description;
+  final Object? metadata;
+
+  Map<String, Object?> toJson({Object? dataOverride}) => <String, Object?>{
+    'data': dataOverride ?? data,
+    'name': name,
+    'extras': extras,
+    'clearFields': clearFields,
+    'opId': opId,
+    'clientId': clientId,
+    'socketId': socketId,
+    'description': description,
+    'metadata': metadata,
+  };
+}
+
+class MessageAck {
+  const MessageAck({
+    required this.messageSerial,
+    required this.historySerial,
+    this.deliverySerial,
+    this.versionSerial,
+    this.status,
+  });
+
+  final String messageSerial;
+  final Object historySerial;
+  final Object? deliverySerial;
+  final String? versionSerial;
+  final String? status;
 }
 
 class PublishAnnotationRequest {
@@ -495,15 +598,24 @@ class MessageExtras {
     this.ephemeral,
     this.idempotencyKey,
     this.echo,
+    this.raw = const <String, Object?>{},
   });
 
   final Map<String, Object>? headers;
   final bool? ephemeral;
   final String? idempotencyKey;
   final bool? echo;
+  final Map<String, Object?> raw;
+
+  Map<String, Object?>? get ai {
+    final value = raw['ai'];
+    return value is Map<String, Object?> ? value : null;
+  }
+
+  Object? operator [](String key) => toJson()[key];
 
   Map<String, dynamic> toJson() {
-    final map = <String, dynamic>{};
+    final map = <String, dynamic>{...raw};
     if (headers != null) map['headers'] = headers;
     if (ephemeral != null) map['ephemeral'] = ephemeral;
     if (idempotencyKey != null) map['idempotencyKey'] = idempotencyKey;
@@ -556,7 +668,7 @@ class RecoveryPosition {
   });
 
   final String? streamId;
-  final int serial;
+  final Object serial;
   final String? lastMessageId;
 
   Map<String, Object?> toJson() => <String, Object?>{

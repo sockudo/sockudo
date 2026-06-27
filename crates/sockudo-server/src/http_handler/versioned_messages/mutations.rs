@@ -18,7 +18,7 @@ use sockudo_core::versioned_messages::{
 use sockudo_protocol::messages::AI_MESSAGE_ID_MAX_BYTES;
 use sockudo_protocol::versioned_messages::{
     AppendMessageRequest, DeleteMessageRequest, MessageAction as ProtocolMessageAction,
-    MutationResponse, UpdateMessageRequest,
+    MutationResponse, UpdateMessageRequest, set_runtime_append_fragment,
 };
 use std::sync::Arc;
 use tracing::{info, instrument, warn};
@@ -613,8 +613,9 @@ pub async fn append_message(
         .record_ai_stream_activity(&path.app_id, &path.channel_name, &appended)
         .await?;
 
-    let runtime_message =
+    let mut runtime_message =
         handler.build_runtime_message_from_record(&appended, Some(reservation.stream_id));
+    set_runtime_append_fragment(&mut runtime_message, request.data.clone());
     handler
         .broadcast_to_channel_force_full(&app, &path.channel_name, runtime_message, None, None)
         .await?;

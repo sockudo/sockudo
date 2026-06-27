@@ -26,12 +26,15 @@ public final class SockudoClient: @unchecked Sendable {
     public var userAuthentication: UserAuthenticationOptions
     public var presenceHistory: PresenceHistoryOptions?
     public var versionedMessages: VersionedMessagesOptions?
+    public var capabilityToken: CapabilityTokenOptions?
     public var deltaCompression: DeltaOptions?
     public var messageDeduplication: Bool
     public var messageDeduplicationCapacity: Int
     public var connectionRecovery: Bool
     public var echoMessages: Bool
     public var wireFormat: SockudoWireFormat
+    public var appendMode: SockudoAppendMode
+    public var appendRollupWindow: Int?
 
     public init(
       cluster: String,
@@ -57,12 +60,15 @@ public final class SockudoClient: @unchecked Sendable {
       userAuthentication: UserAuthenticationOptions = .init(),
       presenceHistory: PresenceHistoryOptions? = nil,
       versionedMessages: VersionedMessagesOptions? = nil,
+      capabilityToken: CapabilityTokenOptions? = nil,
       deltaCompression: DeltaOptions? = nil,
       messageDeduplication: Bool = true,
       messageDeduplicationCapacity: Int = 1000,
       connectionRecovery: Bool = false,
       echoMessages: Bool = true,
-      wireFormat: SockudoWireFormat = .json
+      wireFormat: SockudoWireFormat = .json,
+      appendMode: SockudoAppendMode = .delta,
+      appendRollupWindow: Int? = nil
     ) {
       self.cluster = cluster
       self.protocolVersion = protocolVersion
@@ -87,12 +93,15 @@ public final class SockudoClient: @unchecked Sendable {
       self.userAuthentication = userAuthentication
       self.presenceHistory = presenceHistory
       self.versionedMessages = versionedMessages
+      self.capabilityToken = capabilityToken
       self.deltaCompression = deltaCompression
       self.messageDeduplication = messageDeduplication
       self.messageDeduplicationCapacity = messageDeduplicationCapacity
       self.connectionRecovery = connectionRecovery
       self.echoMessages = echoMessages
       self.wireFormat = wireFormat
+      self.appendMode = appendMode
+      self.appendRollupWindow = appendRollupWindow
     }
   }
 
@@ -111,6 +120,8 @@ public final class SockudoClient: @unchecked Sendable {
   var config: ResolvedConfiguration
   public private(set) var connectionState: ConnectionState = .initialized
   public private(set) var socketID: String?
+  public private(set) var capabilityTokenAuth: CapabilityTokenAuthData?
+  public private(set) var lastCapabilityTokenExpired: CapabilityTokenExpiredData?
   public let user: UserFacade
   public let watchlist: WatchlistFacade
 
@@ -123,6 +134,7 @@ public final class SockudoClient: @unchecked Sendable {
   private var unavailableTimer: Timer?
   private var retryTimer: Timer?
   private var timelineSenderTimer: Timer?
+  private var capabilityTokenRefreshTimer: Timer?
   private let reachability = ReachabilityMonitor()
   private var deltaManager: DeltaCompressionManager?
   private var deduplicator: MessageDeduplicator?
@@ -131,11 +143,17 @@ public final class SockudoClient: @unchecked Sendable {
   private var currentTransport: Transport?
   private var attemptedFallback = false
   private var manuallyDisconnected = false
+  private var tokenRequestInFlight = false
 
   public init(_ key: String, options: Options, urlSession: URLSession? = nil) throws {
     guard key.isEmpty == false else { throw SockudoError.invalidAppKey }
     guard options.cluster.isEmpty == false else {
       throw SockudoError.invalidOptions("Options must provide a cluster")
+    }
+    guard Self.isAllowedAppendRollupWindow(options.appendRollupWindow) else {
+      throw SockudoError.invalidOptions(
+        "appendRollupWindow must be one of 0, 20, 40, 100, or 500 milliseconds"
+      )
     }
 
     self.key = key
@@ -180,7 +198,59 @@ public final class SockudoClient: @unchecked Sendable {
     }
   }
 
+  private static func isAllowedAppendRollupWindow(_ value: Int?) -> Bool {
+    guard let value else { return true }
+    return [0, 20, 40, 100, 500].contains(value)
+  }
+
+  static func capabilityTokenRefreshDelay(for token: String, now: Date = Date()) -> TimeInterval? {
+    guard let claims = capabilityTokenClaims(token),
+      let exp = wireInt64(claims["exp"])
+    else {
+      return nil
+    }
+
+    let nowSeconds = now.timeIntervalSince1970
+    let expSeconds = TimeInterval(exp)
+    let refreshAt: TimeInterval
+    if let iat = wireInt64(claims["iat"]) {
+      let iatSeconds = TimeInterval(iat)
+      let lifetime = expSeconds - iatSeconds
+      guard lifetime > 0 else { return nil }
+      refreshAt = iatSeconds + (lifetime * 0.8)
+    } else {
+      let remaining = expSeconds - nowSeconds
+      guard remaining > 0 else { return 0 }
+      refreshAt = nowSeconds + (remaining * 0.8)
+    }
+
+    return max(0, refreshAt - nowSeconds)
+  }
+
+  private static func capabilityTokenClaims(_ token: String) -> [String: Any]? {
+    let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+    guard parts.count >= 2,
+      let data = base64URLDecodedData(String(parts[1])),
+      let object = try? JSON.decode(data) as? [String: Any]
+    else {
+      return nil
+    }
+    return object
+  }
+
+  private static func base64URLDecodedData(_ value: String) -> Data? {
+    var encoded = value
+      .replacingOccurrences(of: "-", with: "+")
+      .replacingOccurrences(of: "_", with: "/")
+    let padding = encoded.count % 4
+    if padding > 0 {
+      encoded += String(repeating: "=", count: 4 - padding)
+    }
+    return Data(base64Encoded: encoded)
+  }
+
   deinit {
+    invalidateTimers()
     reachability.stop()
     urlSession.invalidateAndCancel()
   }
@@ -258,15 +328,16 @@ public final class SockudoClient: @unchecked Sendable {
   }
 
   public func connect() {
-    guard webSocketTask == nil else { return }
-    guard transportSequence().isEmpty == false else {
+    guard webSocketTask == nil, tokenRequestInFlight == false else { return }
+    let transports = transportSequence()
+    guard transports.isEmpty == false else {
       updateState(.failed)
       return
     }
     manuallyDisconnected = false
     attemptedFallback = false
     updateState(.connecting)
-    openWebSocket(using: transportSequence()[0])
+    openWebSocketAfterInitialAuth(using: transports[0])
     setUnavailableTimer()
     reachability.start()
   }
@@ -281,6 +352,31 @@ public final class SockudoClient: @unchecked Sendable {
       channel.disconnect()
     }
     updateState(.disconnected)
+  }
+
+  private func openWebSocketAfterInitialAuth(using transport: Transport) {
+    guard config.protocolVersion == 2,
+      config.capabilityToken == nil,
+      config.capabilityTokenProvider != nil
+    else {
+      if config.protocolVersion == 2, let token = config.capabilityToken {
+        scheduleCapabilityTokenRefreshIfNeeded(for: token)
+      }
+      openWebSocket(using: transport)
+      return
+    }
+
+    requestCapabilityToken { [weak self] result in
+      guard let self else { return }
+      switch result {
+      case .success:
+        self.openWebSocket(using: transport)
+      case .failure(let error):
+        self.clearUnavailableTimer()
+        self.updateState(.failed)
+        self.dispatcher.emit("error", data: error)
+      }
+    }
   }
 
   public var shouldUseTLS: Bool {
@@ -381,6 +477,44 @@ public final class SockudoClient: @unchecked Sendable {
     }
   }
 
+  private func requestCapabilityToken(
+    completion: @escaping @Sendable (Result<String, Error>) -> Void
+  ) {
+    guard let provider = config.capabilityTokenProvider else {
+      if let token = config.capabilityToken, token.isEmpty == false {
+        completion(.success(token))
+      } else {
+        completion(
+          .failure(
+            SockudoError.invalidOptions(
+              "capabilityToken.token or capabilityToken.provider must provide a non-empty token"
+            )))
+      }
+      return
+    }
+
+    guard tokenRequestInFlight == false else { return }
+    tokenRequestInFlight = true
+    provider { [weak self] result in
+      Task { @MainActor in
+        guard let self else { return }
+        self.tokenRequestInFlight = false
+        switch result {
+        case .success(let token) where token.isEmpty == false:
+          self.config.capabilityToken = token
+          self.scheduleCapabilityTokenRefreshIfNeeded(for: token)
+          completion(.success(token))
+        case .success:
+          completion(
+            .failure(
+              SockudoError.invalidOptions("capabilityToken.provider returned an empty token")))
+        case .failure(let error):
+          completion(.failure(error))
+        }
+      }
+    }
+  }
+
   private func readNextMessage() {
     webSocketTask?.receive { [weak self] result in
       guard let self else { return }
@@ -405,7 +539,7 @@ public final class SockudoClient: @unchecked Sendable {
     }
   }
 
-  private func handle(rawMessage: URLSessionWebSocketTask.Message) {
+  func handle(rawMessage: URLSessionWebSocketTask.Message) {
     do {
       let event = try decodeEvent(rawMessage: rawMessage)
       resetActivityTimer()
@@ -475,6 +609,16 @@ public final class SockudoClient: @unchecked Sendable {
         // no-op
       } else if eventName == p.event("signin_success") {
         user.handleSignInSuccess(event.data)
+      } else if eventName == p.event("auth_success") {
+        capabilityTokenAuth = Self.decodeCapabilityTokenAuthData(event.data)
+        dispatcher.emit(eventName, data: event.data)
+      } else if eventName == p.event("token_expired") {
+        let expired = Self.decodeCapabilityTokenExpiredData(event.data)
+        lastCapabilityTokenExpired = expired
+        dispatcher.emit(eventName, data: event.data)
+        if expired.code == 40142 || expired.code == 40160 {
+          refreshCapabilityToken()
+        }
       } else if eventName == p.internal("watchlist_events") {
         watchlist.handle(event.data)
       } else if eventName == p.event("delta_compression_enabled") {
@@ -531,9 +675,10 @@ public final class SockudoClient: @unchecked Sendable {
               conflationKey: normalizedEvent.conflationKey)
           }
         }
-        if p.isInternalEvent(eventName) == false {
+        if shouldEmitClientEvent(eventName) {
           dispatcher.emit(
-            eventName, data: normalizedEvent.data, metadata: EventMetadata(userID: normalizedEvent.userID)
+            eventName, data: normalizedEvent.data,
+            metadata: EventMetadata(userID: normalizedEvent.userID)
           )
         }
       }
@@ -544,6 +689,49 @@ public final class SockudoClient: @unchecked Sendable {
 
   private func decodeEvent(rawMessage: URLSessionWebSocketTask.Message) throws -> SockudoEvent {
     try ProtocolCodec.decodeEvent(rawMessage, format: config.wireFormat)
+  }
+
+  private func refreshCapabilityToken() {
+    guard config.protocolVersion == 2, config.capabilityTokenProvider != nil else { return }
+    invalidateCapabilityTokenRefreshTimer()
+    requestCapabilityToken { [weak self] result in
+      guard let self else { return }
+      switch result {
+      case .success(let token):
+        do {
+          let sent = try self.sendEvent(
+            name: self.p.event("auth"),
+            data: ["token": token],
+            channel: nil
+          )
+          if sent == false {
+            self.dispatcher.emit("error", data: SockudoError.connectionUnavailable)
+          }
+        } catch {
+          self.dispatcher.emit("error", data: error)
+        }
+      case .failure(let error):
+        self.dispatcher.emit("error", data: error)
+      }
+    }
+  }
+
+  private func shouldEmitClientEvent(_ eventName: String) -> Bool {
+    if p.isInternalEvent(eventName) == false {
+      return true
+    }
+    return isKnownInternalEvent(eventName) == false
+  }
+
+  private func isKnownInternalEvent(_ eventName: String) -> Bool {
+    eventName == p.internal("subscription_succeeded")
+      || eventName == p.internal("subscription_count")
+      || eventName == p.internal("member_added")
+      || eventName == p.internal("member_removed")
+      || eventName == p.internal("message")
+      || eventName == p.internal("annotation")
+      || eventName == p.internal("watchlist_events")
+      || eventName == p.internal("presence_update")
   }
 
   private func stripDeltaMetadata(from rawMessage: URLSessionWebSocketTask.Message) -> String {
@@ -624,6 +812,13 @@ public final class SockudoClient: @unchecked Sendable {
     ]
     if config.protocolVersion == 2 {
       queryItems.append(.init(name: "format", value: config.wireFormat.queryValue))
+      queryItems.append(.init(name: "append_mode", value: config.appendMode.queryValue))
+      if let appendRollupWindow = config.appendRollupWindow {
+        queryItems.append(.init(name: "append_rollup_window", value: "\(appendRollupWindow)"))
+      }
+      if let token = config.capabilityToken, token.isEmpty == false {
+        queryItems.append(.init(name: "token", value: token))
+      }
     }
     components.queryItems = queryItems
     guard let url = components.url else {
@@ -739,6 +934,32 @@ public final class SockudoClient: @unchecked Sendable {
     retryTimer = nil
     timelineSenderTimer?.invalidate()
     timelineSenderTimer = nil
+    invalidateCapabilityTokenRefreshTimer()
+  }
+
+  func scheduleCapabilityTokenRefreshIfNeeded(for token: String, now: Date = Date()) {
+    invalidateCapabilityTokenRefreshTimer()
+    guard config.protocolVersion == 2,
+      config.capabilityTokenProvider != nil,
+      let delay = Self.capabilityTokenRefreshDelay(for: token, now: now)
+    else { return }
+
+    let timer = Timer(timeInterval: max(0.001, delay), repeats: false) { [weak self] _ in
+      Task { @MainActor in
+        self?.refreshCapabilityToken()
+      }
+    }
+    capabilityTokenRefreshTimer = timer
+    RunLoop.main.add(timer, forMode: .common)
+  }
+
+  var hasCapabilityTokenRefreshTimer: Bool {
+    capabilityTokenRefreshTimer != nil
+  }
+
+  private func invalidateCapabilityTokenRefreshTimer() {
+    capabilityTokenRefreshTimer?.invalidate()
+    capabilityTokenRefreshTimer = nil
   }
 
   private func updateState(_ state: ConnectionState, metadata: [String: Any]? = nil) {
@@ -909,6 +1130,23 @@ public final class WatchlistFacade: @unchecked Sendable {
 }
 
 private extension SockudoClient {
+  static func decodeCapabilityTokenAuthData(_ raw: Any?) -> CapabilityTokenAuthData {
+    let payload = raw as? [String: Any] ?? [:]
+    return CapabilityTokenAuthData(
+      clientID: payload["client_id"] as? String ?? payload["clientId"] as? String,
+      jti: payload["jti"] as? String,
+      exp: wireInt64(payload["exp"])
+    )
+  }
+
+  static func decodeCapabilityTokenExpiredData(_ raw: Any?) -> CapabilityTokenExpiredData {
+    let payload = raw as? [String: Any] ?? [:]
+    return CapabilityTokenExpiredData(
+      code: wireInt64(payload["code"]).flatMap { Int(exactly: $0) },
+      reason: payload["reason"] as? String
+    )
+  }
+
   static func decodeResumeSuccessData(_ raw: Any?) -> ResumeSuccessData {
     let payload = raw as? [String: Any] ?? [:]
     let recovered = (payload["recovered"] as? [[String: Any]] ?? []).map {
@@ -957,6 +1195,10 @@ extension SockudoClient {
     var activityTimeout: TimeInterval
     var useTLS: Bool
     let wireFormat: SockudoWireFormat
+    let appendMode: SockudoAppendMode
+    let appendRollupWindow: Int?
+    var capabilityToken: String?
+    let capabilityTokenProvider: CapabilityTokenProvider?
     let wsHost: String
     let wsPort: Int
     let wssPort: Int
@@ -987,6 +1229,10 @@ extension SockudoClient {
       activityTimeout = options.activityTimeout
       useTLS = options.forceTLS == false ? false : true
       wireFormat = options.wireFormat
+      appendMode = options.appendMode
+      appendRollupWindow = options.appendRollupWindow
+      capabilityToken = options.capabilityToken?.token
+      capabilityTokenProvider = options.capabilityToken?.provider
       wsHost = options.wsHost ?? "ws-\(options.cluster).sockudo.com"
       wsPort = options.wsPort
       wssPort = options.wssPort
@@ -1287,6 +1533,109 @@ extension SockudoClient {
     }
   }
 
+  func createVersionedMessage(
+    channelName: String,
+    request: VersionedMessageCreateRequest,
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    performVersionedMessageMutation(
+      channelName: channelName,
+      messageSerial: nil,
+      action: "create_message",
+      fallbackAction: .create,
+      body: request.payload,
+      completion: completion
+    )
+  }
+
+  func updateVersionedMessage(
+    channelName: String,
+    messageSerial: String,
+    request: VersionedMessageUpdateRequest,
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    performVersionedMessageMutation(
+      channelName: channelName,
+      messageSerial: messageSerial,
+      action: "update_message",
+      fallbackAction: .update,
+      body: request.payload,
+      completion: completion
+    )
+  }
+
+  func appendVersionedMessage(
+    channelName: String,
+    messageSerial: String,
+    request: VersionedMessageAppendRequest,
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    performVersionedMessageMutation(
+      channelName: channelName,
+      messageSerial: messageSerial,
+      action: "append_message",
+      fallbackAction: .append,
+      body: request.payload,
+      completion: completion
+    )
+  }
+
+  func deleteVersionedMessage(
+    channelName: String,
+    messageSerial: String,
+    request: VersionedMessageDeleteRequest,
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    performVersionedMessageMutation(
+      channelName: channelName,
+      messageSerial: messageSerial,
+      action: "delete_message",
+      fallbackAction: .delete,
+      body: request.payload,
+      completion: completion
+    )
+  }
+
+  private func performVersionedMessageMutation(
+    channelName: String,
+    messageSerial: String?,
+    action: String,
+    fallbackAction: MutableMessageAction,
+    body: [String: Any],
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    guard let config = self.config.versionedMessages else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "versionedMessages.endpoint must be configured to use \(action). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: config.headers.merging(
+        config.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: [:],
+      action: action,
+      messageSerial: messageSerial,
+      bodyPayload: body,
+      timeout: 10
+    ) { result in
+      completion(
+        result.flatMap { payload in
+          Self.decodeVersionedMessageAck(
+            payload: payload,
+            channelName: channelName,
+            messageSerial: messageSerial,
+            fallbackAction: fallbackAction
+          )
+        })
+    }
+  }
+
   func publishAnnotation(
     channelName: String,
     messageSerial: String,
@@ -1409,6 +1758,8 @@ extension SockudoClient {
     annotationSerial: String? = nil,
     socketID: String? = nil,
     annotation: [String: Any]? = nil,
+    bodyPayload: [String: Any]? = nil,
+    timeout: TimeInterval? = nil,
     completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
   ) {
     guard let url = URL(string: endpoint, relativeTo: nil) ?? URL(string: endpoint) else {
@@ -1419,6 +1770,9 @@ extension SockudoClient {
     do {
       var request = URLRequest(url: url)
       request.httpMethod = "POST"
+      if let timeout {
+        request.timeoutInterval = timeout
+      }
       var payload: [String: Any] = [
         "channel": channelName,
         "params": params,
@@ -1435,6 +1789,9 @@ extension SockudoClient {
       }
       if let annotation {
         payload["annotation"] = annotation
+      }
+      if let requestPayload = bodyPayload {
+        payload["payload"] = requestPayload
       }
       request.httpBody = try JSON.encodeData(payload)
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1575,7 +1932,8 @@ extension SockudoClient {
             startSerial: originalParams.startSerial,
             endSerial: originalParams.endSerial,
             startTimeMS: originalParams.startTimeMS,
-            endTimeMS: originalParams.endTimeMS
+            endTimeMS: originalParams.endTimeMS,
+            untilAttach: originalParams.untilAttach
           ),
           completion: completion
         )
@@ -1611,6 +1969,58 @@ extension SockudoClient {
         )
       }
     )
+  }
+
+  private static func decodeVersionedMessageAck(
+    payload: [String: Any],
+    channelName: String,
+    messageSerial: String?,
+    fallbackAction: MutableMessageAction
+  ) -> Result<VersionedMessageAck, Error> {
+    let ackPayload = extractVersionedMessageAckPayload(payload, channelName: channelName)
+    let serial =
+      ackPayload["message_serial"] as? String
+      ?? ackPayload["messageSerial"] as? String
+      ?? messageSerial
+    guard let serial, serial.isEmpty == false else {
+      return .failure(
+        SockudoError.messageParseError(
+          "Versioned message proxy response did not include message_serial"
+        ))
+    }
+
+    let action = MutableMessageAction(ackValue: ackPayload["action"]) ?? fallbackAction
+    let accepted = ackPayload["accepted"] as? Bool ?? true
+    let status = ackPayload["status"] as? String ?? (accepted ? "accepted" : "rejected")
+
+    return .success(
+      VersionedMessageAck(
+        channel: ackPayload["channel"] as? String ?? channelName,
+        messageSerial: serial,
+        action: action,
+        accepted: accepted,
+        versionSerial: ackPayload["version_serial"] as? String
+          ?? ackPayload["versionSerial"] as? String,
+        historySerial: wireInt64(ackPayload["history_serial"] ?? ackPayload["historySerial"]),
+        deliverySerial: wireInt64(ackPayload["delivery_serial"] ?? ackPayload["deliverySerial"]),
+        status: status,
+        raw: payload
+      ))
+  }
+
+  private static func extractVersionedMessageAckPayload(
+    _ payload: [String: Any],
+    channelName: String
+  ) -> [String: Any] {
+    if let ack = payload["ack"] as? [String: Any] {
+      return ack
+    }
+    if let channels = payload["channels"] as? [String: Any],
+      let channelAck = channels[channelName] as? [String: Any]
+    {
+      return channelAck
+    }
+    return payload
   }
 
   private func decodeAnnotationEventsPage(

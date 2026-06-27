@@ -517,6 +517,8 @@ declare namespace Sockudo {
     action: "create" | "update" | "delete" | "append" | "summary";
     accepted: boolean;
     version_serial?: string | null;
+    history_serial?: number | string | null;
+    delivery_serial?: number | string | null;
     status: string;
   }
   export interface PostOptions extends RequestOptions {
@@ -568,10 +570,12 @@ declare namespace Sockudo {
 
   interface Event {
     name: string;
-    channel: string;
-    event: string;
-    data: string;
-    socket_id: string;
+    channel?: string;
+    event?: string;
+    data?: unknown;
+    socket_id?: string;
+    user_id?: string;
+    [key: string]: unknown;
   }
 
   interface WebHookData {

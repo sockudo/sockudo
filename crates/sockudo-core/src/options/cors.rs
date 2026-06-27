@@ -32,7 +32,12 @@ impl Default for CorsConfig {
         Self {
             credentials: true,
             origin: vec!["*".to_string()],
-            methods: vec!["GET".to_string(), "POST".to_string(), "OPTIONS".to_string()],
+            methods: vec![
+                "GET".to_string(),
+                "POST".to_string(),
+                "DELETE".to_string(),
+                "OPTIONS".to_string(),
+            ],
             allowed_headers: vec![
                 "Authorization".to_string(),
                 "Content-Type".to_string(),

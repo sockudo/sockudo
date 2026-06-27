@@ -1128,6 +1128,20 @@ public abstract class SockudoAbstract<T> {
     }
 
     /**
+     * Parse a webhook body after validating its signature.
+     *
+     * <p>This parser preserves the raw JSON for future webhook event names and
+     * fields. Signature validation still uses the exact raw body string passed
+     * to {@link #validateWebhookSignature(String, String, String)}.</p>
+     *
+     * @param body the raw webhook body
+     * @return a tolerant webhook representation
+     */
+    public Webhook parseWebhook(final String body) {
+        return Webhook.parse(body);
+    }
+
+    /**
      * Determine whether a trigger result represents a successful response.
      * Subclasses may override this for custom result types. The default
      * implementation checks if the result is a {@link Result} with SUCCESS status.

@@ -47,6 +47,8 @@ pub struct WebSocketRef {
     pub wire_format: WireFormat,
     /// V2 only. Connection-level echo setting. Default: true.
     pub echo_messages: bool,
+    /// V2 only. Live append frame mode for this socket.
+    pub append_mode: sockudo_protocol::AppendMode,
 }
 
 impl WebSocketRef {
@@ -60,6 +62,7 @@ impl WebSocketRef {
         let protocol_version = websocket.state.protocol_version;
         let wire_format = websocket.state.wire_format;
         let echo_messages = websocket.state.echo_messages;
+        let append_mode = websocket.state.append_mode;
 
         let channel_filters = Arc::new(DashMap::new());
         for (channel, filter) in &websocket.state.subscribed_channels {
@@ -87,6 +90,7 @@ impl WebSocketRef {
             protocol_version,
             wire_format,
             echo_messages,
+            append_mode,
             inner: Arc::new(Mutex::new(websocket)),
         }
     }

@@ -55,6 +55,63 @@ def test_round_trips_messagepack() -> None:
     assert decoded.conflation_key == "room"
 
 
+def test_round_trips_json_uint64_serials_and_ai_extras() -> None:
+    payload = ProtocolCodec.encode_envelope(
+        {
+            "event": "sockudo:test",
+            "channel": "chat:room-1",
+            "data": {"hello": "world"},
+            "stream_id": "stream-1",
+            "serial": 9007199254740993,
+            "__delta_seq": 9007199254740994,
+            "extras": {
+                "ai": {
+                    "transport": {"turn-id": "turn-1"},
+                    "codec": {"provider-future-key": "opaque"},
+                }
+            },
+        },
+        SockudoWireFormat.JSON,
+    )
+
+    decoded = ProtocolCodec.decode_event(payload, SockudoWireFormat.JSON)
+
+    assert decoded.serial == 9007199254740993
+    assert decoded.sequence == 9007199254740994
+    assert decoded.extras is not None
+    assert decoded.extras.ai == {
+        "transport": {"turn-id": "turn-1"},
+        "codec": {"provider-future-key": "opaque"},
+    }
+
+
+def test_round_trips_messagepack_uint64_serials_and_header_ints() -> None:
+    payload = ProtocolCodec.encode_envelope(
+        {
+            "event": "sockudo:test",
+            "channel": "chat:room-1",
+            "stream_id": "stream-1",
+            "serial": 9007199254740993,
+            "__delta_seq": 9007199254740994,
+            "extras": {
+                "headers": {"sockudo_history_serial": 9007199254740993},
+                "ai": {"transport": {"turn-id": "turn-1"}},
+            },
+        },
+        SockudoWireFormat.MESSAGEPACK,
+    )
+
+    decoded = ProtocolCodec.decode_event(payload, SockudoWireFormat.MESSAGEPACK)
+
+    assert decoded.serial == 9007199254740993
+    assert decoded.sequence == 9007199254740994
+    assert decoded.extras is not None
+    assert decoded.extras.headers == {
+        "sockudo_history_serial": 9007199254740993,
+    }
+    assert decoded.extras.ai == {"transport": {"turn-id": "turn-1"}}
+
+
 def test_round_trips_protobuf() -> None:
     payload = ProtocolCodec.encode_envelope(
         {
@@ -87,6 +144,35 @@ def test_round_trips_protobuf() -> None:
     assert decoded.extras.headers["ttl"] == 5.0
     assert decoded.extras.headers["replay"] is True
     assert decoded.extras.echo is False
+
+
+def test_round_trips_protobuf_uint64_serials_and_ai_extras() -> None:
+    payload = ProtocolCodec.encode_envelope(
+        {
+            "event": "sockudo:test",
+            "channel": "chat:room-1",
+            "stream_id": "stream-1",
+            "serial": 9007199254740993,
+            "__delta_seq": 9007199254740994,
+            "extras": {
+                "ai": {
+                    "transport": {"turn-id": "turn-1"},
+                    "codec": {"provider-future-key": "opaque"},
+                }
+            },
+        },
+        SockudoWireFormat.PROTOBUF,
+    )
+
+    decoded = ProtocolCodec.decode_event(payload, SockudoWireFormat.PROTOBUF)
+
+    assert decoded.serial == 9007199254740993
+    assert decoded.sequence == 9007199254740994
+    assert decoded.extras is not None
+    assert decoded.extras.ai == {
+        "transport": {"turn-id": "turn-1"},
+        "codec": {"provider-future-key": "opaque"},
+    }
 
 
 def test_applies_insert_only_fossil_delta() -> None:

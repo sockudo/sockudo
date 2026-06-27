@@ -3,6 +3,7 @@ import { ChannelAuthorizerGenerator, DeprecatedAuthOptions } from './auth/deprec
 import { AuthTransport, Transport } from './config';
 import * as nacl from 'tweetnacl';
 import { DeltaOptions } from './delta/types';
+export type AppendMode = 'delta' | 'full';
 export interface Options {
     activityTimeout?: number;
     auth?: DeprecatedAuthOptions;
@@ -14,6 +15,7 @@ export interface Options {
     cluster?: string;
     deltaCompression?: DeltaOptions;
     protocolVersion?: number;
+    appendMode?: AppendMode;
     messageDeduplication?: boolean;
     messageDeduplicationCapacity?: number;
     connectionRecovery?: boolean;

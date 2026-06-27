@@ -1,6 +1,6 @@
 import { createServerTransport } from "@sockudo/ai-transport/vercel";
 import type { VercelOutput } from "@sockudo/ai-transport/vercel";
-import { streamText } from "ai";
+import { streamText, toUIMessageStream } from "ai";
 import { demoConfig } from "../utils/config";
 import { isAllowedDemoChannel, realtimeClient } from "../utils/sockudo";
 
@@ -70,12 +70,12 @@ async function liveGatewayStream(
   const common = {
     model: model as Parameters<typeof streamText>[0]["model"],
     abortSignal,
-    system:
+    instructions:
       "You are the live model inside the Sockudo AI Transport Nuxt demo. Be concise, show token streaming clearly, and mention realtime fanout, durable history, cancellation, edits, regeneration, branches, and multi-device sync when relevant.",
     maxOutputTokens: 700,
   };
   const result = streamText({ ...common, prompt: latestText(body) });
-  return result.toUIMessageStream() as ReadableStream<VercelOutput>;
+  return toUIMessageStream({ stream: result.stream }) as ReadableStream<VercelOutput>;
 }
 
 function demoUiMessageStream(prompt: string): ReadableStream<VercelOutput> {
@@ -125,7 +125,7 @@ function demoUiMessageStream(prompt: string): ReadableStream<VercelOutput> {
     {
       type: "tool-input-delta",
       toolCallId: "capability-scan",
-      delta: JSON.stringify({
+      inputTextDelta: JSON.stringify({
         prompt,
         checks: ["history", "branches", "cancel"],
       }),

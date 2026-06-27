@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- [CHANGED] Widen webhook typings for future event names and payload fields.
+- [ADDED] Forward-compatibility coverage for nested webhook payload values.
+- [ADDED] Optional mutation ack serial fields in TypeScript declarations.
+
 ## 5.3.3
 
 - [FIXED] Bump node-fetch to ^2.7.0, express to ^4.22.1, eslint to ^7.32.0, mocha to ^9.2.2

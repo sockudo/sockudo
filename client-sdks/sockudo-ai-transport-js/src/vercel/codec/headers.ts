@@ -12,14 +12,18 @@ export const VERCEL_HEADER_KEYS = [
   "title",
   "provider-executed",
   "preliminary",
+  "is-automatic",
   "approval-id",
   "approved",
   "reason",
+  "signature",
+  "kind",
   "finish-reason",
   "source-id",
   "media-type",
   "filename",
   "transient",
+  "tool-metadata",
   "provider-metadata",
   "message-metadata",
 ] as const;
@@ -29,10 +33,12 @@ const WIRE_KEYS = {
   toolCallId: "tool-call-id",
   toolName: "tool-name",
   providerExecuted: "provider-executed",
+  isAutomatic: "is-automatic",
   approvalId: "approval-id",
   finishReason: "finish-reason",
   sourceId: "source-id",
   mediaType: "media-type",
+  toolMetadata: "tool-metadata",
   providerMetadata: "provider-metadata",
   messageMetadata: "message-metadata",
 } as const;
@@ -65,11 +71,23 @@ export function headersForChunk(chunk: AI.UIMessageChunk): HeaderMap {
   if ("preliminary" in chunk) {
     writer.set("preliminary", chunk.preliminary);
   }
+  if ("isAutomatic" in chunk) {
+    writer.set(WIRE_KEYS.isAutomatic, chunk.isAutomatic);
+  }
   if ("approvalId" in chunk) {
     writer.set(WIRE_KEYS.approvalId, chunk.approvalId);
   }
+  if ("approved" in chunk) {
+    writer.set("approved", chunk.approved);
+  }
   if ("reason" in chunk) {
     writer.set("reason", chunk.reason);
+  }
+  if ("signature" in chunk) {
+    writer.set("signature", chunk.signature);
+  }
+  if ("kind" in chunk) {
+    writer.set("kind", chunk.kind);
   }
   if ("finishReason" in chunk) {
     writer.set(WIRE_KEYS.finishReason, chunk.finishReason);
@@ -85,6 +103,12 @@ export function headersForChunk(chunk: AI.UIMessageChunk): HeaderMap {
   }
   if ("transient" in chunk) {
     writer.set("transient", chunk.transient);
+  }
+  if ("toolMetadata" in chunk) {
+    writer.json(WIRE_KEYS.toolMetadata, chunk.toolMetadata);
+  }
+  if ("providerMetadata" in chunk) {
+    writer.json(WIRE_KEYS.providerMetadata, chunk.providerMetadata);
   }
   if ("metadata" in chunk) {
     writer.json(WIRE_KEYS.providerMetadata, chunk.metadata);

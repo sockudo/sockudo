@@ -29,6 +29,9 @@ export const ws: URLScheme = {
     if (protocolVersion() === 2 && params.wireFormat) {
       queryString += "&format=" + encodeURIComponent(params.wireFormat);
     }
+    if (protocolVersion() === 2 && params.appendMode) {
+      queryString += "&append_mode=" + encodeURIComponent(params.appendMode);
+    }
     const path = (params.httpPath || "") + getGenericPath(key, queryString);
     return getGenericURL("ws", params, path);
   },

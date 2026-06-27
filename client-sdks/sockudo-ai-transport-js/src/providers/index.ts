@@ -695,7 +695,7 @@ function* emitToolDelta(
     yield {
       type: "tool-input-delta",
       toolCallId: callId,
-      delta,
+      inputTextDelta: delta,
       ...(state.messageId !== undefined ? { messageId: state.messageId } : {}),
     };
   }

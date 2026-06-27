@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { ErrorCode, ErrorInfo } from "../errors.js";
@@ -6,10 +8,12 @@ import {
   adaptSockudoChannel,
   compareSerial,
   normalizeInboundMessage,
+  validateAppendMode,
   validateAppendRollupWindow,
   type SockudoChannelPeer,
   type SockudoRawMessage,
 } from "./adapter.js";
+import type { InboundMessage } from "./types.js";
 
 describe("realtime adapter", () => {
   it("normalizes mutable messages with lazy hostile-safe header views", () => {
@@ -113,6 +117,18 @@ describe("realtime adapter", () => {
     }).toThrow(/appendRollupWindow/);
   });
 
+  it("validates append modes locally", () => {
+    expect(() => {
+      validateAppendMode("delta");
+    }).not.toThrow();
+    expect(() => {
+      validateAppendMode("full");
+    }).not.toThrow();
+    expect(() => {
+      validateAppendMode("chunk");
+    }).toThrow(/appendMode/);
+  });
+
   it("maps Sockudo channel methods and client-side name filtering", async () => {
     const listeners: ((event: SockudoRawMessage) => void)[] = [];
     const channel: SockudoChannelPeer = {
@@ -182,6 +198,105 @@ describe("realtime adapter", () => {
       items: [expect.objectContaining({ messageSerial: "msg-history" })],
     });
     expect(delivered).toEqual(["ai-output"]);
+  });
+
+  it("replays E1 forward-compat fixtures through the adapted Sockudo channel handoff", () => {
+    const originalEvents: string[] = [];
+    const channel: SockudoChannelPeer = {
+      name: "private-ai-forward",
+      handleEvent(event) {
+        originalEvents.push(typeof event.event === "string" ? event.event : "");
+      },
+    };
+    const adapted = adaptSockudoChannel(channel);
+    const delivered: InboundMessage[] = [];
+    adapted.subscribe((message) => delivered.push(message));
+
+    channel.handleEvent?.(knownAiOutput("known-before", 1));
+    for (const fixture of [
+      "future-v2-frame.json",
+      "future-versioned-action.json",
+      "future-webhook-events.json",
+      "unknown-ai-extras.json",
+    ]) {
+      channel.handleEvent?.(loadForwardCompatFixture(fixture) as SockudoRawMessage);
+    }
+    channel.handleEvent?.(knownAiOutput("known-after", 2));
+
+    expect(originalEvents).toContain("sockudo:future_event");
+    expect(delivered.map((message) => message.messageSerial)).toContain("known-before");
+    expect(delivered.map((message) => message.messageSerial)).toContain("known-after");
+    expect(
+      delivered.some((message) => Array.isArray((message.raw as { events?: unknown }).events)),
+    ).toBe(false);
+
+    const futureFrame = delivered.find((message) => message.name === "sockudo:future_event");
+    expect(futureFrame).toMatchObject({
+      action: "summary",
+      historySerial: "9007199254740993",
+      deliverySerial: "9007199254740993",
+    });
+
+    const futureAction = delivered.find((message) => message.messageSerial === "future-message");
+    expect(futureAction).toMatchObject({
+      action: "summary",
+      historySerial: "9007199254740993",
+      deliverySerial: "9007199254740994",
+      version: { serial: "future-version" },
+    });
+
+    const aiExtras = delivered.find(
+      (message) => message.name === "ai-output" && message.data === "content",
+    );
+    expect(aiExtras?.extras).toMatchObject({
+      ai: {
+        transport: {
+          "turn-id": "turn-1",
+          status: "streaming",
+        },
+        codec: {
+          "provider-future-key": "opaque",
+          "x-custom": "opaque",
+        },
+      },
+      futureExtrasField: true,
+    });
+    expect(aiExtras?.getTransportHeaders()["turn-id"]).toBe("turn-1");
+    expect(aiExtras?.getCodecHeaders()["provider-future-key"]).toBe("opaque");
+  });
+
+  it("skips malformed presence members without corrupting snapshots", async () => {
+    const handlers = new Map<string, (...args: readonly unknown[]) => void>();
+    const channel: SockudoChannelPeer = {
+      name: "presence-chat",
+      members: {
+        members: {
+          "": { invalid: true },
+          "user-1": { online: true },
+        },
+      },
+      bind(event, listener) {
+        handlers.set(event, listener);
+      },
+      unbind(event) {
+        if (event) {
+          handlers.delete(event);
+        }
+      },
+    };
+    const adapted = adaptSockudoChannel(channel);
+    const observed: string[] = [];
+    adapted.presence.subscribe((event, member) => {
+      observed.push(`${event}:${member.id}`);
+    });
+
+    handlers.get("member_added")?.({ info: { invalid: true } });
+    handlers.get("member_added")?.({ id: "user-2", info: { online: true } });
+
+    await expect(adapted.presence.get()).resolves.toEqual([
+      { id: "user-1", data: { online: true } },
+    ]);
+    expect(observed).toEqual(["enter:user-2"]);
   });
 });
 
@@ -267,3 +382,43 @@ describe("error mapping", () => {
     expect(error.statusCode).toBe(500);
   });
 });
+
+function knownAiOutput(messageSerial: string, serial: number): SockudoRawMessage {
+  return {
+    event: "sockudo:message.create",
+    channel: "private-ai-forward",
+    name: "ai-output",
+    data: "known",
+    message_serial: messageSerial,
+    history_serial: serial,
+    delivery_serial: serial,
+    extras: {
+      ai: {
+        transport: {
+          "codec-message-id": messageSerial,
+          stream: "false",
+        },
+        codec: {
+          type: "text-delta",
+          "message-id": messageSerial,
+        },
+      },
+    },
+  };
+}
+
+function loadForwardCompatFixture(name: string): unknown {
+  const path = fileURLToPath(
+    new URL(`../../../../tests/ai-conformance/fixtures/forward-compat/${name}`, import.meta.url),
+  );
+  return JSON.parse(preserveUnsafeSerialLiterals(readFileSync(path, "utf8"))) as unknown;
+}
+
+const serialLiteralPattern = /("[-_A-Za-z0-9]*serial[-_A-Za-z0-9]*"\s*:\s*)(-?\d+)/gu;
+
+function preserveUnsafeSerialLiterals(source: string): string {
+  return source.replace(serialLiteralPattern, (match, prefix: string, literal: string) => {
+    const parsed = Number(literal);
+    return Number.isSafeInteger(parsed) ? match : `${prefix}${JSON.stringify(literal)}`;
+  });
+}

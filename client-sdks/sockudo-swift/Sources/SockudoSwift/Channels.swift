@@ -9,6 +9,7 @@ public class Channel: @unchecked Sendable {
   var subscriptionPending = false
   var subscriptionCancelled = false
   var subscriptionCount: Int?
+  public internal(set) var attachSerial: Int64?
   var tagsFilter: FilterNode?
   var deltaSettings: ChannelDeltaSettings?
   var eventsFilter: [String]?
@@ -147,6 +148,7 @@ public class Channel: @unchecked Sendable {
 
   func unsubscribe() {
     isSubscribed = false
+    attachSerial = nil
     _ = try? client.sendEvent(
       name: client.p.event("unsubscribe"), data: ["channel": name], channel: nil)
   }
@@ -154,6 +156,7 @@ public class Channel: @unchecked Sendable {
   func disconnect() {
     isSubscribed = false
     subscriptionPending = false
+    attachSerial = nil
   }
 
   func handle(event: SockudoEvent) {
@@ -161,6 +164,7 @@ public class Channel: @unchecked Sendable {
     if event.event == p.internal("subscription_succeeded") {
       subscriptionPending = false
       isSubscribed = true
+      attachSerial = Self.extractAttachSerial(from: event.data)
       if subscriptionCancelled {
         client.unsubscribe(name)
       } else {
@@ -183,10 +187,18 @@ public class Channel: @unchecked Sendable {
       let action = data["action"] as? String
     {
       dispatcher.emit(action, data: data, metadata: EventMetadata(userID: event.userID))
+    } else if p.isInternalEvent(event.event) {
+      dispatcher.emit(
+        event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
     } else if p.isInternalEvent(event.event) == false {
       dispatcher.emit(
         event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
     }
+  }
+
+  static func extractAttachSerial(from data: Any?) -> Int64? {
+    guard let payload = data as? [String: Any] else { return nil }
+    return wireInt64(payload["attach_serial"] ?? payload["attachSerial"])
   }
 
   public func publishAnnotation(
@@ -229,6 +241,83 @@ public class Channel: @unchecked Sendable {
       completion: completion
     )
   }
+
+  public func channelHistory(
+    _ params: ChannelHistoryParams = .init(),
+    completion: @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
+  ) {
+    client.fetchChannelHistory(channelName: name, params: params, completion: completion)
+  }
+
+  public func getMessage(
+    _ messageSerial: String,
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    client.fetchLatestMessage(channelName: name, messageSerial: messageSerial, completion: completion)
+  }
+
+  public func getMessageVersions(
+    _ messageSerial: String,
+    params: MessageVersionsParams = .init(),
+    completion: @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
+  ) {
+    client.fetchMessageVersions(
+      channelName: name,
+      messageSerial: messageSerial,
+      params: params,
+      completion: completion
+    )
+  }
+
+  public func createMessage(
+    _ request: VersionedMessageCreateRequest,
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    client.createVersionedMessage(
+      channelName: name,
+      request: request,
+      completion: completion
+    )
+  }
+
+  public func updateMessage(
+    _ messageSerial: String,
+    request: VersionedMessageUpdateRequest,
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    client.updateVersionedMessage(
+      channelName: name,
+      messageSerial: messageSerial,
+      request: request,
+      completion: completion
+    )
+  }
+
+  public func appendMessage(
+    _ messageSerial: String,
+    request: VersionedMessageAppendRequest,
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    client.appendVersionedMessage(
+      channelName: name,
+      messageSerial: messageSerial,
+      request: request,
+      completion: completion
+    )
+  }
+
+  public func deleteMessage(
+    _ messageSerial: String,
+    request: VersionedMessageDeleteRequest = .init(),
+    completion: @escaping @Sendable (Result<VersionedMessageAck, Error>) -> Void
+  ) {
+    client.deleteVersionedMessage(
+      channelName: name,
+      messageSerial: messageSerial,
+      request: request,
+      completion: completion
+    )
+  }
 }
 
 public class PrivateChannel: Channel, @unchecked Sendable {
@@ -266,8 +355,8 @@ public final class PresenceMembers: @unchecked Sendable {
 
   func applySubscriptionData(_ data: [String: Any]) {
     let presence = data["presence"] as? [String: Any]
-    let hash = presence?["hash"] as? [String: AnyHashable] ?? [:]
-    members = hash
+    let hash = presence?["hash"] as? [String: Any] ?? [:]
+    members = hash.compactMapValues(Self.normalizedInfo)
     count = presence?["count"] as? Int ?? hash.count
     if let myID {
       me = member(id: myID)
@@ -275,12 +364,25 @@ public final class PresenceMembers: @unchecked Sendable {
   }
 
   func add(_ data: [String: Any]) -> PresenceMember? {
-    guard let userID = data["user_id"] as? String else { return nil }
-    let info = data["user_info"] as? AnyHashable
+    guard let userID = data["user_id"] as? String,
+      let info = Self.normalizedInfo(data["user_info"])
+    else { return nil }
     if members[userID] == nil {
       count += 1
     }
     members[userID] = info
+    return PresenceMember(id: userID, info: info)
+  }
+
+  func update(_ data: [String: Any]) -> PresenceMember? {
+    guard let userID = data["user_id"] as? String,
+      members[userID] != nil,
+      let info = Self.normalizedInfo(data["user_info"])
+    else { return nil }
+    members[userID] = info
+    if userID == myID {
+      me = PresenceMember(id: userID, info: info)
+    }
     return PresenceMember(id: userID, info: info)
   }
 
@@ -299,6 +401,24 @@ public final class PresenceMembers: @unchecked Sendable {
     count = 0
     myID = nil
     me = nil
+  }
+
+  private static func normalizedInfo(_ value: Any?) -> AnyHashable? {
+    if let jsonValue = SockudoJSONValue.from(value) {
+      switch jsonValue {
+      case .object, .array, .null:
+        return AnyHashable(jsonValue)
+      case .string, .int, .double, .bool:
+        break
+      }
+    }
+    if let value = value as? AnyHashable {
+      return value
+    }
+    guard let jsonValue = SockudoJSONValue.from(value) else {
+      return nil
+    }
+    return AnyHashable(jsonValue)
   }
 }
 
@@ -345,6 +465,7 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
     if event.event == p.internal("subscription_succeeded") {
       subscriptionPending = false
       isSubscribed = true
+      attachSerial = Channel.extractAttachSerial(from: event.data)
       if subscriptionCancelled {
         client.unsubscribe(name)
       } else if let data = event.data as? [String: Any] {
@@ -361,6 +482,10 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
       if let data = event.data as? [String: Any], let member = members.remove(data) {
         dispatcher.emit(p.event("member_removed"), data: member)
       }
+    } else if event.event == p.internal("presence_update") {
+      if let data = event.data as? [String: Any], let member = members.update(data) {
+        dispatcher.emit(p.event("presence_update"), data: member)
+      }
     } else if event.event == p.internal("message"),
       let data = event.data as? [String: Any],
       data["action"] as? String == "message.summary"
@@ -371,6 +496,9 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
       let action = data["action"] as? String
     {
       dispatcher.emit(action, data: data, metadata: EventMetadata(userID: event.userID))
+    } else if p.isInternalEvent(event.event) {
+      dispatcher.emit(
+        event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
     } else if p.isInternalEvent(event.event) == false {
       dispatcher.emit(
         event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
@@ -389,21 +517,21 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
     client.fetchPresenceHistory(channelName: name, params: params, completion: completion)
   }
 
-  public func channelHistory(
+  override public func channelHistory(
     _ params: ChannelHistoryParams = .init(),
     completion: @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
   ) {
     client.fetchChannelHistory(channelName: name, params: params, completion: completion)
   }
 
-  public func getMessage(
+  override public func getMessage(
     _ messageSerial: String,
     completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
   ) {
     client.fetchLatestMessage(channelName: name, messageSerial: messageSerial, completion: completion)
   }
 
-  public func getMessageVersions(
+  override public func getMessageVersions(
     _ messageSerial: String,
     params: MessageVersionsParams = .init(),
     completion: @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
@@ -421,6 +549,20 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
     completion: @escaping @Sendable (Result<PresenceSnapshot, Error>) -> Void
   ) {
     client.fetchPresenceSnapshot(channelName: name, params: params, completion: completion)
+  }
+
+  public func update(data: Any) throws -> Bool {
+    guard client.config.protocolVersion == 2 else {
+      throw SockudoError.unsupportedFeature("presence.update(data:) requires Protocol V2")
+    }
+    return try client.sendEvent(
+      name: client.p.event("presence_update"),
+      data: [
+        "channel": name,
+        "data": data,
+      ],
+      channel: nil
+    )
   }
 }
 

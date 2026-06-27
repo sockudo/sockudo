@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+* harden forward-compatible realtime decoding for unknown V2 frames, `extras.ai`
+  passthrough, malformed presence member events, and u64 serial preservation
+
 ## [1.1.0](https://github.com/sockudo/sockudo-js/compare/v1.0.0...v1.1.0) (2026-02-11)
 
 

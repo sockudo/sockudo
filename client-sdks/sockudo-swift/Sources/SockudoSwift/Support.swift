@@ -147,6 +147,7 @@ public struct ChannelHistoryParams: Sendable, Equatable {
   public let endSerial: Int64?
   public let startTimeMS: Int64?
   public let endTimeMS: Int64?
+  public let untilAttach: Bool?
 
   public init(
     direction: String? = nil,
@@ -155,7 +156,8 @@ public struct ChannelHistoryParams: Sendable, Equatable {
     startSerial: Int64? = nil,
     endSerial: Int64? = nil,
     startTimeMS: Int64? = nil,
-    endTimeMS: Int64? = nil
+    endTimeMS: Int64? = nil,
+    untilAttach: Bool? = nil
   ) {
     self.direction = direction
     self.limit = limit
@@ -164,6 +166,7 @@ public struct ChannelHistoryParams: Sendable, Equatable {
     self.endSerial = endSerial
     self.startTimeMS = startTimeMS
     self.endTimeMS = endTimeMS
+    self.untilAttach = untilAttach
   }
 
   var payload: [String: Any] {
@@ -175,6 +178,7 @@ public struct ChannelHistoryParams: Sendable, Equatable {
     if let endSerial { data["end_serial"] = endSerial }
     if let startTimeMS { data["start_time_ms"] = startTimeMS }
     if let endTimeMS { data["end_time_ms"] = endTimeMS }
+    if let untilAttach { data["until_attach"] = untilAttach }
     return data
   }
 }
@@ -540,6 +544,15 @@ public enum SockudoWireFormat: String, Sendable, Codable, Equatable {
   }
 }
 
+public enum SockudoAppendMode: String, Sendable, Codable, Equatable {
+  case delta
+  case full
+
+  var queryValue: String {
+    rawValue
+  }
+}
+
 public enum ConnectionState: String, Sendable, Equatable {
   case initialized
   case connecting
@@ -627,20 +640,190 @@ public enum ExtraValue: Sendable, Codable, Equatable {
   }
 }
 
+public enum SockudoJSONValue: Sendable, Codable, Equatable, Hashable {
+  case string(String)
+  case int(Int)
+  case double(Double)
+  case bool(Bool)
+  case object([String: SockudoJSONValue])
+  case array([SockudoJSONValue])
+  case null
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    if container.decodeNil() {
+      self = .null
+    } else if let value = try? container.decode(Bool.self) {
+      self = .bool(value)
+    } else if let value = try? container.decode(Int.self) {
+      self = .int(value)
+    } else if let value = try? container.decode(Double.self) {
+      self = .double(value)
+    } else if let value = try? container.decode(String.self) {
+      self = .string(value)
+    } else if let value = try? container.decode([SockudoJSONValue].self) {
+      self = .array(value)
+    } else {
+      self = .object(try container.decode([String: SockudoJSONValue].self))
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    switch self {
+    case .string(let value):
+      try container.encode(value)
+    case .int(let value):
+      try container.encode(value)
+    case .double(let value):
+      try container.encode(value)
+    case .bool(let value):
+      try container.encode(value)
+    case .object(let value):
+      try container.encode(value)
+    case .array(let value):
+      try container.encode(value)
+    case .null:
+      try container.encodeNil()
+    }
+  }
+
+  public var rawValue: Any {
+    switch self {
+    case .string(let value): value
+    case .int(let value): value
+    case .double(let value): value
+    case .bool(let value): value
+    case .object(let value): value.mapValues(\.rawValue)
+    case .array(let value): value.map(\.rawValue)
+    case .null: NSNull()
+    }
+  }
+
+  public var objectValue: [String: SockudoJSONValue]? {
+    if case .object(let value) = self {
+      return value
+    }
+    return nil
+  }
+
+  public var arrayValue: [SockudoJSONValue]? {
+    if case .array(let value) = self {
+      return value
+    }
+    return nil
+  }
+
+  public var stringValue: String? {
+    if case .string(let value) = self {
+      return value
+    }
+    return nil
+  }
+
+  public subscript(key: String) -> SockudoJSONValue? {
+    objectValue?[key]
+  }
+
+  static func from(_ value: Any?) -> SockudoJSONValue? {
+    guard let value else { return nil }
+    switch value {
+    case is NSNull:
+      return .null
+    case let value as Bool:
+      return .bool(value)
+    case let value as Int:
+      return .int(value)
+    case let value as Int64:
+      guard let exact = Int(exactly: value) else {
+        return .string(String(value))
+      }
+      return .int(exact)
+    case let value as UInt64:
+      guard value <= UInt64(Int.max) else {
+        return .string(String(value))
+      }
+      return .int(Int(value))
+    case let value as Double:
+      if let exact = Int(exactly: value) {
+        return .int(exact)
+      }
+      return .double(value)
+    case let value as Float:
+      let double = Double(value)
+      if let exact = Int(exactly: double) {
+        return .int(exact)
+      }
+      return .double(double)
+    case let value as String:
+      return .string(value)
+    case let value as NSNumber:
+      return fromNSNumber(value)
+    case let value as [String: Any]:
+      return .object(value.mapValues { from($0) ?? .null })
+    case let value as [String: AnyHashable]:
+      return .object(value.mapValues { from($0.base) ?? .null })
+    case let value as [Any]:
+      return .array(value.map { from($0) ?? .null })
+    default:
+      return nil
+    }
+  }
+
+  private static func fromNSNumber(_ value: NSNumber) -> SockudoJSONValue {
+    if CFGetTypeID(value) == CFBooleanGetTypeID() {
+      return .bool(value.boolValue)
+    }
+    let type = String(cString: value.objCType)
+    if type == "f" || type == "d" {
+      if let exact = Int(exactly: value.doubleValue) {
+        return .int(exact)
+      }
+      return .double(value.doubleValue)
+    }
+    if ["C", "S", "I", "L", "Q"].contains(type) {
+      let unsigned = value.uint64Value
+      guard unsigned <= UInt64(Int.max) else {
+        return .string(String(unsigned))
+      }
+      return .int(Int(unsigned))
+    }
+    guard let exact = Int(exactly: value.int64Value) else {
+      return .string(String(value.int64Value))
+    }
+    return .int(exact)
+  }
+}
+
 public struct MessageExtras: Sendable, Codable, Equatable {
   public var headers: [String: ExtraValue]?
   public var ephemeral: Bool?
   public var idempotencyKey: String?
   public var echo: Bool?
+  public var raw: [String: SockudoJSONValue]?
 
   public init(
     headers: [String: ExtraValue]? = nil, ephemeral: Bool? = nil, idempotencyKey: String? = nil,
-    echo: Bool? = nil
+    echo: Bool? = nil, raw: [String: SockudoJSONValue]? = nil
   ) {
     self.headers = headers
     self.ephemeral = ephemeral
     self.idempotencyKey = idempotencyKey
     self.echo = echo
+    self.raw = raw
+  }
+
+  public subscript(key: String) -> SockudoJSONValue? {
+    raw?[key]
+  }
+
+  var payloadValue: [String: Any] {
+    var data = raw?.mapValues(\.rawValue) ?? [:]
+    if let headers { data["headers"] = headers.mapValues(\.rawValue) }
+    if let ephemeral { data["ephemeral"] = ephemeral }
+    if let idempotencyKey { data["idempotency_key"] = idempotencyKey }
+    if let echo { data["echo"] = echo }
+    return data
   }
 }
 
@@ -919,6 +1102,40 @@ public struct SockudoEvent: @unchecked Sendable {
   let conflationKey: String?
   let serial: Int?
   let extras: MessageExtras?
+}
+
+func wireInt64(_ value: Any?) -> Int64? {
+  guard let value else { return nil }
+  switch value {
+  case let value as Int64:
+    return value
+  case let value as Int:
+    return Int64(value)
+  case let value as UInt64:
+    guard value <= UInt64(Int64.max) else { return nil }
+    return Int64(value)
+  case let value as UInt:
+    guard value <= UInt(Int64.max) else { return nil }
+    return Int64(value)
+  case let value as NSNumber:
+    if CFGetTypeID(value) == CFBooleanGetTypeID() {
+      return nil
+    }
+    let type = String(cString: value.objCType)
+    if type == "f" || type == "d" {
+      return Int64(exactly: value.doubleValue)
+    }
+    if ["C", "S", "I", "L", "Q"].contains(type) {
+      let unsigned = value.uint64Value
+      guard unsigned <= UInt64(Int64.max) else { return nil }
+      return Int64(unsigned)
+    }
+    return value.int64Value
+  case let value as String:
+    return Int64(value)
+  default:
+    return nil
+  }
 }
 
 enum Logger {

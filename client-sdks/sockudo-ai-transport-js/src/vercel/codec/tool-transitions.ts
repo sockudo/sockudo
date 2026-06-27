@@ -24,10 +24,16 @@ export function transitionToolPart(
   next: AI.DynamicToolState,
   patch: {
     toolName?: string;
+    title?: string;
+    toolMetadata?: Record<string, unknown>;
+    providerExecuted?: boolean;
     input?: unknown;
     output?: unknown;
     errorText?: string;
     approval?: AI.ToolApproval;
+    preliminary?: boolean;
+    callProviderMetadata?: unknown;
+    resultProviderMetadata?: unknown;
   } = {},
 ): AI.UIMessagePart {
   const current =
@@ -45,11 +51,21 @@ export function transitionToolPart(
   return {
     ...current,
     ...(patch.toolName !== undefined ? { toolName: patch.toolName } : {}),
+    ...(patch.title !== undefined ? { title: patch.title } : {}),
+    ...(patch.toolMetadata !== undefined ? { toolMetadata: patch.toolMetadata } : {}),
+    ...(patch.providerExecuted !== undefined ? { providerExecuted: patch.providerExecuted } : {}),
     state: next,
     ...(patch.input !== undefined ? { input: patch.input } : {}),
     ...(patch.output !== undefined ? { output: patch.output } : {}),
     ...(patch.errorText !== undefined ? { errorText: patch.errorText } : {}),
     ...(patch.approval !== undefined ? { approval: patch.approval } : {}),
+    ...(patch.preliminary !== undefined ? { preliminary: patch.preliminary } : {}),
+    ...(patch.callProviderMetadata !== undefined
+      ? { callProviderMetadata: patch.callProviderMetadata }
+      : {}),
+    ...(patch.resultProviderMetadata !== undefined
+      ? { resultProviderMetadata: patch.resultProviderMetadata }
+      : {}),
   };
 }
 

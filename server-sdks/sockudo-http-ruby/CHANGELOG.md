@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+* [ADDED] Forward-compatibility coverage for future webhook event names and nested payload fields.
+
 ## 2.0.1
 
 * [FIXED] multi_json deprecation warning.

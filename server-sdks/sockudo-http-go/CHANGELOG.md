@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+* [ADDED] Preserve raw webhook event fields and nested non-string data payloads for forward compatibility.
+* [ADDED] Decode optional mutation response serial fields as 64-bit values.
+
 ## 5.1.1
 
 - [CHANGED] readme example for user authentication

@@ -7,9 +7,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import okhttp3.FormBody
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -43,9 +43,11 @@ class SockudoClient(
     private var activityJob: Job? = null
     private var unavailableJob: Job? = null
     private var retryJob: Job? = null
+    private var authRefreshJob: Job? = null
     private var currentTransport: SockudoTransport? = null
     private var attemptedFallback: Boolean = false
     private var manuallyDisconnected: Boolean = false
+    private var currentAuthToken: String? = options.authToken
     private val deltaManager: DeltaCompressionManager? =
         options.deltaCompression?.let { deltaOptions ->
             DeltaCompressionManager(deltaOptions, { event, data ->
@@ -129,7 +131,7 @@ class SockudoClient(
     }
 
     fun connect() {
-        if (webSocket != null) {
+        if (webSocket != null || connectionState == ConnectionState.CONNECTING) {
             return
         }
         val transports = transportSequence()
@@ -140,8 +142,25 @@ class SockudoClient(
         manuallyDisconnected = false
         attemptedFallback = false
         updateState(ConnectionState.CONNECTING)
-        openWebSocket(transports.first())
-        setUnavailableTimer()
+        if (options.protocolVersion >= 2 && options.authTokenProvider != null) {
+            scope.launch {
+                runCatching {
+                    refreshAuthToken(ClientAuthTokenReason.INITIAL, sendRefreshFrame = false)
+                }.onSuccess {
+                    if (manuallyDisconnected) {
+                        return@onSuccess
+                    }
+                    openWebSocket(transports.first())
+                    setUnavailableTimer()
+                }.onFailure { error ->
+                    dispatcher.emit("error", error)
+                    updateState(ConnectionState.FAILED)
+                }
+            }
+        } else {
+            openWebSocket(transports.first())
+            setUnavailableTimer()
+        }
     }
 
     fun disconnect() {
@@ -373,6 +392,93 @@ class SockudoClient(
         }
     }
 
+    internal suspend fun createVersionedMessage(
+        channelName: String,
+        request: VersionedMessageCreateRequest,
+        timeout: Duration,
+    ): VersionedMessageCreateAck {
+        val fields = performVersionedMessageMutation(channelName, "message_create", request.toPayload(), timeout)
+        return VersionedMessageCreateAck(
+            messageSerial = fields.messageSerial,
+            versionSerial = fields.versionSerial,
+            historySerial = fields.historySerial,
+            deliverySerial = fields.deliverySerial,
+            eventName = fields.eventName,
+            raw = fields.raw,
+        )
+    }
+
+    internal suspend fun appendVersionedMessage(
+        channelName: String,
+        request: VersionedMessageAppendRequest,
+        timeout: Duration,
+    ): VersionedMessageAppendAck {
+        val fields = performVersionedMessageMutation(channelName, "message_append", request.toPayload(), timeout)
+        return VersionedMessageAppendAck(
+            messageSerial = fields.messageSerial,
+            versionSerial = fields.versionSerial,
+            historySerial = fields.historySerial,
+            deliverySerial = fields.deliverySerial,
+            eventName = fields.eventName,
+            raw = fields.raw,
+        )
+    }
+
+    internal suspend fun updateVersionedMessage(
+        channelName: String,
+        request: VersionedMessageUpdateRequest,
+        timeout: Duration,
+    ): VersionedMessageUpdateAck {
+        val fields = performVersionedMessageMutation(channelName, "message_update", request.toPayload(), timeout)
+        return VersionedMessageUpdateAck(
+            messageSerial = fields.messageSerial,
+            versionSerial = fields.versionSerial,
+            historySerial = fields.historySerial,
+            deliverySerial = fields.deliverySerial,
+            eventName = fields.eventName,
+            raw = fields.raw,
+        )
+    }
+
+    internal suspend fun deleteVersionedMessage(
+        channelName: String,
+        request: VersionedMessageDeleteRequest,
+        timeout: Duration,
+    ): VersionedMessageDeleteAck {
+        val fields = performVersionedMessageMutation(channelName, "message_delete", request.toPayload(), timeout)
+        return VersionedMessageDeleteAck(
+            messageSerial = fields.messageSerial,
+            versionSerial = fields.versionSerial,
+            historySerial = fields.historySerial,
+            deliverySerial = fields.deliverySerial,
+            eventName = fields.eventName,
+            raw = fields.raw,
+        )
+    }
+
+    private suspend fun performVersionedMessageMutation(
+        channelName: String,
+        action: String,
+        params: Map<String, Any?>,
+        timeout: Duration,
+    ): VersionedMessageAckFields {
+        val config = options.versionedMessages
+            ?: throw SockudoException.UnsupportedFeature(
+                "versionedMessages.endpoint must be configured to use mutable message helpers. This endpoint should proxy requests to the Sockudo server REST API.",
+            )
+
+        val payload =
+            performVersionedMessagesRequest(
+                endpoint = config.endpoint,
+                headers = config.headers + (config.headersProvider?.invoke() ?: emptyMap()),
+                channelName = channelName,
+                action = action,
+                params = params,
+                timeout = timeout,
+            )
+        return decodeVersionedMessageAckFields(payload)
+    }
+
     internal fun launchSubscription(block: suspend () -> Unit) {
         scope.launch { block() }
     }
@@ -393,6 +499,60 @@ class SockudoClient(
 
     private fun subscribeAll() {
         channels.values.forEach { it.subscribeIfPossible() }
+    }
+
+    private fun launchAuthRefresh(reason: ClientAuthTokenReason = ClientAuthTokenReason.REFRESH) {
+        if (options.protocolVersion < 2) {
+            return
+        }
+        scope.launch {
+            runCatching {
+                refreshAuthToken(reason, sendRefreshFrame = true)
+            }.onFailure { dispatcher.emit("error", it) }
+        }
+    }
+
+    private suspend fun refreshAuthToken(
+        reason: ClientAuthTokenReason,
+        sendRefreshFrame: Boolean,
+    ) {
+        val provider = options.authTokenProvider
+        val token =
+            if (provider != null) {
+                provider.token(ClientAuthTokenRequest(socketId = socketId, reason = reason))
+            } else {
+                options.authToken
+            }
+        currentAuthToken = token?.takeIf { it.isNotBlank() }
+        if (sendRefreshFrame && currentAuthToken != null) {
+            sendEvent(p.event("auth"), mapOf("token" to currentAuthToken), null)
+        }
+        if (manuallyDisconnected) {
+            invalidateAuthRefreshTimer()
+        } else {
+            scheduleAuthTokenRefresh(currentAuthToken, provider)
+        }
+    }
+
+    private fun scheduleAuthTokenRefresh(
+        token: String?,
+        provider: ClientAuthTokenProvider?,
+    ) {
+        invalidateAuthRefreshTimer()
+        if (token == null || provider == null) {
+            return
+        }
+        val delayMillis = clientAuthTokenRefreshDelayMillis(token) ?: return
+        authRefreshJob =
+            scope.launch {
+                delay(delayMillis)
+                if (manuallyDisconnected) {
+                    return@launch
+                }
+                runCatching {
+                    refreshAuthToken(ClientAuthTokenReason.REFRESH, sendRefreshFrame = true)
+                }.onFailure { dispatcher.emit("error", it) }
+            }
     }
 
     private fun createChannel(name: String): SockudoChannel =
@@ -505,7 +665,17 @@ class SockudoClient(
                     user.handleConnected()
                 }
 
-                eventName == p.event("error") -> dispatcher.emit("error", event.data)
+                eventName == p.event("error") -> {
+                    if (isTokenExpiredPayload(event.data)) {
+                        launchAuthRefresh(ClientAuthTokenReason.EXPIRED)
+                    }
+                    dispatcher.emit("error", event.data)
+                }
+                eventName == p.event("auth_success") -> dispatcher.emit(eventName, event.data)
+                eventName == p.event("token_expired") -> {
+                    launchAuthRefresh(ClientAuthTokenReason.EXPIRED)
+                    dispatcher.emit(eventName, event.data)
+                }
                 eventName == p.event("ping") -> sendEvent(p.event("pong"), emptyMap<String, Any>(), null)
                 eventName == p.event("pong") -> Unit
                 eventName == p.event("signin_success") -> user.handleSignInSuccess(event.data)
@@ -581,6 +751,12 @@ class SockudoClient(
 
     private fun decodeEvent(rawMessage: Any): SockudoEvent = ProtocolCodec.decodeEvent(rawMessage, options.wireFormat)
 
+    private fun isTokenExpiredPayload(data: Any?): Boolean {
+        val map = data as? Map<*, *> ?: return false
+        val code = map["code"] ?: map["status"] ?: map["error_code"]
+        return parseSockudoLong(code) in setOf(40142L, 40160L)
+    }
+
     private fun stripDeltaMetadata(rawMessage: Any): String =
         (rawMessage as? String ?: decodeEvent(rawMessage).rawMessage)
             .replace(Regex(""","__delta_seq":\d+"""), "")
@@ -629,13 +805,21 @@ class SockudoClient(
         val host = config.wsHost
         val port = if (transport == SockudoTransport.wss) config.wssPort else config.wsPort
         val path = "${config.wsPath}/app/$key"
-        val query = listOf(
-            "protocol=${p.version}",
-            *(if (options.protocolVersion >= 2) arrayOf("format=${options.wireFormat.queryValue}") else emptyArray()),
-            "client=kotlin",
-            "version=2.0.0",
-            "flash=false",
-        ).joinToString("&")
+        val query =
+            QueryString.encode(
+                linkedMapOf<String, AuthValue>().apply {
+                    put("protocol", AuthValue.Integer(p.version))
+                    if (options.protocolVersion >= 2) {
+                        put("format", AuthValue.Text(options.wireFormat.queryValue))
+                        put("append_mode", AuthValue.Text(options.appendMode.queryValue))
+                        options.appendRollupWindow?.let { put("append_rollup_window", AuthValue.Integer(it)) }
+                        currentAuthToken?.let { put("token", AuthValue.Text(it)) }
+                    }
+                    put("client", AuthValue.Text("kotlin"))
+                    put("version", AuthValue.Text("2.0.0"))
+                    put("flash", AuthValue.Flag(false))
+                },
+            )
         return URI(scheme, null, host, port, path, query, null).toString()
     }
 
@@ -764,9 +948,15 @@ class SockudoClient(
 
     private fun invalidateTimers() {
         invalidateActivityTimer()
+        invalidateAuthRefreshTimer()
         clearUnavailableTimer()
         retryJob?.cancel()
         retryJob = null
+    }
+
+    private fun invalidateAuthRefreshTimer() {
+        authRefreshJob?.cancel()
+        authRefreshJob = null
     }
 
     private fun updateState(state: ConnectionState, metadata: Map<String, Any?>? = null) {
@@ -1049,6 +1239,50 @@ private suspend fun SockudoClient.performPresenceHistoryRequest(
             )
     }
 }
+
+private suspend fun SockudoClient.performVersionedMessagesRequest(
+    endpoint: String,
+    headers: Map<String, String>,
+    channelName: String,
+    action: String,
+    params: Map<String, Any?>,
+    timeout: Duration,
+): Map<String, Any?> =
+    withTimeout(timeout) {
+        withContext(Dispatchers.IO) {
+            val request =
+                Request.Builder()
+                    .url(endpoint)
+                    .post(
+                        JsonSupport.encode(
+                            mapOf(
+                                "channel" to channelName,
+                                "params" to params,
+                                "action" to action,
+                            ),
+                        ).toRequestBody("application/json".toMediaType()),
+                    )
+                    .apply {
+                        headers.forEach { (name, value) -> addHeader(name, value) }
+                        addHeader("Content-Type", "application/json")
+                    }
+                    .build()
+
+            val response = httpClient.newCall(request).execute()
+            response.use {
+                val body = it.body?.string().orEmpty()
+                if (!it.isSuccessful) {
+                    throw SockudoException.InvalidOptions(
+                        "Versioned message $action request failed (${it.code}): $body",
+                    )
+                }
+                JsonSupport.fromJsonElement(JsonSupport.decode(body)) as? Map<String, Any?>
+                    ?: throw SockudoException.InvalidOptions(
+                        "Versioned message $action endpoint returned invalid JSON",
+                    )
+            }
+        }
+    }
 
 private fun decodeChannelHistoryPage(
     payload: Map<String, Any?>,

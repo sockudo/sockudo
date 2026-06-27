@@ -2,6 +2,8 @@ package io.sockudo.client
 
 import com.iwebpp.crypto.TweetNaclFast
 import java.util.Base64
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 open class SockudoChannel internal constructor(
     val name: String,
@@ -24,6 +26,8 @@ open class SockudoChannel internal constructor(
     var eventsFilter: List<String>? = null
     var rewind: SubscriptionRewind? = null
     var annotationSubscribe: Boolean = false
+    var attachSerial: Long? = null
+        internal set
 
     fun on(eventName: String, callback: (Any?, EventMetadata?) -> Unit): EventBindingToken =
         dispatcher.bind(eventName, callback)
@@ -127,6 +131,108 @@ open class SockudoChannel internal constructor(
         params: AnnotationEventsParams = AnnotationEventsParams(),
     ): AnnotationEventsPage = client.listAnnotations(name, messageSerial, params)
 
+    suspend fun createMessage(
+        request: VersionedMessageCreateRequest,
+        timeout: Duration = 10.seconds,
+    ): VersionedMessageCreateAck = client.createVersionedMessage(name, request, timeout)
+
+    suspend fun createMessage(
+        eventName: String,
+        data: Any?,
+        extras: MessageExtras? = null,
+        socketId: String? = null,
+        idempotencyKey: String? = null,
+        timeout: Duration = 10.seconds,
+    ): VersionedMessageCreateAck =
+        createMessage(
+            VersionedMessageCreateRequest(
+                eventName = eventName,
+                data = data,
+                extras = extras,
+                socketId = socketId,
+                idempotencyKey = idempotencyKey,
+            ),
+            timeout,
+        )
+
+    suspend fun appendMessage(
+        request: VersionedMessageAppendRequest,
+        timeout: Duration = 10.seconds,
+    ): VersionedMessageAppendAck = client.appendVersionedMessage(name, request, timeout)
+
+    suspend fun appendMessage(
+        messageSerial: String,
+        data: Any?,
+        extras: MessageExtras? = null,
+        socketId: String? = null,
+        idempotencyKey: String? = null,
+        expectedVersionSerial: String? = null,
+        timeout: Duration = 10.seconds,
+    ): VersionedMessageAppendAck =
+        appendMessage(
+            VersionedMessageAppendRequest(
+                messageSerial = messageSerial,
+                data = data,
+                extras = extras,
+                socketId = socketId,
+                idempotencyKey = idempotencyKey,
+                expectedVersionSerial = expectedVersionSerial,
+            ),
+            timeout,
+        )
+
+    suspend fun updateMessage(
+        request: VersionedMessageUpdateRequest,
+        timeout: Duration = 10.seconds,
+    ): VersionedMessageUpdateAck = client.updateVersionedMessage(name, request, timeout)
+
+    suspend fun updateMessage(
+        messageSerial: String,
+        data: Any?,
+        extras: MessageExtras? = null,
+        socketId: String? = null,
+        idempotencyKey: String? = null,
+        expectedVersionSerial: String? = null,
+        timeout: Duration = 10.seconds,
+    ): VersionedMessageUpdateAck =
+        updateMessage(
+            VersionedMessageUpdateRequest(
+                messageSerial = messageSerial,
+                data = data,
+                extras = extras,
+                socketId = socketId,
+                idempotencyKey = idempotencyKey,
+                expectedVersionSerial = expectedVersionSerial,
+            ),
+            timeout,
+        )
+
+    suspend fun deleteMessage(
+        request: VersionedMessageDeleteRequest,
+        timeout: Duration = 10.seconds,
+    ): VersionedMessageDeleteAck = client.deleteVersionedMessage(name, request, timeout)
+
+    suspend fun deleteMessage(
+        messageSerial: String,
+        data: Any? = null,
+        extras: MessageExtras? = null,
+        socketId: String? = null,
+        idempotencyKey: String? = null,
+        expectedVersionSerial: String? = null,
+        timeout: Duration = 10.seconds,
+    ): VersionedMessageDeleteAck =
+        deleteMessage(
+            VersionedMessageDeleteRequest(
+                messageSerial = messageSerial,
+                data = data,
+                extras = extras,
+                socketId = socketId,
+                idempotencyKey = idempotencyKey,
+                expectedVersionSerial = expectedVersionSerial,
+            ),
+            timeout,
+        )
+
     internal open fun unsubscribe() {
         isSubscribed = false
         client.sendEvent(client.p.event("unsubscribe"), mapOf("channel" to name), null)
@@ -146,6 +252,7 @@ open class SockudoChannel internal constructor(
                 if (subscriptionCancelled) {
                     client.unsubscribe(name)
                 } else {
+                    attachSerial = parseAttachSerial(event.data)
                     dispatcher.emit(p.event("subscription_succeeded"), event.data)
                 }
             }
@@ -171,9 +278,7 @@ open class SockudoChannel internal constructor(
             }
 
             else -> {
-                if (!p.isInternalEvent(event.event)) {
-                    dispatcher.emit(event.event, event.data, EventMetadata(userId = event.userId))
-                }
+                dispatcher.emit(event.event, event.data, EventMetadata(userId = event.userId))
             }
         }
     }
@@ -227,6 +332,17 @@ class PresenceMembers {
         return PresenceMember(userId, info)
     }
 
+    internal fun update(data: Map<String, Any?>): PresenceMember? {
+        val userId = data["user_id"] as? String ?: return null
+        if (!members.containsKey(userId)) {
+            return null
+        }
+        val info = data["user_info"]
+        members[userId] = info
+        me = myId?.let(::member)
+        return PresenceMember(userId, info)
+    }
+
     internal fun remove(data: Map<String, Any?>): PresenceMember? {
         val userId = data["user_id"] as? String ?: return null
         val info = members.remove(userId) ?: return null
@@ -247,6 +363,13 @@ class PresenceChannel internal constructor(
     client: SockudoClient,
 ) : PrivateChannel(name, client) {
     val members = PresenceMembers()
+
+    fun update(data: Any): Boolean {
+        if (client.p.version < 2) {
+            throw SockudoException.UnsupportedFeature("Presence member updates require Protocol V2.")
+        }
+        return client.sendEvent(client.p.event("presence_update"), data, name)
+    }
 
     override suspend fun authorize(socketId: String): ChannelAuthorizationData {
         val response = super.authorize(socketId)
@@ -281,6 +404,7 @@ class PresenceChannel internal constructor(
                     client.unsubscribe(name)
                 } else {
                     val payload = event.data as? Map<String, Any?> ?: emptyMap()
+                    attachSerial = parseAttachSerial(payload)
                     members.applySubscriptionData(payload)
                     dispatcher.emit(p.event("subscription_succeeded"), members)
                 }
@@ -297,10 +421,13 @@ class PresenceChannel internal constructor(
                 members.remove(payload)?.let { dispatcher.emit(p.event("member_removed"), it) }
             }
 
+            event.event == p.internal_("presence_update") -> {
+                val payload = event.data as? Map<String, Any?> ?: return
+                members.update(payload)?.let { dispatcher.emit(p.event("presence_update"), it) }
+            }
+
             else -> {
-                if (!p.isInternalEvent(event.event)) {
-                    dispatcher.emit(event.event, event.data, EventMetadata(userId = event.userId))
-                }
+                dispatcher.emit(event.event, event.data, EventMetadata(userId = event.userId))
             }
         }
     }
@@ -401,3 +528,8 @@ class EncryptedChannel internal constructor(
         dispatcher.emit(eventName, payload)
     }
 }
+
+private fun parseAttachSerial(data: Any?): Long? =
+    (data as? Map<*, *>)?.let { payload ->
+        parseSockudoLong(payload["attach_serial"]) ?: parseSockudoLong(payload["attachSerial"])
+    }

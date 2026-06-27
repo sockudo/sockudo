@@ -108,7 +108,7 @@ export function useHttpApi() {
       typeof window !== 'undefined'
       && window.location.port === '3456'
       && ['127.0.0.1', 'localhost'].includes(store.config.host)
-      && port === 9611
+      && port === 9601
     ) {
       return `${window.location.origin}/sockudo-metrics`
     }
@@ -205,13 +205,19 @@ export function useHttpApi() {
     apiRequest('POST', '/batch_events', { batch: events })
 
   const getChannels = (prefix?: string) => {
-    const params: Record<string, string> = { info: 'subscription_count,user_count' }
-    if (prefix) params.filter_by_prefix = prefix
+    const trimmedPrefix = prefix?.trim()
+    const params: Record<string, string> = {
+      info: trimmedPrefix?.startsWith('presence-')
+        ? 'subscription_count,user_count'
+        : 'subscription_count',
+    }
+    if (trimmedPrefix) params.filter_by_prefix = trimmedPrefix
     return apiRequest('GET', '/channels', undefined, params)
   }
 
-  const getChannel = (name: string, info = 'subscription_count,user_count') => {
-    const params: Record<string, string> = info ? { info } : {}
+  const getChannel = (name: string, info?: string) => {
+    const resolvedInfo = info ?? (name.startsWith('presence-') ? 'subscription_count,user_count' : 'subscription_count')
+    const params: Record<string, string> = resolvedInfo ? { info: resolvedInfo } : {}
     return apiRequest('GET', `/channels/${encodeURIComponent(name)}`, undefined, params)
   }
 
@@ -337,7 +343,7 @@ export function useHttpApi() {
     })
 
   const terminateUser = (userId: string) =>
-    apiRequest('POST', `/users/${encodeURIComponent(userId)}/terminate_connections`)
+    apiRequest('POST', `/users/${encodeURIComponent(userId)}/terminate_connections`, {})
 
   const pushAdminHeaders = (extra: RequestHeaders = {}) => ({
     'x-sockudo-push-capability': 'push-admin',

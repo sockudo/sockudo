@@ -11,9 +11,25 @@ export function createVercelProjection(): VercelProjection {
       text: new Map(),
       reasoning: new Map(),
       tools: new Map(),
+      approvals: new Map(),
     },
     pendingToolResolutions: new Map(),
   };
+}
+
+interface ToolPatch {
+  state: AI.DynamicToolState;
+  toolName?: string;
+  title?: string;
+  toolMetadata?: Record<string, unknown>;
+  providerExecuted?: boolean;
+  input?: unknown;
+  output?: unknown;
+  errorText?: string;
+  approval?: AI.ToolApproval;
+  preliminary?: boolean;
+  callProviderMetadata?: unknown;
+  resultProviderMetadata?: unknown;
 }
 
 /** Folds one Vercel input or output event into the projection. */
@@ -89,14 +105,14 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
       return;
     case "finish":
       if (wins(projection, `finish:${messageId}`, meta)) {
-        ensureMessage(projection, messageId).metadata = chunk.metadata;
+        ensureMessage(projection, messageId).metadata = chunk.messageMetadata ?? chunk.metadata;
       }
       return;
     case "message-metadata":
       ensureMessage(projection, messageId).metadata = chunk.messageMetadata;
       return;
     case "text-start":
-      startText(projection, messageId, chunk.id, "text");
+      startText(projection, messageId, chunk.id, "text", chunk.providerMetadata);
       return;
     case "text-delta":
       appendText(projection, messageId, chunk.id, "text", chunk.delta);
@@ -104,7 +120,7 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
     case "text-end":
       return;
     case "reasoning-start":
-      startText(projection, messageId, chunk.id, "reasoning");
+      startText(projection, messageId, chunk.id, "reasoning", chunk.providerMetadata);
       return;
     case "reasoning-delta":
       appendText(projection, messageId, chunk.id, "reasoning", chunk.delta);
@@ -115,7 +131,7 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
       startTool(projection, messageId, chunk);
       return;
     case "tool-input-delta":
-      appendToolInput(projection, chunk.toolCallId, chunk.delta);
+      appendToolInput(projection, chunk.toolCallId, inputDelta(chunk));
       return;
     case "tool-input-available":
       finishToolInput(projection, messageId, chunk);
@@ -124,10 +140,22 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
       applyToolPart(projection, messageId, chunk.toolCallId, {
         state: "output-error",
         errorText: chunk.errorText,
+        ...(chunk.input !== undefined ? { input: chunk.input } : {}),
         ...(chunk.toolName !== undefined ? { toolName: chunk.toolName } : {}),
+        ...(chunk.title !== undefined ? { title: chunk.title } : {}),
+        ...(chunk.toolMetadata !== undefined ? { toolMetadata: chunk.toolMetadata } : {}),
+        ...(chunk.providerExecuted !== undefined
+          ? { providerExecuted: chunk.providerExecuted }
+          : {}),
+        ...(chunk.providerMetadata !== undefined
+          ? { callProviderMetadata: chunk.providerMetadata }
+          : {}),
       });
       return;
     case "tool-approval-request":
+      if (chunk.approvalId !== undefined) {
+        projection.trackers.approvals.set(chunk.approvalId, chunk.toolCallId);
+      }
       applyToolPart(projection, messageId, chunk.toolCallId, {
         state: "approval-requested",
         approval: {
@@ -135,8 +163,13 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
           ...(chunk.approvalId !== undefined
             ? { id: chunk.approvalId, approvalId: chunk.approvalId }
             : {}),
+          ...(chunk.isAutomatic !== undefined ? { isAutomatic: chunk.isAutomatic } : {}),
+          ...(chunk.signature !== undefined ? { signature: chunk.signature } : {}),
         },
       });
+      return;
+    case "tool-approval-response":
+      applyToolApprovalResponseOutput(projection, chunk, meta);
       return;
     case "tool-output-available":
     case "tool-output-error":
@@ -149,6 +182,28 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
         url: chunk.url,
         ...(chunk.mediaType !== undefined ? { mediaType: chunk.mediaType } : {}),
         ...(chunk.filename !== undefined ? { filename: chunk.filename } : {}),
+        ...(chunk.providerMetadata !== undefined
+          ? { providerMetadata: chunk.providerMetadata }
+          : {}),
+      });
+      return;
+    case "reasoning-file":
+      ensureMessage(projection, messageId).parts.push({
+        type: "reasoning-file",
+        url: chunk.url,
+        mediaType: chunk.mediaType,
+        ...(chunk.providerMetadata !== undefined
+          ? { providerMetadata: chunk.providerMetadata }
+          : {}),
+      });
+      return;
+    case "custom":
+      ensureMessage(projection, messageId).parts.push({
+        type: "custom",
+        kind: chunk.kind,
+        ...(chunk.providerMetadata !== undefined
+          ? { providerMetadata: chunk.providerMetadata }
+          : {}),
       });
       return;
     case "source-url":
@@ -157,6 +212,9 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
         url: chunk.url,
         ...(chunk.sourceId !== undefined ? { sourceId: chunk.sourceId } : {}),
         ...(chunk.title !== undefined ? { title: chunk.title } : {}),
+        ...(chunk.providerMetadata !== undefined
+          ? { providerMetadata: chunk.providerMetadata }
+          : {}),
       });
       return;
     case "source-document":
@@ -166,6 +224,9 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
         ...(chunk.title !== undefined ? { title: chunk.title } : {}),
         ...(chunk.mediaType !== undefined ? { mediaType: chunk.mediaType } : {}),
         ...(chunk.filename !== undefined ? { filename: chunk.filename } : {}),
+        ...(chunk.providerMetadata !== undefined
+          ? { providerMetadata: chunk.providerMetadata }
+          : {}),
       });
       return;
     case "error":
@@ -188,6 +249,7 @@ function foldOutput(projection: VercelProjection, chunk: VercelOutput, meta: Red
       if (chunk.type.startsWith("data-") && !chunk.transient) {
         ensureMessage(projection, messageId).parts.push({
           type: chunk.type,
+          ...("id" in chunk && chunk.id !== undefined ? { id: chunk.id } : {}),
           data: chunk.data,
         });
       }
@@ -199,15 +261,22 @@ function startText(
   messageId: string,
   streamId: string,
   family: "text" | "reasoning",
+  providerMetadata?: unknown,
 ): void {
   const message = ensureMessage(projection, messageId);
   const part =
     family === "text"
-      ? ({ type: "text", id: streamId, text: "" } satisfies AI.UIMessagePart)
+      ? ({
+          type: "text",
+          id: streamId,
+          text: "",
+          ...(providerMetadata !== undefined ? { providerMetadata } : {}),
+        } satisfies AI.UIMessagePart)
       : ({
           type: "reasoning",
           id: streamId,
           text: "",
+          ...(providerMetadata !== undefined ? { providerMetadata } : {}),
         } satisfies AI.UIMessagePart);
   const index = message.parts.push(part) - 1;
   trackerMap(projection.trackers, family, messageId).set(streamId, index);
@@ -243,6 +312,12 @@ function startTool(
     toolName: chunk.toolName,
     toolCallId: chunk.toolCallId,
     state: "input-streaming",
+    ...(chunk.title !== undefined ? { title: chunk.title } : {}),
+    ...(chunk.toolMetadata !== undefined ? { toolMetadata: chunk.toolMetadata } : {}),
+    ...(chunk.providerExecuted !== undefined ? { providerExecuted: chunk.providerExecuted } : {}),
+    ...(chunk.providerMetadata !== undefined
+      ? { callProviderMetadata: chunk.providerMetadata }
+      : {}),
   };
   const partIndex = message.parts.push(part) - 1;
   projection.trackers.tools.set(chunk.toolCallId, {
@@ -271,6 +346,12 @@ function finishToolInput(
     state: "input-available",
     input,
     ...(chunk.toolName !== undefined ? { toolName: chunk.toolName } : {}),
+    ...(chunk.title !== undefined ? { title: chunk.title } : {}),
+    ...(chunk.toolMetadata !== undefined ? { toolMetadata: chunk.toolMetadata } : {}),
+    ...(chunk.providerExecuted !== undefined ? { providerExecuted: chunk.providerExecuted } : {}),
+    ...(chunk.providerMetadata !== undefined
+      ? { callProviderMetadata: chunk.providerMetadata }
+      : {}),
   });
 }
 
@@ -315,6 +396,14 @@ function applyToolResolutionPart(
       {
         state: "output-available",
         output: chunk.output,
+        ...(chunk.toolMetadata !== undefined ? { toolMetadata: chunk.toolMetadata } : {}),
+        ...(chunk.providerExecuted !== undefined
+          ? { providerExecuted: chunk.providerExecuted }
+          : {}),
+        ...(chunk.preliminary !== undefined ? { preliminary: chunk.preliminary } : {}),
+        ...(chunk.providerMetadata !== undefined
+          ? { resultProviderMetadata: chunk.providerMetadata }
+          : {}),
       },
       true,
     );
@@ -326,6 +415,13 @@ function applyToolResolutionPart(
       {
         state: "output-error",
         errorText: chunk.errorText,
+        ...(chunk.toolMetadata !== undefined ? { toolMetadata: chunk.toolMetadata } : {}),
+        ...(chunk.providerExecuted !== undefined
+          ? { providerExecuted: chunk.providerExecuted }
+          : {}),
+        ...(chunk.providerMetadata !== undefined
+          ? { resultProviderMetadata: chunk.providerMetadata }
+          : {}),
       },
       true,
     );
@@ -368,18 +464,40 @@ function applyToolApprovalResponse(
   });
 }
 
+function applyToolApprovalResponseOutput(
+  projection: VercelProjection,
+  chunk: Extract<VercelOutput, { type: "tool-approval-response" }>,
+  meta: ReducerMeta,
+): void {
+  const toolCallId = chunk.toolCallId ?? projection.trackers.approvals.get(chunk.approvalId);
+  if (toolCallId === undefined || !wins(projection, `tool-approval:${toolCallId}`, meta)) {
+    return;
+  }
+  const tracker = projection.trackers.tools.get(toolCallId);
+  const targetMessageId = tracker?.messageId ?? chunk.messageId ?? meta.messageId;
+  if (!targetMessageId) {
+    return;
+  }
+  applyToolPart(projection, targetMessageId, toolCallId, {
+    state: "approval-responded",
+    ...(chunk.providerExecuted !== undefined ? { providerExecuted: chunk.providerExecuted } : {}),
+    ...(chunk.providerMetadata !== undefined
+      ? { callProviderMetadata: chunk.providerMetadata }
+      : {}),
+    approval: {
+      id: chunk.approvalId,
+      approvalId: chunk.approvalId,
+      approved: chunk.approved,
+      ...(chunk.reason !== undefined ? { reason: chunk.reason } : {}),
+    },
+  });
+}
+
 function applyToolPart(
   projection: VercelProjection,
   messageId: string,
   toolCallId: string,
-  patch: {
-    state: AI.DynamicToolState;
-    toolName?: string;
-    input?: unknown;
-    output?: unknown;
-    errorText?: string;
-    approval?: AI.ToolApproval;
-  },
+  patch: ToolPatch,
   force = false,
 ): void {
   const message = ensureMessage(projection, messageId);
@@ -390,6 +508,12 @@ function applyToolPart(
       toolName: patch.toolName ?? "tool",
       toolCallId,
       state: "input-streaming",
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.toolMetadata !== undefined ? { toolMetadata: patch.toolMetadata } : {}),
+      ...(patch.providerExecuted !== undefined ? { providerExecuted: patch.providerExecuted } : {}),
+      ...(patch.callProviderMetadata !== undefined
+        ? { callProviderMetadata: patch.callProviderMetadata }
+        : {}),
     };
     const partIndex = message.parts.push(part) - 1;
     tracker = { messageId, partIndex, inputText: "" };
@@ -511,14 +635,7 @@ function bufferPending(
 function forceToolPart(
   existing: AI.UIMessagePart | undefined,
   toolCallId: string,
-  patch: {
-    state: AI.DynamicToolState;
-    toolName?: string;
-    input?: unknown;
-    output?: unknown;
-    errorText?: string;
-    approval?: AI.ToolApproval;
-  },
+  patch: ToolPatch,
 ): AI.UIMessagePart {
   const current =
     existing?.type === "dynamic-tool"
@@ -532,12 +649,26 @@ function forceToolPart(
   return {
     ...current,
     ...(patch.toolName !== undefined ? { toolName: patch.toolName } : {}),
+    ...(patch.title !== undefined ? { title: patch.title } : {}),
+    ...(patch.toolMetadata !== undefined ? { toolMetadata: patch.toolMetadata } : {}),
+    ...(patch.providerExecuted !== undefined ? { providerExecuted: patch.providerExecuted } : {}),
     state: patch.state,
     ...(patch.input !== undefined ? { input: patch.input } : {}),
     ...(patch.output !== undefined ? { output: patch.output } : {}),
     ...(patch.errorText !== undefined ? { errorText: patch.errorText } : {}),
     ...(patch.approval !== undefined ? { approval: patch.approval } : {}),
+    ...(patch.preliminary !== undefined ? { preliminary: patch.preliminary } : {}),
+    ...(patch.callProviderMetadata !== undefined
+      ? { callProviderMetadata: patch.callProviderMetadata }
+      : {}),
+    ...(patch.resultProviderMetadata !== undefined
+      ? { resultProviderMetadata: patch.resultProviderMetadata }
+      : {}),
   };
+}
+
+function inputDelta(chunk: Extract<VercelOutput, { type: "tool-input-delta" }>): string {
+  return chunk.inputTextDelta ?? chunk.delta ?? "";
 }
 
 function parseJsonish(value: string): unknown {
@@ -582,5 +713,9 @@ function isToolResultErrorInput(
 function isToolApprovalResponseInput(
   input: VercelInput | VercelOutput,
 ): input is Extract<VercelInput, { type: "tool-approval-response" }> {
-  return "type" in input && input.type === "tool-approval-response";
+  return (
+    "type" in input &&
+    input.type === "tool-approval-response" &&
+    typeof (input as { toolCallId?: unknown }).toolCallId === "string"
+  );
 }

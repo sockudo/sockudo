@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import kotlin.math.floor
 
 data class EventMetadata(val userId: String? = null)
 
@@ -77,6 +78,40 @@ object JsonSupport {
                 }
         }
 }
+
+private val INTEGER_STRING = Regex("^-?\\d+$")
+private const val MAX_SAFE_INTEGER_DOUBLE = 9_007_199_254_740_991.0
+
+internal fun parseSockudoLong(value: Any?): Long? =
+    when (value) {
+        is Long -> value
+        is Int -> value.toLong()
+        is Short -> value.toLong()
+        is Byte -> value.toLong()
+        is String -> {
+            val trimmed = value.trim()
+            if (INTEGER_STRING.matches(trimmed)) trimmed.toLongOrNull() else null
+        }
+        is Double ->
+            if (
+                value.isFinite() &&
+                value == floor(value) &&
+                value >= -MAX_SAFE_INTEGER_DOUBLE &&
+                value <= MAX_SAFE_INTEGER_DOUBLE
+            ) {
+                value.toLong()
+            } else {
+                null
+            }
+        is Float -> parseSockudoLong(value.toDouble())
+        is Number -> parseSockudoLong(value.toString())
+        else -> null
+    }
+
+internal fun parseSockudoInt(value: Any?): Int? =
+    parseSockudoLong(value)
+        ?.takeIf { it >= Int.MIN_VALUE && it <= Int.MAX_VALUE }
+        ?.toInt()
 
 object QueryString {
     fun encode(params: Map<String, AuthValue>): String =

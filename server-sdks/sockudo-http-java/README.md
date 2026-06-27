@@ -205,6 +205,19 @@ Validate the authenticity of incoming webhooks using the `X-Pusher-Key` and `X-P
 Validity validity = sockudo.validateWebhookSignature(xPusherKey, xPusherSignature, body);
 ```
 
+After validating the raw body signature, parse webhook events with tolerant raw access. Future event
+names and fields are preserved instead of rejected:
+
+```java
+Webhook webhook = sockudo.parseWebhook(body);
+
+for (WebhookEvent event : webhook.getEvents()) {
+    String eventName = event.getName();
+    JsonElement rawData = event.getData();
+    JsonObject rawEvent = event.getRawEvent();
+}
+```
+
 ### Generating signed URIs
 
 If you want to issue HTTP API requests manually using a different HTTP client, generate a signed URI:

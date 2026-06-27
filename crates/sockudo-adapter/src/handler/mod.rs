@@ -465,6 +465,7 @@ impl ConnectionHandler {
         protocol_version: ProtocolVersion,
         wire_format: WireFormat,
         echo_messages: bool,
+        append_mode: sockudo_protocol::AppendMode,
         initial_token: Option<String>,
     ) -> Result<()> {
         // Early validation and setup
@@ -566,6 +567,7 @@ impl ConnectionHandler {
             protocol_version,
             wire_format,
             echo_messages,
+            append_mode,
         )
         .await?;
 
@@ -639,6 +641,7 @@ impl ConnectionHandler {
         protocol_version: ProtocolVersion,
         wire_format: WireFormat,
         echo_messages: bool,
+        append_mode: sockudo_protocol::AppendMode,
     ) -> Result<()> {
         // True atomic operation: quota check and socket addition under single lock
         // This is the only way to prevent race conditions
@@ -692,6 +695,7 @@ impl ConnectionHandler {
                     protocol_version,
                     wire_format,
                     echo_messages,
+                    append_mode,
                 )
                 .await?;
         } // Lock released - atomic operation complete

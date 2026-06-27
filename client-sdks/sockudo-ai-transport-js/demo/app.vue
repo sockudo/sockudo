@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Chat } from "@ai-sdk/vue";
+import { useChat } from "@ai-sdk/vue";
 import {
   provideChatTransport,
   useActiveTurns,
@@ -10,7 +10,7 @@ import {
 } from "@sockudo/ai-transport/vercel/vue";
 import type { AI } from "@sockudo/ai-transport/vercel";
 import type { ChatTransport as AiSdkChatTransport, UIMessage } from "ai";
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { createBrowserSockudoClient } from "~/lib/browser-proxy";
 
 interface DemoConfig {
@@ -71,33 +71,31 @@ if (!transportProvider.chatTransport.value || !transportProvider.transport.value
   });
 }
 
-const chat = reactive(
-  new Chat<UIMessage>({
-    id: channelName,
-    transport: transportProvider.chatTransport.value as unknown as AiSdkChatTransport<UIMessage>,
-    onError(error) {
-      timeline.value.unshift({
-        kind: "error",
-        text: error.message,
-        at: new Date().toLocaleTimeString(),
-      });
-    },
-    onFinish({ finishReason }) {
-      timeline.value.unshift({
-        kind: "finish",
-        text: `assistant finished: ${finishReason ?? "complete"}`,
-        at: new Date().toLocaleTimeString(),
-      });
-    },
-    onToolCall({ toolCall }) {
-      timeline.value.unshift({
-        kind: "tool",
-        text: `tool call observed: ${"toolName" in toolCall ? String(toolCall.toolName) : "dynamic"}`,
-        at: new Date().toLocaleTimeString(),
-      });
-    },
-  }),
-) as Chat<UIMessage>;
+const chat = useChat<UIMessage>({
+  id: channelName,
+  transport: transportProvider.chatTransport.value as unknown as AiSdkChatTransport<UIMessage>,
+  onError(error) {
+    timeline.value.unshift({
+      kind: "error",
+      text: error.message,
+      at: new Date().toLocaleTimeString(),
+    });
+  },
+  onFinish({ finishReason }) {
+    timeline.value.unshift({
+      kind: "finish",
+      text: `assistant finished: ${finishReason ?? "complete"}`,
+      at: new Date().toLocaleTimeString(),
+    });
+  },
+  onToolCall({ toolCall }) {
+    timeline.value.unshift({
+      kind: "tool",
+      text: `tool call observed: ${"toolName" in toolCall ? String(toolCall.toolName) : "dynamic"}`,
+      at: new Date().toLocaleTimeString(),
+    });
+  },
+});
 
 const transport = transportProvider.transport.value;
 // @docs-snippet core-branch-views
@@ -130,7 +128,7 @@ const timeline = ref<
   }>
 >([]);
 
-const messages = computed(() => safeArray(chat.messages));
+const messages = computed(() => safeArray(chat.messages.value));
 const viewMessages = computed(() => safeArray(primaryView.messages.value));
 const allConversationMessages = computed<UIMessage[]>(() =>
   viewMessages.value.length > 0 ? (viewMessages.value as UIMessage[]) : messages.value,
@@ -187,7 +185,7 @@ const conversationMessages = computed<UIMessage[]>(() =>
   ),
 );
 const compareMessages = computed(() => safeArray(compareView.messages.value));
-const status = computed(() => chat.status);
+const status = computed(() => chat.status.value);
 const rawRecent = computed(() => safeArray(rawMessages.value).slice(-24).reverse());
 const activeTurnCount = computed(() =>
   Array.from((activeTurns.value ?? new Map()).values()).reduce(
@@ -227,7 +225,7 @@ const selectedSiblings = computed(() =>
 const capabilityRows = computed(() => [
   {
     name: "Vercel AI SDK chat transport",
-    detail: "Chat class sends through Sockudo ChatTransport",
+    detail: "useChat sends through Sockudo ChatTransport",
     active: Boolean(transportProvider.chatTransport.value),
   },
   {
@@ -270,8 +268,8 @@ watch(
   () => primaryView.messages.value,
   (next) => {
     const nextMessages = safeArray(next);
-    if (nextMessages.length > messages.value.length && chat.status !== "streaming") {
-      chat.messages = [...nextMessages] as typeof chat.messages;
+    if (nextMessages.length > messages.value.length && chat.status.value !== "streaming") {
+      chat.messages.value = [...nextMessages] as typeof chat.messages.value;
     }
   },
 );

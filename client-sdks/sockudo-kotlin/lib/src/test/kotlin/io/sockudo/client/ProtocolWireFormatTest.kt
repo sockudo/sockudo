@@ -2,6 +2,7 @@ package io.sockudo.client
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -19,6 +20,9 @@ class ProtocolWireFormatTest {
                     wsPort = 6001,
                     wssPort = 6002,
                     wireFormat = SockudoWireFormat.messagepack,
+                    appendMode = SockudoAppendMode.full,
+                    appendRollupWindow = 100,
+                    authToken = "capability-token",
                 ),
             )
 
@@ -26,14 +30,46 @@ class ProtocolWireFormatTest {
         method.isAccessible = true
         val url = method.invoke(client, SockudoTransport.ws) as String
 
-        assertEquals("2", java.net.URI(url).query.split("&").associate {
-            val (key, value) = it.split("=", limit = 2)
-            key to value
-        }["protocol"])
-        assertEquals("messagepack", java.net.URI(url).query.split("&").associate {
-            val (key, value) = it.split("=", limit = 2)
-            key to value
-        }["format"])
+        val query = queryParams(url)
+
+        assertEquals("2", query["protocol"])
+        assertEquals("messagepack", query["format"])
+        assertEquals("full", query["append_mode"])
+        assertEquals("100", query["append_rollup_window"])
+        assertEquals("capability-token", query["token"])
+    }
+
+    @Test
+    fun validatesAppendRollupWindowAndOmitsV2OnlyParamsForProtocolV1() {
+        assertFailsWith<SockudoException.InvalidOptions> {
+            SockudoOptions(
+                cluster = "local",
+                appendRollupWindow = 21,
+            )
+        }
+
+        val client =
+            SockudoClient(
+                "app-key",
+                SockudoOptions(
+                    cluster = "local",
+                    protocolVersion = 1,
+                    forceTls = false,
+                    enabledTransports = listOf(SockudoTransport.ws),
+                    wsHost = "ws.example.com",
+                    wsPort = 6001,
+                    authToken = "ignored-token",
+                    appendRollupWindow = 100,
+                ),
+            )
+        val method = SockudoClient::class.java.getDeclaredMethod("socketUrl", SockudoTransport::class.java)
+        method.isAccessible = true
+        val query = queryParams(method.invoke(client, SockudoTransport.ws) as String)
+
+        assertEquals("1", query["protocol"])
+        assertEquals(null, query["format"])
+        assertEquals(null, query["append_rollup_window"])
+        assertEquals(null, query["token"])
     }
 
     @Test
@@ -81,6 +117,11 @@ class ProtocolWireFormatTest {
                     "extras" to
                         linkedMapOf(
                             "headers" to linkedMapOf("region" to "eu", "ttl" to 5, "replay" to true),
+                            "ai" to
+                                linkedMapOf(
+                                    "transport" to linkedMapOf("turn-id" to "turn-1", "status" to "streaming"),
+                                    "codec" to linkedMapOf("x-custom" to "opaque"),
+                                ),
                             "echo" to false,
                         ),
                 ),
@@ -100,6 +141,8 @@ class ProtocolWireFormatTest {
         assertEquals("eu", decoded.extras?.headers?.get("region"))
         assertEquals(5.0, decoded.extras?.headers?.get("ttl"))
         assertEquals(true, decoded.extras?.headers?.get("replay"))
+        assertEquals("turn-1", (decoded.extras?.ai?.get("transport") as? Map<*, *>)?.get("turn-id"))
+        assertEquals("opaque", (decoded.extras?.ai?.get("codec") as? Map<*, *>)?.get("x-custom"))
         assertFalse(decoded.extras?.echo ?: true)
     }
 
@@ -160,4 +203,10 @@ class ProtocolWireFormatTest {
         kotlinx.coroutines.runBlocking { page.next() }
         assertEquals("cursor-2", capturedCursor)
     }
+
+    private fun queryParams(url: String): Map<String, String> =
+        java.net.URI(url).query.split("&").associate {
+            val (key, value) = it.split("=", limit = 2)
+            key to value
+        }
 }

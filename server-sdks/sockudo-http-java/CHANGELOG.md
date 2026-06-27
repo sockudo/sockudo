@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- [ADDED] Add tolerant webhook parsing that preserves unknown event names, future fields, nested JSON values, and raw event access.
+
 ## 1.3.5
 
 - [CHANGED] Update async-http-client to 3.0.6.

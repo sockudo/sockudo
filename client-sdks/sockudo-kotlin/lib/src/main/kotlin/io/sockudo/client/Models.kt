@@ -14,6 +14,13 @@ enum class SockudoWireFormat(
     protobuf("protobuf", true),
 }
 
+enum class SockudoAppendMode(
+    val queryValue: String,
+) {
+    delta("delta"),
+    full("full"),
+}
+
 enum class ConnectionState {
     INITIALIZED,
     CONNECTING,
@@ -66,7 +73,21 @@ data class MessageExtras(
     val ephemeral: Boolean? = null,
     val idempotencyKey: String? = null,
     val echo: Boolean? = null,
-)
+    val ai: Map<String, Any?>? = null,
+    val raw: Map<String, Any?> = emptyMap(),
+) {
+    operator fun get(key: String): Any? = raw[key]
+
+    internal fun toWireMap(): Map<String, Any?> =
+        linkedMapOf<String, Any?>().apply {
+            putAll(raw)
+            headers?.let { put("headers", it) }
+            ephemeral?.let { put("ephemeral", it) }
+            idempotencyKey?.let { put("idempotency_key", it) }
+            echo?.let { put("echo", it) }
+            ai?.let { put("ai", it) }
+        }
+}
 
 data class SubscriptionOptions(
     val filter: FilterNode? = null,
@@ -272,6 +293,7 @@ data class ChannelHistoryParams(
     val endSerial: Long? = null,
     val startTimeMs: Long? = null,
     val endTimeMs: Long? = null,
+    val untilAttach: Boolean? = null,
 ) {
     fun toPayload(): Map<String, Any> =
         buildMap {
@@ -282,6 +304,7 @@ data class ChannelHistoryParams(
             endSerial?.let { put("end_serial", it) }
             startTimeMs?.let { put("start_time_ms", it) }
             endTimeMs?.let { put("end_time_ms", it) }
+            untilAttach?.let { put("until_attach", it) }
         }
 }
 
@@ -418,6 +441,8 @@ class PresenceHistoryPage internal constructor(
     }
 }
 
+private val allowedAppendRollupWindows = setOf(0, 20, 40, 100, 500)
+
 data class SockudoOptions(
     val cluster: String,
     val protocolVersion: Int = 2,
@@ -448,4 +473,16 @@ data class SockudoOptions(
     val connectionRecovery: Boolean = false,
     val echoMessages: Boolean = true,
     val wireFormat: SockudoWireFormat = SockudoWireFormat.json,
-)
+    val appendMode: SockudoAppendMode = SockudoAppendMode.delta,
+    val appendRollupWindow: Int? = null,
+    val authToken: String? = null,
+    val authTokenProvider: ClientAuthTokenProvider? = null,
+) {
+    init {
+        if (appendRollupWindow != null && appendRollupWindow !in allowedAppendRollupWindows) {
+            throw SockudoException.InvalidOptions(
+                "appendRollupWindow must be one of ${allowedAppendRollupWindows.sorted().joinToString(", ")}",
+            )
+        }
+    }
+}

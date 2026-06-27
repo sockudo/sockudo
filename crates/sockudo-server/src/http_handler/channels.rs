@@ -403,6 +403,7 @@ mod tests {
                 ProtocolVersion::V2,
                 WireFormat::Json,
                 true,
+                sockudo_protocol::AppendMode::Delta,
             )
             .await
             .unwrap();

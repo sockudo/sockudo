@@ -322,6 +322,7 @@ async fn connect_v2_socket(harness: &AnnotationHarness) -> (SocketId, ClientRead
             ProtocolVersion::V2,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();

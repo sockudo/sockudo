@@ -62,6 +62,7 @@ export interface ConnectionConfig {
   useTLS: boolean;
   cluster: string;
   wireFormat: "json" | "messagepack" | "protobuf";
+  appendMode: "delta" | "full";
   appendRollupWindow: 0 | 20 | 40 | 100 | 500;
   authEndpoint: string;
   userAuthEndpoint: string;
@@ -81,6 +82,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     useTLS: false,
     cluster: "mt1",
     wireFormat: "json",
+    appendMode: "delta",
     appendRollupWindow: 40,
     authEndpoint: "/pusher/auth",
     userAuthEndpoint: "/pusher/user-auth",

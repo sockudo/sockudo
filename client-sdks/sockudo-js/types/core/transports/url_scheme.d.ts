@@ -1,9 +1,11 @@
+import { AppendMode } from '../options';
 export interface URLSchemeParams {
     useTLS: boolean;
     hostTLS: string;
     hostNonTLS: string;
     httpPath: string;
     echoMessages?: boolean;
+    appendMode?: AppendMode;
 }
 interface URLScheme {
     getInitial(key: string, params: any): string;

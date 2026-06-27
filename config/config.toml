@@ -309,7 +309,7 @@ enabled = false
 [cors]
 credentials = true
 origin = ["*"]
-methods = ["GET", "POST", "OPTIONS"]
+methods = ["GET", "POST", "DELETE", "OPTIONS"]
 allowed_headers = [
   "Authorization",
   "Content-Type",

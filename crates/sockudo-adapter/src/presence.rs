@@ -1132,6 +1132,7 @@ mod tests {
             _protocol_version: sockudo_protocol::ProtocolVersion,
             _wire_format: WireFormat,
             _echo_messages: bool,
+            _append_mode: sockudo_protocol::AppendMode,
         ) -> Result<()> {
             Ok(())
         }

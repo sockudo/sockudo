@@ -27,6 +27,7 @@ where
         protocol_version: sockudo_protocol::ProtocolVersion,
         wire_format: sockudo_protocol::WireFormat,
         echo_messages: bool,
+        append_mode: sockudo_protocol::AppendMode,
     ) -> Result<()> {
         self.local_adapter
             .add_socket(
@@ -38,6 +39,7 @@ where
                 protocol_version,
                 wire_format,
                 echo_messages,
+                append_mode,
             )
             .await
     }

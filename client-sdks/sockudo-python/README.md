@@ -9,6 +9,8 @@ Async Sockudo client SDK for Python.
 - Protocol V2 by default, with V1 compatibility
 - Public, private, presence, and encrypted channels
 - Proxy-backed presence history and presence snapshot helpers
+- Proxy-backed channel history and versioned message helpers
+- Capability token auth with websocket refresh
 - Tag filter and per-subscription event filter helpers
 - Continuity-aware connection recovery (`stream_id` + `serial`)
 - Message deduplication
@@ -119,6 +121,30 @@ channel.bind("order-placed", lambda data, meta: print(data))
 await client.connect()
 ```
 
+### Capability Token Auth
+
+Protocol V2 connections can include an initial capability token and refresh it with the server-supported `sockudo:auth` flow. Use a static token or an async callback; callbacks may return `TokenAuthData` with expiry metadata so the client can schedule refreshes at 80% of the token lifetime. Opaque tokens without expiry metadata rely on `sockudo:token_expired`.
+
+```python
+from sockudo_python import SockudoClient, SockudoOptions, TokenAuthData
+
+
+async def auth_callback() -> TokenAuthData:
+    token = await fetch_token_from_your_backend()
+    return TokenAuthData(token=token, expires_in=300)
+
+
+client = SockudoClient(
+    "app-key",
+    SockudoOptions(
+        cluster="local",
+        ws_host="127.0.0.1",
+        ws_port=6001,
+        auth_callback=auth_callback,
+    ),
+)
+```
+
 ### Presence Channels
 
 ```python
@@ -138,6 +164,8 @@ channel.bind(
 )
 
 await client.connect()
+
+await channel.update({"status": "editing"})
 ```
 
 ### Presence History
@@ -168,6 +196,57 @@ if page.has_next():
     next_page = await page.next()
 
 snapshot = await channel.snapshot(PresenceSnapshotParams(at_serial=4))
+```
+
+### Channel History
+
+Message history is proxy-backed. Configure a backend endpoint that accepts `{channel, params, action}` and proxies to the Sockudo server with server credentials. `until_attach=True` uses the `attach_serial` received with `subscription_succeeded` when available.
+
+```python
+from sockudo_python import ChannelHistoryOptions, ChannelHistoryParams
+
+client = SockudoClient(
+    "app-key",
+    SockudoOptions(
+        cluster="local",
+        ws_host="127.0.0.1",
+        ws_port=6001,
+        channel_history=ChannelHistoryOptions(
+            endpoint="https://api.example.com/sockudo/channel-history",
+        ),
+    ),
+)
+
+channel = client.subscribe("room")
+page = await channel.history(ChannelHistoryParams(limit=50, until_attach=True))
+```
+
+### Versioned Messages
+
+Versioned message create and mutation helpers are also proxy-backed. The Python client does not send websocket mutation frames; configure a backend endpoint that performs the HTTP `/events` or mutation request and returns the server ack.
+
+```python
+from sockudo_python import VersionedMessageOptions
+
+client = SockudoClient(
+    "app-key",
+    SockudoOptions(
+        cluster="local",
+        versioned_messages=VersionedMessageOptions(
+            endpoint="https://api.example.com/sockudo/versioned-messages",
+        ),
+    ),
+)
+
+ack = await client.versioned_messages.create(
+    "room",
+    "message.created",
+    {"text": "hello"},
+    extras={"ai": {"transport": {"turn-id": "turn-1"}}},
+)
+await client.versioned_messages.append("room", ack.message_id, {"text": " world"})
+await client.versioned_messages.update("room", ack.message_id, {"text": "hello world"})
+await client.versioned_messages.delete("room", ack.message_id)
 ```
 
 ### Filter-Aware Subscriptions
@@ -288,7 +367,14 @@ V2 is the default. To explicitly request it or to downgrade to V1 for strict Pus
 
 ```python
 # V2 (default) — enables continuity tokens, message_id, recovery, filters, delta
-client = SockudoClient("app-key", SockudoOptions(cluster="local", protocol_version=2))
+client = SockudoClient(
+    "app-key",
+    SockudoOptions(
+        cluster="local",
+        protocol_version=2,
+        append_rollup_window=100,
+    ),
+)
 
 # V1 — plain Pusher protocol, compatible with official Pusher SDKs
 client = SockudoClient("app-key", SockudoOptions(cluster="local", protocol_version=1))

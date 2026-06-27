@@ -115,8 +115,8 @@ watch(
   () => primaryView.messages.value,
   (next) => {
     const nextMessages = safeArray(next);
-    if (nextMessages.length > messages.value.length && chat.status !== "streaming") {
-      chat.messages = [...nextMessages] as typeof chat.messages;
+    if (nextMessages.length > messages.value.length && chat.status.value !== "streaming") {
+      chat.messages.value = [...nextMessages] as typeof chat.messages.value;
     }
   },
 );

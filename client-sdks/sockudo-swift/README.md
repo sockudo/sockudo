@@ -23,6 +23,9 @@ Official Swift client for Sockudo.
 - Fossil and Xdelta3/VCDIFF delta reconstruction
 - Encrypted channel payload decryption with `swift-sodium`
 - Continuity-aware connection recovery and subscribe-time rewind on Protocol V2
+- Protocol V2 capability tokens with initial URL auth and `sockudo:auth` refresh
+- Protocol V2 presence updates and append rollup window selection
+- Proxy-backed mutable message create/update/append/delete helpers
 - Live integration tests against Sockudo on `127.0.0.1:6001`
 - Swift Package Manager distribution with root GitHub Actions CI
 
@@ -97,6 +100,25 @@ Protocol V2 heartbeat behavior:
 - the Swift client uses `URLSessionWebSocketTask.sendPing` for native V2 liveness checks
 - lightweight `sockudo:ping` / `sockudo:pong` fallback messages remain reserved for compatibility and diagnostics, and they do not carry `message_id`, `serial`, or `stream_id`
 
+Protocol V2 capability tokens can be supplied statically or through a provider. The initial token is sent as the WebSocket `token` query parameter. Provider-backed JWTs with `exp` are refreshed proactively at 80% of their lifetime (`iat` to `exp`, or current time to `exp` when `iat` is absent). Opaque tokens and static-only tokens are reactive only: when Sockudo emits `sockudo:token_expired` with code `40142` or `40160`, the provider is called if one exists and the SDK sends a `sockudo:auth` refresh frame with the new token.
+
+```swift
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        protocolVersion: 2,
+        forceTLS: false,
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        capabilityToken: .init(asyncProvider: {
+            try await tokenService.fetchSockudoToken()
+        }),
+        appendRollupWindow: 40
+    )
+)
+```
+
 ## Advanced Usage
 
 ### Channel Authorization
@@ -159,6 +181,11 @@ client.bind("sockudo:resume_success") { data, _ in
 channel.bind("sockudo:rewind_complete") { data, _ in
     print(data as Any)
 }
+
+print(channel.attachSerial as Any)
+channel.channelHistory(.init(limit: 50, untilAttach: true)) { result in
+    print(result)
+}
 ```
 
 ### Mutable Messages (Release 4.3)
@@ -182,6 +209,8 @@ For historical inspection, use:
 - `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}` for the latest visible version
 - `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions` for preserved versions in `version_serial` order
 
+Configure `versionedMessages.endpoint` to use proxy-backed write helpers without exposing Sockudo app secrets in the mobile client. The proxy should accept JSON `{ channel, messageSerial?, action, payload }` and call Sockudo's signed REST API server-side. `createMessage` should proxy `/events`; mutation helpers should proxy the HTTP update/delete/append endpoints. The Swift SDK does not send unsupported websocket mutation frames.
+
 ```swift
 import SockudoSwift
 
@@ -192,7 +221,10 @@ let client = try SockudoClient(
         forceTLS: false,
         wsHost: "127.0.0.1",
         wsPort: 6001,
-        protocolVersion: 2
+        protocolVersion: 2,
+        versionedMessages: .init(
+            endpoint: "https://api.example.com/sockudo/versioned"
+        )
     )
 )
 
@@ -213,6 +245,33 @@ channel.bindGlobal { eventName, data in
 }
 
 client.connect()
+
+channel.createMessage(
+    .init(name: "chat.message", data: ["text": "hello"], messageID: "msg-1")
+) { result in
+    print(result)
+}
+
+channel.appendMessage(
+    "msg-1",
+    request: .init(data: " world", opID: "append-1")
+) { result in
+    print(result)
+}
+```
+
+### Presence Updates
+
+Presence member data can be updated in-place on Protocol V2 presence channels. Incoming `sockudo_internal:presence_update` events update `members` and emit `sockudo:presence_update`.
+
+```swift
+let presence = client.subscribe("presence-agent:session-123") as! PresenceChannel
+
+try presence.update(data: ["status": "thinking"])
+
+presence.bind("sockudo:presence_update") { data, _ in
+    print(data as Any)
+}
 ```
 
 ### Presence History

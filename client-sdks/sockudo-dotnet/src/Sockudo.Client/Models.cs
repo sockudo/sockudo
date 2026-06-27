@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -17,6 +18,12 @@ public enum SockudoWireFormat
     Json,
     MessagePack,
     Protobuf,
+}
+
+public enum SockudoAppendMode
+{
+    Delta,
+    Full,
 }
 
 public enum ConnectionState
@@ -72,7 +79,11 @@ public sealed record MessageExtras(
     bool? Ephemeral = null,
     string? IdempotencyKey = null,
     bool? Echo = null
-);
+)
+{
+    public IReadOnlyDictionary<string, object?> Raw { get; init; } =
+        new Dictionary<string, object?>(StringComparer.Ordinal);
+}
 
 public sealed record SubscriptionOptions(
     FilterNode? Filter = null,
@@ -148,6 +159,11 @@ public sealed record UserAuthenticationOptions(
     Func<IDictionary<string, string>>? HeadersProvider = null,
     Func<IDictionary<string, object>>? ParamsProvider = null,
     UserAuthenticationHandler? CustomHandler = null
+);
+
+public sealed record TokenAuthenticationOptions(
+    string? Token = null,
+    Func<CancellationToken, Task<string>>? TokenProvider = null
 );
 
 public sealed record PresenceHistoryOptions(
@@ -307,7 +323,8 @@ public sealed record ChannelHistoryParams(
     long? StartSerial = null,
     long? EndSerial = null,
     long? StartTimeMs = null,
-    long? EndTimeMs = null
+    long? EndTimeMs = null,
+    bool? UntilAttach = null
 )
 {
     public IDictionary<string, object> ToPayload()
@@ -320,6 +337,7 @@ public sealed record ChannelHistoryParams(
         if (EndSerial is not null) payload["end_serial"] = EndSerial.Value;
         if (StartTimeMs is not null) payload["start_time_ms"] = StartTimeMs.Value;
         if (EndTimeMs is not null) payload["end_time_ms"] = EndTimeMs.Value;
+        if (UntilAttach is not null) payload["until_attach"] = UntilAttach.Value;
         return payload;
     }
 }
@@ -520,6 +538,40 @@ public sealed class AnnotationEventsPage
     }
 }
 
+public sealed record VersionedMessageCreateOptions(
+    string? MessageSerial = null,
+    MessageExtras? Extras = null,
+    string? MessageId = null,
+    string? ClientId = null,
+    string? SocketId = null,
+    string? OpId = null
+);
+
+public sealed record VersionedMessageMutationOptions(
+    object? Data = null,
+    MessageExtras? Extras = null,
+    IReadOnlyList<string>? ClearFields = null,
+    string? ClientId = null,
+    string? SocketId = null,
+    string? Description = null,
+    IDictionary<string, object?>? Metadata = null,
+    string? OpId = null,
+    string? Name = null
+);
+
+public sealed record VersionedMessageAck(
+    string Channel,
+    string MessageSerial,
+    MutableMessageAction Action,
+    bool Accepted,
+    string? VersionSerial = null,
+    long? HistorySerial = null,
+    long? DeliverySerial = null,
+    string Status = "accepted",
+    string? HistorySerialText = null,
+    string? DeliverySerialText = null
+);
+
 public sealed record SockudoOptions(
     string Cluster,
     int ProtocolVersion = 2,
@@ -549,14 +601,30 @@ public sealed record SockudoOptions(
     int MessageDeduplicationCapacity = 1000,
     bool ConnectionRecovery = false,
     bool EchoMessages = true,
-    SockudoWireFormat WireFormat = SockudoWireFormat.Json
+    SockudoWireFormat WireFormat = SockudoWireFormat.Json,
+    SockudoAppendMode AppendMode = SockudoAppendMode.Delta,
+    int? AppendRollupWindow = null,
+    TokenAuthenticationOptions? TokenAuthentication = null
 )
 {
+    private static readonly int[] AllowedAppendRollupWindows = { 0, 20, 40, 100, 500 };
+
     public TimeSpan EffectiveActivityTimeout => ActivityTimeout ?? TimeSpan.FromSeconds(120);
     public TimeSpan EffectivePongTimeout => PongTimeout ?? TimeSpan.FromSeconds(30);
     public TimeSpan EffectiveUnavailableTimeout => UnavailableTimeout ?? TimeSpan.FromSeconds(10);
     public ChannelAuthorizationOptions EffectiveChannelAuthorization => ChannelAuthorization ?? new ChannelAuthorizationOptions();
     public UserAuthenticationOptions EffectiveUserAuthentication => UserAuthentication ?? new UserAuthenticationOptions();
+
+    internal void ValidateAppendRollupWindow()
+    {
+        if (AppendRollupWindow is not null && !AllowedAppendRollupWindows.Contains(AppendRollupWindow.Value))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(AppendRollupWindow),
+                AppendRollupWindow,
+                "AppendRollupWindow must be one of: 0, 20, 40, 100, 500.");
+        }
+    }
 }
 
 public sealed record EventMetadata(string? UserId = null);
@@ -578,12 +646,13 @@ public sealed record SockudoEvent(
     string RawMessage,
     int? Sequence = null,
     string? ConflationKey = null,
-    int? Serial = null,
+    long? Serial = null,
+    string? SerialText = null,
     MessageExtras? Extras = null
 );
 
 internal sealed record RecoveryPosition(
-    int Serial,
+    object Serial,
     string? StreamId = null,
     string? LastMessageId = null
 );
@@ -622,6 +691,9 @@ internal static class JsonSupport
             JsonValueKind.Array => element.EnumerateArray().Select(NormalizeElement).ToList(),
             JsonValueKind.String => element.GetString(),
             JsonValueKind.Number when element.TryGetInt64(out var number) => number,
+            JsonValueKind.Number when element.TryGetUInt64(out var number) => number <= long.MaxValue
+                ? (long)number
+                : number.ToString(CultureInfo.InvariantCulture),
             JsonValueKind.Number => element.GetDouble(),
             JsonValueKind.True => true,
             JsonValueKind.False => false,

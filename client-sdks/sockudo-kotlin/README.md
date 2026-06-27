@@ -15,6 +15,7 @@ Official Kotlin client for Sockudo.
 - Fossil and Xdelta3/VCDIFF delta reconstruction
 - User sign-in and watchlist event handling
 - Continuity-aware connection recovery and subscribe-time rewind on Protocol V2
+- Protocol V2 capability-token auth refresh, presence updates, channel history, and mutable-message proxy helpers
 - Live integration tests against Sockudo on `127.0.0.1:6001`
 - Gradle CI and Maven Central publication workflow
 
@@ -151,6 +152,36 @@ channel.bind("sockudo:rewind_complete") { data, _ ->
 }
 ```
 
+### Protocol V2 Auth And History
+
+```kotlin
+val client =
+    SockudoClient(
+        "app-key",
+        SockudoOptions(
+            cluster = "local",
+            protocolVersion = 2,
+            authTokenProvider =
+                ClientAuthTokenProvider { request ->
+                    fetchCapabilityToken(reason = request.reason, socketId = request.socketId)
+                },
+            appendRollupWindow = 100,
+            versionedMessages =
+                VersionedMessagesOptions(
+                    endpoint = "https://api.example.com/sockudo/versioned",
+                ),
+        ),
+    )
+
+val channel = client.subscribe("chat:room-1")
+val history = channel.channelHistory(ChannelHistoryParams(limit = 50, untilAttach = true))
+println(channel.attachSerial)
+```
+
+For JWTs returned by `authTokenProvider`, the client reads `iat` / `exp` without validating the signature and schedules a proactive refresh at 80% of the token lifetime. When the server sends `sockudo:token_expired` or error code `40142` / `40160`, the client asks `authTokenProvider` for a fresh token and sends it with `sockudo:auth`.
+
+Opaque provider tokens and static `authToken` values are reactive-only and rely on `sockudo:token_expired`.
+
 ### Mutable Messages (Release 4.3)
 
 Protocol V2 mutable messages use:
@@ -171,6 +202,7 @@ For historical inspection, use:
 
 - `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}` for the latest visible version
 - `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions` for preserved versions in `version_serial` order
+- proxy-backed helpers: `createMessage`, `appendMessage`, `updateMessage`, and `deleteMessage`
 
 ```kotlin
 import io.sockudo.client.*
@@ -203,6 +235,15 @@ channel.bindGlobal { eventName, data ->
 client.connect()
 ```
 
+Proxy-backed write helpers use `VersionedMessagesOptions.endpoint`; the mobile client still does not sign server REST requests directly.
+
+```kotlin
+val ack = channel.createMessage("chat-message", mapOf("text" to "hello"))
+channel.appendMessage(ack.messageSerial, " world")
+channel.updateMessage(ack.messageSerial, mapOf("text" to "edited"))
+channel.deleteMessage(ack.messageSerial)
+```
+
 ### Presence History
 
 Client-side presence history is proxy-backed. The Kotlin client does not sign the server REST API directly; configure a backend endpoint that accepts `{channel, params, action}` and forwards the request with server credentials.
@@ -224,6 +265,8 @@ val client =
     )
 
 val channel = client.subscribe("presence-lobby") as PresenceChannel
+channel.update(mapOf("status" to "typing"))
+
 val page = channel.history(PresenceHistoryParams(limit = 50, direction = "newest_first"))
 if (page.hasNext()) {
     val nextPage = page.next()

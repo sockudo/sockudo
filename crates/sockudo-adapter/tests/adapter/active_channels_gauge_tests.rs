@@ -48,6 +48,7 @@ async fn register_socket(adapter: &LocalAdapter, app_manager: Arc<MemoryAppManag
             ProtocolVersion::V2,
             WireFormat::Json,
             true,
+            sockudo_protocol::AppendMode::Delta,
         )
         .await
         .unwrap();

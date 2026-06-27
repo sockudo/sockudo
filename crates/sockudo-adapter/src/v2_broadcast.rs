@@ -13,9 +13,31 @@ use sockudo_core::utils::{is_wildcard_subscription_pattern, wildcard_pattern_mat
 use sockudo_core::websocket::SocketId;
 use sockudo_core::websocket::WebSocketRef;
 use sockudo_protocol::messages::PusherMessage;
+use sockudo_protocol::versioned_messages::{
+    AppendMode, MessageAction, clear_runtime_append_fragment, extract_runtime_action,
+    extract_runtime_append_fragment,
+};
+
+/// Apply one socket's append delivery preference and remove internal metadata.
+pub(crate) fn apply_append_mode(
+    mut message: PusherMessage,
+    append_mode: AppendMode,
+) -> PusherMessage {
+    if append_mode == AppendMode::Delta
+        && extract_runtime_action(&message) == Some(MessageAction::Append)
+        && let Some(fragment) = extract_runtime_append_fragment(&message)
+    {
+        message.data = Some(sockudo_protocol::messages::MessageData::String(
+            fragment.to_string(),
+        ));
+    }
+    clear_runtime_append_fragment(&mut message);
+    message
+}
 
 /// Prepare and serialize a V2 message (rewrite prefix, keep serial/message_id).
 pub(crate) fn prepare_v2_message(mut message: PusherMessage) -> Result<(PusherMessage, Bytes)> {
+    clear_runtime_append_fragment(&mut message);
     message.rewrite_prefix(sockudo_protocol::ProtocolVersion::V2);
     message.idempotency_key = None;
     let v2_bytes = Bytes::from(

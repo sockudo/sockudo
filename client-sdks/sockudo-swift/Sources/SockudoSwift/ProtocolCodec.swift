@@ -63,35 +63,7 @@ enum ProtocolCodec {
     if let stringData = eventData as? String, let parsed = try? JSON.decodeString(stringData) {
       eventData = parsed
     }
-    var parsedExtras: MessageExtras?
-    if let extras = envelope["extras"] as? [String: Any] {
-      let headers =
-        (extras["headers"] as? [String: Any])?.compactMapValues { value -> ExtraValue? in
-          switch value {
-          case let value as Bool:
-            return .bool(value)
-          case let value as Int:
-            return .int(value)
-          case let value as NSNumber where CFGetTypeID(value) != CFBooleanGetTypeID():
-            if floor(value.doubleValue) == value.doubleValue {
-              return .int(value.intValue)
-            }
-            return .double(value.doubleValue)
-          case let value as Double:
-            return .double(value)
-          case let value as String:
-            return .string(value)
-          default:
-            return nil
-          }
-        }
-      parsedExtras = MessageExtras(
-        headers: headers,
-        ephemeral: extras["ephemeral"] as? Bool,
-        idempotencyKey: (extras["idempotency_key"] ?? extras["idempotencyKey"]) as? String,
-        echo: extras["echo"] as? Bool
-      )
-    }
+    let parsedExtras = (envelope["extras"] as? [String: Any]).map(parseExtras)
 
     return SockudoEvent(
       event: event,
@@ -101,13 +73,105 @@ enum ProtocolCodec {
       streamID: envelope["stream_id"] as? String,
       messageId: envelope["message_id"] as? String,
       rawMessage: decoded.rawMessage,
-      sequence: (envelope["__delta_seq"] as? NSNumber)?.intValue
-        ?? (envelope["sequence"] as? NSNumber)?.intValue,
+      sequence: parseWireSerial(envelope["__delta_seq"]) ?? parseWireSerial(envelope["sequence"]),
       conflationKey: envelope["__conflation_key"] as? String ?? envelope["conflation_key"]
         as? String,
-      serial: (envelope["serial"] as? NSNumber)?.intValue,
+      serial: parseWireSerial(envelope["serial"]),
       extras: parsedExtras
     )
+  }
+
+  private static func parseExtras(_ extras: [String: Any]) -> MessageExtras {
+    let headers = (extras["headers"] as? [String: Any])?.compactMapValues(parseExtraValue)
+    let raw = extras.mapValues { SockudoJSONValue.from($0) ?? .null }
+    return MessageExtras(
+      headers: headers?.isEmpty == false ? headers : nil,
+      ephemeral: extras["ephemeral"] as? Bool,
+      idempotencyKey: (extras["idempotency_key"] ?? extras["idempotencyKey"]) as? String,
+      echo: extras["echo"] as? Bool,
+      raw: raw.isEmpty ? nil : raw
+    )
+  }
+
+  private static func parseExtraValue(_ value: Any) -> ExtraValue? {
+    switch value {
+    case let value as Bool:
+      return .bool(value)
+    case let value as Int:
+      return .int(value)
+    case let value as Int64:
+      return Int(exactly: value).map(ExtraValue.int) ?? .string(String(value))
+    case let value as UInt64:
+      guard value <= UInt64(Int.max) else {
+        return .string(String(value))
+      }
+      return .int(Int(value))
+    case let value as NSNumber:
+      return parseNSNumberExtra(value)
+    case let value as Double:
+      return Int(exactly: value).map(ExtraValue.int) ?? .double(value)
+    case let value as Float:
+      let double = Double(value)
+      return Int(exactly: double).map(ExtraValue.int) ?? .double(double)
+    case let value as String:
+      return .string(value)
+    default:
+      return nil
+    }
+  }
+
+  private static func parseNSNumberExtra(_ value: NSNumber) -> ExtraValue? {
+    if CFGetTypeID(value) == CFBooleanGetTypeID() {
+      return .bool(value.boolValue)
+    }
+    let type = String(cString: value.objCType)
+    if type == "f" || type == "d" {
+      return Int(exactly: value.doubleValue).map(ExtraValue.int) ?? .double(value.doubleValue)
+    }
+    if ["C", "S", "I", "L", "Q"].contains(type) {
+      let unsigned = value.uint64Value
+      guard unsigned <= UInt64(Int.max) else {
+        return .string(String(unsigned))
+      }
+      return .int(Int(unsigned))
+    }
+    return Int(exactly: value.int64Value).map(ExtraValue.int)
+      ?? .string(String(value.int64Value))
+  }
+
+  private static func parseWireSerial(_ value: Any?) -> Int? {
+    guard let value else { return nil }
+    switch value {
+    case let value as Int:
+      return value
+    case let value as Int64:
+      return Int(exactly: value)
+    case let value as UInt64:
+      guard value <= UInt64(Int.max) else { return nil }
+      return Int(value)
+    case let value as NSNumber:
+      return parseNSNumberSerial(value)
+    case let value as String:
+      return Int(value)
+    default:
+      return nil
+    }
+  }
+
+  private static func parseNSNumberSerial(_ value: NSNumber) -> Int? {
+    if CFGetTypeID(value) == CFBooleanGetTypeID() {
+      return nil
+    }
+    let type = String(cString: value.objCType)
+    if type == "f" || type == "d" {
+      return Int(exactly: value.doubleValue)
+    }
+    if ["C", "S", "I", "L", "Q"].contains(type) {
+      let unsigned = value.uint64Value
+      guard unsigned <= UInt64(Int.max) else { return nil }
+      return Int(unsigned)
+    }
+    return Int(exactly: value.int64Value)
   }
 
   private static func data(from message: URLSessionWebSocketTask.Message) throws -> Data {
@@ -181,30 +245,20 @@ private enum MessagePackCodec {
     }
 
     let extrasValue: Any = {
-      guard let extras = envelope["extras"] as? [String: Any] else { return NSNull() }
-      var encoded: [String: Any] = [:]
-      if let headers = extras["headers"] as? [String: Any] {
-        encoded["headers"] = headers.mapValues { headerValue in
-          switch headerValue {
-          case let value as Bool:
-            return ["bool", value]
-          case let value as Int:
-            return ["number", value]
-          case let value as Double:
-            return ["number", value]
-          case let value as NSNumber where CFGetTypeID(value) != CFBooleanGetTypeID():
-            return ["number", value.doubleValue]
-          default:
-            return ["string", String(describing: headerValue)]
-          }
+      if let extras = envelope["extras"] as? MessageExtras {
+        var encoded = extras.raw?.mapValues(\.rawValue) ?? [:]
+        if let headers = extras.headers {
+          encoded["headers"] = headers.mapValues(\.rawValue)
         }
+        if let ephemeral = extras.ephemeral { encoded["ephemeral"] = ephemeral }
+        if let idempotencyKey = extras.idempotencyKey {
+          encoded["idempotency_key"] = idempotencyKey
+        }
+        if let echo = extras.echo { encoded["echo"] = echo }
+        return encoded.isEmpty ? NSNull() : encoded
       }
-      if let ephemeral = extras["ephemeral"] { encoded["ephemeral"] = ephemeral }
-      if let idempotencyKey = extras["idempotency_key"] ?? extras["idempotencyKey"] {
-        encoded["idempotency_key"] = idempotencyKey
-      }
-      if let echo = extras["echo"] { encoded["echo"] = echo }
-      return encoded
+      guard let extras = envelope["extras"] as? [String: Any] else { return NSNull() }
+      return extras
     }()
 
     return [
@@ -282,8 +336,13 @@ private struct MessagePackEncoder {
       try encode(array: value)
     case let value as [String: String]:
       try encode(map: value.mapValues { $0 })
+    case let value as ExtraValue:
+      try encode(value.rawValue)
+    case let value as SockudoJSONValue:
+      try encode(value.rawValue)
     case let value as MessageExtras:
       var map: [String: Any] = [:]
+      if let raw = value.raw { map = raw.mapValues(\.rawValue) }
       if let headers = value.headers { map["headers"] = headers.mapValues(\.rawValue) }
       if let ephemeral = value.ephemeral { map["ephemeral"] = ephemeral }
       if let idempotencyKey = value.idempotencyKey { map["idempotency_key"] = idempotencyKey }
@@ -424,7 +483,9 @@ private struct MessagePackDecoder {
     case 0xcc: return Int(readByte())
     case 0xcd: return Int(try readUInt16())
     case 0xce: return Int(try readUInt32())
-    case 0xcf: return Int(try readUInt64())
+    case 0xcf:
+      let value = try readUInt64()
+      return value <= UInt64(Int.max) ? Int(value) : String(value)
     case 0xd0: return Int(Int8(bitPattern: readByte()))
     case 0xd1: return Int(Int16(bitPattern: try readUInt16()))
     case 0xd2: return Int(Int32(bitPattern: try readUInt32()))
@@ -526,7 +587,7 @@ private enum ProtobufCodec {
     if let userID = envelope["user_id"] as? String {
       writer.writeString(field: 5, value: userID)
     }
-    if let sequence = (envelope["sequence"] as? NSNumber)?.uint64Value {
+    if let sequence = uint64(from: envelope["sequence"]) {
       writer.writeVarint(field: 7, value: sequence)
     }
     if let conflationKey = envelope["conflation_key"] as? String {
@@ -536,12 +597,12 @@ private enum ProtobufCodec {
       writer.writeString(field: 9, value: messageID)
     }
     if let streamID = envelope["stream_id"] as? String {
-      writer.writeString(field: 15, value: streamID)
+      writer.writeString(field: 10, value: streamID)
     }
-    if let serial = (envelope["serial"] as? NSNumber)?.uint64Value {
-      writer.writeVarint(field: 10, value: serial)
+    if let serial = uint64(from: envelope["serial"]) {
+      writer.writeVarint(field: 11, value: serial)
     }
-    if let extras = envelope["extras"] as? [String: Any] {
+    if let extras = extrasMap(from: envelope["extras"]) {
       var nested = ProtoWriter()
       if let headers = extras["headers"] as? [String: Any] {
         for key in headers.keys.sorted() {
@@ -579,13 +640,25 @@ private enum ProtobufCodec {
       if let echo = extras["echo"] as? Bool {
         nested.writeBool(field: 4, value: echo)
       }
-      writer.writeData(field: 12, value: nested.data)
+      if let aiExtras = extras["ai"] as? [String: Any] {
+        var aiWriter = ProtoWriter()
+        if let transport = aiExtras["transport"] as? [String: Any] {
+          writeStringMap(transport, field: 1, into: &aiWriter)
+        }
+        if let codec = aiExtras["codec"] as? [String: Any] {
+          writeStringMap(codec, field: 2, into: &aiWriter)
+        }
+        if aiWriter.data.isEmpty == false {
+          nested.writeData(field: 5, value: aiWriter.data)
+        }
+      }
+      writer.writeData(field: 13, value: nested.data)
     }
-    if let deltaSequence = (envelope["__delta_seq"] as? NSNumber)?.uint64Value {
-      writer.writeVarint(field: 13, value: deltaSequence)
+    if let deltaSequence = uint64(from: envelope["__delta_seq"]) {
+      writer.writeVarint(field: 14, value: deltaSequence)
     }
     if let deltaConflationKey = envelope["__conflation_key"] as? String {
-      writer.writeString(field: 14, value: deltaConflationKey)
+      writer.writeString(field: 15, value: deltaConflationKey)
     }
     return writer.data
   }
@@ -602,15 +675,103 @@ private enum ProtobufCodec {
       case (7, .varint): envelope["sequence"] = NSNumber(value: try reader.readVarint())
       case (8, .lengthDelimited): envelope["conflation_key"] = try reader.readString()
       case (9, .lengthDelimited): envelope["message_id"] = try reader.readString()
-      case (10, .varint): envelope["serial"] = NSNumber(value: try reader.readVarint())
-      case (12, .lengthDelimited): envelope["extras"] = try decodeExtras(reader.readData())
-      case (13, .varint): envelope["__delta_seq"] = NSNumber(value: try reader.readVarint())
-      case (14, .lengthDelimited): envelope["__conflation_key"] = try reader.readString()
-      case (15, .lengthDelimited): envelope["stream_id"] = try reader.readString()
+      case (10, .lengthDelimited): envelope["stream_id"] = try reader.readString()
+      case (11, .varint): envelope["serial"] = NSNumber(value: try reader.readVarint())
+      case (13, .lengthDelimited): envelope["extras"] = try decodeExtras(reader.readData())
+      case (14, .varint): envelope["__delta_seq"] = NSNumber(value: try reader.readVarint())
+      case (15, .lengthDelimited): envelope["__conflation_key"] = try reader.readString()
       default: try reader.skip(wireType: wireType)
       }
     }
     return envelope
+  }
+
+  private static func extrasMap(from value: Any?) -> [String: Any]? {
+    if let extras = value as? [String: Any] {
+      return extras
+    }
+    guard let extras = value as? MessageExtras else {
+      return nil
+    }
+    var map = extras.raw?.mapValues(\.rawValue) ?? [:]
+    if let headers = extras.headers { map["headers"] = headers.mapValues(\.rawValue) }
+    if let ephemeral = extras.ephemeral { map["ephemeral"] = ephemeral }
+    if let idempotencyKey = extras.idempotencyKey { map["idempotency_key"] = idempotencyKey }
+    if let echo = extras.echo { map["echo"] = echo }
+    return map.isEmpty ? nil : map
+  }
+
+  private static func uint64(from value: Any?) -> UInt64? {
+    guard let value else { return nil }
+    switch value {
+    case let value as UInt64:
+      return value
+    case let value as UInt:
+      return UInt64(value)
+    case let value as Int:
+      guard value >= 0 else { return nil }
+      return UInt64(value)
+    case let value as Int64:
+      guard value >= 0 else { return nil }
+      return UInt64(value)
+    case let value as NSNumber:
+      if CFGetTypeID(value) == CFBooleanGetTypeID() {
+        return nil
+      }
+      let type = String(cString: value.objCType)
+      if type == "f" || type == "d" {
+        let double = value.doubleValue
+        guard double >= 0, double.rounded(.towardZero) == double else {
+          return nil
+        }
+        return UInt64(exactly: double)
+      }
+      if ["C", "S", "I", "L", "Q"].contains(type) {
+        return value.uint64Value
+      }
+      let signed = value.int64Value
+      guard signed >= 0 else { return nil }
+      return UInt64(signed)
+    case let value as String:
+      return UInt64(value)
+    default:
+      return nil
+    }
+  }
+
+  private static func writeStringMap(
+    _ map: [String: Any],
+    field: UInt64,
+    into writer: inout ProtoWriter
+  ) {
+    for key in map.keys.sorted() {
+      guard let value = stringValue(map[key]) else { continue }
+      var entry = ProtoWriter()
+      entry.writeString(field: 1, value: key)
+      entry.writeString(field: 2, value: value)
+      writer.writeData(field: field, value: entry.data)
+    }
+  }
+
+  private static func stringValue(_ value: Any?) -> String? {
+    switch value {
+    case let value as String:
+      return value
+    case let value as SockudoJSONValue:
+      return value.stringValue
+    case let value as NSNumber where CFGetTypeID(value) != CFBooleanGetTypeID():
+      return String(describing: value)
+    case let value as Int:
+      return String(value)
+    case let value as Int64:
+      return String(value)
+    case let value as UInt64:
+      return String(value)
+    case let value as Bool:
+      return value ? "true" : "false"
+    default:
+      return nil
+    }
   }
 
   private static func decodeMessageData(_ data: Data) throws -> Any {
@@ -642,6 +803,8 @@ private enum ProtobufCodec {
         extras["idempotency_key"] = try reader.readString()
       case (4, .varint):
         extras["echo"] = try reader.readVarint() != 0
+      case (5, .lengthDelimited):
+        extras["ai"] = try decodeAiExtras(reader.readData())
       default:
         try reader.skip(wireType: wireType)
       }
@@ -650,6 +813,46 @@ private enum ProtobufCodec {
       extras["headers"] = headers
     }
     return extras
+  }
+
+  private static func decodeAiExtras(_ data: Data) throws -> [String: Any] {
+    var reader = ProtoReader(data: data)
+    var aiExtras: [String: Any] = [:]
+    var transport: [String: String] = [:]
+    var codec: [String: String] = [:]
+    while let (field, wireType) = try reader.nextField() {
+      switch (field, wireType) {
+      case (1, .lengthDelimited):
+        let (key, value) = try decodeStringMapEntry(reader.readData())
+        transport[key] = value
+      case (2, .lengthDelimited):
+        let (key, value) = try decodeStringMapEntry(reader.readData())
+        codec[key] = value
+      default:
+        try reader.skip(wireType: wireType)
+      }
+    }
+    if transport.isEmpty == false {
+      aiExtras["transport"] = transport
+    }
+    if codec.isEmpty == false {
+      aiExtras["codec"] = codec
+    }
+    return aiExtras
+  }
+
+  private static func decodeStringMapEntry(_ data: Data) throws -> (String, String) {
+    var reader = ProtoReader(data: data)
+    var key = ""
+    var value = ""
+    while let (field, wireType) = try reader.nextField() {
+      switch (field, wireType) {
+      case (1, .lengthDelimited): key = try reader.readString()
+      case (2, .lengthDelimited): value = try reader.readString()
+      default: try reader.skip(wireType: wireType)
+      }
+    }
+    return (key, value)
   }
 
   private static func decodeHeaderEntry(_ data: Data) throws -> (String, Any) {
@@ -772,8 +975,11 @@ private struct ProtoReader {
     throw SockudoError.messageParseError("Unexpected end of protobuf payload")
   }
 
-  mutating func readData() -> Data {
-    let length = Int((try? readVarint()) ?? 0)
+  mutating func readData() throws -> Data {
+    let length = Int(try readVarint())
+    guard data.distance(from: offset, to: data.endIndex) >= length else {
+      throw SockudoError.messageParseError("Unexpected end of protobuf payload")
+    }
     let end = data.index(offset, offsetBy: length)
     let slice = Data(data[offset..<end])
     offset = end
@@ -781,7 +987,7 @@ private struct ProtoReader {
   }
 
   mutating func readString() throws -> String {
-    let data = readData()
+    let data = try readData()
     guard let string = String(data: data, encoding: .utf8) else {
       throw SockudoError.messageParseError("Invalid UTF-8 protobuf payload")
     }
@@ -807,7 +1013,7 @@ private struct ProtoReader {
     case .fixed64:
       _ = try readFixed64()
     case .lengthDelimited:
-      _ = readData()
+      _ = try readData()
     case .fixed32:
       guard data.distance(from: offset, to: data.endIndex) >= 4 else {
         throw SockudoError.messageParseError("Unexpected end of protobuf payload")
