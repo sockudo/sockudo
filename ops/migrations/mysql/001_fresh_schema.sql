@@ -19,8 +19,8 @@
 -- stores until release-4.4-aware annotation events are published.
 
 CREATE TABLE IF NOT EXISTS `applications` (
-    id VARCHAR(255) PRIMARY KEY,
-    `key` VARCHAR(255) UNIQUE NOT NULL,
+    id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci PRIMARY KEY,
+    `key` VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci UNIQUE NOT NULL,
     secret VARCHAR(255) NOT NULL,
     max_connections INT UNSIGNED NOT NULL,
     enable_client_messages BOOLEAN NOT NULL DEFAULT FALSE,
@@ -52,9 +52,9 @@ CREATE INDEX idx_applications_enabled ON `applications` (enabled);
 CREATE INDEX idx_applications_created_at ON `applications` (created_at);
 
 CREATE TABLE IF NOT EXISTS `sockudo_history_streams` (
-    app_id VARCHAR(255) NOT NULL,
-    channel VARCHAR(255) NOT NULL,
-    stream_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    stream_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     next_serial BIGINT NOT NULL,
     durable_state VARCHAR(32) NOT NULL DEFAULT 'healthy',
     durable_state_reason TEXT NULL,
@@ -71,9 +71,9 @@ CREATE TABLE IF NOT EXISTS `sockudo_history_streams` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `sockudo_history_entries` (
-    app_id VARCHAR(255) NOT NULL,
-    channel VARCHAR(255) NOT NULL,
-    stream_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    stream_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     serial BIGINT NOT NULL,
     published_at_ms BIGINT NOT NULL,
     message_id VARCHAR(255) NULL,
@@ -94,8 +94,8 @@ CREATE INDEX sockudo_history_entries_app_channel_time_idx
 ON `sockudo_history_entries` (app_id, channel, published_at_ms DESC, serial DESC);
 
 CREATE TABLE IF NOT EXISTS `sockudo_history_version_streams` (
-    app_id VARCHAR(255) NOT NULL,
-    channel VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     next_delivery_serial BIGINT NOT NULL,
     oldest_available_delivery_serial BIGINT NULL,
     newest_available_delivery_serial BIGINT NULL,
@@ -106,8 +106,8 @@ CREATE TABLE IF NOT EXISTS `sockudo_history_version_streams` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `sockudo_history_version_messages` (
-    app_id VARCHAR(255) NOT NULL,
-    channel VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     message_serial VARCHAR(128) NOT NULL,
     history_serial BIGINT NOT NULL,
     original_client_id VARCHAR(255) NULL,
@@ -124,8 +124,8 @@ CREATE INDEX sockudo_history_version_messages_latest_version_idx
 ON `sockudo_history_version_messages` (app_id, channel, latest_version_serial);
 
 CREATE TABLE IF NOT EXISTS `sockudo_history_version_entries` (
-    app_id VARCHAR(255) NOT NULL,
-    channel VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     message_serial VARCHAR(128) NOT NULL,
     version_serial VARCHAR(128) NOT NULL,
     delivery_serial BIGINT NOT NULL,
@@ -153,11 +153,11 @@ CREATE INDEX sockudo_history_version_entries_history_version_idx
 ON `sockudo_history_version_entries` (app_id, channel, history_serial, version_serial DESC);
 
 CREATE TABLE IF NOT EXISTS `sockudo_history_annotation_events` (
-    app_id VARCHAR(255) NOT NULL,
-    channel VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     message_serial VARCHAR(128) NOT NULL,
     annotation_serial VARCHAR(128) NOT NULL,
-    annotation_type VARCHAR(256) NOT NULL,
+    annotation_type VARCHAR(256) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     name VARCHAR(255) NULL,
     client_id VARCHAR(255) NULL,
     count_value BIGINT NULL,
@@ -184,10 +184,10 @@ CREATE INDEX sockudo_history_annotation_events_created_at_idx
 ON `sockudo_history_annotation_events` (created_at_ms);
 
 CREATE TABLE IF NOT EXISTS `sockudo_history_annotation_projections` (
-    app_id VARCHAR(255) NOT NULL,
-    channel VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     message_serial VARCHAR(128) NOT NULL,
-    annotation_type VARCHAR(256) NOT NULL,
+    annotation_type VARCHAR(256) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     summary_json JSON NOT NULL,
     last_annotation_serial VARCHAR(128) NULL,
     updated_at_ms BIGINT NOT NULL,

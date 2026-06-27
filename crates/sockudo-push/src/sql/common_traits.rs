@@ -1,5 +1,8 @@
 use super::helpers::*;
-use super::stores::{MySqlPushStore, PostgresPushStore};
+#[cfg(feature = "mysql")]
+use super::stores::MySqlPushStore;
+#[cfg(feature = "postgres")]
+use super::stores::PostgresPushStore;
 use crate::domain::{
     DeleteDeviceOutcome, DeliveryEvent, NotificationTemplate, ProviderCredential, PublishLogEvent,
     PublishStatus, PushCursor, PushCursorKind, ShardJob,

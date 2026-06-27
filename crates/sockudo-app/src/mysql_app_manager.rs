@@ -130,8 +130,8 @@ impl MySQLAppManager {
     async fn ensure_table_exists(&self) -> Result<()> {
         const CREATE_TABLE_QUERY: &str = r#"
             CREATE TABLE IF NOT EXISTS `applications` (
-                id VARCHAR(255) PRIMARY KEY,
-                `key` VARCHAR(255) UNIQUE NOT NULL,
+                id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci PRIMARY KEY,
+                `key` VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci UNIQUE NOT NULL,
                 secret VARCHAR(255) NOT NULL,
                 max_connections INT UNSIGNED NOT NULL,
                 enable_client_messages BOOLEAN NOT NULL DEFAULT FALSE,

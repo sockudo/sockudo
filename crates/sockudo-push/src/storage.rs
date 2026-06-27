@@ -494,6 +494,18 @@ mod migration_smoke_tests {
     }
 
     #[test]
+    fn mysql_push_schema_limits_indexed_identifiers_to_ascii() {
+        for required in [
+            "app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL",
+            "device_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL",
+            "client_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NULL",
+            "channel VARCHAR(512) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL",
+        ] {
+            assert!(MYSQL_PUSH_SCHEMA.contains(required), "mysql: {required}");
+        }
+    }
+
+    #[test]
     fn hyperscale_backend_schema_contracts_cover_denormalized_indexes() {
         for required in [
             "devices_by_id",

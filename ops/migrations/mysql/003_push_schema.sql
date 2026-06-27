@@ -25,9 +25,9 @@
 --   jobs, then retiring the old version.
 
 CREATE TABLE IF NOT EXISTS `push_devices` (
-    app_id VARCHAR(255) NOT NULL,
-    device_id VARCHAR(255) NOT NULL,
-    client_id VARCHAR(255) NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    device_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    client_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NULL,
     form_factor VARCHAR(32) NOT NULL,
     platform VARCHAR(32) NOT NULL,
     metadata JSON NOT NULL,
@@ -52,10 +52,10 @@ CREATE TABLE IF NOT EXISTS `push_devices` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_channel_subscribers` (
-    app_id VARCHAR(255) NOT NULL,
-    channel VARCHAR(512) NOT NULL,
-    device_id VARCHAR(255) NOT NULL,
-    client_id VARCHAR(255) NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    channel VARCHAR(512) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    device_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
+    client_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NULL,
     provider VARCHAR(32) NOT NULL,
     token_hash VARCHAR(128) NOT NULL,
     credential_version BIGINT UNSIGNED NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS `push_channel_subscribers` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_provider_credentials` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     credential_id VARCHAR(255) NOT NULL,
     provider VARCHAR(32) NOT NULL,
     version BIGINT UNSIGNED NOT NULL,
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS `push_provider_credentials` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_notification_templates` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     template_id VARCHAR(255) NOT NULL,
     default_locale VARCHAR(64) NOT NULL,
     locales_json JSON NOT NULL,
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS `push_notification_templates` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_scheduled_jobs` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     publish_id VARCHAR(255) NOT NULL,
     due_minute_ms BIGINT UNSIGNED NOT NULL,
     due_at_ms BIGINT UNSIGNED NOT NULL,
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS `push_scheduled_jobs` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_scheduler_locks` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     publish_id VARCHAR(255) NOT NULL,
     owner_id VARCHAR(255) NOT NULL,
     expires_at_ms BIGINT UNSIGNED NOT NULL,
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS `push_scheduler_locks` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_publish_status` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     publish_id VARCHAR(255) NOT NULL,
     state VARCHAR(32) NOT NULL,
     counters_json JSON NOT NULL,
@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS `push_publish_status` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_publish_log` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     publish_id VARCHAR(255) NOT NULL,
     occurred_at_ms BIGINT UNSIGNED NOT NULL,
     event_id VARCHAR(255) NOT NULL,
@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS `push_publish_log` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_fanout_shards` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     publish_id VARCHAR(255) NOT NULL,
     shard_id VARCHAR(255) NOT NULL,
     shard_json JSON NOT NULL,
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS `push_fanout_shards` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_delivery_events` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     publish_id VARCHAR(255) NOT NULL,
     occurred_at_ms BIGINT UNSIGNED NOT NULL,
     event_id VARCHAR(255) NOT NULL,
@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS `push_delivery_events` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_dead_letters` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     publish_id VARCHAR(255) NOT NULL,
     dead_letter_id VARCHAR(255) NOT NULL,
     occurred_at_ms BIGINT UNSIGNED NOT NULL,
@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS `push_dead_letters` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_idempotency` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     idempotency_key VARCHAR(255) NOT NULL,
     publish_id VARCHAR(255) NOT NULL,
     expires_at_ms BIGINT UNSIGNED NOT NULL,
@@ -182,7 +182,7 @@ CREATE TABLE IF NOT EXISTS `push_idempotency` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `push_operator_invalidations` (
-    app_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
     occurred_at_ms BIGINT UNSIGNED NOT NULL,
     event_id VARCHAR(255) NOT NULL,
     subject VARCHAR(1024) NOT NULL,
