@@ -34,7 +34,7 @@ let package = Package(
             targets: ["YourPackage"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/sockudo/sockudo", from: "2.0.0"),
+        .package(url: "https://github.com/sockudo/sockudo", from: "2.1.0"),
     ],
     targets: [
         .target(

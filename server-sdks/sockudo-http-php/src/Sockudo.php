@@ -19,7 +19,7 @@ class Sockudo implements LoggerAwareInterface, SockudoInterface
     /**
      * @var string Version
      */
-    public static $VERSION = '2.0.0';
+    public static $VERSION = '2.1.0';
 
     /**
      * @var null|SockudoCrypto

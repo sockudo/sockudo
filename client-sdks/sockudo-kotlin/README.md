@@ -25,7 +25,7 @@ Install the published package from Maven Central:
 
 ```kotlin
 dependencies {
-    implementation("io.sockudo:sockudo-kotlin:2.0.0")
+    implementation("io.sockudo:sockudo-kotlin:2.1.0")
 }
 ```
 
@@ -35,7 +35,7 @@ For Maven projects:
 <dependency>
   <groupId>io.sockudo</groupId>
   <artifactId>sockudo-kotlin</artifactId>
-  <version>2.0.0</version>
+  <version>2.1.0</version>
 </dependency>
 ```
 

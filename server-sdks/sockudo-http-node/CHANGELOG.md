@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 - 2026-06-27
 
 - [CHANGED] Widen webhook typings for future event names and payload fields.
 - [ADDED] Forward-compatibility coverage for nested webhook payload values.

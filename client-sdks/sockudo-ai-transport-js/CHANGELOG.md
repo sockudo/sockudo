@@ -1,6 +1,6 @@
 # @sockudo/ai-transport
 
-## Unreleased
+## 2.1.0 - 2026-06-27
 
 - Hardened adapter-level forward-compatibility over `@sockudo/client` by replaying the shared E1
   fixtures, preserving `extras.ai`, keeping unsafe serials as `number | string`, skipping event-less

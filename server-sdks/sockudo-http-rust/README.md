@@ -23,7 +23,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sockudo-http = "2.0.0"
+sockudo-http = "2.1.0"
 sonic-rs = "0.5"
 tokio = { version = "1", features = ["full"] }
 ```

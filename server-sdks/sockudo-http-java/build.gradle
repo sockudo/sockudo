@@ -24,7 +24,7 @@ repositories {
 }
 
 group = "io.sockudo"
-version = "2.0.0"
+version = "2.1.0"
 description = "Sockudo HTTP Client"
 
 // Netty version override to address CVE-2025-24970, CVE-2025-25193, CVE-2025-55163,

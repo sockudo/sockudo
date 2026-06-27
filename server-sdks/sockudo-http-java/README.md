@@ -18,14 +18,14 @@ Install the published package from Maven Central:
 <dependency>
   <groupId>io.sockudo</groupId>
   <artifactId>sockudo-http-java</artifactId>
-  <version>2.0.0</version>
+  <version>2.1.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```kotlin
-implementation("io.sockudo:sockudo-http-java:2.0.0")
+implementation("io.sockudo:sockudo-http-java:2.1.0")
 ```
 
 For local monorepo development, run `./gradlew publishToMavenLocal` from this directory.
