@@ -1,7 +1,7 @@
 use sockudo_core::error::{Error, Result};
 use sockudo_core::versioned_messages::MAX_VERSIONED_SERIAL_LENGTH;
 
-use super::MySqlHistoryStore;
+use super::{MYSQL_ASCII_IDENTIFIER_CHARSET, MySqlHistoryStore};
 
 impl MySqlHistoryStore {
     async fn add_column_if_not_exists(
@@ -46,9 +46,9 @@ impl MySqlHistoryStore {
         let create_streams = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
-                stream_id VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                stream_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 next_serial BIGINT NOT NULL,
                 durable_state VARCHAR(32) NOT NULL DEFAULT 'healthy',
                 durable_state_reason TEXT NULL,
@@ -69,9 +69,9 @@ impl MySqlHistoryStore {
         let create_entries = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
-                stream_id VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                stream_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 serial BIGINT NOT NULL,
                 published_at_ms BIGINT NOT NULL,
                 message_id VARCHAR(255) NULL,
@@ -90,8 +90,8 @@ impl MySqlHistoryStore {
         let create_version_streams = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 next_delivery_serial BIGINT NOT NULL,
                 oldest_available_delivery_serial BIGINT NULL,
                 newest_available_delivery_serial BIGINT NULL,
@@ -106,8 +106,8 @@ impl MySqlHistoryStore {
         let create_version_messages = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 message_serial VARCHAR({}) NOT NULL,
                 history_serial BIGINT NOT NULL,
                 original_client_id VARCHAR(255) NULL,
@@ -125,8 +125,8 @@ impl MySqlHistoryStore {
         let create_version_entries = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 message_serial VARCHAR({}) NOT NULL,
                 version_serial VARCHAR({}) NOT NULL,
                 delivery_serial BIGINT NOT NULL,
@@ -149,11 +149,11 @@ impl MySqlHistoryStore {
         let create_annotation_events = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 message_serial VARCHAR({}) NOT NULL,
                 annotation_serial VARCHAR({}) NOT NULL,
-                annotation_type VARCHAR(256) NOT NULL,
+                annotation_type VARCHAR(256) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 name VARCHAR(255) NULL,
                 client_id VARCHAR(255) NULL,
                 count_value BIGINT NULL,
@@ -172,10 +172,10 @@ impl MySqlHistoryStore {
         let create_annotation_projections = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 message_serial VARCHAR({}) NOT NULL,
-                annotation_type VARCHAR(256) NOT NULL,
+                annotation_type VARCHAR(256) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 summary_json JSON NOT NULL,
                 last_annotation_serial VARCHAR({}) NULL,
                 updated_at_ms BIGINT NOT NULL,
@@ -299,5 +299,23 @@ impl MySqlHistoryStore {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    const MYSQL_FRESH_SCHEMA: &str =
+        include_str!("../../../../../ops/migrations/mysql/001_fresh_schema.sql");
+
+    #[test]
+    fn mysql_fresh_schema_limits_indexed_identifiers_to_ascii() {
+        for required in [
+            "app_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL",
+            "channel VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL",
+            "stream_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL",
+            "annotation_type VARCHAR(256) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL",
+        ] {
+            assert!(MYSQL_FRESH_SCHEMA.contains(required), "{required}");
+        }
     }
 }

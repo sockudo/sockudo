@@ -9,12 +9,15 @@ use sockudo_core::history::{
 };
 use sockudo_core::metrics::MetricsInterface;
 use sockudo_core::options::{DatabaseConnection, DatabasePooling, HistoryConfig};
+#[cfg(feature = "versioned-messages")]
 use sockudo_core::versioned_messages::MAX_VERSIONED_SERIAL_LENGTH;
 use sonic_rs::JsonValueTrait;
 use sqlx::{MySqlPool, Row, mysql::MySqlPoolOptions};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info};
+
+const MYSQL_ASCII_IDENTIFIER_CHARSET: &str = "CHARACTER SET ascii COLLATE ascii_general_ci";
 
 #[derive(Clone)]
 struct HistoryTables {
@@ -254,7 +257,9 @@ mod writes;
 
 mod store_impl;
 
+#[cfg(feature = "versioned-messages")]
 mod version_store;
+#[cfg(feature = "versioned-messages")]
 pub(super) use version_store::create_mysql_version_store;
 
 #[cfg(test)]

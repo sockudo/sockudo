@@ -76,8 +76,8 @@ impl MysqlVersionStore {
     async fn ensure_version_tables(&self) -> Result<()> {
         let create_version_streams = format!(
             r#"CREATE TABLE IF NOT EXISTS `{}` (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 next_delivery_serial BIGINT NOT NULL,
                 oldest_available_delivery_serial BIGINT NULL,
                 newest_available_delivery_serial BIGINT NULL,
@@ -90,8 +90,8 @@ impl MysqlVersionStore {
         );
         let create_version_messages = format!(
             r#"CREATE TABLE IF NOT EXISTS `{}` (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 message_serial VARCHAR({}) NOT NULL,
                 history_serial BIGINT NOT NULL,
                 original_client_id VARCHAR(255) NULL,
@@ -110,8 +110,8 @@ impl MysqlVersionStore {
         );
         let create_version_entries = format!(
             r#"CREATE TABLE IF NOT EXISTS `{}` (
-                app_id VARCHAR(255) NOT NULL,
-                channel VARCHAR(255) NOT NULL,
+                app_id VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
+                channel VARCHAR(255) {MYSQL_ASCII_IDENTIFIER_CHARSET} NOT NULL,
                 message_serial VARCHAR({}) NOT NULL,
                 version_serial VARCHAR({}) NOT NULL,
                 delivery_serial BIGINT NOT NULL,
